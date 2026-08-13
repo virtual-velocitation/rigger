@@ -96,7 +96,7 @@ use rigger::eventstore::sqlite::{PrunedDerived, Store};
 use rigger::eventstore::{
     ContentIdentity, Direction, Error, Event, EventStore, ExpectedRevision, META_GUARD_DEGRADED,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -2484,4 +2484,756 @@ fn replay_baseline_column(out: &str) -> Vec<(String, String)> {
             (!cols.is_empty()).then(|| (cols.join(" "), baseline.to_string()))
         })
         .collect()
+}
+
+// ---------------------------------------------------------------------------------------
+// 15. The FOLD the maintenance now speaks for.
+//
+// The prune no longer only deletes rows: it CARRIES a pruned key's earliest valid-time onto the
+// recording it keeps, for the types named by `ingest::reasserted_derived_types`, which is derived
+// from the single fold fact `contextgraph::refold_supersedes_prior_edges`. That partition is a
+// claim ABOUT THE FOLD made in a module the fold cannot see, and it is exactly the kind of claim
+// that goes stale in silence: nothing about `matches!(type_, A | B)` fails when a fifth type is
+// added, or when a fold arm changes which valid-time its live edge ends up holding. The store
+// under it is equally blind - it takes the partition as data and would faithfully carry a date
+// onto a type whose fold supersedes, MOVING the live graph while every surviving row still looked
+// intact.
+//
+// So the partition is asserted against the fold ITSELF, type by type and empirically: for each
+// derived type, a log carrying two recordings of one subject is pruned by the SHIPPED policy and
+// re-folded, and the live graph - `valid_from` and provenance included - must be the graph the
+// WHOLE log folds to. Then the same log is pruned by the INVERTED policy, which must move the
+// graph: that half is what stops the equality above from passing for a type whose date nothing
+// can shift.
+// ---------------------------------------------------------------------------------------
+
+/// The payload one recording of `type_` carries. All four name the SAME subject (`src/a.rs` and
+/// the design doc that specifies it), so re-recording a type is a re-recording of one fact rather
+/// than a new one - which is the shape the prune's per-key rule is about.
+///
+/// The code half sets `fresh`, because that is what a real extraction BATCH carries: the marker is
+/// what makes the code fold supersede the file's prior edges, and a fixture without it would
+/// exercise a fold arm no extraction pass ever drives.
+fn derived_payload(type_: &str) -> Vec<u8> {
+    let v = match type_ {
+        t if t == rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED => serde_json::json!({
+            "file": "src/a.rs", "name": "alpha", "kind": "function", "line": 1, "lang": "rust",
+            "fresh": true,
+        }),
+        t if t == rigger::contextgraph::TYPE_EDGE_INFERRED => serde_json::json!({
+            "file": "src/a.rs", "name": "beta", "lang": "rust", "fresh": true,
+        }),
+        t if t == rigger::contextgraph::TYPE_DOC_CONCEPT_EXTRACTED => serde_json::json!({
+            "kind": rigger::contextgraph::KIND_DESIGN_DOC,
+            "id": "docs/design.md",
+            "title": "the design that specifies src/a.rs",
+            "doc": "docs/design.md",
+        }),
+        t if t == rigger::contextgraph::TYPE_DOC_LINK_EXTRACTED => serde_json::json!({
+            "from": "docs/design.md", "to": "src/a.rs",
+            "rel": rigger::contextgraph::REL_SPECIFIES,
+        }),
+        other => panic!(
+            "the derived index gained the type {other:?} and this fixture does not know how to \
+             record it - a new derived type must be placed by the fold before the prune can carry \
+             or leave its dates"
+        ),
+    };
+    serde_json::to_vec(&v).unwrap()
+}
+
+/// One replay key per type, in the shape the key authority builds
+/// (`<prefix>/<file>@<hash>#<i>`). Distinct per type so a fixture never leans on the prune's
+/// type-scoping to keep two subjects apart.
+fn derived_key_for(type_: &str) -> String {
+    format!("gc/src/{type_}.rs@h1#0")
+}
+
+/// Seed `project`'s run stream inside `backend` with one recording of `type_` per entry in
+/// `dates`, all of them re-recordings of the SAME subject under the SAME replay key.
+fn seed_one_derived_type(backend: &Store, project: &str, type_: &str, dates: &[u64]) {
+    let key = derived_key_for(type_);
+    let events: Vec<Event> = dates
+        .iter()
+        .map(|secs| keyed(type_, derived_payload(type_), &key, *secs))
+        .collect();
+    Namespaced::new(backend, project)
+        .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
+        .expect("seed one derived type");
+}
+
+/// The project's run stream, read back through the SAME namespaced decorator that wrote it - so
+/// what gets folded below is the log as a reader sees it, positions and valid-times included.
+fn read_run_stream(backend: &Store, project: &str) -> Vec<Event> {
+    Namespaced::new(backend, project)
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .expect("read the run stream back")
+}
+
+/// The LIVE graph `events` fold to, with the bitemporal `valid_from` and the `source` position
+/// INCLUDED.
+///
+/// `graph_rows` above deliberately omits both: it answers "did `--runs` disturb the graph", where
+/// a date is not the question. Here the date IS the question - it is the single column a
+/// carry-forward writes and the single column a wrongly-placed type would move - so a comparison
+/// that dropped it would be satisfied by exactly the defect this section exists to catch.
+fn fold_live_with_dates(
+    events: &[Event],
+    project: &str,
+    path: &Path,
+) -> (Vec<String>, Vec<String>) {
+    {
+        let p = Projector::open(path.to_str().unwrap(), project).expect("open the context graph");
+        p.apply_batch(events).expect("fold the log");
+    }
+    let conn = rusqlite::Connection::open(path).expect("open the context graph");
+    let mut nodes: Vec<String> = conn
+        .prepare("SELECT id, kind, COALESCE(attrs,''), project FROM nodes")
+        .unwrap()
+        .query_map([], |r| {
+            Ok(format!(
+                "{}|{}|{}|{}",
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?
+            ))
+        })
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    nodes.sort();
+    let mut edges: Vec<String> = conn
+        .prepare(
+            "SELECT from_id, to_id, rel, valid_from, source, project, tier FROM edges \
+             WHERE valid_to IS NULL",
+        )
+        .unwrap()
+        .query_map([], |r| {
+            Ok(format!(
+                "{}|{}|{}|{}|{}|{}|{}",
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, String>(6)?
+            ))
+        })
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    edges.sort();
+    (nodes, edges)
+}
+
+/// The two derived halves as sets: the types whose recordings RE-ASSERT (whose earliest date the
+/// prune must carry) and the types whose recordings SUPERSEDE (whose surviving recording's own
+/// date is already the live one).
+fn derived_halves() -> (Vec<&'static str>, Vec<&'static str>) {
+    let reasserted = rigger::ingest::reasserted_derived_types();
+    let superseding: Vec<&'static str> = rigger::ingest::DERIVED_INDEX_TYPES
+        .into_iter()
+        .filter(|t| rigger::contextgraph::refold_supersedes_prior_edges(t))
+        .collect();
+    (reasserted, superseding)
+}
+
+#[test]
+fn the_carry_forward_partition_is_the_folds_own_and_each_type_compacts_to_the_graph_it_folded() {
+    let (reasserted, superseding) = derived_halves();
+
+    // THE PARTITION IS TOTAL, DISJOINT, AND DERIVED. `reasserted_derived_types` is documented as
+    // the derived-index types the fold predicate does NOT place in the superseding half - never a
+    // second hand-written list - so a fifth derived type lands in exactly one half by construction.
+    let all: BTreeSet<&str> = rigger::ingest::DERIVED_INDEX_TYPES.into_iter().collect();
+    let left: BTreeSet<&str> = reasserted.iter().copied().collect();
+    let right: BTreeSet<&str> = superseding.iter().copied().collect();
+    assert!(
+        left.is_disjoint(&right),
+        "no derived type may be in both halves; both: {:?}",
+        left.intersection(&right).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        left.union(&right).copied().collect::<BTreeSet<&str>>(),
+        all,
+        "every derived index type must be placed by the fold predicate; unplaced: {:?}",
+        all.difference(&left.union(&right).copied().collect())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        !left.is_empty() && !right.is_empty(),
+        "both halves must be inhabited, or the inversion below is not an inversion (reasserted \
+         {left:?}, superseding {right:?})"
+    );
+    assert_eq!(
+        left,
+        all.iter()
+            .copied()
+            .filter(|t| !rigger::contextgraph::refold_supersedes_prior_edges(t))
+            .collect::<BTreeSet<&str>>(),
+        "reasserted_derived_types must be exactly the derived types the fold predicate does not \
+         place in the superseding half"
+    );
+
+    // AND THE PARTITION IS THE FOLD'S OWN, type by type.
+    const PROJECT: &str = "fold-partition";
+    const EARLY: u64 = 1_000;
+    const LATE: u64 = 2_000;
+    let prefix = Namespaced::prefix_for(PROJECT);
+    let scratch = tempfile::tempdir().expect("create a scratch dir");
+    let mut folds_a_live_edge: BTreeSet<&str> = BTreeSet::new();
+
+    for type_ in rigger::ingest::DERIVED_INDEX_TYPES {
+        // Three identically seeded logs: one left whole, one pruned by the SHIPPED policy, one
+        // pruned by the INVERTED one. Separate files, so each prune sees a log in its seeded state.
+        let mut folded = Vec::new();
+        for (case, reasserted_arg) in [
+            ("whole", None),
+            ("shipped", Some(reasserted.clone())),
+            ("inverted", Some(superseding.clone())),
+        ] {
+            let db = scratch.path().join(format!("{type_}-{case}.db"));
+            let backend = Store::open(db.to_str().unwrap()).expect("open the event log");
+            seed_one_derived_type(&backend, PROJECT, type_, &[EARLY, LATE]);
+            if let Some(reasserted_arg) = reasserted_arg {
+                let report = backend
+                    .prune_derived_index(
+                        &prefix,
+                        &rigger::ingest::derived_index_identity(),
+                        &reasserted_arg,
+                    )
+                    .expect("prune the derived index");
+                assert_eq!(
+                    report.total_removed(),
+                    1,
+                    "the {case} prune of {type_} must shed exactly the earlier recording, or the \
+                     comparison below is not about a compaction at all"
+                );
+            }
+            let events = read_run_stream(&backend, PROJECT);
+            folded.push(fold_live_with_dates(
+                &events,
+                PROJECT,
+                &scratch.path().join(format!("{type_}-{case}-graph.db")),
+            ));
+        }
+        let (whole, shipped, inverted) = (&folded[0], &folded[1], &folded[2]);
+
+        assert!(
+            !whole.0.is_empty(),
+            "{type_} must fold to something, or nothing below proves anything"
+        );
+        // THE COMPACTION CONTRACT, per type: the log the SHIPPED policy leaves folds to the graph
+        // the whole log folds to - the same nodes, and the same live edges down to the assertion
+        // date and the provenance position.
+        assert_eq!(
+            shipped.0, whole.0,
+            "a {type_} log compacted by the shipped policy must fold to the same nodes"
+        );
+        assert_eq!(
+            shipped.1, whole.1,
+            "a {type_} log compacted by the shipped policy must fold to the same live edges, with \
+             the same valid-from and the same provenance"
+        );
+
+        if whole.1.is_empty() {
+            // A type whose fold writes NODES ONLY has no bitemporal column for a carry to move, so
+            // its placement cannot re-date anything. That is a fact worth stating rather than a
+            // case worth skipping: it is precisely why the equality above is not enough on its own,
+            // and why the inversion below is asserted only where a date actually exists.
+            assert_eq!(
+                inverted.0, whole.0,
+                "{type_} folds no live edge, so neither placement may change what it folds"
+            );
+            continue;
+        }
+        folds_a_live_edge.insert(type_);
+        // AND THE PLACEMENT IS LOAD-BEARING. Swap the two halves and the live graph MOVES: the
+        // re-asserting half loses the date the fact first became true, the superseding half gains
+        // a date its fold retired. Without this, the equality above would hold for a partition
+        // that said nothing at all.
+        assert_ne!(
+            inverted.1, whole.1,
+            "putting {type_} in the WRONG half must move the live graph, or its placement is not \
+             load-bearing and the equality above proves nothing"
+        );
+    }
+
+    // The inversion has to have exercised BOTH directions, or half the partition is unproven.
+    for (half, name) in [(&left, "re-asserting"), (&right, "superseding")] {
+        assert!(
+            half.iter().any(|t| folds_a_live_edge.contains(t)),
+            "the {name} half must contain at least one type whose fold writes a live edge, or its \
+             placement was never actually put to the test; edge-folding types: {folds_a_live_edge:?}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// 16. The API edges of the carry-forward itself.
+//
+// `prune_derived_index` gained a second policy argument, and the store applies it AS DATA: it
+// holds no fold knowledge and asks only whether the caller named a type. That makes the caller's
+// answer the whole contract, and it has edges the command's one shipped call site never reaches -
+// naming nothing, naming a type the policy does not cover, and the key recorded exactly once,
+// whose group has no earlier recording to inherit from and which the `n > 1` guard must therefore
+// leave byte-identical. All three are silent when wrong: a spurious UPDATE re-dates a fact and
+// leaves every row looking perfectly intact.
+// ---------------------------------------------------------------------------------------
+
+/// Every row's `valid_from`, keyed by position - the ONE column the compaction is allowed to
+/// write. Read separately from `raw_rows` on purpose: `raw_rows` is what "untouched" means for
+/// every other column, so holding the two apart lets a test say "these rows are identical AND
+/// exactly these dates moved" rather than conflating the two claims in one tuple.
+fn valid_from_by_position(db: &Path) -> BTreeMap<i64, i64> {
+    let conn = rusqlite::Connection::open(db).expect("open the event log");
+    let mut stmt = conn
+        .prepare("SELECT position, valid_from FROM events ORDER BY position")
+        .unwrap();
+    let out = stmt
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    out
+}
+
+/// Every valid-time in a log, addressed by what the row IS - its type and its replay key - rather
+/// than by a position a fixture would have to hard-code. A key maps to a LIST because a bloated log
+/// is precisely one that holds several recordings of one key.
+type DatesByKey = BTreeMap<(String, String), Vec<i64>>;
+
+/// One pruned fixture: the case that pruned it, its surviving rows, and the dates they carry.
+type PrunedCase = (&'static str, Vec<Row>, DatesByKey);
+
+/// The valid-time a row carries, addressed by what the row IS (its type and its replay key)
+/// rather than by a position a fixture would have to hard-code.
+fn dates_by_key(db: &Path) -> DatesByKey {
+    let dates = valid_from_by_position(db);
+    let mut out: DatesByKey = BTreeMap::new();
+    for row in raw_rows(db) {
+        let key = replay_key(&row).unwrap_or_default();
+        out.entry((row.2.clone(), key))
+            .or_default()
+            .push(dates[&row.0]);
+    }
+    out
+}
+
+/// The one seed every carry-forward edge case below is pruned from: a re-recorded key from EACH
+/// half, a key of the re-asserting half recorded exactly ONCE, and a non-derived event carrying a
+/// derived-looking replay key.
+fn seed_carry_forward_fixture(db: &Path, project: &str) {
+    let backend = Store::open(db.to_str().unwrap()).expect("open the event log");
+    let store = Namespaced::new(&backend, project);
+    let mut events = vec![Event::new(
+        "DecisionMade",
+        br#"{"id":"d1","summary":"s","governs":["src/a.rs"],"supersedes":""}"#.to_vec(),
+    )
+    .with_meta(rigger::ingest::META_REPLAY_KEY, CARRY_KEY_DOC)
+    .with_valid_from(UNIX_EPOCH + Duration::from_secs(500))];
+    for secs in [1_000, 1_500, 2_000] {
+        events.push(keyed(
+            rigger::contextgraph::TYPE_DOC_LINK_EXTRACTED,
+            derived_payload(rigger::contextgraph::TYPE_DOC_LINK_EXTRACTED),
+            CARRY_KEY_DOC,
+            secs,
+        ));
+        events.push(keyed(
+            rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+            derived_payload(rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED),
+            CARRY_KEY_CODE,
+            secs,
+        ));
+    }
+    events.push(keyed(
+        rigger::contextgraph::TYPE_DOC_LINK_EXTRACTED,
+        derived_payload(rigger::contextgraph::TYPE_DOC_LINK_EXTRACTED),
+        CARRY_KEY_SOLO,
+        3_000,
+    ));
+    store
+        .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
+        .expect("seed the carry-forward fixture");
+}
+
+const CARRY_KEY_DOC: &str = "gd/src/a.rs@h1#0";
+const CARRY_KEY_CODE: &str = "gc/src/a.rs@h1#0";
+const CARRY_KEY_SOLO: &str = "gd/src/solo.rs@h1#0";
+
+#[test]
+fn the_carry_forward_touches_only_the_survivors_of_the_types_the_caller_named() {
+    const PROJECT: &str = "carry-edges";
+    let prefix = Namespaced::prefix_for(PROJECT);
+    let scratch = tempfile::tempdir().expect("create a scratch dir");
+    let (reasserted, _) = derived_halves();
+    let doc = rigger::contextgraph::TYPE_DOC_LINK_EXTRACTED.to_string();
+    let code = rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED.to_string();
+    assert!(
+        reasserted.contains(&doc.as_str()) && !reasserted.contains(&code.as_str()),
+        "this fixture reads a type from each half; the shipped partition put them both in {reasserted:?}"
+    );
+
+    // Three prunes of one identical seed, differing ONLY in what the caller named as re-asserting.
+    let cases: [(&str, Vec<&str>); 3] = [
+        // Nothing named: the fail-safe direction for an unconfigured caller - it writes no column
+        // at all, so every survivor keeps the date it was recorded with.
+        ("named-nothing", Vec::new()),
+        // The shipped answer.
+        ("named-shipped", reasserted.clone()),
+        // A type the POLICY does not cover. The store iterates the policy's types and asks whether
+        // each is named, so an unrelated name can only ever be inert - and an implementation that
+        // instead asked "did the caller name anything" would carry every type on this input.
+        ("named-outside", vec!["ReviewFinding"]),
+    ];
+
+    let mut observed: Vec<PrunedCase> = Vec::new();
+    let mut seeded: Option<(Vec<Row>, DatesByKey)> = None;
+    for (case, reasserted_arg) in cases {
+        let db = scratch.path().join(format!("{case}.db"));
+        seed_carry_forward_fixture(&db, PROJECT);
+        let before = (shape(&raw_rows(&db)), dates_by_key(&db));
+        match &seeded {
+            None => seeded = Some((raw_rows(&db), dates_by_key(&db))),
+            Some(first) => assert_eq!(
+                (shape(&first.0), first.1.clone()),
+                before,
+                "every case must start from an identical log, or their outcomes are not comparable"
+            ),
+        }
+        let backend = Store::open(db.to_str().unwrap()).expect("open the event log");
+        backend
+            .prune_derived_index(
+                &prefix,
+                &rigger::ingest::derived_index_identity(),
+                &reasserted_arg,
+            )
+            .expect("prune the derived index");
+        observed.push((case, raw_rows(&db), dates_by_key(&db)));
+    }
+
+    // WHICH ROWS SURVIVE IS THE SAME IN ALL THREE. The carry argument is about DATES; a policy
+    // value that changed the selection would be a different command wearing the same name.
+    let baseline = shape(&observed[0].1);
+    for (case, rows, _) in &observed[1..] {
+        assert_eq!(
+            shape(rows),
+            baseline,
+            "the {case} prune must delete exactly the rows every other prune of this seed \
+             deletes - `reasserted` names dates to carry, never rows to drop"
+        );
+    }
+
+    let survivor_date = |dates: &DatesByKey, type_: &str, key: &str| {
+        let got = dates
+            .get(&(type_.to_string(), key.to_string()))
+            .unwrap_or_else(|| panic!("the survivor of {type_} / {key} must still be in the log"));
+        assert_eq!(
+            got.len(),
+            1,
+            "exactly one recording of {type_} / {key} may survive; got {got:?}"
+        );
+        got[0]
+    };
+    let secs = |s: u64| Duration::from_secs(s).as_nanos() as i64;
+
+    for (case, _, dates) in &observed {
+        // THE SUPERSEDING HALF IS NEVER CARRIED, whatever the caller named it alongside: its
+        // surviving recording's own date is the one its fold arrives at.
+        assert_eq!(
+            survivor_date(dates, &code, CARRY_KEY_CODE),
+            secs(2_000),
+            "the {case} prune must leave the superseding half's survivor at its own recorded date"
+        );
+        // A KEY RECORDED ONCE IS NEVER REWRITTEN. It has no earlier recording to inherit from, and
+        // the `n > 1` guard is what keeps the carry off a row the prune did not touch.
+        assert_eq!(
+            survivor_date(dates, &doc, CARRY_KEY_SOLO),
+            secs(3_000),
+            "the {case} prune must leave a singly-recorded key exactly as it found it"
+        );
+        // THE NON-DERIVED EVENT IS NEVER READ, WRITTEN, OR MOVED - however its replay key is
+        // spelled. It shares a key with the derived row the carry rewrites, so an UPDATE that
+        // matched on the key rather than on the key AND the type would re-date a domain event.
+        assert_eq!(
+            survivor_date(dates, "DecisionMade", CARRY_KEY_DOC),
+            secs(500),
+            "the {case} prune must never touch a non-derived event, however its key is spelled"
+        );
+    }
+
+    // AND THE RE-ASSERTING HALF IS CARRIED EXACTLY WHEN THE CALLER NAMED IT.
+    let doc_dates: Vec<(&str, i64)> = observed
+        .iter()
+        .map(|(case, _, dates)| (*case, survivor_date(dates, &doc, CARRY_KEY_DOC)))
+        .collect();
+    assert_eq!(
+        doc_dates,
+        vec![
+            ("named-nothing", secs(2_000)),
+            ("named-shipped", secs(1_000)),
+            ("named-outside", secs(2_000)),
+        ],
+        "the earliest date must be carried onto the survivor when - and only when - the caller \
+         named its type; got {doc_dates:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------------------
+// 17. The store the prune migrates is the store the prune addresses.
+//
+// `reset` now runs the spec-09 identity migration before any prune, because a log bloated enough
+// to need compacting is by construction an OLD log whose streams were written under the
+// pre-identity basename namespace. That migration is anchored at the RESOLVED store's owning root
+// - not at the process cwd - and the two anchors are indistinguishable from the project root,
+// where every other test of this unit runs.
+//
+// They come apart exactly where the store walk exists for: a nested WORKTREE. Its own git
+// top-level is itself, so a cwd-anchored migration computes both halves of its comparison from
+// the worktree (which has no minted identity, so they agree and it migrates nothing) while the
+// prune addresses the store it walked UP to - and reports a perfectly successful prune of zero
+// rows against a log whose history is all still under the legacy namespace. That is the silent
+// no-op this command's whole design refuses, and no fixture rooted at the project can see it.
+// ---------------------------------------------------------------------------------------
+
+/// The durable identity the fixtures below mint. A fixed string rather than a derivation of the
+/// basename it replaces, for the reason spelled out where it is written.
+const MINTED_ID: &str = "compaction-fixture-9f2c1a";
+
+/// A project whose event log was written under the LEGACY basename namespace and which only
+/// afterwards minted a durable identity - the shape a store that needs compacting actually has.
+/// Returns `(legacy identity, minted identity)`.
+fn seed_project_under_the_legacy_namespace(root: &Path, rounds: u64) -> (String, String) {
+    git_in(root, &["init", "-q"]);
+    git_in(root, &["config", "user.email", "fixture@example.invalid"]);
+    git_in(root, &["config", "user.name", "fixture"]);
+    git_in(root, &["commit", "-q", "--allow-empty", "-m", "seed"]);
+    std::fs::create_dir_all(root.join(".rigger")).expect("create .rigger");
+
+    // Seeded BEFORE the mint, so the history is filed under the basename namespace exactly as a
+    // pre-identity store's is. A fixture that minted first would prove nothing about the migration.
+    let legacy = project_identity(root);
+    let backend = Store::open(event_log(root).to_str().unwrap()).expect("open the event log");
+    seed_namespace(&backend, &legacy, rounds);
+    drop(backend);
+
+    // The minted id shares NO prefix with the basename it replaces. `proj-<id>-` is a separator-free
+    // string prefix, so an id of the form `<legacy>-<suffix>` would leave every migrated stream
+    // still matching the LEGACY prefix and the assertions below would be reading that ambiguity
+    // rather than whether the history moved.
+    let minted = MINTED_ID.to_string();
+    std::fs::write(root.join(".rigger").join("project.id"), &minted).expect("mint the identity");
+    assert!(
+        !minted.starts_with(&legacy) && !legacy.starts_with(&minted),
+        "neither identity may be a string prefix of the other, or the namespace assertions below \
+         cannot tell a migrated stream from an unmigrated one ({legacy:?} vs {minted:?})"
+    );
+    assert_ne!(
+        legacy,
+        project_identity(root),
+        "the mint must produce an identity distinct from the basename, or this fixture does not \
+         reproduce the shape it exists for"
+    );
+    (legacy, minted)
+}
+
+#[test]
+fn a_reset_from_a_nested_worktree_migrates_and_compacts_the_store_it_walked_up_to() {
+    const ROUNDS: u64 = 4;
+    let removed_per_key = (ROUNDS - 1) as usize;
+
+    // Two identically seeded projects. One is reset from its own root, the other from a worktree
+    // nested inside it: the SAME store, reached by the SAME walk, from two different working
+    // directories. Whatever the command does, it must do the same thing in both.
+    let from_root = tempfile::tempdir().expect("create a temp project");
+    let from_worktree = tempfile::tempdir().expect("create a temp project");
+    let (legacy_a, minted_a) = seed_project_under_the_legacy_namespace(from_root.path(), ROUNDS);
+    let (legacy_b, minted_b) =
+        seed_project_under_the_legacy_namespace(from_worktree.path(), ROUNDS);
+
+    let nested = from_worktree.path().join("wt");
+    git_in(
+        from_worktree.path(),
+        &["worktree", "add", "-q", "--detach", "wt"],
+    );
+    assert!(
+        !nested.join(".rigger").exists(),
+        "the nested worktree must carry no store of its own, or the walk would stop at a shadow \
+         instead of reaching the project's store"
+    );
+
+    let before_a = raw_rows(&event_log(from_root.path())).len();
+    let before_b = raw_rows(&event_log(from_worktree.path())).len();
+    assert_eq!(
+        before_a, before_b,
+        "the two fixtures must start from logs of the same size"
+    );
+
+    let (out_a, err_a, ok_a) = run_rigger(from_root.path(), &["reset", "--derived"]);
+    assert!(
+        ok_a,
+        "reset --derived at the root must succeed: {err_a}\n{out_a}"
+    );
+    let (out_b, err_b, ok_b) = run_rigger(&nested, &["reset", "--derived"]);
+    assert!(
+        ok_b,
+        "reset --derived from a nested worktree must succeed - the store walk reaches the \
+         project's store from there: {err_b}\n{out_b}"
+    );
+
+    // THE PRUNE DID THE WORK, from the worktree exactly as from the root. A zero-row report here
+    // is the failure this test exists for: it is what a migration anchored at the process cwd
+    // produces, and it is indistinguishable from a healthy prune of an already-compacted log
+    // unless the counts are asserted.
+    for (where_, out) in [("the root", &out_a), ("a nested worktree", &out_b)] {
+        let report = per_type_report(out);
+        let expected: Vec<(String, usize)> = rigger::ingest::DERIVED_INDEX_TYPES
+            .into_iter()
+            .map(|t| {
+                let n = if t == rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED
+                    || t == rigger::contextgraph::TYPE_EDGE_INFERRED
+                {
+                    removed_per_key
+                } else {
+                    0
+                };
+                (t.to_string(), n)
+            })
+            .collect();
+        assert_eq!(
+            report, expected,
+            "reset --derived run from {where_} must compact the legacy-namespaced history it \
+             walked up to; got {out:?}"
+        );
+    }
+
+    // AND THE MIGRATION MOVED THE HISTORY rather than leaving it stranded: nothing survives under
+    // the legacy namespace, and everything survives under the minted one.
+    for (where_, root, legacy, minted, before) in [
+        ("the root", from_root.path(), &legacy_a, &minted_a, before_a),
+        (
+            "a nested worktree",
+            from_worktree.path(),
+            &legacy_b,
+            &minted_b,
+            before_b,
+        ),
+    ] {
+        let after = raw_rows(&event_log(root));
+        assert!(
+            after.len() < before,
+            "reset --derived from {where_} must actually shed rows: {before} before, {} after",
+            after.len()
+        );
+        assert!(
+            rows_in(&after, &Namespaced::prefix_for(legacy)).is_empty(),
+            "no row may be left behind under the legacy namespace after a reset from {where_}"
+        );
+        assert_eq!(
+            rows_in(&after, &Namespaced::prefix_for(minted)).len(),
+            after.len(),
+            "every surviving row must live under the minted namespace after a reset from {where_}"
+        );
+    }
+
+    // The two invocations are the SAME operation: one store, one authority, two cwds.
+    assert_eq!(
+        shape(&raw_rows(&event_log(from_root.path())))
+            .iter()
+            .map(|r| (r.0, r.2.clone(), r.5))
+            .collect::<Vec<_>>(),
+        shape(&raw_rows(&event_log(from_worktree.path())))
+            .iter()
+            .map(|r| (r.0, r.2.clone(), r.5))
+            .collect::<Vec<_>>(),
+        "a reset from a nested worktree must leave the log in the state a reset from the root \
+         leaves it in"
+    );
+}
+
+// ---------------------------------------------------------------------------------------
+// 18. The key split the policy publishes.
+//
+// `ContentIdentity::split` exists so a caller needing the same key form under a different metadata
+// key builds a VARIANT of the shipped policy instead of writing a second parser of that form. The
+// property that is worth anything is that the variant parses IDENTICALLY - an accessor that
+// returned some other function would still typecheck, still compile every call site, and quietly
+// give the guard and the compaction two different opinions about where a key's generation begins.
+// ---------------------------------------------------------------------------------------
+
+#[test]
+fn the_published_key_split_is_the_policys_own_and_a_variant_policy_parses_identically() {
+    let shipped = rigger::ingest::derived_index_identity();
+    let split = shipped.split();
+    // A variant under a different metadata key and a narrower type list, built the only way the
+    // accessor is meant to be used.
+    let variant = ContentIdentity::new(
+        "some_other_meta_key",
+        vec![rigger::contextgraph::TYPE_DOC_LINK_EXTRACTED],
+        split,
+    );
+
+    // Well-formed keys, including the shapes the key form deliberately allows: a file path that
+    // itself contains the `/`, `@` and `#` the key uses as separators.
+    for key in [
+        "gc/src/a.rs@h1#0",
+        "gd/docs/design.md@abcdef0123456789#12",
+        "gc/src/od/d@ta#1.rs@deadbeef#3",
+    ] {
+        let via_accessor: Option<(Range<usize>, Range<usize>)> = split(key);
+        assert_eq!(
+            via_accessor,
+            shipped.split_of(key),
+            "the published split must be the split the policy itself reads {key:?} with"
+        );
+        assert_eq!(
+            variant.split_of(key),
+            shipped.split_of(key),
+            "a policy built from the published split must parse {key:?} identically"
+        );
+        let (identity, generation) = shipped
+            .split_of(key)
+            .unwrap_or_else(|| panic!("{key:?} is a well-formed content key"));
+        // The ranges name the substrings the key form promises: the subject up to the `@`, and the
+        // content generation between the `@` and the `#<i>` tail.
+        let subject = key
+            .rsplit_once('#')
+            .expect("a well-formed key has a #<i> tail")
+            .0;
+        let (before_at, hash) = tail_free(subject);
+        assert_eq!(
+            &key[identity], before_at,
+            "the identity range must be the batch subject"
+        );
+        assert_eq!(
+            &key[generation], hash,
+            "the generation range must be the content hash"
+        );
+    }
+
+    // And a string that is not that shape parses to nothing, through both spellings alike.
+    for key in [
+        "",
+        "no-slash@h1#0",
+        "gc/src/a.rs@h1",
+        "gc/src/a.rs@h1#x",
+        "/src/a.rs@h1#0",
+    ] {
+        assert!(
+            split(key).is_none()
+                && shipped.split_of(key).is_none()
+                && variant.split_of(key).is_none(),
+            "{key:?} is not a content key and must parse to nothing through every spelling"
+        );
+    }
+}
+
+/// A well-formed key's subject and content hash, split from the RIGHT at the last `@` - the same
+/// direction the key authority splits, because a file path may itself contain one.
+fn tail_free(subject: &str) -> (&str, &str) {
+    subject
+        .rsplit_once('@')
+        .expect("a well-formed key carries an @ before its tail")
 }
