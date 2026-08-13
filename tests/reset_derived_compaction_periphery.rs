@@ -44,6 +44,15 @@
 //!      in the table is not that promise: the run read-model rides the namespace-scoped GLOBAL read
 //!      (a `LIKE`-filtered scan across the file), a different path from the `read_stream` the
 //!      revision-cursor test drives, and it is the one an operator actually looks at.
+//!   9. **The STREAM boundary inside one namespace.** The prune ranks a key's recordings within
+//!      each STREAM, but its candidate set is chosen by type and by namespace prefix - never by
+//!      stream - and a project namespace holds more than one stream. So "latest per key" is a
+//!      per-stream fact that no single-stream fixture can distinguish from a per-namespace one,
+//!      and neither can the per-stream revision cursor the compaction gapped.
+//!  10. **The OTHER command the criterion names.** Criterion 5 requires that `rigger status` AND
+//!      `rigger validate` read the compacted store correctly. `validate` is pinned by the unit's
+//!      own suite; `status` walks a different path from either that suite or item 8 above - the
+//!      per-stream read, the current-run slice, and the replay driver's frontier.
 //!
 //! Plus the command's own flag registry at the edges the composition opened: each mode named at
 //! most once, and the two modes composing in EITHER order.
@@ -1464,5 +1473,317 @@ fn the_run_history_the_shipped_guidance_promises_reads_back_identically_after_a_
         after_all, before_all,
         "the historical aggregate reads EVERY run in the log, so it must survive the compaction \
          whole - not just the latest run's slice of it"
+    );
+}
+
+// ---------------------------------------------------------------------------------------
+// 10. The stream boundary INSIDE one namespace: a replay key names a generation PER STREAM
+// ---------------------------------------------------------------------------------------
+
+/// Every recording of `key` the log holds in `stream`, in position order.
+fn rows_of_key(rows: &[Row], stream: &str, key: &str) -> Vec<Row> {
+    rows.iter()
+        .filter(|r| r.1 == stream && replay_key(r).as_deref() == Some(key))
+        .cloned()
+        .collect()
+}
+
+/// The prune ranks a key's recordings WITHIN EACH STREAM, and every fixture above - here and in
+/// the unit's own suite - seeds exactly one stream per namespace (`conductor::STREAM`), so the
+/// `stream` half of that partition is asserted nowhere.
+///
+/// It is not decoration. A project namespace holds MORE than one stream under the one
+/// `proj-<id>-` prefix (`conductor::STREAM` and `canary::STREAM` are both written through the same
+/// decorator), and the prune chooses its candidates by TYPE and by PREFIX - never by stream - so
+/// every stream in the namespace is eligible for it. Rank across the namespace instead of within
+/// the stream and the older stream does not lose a duplicate, it loses its ONLY surviving row, to
+/// a stream it has nothing to do with: silent deletion of the last recording of a live key, which
+/// is the one outcome the fail-safe direction of this command forbids.
+///
+/// The same boundary, in the cursor the compaction moved: `Store::append` reads the stream's
+/// current revision as `MAX(revision) WHERE stream = ?1`. Section 4 pins that on a single gapped
+/// stream, where a per-stream cursor and a namespace-wide one cannot be told apart; two gapped
+/// streams can tell them apart, so each is asked for its own.
+#[test]
+fn each_stream_in_one_namespace_keeps_its_own_latest_recording_and_answers_its_own_cursor() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("streams.db");
+    let backend = Store::open(db.to_str().unwrap()).unwrap();
+    const PROJECT: &str = "two-streams";
+    const ROUNDS: u64 = 5;
+    let streams = [rigger::conductor::STREAM, rigger::canary::STREAM];
+
+    // ONE namespace, TWO streams, each re-recording the SAME replay key. The run stream is written
+    // first, so ALL of its recordings sit at lower positions than any of the canary stream's: a
+    // ranking that forgot the stream would rank every one of them below the other stream's latest
+    // and delete the lot.
+    {
+        let store = Namespaced::new(&backend, PROJECT);
+        for (s, stream) in streams.iter().enumerate() {
+            let events: Vec<Event> = (0..ROUNDS)
+                .map(|r| {
+                    keyed(
+                        rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                        entity(stream),
+                        KEY_DEF,
+                        1_000 + s as u64 * 100 + r,
+                    )
+                })
+                .collect();
+            store
+                .append(stream, ExpectedRevision::Any, &events)
+                .expect("seed the stream");
+        }
+    }
+
+    let before = raw_rows(&db);
+    let scoped = |stream: &str| format!("{}{stream}", Namespaced::prefix_for(PROJECT));
+    for stream in streams {
+        assert_eq!(
+            rows_of_key(&before, &scoped(stream), KEY_DEF).len(),
+            ROUNDS as usize,
+            "the seed must give {stream} its own pile of re-recordings, or the prune below has \
+             nothing to choose between"
+        );
+    }
+
+    let pruned = prune_all_types(&backend, &Namespaced::prefix_for(PROJECT));
+    assert_eq!(
+        pruned.total_removed(),
+        2 * (ROUNDS as usize - 1),
+        "each stream must shed its OWN superseded recordings - one survivor per stream, not one \
+         survivor per namespace; got {:?}",
+        pruned.removed
+    );
+
+    // EACH STREAM KEEPS ITS OWN LATEST, byte for byte, position and revision included.
+    let after = raw_rows(&db);
+    for stream in streams {
+        let scoped = scoped(stream);
+        let own_latest = rows_of_key(&before, &scoped, KEY_DEF)
+            .into_iter()
+            .max_by_key(|r| r.0)
+            .expect("the seed recorded the key in this stream");
+        assert_eq!(
+            rows_of_key(&after, &scoped, KEY_DEF),
+            vec![own_latest],
+            "{stream} must keep the latest recording IT holds of the shared key, untouched"
+        );
+    }
+
+    // AND EACH ANSWERS ITS OWN CURSOR. Both streams were gapped down to a single row at revision
+    // ROUNDS-1, so both refuse a stale cursor by naming that revision, and both accept it.
+    let store = Namespaced::new(&backend, PROJECT);
+    let stale = ExpectedRevision::Exact(0);
+    let cursor = ROUNDS as i64 - 1;
+    for stream in streams {
+        match store.append(stream, stale, &[Event::new("Stale", b"{}".to_vec())]) {
+            Err(Error::Conflict { actual, .. }) => assert_eq!(
+                actual, cursor,
+                "{stream} must report ITS OWN highest surviving revision on a conflict"
+            ),
+            other => panic!(
+                "a stale cursor must conflict on the compacted stream {stream}; got {other:?}"
+            ),
+        }
+        store
+            .append(
+                stream,
+                ExpectedRevision::Exact(cursor),
+                &[Event::new("RunStarted", br#"{"run":"r1"}"#.to_vec())],
+            )
+            .unwrap_or_else(|e| panic!("{stream} must accept its own cursor {cursor}; got {e:?}"));
+    }
+    for stream in streams {
+        let log = store
+            .read_stream(stream, 0, Direction::Forward)
+            .expect("read the compacted stream back");
+        assert_eq!(
+            log.iter().map(|e| e.revision).collect::<Vec<_>>(),
+            vec![cursor, cursor + 1],
+            "{stream} must read back its own survivor and its own appended event"
+        );
+        assert_eq!(
+            log.last().map(|e| e.type_.as_str()),
+            Some("RunStarted"),
+            "the event appended to {stream} must land in {stream}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// 11. The OTHER command the criterion names: `rigger status` over a compacted log
+// ---------------------------------------------------------------------------------------
+
+/// Append `events` to the project's run stream, timestamped in order after `at`.
+fn append_run(root: &Path, at: &mut u64, events: &[(&str, &str)]) {
+    let staged: Vec<Event> = events
+        .iter()
+        .map(|(type_, data)| {
+            *at += 1;
+            Event::new(*type_, data.as_bytes().to_vec())
+                .with_valid_from(UNIX_EPOCH + Duration::from_secs(*at))
+        })
+        .collect();
+    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
+    Namespaced::new(&backend, &project_identity(root))
+        .append(rigger::conductor::STREAM, ExpectedRevision::Any, &staged)
+        .expect("seed the run stream");
+}
+
+/// Append one pile of re-recordings of `key` - the duplication the prune sheds - into the run
+/// stream, so the prune deletes from wherever in the run's own slice this pile was placed.
+fn append_duplication(root: &Path, key: &str, rounds: u64, base_secs: u64) {
+    let events: Vec<Event> = (0..rounds)
+        .map(|r| {
+            keyed(
+                rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                entity("alpha"),
+                key,
+                base_secs + r,
+            )
+        })
+        .collect();
+    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
+    Namespaced::new(&backend, &project_identity(root))
+        .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
+        .expect("seed the duplication");
+}
+
+/// Criterion 5 names TWO commands that must read the compacted store correctly: `rigger validate`
+/// and `rigger status`. The unit's own suite drives `validate`; nothing drives `status`.
+///
+/// It is not covered by the `stats` test above either, because it is not the same read. `stats`
+/// rides the namespace-scoped GLOBAL read; `status` reads the run stream with `read_stream`, cuts
+/// it to the CURRENT run at the last `RunStarted`, and hands that one slice to four separate
+/// order-sensitive folds: the in-flight view, the replay driver's parked wave, the blocker
+/// classifier (whose "attempt n" is the attempt count carried by the LAST recorded failure, plus
+/// one), and the release-ready projection. Deleting rows out of the middle of that slice is
+/// exactly the shape that moves a boundary or a count while every surviving row still looks
+/// perfectly intact, and it is the surface an operator watches a run through.
+///
+/// Both shapes an operator sees are pinned, in sequence, over ONE project: a run BLOCKED
+/// mid-remediation (the blocker line and its attempt number) and then the same run DONE (the
+/// release-ready handoff). The second compaction therefore also runs against an already-compacted
+/// log, which is the state a real project is in the second time an operator prunes it.
+///
+/// The `--json` view is deliberately not compared: it carries only the spawns parked in flight,
+/// which a seeded log has none of, so an equality there would be an equality between two empty
+/// arrays. The rendered view is the one that folds the run.
+#[test]
+fn the_status_view_reads_a_compacted_log_exactly_as_it_read_the_bloated_one() {
+    const ROUNDS: u64 = 6;
+    let dir = temp_project();
+    let root = dir.path();
+
+    // A finished earlier run, then the duplication, then the current run - which is blocked
+    // mid-remediation, with its own pile of duplication INSIDE its slice, between the failure the
+    // attempt count is derived from and the retry that reads it.
+    let mut at = 10u64;
+    append_run(
+        root,
+        &mut at,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["c one"]}"#),
+            (rigger::ledger::TYPE_UNIT_STARTED, r#"{"id":"u1"}"#),
+            (
+                rigger::ledger::TYPE_UNIT_INTEGRATED,
+                r#"{"id":"u1","commit":"aaa"}"#,
+            ),
+        ],
+    );
+    append_duplication(root, KEY_DEF, ROUNDS, 1_000);
+    append_run(
+        root,
+        &mut at,
+        &[
+            ("RunStarted", r#"{"run":"r2","criteria":["c two"]}"#),
+            (rigger::ledger::TYPE_UNIT_STARTED, r#"{"id":"u2"}"#),
+            (
+                rigger::ledger::TYPE_UNIT_FAILED,
+                r#"{"id":"u2","attempts":2}"#,
+            ),
+        ],
+    );
+    append_duplication(root, KEY_REF, ROUNDS, 2_000);
+    append_run(
+        root,
+        &mut at,
+        &[(rigger::ledger::TYPE_UNIT_STARTED, r#"{"id":"u2"}"#)],
+    );
+
+    let status = |label: &str| {
+        let (out, err, ok) = run_rigger(root, &["status"]);
+        assert!(
+            ok,
+            "rigger status must succeed {label} the compaction; stderr: {err}\n{out}"
+        );
+        out
+    };
+
+    // The report must be a report of THIS run, or the equalities below are equalities between two
+    // "no run" messages.
+    let blocked_before = status("before");
+    assert!(
+        blocked_before.contains("run r2"),
+        "status must read the CURRENT run out of the seeded log; got:\n{blocked_before}"
+    );
+    assert!(
+        blocked_before.contains("u2: building (attempt 3)"),
+        "status must classify the blocked unit and count its attempt off the recorded failure; \
+         got:\n{blocked_before}"
+    );
+
+    let compact = |label: &str, expect_removed: usize| {
+        let derived_before = derived_rows(&event_log(root));
+        let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
+        assert!(
+            ok,
+            "reset --derived must succeed {label}; stderr: {err}\n{out}"
+        );
+        let derived_after = derived_rows(&event_log(root));
+        assert_eq!(
+            derived_before - derived_after,
+            expect_removed,
+            "the compaction {label} must actually delete from the run's stream, or the equality \
+             it is checked by proves nothing; it said: {out:?}"
+        );
+    };
+
+    // The prune deletes from BOTH sides of the current run's boundary: the pile before its
+    // `RunStarted` and the pile inside its slice.
+    compact("on the bloated log", 2 * (ROUNDS as usize - 1));
+    assert_eq!(
+        status("after"),
+        blocked_before,
+        "the blocked run's status view must read back identically across a compaction that \
+         deleted from the middle of the very slice it folds"
+    );
+
+    // The same surface in the run's other shape: integrate the unit, bloat the log again, and
+    // compact a log that has ALREADY been compacted once.
+    append_run(
+        root,
+        &mut at,
+        &[(
+            rigger::ledger::TYPE_UNIT_INTEGRATED,
+            r#"{"id":"u2","commit":"bbb"}"#,
+        )],
+    );
+    append_duplication(root, KEY_DEF, ROUNDS, 3_000);
+
+    let done_before = status("before the second compaction");
+    assert!(
+        done_before.contains("release-ready:") && done_before.contains("1 unit integrated"),
+        "a done run must surface the release-ready handoff, or the equality below is checking a \
+         blank; got:\n{done_before}"
+    );
+    // ROUNDS, not ROUNDS-1: the new pile re-records a key whose survivor the FIRST compaction
+    // left behind, so this prune sheds that stale survivor too and one recording again remains.
+    compact("on the already-compacted log", ROUNDS as usize);
+    assert_eq!(
+        status("after the second compaction"),
+        done_before,
+        "the done run's release-ready handoff must survive a second compaction whole"
     );
 }
