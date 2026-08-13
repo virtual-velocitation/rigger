@@ -17,13 +17,18 @@ orchestrator's own surfaces the moment it happens instead of waiting to be polle
   `skills/rigger-<operation>/SKILL.md`; symptom-carrying descriptions, one procedure each,
   named anti-moves, cross-links by name - the spec-68 contract):
   - `rigger-watch-a-run` - the monitoring protocol for any in-flight run. Tells: you just
-    launched a run; a run has been driving unattended for a while. Body: the FOUR SIGNALS to
+    launched a run; a run has been driving unattended for a while. Body: the FIVE SIGNALS to
     check on every look - (1) escalated blockers, (2) heartbeat staleness against live agent
     processes (a stale heartbeat with no live worker means the driver or worker died), (3)
-    dashboard liveness, (4) the reject-recurrence trend per unit - each mapped BY NAME to its
-    response skill (`rigger-handle-an-escalation`, `rigger-resume-a-run`,
-    `rigger-restore-the-dash`, `rigger-diagnose-churn`); and the cadence rule: look on every
-    wave boundary you are present for, and never less than once per remediation cycle.
+    dashboard liveness, (4) the reject-recurrence trend per unit, (5) FRONTIER PROGRESS: is
+    the run consuming what it spawns? A spawn id that survives consecutive looks, a store
+    whose last run event is hours old while agents "work", or the same wave repeating are a
+    stall, not slowness - liveness signals all read healthy in a stalled run, which is
+    exactly why progress is its own signal - each mapped BY NAME to its response skill
+    (`rigger-handle-an-escalation`, `rigger-resume-a-run`, `rigger-restore-the-dash`,
+    `rigger-diagnose-churn`, and for a stall: stop the driver and diagnose before another
+    round spends); and the cadence rule: look on every wave boundary you are present for,
+    and never less than once per remediation cycle.
     Anti-moves: polling git/ps as the primary view (`rigger status` is the surface), and
     hand-intervening in a run that is merely SLOW rather than stuck.
   - `rigger-restore-the-dash` - get the dashboard serving again. Tells: the printed URL does
@@ -55,7 +60,12 @@ orchestrator's own surfaces the moment it happens instead of waiting to be polle
   fold cannot see is exactly the field the step must stamp) - the driver must never scrape or
   infer what the wire does not say. Each entry names the event and the unit: a unit ESCALATED,
   the run HALTED with its reason, a worker's death recorded for the Nth time on one unit, the
-  spawn budget crossing into its final tenth. THRESHOLD EVENTS ARE STAMPED ONCE PER CROSSING,
+  spawn budget crossing into its final tenth - and a STALLED FRONTIER: a spawn id parked in
+  the wave while the log already holds MULTIPLE results recorded against it (the conductor is
+  re-driving work it cannot consume - whatever the cause, a spawn answered more than twice
+  without the run advancing is burning full agent cost per round and must reach the operator
+  as an attention event, not be discovered at round 37; the recorded incident this signal
+  comes from cost thirteen million tokens). THRESHOLD EVENTS ARE STAMPED ONCE PER CROSSING,
   conductor-side (the breaker's idempotency discipline), so a long run never spams. The field
   is serde-defaulted and omitted when empty, keeping a clean run's wire byte-stable. The
   driver renders each entry as a `log()` narrator line naming the event and its response
@@ -68,8 +78,9 @@ orchestrator's own surfaces the moment it happens instead of waiting to be polle
 - Detection vs response: this spec ships detection (watching, pushing) and the diagnose/restore
   procedures; the response protocols for resume and escalation are spec 68's skills, referenced
   by name and not duplicated.
-- The four signals are exactly the recorded failure modes of real sessions; a fifth signal
-  earns its place in the skill when a run records it, not speculatively.
+- The five signals are exactly the recorded failure modes of real sessions - the fifth
+  (frontier progress) was added the day a run recorded it, per this spec's own rule that
+  signals earn their place from incidents, never speculation.
 - No new event type is introduced anywhere in this spec.
 
 ## Global constraints
@@ -99,7 +110,8 @@ orchestrator's own surfaces the moment it happens instead of waiting to be polle
   live serving dash, today's URL line is unchanged; `--json` carries the same truth. This
   criterion OWNS the status dash line.
 - [ ] a test proves THE STEP STAMPS ATTENTION: a step during which a unit escalated, the run
-  halted, a worker's death recurred, or the budget crossed into its final tenth prints the
+  halted, a worker's death recurred, the budget crossed into its final tenth, or a parked
+  spawn already carries more than two recorded results (the stalled frontier) prints the
   additive `attention` array naming each event and unit - stamped from live conductor state,
   once per threshold crossing, omitted entirely on a clean step so today's wire is
   byte-stable. This criterion OWNS the wire stamp.
