@@ -175,6 +175,21 @@ fn discipline_body(ctx: &DocsContext) -> String {
          driver (see the one-blessed-driver anti-patterns above), whereas `rigger reset \
          --runs` is a one-shot prune you run BEFORE launching the loop.\n"
     );
+    let _ = writeln!(
+        s,
+        "The EVENT LOG accumulates separately, and has its own prune: `rigger reset \
+         --derived`. Each run's project-ingest pass records the project's derived index - the \
+         code entities, inferred edges, and design links folded from your sources - and a log \
+         written before that pass deduplicated across runs holds the WHOLE index once per run, \
+         which is re-derivable duplication rather than history. `rigger reset --derived` keeps \
+         the LATEST event per replay key of each derived index type, deletes the superseded \
+         re-recordings, and vacuums so events.db shrinks on disk. Every other event survives \
+         byte-for-byte - lessons, decisions, findings, gate verdicts, and the whole run history \
+         `rigger stats` and replay read - and the graph is unaffected, because all recordings of \
+         one key fold to the same rows. The two flags COMPOSE and each prunes its own \
+         accumulation: `rigger reset --runs --derived` sheds the dead-run graph rows and the \
+         duplicated index in one pass.\n"
+    );
 
     let _ = writeln!(s, "## Spec shape\n");
     let _ = writeln!(
@@ -413,6 +428,52 @@ mod tests {
                      (found {banned:?}); a prune reclaims disk, it does not speed a fold"
                 );
             }
+        }
+    }
+
+    /// Spec 60, criterion 5 (the shipped operator guidance for SUPPORTED COMPACTION): the same
+    /// discipline body names `rigger reset --derived` as the EVENT LOG's own prune, so `--runs`
+    /// is no longer rendered as THE prune command while a second one exists.
+    ///
+    /// It pins the four things an operator must know before running a command that deletes from
+    /// an append-only log: WHAT IT KEEPS (the latest event per replay key of each derived index
+    /// type), WHAT IT COSTS (nothing else - every other event survives byte-for-byte, so lessons,
+    /// decisions, findings and the run history `stats` and replay read are untouched), that the
+    /// FILE actually shrinks, and that the two flags COMPOSE rather than one superseding the
+    /// other. Both shipped outputs render from `discipline_body`, so the skill and the handbook
+    /// chapter cannot disagree and a drift here would drift for every consumer at once.
+    #[test]
+    fn discipline_names_reset_derived_as_the_event_logs_own_prune() {
+        let ctx = sentinel_ctx();
+        for (label, out) in [
+            ("skill", render_using_rigger_skill(&ctx)),
+            ("handbook", render_handbook_discipline(&ctx)),
+        ] {
+            assert!(
+                out.contains("rigger reset --derived"),
+                "{label} must name `rigger reset --derived` as the event log's own prune"
+            );
+            assert!(
+                out.contains("EVENT LOG"),
+                "{label} must say WHICH store the derived prune compacts - the event log, not \
+                 the graph"
+            );
+            assert!(
+                out.contains("LATEST event per replay key"),
+                "{label} must state what the derived prune KEEPS, so an operator can predict it"
+            );
+            assert!(
+                out.contains("byte-for-byte"),
+                "{label} must state that every other event survives the derived prune untouched"
+            );
+            assert!(
+                out.contains("shrinks on disk"),
+                "{label} must state that the derived prune shrinks events.db on disk"
+            );
+            assert!(
+                out.contains("rigger reset --runs --derived"),
+                "{label} must show the two prunes COMPOSING, each shedding its own accumulation"
+            );
         }
     }
 

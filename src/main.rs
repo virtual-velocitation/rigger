@@ -1360,6 +1360,12 @@ findings from the context graph, keeping every lesson and\n                     
 the active run's own decisions/findings. Sheds dead-run\n                              \
 grounding noise without wiping the store - the event log\n                              \
 is left untouched\n  \
+rigger reset --derived      compact the EVENT LOG: keep the latest event per\n                              \
+replay key of each derived index type, delete the\n                              \
+superseded re-recordings, and vacuum so the file shrinks\n                              \
+on disk. Every other event survives. Sheds the\n                              \
+duplication a log accreted before the ingest dedup;\n                              \
+composes with --runs (each prunes its own accumulation)\n  \
 rigger validate             load and validate the workflow + agents\n  \
 rigger init                 set up a project: scaffold .rigger/ (workflow.yml +\n                              \
 an agents/ folder) and install the Claude Code\n                              \
@@ -5822,6 +5828,129 @@ fn release_ready_lines(run_events: &[Event], run_branch: &str, base: &str) -> Ve
         .unwrap_or_default()
 }
 
+/// `rigger reset` - the supported prunes, one flag per accumulation.
+///
+/// Each mode sheds a DIFFERENT pile, so they name themselves explicitly and compose in one
+/// invocation; a bare `rigger reset` never prunes silently.
+///
+///   - `--runs` (spec 21, unit 2) prunes the CONTEXT GRAPH: see [`reset_runs`].
+///   - `--derived` (spec 60, criterion 5) compacts the EVENT LOG: see [`reset_derived`].
+///
+/// The backend requirement of every requested mode is settled BEFORE the first prune runs, so a
+/// composed invocation either does all of its work or none of it - a half-done reset is a state
+/// an operator would have to reconstruct by hand.
+fn cmd_reset(args: &[String]) -> Res {
+    let modes = reset_modes(args)?;
+
+    let (loc, selection) = require_store_dir()?;
+    // Decided up front, before anything is pruned: deleting rows and reclaiming the file are
+    // mechanics of the embedded log, not port operations, so `--derived` names the backend it
+    // needs rather than quietly doing nothing on one that cannot compact.
+    if modes.derived && !selection.is_sqlite() {
+        return Err(format!(
+            "reset --derived: the derived-index compaction deletes rows from the event log and \
+             vacuums the file, which is a mechanic of the embedded {RIGGER_DIR}/events.db store; \
+             this project is configured for the server-backed store, which rigger cannot compact. \
+             Re-run it against a project on the sqlite backend, or prune the server store with \
+             its own retention tooling. Refusing rather than reporting a prune that did not happen."
+        )
+        .into());
+    }
+
+    if modes.runs {
+        reset_runs(&loc, &selection)?;
+    }
+    if modes.derived {
+        reset_derived(&loc)?;
+    }
+    Ok(())
+}
+
+/// Which prunes one `rigger reset` invocation was asked for.
+struct ResetModes {
+    runs: bool,
+    derived: bool,
+}
+
+/// Parse `rigger reset`'s flags: any combination of the named modes, in any order, each at most
+/// once, and at least one of them.
+///
+/// Every mode is explicit and an unrecognized argument is REFUSED rather than ignored, because
+/// both failure modes here are silent: a bare `reset` that guessed a mode would prune something
+/// the operator did not ask for, and a tolerated typo would report success for work it never did.
+fn reset_modes(args: &[String]) -> Result<ResetModes, Box<dyn std::error::Error>> {
+    let mut modes = ResetModes {
+        runs: false,
+        derived: false,
+    };
+    for arg in args {
+        let slot = match arg.as_str() {
+            "--runs" => &mut modes.runs,
+            "--derived" => &mut modes.derived,
+            other => {
+                return Err(format!(
+                    "reset: expected --runs and/or --derived, got {other}: \
+                     rigger reset --runs | rigger reset --derived"
+                )
+                .into())
+            }
+        };
+        if *slot {
+            return Err(format!("reset: {arg} was given more than once").into());
+        }
+        *slot = true;
+    }
+    if !modes.runs && !modes.derived {
+        return Err(
+            "reset: expected at least one mode: rigger reset --runs (prune the context \
+                    graph) and/or rigger reset --derived (compact the event log)"
+                .into(),
+        );
+    }
+    Ok(modes)
+}
+
+/// `rigger reset --derived` (spec 60, criterion 5) - SUPPORTED COMPACTION of an event log that
+/// accumulated derived-index duplication before the project-scoped ingest dedup existed.
+///
+/// For each of the four derived index types it keeps the LATEST event per distinct replay key,
+/// deletes every earlier recording of that key, and vacuums so the file shrinks on disk. Every
+/// non-derived event survives byte-for-byte; the graph projection stays consistent, because it is
+/// an upsert projection in which all recordings of a key fold to the same rows.
+///
+/// It is orchestration over ONE store-mutation primitive
+/// ([`rigger::eventstore::sqlite::Store::prune_derived_index`]), given the same two authorities
+/// the ingest dedup uses - the replay-key metadata name and the four derived types, both owned by
+/// [`rigger::ingest`] - and the same namespace boundary every read and write of this project uses
+/// ([`Namespaced::prefix_for`]), so the compaction can never address a wider slice of a shared
+/// backend than the project owns.
+///
+/// The sqlite store is constructed through [`open_sqlite_store`], the one sqlite event-log
+/// constructor (§48), exactly as the local identity migration does when it needs the concrete
+/// store for a maintenance operation the port does not carry.
+fn reset_derived(loc: &StoreLocation) -> Res {
+    let store = open_sqlite_store(&loc.file("events.db"))?;
+    let pruned = store.prune_derived_index(
+        &Namespaced::prefix_for(&loc.identity()),
+        rigger::ingest::META_REPLAY_KEY,
+        &rigger::ingest::DERIVED_INDEX_TYPES,
+    )?;
+    let per_type = pruned
+        .removed
+        .iter()
+        .map(|(t, n)| format!("{t} {n}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    println!(
+        "reset --derived: pruned {} redundant derived-index event(s) from the event log \
+         ({per_type}), then compacted the log file (reclaimed {} byte(s) on disk) - every \
+         non-derived event and the latest recording of every content key are preserved",
+        pruned.total_removed(),
+        pruned.reclaimed_bytes
+    );
+    Ok(())
+}
+
 /// `rigger reset --runs` (spec 21, unit 2) - drop the decisions and findings of every
 /// SUPERSEDED / dead run from the context graph, PRESERVING every `LessonLearned` and the
 /// active run's decisions and findings. It is the supported way to shed dead-run noise
@@ -5835,17 +5964,8 @@ fn release_ready_lines(run_events: &[Event], run_branch: &str, base: &str) -> Ve
 /// ([`Projector::prune`]). ONE whole-stream forward read feeds the attribution AND the
 /// node-id lookup (the index-keying contract `run_attribution` documents - a filtered slice
 /// would misattribute); the derived node ids are then handed to the prune.
-fn cmd_reset(args: &[String]) -> Res {
-    // `--runs` is the only mode today; require it explicitly so a bare `rigger reset` never
-    // silently prunes and a future `reset` mode stays unambiguous.
-    match args {
-        [flag] if flag == "--runs" => {}
-        [] => return Err("reset: expected --runs: rigger reset --runs".into()),
-        _ => return Err(format!("reset: expected only --runs, got {}", args.join(" ")).into()),
-    }
-
-    let (loc, selection) = require_store_dir()?;
-    let backend = resolve_store(&selection, &loc.file("events.db"))?;
+fn reset_runs(loc: &StoreLocation, selection: &StoreSelection) -> Res {
+    let backend = resolve_store(selection, &loc.file("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &loc.identity());
     // ONE whole-stream forward read: it feeds BOTH the attribution and the per-index node-id
     // lookup inside `superseded_graph_nodes`, honoring run_attribution's whole-stream contract.
