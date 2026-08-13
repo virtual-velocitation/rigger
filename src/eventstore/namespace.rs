@@ -39,9 +39,18 @@ impl<'a> Namespaced<'a> {
     /// streams without going through the decorator: the compacting prune
     /// (`sqlite::Store::prune_derived_index`) works on the backend directly, since deleting rows
     /// and reclaiming the file are not port operations. Reading the prefix from here rather than
-    /// re-spelling `proj-<id>-` at the call site keeps that maintenance and every namespaced read
-    /// and write agreeing on the same boundary, so a change to the form can never leave a
-    /// maintenance command addressing streams that no longer exist.
+    /// re-spelling `proj-<id>-` at the call site is what keeps that maintenance and every
+    /// namespaced read and write on ONE SPELLING of the namespace, so a change to the wire form
+    /// can never leave a maintenance command addressing streams that no longer exist.
+    ///
+    /// WHAT ONE SPELLING IS NOT: a separator-free string prefix is not a boundary between ids
+    /// where one is a prefix of another. `proj-alpha-` matches every stream of a project named
+    /// `alpha-beta` too, and no predicate over this form can tell the two apart, because the
+    /// boundary is ambiguous in the FORM: `alpha` + `-beta-run` and `alpha-beta` + `-run` are the
+    /// same bytes. Every prefix-scoped read on this decorator - `read_all`, `subscribe_all`, and
+    /// any caller-supplied filter prefix composed onto it - shares that property exactly, so what
+    /// this function guarantees is that maintenance inherits the SAME slice those reads see,
+    /// never that the slice is narrower than they are.
     pub fn prefix_for(project: &str) -> String {
         format!("proj-{project}-")
     }

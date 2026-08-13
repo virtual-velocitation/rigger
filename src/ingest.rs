@@ -278,9 +278,14 @@ pub fn is_derived_index_type(type_: &str) -> bool {
     DERIVED_INDEX_TYPES.contains(&type_)
 }
 
-/// Split a derived-index content key `<prefix>/<file>@<hash>#<i>` into
-/// `(<prefix>/<file>, <hash>)`: the BATCH IDENTITY (which file's batch this is) and the CONTENT
-/// GENERATION of that batch. `None` when the key is not that shape.
+/// WHERE a derived-index content key `<prefix>/<file>@<hash>#<i>` splits: the byte range of the
+/// BATCH IDENTITY (which file's batch this is) and the byte range of its CONTENT GENERATION.
+/// `None` when the key is not that shape.
+///
+/// This is the ONE parser of the key form [`key_batch`] builds - [`derived_key_parts`] below is
+/// this function read out as substrings, and [`derived_index_identity`] hands it to the store as
+/// the policy's [`crate::eventstore::ContentKeySplit`], so the sink rule, the storage guard and the
+/// compaction can never come to disagree about where a key's generation begins.
 ///
 /// The identity deliberately carries the `<prefix>` segment, so one file's code (`gc`) and design
 /// (`gd`) batches are two independent identities that never overwrite each other's generation -
@@ -289,7 +294,7 @@ pub fn is_derived_index_type(type_: &str) -> bool {
 /// cross-module naming habit; the shape (a `/`, an `@`, and a `#<digits>` tail) is what the key
 /// authority actually guarantees. `<file>` may itself contain `/`, `@` or `#`, so the tail and the
 /// hash are split from the RIGHT.
-fn derived_key_parts(key: &str) -> Option<(&str, &str)> {
+fn derived_key_split(key: &str) -> Option<(std::ops::Range<usize>, std::ops::Range<usize>)> {
     let (prefix, remainder) = key.split_once('/')?;
     if prefix.is_empty() {
         return None;
@@ -303,8 +308,48 @@ fn derived_key_parts(key: &str) -> Option<(&str, &str)> {
         return None;
     }
     // `key` is `<prefix>` + '/' + `<file>` + '@' + `<hash>` + '#' + `<i>`, so the identity is the
-    // key's leading `prefix.len() + 1 + file.len()` bytes - all three substrings borrow `key`.
-    Some((&key[..prefix.len() + 1 + file.len()], hash))
+    // key's leading `prefix.len() + 1 + file.len()` bytes and the generation is the `hash.len()`
+    // bytes that follow the `@` one past it.
+    let identity_end = prefix.len() + 1 + file.len();
+    let hash_start = identity_end + 1;
+    Some((0..identity_end, hash_start..hash_start + hash.len()))
+}
+
+/// Split a derived-index content key `<prefix>/<file>@<hash>#<i>` into
+/// `(<prefix>/<file>, <hash>)` - [`derived_key_split`]'s ranges read out as the substrings they
+/// point at, never a second parse of the key form.
+fn derived_key_parts(key: &str) -> Option<(&str, &str)> {
+    let (identity, generation) = derived_key_split(key)?;
+    Some((&key[identity], &key[generation]))
+}
+
+/// The derived index's CONTENT-IDENTITY POLICY as one value: the metadata key a derived event
+/// carries its content key under, the four types that carry content identity, and where a key
+/// splits into subject and generation.
+///
+/// It exists so no consumer has to re-spell the policy as loose parameters. The store-level
+/// idempotency guard and the compacting prune both act on exactly this policy, and both take it as
+/// the value object rather than as a metadata-key string plus a type list: two positional strings
+/// can be passed in the wrong order, can drift apart one call site at a time, and say nothing about
+/// where a generation lies inside a key. One value, built HERE beside the key authority that builds
+/// the key form, is what keeps every consumer of the policy on one story.
+pub fn derived_index_identity() -> crate::eventstore::ContentIdentity {
+    crate::eventstore::ContentIdentity::new(META_REPLAY_KEY, DERIVED_INDEX_TYPES, derived_key_split)
+}
+
+/// The derived index types whose recordings RE-ASSERT a fact that was already true, rather than
+/// SUPERSEDING the subject's prior recording - the ones whose EARLIEST recorded valid-time is the
+/// one the graph holds, and which a compaction must therefore carry onto the recording it keeps.
+///
+/// Derived, never listed: the partition comes from the single fold fact
+/// [`crate::contextgraph::refold_supersedes_prior_edges`], filtered over
+/// [`DERIVED_INDEX_TYPES`] - so a FIFTH derived type added above is placed by the fold that
+/// projects it, and no second hand-written list can drift from it.
+pub fn reasserted_derived_types() -> Vec<&'static str> {
+    DERIVED_INDEX_TYPES
+        .into_iter()
+        .filter(|t| !crate::contextgraph::refold_supersedes_prior_edges(t))
+        .collect()
 }
 
 /// The ONE project-scoped suppression predicate, expressed as the set of replay keys a derived-index

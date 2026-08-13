@@ -700,9 +700,10 @@ impl Store {
     }
 
     /// Prune the DUPLICATION an already-bloated log accumulated in its derived index, and reclaim
-    /// the disk it held: for each type in `types`, keep the LATEST event per distinct content key
-    /// (read from `meta_key`) within each stream under `stream_prefix`, delete every earlier
-    /// recording of that key, then `VACUUM` so the file actually shrinks.
+    /// the disk it held: for each type `identity` covers, keep the LATEST event per distinct
+    /// content key within each stream under `stream_prefix`, carry that key's earliest valid-time
+    /// onto the recording it keeps, delete every earlier recording, then `VACUUM` so the file
+    /// actually shrinks.
     ///
     /// This is the COMPACTION half of spec 60 - the supported way to shed duplication a store
     /// accreted BEFORE the ingest dedup existed. The dedup above the port stops new duplication;
@@ -710,26 +711,83 @@ impl Store {
     /// the embedded store, so it lives here rather than on the port: a backend that cannot do it
     /// says so to the operator instead of silently reporting a prune that did not happen.
     ///
-    /// Three properties, each load-bearing:
+    /// It takes the SAME [`ContentIdentity`] policy value the guard above is configured with,
+    /// rather than a metadata-key string plus a type list: the policy already exists as one
+    /// injected value, and re-spelling two of its fields as positional parameters is a second
+    /// parallel expression of one rule that can be passed in the wrong order and can drift a call
+    /// site at a time.
+    ///
+    /// Four properties, each load-bearing:
     ///
     /// 1. **Per KEY, not per subject.** A content key names a file AND its content generation, so
-    ///    a superseded generation is a DISTINCT key whose latest recording survives. Keeping only
-    ///    the latest key per file would delete the history a revert re-reads.
-    /// 2. **Nothing else is touched.** Only the named `types` are eligible, and within them only a
-    ///    row whose key is recorded again LATER in the same stream. A row with no key at all names
-    ///    no content generation and is never provably redundant, so it is left alone - the
-    ///    fail-safe direction. Every surviving row keeps its position, its per-stream revision, and
-    ///    its bytes: this deletes rows, it never rewrites one.
-    /// 3. **The gaps it leaves are safe.** Deleting from the middle of a stream leaves holes in
+    ///    a superseded generation is a DISTINCT key whose latest recording survives. The
+    ///    justification is not that some reader re-reads superseded generations - the sink rule
+    ///    deliberately seeds from the LATEST generation only, and says so. It is that per-key is
+    ///    the FAIL-SAFE direction, stated as three properties rather than as a belief about a
+    ///    consumer: it deletes a strict SUBSET of what a per-subject rule would delete; it leaves
+    ///    the per-key `MAX(position)` byte-identical, because only recordings BEHIND a key's
+    ///    survivor are eligible; and its unit of redundancy is exactly the ingest dedup's - the
+    ///    whole `<prefix>/<file>@<hash>#<i>` key - so the prune can never call redundant anything
+    ///    the layer above it would have re-emitted. A per-subject rule would have to decide which
+    ///    of a subject's generations is dead, which is a judgement this store has no standing to
+    ///    make; per-key makes none.
+    /// 2. **A RE-ASSERTED key's valid-time is CARRIED, not dropped.** A projection that
+    ///    re-asserts a fact in place keeps its EARLIEST valid-time ("it has held since it first
+    ///    became true"), so deleting that key's earliest recording would silently re-date the
+    ///    fact to whichever recording survived - and for the design-intent edge class the date IS
+    ///    the value. `reasserted` names the types this is true of; each of their surviving rows
+    ///    takes its group's `MIN(valid_from)` before the deletes run. Because a minimum is
+    ///    associative and every deleted row's valid-time is at or above the minimum retained on
+    ///    its survivor, the compacted log then yields exactly the valid-times the whole log
+    ///    yields. A type NOT named here is one whose batch SUPERSEDES the subject's prior
+    ///    assertions, so the surviving (latest) recording's own valid-time is already the one a
+    ///    fold arrives at, and carrying an earlier one onto it would MOVE the graph rather than
+    ///    preserve it. WHICH types are which is not this store's knowledge to hold - it is a fact
+    ///    about the fold, so it arrives as data (see `contextgraph::refold_supersedes_prior_edges`
+    ///    and `ingest::reasserted_derived_types`, where the partition is derived once). Naming no
+    ///    type carries nothing, which is the fail-safe direction for an unconfigured caller: it
+    ///    writes no column at all.
+    /// 3. **Nothing else is touched.** Only the types `identity` covers are eligible, and within
+    ///    them only a row whose key is recorded again LATER in the same stream. A row with no key
+    ///    at all names no content generation and is never provably redundant, so it is left alone -
+    ///    the fail-safe direction. Every surviving row keeps its position, its per-stream revision,
+    ///    its type, its id, its payload bytes and its metadata; the ONLY column this writes is the
+    ///    valid-time of a surviving DERIVED row whose duplicates it deleted, and it writes the
+    ///    value the fold would have derived anyway. No non-derived row is read, written, or moved.
+    /// 4. **The gaps it leaves are safe.** Deleting from the middle of a stream leaves holes in
     ///    that stream's revisions, which is exactly why [`Store::append`] reads the stream's
     ///    current revision as `MAX(revision)` rather than counting rows - see the comment there.
     pub fn prune_derived_index(
         &self,
         stream_prefix: &str,
-        meta_key: &str,
-        types: &[&str],
+        identity: &ContentIdentity,
+        reasserted: &[&str],
     ) -> Result<PrunedDerived, Error> {
-        let key = key_expr(meta_key);
+        let key = key_expr(identity.meta_key());
+        let key_o = key_expr_on("o", identity.meta_key());
+        let key_v = key_expr_on("v", identity.meta_key());
+        // The surviving recording of every covered key that HAS duplicates, ranked newest-first
+        // (`rn = 1` is the survivor) and counted so a key recorded once is never rewritten.
+        let survivors = format!(
+            "SELECT position FROM (
+               SELECT position,
+                      ROW_NUMBER() OVER (PARTITION BY stream, {key} ORDER BY position DESC) AS rn,
+                      COUNT(*)     OVER (PARTITION BY stream, {key})                        AS n
+               FROM events
+               WHERE type = ?1
+                 AND substr(stream, 1, length(?2)) = ?2
+                 AND {key} IS NOT NULL
+             ) WHERE rn = 1 AND n > 1"
+        );
+        // Property 2: the survivor inherits its key group's EARLIEST valid-time, so the fact keeps
+        // the date it first became true. Runs BEFORE the delete, while the group is still whole.
+        let carry = format!(
+            "UPDATE events AS o
+                SET valid_from = (SELECT MIN(v.valid_from) FROM events v
+                                   WHERE v.type = o.type AND v.stream = o.stream
+                                     AND {key_v} = {key_o})
+              WHERE o.position IN ({survivors})"
+        );
         // Every recording of a covered key EXCEPT the last one in its stream. `ROW_NUMBER` ranks a
         // key's recordings newest-first, so `rn = 1` is the surviving one and everything beyond it
         // is a superseded duplicate.
@@ -747,19 +805,30 @@ impl Store {
         );
 
         let mut guard = self.conn.lock().unwrap();
+        let types = identity.types();
         let mut removed: Vec<(String, usize)> = Vec::with_capacity(types.len());
         {
             // ONE transaction for the whole prune: a partial compaction is not a state an operator
             // can reason about, and `BEGIN IMMEDIATE` takes the write lock up front so a concurrent
-            // appender queues on `busy_timeout` rather than failing a deferred lock upgrade.
+            // appender queues on `busy_timeout` rather than failing a deferred lock upgrade. The
+            // carry-forward shares it, so a log can never be left with its duplicates deleted and
+            // its survivors' valid-times un-carried.
             let tx = guard
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(be)?;
             {
+                let mut carry_stmt = tx.prepare(&carry).map_err(be)?;
                 let mut stmt = tx.prepare(&sql).map_err(be)?;
                 for t in types {
-                    let n = stmt.execute(params![t, stream_prefix]).map_err(be)?;
-                    removed.push(((*t).to_string(), n));
+                    if reasserted.contains(&t.as_str()) {
+                        carry_stmt
+                            .execute(params![t.as_str(), stream_prefix])
+                            .map_err(be)?;
+                    }
+                    let n = stmt
+                        .execute(params![t.as_str(), stream_prefix])
+                        .map_err(be)?;
+                    removed.push((t.clone(), n));
                 }
             }
             tx.commit().map_err(be)?;
@@ -846,11 +915,25 @@ fn sql_literal(s: &str) -> String {
 /// and never mistakes one key for another. Pinned by
 /// `a_metadata_key_that_no_json_path_can_address_suppresses_nothing`.
 fn key_expr(meta_key: &str) -> String {
+    format!("json_extract(meta, {})", key_path(meta_key))
+}
+
+/// [`key_expr`] against a NAMED table alias, for the one statement that has to compare two rows'
+/// content keys in the same query (the compaction's carry-forward, which correlates a surviving
+/// row against the group it survives). Rendered from the SAME [`key_path`] as the unqualified
+/// form, so the two spellings can never drift into asking different questions.
+fn key_expr_on(alias: &str, meta_key: &str) -> String {
+    format!("json_extract({alias}.meta, {})", key_path(meta_key))
+}
+
+/// The quoted JSON path a content key is addressed by (`$."<meta_key>"`), as a SQL literal - the
+/// ONE rendering of the path, shared by every expression that reads a content key.
+fn key_path(meta_key: &str) -> String {
     let path = format!(
         "$.\"{}\"",
         meta_key.replace('\\', "\\\\").replace('"', "\\\"")
     );
-    format!("json_extract(meta, {})", sql_literal(&path))
+    sql_literal(&path)
 }
 
 /// The `IN (...)` list of the covered event types, rendered once at configuration.
