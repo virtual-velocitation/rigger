@@ -712,10 +712,13 @@ impl Store {
     /// says so to the operator instead of silently reporting a prune that did not happen.
     ///
     /// It takes the SAME [`ContentIdentity`] policy value the guard above is configured with,
-    /// rather than a metadata-key string plus a type list: the policy already exists as one
-    /// injected value, and re-spelling two of its fields as positional parameters is a second
-    /// parallel expression of one rule that can be passed in the wrong order and can drift a call
-    /// site at a time.
+    /// rather than a metadata-key string plus a type list plus a carry list: the policy already
+    /// exists as one injected value, and re-spelling its fields as positional parameters is a
+    /// second parallel expression of one rule that can be passed in the wrong order and can drift
+    /// a call site at a time. The valid-time partition property 2 rests on is part of that value
+    /// ([`ContentIdentity::with_reasserting_types`]) for exactly that reason, and it is CHECKED
+    /// here before a single row is read, because it is the one input to this function that can
+    /// corrupt the projection while leaving every row looking intact.
     ///
     /// Four properties, each load-bearing:
     ///
@@ -735,8 +738,9 @@ impl Store {
     ///    re-asserts a fact in place keeps its EARLIEST valid-time ("it has held since it first
     ///    became true"), so deleting that key's earliest recording would silently re-date the
     ///    fact to whichever recording survived - and for the design-intent edge class the date IS
-    ///    the value. `reasserted` names the types this is true of; each of their surviving rows
-    ///    takes its group's `MIN(valid_from)` before the deletes run. Because a minimum is
+    ///    the value. The policy's own declaration ([`ContentIdentity::reasserts`]) names the types
+    ///    this is true of; each of their surviving rows takes its group's `MIN(valid_from)` before
+    ///    the deletes run. Because a minimum is
     ///    associative and every deleted row's valid-time is at or above the minimum retained on
     ///    its survivor, the compacted log then yields exactly the valid-times the whole log
     ///    yields. A type NOT named here is one whose batch SUPERSEDES the subject's prior
@@ -744,9 +748,18 @@ impl Store {
     ///    fold arrives at, and carrying an earlier one onto it would MOVE the graph rather than
     ///    preserve it. WHICH types are which is not this store's knowledge to hold - it is a fact
     ///    about the fold, so it arrives as data (see `contextgraph::refold_supersedes_prior_edges`
-    ///    and `ingest::reasserted_derived_types`, where the partition is derived once). Naming no
-    ///    type carries nothing, which is the fail-safe direction for an unconfigured caller: it
-    ///    writes no column at all.
+    ///    and `ingest::reasserted_derived_types`, where the partition is derived once).
+    ///
+    ///    THERE IS NO SAFE DEFAULT FOR AN UNDECLARED PARTITION, so this REFUSES rather than
+    ///    picking one. Treating an undeclared policy as "nothing re-asserts" would not be the
+    ///    fail-safe direction: the deletes below run over every covered type either way, so an
+    ///    unnamed re-asserting type would have its earliest recordings deleted with no carry and
+    ///    every one of its facts silently re-dated - the exact corruption this property exists to
+    ///    prevent. The opposite default fails the other way, dragging a superseded fact back to a
+    ///    date its fold retired. A policy that never declared the partition, or that declares a
+    ///    type it does not cover, is therefore an [`Error::Backend`] before any row is read.
+    ///    Declaring an EMPTY list is a different thing and is honored: it is a caller stating that
+    ///    none of its types re-assert.
     /// 3. **Nothing else is touched.** Only the types `identity` covers are eligible, and within
     ///    them only a row whose key is recorded again LATER in the same stream. A row with no key
     ///    at all names no content generation and is never provably redundant, so it is left alone -
@@ -761,32 +774,57 @@ impl Store {
         &self,
         stream_prefix: &str,
         identity: &ContentIdentity,
-        reasserted: &[&str],
     ) -> Result<PrunedDerived, Error> {
+        // THE PARTITION IS CHECKED BEFORE ANY ROW IS READ (property 2). Both failures here are
+        // silent when they are wrong - a re-dated fact leaves every row looking perfectly intact -
+        // so they are refused rather than defaulted, and refused up front so a policy that cannot
+        // be acted on never takes the write lock at all.
+        let Some(declared) = identity.reasserting() else {
+            return Err(Error::Backend(format!(
+                "prune_derived_index: the content-identity policy for {:?} has not declared which \
+                 of its types re-assert a fact in place (ContentIdentity::with_reasserting_types). \
+                 Without it a compaction cannot know whether a key's EARLIEST recorded valid-time \
+                 is the one the projection holds, and either default silently re-dates facts. \
+                 Refusing rather than guessing.",
+                identity.types()
+            )));
+        };
+        if let Some(stray) = declared.iter().find(|t| !identity.covers(t)) {
+            return Err(Error::Backend(format!(
+                "prune_derived_index: the content-identity policy declares {stray:?} as \
+                 re-asserting, but does not cover that type ({:?}). A declaration naming a type \
+                 this policy will never prune describes some other policy, so it cannot be the \
+                 partition for this one. Refusing rather than pruning against a declaration that \
+                 does not fit.",
+                identity.types()
+            )));
+        }
+
         let key = key_expr(identity.meta_key());
-        let key_o = key_expr_on("o", identity.meta_key());
-        let key_v = key_expr_on("v", identity.meta_key());
-        // The surviving recording of every covered key that HAS duplicates, ranked newest-first
-        // (`rn = 1` is the survivor) and counted so a key recorded once is never rewritten.
-        let survivors = format!(
-            "SELECT position FROM (
-               SELECT position,
-                      ROW_NUMBER() OVER (PARTITION BY stream, {key} ORDER BY position DESC) AS rn,
-                      COUNT(*)     OVER (PARTITION BY stream, {key})                        AS n
-               FROM events
-               WHERE type = ?1
-                 AND substr(stream, 1, length(?2)) = ?2
-                 AND {key} IS NOT NULL
-             ) WHERE rn = 1 AND n > 1"
-        );
-        // Property 2: the survivor inherits its key group's EARLIEST valid-time, so the fact keeps
-        // the date it first became true. Runs BEFORE the delete, while the group is still whole.
+        // Property 2: the survivor of every DUPLICATED key inherits its group's EARLIEST
+        // valid-time, so the fact keeps the date it first became true. Runs BEFORE the delete,
+        // while the group is still whole.
+        //
+        // ONE set-based pass, deliberately: the group's minimum and its survivor come from a
+        // SINGLE grouped scan of the type's rows (`HAVING COUNT(*) > 1` is what keeps a key
+        // recorded once from ever being rewritten, and the survivor is that group's
+        // `MAX(position)` - the same row `ROW_NUMBER() ... ORDER BY position DESC` calls `rn = 1`
+        // below). Written as a correlated `MIN()` subquery per survivor instead, this re-scans the
+        // type's rows once PER CARRIED ROW: on a real pre-dedup log with no index on the key
+        // expression that is hours of held write lock for a prune whose deletes take seconds, and
+        // the cost grows with the square of the log it exists to shrink.
         let carry = format!(
-            "UPDATE events AS o
-                SET valid_from = (SELECT MIN(v.valid_from) FROM events v
-                                   WHERE v.type = o.type AND v.stream = o.stream
-                                     AND {key_v} = {key_o})
-              WHERE o.position IN ({survivors})"
+            "UPDATE events
+                SET valid_from = g.earliest
+               FROM (SELECT MIN(valid_from)  AS earliest,
+                            MAX(position)    AS survivor
+                       FROM events
+                      WHERE type = ?1
+                        AND substr(stream, 1, length(?2)) = ?2
+                        AND {key} IS NOT NULL
+                      GROUP BY stream, {key}
+                     HAVING COUNT(*) > 1) AS g
+              WHERE events.position = g.survivor"
         );
         // Every recording of a covered key EXCEPT the last one in its stream. `ROW_NUMBER` ranks a
         // key's recordings newest-first, so `rn = 1` is the surviving one and everything beyond it
@@ -820,7 +858,9 @@ impl Store {
                 let mut carry_stmt = tx.prepare(&carry).map_err(be)?;
                 let mut stmt = tx.prepare(&sql).map_err(be)?;
                 for t in types {
-                    if reasserted.contains(&t.as_str()) {
+                    // `Some(_)` throughout: the undeclared case returned above, so every covered
+                    // type here has an answer and none is defaulted.
+                    if identity.reasserts(t) == Some(true) {
                         carry_stmt
                             .execute(params![t.as_str(), stream_prefix])
                             .map_err(be)?;
@@ -846,9 +886,29 @@ impl Store {
         guard.execute_batch("VACUUM").map_err(be)?;
         // Fold the WAL back into the main file so the shrink lands on disk NOW rather than at some
         // later checkpoint: the reported reclamation must match what the operator sees on disk.
-        guard
-            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
-            .map_err(be)?;
+        //
+        // `PRAGMA wal_checkpoint` RETURNS ITS OUTCOME, and TRUNCATE is the mode that can decline:
+        // its first column is 1 when a reader still held a snapshot of the write-ahead log, in
+        // which case the frames stay in the `-wal` file and the file on disk did NOT shrink -
+        // total bytes on disk can even go UP. Discarding that column is what turns the page-count
+        // delta below from a measurement into a claim, so it is read. Retried a bounded number of
+        // times because a blocked checkpoint is transient (the deletes are already committed and
+        // the vacuum is done, so this is only about WHEN the frames land), and when it is still
+        // blocked the reclamation is reported as UNKNOWN rather than as a number the operator's
+        // own `ls` contradicts.
+        let mut checkpointed = false;
+        for attempt in 0..CHECKPOINT_TRUNCATE_ATTEMPTS {
+            let busy: i64 = guard
+                .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))
+                .map_err(be)?;
+            if busy == 0 {
+                checkpointed = true;
+                break;
+            }
+            if attempt + 1 < CHECKPOINT_TRUNCATE_ATTEMPTS {
+                std::thread::sleep(CHECKPOINT_TRUNCATE_BACKOFF);
+            }
+        }
         let after: i64 = guard
             .query_row("PRAGMA page_count", [], |r| r.get(0))
             .map_err(be)?;
@@ -856,10 +916,20 @@ impl Store {
 
         Ok(PrunedDerived {
             removed,
-            reclaimed_bytes: reclaimed_pages * page_size.max(0) as u64,
+            reclaimed_bytes: checkpointed.then(|| reclaimed_pages * page_size.max(0) as u64),
         })
     }
 }
+
+/// How many times [`Store::prune_derived_index`] asks a blocked `wal_checkpoint(TRUNCATE)` again
+/// before it reports the on-disk reclamation as unmeasured, and how long it waits between asks.
+///
+/// Bounded and short on purpose: the prune's transaction has already committed and its vacuum has
+/// already run by the time this matters, so the only thing at stake is whether the freed frames
+/// land in the main file NOW or at the next checkpoint some later writer performs. Waiting a
+/// reader out indefinitely would trade a correct, honestly-reported result for a hang.
+const CHECKPOINT_TRUNCATE_ATTEMPTS: u32 = 5;
+const CHECKPOINT_TRUNCATE_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// What one [`Store::prune_derived_index`] pass removed: the rows deleted PER TYPE (in the order
 /// the caller named the types, including the types nothing was removed from), and the bytes the
@@ -871,8 +941,18 @@ impl Store {
 pub struct PrunedDerived {
     /// `(type, rows deleted)`, in the order the caller named the types.
     pub removed: Vec<(String, usize)>,
-    /// Bytes the vacuum reclaimed on disk.
-    pub reclaimed_bytes: u64,
+    /// Bytes the vacuum reclaimed ON DISK, or `None` when that could not be measured because a
+    /// concurrent reader still held a write-ahead-log snapshot when the truncating checkpoint ran.
+    ///
+    /// An `Option`, not a `0`, and not the page-count delta reported regardless. The delta is the
+    /// LOGICAL size the database shrank by; it becomes bytes on disk only once the checkpoint
+    /// folds the write-ahead log back into the main file and truncates it. While a reader holds a
+    /// snapshot that fold is declined, the freed frames stay in the `-wal` file, and total bytes
+    /// on disk can go UP - so the same number that is exact in the uncontended case is simply
+    /// wrong in the contended one, with nothing in it to tell the two apart. `None` says
+    /// "unmeasured, the pages land at the next checkpoint" and is the honest report; `Some(0)`
+    /// would claim a measurement that found nothing.
+    pub reclaimed_bytes: Option<u64>,
 }
 
 impl PrunedDerived {
@@ -916,14 +996,6 @@ fn sql_literal(s: &str) -> String {
 /// `a_metadata_key_that_no_json_path_can_address_suppresses_nothing`.
 fn key_expr(meta_key: &str) -> String {
     format!("json_extract(meta, {})", key_path(meta_key))
-}
-
-/// [`key_expr`] against a NAMED table alias, for the one statement that has to compare two rows'
-/// content keys in the same query (the compaction's carry-forward, which correlates a surviving
-/// row against the group it survives). Rendered from the SAME [`key_path`] as the unqualified
-/// form, so the two spellings can never drift into asking different questions.
-fn key_expr_on(alias: &str, meta_key: &str) -> String {
-    format!("json_extract({alias}.meta, {})", key_path(meta_key))
 }
 
 /// The quoted JSON path a content key is addressed by (`$."<meta_key>"`), as a SQL literal - the

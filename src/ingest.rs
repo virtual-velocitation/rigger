@@ -324,17 +324,26 @@ fn derived_key_parts(key: &str) -> Option<(&str, &str)> {
 }
 
 /// The derived index's CONTENT-IDENTITY POLICY as one value: the metadata key a derived event
-/// carries its content key under, the four types that carry content identity, and where a key
-/// splits into subject and generation.
+/// carries its content key under, the four types that carry content identity, where a key splits
+/// into subject and generation, and WHICH of those types re-assert a fact in place rather than
+/// superseding the subject's prior recording.
 ///
-/// It exists so no consumer has to re-spell the policy as loose parameters. The store-level
-/// idempotency guard and the compacting prune both act on exactly this policy, and both take it as
-/// the value object rather than as a metadata-key string plus a type list: two positional strings
-/// can be passed in the wrong order, can drift apart one call site at a time, and say nothing about
-/// where a generation lies inside a key. One value, built HERE beside the key authority that builds
-/// the key form, is what keeps every consumer of the policy on one story.
+/// It exists so no consumer has to re-spell the policy as loose parameters. Every field of it is a
+/// per-type or per-key rule that a caller would otherwise pass positionally: two strings can be
+/// handed over in the wrong order, a list can drift apart one call site at a time, and neither
+/// says anything about where a generation lies inside a key or which recording's date the
+/// projection holds. One value, built HERE beside the key authority that builds the key form and
+/// beside the fold facts the partition is derived from, is what keeps every consumer on one story.
+///
+/// TODAY'S ONE CONSUMER is the compacting prune (`rigger reset --derived`). The store-level
+/// idempotency guard takes the same value - that is what `Store::with_content_identity` is for -
+/// but the composition root does not yet configure it on the production store, so this is written
+/// as the policy BOTH consumers take rather than as one two consumers are already taking. The
+/// carry partition it declares is what the prune needs; the guard reads only the key and type
+/// halves, so wiring it later adds a consumer and changes nothing here.
 pub fn derived_index_identity() -> crate::eventstore::ContentIdentity {
     crate::eventstore::ContentIdentity::new(META_REPLAY_KEY, DERIVED_INDEX_TYPES, derived_key_split)
+        .with_reasserting_types(reasserted_derived_types())
 }
 
 /// The derived index types whose recordings RE-ASSERT a fact that was already true, rather than
