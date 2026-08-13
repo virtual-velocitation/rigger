@@ -17,7 +17,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 
 use rigger::contextgraph::{
@@ -90,18 +90,19 @@ fn rationale_graph() -> Graph {
     }
 }
 
-/// Start `serve` on a FRESH ephemeral loopback port, fetch `GET <path>` once against a fixture-graph
-/// provider, and return the raw HTTP response - or `None` when THIS attempt lost the free-port handoff
-/// race (the same TOCTOU window `dash_kg_graph_route` documents: the probe binds port 0, learns the
-/// port, releases it, and `serve` re-binds it). A `None` is always a transient handoff loss, never a
-/// content failure. Production `rigger dash` binds ONE stable port once and never drop-rebinds.
+/// Start the dash server on a FRESH ephemeral loopback port, fetch `GET <path>` once against a
+/// fixture-graph provider, and return the raw HTTP response - or `None` on a genuine socket-level
+/// failure.
+///
+/// The listener this attempt binds is HANDED to `serve_on`, never dropped and re-bound - the same
+/// ownership `dash_kg_graph_route` documents. Releasing it first would leave the port free for the
+/// whole handoff window, so a sibling test's `bind(0)` in this same binary could be handed it; one
+/// `serve` then wins the re-bind and the loser's client CONNECTS SUCCESSFULLY to it and reads the
+/// OTHER test's fixture - a content failure no connect-error retry can see, reddening only on a
+/// loaded machine. Owning the port from `bind` through `serve_on` closes that window by construction.
 fn try_fetch_served(path: &str, graph: Graph) -> Option<String> {
-    let port = TcpListener::bind(("127.0.0.1", 0))
-        .ok()?
-        .local_addr()
-        .ok()?
-        .port();
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let listener = TcpListener::bind(("127.0.0.1", 0)).ok()?;
+    let addr = listener.local_addr().ok()?;
 
     // `/api/graph` reads through the SEPARATE lazy graph provider (spec 45 c1), so the fixture graph
     // is what `graph_provider` yields; the polled provider carries a run-seeded slice (unused here).
@@ -118,8 +119,8 @@ fn try_fetch_served(path: &str, graph: Graph) -> Option<String> {
         };
     let instances_provider = Vec::new;
     std::thread::spawn(move || {
-        let _ = dash::serve(
-            addr,
+        let _ = dash::serve_on(
+            listener,
             provider,
             graph_provider,
             calls_provider,
