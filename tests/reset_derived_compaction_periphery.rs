@@ -63,6 +63,18 @@
 //!      operator cannot tell apart from a healthy one and a guard that has quietly changed its
 //!      mind about which content is current. Neither layer's own tests can see this: the guard's
 //!      suite never prunes and the compaction's suite never configures a guard.
+//!  12. **The compare-and-append that rides ABOVE the gaps.** The derived index shares the run
+//!      stream with the run's own events, so this compaction is the first and only thing in the
+//!      project that deletes rows from a stream an operator keeps writing to - and the prune
+//!      accounts for the holes it leaves against exactly ONE consumer, the sqlite `append`, whose
+//!      cursor is now `MAX(revision)`. One caller lives ABOVE that boundary and supplies an
+//!      `ExpectedRevision::Exact` of its own: the compare-and-append behind `rigger result
+//!      --if-absent`, the write that moves a run past a spawn whose agent died without
+//!      self-reporting. It must take its expectation from the head event's own revision and never
+//!      from how many events the read returned, because a conflict it cannot satisfy is not a
+//!      failed write - the loop re-reads and retries it forever. Invisible to both sides: the
+//!      compaction suites record no result, and every test of that write runs on a densely
+//!      numbered stream, where the two cursors agree.
 //!
 //! Plus the command's own flag registry at the edges the composition opened: each mode named at
 //! most once, and the two modes composing in EITHER order.
@@ -77,8 +89,8 @@ use rigger::eventstore::{
 use std::collections::BTreeSet;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::{Duration, UNIX_EPOCH};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 // ---------------------------------------------------------------------------------------
 // Harness
@@ -2027,5 +2039,260 @@ fn a_compaction_leaves_the_storage_guards_verdicts_exactly_where_it_found_them()
             .all(|row| !row.5.contains(META_GUARD_DEGRADED)),
         "no event on the compacted log may carry a degradation marker - a guard that cannot probe \
          suppresses nothing, which would make the equality above hold for the wrong reason"
+    );
+}
+
+// ---------------------------------------------------------------------------------------
+// 13. The compare-and-append that rides ABOVE the gaps
+// ---------------------------------------------------------------------------------------
+
+/// The parked spawn the fixture below records, and the id the courier answers it with.
+const COURIER_ID: &str = "u-compaction/implementer#1";
+
+/// Run `rigger <args...>` in `cwd` under a WALL-CLOCK BOUND: `Some((stdout, stderr, success))`
+/// when the binary exited on its own, `None` when the bound expired first (the child is killed
+/// and reaped either way, so a bound that expires leaks no process).
+///
+/// The bound is an ASSERTION, not a convenience. The write this section exercises is a retry
+/// loop, and its failure mode on a stream it cannot address is not a failed command - it is a
+/// command that never returns, re-reading and re-deciding forever. A plain blocking run would
+/// hang the whole test binary instead of failing it, which is the one outcome that would hide
+/// this regression rather than report it, so the child is driven as a subprocess under a deadline
+/// and a bound that expires is the failure.
+///
+/// Both pipes are drained only after exit. The command's output is a handful of lines, far below
+/// the operating system's pipe buffer, so it cannot fill one and block on a write while this
+/// thread waits for it.
+fn run_rigger_bounded(
+    cwd: &Path,
+    args: &[&str],
+    bound: Duration,
+) -> Option<(String, String, bool)> {
+    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
+    let mut child = Command::new(rigger_bin())
+        .args(args)
+        .current_dir(cwd)
+        .env("RIGGER_NO_DASH", "1")
+        .env("XDG_STATE_HOME", state.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the rigger binary");
+    let deadline = Instant::now() + bound;
+    loop {
+        match child.try_wait().expect("wait on the rigger binary") {
+            Some(_) => {
+                let out = child
+                    .wait_with_output()
+                    .expect("collect the binary's output");
+                return Some((
+                    String::from_utf8_lossy(&out.stdout).into_owned(),
+                    String::from_utf8_lossy(&out.stderr).into_owned(),
+                    out.status.success(),
+                ));
+            }
+            None if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            None => std::thread::sleep(Duration::from_millis(20)),
+        }
+    }
+}
+
+/// Seed `root`'s run stream with the shape a compaction gaps AROUND a parked spawn: a run start
+/// and the SPAWN REQUEST the courier will answer, then `rounds` re-recordings of two derived
+/// keys.
+///
+/// The two non-derived events sit at the HEAD of the stream, so the prune deletes strictly
+/// between them and the surviving tail - the arrangement that pushes the stream's row count and
+/// its revision cursor furthest apart while leaving a real, answerable spawn behind.
+fn seed_run_with_a_parked_spawn(root: &Path, rounds: u64) {
+    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
+    let project = project_identity(root);
+    let store = Namespaced::new(&backend, &project);
+    let mut events = vec![
+        Event::new(
+            "RunStarted",
+            format!(r#"{{"run":"{project}","criteria":["c"]}}"#).into_bytes(),
+        )
+        .with_valid_from(UNIX_EPOCH + Duration::from_secs(10)),
+        Event::new(
+            rigger::spawn::TYPE_SPAWN_REQUESTED,
+            format!(
+                r#"{{"id":"{COURIER_ID}","unit":"u-compaction","stage":"u-compaction","prompt":"build it"}}"#
+            )
+            .into_bytes(),
+        )
+        .with_valid_from(UNIX_EPOCH + Duration::from_secs(11)),
+    ];
+    for r in 0..rounds {
+        events.push(keyed(
+            rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+            entity("alpha"),
+            KEY_DEF,
+            1_000 + r,
+        ));
+        events.push(keyed(
+            rigger::contextgraph::TYPE_EDGE_INFERRED,
+            edge("alpha"),
+            KEY_REF,
+            1_000 + r,
+        ));
+    }
+    store
+        .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
+        .expect("seed the run stream");
+}
+
+/// The derived index shares `conductor::STREAM` with the run's own events, so the compaction is
+/// the FIRST and ONLY thing in this project that deletes rows from a stream an operator keeps
+/// writing to. `prune_derived_index` accounts for the holes it leaves against exactly one
+/// consumer - the sqlite `append`, which is why that cursor is now `MAX(revision)` and not
+/// `COUNT(*) - 1` - and that accounting stops at the store boundary.
+///
+/// ONE caller lives above that boundary and supplies an [`ExpectedRevision::Exact`] of its own:
+/// the compare-and-append behind `rigger result --if-absent`, this project's only optimistic
+/// concurrency user. It reads the run stream, and if the spawn is still unanswered appends its
+/// result pinned to the revision it just read. That is the write a courier makes on behalf of an
+/// agent that died without self-reporting, and it is the only thing that can move a run past a
+/// parked spawn.
+///
+/// Its expectation must come from the HEAD EVENT'S OWN REVISION, never from how many events the
+/// read returned - the very distinction the compaction just forced one layer down. On a compacted
+/// stream the two numbers are far apart, and the consequence of confusing them is not a failed
+/// write that an operator would see: the loop treats a conflict as "the stream moved under me",
+/// re-reads, computes the same unreachable expectation, and spins forever. The result is never
+/// recorded, the spawn stays parked, and the run cannot advance - with the command still running.
+///
+/// Neither layer's own tests can see this. The compaction suites never record a result, and every
+/// test of the courier's write runs on a densely numbered stream, where a count-derived cursor and
+/// the real one agree and the bug is invisible.
+#[test]
+fn a_compacted_run_stream_still_answers_the_couriers_compare_and_append() {
+    let dir = temp_project();
+    let root = dir.path();
+    const ROUNDS: u64 = 5;
+    seed_run_with_a_parked_spawn(root, ROUNDS);
+
+    let db = event_log(root);
+    let head_before = raw_rows(&db)
+        .iter()
+        .map(|r| r.6)
+        .max()
+        .expect("the seed must populate the run stream");
+
+    let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
+    assert!(ok, "reset --derived must succeed; stderr: {err}\n{out}");
+
+    // The compacted stream: the two head events, plus the latest recording of each of the two
+    // keys. The tail is never eligible for deletion - a row is only pruned when a LATER recording
+    // of its key exists - so the cursor stands exactly where it stood before the prune, while the
+    // row count has collapsed to four.
+    let compacted = raw_rows(&db);
+    let head = compacted
+        .iter()
+        .map(|r| r.6)
+        .max()
+        .expect("a compacted stream must keep rows");
+    assert_eq!(
+        compacted.len(),
+        4,
+        "the prune must leave the two non-derived events and one recording of each key; got {:?}",
+        compacted.iter().map(|r| r.2.clone()).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        head, head_before,
+        "the compaction must never delete a stream's head, so its revision cursor is exactly \
+         where it was before the prune"
+    );
+    assert_ne!(
+        head,
+        compacted.len() as i64 - 1,
+        "the fixture must actually separate the stream's row count from its revision cursor, or \
+         the write below proves nothing about which of the two it used"
+    );
+
+    // THE COURIER'S WRITE. A bound, because the regression this guards does not return.
+    let bound = Duration::from_secs(60);
+    let Some((rout, rerr, rok)) = run_rigger_bounded(
+        root,
+        &["result", COURIER_ID, "the unit is green", "--if-absent"],
+        bound,
+    ) else {
+        panic!(
+            "`rigger result --if-absent` never returned within {bound:?} on a compacted stream: \
+             the compare-and-append is pinning an expectation the stream cannot answer and is \
+             retrying it forever, so the parked spawn can never be answered"
+        )
+    };
+    assert!(
+        rok,
+        "the courier's write must land on a compacted stream; stdout: {rout}\nstderr: {rerr}"
+    );
+
+    // It landed ONCE, and it landed ABOVE the gaps: the next revision after the head the stream
+    // actually holds, not after the count of rows that survived.
+    let recorded = raw_rows(&db);
+    let results: Vec<&Row> = recorded
+        .iter()
+        .filter(|r| r.2 == rigger::spawn::TYPE_SPAWN_RESULT)
+        .collect();
+    assert_eq!(
+        results.len(),
+        1,
+        "the courier's result must be recorded exactly once; got {:?}",
+        results.iter().map(|r| (r.0, r.6)).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        results[0].6,
+        head + 1,
+        "the recorded result must take the revision AFTER the stream's real head, so the write \
+         was placed by the cursor the store keeps and not by the number of rows that survived"
+    );
+
+    // And it was purely ADDITIVE. Every row the compaction left keeps its position, its revision
+    // and its bytes: answering a parked spawn on a compacted stream renumbers nothing.
+    assert_eq!(
+        recorded[..compacted.len()],
+        compacted[..],
+        "the courier's write must leave every surviving row exactly where the compaction left it"
+    );
+
+    // THE IDEMPOTENCE THE COURIER EXISTS FOR, on the same compacted stream. `--if-absent` is what
+    // lets a death guard run unconditionally: it must read the gapped stream, SEE the result that
+    // already stands, and write nothing - never a second, contradicting record.
+    let Some((rout2, rerr2, rok2)) = run_rigger_bounded(
+        root,
+        &["result", COURIER_ID, "a second courier", "--if-absent"],
+        bound,
+    ) else {
+        panic!(
+            "a second `rigger result --if-absent` never returned within {bound:?} on a compacted \
+             stream: the no-op path must decide from the rows it read, not retry"
+        )
+    };
+    assert!(
+        rok2,
+        "a second --if-absent must succeed as a no-op; stdout: {rout2}\nstderr: {rerr2}"
+    );
+    assert!(
+        rout2.contains("already has a result"),
+        "the second --if-absent must report that it left the existing result untouched; got \
+         {rout2:?}"
+    );
+    let after_second = raw_rows(&db);
+    assert_eq!(
+        after_second
+            .iter()
+            .filter(|r| r.2 == rigger::spawn::TYPE_SPAWN_RESULT)
+            .count(),
+        1,
+        "a second --if-absent must leave the recorded result alone, not append a contradicting one"
+    );
+    assert_eq!(
+        after_second, recorded,
+        "the no-op must be a no-op on the log too, byte-for-byte"
     );
 }
