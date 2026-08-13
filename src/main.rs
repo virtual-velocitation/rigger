@@ -5961,14 +5961,17 @@ fn reset_modes(args: &[String]) -> Result<ResetModes, Box<dyn std::error::Error>
 /// It is orchestration over ONE store-mutation primitive
 /// ([`rigger::eventstore::sqlite::Store::prune_derived_index`]), handed the ONE derived-index
 /// content-identity policy [`rigger::ingest::derived_index_identity`] owns (the replay-key
-/// metadata name, the four derived types, and where a key's content generation lies), and the
+/// metadata name, the four derived types, where a key's content generation lies, and which of
+/// those types re-assert a fact in place rather than superseding it), and the
 /// SAME stream-prefix spelling every namespaced read and write of this project uses
-/// ([`Namespaced::prefix_for`]) - so the compaction addresses exactly the slice this project's
-/// own reads address, and a change to the namespace's wire form can never leave it addressing
-/// streams that no longer exist. That prefix is a string match, with the property a string match
-/// has: a project whose id is a prefix of another's shares its slice, exactly as `read_all`,
-/// `subscribe_all` and the identity migration already do. The boundary is inherited, not
-/// tightened here.
+/// ([`Namespaced::prefix_for`]) - so a change to the namespace's wire form can never leave the
+/// compaction addressing streams that no longer exist. That prefix is a string match, with the
+/// property a string match has: a project whose id is a prefix of another's shares its slice,
+/// exactly as `read_all`, `subscribe_all` and the identity migration already do. The boundary is
+/// inherited, not tightened here. The two are the same PREFIX, not the same predicate: those
+/// reads match it with SQL `LIKE` and no `ESCAPE`, so an `_` or `%` in a project id is a wildcard
+/// there, while the prune matches literally and so reaches a SUBSET of the streams the project's
+/// own reads reach - the safe direction for a command that deletes.
 ///
 /// The sqlite store is constructed through [`open_sqlite_store`], the one sqlite event-log
 /// constructor (§48), exactly as the local identity migration does when it needs the concrete
@@ -5978,7 +5981,6 @@ fn reset_derived(loc: &StoreLocation) -> Res {
     let pruned = store.prune_derived_index(
         &Namespaced::prefix_for(&loc.identity()),
         &rigger::ingest::derived_index_identity(),
-        &rigger::ingest::reasserted_derived_types(),
     )?;
     let per_type = pruned
         .removed
@@ -5986,12 +5988,33 @@ fn reset_derived(loc: &StoreLocation) -> Res {
         .map(|(t, n)| format!("{t} {n}"))
         .collect::<Vec<_>>()
         .join(", ");
+    // WHAT THE NUMBER MEANS, both ways round. Zero removed is the expected report on a log the
+    // ingest dedup has kept clean since it was written, and an operator who reads "pruned 0" as a
+    // failure will go looking for a defect that is not there - so the line SAYS that, rather than
+    // reading as a successful prune of a log that had nothing to shed. And the reclamation is a
+    // measurement that can decline to be taken: while a concurrent reader holds a write-ahead-log
+    // snapshot the truncating checkpoint is refused and the freed pages stay in the `-wal` file,
+    // so it is reported as unmeasured instead of as a byte count the operator's own `ls` would
+    // contradict.
+    let reclaimed = match pruned.reclaimed_bytes {
+        Some(bytes) => format!("reclaimed {bytes} byte(s) on disk"),
+        None => "the freed pages could not be folded back into the file: a concurrent reader held \
+                 the write-ahead log, so they land at the next checkpoint and this run reclaimed \
+                 an unmeasured amount"
+            .to_string(),
+    };
+    let nothing_to_shed = if pruned.total_removed() == 0 {
+        " - a log whose derived index already holds one recording per distinct key has no \
+         redundancy to shed, so this is the expected report on a log written since the ingest \
+         dedup existed, not a failed prune"
+    } else {
+        ""
+    };
     println!(
         "reset --derived: pruned {} redundant derived-index event(s) from the event log \
-         ({per_type}), then compacted the log file (reclaimed {} byte(s) on disk) - every \
-         non-derived event and the latest recording of every content key are preserved",
+         ({per_type}), then compacted the log file ({reclaimed}) - every non-derived event and \
+         the latest recording of every content key are preserved{nothing_to_shed}",
         pruned.total_removed(),
-        pruned.reclaimed_bytes
     );
     Ok(())
 }

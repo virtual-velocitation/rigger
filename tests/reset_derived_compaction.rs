@@ -779,9 +779,36 @@ fn reset_derived_on_a_backend_that_cannot_compact_fails_loudly_naming_the_backen
         !ok,
         "reset --derived on a server-backed project must fail; stdout: {out}"
     );
+    // WHAT THE REFUSAL HAS TO SAY, clause by clause, because "it exited non-zero" is satisfied by
+    // any error at all - including one about something else entirely - and because a message an
+    // operator cannot act on is how a loud refusal degrades back into a silent one. Spec 60 names
+    // this arm, so its text is pinned here rather than living only in the binary: it must name the
+    // MODE that was refused, the backend the compaction NEEDS, the backend this project is
+    // CONFIGURED for, what to do instead, and that it is refusing rather than reporting a prune
+    // that did not happen.
     let said = format!("{err}{out}");
+    for (clause, needle) in [
+        ("name the mode it refused", "reset --derived"),
+        ("name the backend it needs", "events.db"),
+        ("say WHY that backend is needed", "vacuums the file"),
+        (
+            "name the backend the project is configured for",
+            "server-backed store",
+        ),
+        ("say what the operator can do instead", "Re-run it against"),
+        (
+            "say that it is refusing rather than pretending",
+            "Refusing rather than reporting a prune that did not happen",
+        ),
+    ] {
+        assert!(
+            said.contains(needle),
+            "the refusal must {clause} ({needle:?}); an operator reads this line and nothing else, \
+             so the arm's message is a shipped surface, not an internal string; got: {said:?}"
+        );
+    }
     assert!(
-        said.contains("--derived") && said.contains("sqlite"),
+        said.contains("sqlite"),
         "the refusal must name the embedded sqlite backend the compaction needs; got: {said:?}"
     );
 

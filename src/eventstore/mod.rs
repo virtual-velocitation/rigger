@@ -247,10 +247,25 @@ impl Appended {
 /// A store with no policy configured has no guard and appends everything through,
 /// which is the fail-safe direction: an unconfigured store can only ever write MORE,
 /// never drop.
+///
+/// The policy also carries the VALID-TIME PARTITION a compaction needs
+/// ([`with_reasserting_types`](Self::with_reasserting_types)) - which of the covered
+/// types re-assert a fact in place rather than superseding the subject's prior
+/// recording. That belongs here, on the one injected value, and not as a second
+/// positional list beside it: a compaction that deletes a key's earlier recordings has
+/// to know whether the earliest recorded valid-time is the one the projection holds,
+/// and a per-type rule expressed twice can be handed in the wrong order and can drift a
+/// call site at a time. It is still injected knowledge, still just type names, so the
+/// store learns nothing about the fold it could not be told.
 #[derive(Clone)]
 pub struct ContentIdentity {
     meta_key: String,
     types: Vec<String>,
+    /// The covered types whose recordings RE-ASSERT, or `None` when this policy has
+    /// never been told the partition. `None` is not "no type re-asserts": the two are
+    /// different states on purpose, because a compaction cannot act correctly on the
+    /// first and must say so rather than guess (see [`reasserts`](Self::reasserts)).
+    reasserting: Option<Vec<String>>,
     split: ContentKeySplit,
 }
 
@@ -289,8 +304,50 @@ impl ContentIdentity {
         ContentIdentity {
             meta_key: meta_key.into(),
             types: types.into_iter().map(Into::into).collect(),
+            reasserting: None,
             split,
         }
+    }
+
+    /// Declare the VALID-TIME PARTITION over this policy's covered types: `reasserting`
+    /// names the types whose recordings RE-ASSERT a fact that was already true, so the
+    /// EARLIEST recorded valid-time is the one the projection holds. Every covered type
+    /// NOT named here SUPERSEDES: its latest recording's own valid-time is the one a
+    /// fold arrives at.
+    ///
+    /// Declaring it is TOTAL - one call answers for every covered type - which is why a
+    /// compaction may act on it and why a policy that has never had this called on it is
+    /// a different state from one that declared an empty list. WHICH types are which is
+    /// a fact about the projection, not about the store, so it arrives here as data from
+    /// the layer that folds them; declaring it on the one policy value keeps it from
+    /// being re-spelled at a call site.
+    pub fn with_reasserting_types(
+        mut self,
+        reasserting: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.reasserting = Some(reasserting.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// Whether `type_`'s recordings RE-ASSERT (`Some(true)`) or SUPERSEDE (`Some(false)`),
+    /// or `None` when this policy was never told the partition at all.
+    ///
+    /// `None` is the answer a caller must handle rather than default, and it is why this
+    /// returns an `Option` instead of a `bool`. Neither default is safe: guessing
+    /// "supersedes" re-dates every re-asserted fact to whichever recording a compaction
+    /// happened to keep, and guessing "re-asserts" drags a superseded fact back to a date
+    /// its fold retired. Both move the live graph silently, so the only correct answer to
+    /// an undeclared partition is to refuse to act on it.
+    pub fn reasserts(&self, type_: &str) -> Option<bool> {
+        let declared = self.reasserting.as_ref()?;
+        Some(declared.iter().any(|t| t == type_))
+    }
+
+    /// The declared re-asserting types, or `None` when the partition was never declared -
+    /// so a caller can check the declaration itself (every name in it must be a type this
+    /// policy covers, or the declaration is about a policy other than this one).
+    pub fn reasserting(&self) -> Option<&[String]> {
+        self.reasserting.as_deref()
     }
 
     /// The metadata key an identified event carries its content key under.
@@ -363,6 +420,7 @@ impl std::fmt::Debug for ContentIdentity {
         f.debug_struct("ContentIdentity")
             .field("meta_key", &self.meta_key)
             .field("types", &self.types)
+            .field("reasserting", &self.reasserting)
             .finish_non_exhaustive()
     }
 }

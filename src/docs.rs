@@ -189,7 +189,15 @@ fn discipline_body(ctx: &DocsContext) -> String {
          history `rigger stats` and replay read. The live graph is unchanged: every recording of \
          one key folds to the same rows, and the prune carries a pruned key's EARLIEST recorded \
          valid-time onto the recording it keeps, so a design fact keeps the date it first became \
-         true rather than being re-dated to whichever recording survived. The two flags COMPOSE \
+         true rather than being re-dated to whichever recording survived. WHAT IT CANNOT \
+         RECLAIM, because this decides whether it is worth running at all: it only ever sheds \
+         DUPLICATE recordings of one key, never the index itself. The last recording of every \
+         key stays, so a log written since the dedup existed already holds exactly one event per \
+         distinct fact and `rigger reset --derived` deletes ZERO rows from it and reports so - \
+         that is the expected report on a clean log, not a failure, and the derived index remains \
+         the bulk of the log by design because it is what the graph is folded from. Run it on a \
+         log that was written BEFORE the dedup and it sheds the whole pile; run it on one written \
+         after, and there is nothing to shed. The two flags COMPOSE \
          and each prunes its own accumulation: `rigger reset --runs --derived` sheds the dead-run \
          graph rows and the duplicated index in one pass. Both are one-shot maintenance you run \
          BETWEEN runs, never against a live one.\n"

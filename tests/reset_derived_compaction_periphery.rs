@@ -213,11 +213,7 @@ fn seed_namespace(backend: &Store, project: &str, rounds: u64) {
 
 fn prune_all_types(backend: &Store, prefix: &str) -> PrunedDerived {
     backend
-        .prune_derived_index(
-            prefix,
-            &rigger::ingest::derived_index_identity(),
-            &rigger::ingest::reasserted_derived_types(),
-        )
+        .prune_derived_index(prefix, &rigger::ingest::derived_index_identity())
         .expect("prune the derived index")
 }
 
@@ -225,9 +221,19 @@ fn prune_all_types(backend: &Store, prefix: &str) -> PrunedDerived {
 /// a metadata key nothing carries and a covered-type list the caller chose. They vary exactly that
 /// field of the real policy (its key SPLIT comes straight off it), so no test ever stands up a
 /// second, hand-written parser of the same key form to test the prune against.
+///
+/// The valid-time partition is re-declared over the varied type list, because the prune refuses a
+/// declaration naming a type the policy does not cover: narrowing the covered types narrows the
+/// declaration with it, which is exactly what a composition root varying this policy would have to
+/// do. The membership is still the shipped answer, never a hand-written one.
 fn identity_with(meta_key: &str, types: &[&str]) -> ContentIdentity {
     let shipped = rigger::ingest::derived_index_identity();
+    let reasserting: Vec<&str> = rigger::ingest::reasserted_derived_types()
+        .into_iter()
+        .filter(|t| types.contains(t))
+        .collect();
     ContentIdentity::new(meta_key, types.to_vec(), shipped.split())
+        .with_reasserting_types(reasserting)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -352,11 +358,7 @@ fn prune_derived_index_keeps_the_callers_type_order_and_is_a_faithful_no_op_at_i
     // ASKED FOR NOTHING. No type is eligible, so nothing is removed and nothing is reported -
     // an empty request is answered with an empty accounting, not with a guess at a default set.
     let none = backend
-        .prune_derived_index(
-            "",
-            &identity_with(rigger::ingest::META_REPLAY_KEY, &[]),
-            &[],
-        )
+        .prune_derived_index("", &identity_with(rigger::ingest::META_REPLAY_KEY, &[]))
         .unwrap();
     assert!(
         none.removed.is_empty() && none.total_removed() == 0,
@@ -376,7 +378,6 @@ fn prune_derived_index_keeps_the_callers_type_order_and_is_a_faithful_no_op_at_i
         .prune_derived_index(
             &Namespaced::prefix_for("edges"),
             &identity_with("no_such_metadata_key", &rigger::ingest::DERIVED_INDEX_TYPES),
-            &rigger::ingest::reasserted_derived_types(),
         )
         .unwrap();
     assert_eq!(
@@ -413,7 +414,6 @@ fn prune_derived_index_keeps_the_callers_type_order_and_is_a_faithful_no_op_at_i
         .prune_derived_index(
             &Namespaced::prefix_for("edges"),
             &identity_with(rigger::ingest::META_REPLAY_KEY, &reversed),
-            &rigger::ingest::reasserted_derived_types(),
         )
         .unwrap();
     assert_eq!(
@@ -435,7 +435,157 @@ fn prune_derived_index_keeps_the_callers_type_order_and_is_a_faithful_no_op_at_i
     // compare one without a prune having run.
     let empty = PrunedDerived::default();
     assert_eq!(empty.total_removed(), 0);
-    assert!(empty.removed.is_empty() && empty.reclaimed_bytes == 0);
+    assert!(empty.removed.is_empty() && empty.reclaimed_bytes.is_none());
+}
+
+/// The valid-time partition is an input the prune CANNOT default, so it refuses instead.
+///
+/// Both refusals guard a corruption that leaves every row looking intact. A policy that never
+/// declared the partition cannot be read as "nothing re-asserts": the deletes run over every
+/// covered type either way, so an unnamed re-asserting type would lose its earliest recordings
+/// with no carry and have every one of its facts silently re-dated to whichever recording
+/// survived. And a declaration naming a type the policy does not cover describes some OTHER
+/// policy, so it cannot be this one's partition - taking it anyway would let a caller believe it
+/// had declared a carry that the prune, which iterates its own covered types, never performs.
+///
+/// The store is required to say so BEFORE it takes the write lock, because a refusal that arrives
+/// after a partial prune is not a refusal.
+#[test]
+fn a_prune_whose_policy_never_declared_the_valid_time_partition_is_refused_untouched() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("undeclared.db");
+    let backend = Store::open(db.to_str().unwrap()).unwrap();
+    seed_namespace(&backend, "undeclared", 4);
+    let seeded = raw_rows(&db);
+    let prefix = Namespaced::prefix_for("undeclared");
+
+    // The shipped policy WITHOUT its declaration: everything else about it is the real thing, so
+    // the only reason to refuse is the missing partition.
+    let shipped = rigger::ingest::derived_index_identity();
+    let undeclared = ContentIdentity::new(
+        rigger::ingest::META_REPLAY_KEY,
+        rigger::ingest::DERIVED_INDEX_TYPES,
+        shipped.split(),
+    );
+    assert!(
+        undeclared.reasserting().is_none() && shipped.reasserting().is_some(),
+        "the fixture must differ from the shipped policy in exactly the declaration"
+    );
+    let refused = backend
+        .prune_derived_index(&prefix, &undeclared)
+        .expect_err("a policy with no declared partition must be refused, not guessed at");
+    let said = refused.to_string();
+    for needle in ["re-assert", "with_reasserting_types"] {
+        assert!(
+            said.contains(needle),
+            "the refusal must name what was not declared and how to declare it ({needle:?}); got \
+             {said:?}"
+        );
+    }
+
+    // A DECLARATION ABOUT ANOTHER POLICY is refused the same way.
+    let stray = ContentIdentity::new(
+        rigger::ingest::META_REPLAY_KEY,
+        rigger::ingest::DERIVED_INDEX_TYPES,
+        shipped.split(),
+    )
+    .with_reasserting_types(["ReviewFinding"]);
+    let refused = backend
+        .prune_derived_index(&prefix, &stray)
+        .expect_err("a declaration naming an uncovered type must be refused");
+    assert!(
+        refused.to_string().contains("ReviewFinding"),
+        "the refusal must name the type that does not belong to this policy; got {refused:?}"
+    );
+
+    // NEITHER REFUSAL TOUCHED THE LOG. A refusal that has already deleted rows is not a refusal,
+    // and this is the assertion that the checks run before the transaction rather than inside it.
+    assert_eq!(
+        raw_rows(&db),
+        seeded,
+        "a refused prune must leave every row byte-for-byte, VACUUM included"
+    );
+
+    // AND AN EMPTY DECLARATION IS NOT THE UNDECLARED STATE. It is a caller stating that none of
+    // its types re-assert, which is a thing a caller may truthfully say, so it prunes.
+    let declared_empty = ContentIdentity::new(
+        rigger::ingest::META_REPLAY_KEY,
+        rigger::ingest::DERIVED_INDEX_TYPES,
+        shipped.split(),
+    )
+    .with_reasserting_types(Vec::<String>::new());
+    let pruned = backend
+        .prune_derived_index(&prefix, &declared_empty)
+        .expect("an empty declaration is a declaration and must be honored");
+    assert!(
+        pruned.total_removed() > 0,
+        "the seeded log holds duplicates, so an honored prune must shed them; got {pruned:?}"
+    );
+}
+
+/// The reported reclamation is a MEASUREMENT OF THE FILE, so when the file did not shrink the
+/// report must not say it did.
+///
+/// `PRAGMA wal_checkpoint(TRUNCATE)` is what folds the freed pages out of the write-ahead log and
+/// back into `events.db`, and it DECLINES while any reader still holds a snapshot of that log -
+/// its first result column is the BUSY flag. Read only the page-count delta and the two cases are
+/// indistinguishable: the prune reports a healthy byte count while `events.db` is unchanged on
+/// disk and total bytes have gone UP, which is the one report an operator has no way to check. So
+/// the contended case is asserted directly, with a reader deliberately parked on a snapshot.
+///
+/// The deletion itself is unaffected and that is asserted too - the transaction committed before
+/// any of this - so the test says "the rows went, the reclamation is unmeasured" rather than
+/// letting a failure to prune masquerade as a failure to measure.
+#[test]
+fn a_reader_holding_the_write_ahead_log_makes_the_reclamation_unmeasured_not_wrong() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("contended.db");
+    let backend = Store::open(db.to_str().unwrap()).unwrap();
+    seed_namespace(&backend, "contended", 6);
+    let prefix = Namespaced::prefix_for("contended");
+
+    // UNCONTENDED FIRST, on an identical seed, so the two reports are compared rather than one
+    // being asserted in isolation: whatever this one reports, it is a number.
+    let solo_db = dir.path().join("uncontended.db");
+    let solo = Store::open(solo_db.to_str().unwrap()).unwrap();
+    seed_namespace(&solo, "contended", 6);
+    let solo_report = solo
+        .prune_derived_index(&prefix, &rigger::ingest::derived_index_identity())
+        .expect("prune the uncontended log");
+    assert!(
+        solo_report.reclaimed_bytes.is_some() && solo_report.total_removed() > 0,
+        "with no reader parked on the log the checkpoint completes, so the reclamation is a \
+         measurement; got {solo_report:?}"
+    );
+
+    // NOW PARK A READER ON THE WRITE-AHEAD LOG. An open read transaction is exactly the state that
+    // makes a truncating checkpoint decline, and it is an ordinary thing for a second rigger
+    // process to be doing.
+    let reader = rusqlite::Connection::open(&db).expect("open a second connection");
+    reader
+        .execute_batch("BEGIN")
+        .expect("begin the reader's transaction");
+    let _: i64 = reader
+        .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+        .expect("take a read snapshot");
+
+    let report = backend
+        .prune_derived_index(&prefix, &rigger::ingest::derived_index_identity())
+        .expect("prune the contended log");
+    assert_eq!(
+        report.total_removed(),
+        solo_report.total_removed(),
+        "a parked reader must not change WHAT the prune deletes - the deletes commit before the \
+         checkpoint is ever asked for"
+    );
+    assert_eq!(
+        report.reclaimed_bytes, None,
+        "the checkpoint was refused, so the freed pages are still in the write-ahead log and the \
+         file did not shrink: the reclamation is UNMEASURED, never a byte count the operator's own \
+         `ls` would contradict; got {report:?}"
+    );
+
+    drop(reader);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1018,9 +1168,19 @@ const SHIPPED_DOCS: [&str; 2] = [
 /// stayed at their pre-change text, so the guidance for a command that deletes from an append-only
 /// log was not actually shipped to anyone.
 ///
-/// So the shipped bytes are read directly and held to the four things an operator must know before
-/// running it - WHAT IT KEEPS, WHAT IT COSTS, that the file shrinks, and that the two prunes
-/// compose - plus the proof that these documents were rendered from the real context at all.
+/// So the shipped bytes are read directly and held to the five things an operator must know before
+/// running it - WHAT IT KEEPS, WHAT IT COSTS, that the file shrinks, WHAT IT CANNOT RECLAIM, and
+/// that the two prunes compose - plus the proof that these documents were rendered from the real
+/// context at all.
+///
+/// AND THEN TO THE RENDERER'S OWN TEXT, WORD FOR WORD, which is the assertion that can actually go
+/// red on staleness. A list of substrings cannot: a uniformly stale render satisfies every one of
+/// them, and so does a stale render that agrees with its equally stale sibling, so the checks above
+/// pin that the guidance EXISTS and this one pins that it is the CURRENT guidance. Any later
+/// sentence added to the renderer is therefore shipped or the test fails - including one that
+/// changes what the paragraph claims. It doubles as the proof that this paragraph is not
+/// context-conditional: it is compared against a render from a context that shares no value with
+/// the real one, so a paragraph that varied with the context could not match.
 #[test]
 fn the_committed_operator_documents_ship_the_derived_prunes_guidance() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -1041,6 +1201,7 @@ fn the_committed_operator_documents_ship_the_derived_prunes_guidance() {
             ("say what it KEEPS", "LATEST event per replay key"),
             ("say what it costs everything else", "byte-for-byte"),
             ("say the file actually shrinks", "shrinks on disk"),
+            ("say what it CANNOT reclaim", "WHAT IT CANNOT RECLAIM"),
             (
                 "show the two prunes composing",
                 "rigger reset --runs --derived",
@@ -1061,12 +1222,7 @@ fn the_committed_operator_documents_ship_the_derived_prunes_guidance() {
             rigger::dash::DEFAULT_PORT
         );
 
-        let paragraph = shipped
-            .lines()
-            .find(|l| l.contains("rigger reset --derived"))
-            .unwrap_or_else(|| panic!("the guidance must be a paragraph in {rel}"))
-            .to_string();
-        paragraphs.push((rel.to_string(), paragraph));
+        paragraphs.push((rel.to_string(), derived_paragraph(rel, &shipped)));
     }
 
     // ONE body, two consumers: the skill and the handbook chapter render from the same
@@ -1080,6 +1236,63 @@ fn the_committed_operator_documents_ship_the_derived_prunes_guidance() {
             "{rel} and {first_rel} render from one shared discipline body, so their --derived \
              guidance must not have drifted apart"
         );
+    }
+
+    // AND IT IS THE CURRENT PARAGRAPH, not merely a paragraph the two files agree on. Two stale
+    // files agree with each other perfectly; the renderer is the only thing that can tell a
+    // shipped document from a stale one. `rigger docs` re-renders these files from the binary
+    // built out of this tree, so an edit to `discipline_body` that was not re-rendered and
+    // committed - or was re-rendered by an OLDER installed binary, which is how this unit lost
+    // the paragraph once already - fails here with the two texts printed side by side.
+    let rendered = derived_paragraph(
+        "<discipline_body>",
+        &rigger::docs::render_handbook_discipline(&docs_context_for_paragraph_comparison()),
+    );
+    for (rel, paragraph) in &paragraphs {
+        assert_eq!(
+            paragraph, &rendered,
+            "the committed {rel} carries a STALE `--derived` paragraph: it is not what \
+             `rigger::docs` renders today. Re-render it with a `rigger` built from THIS tree \
+             (`cargo build` and run that binary's `docs`, or `cargo install --path .` first) and \
+             commit the result"
+        );
+    }
+}
+
+/// The ONE `rigger reset --derived` paragraph in a rendered or shipped discipline document.
+///
+/// Exactly one, asserted rather than assumed: taking the first of several would let a second
+/// mention elsewhere in the document silently become what the comparison above is about.
+fn derived_paragraph(what: &str, text: &str) -> String {
+    let mut found: Vec<&str> = text
+        .lines()
+        .filter(|l| l.contains("rigger reset --derived"))
+        .collect();
+    assert_eq!(
+        found.len(),
+        1,
+        "{what} must carry exactly one `rigger reset --derived` paragraph; got {}: {found:?}",
+        found.len()
+    );
+    found.remove(0).to_string()
+}
+
+/// A docs context that shares NO value with the real one the shipped documents were rendered from.
+///
+/// That is the point of it. The paragraph this test compares must be the same text whatever the
+/// context says, so rendering it from a context whose every field is deliberately unlike the real
+/// one turns "these two paragraphs are equal" into a proof that the paragraph is unconditional -
+/// which is exactly the hole a comparison against the real context would leave open.
+fn docs_context_for_paragraph_comparison() -> rigger::docs::DocsContext {
+    rigger::docs::DocsContext {
+        base_ref: "not-the-real-base-ref".into(),
+        dash_port: 65531,
+        max_retries: 999,
+        verdict_approve: "not-the-real-verdict".into(),
+        spec_shape_rules: vec!["not-a-real-rule".into()],
+        spec_shape_recommendation: "not the real recommendation".into(),
+        subcommands: vec!["not-a-real-subcommand".into()],
+        specs_location: "not/the/real/specs".into(),
     }
 }
 
@@ -2698,12 +2911,13 @@ fn the_carry_forward_partition_is_the_folds_own_and_each_type_compacts_to_the_gr
             let backend = Store::open(db.to_str().unwrap()).expect("open the event log");
             seed_one_derived_type(&backend, PROJECT, type_, &[EARLY, LATE]);
             if let Some(reasserted_arg) = reasserted_arg {
+                // The SHIPPED policy with its declaration replaced - the partition lives on the
+                // policy value, so an inverted partition is an inverted policy, not a second
+                // argument that could disagree with the one the policy already carries.
+                let policy =
+                    rigger::ingest::derived_index_identity().with_reasserting_types(reasserted_arg);
                 let report = backend
-                    .prune_derived_index(
-                        &prefix,
-                        &rigger::ingest::derived_index_identity(),
-                        &reasserted_arg,
-                    )
+                    .prune_derived_index(&prefix, &policy)
                     .expect("prune the derived index");
                 assert_eq!(
                     report.total_removed(),
@@ -2774,13 +2988,15 @@ fn the_carry_forward_partition_is_the_folds_own_and_each_type_compacts_to_the_gr
 // ---------------------------------------------------------------------------------------
 // 16. The API edges of the carry-forward itself.
 //
-// `prune_derived_index` gained a second policy argument, and the store applies it AS DATA: it
-// holds no fold knowledge and asks only whether the caller named a type. That makes the caller's
-// answer the whole contract, and it has edges the command's one shipped call site never reaches -
-// naming nothing, naming a type the policy does not cover, and the key recorded exactly once,
-// whose group has no earlier recording to inherit from and which the `n > 1` guard must therefore
-// leave byte-identical. All three are silent when wrong: a spurious UPDATE re-dates a fact and
-// leaves every row looking perfectly intact.
+// The content-identity policy now DECLARES the valid-time partition, and the store applies that
+// declaration AS DATA: it holds no fold knowledge and asks, per covered type, whether the policy
+// declared it re-asserting. That makes the declaration the whole contract, and it has edges the
+// command's one shipped call site never reaches - declaring nothing at all, declaring some other
+// covered type, and the key recorded exactly once, whose group has no earlier recording to
+// inherit from and which the `HAVING COUNT(*) > 1` guard must therefore leave byte-identical.
+// All of them are silent when wrong: a spurious UPDATE re-dates a fact and leaves every row
+// looking perfectly intact. (The two declarations that cannot be acted on at all - undeclared,
+// and declaring a type the policy does not cover - are refusals, pinned in section 2.)
 // ---------------------------------------------------------------------------------------
 
 /// Every row's `valid_from`, keyed by position - the ONE column the compaction is allowed to
@@ -2876,17 +3092,25 @@ fn the_carry_forward_touches_only_the_survivors_of_the_types_the_caller_named() 
         "this fixture reads a type from each half; the shipped partition put them both in {reasserted:?}"
     );
 
-    // Three prunes of one identical seed, differing ONLY in what the caller named as re-asserting.
+    // Three prunes of one identical seed, differing ONLY in what the policy declares as
+    // re-asserting. Every one of them is a declaration a caller may truthfully make; the two
+    // declarations that cannot be acted on are refused before any row is read (section 2).
     let cases: [(&str, Vec<&str>); 3] = [
-        // Nothing named: the fail-safe direction for an unconfigured caller - it writes no column
-        // at all, so every survivor keeps the date it was recorded with.
-        ("named-nothing", Vec::new()),
+        // A caller stating that NONE of its types re-assert. It writes no column at all, so every
+        // survivor keeps the date it was recorded with. Not the same state as an undeclared
+        // policy, which is refused: this one is an answer.
+        ("declared-nothing", Vec::new()),
         // The shipped answer.
-        ("named-shipped", reasserted.clone()),
-        // A type the POLICY does not cover. The store iterates the policy's types and asks whether
-        // each is named, so an unrelated name can only ever be inert - and an implementation that
-        // instead asked "did the caller name anything" would carry every type on this input.
-        ("named-outside", vec!["ReviewFinding"]),
+        ("declared-shipped", reasserted.clone()),
+        // A DIFFERENT covered type, re-asserting like the doc half but absent from this fixture.
+        // The store iterates its own covered types and asks about each ONE BY NAME, so declaring
+        // a sibling leaves this fixture's types exactly where an empty declaration leaves them -
+        // whereas an implementation that instead asked "did the policy declare anything" would
+        // carry every type on this input.
+        (
+            "declared-other-covered-type",
+            vec![rigger::contextgraph::TYPE_DOC_CONCEPT_EXTRACTED],
+        ),
     ];
 
     let mut observed: Vec<PrunedCase> = Vec::new();
@@ -2904,12 +3128,10 @@ fn the_carry_forward_touches_only_the_survivors_of_the_types_the_caller_named() 
             ),
         }
         let backend = Store::open(db.to_str().unwrap()).expect("open the event log");
+        let policy =
+            rigger::ingest::derived_index_identity().with_reasserting_types(reasserted_arg);
         backend
-            .prune_derived_index(
-                &prefix,
-                &rigger::ingest::derived_index_identity(),
-                &reasserted_arg,
-            )
+            .prune_derived_index(&prefix, &policy)
             .expect("prune the derived index");
         observed.push((case, raw_rows(&db), dates_by_key(&db)));
     }
@@ -2922,7 +3144,7 @@ fn the_carry_forward_touches_only_the_survivors_of_the_types_the_caller_named() 
             shape(rows),
             baseline,
             "the {case} prune must delete exactly the rows every other prune of this seed \
-             deletes - `reasserted` names dates to carry, never rows to drop"
+             deletes - the declaration names dates to carry, never rows to drop"
         );
     }
 
@@ -2940,8 +3162,8 @@ fn the_carry_forward_touches_only_the_survivors_of_the_types_the_caller_named() 
     let secs = |s: u64| Duration::from_secs(s).as_nanos() as i64;
 
     for (case, _, dates) in &observed {
-        // THE SUPERSEDING HALF IS NEVER CARRIED, whatever the caller named it alongside: its
-        // surviving recording's own date is the one its fold arrives at.
+        // THE SUPERSEDING HALF IS NEVER CARRIED under any of these declarations: its surviving
+        // recording's own date is the one its fold arrives at.
         assert_eq!(
             survivor_date(dates, &code, CARRY_KEY_CODE),
             secs(2_000),
@@ -2972,12 +3194,12 @@ fn the_carry_forward_touches_only_the_survivors_of_the_types_the_caller_named() 
     assert_eq!(
         doc_dates,
         vec![
-            ("named-nothing", secs(2_000)),
-            ("named-shipped", secs(1_000)),
-            ("named-outside", secs(2_000)),
+            ("declared-nothing", secs(2_000)),
+            ("declared-shipped", secs(1_000)),
+            ("declared-other-covered-type", secs(2_000)),
         ],
-        "the earliest date must be carried onto the survivor when - and only when - the caller \
-         named its type; got {doc_dates:?}"
+        "the earliest date must be carried onto the survivor when - and only when - the policy \
+         declared its type re-asserting; got {doc_dates:?}"
     );
 }
 
