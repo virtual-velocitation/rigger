@@ -53,6 +53,16 @@
 //!      `rigger validate` read the compacted store correctly. `validate` is pinned by the unit's
 //!      own suite; `status` walks a different path from either that suite or item 8 above - the
 //!      per-stream read, the current-run slice, and the replay driver's frontier.
+//!  11. **The rows the prune shares with the STORAGE GUARD.** The compaction is not the only
+//!      thing in this store that reads a replay key: the spec-60 storage guard decides whether an
+//!      append is redundant by asking which generation a subject is CURRENTLY at, and it answers
+//!      that from the very rows the prune deletes (the latest recorded position of each covered
+//!      key) inside the very file the prune then `VACUUM`s. So "keep the latest recording of every
+//!      key" is not only a statement about what survives - it is the precondition of a defense
+//!      that suppresses. A prune that kept the WRONG recording of a key would leave a log an
+//!      operator cannot tell apart from a healthy one and a guard that has quietly changed its
+//!      mind about which content is current. Neither layer's own tests can see this: the guard's
+//!      suite never prunes and the compaction's suite never configures a guard.
 //!
 //! Plus the command's own flag registry at the edges the composition opened: each mode named at
 //! most once, and the two modes composing in EITHER order.
@@ -61,8 +71,11 @@ use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::Projection;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::{PrunedDerived, Store};
-use rigger::eventstore::{Direction, Error, Event, EventStore, ExpectedRevision};
+use rigger::eventstore::{
+    ContentIdentity, Direction, Error, Event, EventStore, ExpectedRevision, META_GUARD_DEGRADED,
+};
 use std::collections::BTreeSet;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, UNIX_EPOCH};
@@ -1785,5 +1798,234 @@ fn the_status_view_reads_a_compacted_log_exactly_as_it_read_the_bloated_one() {
         status("after the second compaction"),
         done_before,
         "the done run's release-ready handoff must survive a second compaction whole"
+    );
+}
+
+// ---------------------------------------------------------------------------------------
+// 12. The rows the prune shares with the storage guard
+// ---------------------------------------------------------------------------------------
+
+/// Split a `<prefix>/<file>@<hash>#<i>` content key into `(the prefix every key naming the same
+/// file begins with, the content generation this key belongs to)` - the shape the ingest layer
+/// mints.
+///
+/// It is written HERE, in the test, because the split is INJECTED configuration: the store parses
+/// no key format of its own, so a caller that wants the guard hands it this policy. Splitting from
+/// the RIGHT is load-bearing - a real path may itself contain `@` or `#`.
+fn path_subject_of(key: &str) -> Option<(Range<usize>, Range<usize>)> {
+    let (prefix, rest) = key.split_once('/')?;
+    if prefix.is_empty() || rest.is_empty() {
+        return None;
+    }
+    let (head, index) = key.rsplit_once('#')?;
+    if index.is_empty() || !index.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let (file, hash) = head.rsplit_once('@')?;
+    if file.len() <= prefix.len() + 1 || hash.is_empty() {
+        return None;
+    }
+    let subject_end = file.len() + 1; // through the `@` that ends the subject
+    Some((0..subject_end, subject_end..subject_end + hash.len()))
+}
+
+/// The guard policy this project would configure: its real metadata key, its real derived index
+/// types, and the split for the keys it really mints - so the guard is exercised against the same
+/// vocabulary the prune is handed, which is the whole point of asking whether they agree.
+fn guard_policy() -> ContentIdentity {
+    ContentIdentity::new(
+        rigger::ingest::META_REPLAY_KEY,
+        rigger::ingest::DERIVED_INDEX_TYPES,
+        path_subject_of,
+    )
+}
+
+/// The two events one content generation of `gc/src/guarded.rs` records: the entity at `#0` and
+/// the edge at `#1`, exactly as a keyed ingest batch shapes them.
+fn guarded_generation(hash: &str, secs: u64) -> Vec<Event> {
+    vec![
+        keyed(
+            rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+            entity(hash),
+            &format!("gc/src/guarded.rs@{hash}#0"),
+            secs,
+        ),
+        keyed(
+            rigger::contextgraph::TYPE_EDGE_INFERRED,
+            edge(hash),
+            &format!("gc/src/guarded.rs@{hash}#1"),
+            secs,
+        ),
+    ]
+}
+
+/// Every `(replay key, position)` the log holds, in position order - the raw material BOTH layers
+/// read: the prune ranks these to choose what to delete, and the guard's latest-generation walk
+/// reads the greatest position per key to decide which generation a subject is at.
+fn keyed_positions(db: &Path) -> Vec<(String, i64)> {
+    raw_rows(db)
+        .iter()
+        .filter_map(|row| replay_key(row).map(|k| (k, row.0)))
+        .collect()
+}
+
+/// The guard's verdicts on a store, as an outside caller sees them: for each generation probed, one
+/// `true` per event the store SUPPRESSED and one `false` per event it wrote.
+///
+/// The probe is a re-ingest of two generations in a fixed order - first the one the subject is
+/// currently at, then one it has moved past - which is precisely the pair the latest-per-subject
+/// rule has to tell apart. It runs on a FRESH handle, because a compaction is something an operator
+/// does between processes: the answer a long-lived writer had cached is not the answer that matters.
+fn guard_verdicts(db: &Path, project: &str, hashes: [&str; 2]) -> Vec<Vec<bool>> {
+    let backend = Store::open(db.to_str().unwrap())
+        .expect("open the compacted log")
+        .with_content_identity(guard_policy());
+    let store = Namespaced::new(&backend, project);
+    hashes
+        .iter()
+        .enumerate()
+        .map(|(i, hash)| {
+            let appended = store
+                .append(
+                    rigger::conductor::STREAM,
+                    ExpectedRevision::Any,
+                    &guarded_generation(hash, 9_000 + i as u64),
+                )
+                .expect("the guarded re-ingest is accepted");
+            appended.placements().iter().map(Option::is_none).collect()
+        })
+        .collect()
+}
+
+/// The compaction and the storage guard read the SAME rows, and the prune must leave every one of
+/// the guard's verdicts exactly where it found it.
+///
+/// The two features meet on one fact: which recording of a covered replay key is the LATEST one in
+/// its stream. The prune keeps that row and deletes the rest; the guard reads the greatest position
+/// per key to decide which generation a subject is currently at, and suppresses only an append of
+/// THAT generation. Keeping any other recording of a key would still leave one row per key - a log
+/// that looks perfectly compacted, whose every assertion about survivors, sizes and folds still
+/// holds - while silently moving the subject's current generation, so the store would afterwards
+/// swallow a re-ingest of the content the tree really holds and admit one it has moved past. That
+/// is the graph-on-a-superseded-version outcome the spec forbids, reached through the compaction
+/// rather than through the dedup.
+///
+/// Neither layer's own suite can see it: the guard's periphery suite never prunes, and this
+/// criterion's suites never configure a guard. So the property is asserted DIFFERENTIALLY, over two
+/// logs seeded identically, one compacted and one not:
+///
+///   - the fixture makes the answer non-obvious on purpose. The subject records generation `h1`,
+///     then `h2`, then `h1` AGAIN - a revert - so its current generation is neither the
+///     first-recorded nor the last-minted one, and a prune that kept the earliest recording of each
+///     key rather than the latest would flip it;
+///   - the un-compacted log's verdicts are asserted ABSOLUTELY first (suppress the current
+///     generation, write the superseded one), so the equality that follows is an equality between
+///     two known-meaningful answers rather than between two coincidences;
+///   - and the compacted log's own appends are checked to carry no degradation marker, because a
+///     guard that stopped judging suppresses nothing and would answer `false` everywhere for a
+///     reason that has nothing to do with the prune.
+#[test]
+fn a_compaction_leaves_the_storage_guards_verdicts_exactly_where_it_found_them() {
+    const PROJECT: &str = "guarded";
+    // h1, then h2, then back to h1: the subject's CURRENT generation is h1, and it is neither the
+    // first thing recorded nor the last generation minted.
+    const HISTORY: [&str; 8] = ["h1", "h1", "h1", "h2", "h2", "h2", "h1", "h1"];
+
+    let dir = tempfile::tempdir().unwrap();
+    let bloated = dir.path().join("bloated.db");
+    let compacted = dir.path().join("compacted.db");
+
+    // Seeded through an UNGUARDED handle, which is the log this command exists for: duplication a
+    // store accreted before anything suppressed it.
+    for db in [&bloated, &compacted] {
+        let backend = Store::open(db.to_str().unwrap()).expect("open a fresh log");
+        let store = Namespaced::new(&backend, PROJECT);
+        store
+            .append(
+                rigger::conductor::STREAM,
+                ExpectedRevision::Any,
+                &[
+                    Event::new("RunStarted", br#"{"run":"g","criteria":["c"]}"#.to_vec())
+                        .with_valid_from(UNIX_EPOCH + Duration::from_secs(10)),
+                ],
+            )
+            .expect("seed the non-derived event");
+        for (i, hash) in HISTORY.iter().enumerate() {
+            store
+                .append(
+                    rigger::conductor::STREAM,
+                    ExpectedRevision::Any,
+                    &guarded_generation(hash, 1_000 + i as u64),
+                )
+                .expect("seed a generation");
+        }
+    }
+    assert_eq!(
+        keyed_positions(&bloated),
+        keyed_positions(&compacted),
+        "the two logs must be seeded identically, or the differential below compares two fixtures \
+         rather than one compaction"
+    );
+
+    // Compact ONE of them, through the primitive `rigger reset --derived` drives.
+    let bloated_positions = keyed_positions(&bloated);
+    let pruned = {
+        let backend = Store::open(compacted.to_str().unwrap()).expect("open the log to compact");
+        prune_all_types(&backend, &Namespaced::prefix_for(PROJECT))
+    };
+    assert_eq!(
+        pruned.total_removed(),
+        12,
+        "four distinct keys recorded 16 times must lose 12 recordings; got {pruned:?}"
+    );
+
+    // What survived is each key's LATEST recording - the row the guard's walk reads - and every
+    // key still has exactly one. This is the mechanism the verdict equality below rests on, so it
+    // is asserted directly rather than inferred from the fact that the counts came out right.
+    let mut latest: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
+    for (key, at) in &bloated_positions {
+        let slot = latest.entry(key.clone()).or_insert(*at);
+        *slot = (*slot).max(*at);
+    }
+    assert_eq!(
+        keyed_positions(&compacted),
+        {
+            let mut survivors: Vec<(String, i64)> =
+                latest.iter().map(|(k, at)| (k.clone(), *at)).collect();
+            survivors.sort_by_key(|(_, at)| *at);
+            survivors
+        },
+        "the compacted log must hold exactly the LATEST recording of every key, at its original \
+         position - that row IS the guard's answer to which generation the subject is at"
+    );
+
+    // The verdicts themselves. First absolutely, on the log nobody compacted: the current
+    // generation is suppressed, the superseded one is written.
+    let before = guard_verdicts(&bloated, PROJECT, ["h1", "h2"]);
+    assert_eq!(
+        before,
+        vec![vec![true, true], vec![false, false]],
+        "the guard must suppress a re-ingest of the generation the subject is CURRENTLY at (h1, \
+         reverted to) and write one it has moved past (h2), or this test is comparing two \
+         meaningless answers"
+    );
+
+    // Then the same probe on the compacted log: identical, event for event.
+    assert_eq!(
+        guard_verdicts(&compacted, PROJECT, ["h1", "h2"]),
+        before,
+        "a compaction must leave every one of the guard's verdicts where it found them: the prune \
+         deletes the very rows the latest-generation walk reads, so keeping the wrong recording of \
+         a key would silently move the subject's current generation"
+    );
+
+    // And the guard was JUDGING while it answered, not silently switched off by a log that had
+    // just been rewritten and vacuumed under it.
+    assert!(
+        raw_rows(&compacted)
+            .iter()
+            .all(|row| !row.5.contains(META_GUARD_DEGRADED)),
+        "no event on the compacted log may carry a degradation marker - a guard that cannot probe \
+         suppresses nothing, which would make the equality above hold for the wrong reason"
     );
 }
