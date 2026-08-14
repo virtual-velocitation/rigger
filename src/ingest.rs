@@ -341,6 +341,15 @@ fn derived_key_parts(key: &str) -> Option<(&str, &str)> {
 /// as the policy BOTH consumers take rather than as one two consumers are already taking. The
 /// carry partition it declares is what the prune needs; the guard reads only the key and type
 /// halves, so wiring it later adds a consumer and changes nothing here.
+///
+/// THAT "not yet" IS A RECORDED DECISION, NOT AN OVERSIGHT, and it is recorded on the event log
+/// where a peer can read it rather than only here: `d60c5r5-guard-wiring-is-superseded-out-of-
+/// spec-60-and-routed-by-name` supersedes `d60u4b-guard-is-configuration-and-this-criterion-does-
+/// not-wire-it`, which had made the wiring conditional on this accessor being public - it now is.
+/// The wiring is one line in `main`'s `resolve_store` (the write-path composition root, never the
+/// shared read-only-attach constructor), and it is routed to a follow-up spec because switching
+/// the guard on changes production append behavior for these four types across every command that
+/// resolves a store, which no criterion of spec 60 owns and no gate of this run measures.
 pub fn derived_index_identity() -> crate::eventstore::ContentIdentity {
     crate::eventstore::ContentIdentity::new(META_REPLAY_KEY, DERIVED_INDEX_TYPES, derived_key_split)
         .with_reasserting_types(reasserted_derived_types())
