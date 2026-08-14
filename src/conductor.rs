@@ -21181,6 +21181,144 @@ mod tests {
     }
 
     #[test]
+    fn a_units_worktree_cache_and_branch_are_all_reclaimed_on_a_successful_integrate() {
+        // Spec 64, criterion 2 (TERMINAL TEARDOWN IS UNCHANGED): criterion 1's
+        // phase-aware split only ever SKIPS teardown on a parked_unwind (a park or a
+        // budget refusal, `run_stage` conductor.rs ~3141-3157); a genuinely TERMINAL
+        // return - here, a full integrate - must tear down EXACTLY as it did before
+        // that split existed: worktree removed, its `cargo-target-<slug>` cache
+        // sibling reclaimed with it, AND (the one half of "identical to today's
+        // behavior" no existing test measures through the public `run()` seam) the
+        // unit's durable branch DELETED, since its checkpoint has already served its
+        // purpose (the merged work now lives on the base). Runs a REVIEW PANEL
+        // (lens + adjudicator) that completes normally with no park anywhere - this is
+        // the "parked-capable driver, but THIS outcome is terminal" half of the
+        // criterion's "in both drivers" text: it drives the exact `any_parked`
+        // AtomicBool machinery criterion 1 added (threaded from `review_unit`'s lens
+        // tier into `run_stage`'s `parked_unwind`, spec 64 c1 round 4) and proves it
+        // stays FALSE - and so does not spuriously preserve the worktree/branch -
+        // when nothing actually parked. Non-vacuous: a materializing gate runner
+        // really builds into the per-unit cache before the assertions below run.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let cfg = sha_stamp_cfg();
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            output_by_agent: HashMap::from([
+                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
+                ("lens".to_string(), "reviewed: no blocker".to_string()),
+            ]),
+            ..Stub::new()
+        };
+        let runner = RecordingRunner::materializing();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "an approved review panel with no park anywhere must integrate"
+        );
+        assert!(
+            driver.spawned("lens") && driver.spawned("judge"),
+            "the review panel must actually have run, or this test proves nothing about any_parked"
+        );
+
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let worktree = unit_worktree_dir(&scratch, "s");
+        let cache = crate::worktree::unit_cache_sibling(&worktree).unwrap();
+        assert!(
+            runner.targets().contains(&cache),
+            "the unit's gate must really have built into its per-unit cache: {:?}",
+            runner.targets()
+        );
+        assert!(
+            !std::path::Path::new(&cache).exists(),
+            "the per-unit build cache must be reclaimed on integrate, leaked at {cache}"
+        );
+        assert!(
+            !std::path::Path::new(&worktree).exists(),
+            "the unit's worktree must be gone after a successful integrate: {worktree}"
+        );
+        assert!(
+            !branch_present(&repo_path, &unit_branch("s")),
+            "a successfully integrated unit's branch must be deleted - its checkpoint \
+             already served its purpose, exactly as before criterion 1's park-keep split"
+        );
+    }
+
+    #[test]
+    fn a_units_worktree_is_reclaimed_but_its_branch_survives_a_terminal_escalation() {
+        // Spec 64, criterion 2's other half: a stage that goes terminal by FAILING (every
+        // attempt crashes and remediation exhausts into `UnitEscalated`, never a park)
+        // must still remove the worktree exactly as before criterion 1 - but, since only
+        // an Ok(true) integrate deletes the branch (`run_stage` conductor.rs ~3155), the
+        // branch must SURVIVE as the human's evidence, identical to today's behavior. No
+        // existing test drives this through the public `run()` seam with a real repo (the
+        // sibling repo-less test `mid_spawn_crash_escalates_without_aborting_the_run`
+        // cannot observe worktree/branch state at all).
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "a".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            fail_spawn: true,
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &RecordingRunner::materializing(),
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Escalated,
+            "every attempt crashes, so remediation exhausts into an escalation"
+        );
+        assert!(
+            driver.spawned("a"),
+            "the implementer must actually have been spawned (and crashed), or this test proves nothing"
+        );
+
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let worktree = unit_worktree_dir(&scratch, "s");
+        assert!(
+            !std::path::Path::new(&worktree).exists(),
+            "the unit's worktree must be gone after a terminal escalation: {worktree}"
+        );
+        assert!(
+            branch_present(&repo_path, &unit_branch("s")),
+            "an escalated unit's branch must be RETAINED as the human's evidence, exactly \
+             as before criterion 1's park-keep split - only a successful integrate deletes it"
+        );
+    }
+
+    #[test]
     fn a_parked_review_spawn_keeps_the_unit_worktree_registered_and_its_cache() {
         // Spec 64, criterion 1 (the split this criterion OWNS): a stage that PARKS a
         // spawn - here, the adjudicator, mid three-tier review - is NOT the stage
