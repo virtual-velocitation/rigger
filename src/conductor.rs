@@ -12700,50 +12700,37 @@ mod tests {
     // This criterion adds NO production code. The rules it pins belong to criteria 1 and 4; the
     // helpers below are the fixture that puts both of them in front of one run.
 
-    /// The `<prefix>/<file>@<hash>#<i>` split a COMPOSITION ROOT injects into the store's
-    /// content-identity guard: `(the prefix every key naming this file's batch begins with, the
-    /// content generation that batch belongs to)`.
+    /// The content-identity policy a COMPOSITION ROOT injects into the store's guard, built ONCE
+    /// here so every fixture below judges the store by the policy the store actually carries - the
+    /// real metadata key, the real derived-index type set AND the real `<prefix>/<file>@<hash>#<i>`
+    /// split the ingest layer uses, so the second layer of the stack is the one that ships and not
+    /// a fixture of its own.
     ///
-    /// It lives in the fixture because it is CONFIGURATION, not vocabulary the store owns - the key
-    /// format belongs to [`crate::ingest`], which BUILDS it, and the store must never parse a key of
-    /// its own ([`crate::eventstore::ContentIdentity`]). Split from the RIGHT: a real path may itself
-    /// carry `@` or `#`.
-    ///
-    /// The proof does not TRUST this split to match the real format. It is asserted against a key the
-    /// REAL walk emitted (see `spec60_guard_is_judging`), so a change to the key authority reddens
-    /// this proof instead of silently switching the guard off underneath it.
+    /// The split is still CONFIGURATION handed IN - the store must never parse a key of its own
+    /// ([`crate::eventstore::ContentIdentity`]) - but the configuration is the key authority's OWN
+    /// published parse taken verbatim, never re-spelled here. [`crate::ingest`] BUILDS this format
+    /// in `key_batch` and publishes [`crate::ingest::derived_key_spans`] with exactly the
+    /// [`crate::eventstore::ContentKeySplit`] signature, so there is one parser and nothing to
+    /// drift. A hand-rolled copy used to sit in this fixture and had already drifted by one byte at
+    /// the identity boundary (it ended the subject THROUGH the `@`), which is what a second
+    /// spelling of one format buys; `spec60_guard_is_judging` below now asserts the equality that
+    /// fork slid past.
     #[cfg(feature = "symbols")]
-    fn spec60_content_key_split(
-        key: &str,
-    ) -> Option<(std::ops::Range<usize>, std::ops::Range<usize>)> {
-        let (prefix, remainder) = key.split_once('/')?;
-        if prefix.is_empty() || remainder.is_empty() {
-            return None;
-        }
-        let (head, index) = key.rsplit_once('#')?;
-        if index.is_empty() || !index.bytes().all(|b| b.is_ascii_digit()) {
-            return None;
-        }
-        let (file, hash) = head.rsplit_once('@')?;
-        if file.len() <= prefix.len() + 1 || hash.is_empty() {
-            return None;
-        }
-        let subject_end = file.len() + 1; // through the `@` that ends the subject
-        Some((0..subject_end, subject_end..subject_end + hash.len()))
+    fn spec60_content_identity() -> crate::eventstore::ContentIdentity {
+        crate::eventstore::ContentIdentity::new(
+            crate::ingest::META_REPLAY_KEY,
+            crate::ingest::DERIVED_INDEX_TYPES,
+            crate::ingest::derived_key_spans,
+        )
     }
 
     /// The run's event log WITH criterion 4's storage guard configured on it, exactly as a
-    /// composition root would - the real metadata key and the real derived-index type set the ingest
-    /// layer uses, so the second layer of the stack is the one that ships, not a fixture of its own.
+    /// composition root would.
     #[cfg(feature = "symbols")]
     fn spec60_guarded_store() -> Store {
-        Store::open(":memory:").unwrap().with_content_identity(
-            crate::eventstore::ContentIdentity::new(
-                crate::ingest::META_REPLAY_KEY,
-                crate::ingest::DERIVED_INDEX_TYPES,
-                spec60_content_key_split,
-            ),
-        )
+        Store::open(":memory:")
+            .unwrap()
+            .with_content_identity(spec60_content_identity())
     }
 
     /// Assert the configured guard is REALLY JUDGING this store, so every claim about "the full
@@ -12758,15 +12745,14 @@ mod tests {
     /// suppression the revert must escape.
     #[cfg(feature = "symbols")]
     fn spec60_guard_is_judging(store: &Store, latest: &Event, sample: &str) {
-        let identity = crate::eventstore::ContentIdentity::new(
-            crate::ingest::META_REPLAY_KEY,
-            crate::ingest::DERIVED_INDEX_TYPES,
-            spec60_content_key_split,
-        );
-        assert!(
-            identity.subject_of(sample).is_some(),
-            "the injected policy must split a key the REAL walk emitted ({sample}); the fixture's \
-             split has drifted from the ingest key authority - fix the split, not this assertion"
+        let identity = spec60_content_identity();
+        assert_eq!(
+            identity.subject_of(sample),
+            crate::ingest::derived_key_spans(sample).map(|(id, gen)| (&sample[id], &sample[gen])),
+            "the injected policy must split a key the REAL walk emitted ({sample}) EXACTLY as the \
+             ingest key authority does. `is_some()` is not that test and never was: it holds for \
+             ANY policy that finds SOME split, so two spellings of this one format can disagree at \
+             the identity boundary while it stays green. Fix the split, not this assertion"
         );
         let before = store
             .read_stream(STREAM, 0, Direction::Forward)

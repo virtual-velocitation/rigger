@@ -46,13 +46,18 @@ const GEN_A: &str = "pub fn alpha_symbol() {}\npub fn churn_caller() { alpha_sym
 const GEN_B: &str = "pub fn beta_symbol() {}\npub fn churn_caller() { beta_symbol(); }\n";
 const STABLE: &str = "pub fn stable_symbol() {}\npub fn stable_caller() { stable_symbol(); }\n";
 
+// The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
+// `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
+// and every suite that spawns the product then dies with a bare NotFound.
+mod common;
+
 /// Run `rigger <args...>` in `cwd` through the COMPILED binary, returning (stdout, stderr,
 /// success). Each invocation gets its own throwaway state home so a short-lived integration run
 /// never registers a phantom instance in the operator's machine-global registry, and never spawns
 /// a real dashboard.
 fn run_rigger(cwd: &std::path::Path, args: &[&str]) -> (String, String, bool) {
     let state = tempfile::tempdir().expect("a temp XDG_STATE_HOME for the rigger invocation");
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_rigger"))
+    let out = std::process::Command::new(common::rigger_bin())
         .args(args)
         .current_dir(cwd)
         .env("RIGGER_NO_DASH", "1")

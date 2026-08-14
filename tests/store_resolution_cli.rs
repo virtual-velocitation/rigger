@@ -43,10 +43,11 @@ use std::process::{Command, Output};
 
 use tempfile::TempDir;
 
-/// The compiled `rigger` binary under test (Cargo sets this for integration tests).
-fn rigger_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_rigger")
-}
+// The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
+// `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
+// and every suite that spawns the product then dies with a bare NotFound.
+mod common;
+use common::rigger_bin;
 
 /// A throwaway project: its own git repo (so identity resolves exactly as a real project's does)
 /// with an empty `.rigger/` and no event log yet. The `TempDir` is returned so it outlives the

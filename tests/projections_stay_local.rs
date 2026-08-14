@@ -123,10 +123,11 @@ fn the_graph_and_progress_projections_open_via_the_local_sqlite_constructors() {
 // while the event LOG goes to the server. Gracefully skipped when no container runtime.
 // =======================================================================================
 
-/// The compiled `rigger` binary under test (Cargo sets this for integration tests).
-fn rigger_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_rigger")
-}
+// The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
+// `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
+// and every suite that spawns the product then dies with a bare NotFound.
+mod common;
+use common::rigger_bin;
 
 /// The project identity the binary resolves for `root` (the git top-level basename, or the
 /// tracked `.rigger/project.id`) - the identity that namespaces the LOCAL progress projection,
