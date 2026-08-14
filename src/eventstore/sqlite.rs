@@ -945,10 +945,13 @@ impl Store {
         // re-run for would stay in the file forever.
         match compact(&guard) {
             // Nothing to reclaim, nothing rewritten: zero bytes is the MEASUREMENT here, not a
-            // measurement that could not be taken.
+            // measurement that could not be taken - but only where a FILE existed to measure.
+            // A database with no file behind it has no reading to report, and a `Some(0)`
+            // beside `on_disk_measured: false` would claim a measurement the flag denies;
+            // unmeasured is the honest report there, exactly as on the pending path below.
             Ok(Compaction::Skipped) => Ok(PrunedDerived {
                 removed,
-                reclaimed_bytes: Some(0),
+                reclaimed_bytes: db_file.as_deref().map(|_| 0),
                 compaction_ran: false,
                 on_disk_measured: db_file.is_some(),
                 compaction_error: None,
