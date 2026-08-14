@@ -2804,6 +2804,102 @@ fn step_prints_a_disjoint_two_spawn_wave_then_reports_done() {
     );
 }
 
+/// Scaffold a project with ONE standalone review-only stage (`agents: [lens]`, no
+/// singular `agent`) - the `is_fan_out` shape `run_fan_out_stage` drives, the call site
+/// spec 64 criterion 1 closes the review-worktree park-teardown gap for. No `needs`, so
+/// it is ready in the very first wave. Deliberately carries NO `isolation: none`: a
+/// standalone review's throwaway worktree is minted unconditionally whenever a repo is
+/// configured (`review_only_worktree` checks only `self.deps.repo`, never the lens
+/// agent's own isolation setting), so the default (real, git-backed) isolation this
+/// test needs is just the field's absence.
+fn write_standalone_review_workflow(root: &Path) {
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("lens.md"),
+        "---\nid: lens\nmodel: sonnet\ntools: [Read]\n---\nReview it.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: reviewparktest
+defaults:
+  grounder: nop
+  budget: 60
+stages:
+  review:
+    agents: [lens]
+"#,
+    )
+    .unwrap();
+}
+
+/// Spec 64, criterion 1 (the review-worktree half of the split this unit OWNS): a
+/// standalone review stage's lens spawn PARKS - `rigger step` never runs an agent
+/// in-process, it is by construction the parked/stepwise driver - and the stage must
+/// KEEP its throwaway `rigger-review-*` worktree and branch on disk, not tear them
+/// down as `run_fan_out_stage` did unconditionally before this criterion's fix.
+///
+/// This is the TRUE PERIPHERY of that guarantee, not a restatement of it: the
+/// implementer's own tests (`conductor.rs`'s `mod tests`) call the library's `run()`
+/// directly, in ONE test process, against an internal `Stub` driver - they can prove
+/// the internal state machine keeps the worktree alive across the function call, but
+/// they cannot observe whether the guarantee holds at the boundary the spec exists
+/// for: "the parked agent runs BETWEEN conductor processes." This test drives the
+/// actual COMPILED BINARY as a real subprocess against a real git repo and inspects
+/// the result the only way an out-of-process agent (or an operator) could: reading
+/// the filesystem and asking `git` what is registered - nothing in a live Rust call
+/// stack is silently keeping state alive across the process boundary here. It is also
+/// the first CLI-level park test in this file to use REAL isolation at all: every
+/// other `rigger step` park scenario here deliberately sets `isolation: none` to stay
+/// offline and worktree-free, so none of them could have caught a regression here.
+#[test]
+fn step_parks_a_standalone_review_spawn_and_keeps_its_review_worktree() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_standalone_review_workflow(root);
+
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "step must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(r#""id":"review/lens:lens#0""#),
+        "the lens spawn must actually have parked in the wave, or this test proves \
+         nothing about a park; got: {line:?}"
+    );
+    assert!(
+        line.contains(r#""done":false"#),
+        "a spawn still awaiting a result is not a done run; got: {line:?}"
+    );
+
+    // The deterministic review-worktree naming (`conductor.rs`'s `review_worktree_dir`
+    // / `review_branch`, spec 06): `<scratch-root>/rigger-review-<stage>-<attempt>` on
+    // branch `rigger/review/<stage>-<attempt>`, scratch root defaulting to
+    // `<repo>/.rigger/tmp` (no `RIGGER_TMPDIR` set, no `defaults.workdir` configured).
+    let wt_dir = root
+        .join(".rigger")
+        .join("tmp")
+        .join("rigger-review-review-0");
+    assert!(
+        wt_dir.exists(),
+        "a parked standalone-review stage must KEEP its throwaway review worktree on \
+         disk: {}",
+        wt_dir.display()
+    );
+
+    // Registered with git, not just a leftover directory: a bare surviving dir whose
+    // `.git/worktrees` admin entry is gone is exactly the half-fixed state this
+    // criterion rules out (the SAME failure class `worktree_registered_on` guards
+    // against in the implementer's in-process tests, checked here from outside).
+    let list = git_out(root, &["worktree", "list", "--porcelain"])
+        .expect("git worktree list must succeed in the seeded repo");
+    assert!(
+        list.contains("rigger/review/review-0"),
+        "the kept review worktree must stay REGISTERED with git, checked out on its \
+         throwaway branch: {list}"
+    );
+}
+
 /// Spec 50, criterion 2 (the REGISTRY lifecycle): `rigger step` REGISTERS this instance in the
 /// machine-global state directory - the project root plus a CREDENTIAL-FREE store identity, with a
 /// live heartbeat - so a machine-level dash can DISCOVER it without a coordination protocol. The
