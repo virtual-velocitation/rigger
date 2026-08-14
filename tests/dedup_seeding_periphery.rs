@@ -645,11 +645,16 @@ fn read_run_stream(root: &std::path::Path) -> Vec<Event> {
         .unwrap()
 }
 
+// The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
+// `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
+// and every suite that spawns the product then dies with a bare NotFound.
+mod common;
+
 /// Run `rigger <args...>` in `cwd` through the COMPILED binary, returning (stdout, stderr, success).
 #[cfg(feature = "symbols")]
 fn run_rigger(cwd: &std::path::Path, args: &[&str]) -> (String, String, bool) {
     let state = tempfile::tempdir().expect("a temp XDG_STATE_HOME for the rigger invocation");
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_rigger"))
+    let out = std::process::Command::new(common::rigger_bin())
         .args(args)
         .current_dir(cwd)
         // Never let a short-lived integration invocation spawn a real dashboard, and never let it

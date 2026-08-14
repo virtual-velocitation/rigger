@@ -138,10 +138,11 @@ fn the_single_resolver_exists_and_the_old_per_command_helper_is_retired() {
 // Runtime wiring: a command configured for the server-backed store resolves THAT store.
 // ---------------------------------------------------------------------------------------
 
-/// The compiled `rigger` binary under test (Cargo sets this for integration tests).
-fn rigger_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_rigger")
-}
+// The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
+// `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
+// and every suite that spawns the product then dies with a bare NotFound.
+mod common;
+use common::rigger_bin;
 
 /// The project identity the binary resolves for `root` (the git top-level basename, or the
 /// tracked `.rigger/project.id`), mirrored here so a read-back of the server binds the exact
