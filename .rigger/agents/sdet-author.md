@@ -1,6 +1,6 @@
 ---
 id: sdet-author
-model: opus
+model: sonnet
 tools: [Read, Edit, Write, Grep, Glob, Bash]
 isolation: worktree
 recurse: false

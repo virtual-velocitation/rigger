@@ -1,6 +1,6 @@
 ---
 id: sdet
-model: opus
+model: sonnet
 tools: [Read, Grep, Glob, Bash]
 isolation: worktree
 ---
