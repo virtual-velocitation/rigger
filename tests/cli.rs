@@ -3221,6 +3221,245 @@ fn step_halts_on_an_exhausted_lens_beside_a_parked_sibling_and_keeps_the_unit_wo
     );
 }
 
+/// Scaffold a project with ONE full unit stage - `agent: worker`, gated by a trivial
+/// always-passing inline gate, `on_pass: merge`, and NO review panel at all
+/// (`review.is_empty()`, "the historical implement-then-integrate behavior" `ReviewPanel`
+/// itself documents) - the minimal shape that reaches a genuine `Ok(true)` integrate. Real
+/// git isolation (no `isolation: none`, same reasoning as
+/// [`write_unit_review_lenses_workflow`]) so the unit's own durable `rigger-wt-<unit>`
+/// worktree on `rigger/u/<unit>` is the SAME checkpoint kind `run_stage`'s
+/// terminal-teardown gate covers.
+fn write_reviewless_git_unit_workflow(root: &Path) {
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: terminalintegratetest
+defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok: { run: "true", kind: core }
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    on_pass: merge
+"#,
+    )
+    .unwrap();
+}
+
+/// The escalating twin of [`write_reviewless_git_unit_workflow`]: identical shape, but
+/// `defaults.max_retries: 1` means `safety::remediate(0, 1)` escalates on the FIRST failed
+/// attempt (`bounded_then_escalates` in `src/safety.rs` pins that arithmetic), so a single
+/// crashed implementer spawn - never a park - is enough to drive the unit terminal without
+/// ever integrating.
+fn write_reviewless_git_escalating_unit_workflow(root: &Path) {
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: terminalescalatetest
+defaults:
+  grounder: nop
+  budget: 60
+  max_retries: 1
+gates:
+  ok: { run: "true", kind: core }
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    on_pass: merge
+"#,
+    )
+    .unwrap();
+}
+
+/// Spec 64, criterion 2 (TERMINAL TEARDOWN IS UNCHANGED), the "in both drivers" half no
+/// existing test measures at the real binary boundary. The implementer's own regression
+/// (`a_units_worktree_cache_and_branch_are_all_reclaimed_on_a_successful_integrate`,
+/// `conductor.rs`'s `mod tests`) proves the guarantee with a synchronous, single-process
+/// `Stub` driver whose spawn NEVER parks - `any_parked` starts false and stays false for the
+/// whole call, so that test cannot exercise the shape every REAL unit actually takes:
+/// [`rigger::driver::replay::ReplayDriver`] parks the implementer as a durable event on the
+/// FIRST `rigger step`, and only REPLAYS its result (posted by an out-of-process courier,
+/// here `rigger result`) on a LATER, SEPARATE process. This drives that real two-process
+/// lifecycle - park, then terminate - through the compiled binary against a real git repo,
+/// and inspects the result the only way an out-of-process operator could: the filesystem
+/// and `git`, never an internal helper.
+#[test]
+fn step_reclaims_the_units_worktree_and_deletes_its_branch_on_a_clean_integrate() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_reviewless_git_unit_workflow(root);
+
+    // Step 1: the unit is ready, so its implementer parks - the real, git-backed isolation
+    // means the unit's own durable worktree is created right here, before the implementer
+    // has produced any diff.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/implementer#0""#) && out.contains(r#""done":false"#),
+        "step 1 parks the implementer; got: {out:?}"
+    );
+
+    let wt_dir = root.join(".rigger").join("tmp").join("rigger-wt-solo");
+    assert!(
+        wt_dir.exists(),
+        "a parked implementer must already have its unit worktree on disk (load-bearing for \
+         the rest of this test): {}",
+        wt_dir.display()
+    );
+
+    // Write the implementer's "diff" directly into the worktree it was already handed - the
+    // shape a real out-of-process agent takes - then record its result.
+    std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
+    let (_o, err, ok) = run_rigger(
+        root,
+        &["result", "solo/implementer#0", "implemented the unit"],
+    );
+    assert!(
+        ok,
+        "recording the implementer result must succeed; stderr: {err}"
+    );
+
+    // Step 2: the implementer replays, the pre-gate commit lands the written file, the `ok`
+    // gate passes inline, there is no review panel to run, and with `on_pass: merge` the
+    // stage reaches a genuine TERMINAL `Ok(true)` in THIS process - through the real replay
+    // driver, across the process boundary step 1 opened.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the second step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""done":true"#),
+        "every spawn now has a result and the stage integrates, so the run converges; got: {out:?}"
+    );
+    assert!(
+        !out.contains("escalated"),
+        "a clean integrate must not carry an escalated unit; got: {out:?}"
+    );
+
+    // The unit's own worktree is gone...
+    assert!(
+        !wt_dir.exists(),
+        "the unit's worktree must be reclaimed after a clean integrate: {}",
+        wt_dir.display()
+    );
+    let list = git_out(root, &["worktree", "list", "--porcelain"]).unwrap_or_default();
+    assert!(
+        !list.contains("rigger-wt-solo"),
+        "the reclaimed worktree must be fully DEREGISTERED with git, not a stale admin entry \
+         pointing at a removed dir: {list}"
+    );
+
+    // ...and its durable branch is DELETED - the checkpoint already served its purpose (the
+    // merged work now lives on the run branch) - the one half of "identical to today's
+    // behavior" the implementer's own tests, calling `run()` directly in one process, never
+    // observe.
+    assert!(
+        git_out(
+            root,
+            &["rev-parse", "--verify", "-q", "refs/heads/rigger/u/solo"]
+        )
+        .is_none(),
+        "a successfully integrated unit's branch must be deleted, not left on disk"
+    );
+}
+
+/// Spec 64, criterion 2's other half at the real binary boundary - the mirror image of
+/// [`step_reclaims_the_units_worktree_and_deletes_its_branch_on_a_clean_integrate`] above,
+/// and of the implementer's own
+/// `a_units_worktree_is_reclaimed_but_its_branch_survives_a_terminal_escalation`
+/// (`conductor.rs`'s `mod tests`), which proves the same guarantee with a synchronous,
+/// single-process `Stub` driver that never parks at all. Here the implementer's crash is a
+/// REPLAYED `SpawnResult` a LATER process reads back (never a park), so remediation exhausts
+/// into `UnitEscalated` only once this second real process folds it - the shape the
+/// implementer's own comment notes no existing test could drive through a real repo. Only a
+/// successful `Ok(true)` integrate deletes the branch (`run_stage`, `src/conductor.rs`), and
+/// this path never reaches one, so the worktree must still be reclaimed while the branch
+/// survives as the human's evidence.
+#[test]
+fn step_reclaims_the_units_worktree_but_keeps_its_branch_on_a_terminal_escalation() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_reviewless_git_escalating_unit_workflow(root);
+
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/implementer#0""#) && out.contains(r#""done":false"#),
+        "step 1 parks the implementer; got: {out:?}"
+    );
+
+    let wt_dir = root.join(".rigger").join("tmp").join("rigger-wt-solo");
+    assert!(
+        wt_dir.exists(),
+        "a parked implementer must already have its unit worktree on disk (load-bearing for \
+         the rest of this test): {}",
+        wt_dir.display()
+    );
+
+    // The out-of-process courier reports a genuine crash, never a verdict.
+    let (_o, err, ok) = run_rigger(
+        root,
+        &[
+            "result",
+            "solo/implementer#0",
+            "boundary-genuine-crash-marker",
+            "--error",
+        ],
+    );
+    assert!(ok, "recording the crash must succeed; stderr: {err}");
+
+    // Step 2: the crash replays, `max_retries: 1` escalates on this FIRST failed attempt (no
+    // second implementer spawn), and the run reaches a fixpoint AROUND the escalated unit -
+    // terminal, never parked.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok,
+        "an escalation-fixpoint step still exits 0; stderr: {err}"
+    );
+    assert!(
+        out.contains(r#""done":true"#) && out.contains(r#""escalated":["solo"]"#),
+        "the crash must exhaust remediation into an escalated fixpoint; got: {out:?}"
+    );
+
+    // The unit's worktree is reclaimed exactly as a clean integrate's...
+    assert!(
+        !wt_dir.exists(),
+        "the unit's worktree must be reclaimed after a terminal escalation: {}",
+        wt_dir.display()
+    );
+    let list = git_out(root, &["worktree", "list", "--porcelain"]).unwrap_or_default();
+    assert!(
+        !list.contains("rigger-wt-solo"),
+        "the reclaimed worktree must be fully DEREGISTERED with git, not a stale admin entry \
+         pointing at a removed dir: {list}"
+    );
+
+    // ...but its branch SURVIVES as the human's evidence - only a successful integrate
+    // deletes it, and this unit never integrated.
+    assert!(
+        git_out(
+            root,
+            &["rev-parse", "--verify", "-q", "refs/heads/rigger/u/solo"]
+        )
+        .is_some(),
+        "an escalated unit's branch must be RETAINED, not deleted alongside its worktree"
+    );
+}
+
 /// Spec 50, criterion 2 (the REGISTRY lifecycle): `rigger step` REGISTERS this instance in the
 /// machine-global state directory - the project root plus a CREDENTIAL-FREE store identity, with a
 /// live heartbeat - so a machine-level dash can DISCOVER it without a coordination protocol. The
