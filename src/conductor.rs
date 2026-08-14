@@ -4784,13 +4784,40 @@ impl RunCtx<'_> {
         // MAX_CONCURRENCY, each chunk a scoped thread group. Every lens still runs;
         // never more than MAX_CONCURRENCY at once.
         for chunk in agent_ids.chunks(MAX_CONCURRENCY) {
-            let chunk_results: Vec<Result<(), Error>> = std::thread::scope(|s| {
+            let mut chunk_results: Vec<Result<(), Error>> = std::thread::scope(|s| {
                 let handles: Vec<_> = chunk
                     .iter()
                     .map(|a| s.spawn(move || self.run_lens(st, a, dir, attempt)))
                     .collect();
                 handles.into_iter().map(|h| h.join().unwrap()).collect()
             });
+            // `chunk_results` arrives in FIXED agent-list index order (the `map` above
+            // preserves `chunk`'s order across the thread join), not completion order -
+            // so the naive `for r in chunk_results { r?; }` below propagates whichever
+            // lens is LOWEST-INDEXED among the errors, not necessarily the one that
+            // matters. `run_fan_out_stage`'s `parked_unwind` guard decides whether to
+            // keep or tear down the SHARED review worktree from exactly that ONE
+            // propagated Error via `is_parked`/`is_budget_refused` (spec 64 c1) - so if a
+            // lower-indexed sibling in this SAME chunk hit a genuine terminal error while
+            // a higher-indexed one PARKED (a live out-of-process reviewer already
+            // assigned this exact worktree), masking the park would tear the worktree out
+            // from under it (adv-u1c1-concurrent-lens-park-masked-by-sibling-error). A
+            // real review panel runs 2+ lenses concurrently on nearly every unit, so this
+            // is the NORMAL shape of a fan-out chunk, not a corner case. Prefer surfacing
+            // a parked/budget-refused outcome over a plain terminal one from the SAME
+            // chunk, regardless of index, by moving it to the front before the
+            // index-ordered `?` loop below - the PARKED_MARKER/BUDGET_MARKER sentinels
+            // survive the caller's further `format!` wrapping (documented on
+            // `is_parked`/`is_budget_refused`), so the ONE Result this function still
+            // returns correctly answers "did anything in this chunk park" all the way up
+            // to `run_fan_out_stage`, without changing this function's `Result<(), Error>`
+            // shape or inventing a second reporting channel.
+            if let Some(pos) = chunk_results
+                .iter()
+                .position(|r| matches!(r, Err(e) if is_parked(e) || is_budget_refused(e)))
+            {
+                chunk_results.swap(0, pos);
+            }
             for r in chunk_results {
                 r?;
             }
@@ -21417,6 +21444,147 @@ mod tests {
     }
 
     #[test]
+    fn a_parked_lens_keeps_the_review_worktree_even_beside_a_lower_indexed_sibling_crash() {
+        // adv-u1c1-concurrent-lens-park-masked-by-sibling-error (spec 64 criterion 1):
+        // `run_review_agents_concurrently`'s concurrent chunk collects results in FIXED
+        // agent-list index order, not by which lens actually needs attention. Lens "a"
+        // (index 0) hits a genuine TERMINAL error while its sibling lens "b" (index 1)
+        // PARKS in the SAME chunk - the exact shape a real review panel takes
+        // (architecture-reviewer + sdet run concurrently on nearly every unit, this one
+        // included). Before the fix, the naive `for r in chunk_results { r?; }`
+        // propagated "a"'s error (it comes first BY INDEX, not by severity), so
+        // `run_fan_out_stage`'s `parked_unwind` read false and tore the SHARED review
+        // worktree out from under "b", which is actually parked and will resume in
+        // exactly that tree from a later conductor process. The worktree must survive
+        // here exactly as it does when "b" is the ONLY lens (the test above).
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.agents.insert("b".into(), agent("b"));
+        cfg.workflow.stages.insert(
+            "review".into(),
+            Stage {
+                name: "review".into(),
+                agents: vec!["a".into(), "b".into()],
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            fail_spawn_ids: [spawn_id("review", &lens_role("a"), 0)]
+                .into_iter()
+                .collect(),
+            park_spawn_ids: [spawn_id("review", &lens_role("b"), 0)]
+                .into_iter()
+                .collect(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+
+        assert!(
+            driver.spawned("a"),
+            "the crashing lens must actually have run, or this test proves nothing about masking"
+        );
+        assert!(
+            driver.spawned("b"),
+            "the parking lens must actually have run (and parked), or this test proves nothing"
+        );
+
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let dir = review_worktree_dir(&scratch, "review", 0);
+        let branch = review_branch("review", 0);
+        assert!(
+            std::path::Path::new(&dir).exists(),
+            "a PARKED sibling must keep the shared review worktree even when a LOWER-indexed \
+             lens in the SAME concurrent chunk crashed terminally: {dir}"
+        );
+        assert!(
+            worktree_registered_on(&repo_path, &branch),
+            "the kept review worktree must stay REGISTERED with git: {dir}"
+        );
+    }
+
+    #[test]
+    fn a_budget_refused_standalone_review_spawn_keeps_its_worktree() {
+        // sdet-u1c1-budget-refused-arm-untested: `run_fan_out_stage`'s `parked_unwind`
+        // guard is `is_parked(e) || is_budget_refused(e)` - an OR of two disjuncts - but
+        // no test had ever driven the `is_budget_refused` arm to a REAL refusal at this
+        // call site, so a regression that dropped it back to `is_parked`-only (the exact
+        // mutant that survived every pre-existing test here) would pass silently.
+        // `defaults.budget = 1`: the lens's own spawn consumes the whole budget, and the
+        // adversary runs AFTER the lenses (sequentially, within the SAME
+        // `run_fan_out_stage` call - `spend` and `review` in two separate WAVES would
+        // trip the pre-wave `budget_tripped` breaker before `review` ever started,
+        // proving nothing about THIS call site's guard), so the adversary's spawn is a
+        // genuinely NEW, over-budget spawn `reserve_spawn` refuses deterministically (one
+        // spawn attempted at a time here - no race, unlike two concurrent lenses would be).
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.workflow.defaults.budget = 1;
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("adv".into(), agent("adv"));
+        cfg.workflow.stages.insert(
+            "review".into(),
+            Stage {
+                name: "review".into(),
+                agents: vec!["lens".into()],
+                adversary: "adv".into(),
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            output: "reviewed the diff".into(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps)
+            .expect("a budget-refused review spawn halts the run cleanly, it does not error");
+
+        assert!(
+            driver.spawned("lens"),
+            "the lens must actually spend the budget, or this test proves nothing"
+        );
+        assert!(
+            !driver.spawned("adv"),
+            "the over-budget adversary must be refused before it ever spawns, or this proves \
+             nothing about the refusal arm"
+        );
+
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let dir = review_worktree_dir(&scratch, "review", 0);
+        let branch = review_branch("review", 0);
+        assert!(
+            std::path::Path::new(&dir).exists(),
+            "a budget-refused standalone-review spawn must KEEP its throwaway review \
+             worktree exactly like a parked one: {dir}"
+        );
+        assert!(
+            worktree_registered_on(&repo_path, &branch),
+            "the kept review worktree must stay REGISTERED with git: {dir}"
+        );
+    }
+
+    #[test]
     fn partition_separates_overlapping_blast_radii() {
         // Overlapping file sets land in separate batches; disjoint sets share one.
         let items = vec![
@@ -28564,6 +28732,59 @@ mod tests {
         assert!(
             std::path::Path::new(&wt_dir).exists(),
             "a parked plan-critique gate must KEEP its throwaway review worktree: {wt_dir}"
+        );
+        assert!(
+            worktree_registered_on(&repo_path, &branch),
+            "the kept review worktree must stay REGISTERED with git: {wt_dir}"
+        );
+    }
+
+    #[test]
+    fn a_budget_refused_plan_critique_gate_keeps_its_review_worktree() {
+        // sdet-u1c1-budget-refused-arm-untested: `run_plan_critique_gate`'s
+        // `parked_unwind` guard is `is_parked(e) || is_budget_refused(e)` too, but no
+        // test had ever driven the `is_budget_refused` arm to a REAL refusal at this
+        // call site. `defaults.budget = 1`: the planner's own spawn consumes the whole
+        // budget (it runs synchronously right before the gate - spec 10's design, no
+        // pre-wave breaker check sits between them), so the gate's adversary spawn is a
+        // genuinely NEW, over-budget spawn `reserve_spawn` refuses deterministically -
+        // one spawn attempted at a time here (unlike `run_fan_out_stage`'s lenses), so
+        // there is no race to model.
+        let mut cfg = critique_cfg();
+        cfg.workflow.defaults.budget = 1;
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps)
+            .expect("a plan-critique-gate budget refusal halts the run cleanly, it does not error");
+
+        assert!(
+            driver.spawned("planner"),
+            "the planner must actually spend the budget, or this test proves nothing"
+        );
+        assert!(
+            !driver.spawned("adversary"),
+            "the over-budget adversary spawn must be refused before it ever spawns, or this \
+             proves nothing about the refusal arm"
+        );
+
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let wt_dir = review_worktree_dir(&scratch, "plan-critique", 0);
+        let branch = review_branch("plan-critique", 0);
+        assert!(
+            std::path::Path::new(&wt_dir).exists(),
+            "a budget-refused plan-critique gate must KEEP its throwaway review worktree \
+             exactly like a parked one: {wt_dir}"
         );
         assert!(
             worktree_registered_on(&repo_path, &branch),
