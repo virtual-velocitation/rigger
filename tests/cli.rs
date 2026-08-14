@@ -2900,6 +2900,132 @@ fn step_parks_a_standalone_review_spawn_and_keeps_its_review_worktree() {
     );
 }
 
+/// Spec 64, criterion 1 rounds 2-3 (adv-u1c1-r2-park-swap-swallows-concurrent-genuine-error):
+/// the concurrent-chunk masking defect the round-2/round-3 fixes close in
+/// `run_review_agents_concurrently`. The single-lens test above cannot see this at all - it has
+/// no sibling to race against. The implementer's own regression
+/// (`a_parked_lens_keeps_the_review_worktree_beside_a_sibling_degenerate_halt`, `conductor.rs`'s
+/// `mod tests`) proves the fix's ALGORITHM correct - which of two `Result`s collected into a
+/// `Vec` wins - with a synchronous, single-process `Stub` driver that decides the outcome from a
+/// fixed id set before `run()` is even called. It can never exercise the mechanism this
+/// criterion actually gates: [`rigger::driver::replay::ReplayDriver`] parks a spawn as a durable
+/// event, then REPLAYS it only once a LATER, SEPARATE process finds its result already in the
+/// log - so a real mixed chunk (one sibling genuinely dead, another still open) can only arise
+/// from an out-of-process courier resolving one before the other BETWEEN conductor invocations.
+///
+/// A single `rigger result --error` cannot reproduce a GENUINE terminal error here by itself: a
+/// replayed error on a review-tier spawn is spec 51's territory first - `run_reviewer` reads it
+/// as an infrastructure fault (an externally-killed reviewer, not a verdict) and RE-PARKS a
+/// fresh attempt rather than propagating it, bounded by `REVIEWER_RESPAWN_BOUND`. Exhausting
+/// every one of a lens's spawns this way converges on the SAME halt as an exhausted
+/// degenerate-reviewer (Gap 18) - `run_wave`'s dedicated `is_degenerate_reviewer` arm, the
+/// second genuine-error shape round 3 names - which is exactly the boundary condition this test
+/// drives to, deterministically, through the real binary: a courier that posts nothing but
+/// failures for lens "a"'s spawn and every one of its respawns, while lens "b" is left
+/// unanswered throughout and so re-parks in the SAME concurrent chunk on every step, including
+/// the final one that halts. Two requirements from that one real halt: it must surface LOUDLY
+/// (non-zero exit, the dead reviewer named on stderr) - round 2's swap-to-front bug could mask a
+/// co-chunked genuine error behind a sibling's park - AND the shared review worktree must
+/// survive anyway - round 1's original bug tore it down whenever the propagated result was not
+/// itself a park.
+#[test]
+fn step_halts_on_an_exhausted_reviewer_beside_a_parked_sibling_and_keeps_the_review_worktree() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    for id in ["a", "b"] {
+        std::fs::write(
+            rigger.join("agents").join(format!("{id}.md")),
+            format!("---\nid: {id}\nmodel: sonnet\ntools: [Read]\n---\nReview it.\n"),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: reviewracetest
+defaults:
+  grounder: nop
+  budget: 60
+stages:
+  review:
+    agents: [a, b]
+"#,
+    )
+    .unwrap();
+
+    // Step 1: neither lens has a recorded result yet, so the concurrent chunk parks BOTH -
+    // the real fan-out shape a two-lens review panel takes on nearly every unit.
+    let (out1, err1, ok1) = run_rigger(root, &["step"]);
+    assert!(ok1, "the first step must succeed; stderr: {err1}");
+    assert!(
+        out1.contains(r#""id":"review/lens:a#0""#) && out1.contains(r#""id":"review/lens:b#0""#),
+        "both lenses must actually have parked in the same wave, or this test proves nothing \
+         about a mixed chunk; got: {out1:?}"
+    );
+
+    // An out-of-process courier posts nothing but failures for "a" - its original spawn, then
+    // each deterministic `~retryN` respawn `run_reviewer` re-parks in turn (spec 51's
+    // reviewer-error-re-park) - while "b" is left unanswered throughout. `spawn_retry_id`'s
+    // exact naming (retry 0 is the plain id, retry N>0 appends `~retryN`) is asserted by
+    // `rigger::spawn`'s own doc tests; this loop reconstructs it rather than hardcoding the
+    // respawn bound, so it tracks whatever that bound is. Capped well above any real bound so a
+    // genuine infinite-repark regression fails LOUDLY here instead of hanging the suite.
+    let mut ok_step = true;
+    let mut last_err = String::new();
+    let mut retry = 0u32;
+    while ok_step {
+        assert!(
+            retry <= 8,
+            "the reviewer-error-repark loop did not halt within a sane number of rounds - \
+             either the respawn bound regressed or this test's premise is wrong"
+        );
+        let id = if retry == 0 {
+            "review/lens:a#0".to_string()
+        } else {
+            format!("review/lens:a#0~retry{retry}")
+        };
+        let (_o, err_r, ok_r) = run_rigger(
+            root,
+            &["result", &id, "boundary-genuine-crash-marker", "--error"],
+        );
+        assert!(
+            ok_r,
+            "recording a failure for {id:?} must succeed; stderr: {err_r}"
+        );
+        let (_out, err_s, ok_s) = run_rigger(root, &["step"]);
+        ok_step = ok_s;
+        last_err = err_s;
+        retry += 1;
+    }
+
+    // The exhausted reviewer must halt LOUDLY, naming the dead reviewer - not be silently
+    // masked by "b"'s park in the same final concurrent chunk (the round-2 defect).
+    assert!(
+        last_err.contains("\"review\"") && last_err.contains("\"a\"") && last_err.contains("lens"),
+        "the halt must name the exhausted reviewer (stage, tier, agent): {last_err}"
+    );
+
+    // The shared review worktree survives anyway - "b" genuinely parked in this same final
+    // chunk and resumes in exactly this tree from a later conductor process.
+    let wt_dir = root
+        .join(".rigger")
+        .join("tmp")
+        .join("rigger-review-review-0");
+    assert!(
+        wt_dir.exists(),
+        "a PARKED sibling must keep the shared review worktree even when a co-chunked lens \
+         exhausted into a loud halt, across a REAL process boundary: {}",
+        wt_dir.display()
+    );
+    let list = git_out(root, &["worktree", "list", "--porcelain"])
+        .expect("git worktree list must succeed in the seeded repo");
+    assert!(
+        list.contains("rigger/review/review-0"),
+        "the kept review worktree must stay REGISTERED with git: {list}"
+    );
+}
+
 /// Spec 50, criterion 2 (the REGISTRY lifecycle): `rigger step` REGISTERS this instance in the
 /// machine-global state directory - the project root plus a CREDENTIAL-FREE store identity, with a
 /// live heartbeat - so a machine-level dash can DISCOVER it without a coordination protocol. The
