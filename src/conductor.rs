@@ -3092,8 +3092,22 @@ impl RunCtx<'_> {
         let wt = self.stage_worktree(st)?;
         let dir = wt.as_ref().map(|w| w.dir.clone()).unwrap_or_default();
         let result = self.run_single_stage(stages, st, wt.as_ref(), &dir, phase);
+        // A PARKED return is not the stage ending - it is the stage HANDING WORK to
+        // out-of-process agents that run BETWEEN conductor processes, in this worktree,
+        // against this build cache. Removing either here deletes the tree the parked
+        // agents were assigned (recorded at 10+ restorations per unit) and, worse,
+        // desynchronizes the gate-verdict cache from its artifacts: a build gate
+        // cache-hits on an unchanged digest while its `target/debug` binary is gone,
+        // and every test spawning the binary fails NotFound - unconvergeable by
+        // construction. So a parked (or budget-refused) unwind KEEPS worktree, cache,
+        // and branch; teardown happens on the TERMINAL returns only. The full
+        // phase-aware lifecycle (ensure-on-park, sweep liveness) is specced separately;
+        // this is the minimal keep that lets the loop converge at all.
+        let parked_unwind = matches!(&result, Err(e) if is_parked(e) || is_budget_refused(e));
         if let Some(w) = &wt {
-            let _ = w.remove();
+            if !parked_unwind {
+                let _ = w.remove();
+            }
             // The unit's branch is its DURABLE checkpoint (resume-continuity): it must
             // survive an interrupted unit so the next run reuses its committed work.
             // Delete it ONLY on a SUCCESSFUL integrate (Ok(true)), where the branch has
