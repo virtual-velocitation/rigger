@@ -3930,3 +3930,288 @@ fn a_prune_that_sheds_nothing_leaves_the_file_unrewritten() {
          reduce the page count, so a smaller file is the rewrite this path exists to skip"
     );
 }
+
+// ---------------------------------------------------------------------------------------
+// 23. THE COMMAND on the path the shipped guidance calls the expected one - what it costs.
+//
+// Section 22 pins the store primitive: a pass that deleted nothing does not rewrite the file.
+// This pins the same property of the COMMAND, which is what the operator documents describe and
+// what an operator actually runs, and which is strictly more than that one call - `rigger reset
+// --derived` parses its modes, resolves the store by walking up from the working directory, runs
+// the spec-09 identity migration over it, and only then prunes. A rewrite reintroduced anywhere
+// along that path - a maintenance step added beside the prune, a compaction moved up into the
+// command - is invisible to a test that calls the store directly, and it is the command's cost,
+// not the primitive's, that the shipped sentence "leaves the file exactly as it found it" is a
+// promise about.
+//
+// The cost is the reason this matters at all. On this path the rewrite would hold the write lock
+// for a full scan of the log, stage a COMPLETE second copy of the database in the operating
+// system's temporary directory - a different and typically much smaller filesystem than the one
+// holding `.rigger/` - and reclaim exactly the pages the deletes freed, which here is none of
+// them. Section 20 cannot see any of that: it compares rows and dates, and a full VACUUM
+// preserves every row and every date, so a command that rewrote the entire log to reclaim nothing
+// passes it.
+//
+// FREE PAGES ARE PLANTED FIRST, for the same reason as section 22: an untouched file and a
+// vacuumed one are indistinguishable unless the vacuum has something to reclaim.
+// ---------------------------------------------------------------------------------------
+
+#[test]
+fn the_command_does_not_rewrite_the_file_it_had_nothing_to_shed_from() {
+    let dir = temp_project();
+    let root = dir.path();
+    // ONE recording per replay key - the clean log of section 20, differing from the duplicated
+    // fixtures by exactly the round count.
+    seed_project(root, 1);
+    let db = event_log(root);
+    plant_free_pages(&db, 3_000);
+
+    let pages_before = pragma_i64(&db, "page_count");
+    let free_before = pragma_i64(&db, "freelist_count");
+    assert!(
+        free_before > 100,
+        "the fixture must leave real free pages, or an untouched file and a rewritten one look \
+         identical; the freelist holds {free_before} page(s)"
+    );
+
+    let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
+    assert!(
+        ok,
+        "a log with nothing to shed is not an error; stdout {out:?}, stderr {err:?}"
+    );
+    assert!(
+        out.contains("pruned 0 redundant derived-index event(s)"),
+        "the fixture must be the zero-delete path this section is about; got {out:?}"
+    );
+
+    // WHAT THE COMMAND SAYS IT DID TO THE FILE, which is the operator's only view of the cost it
+    // did not pay.
+    assert!(
+        out.contains("left exactly as it stands"),
+        "the report must tell the operator the file was not rewritten, or a skipped compaction is \
+         indistinguishable from one that ran; got {out:?}"
+    );
+    assert!(
+        !out.contains("byte(s) on disk"),
+        "a run that did not compact the file must not report bytes reclaimed from it; got {out:?}"
+    );
+
+    // AND WHAT IT ACTUALLY DID. VACUUM drives the freelist to zero and shrinks the page count
+    // with it, so both counts standing still is the assertion that no rewrite ran - anywhere in
+    // the command, not only in the prune.
+    assert_eq!(
+        pragma_i64(&db, "freelist_count"),
+        free_before,
+        "the command must not rewrite a file it shed nothing from: VACUUM empties the freelist, \
+         so a freelist that shrank is a full rewrite of the log to reclaim zero deleted rows - on \
+         the path the shipped guidance calls the expected one. Report was {out:?}"
+    );
+    assert_eq!(
+        pragma_i64(&db, "page_count"),
+        pages_before,
+        "and it must not shrink the file either: nothing but a rewrite reduces the page count. \
+         Report was {out:?}"
+    );
+
+    // THE COMMITTED DOCUMENTS PROMISE EXACTLY THIS COST, read from the bytes an operator opens so
+    // the promise and the binary cannot drift apart with the renderer green.
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for rel in SHIPPED_DOCS {
+        let shipped = std::fs::read_to_string(manifest.join(rel))
+            .unwrap_or_else(|e| panic!("the operator document {rel} must ship: {e}"));
+        assert!(
+            shipped.contains("leaves the file exactly as it found it"),
+            "the committed {rel} must promise that a prune with nothing to shed does not rewrite \
+             the log, or the run above is behaviour nobody was told to expect"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// 24. WHY A DEDUPLICATED LOG STILL HAD SOMETHING TO SHED - the sentence that keeps a correct
+//     prune from reading as a broken dedup.
+//
+// The shipped guidance now tells an operator that a clean log prunes to zero and that this is
+// expected. That sentence has a second edge: having just been told zero is normal, an operator
+// who then sees a NON-zero prune on a log written since the ingest dedup existed reads it as the
+// dedup having failed - and goes looking for a defect in the ingest path. It has not failed. A
+// file whose content RETURNS to a generation the log already recorded (a revert, a branch switch,
+// a checkout back) re-records its whole batch by design, because a dedup that suppressed an
+// already-recorded key would strand the graph on the version the file has since moved past.
+//
+// So the explanation ships in BOTH consumer documents and prints from the BINARY, and this pins
+// the two to each other. Nothing else does: the renderer's own tests assert the documents, and a
+// unit test asserts the report function, but the shipped binary printing what the shipped
+// document promises is a claim neither can make. Section 20 covers only the reverse direction of
+// the OTHER clause - that the clean-log sentence is absent here.
+// ---------------------------------------------------------------------------------------
+
+/// The clause a prune that DID shed rows adds, split into the three things it has to convey, so a
+/// rewording that drops one of them fails by naming which one.
+const WHY_A_DEDUPLICATED_LOG_STILL_SHEDS: [(&str, &str); 3] = [
+    (
+        "say a non-zero count is not a broken dedup",
+        "not a sign the ingest dedup is broken",
+    ),
+    (
+        "name the shape that re-records a batch",
+        "RETURNS to a generation the log already recorded",
+    ),
+    ("give that shape its ordinary name", "revert"),
+];
+
+#[test]
+fn a_prune_that_shed_rows_explains_itself_the_way_the_shipped_documents_do() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_project(root, 4);
+
+    let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
+    assert!(ok, "the prune must succeed; stdout {out:?}, stderr {err:?}");
+    assert!(
+        !out.contains("pruned 0 redundant derived-index event(s)"),
+        "the fixture must actually shed rows, or this is a test of the other branch; got {out:?}"
+    );
+    for (fact, needle) in WHY_A_DEDUPLICATED_LOG_STILL_SHEDS {
+        assert!(
+            out.contains(needle),
+            "a prune that shed rows must {fact} ({needle:?}), or an operator who was just told \
+             that zero is the expected report reads this one as the ingest dedup having failed. \
+             Got {out:?}"
+        );
+    }
+
+    // THE OTHER DIRECTION, so the clause is a statement about THIS log rather than boilerplate:
+    // the clean log does not carry it.
+    let clean = temp_project();
+    seed_project(clean.path(), 1);
+    let (clean_out, err, ok) = run_rigger(clean.path(), &["reset", "--derived"]);
+    assert!(
+        ok,
+        "the clean prune must succeed; stdout {clean_out:?}, stderr {err:?}"
+    );
+    for (fact, needle) in WHY_A_DEDUPLICATED_LOG_STILL_SHEDS {
+        assert!(
+            !clean_out.contains(needle),
+            "a prune that shed NOTHING must not {fact} ({needle:?}): an explanation of \
+             duplication printed where there was none tells the operator their clean log holds \
+             something it does not. Got {clean_out:?}"
+        );
+    }
+
+    // AND THE COMMITTED DOCUMENTS SAY THE SAME THING, in the tense a document is written in. The
+    // command explains the prune in front of the operator; the document explains it before they
+    // run anything - and if only one of the two carries the rule, the other teaches the misread
+    // this clause exists to prevent.
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for rel in SHIPPED_DOCS {
+        let shipped = std::fs::read_to_string(manifest.join(rel))
+            .unwrap_or_else(|e| panic!("the operator document {rel} must ship: {e}"));
+        for needle in [
+            "WHEN A DEDUPLICATED LOG STILL HAS SOMETHING TO SHED",
+            "RETURNED to a generation the log had already recorded",
+            "revert",
+        ] {
+            assert!(
+                shipped.contains(needle),
+                "the committed {rel} must carry the same rule the binary prints ({needle:?}), or \
+                 the two consumer surfaces disagree about what a non-zero prune means"
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// 25. THE NUMBER: what the command says it reclaimed, against what the file actually lost.
+//
+// Section 21 pins the arm where the reclamation could NOT be measured. The measured arm - the one
+// an operator sees on an ordinary run, and the only one that prints a number - is asserted
+// nowhere at the binary: the suites check `reclaimed_bytes.is_some()` on the store's own report,
+// which says the field was populated, not that the figure is true of the file on disk.
+//
+// An untrue figure here is the specific dishonesty this criterion is about. The page-count delta
+// is the LOGICAL size the database shrank by; it becomes bytes on disk only once the truncating
+// checkpoint folds the write-ahead log back into the file, and a report that skipped that step
+// would print a number the operator's own `ls` contradicts. So the number is held to two things
+// at once: it equals the pages the file lost, and the file on disk really is that size afterwards
+// - no `-wal` still holding the frames the number already counted as reclaimed.
+// ---------------------------------------------------------------------------------------
+
+/// The byte count out of the report's measured-reclamation clause: `reclaimed <n> byte(s) on
+/// disk`.
+fn reported_reclaimed_bytes(out: &str) -> u64 {
+    let marker = "reclaimed ";
+    let at = out
+        .find(marker)
+        .unwrap_or_else(|| panic!("the report must carry a measured reclamation; got {out:?}"))
+        + marker.len();
+    let rest = &out[at..];
+    let end = rest
+        .find(" byte(s) on disk")
+        .unwrap_or_else(|| panic!("the reclamation must be reported in bytes; got {out:?}"));
+    rest[..end]
+        .parse()
+        .unwrap_or_else(|e| panic!("the reclamation must be a number ({e}); got {out:?}"))
+}
+
+/// Bytes of `path` on disk, or 0 when it does not exist - the `-wal` is deleted on a clean close.
+fn file_len(path: &Path) -> u64 {
+    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+}
+
+#[test]
+fn the_reclamation_the_command_reports_is_the_space_the_file_actually_lost() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_project(root, 4);
+    let db = event_log(root);
+    // ROOM TO RECLAIM. The seeded duplication is a few small rows, which can free no whole page
+    // at all - a run that honestly reports zero would leave this test asserting nothing. Planted
+    // free pages make the reclamation a definite figure without changing what it means: the
+    // vacuum reclaims the pages the file is not using, however they came to be free.
+    plant_free_pages(&db, 3_000);
+
+    let page_size = pragma_i64(&db, "page_size");
+    let pages_before = pragma_i64(&db, "page_count");
+
+    let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
+    assert!(ok, "the prune must succeed; stdout {out:?}, stderr {err:?}");
+    assert!(
+        !out.contains("pruned 0 redundant derived-index event(s)"),
+        "the fixture must shed rows, or the compaction this section measures never runs; got \
+         {out:?}"
+    );
+
+    let pages_after = pragma_i64(&db, "page_count");
+    let reclaimed = reported_reclaimed_bytes(&out);
+    assert!(
+        pages_after < pages_before,
+        "the compaction must actually shrink the log, or the figure below is a claim about \
+         nothing: {pages_before} page(s) before, {pages_after} after. Report was {out:?}"
+    );
+    assert_eq!(
+        reclaimed,
+        (pages_before - pages_after) as u64 * page_size as u64,
+        "the reported reclamation must be the space the file lost - {pages_before} page(s) before \
+         and {pages_after} after, at {page_size} bytes each. A number that is not this one is a \
+         claim an operator can disprove with `ls`. Report was {out:?}"
+    );
+
+    // AND IT LANDED ON DISK. The delta above is a LOGICAL measurement; it is bytes an operator
+    // can see only because the truncating checkpoint folded the write-ahead log back into the
+    // file. If the frames were still in the `-wal`, the file would not be the size the number
+    // says it is - the exact case section 21 makes the command report as unmeasured instead.
+    assert_eq!(
+        file_len(&db),
+        pages_after as u64 * page_size as u64,
+        "the log on disk must be exactly the pages it now holds, or the reclamation was reported \
+         as landed while the freed frames were still in the write-ahead log"
+    );
+    let wal = db.with_extension("db-wal");
+    assert_eq!(
+        file_len(&wal),
+        0,
+        "and nothing may be left in the write-ahead log the reclamation already counted as \
+         reclaimed"
+    );
+}
