@@ -1135,6 +1135,22 @@ fn is_budget_refused(e: &Error) -> bool {
     e.0.contains(BUDGET_MARKER)
 }
 
+/// Whether `e` is a NON-TERMINAL unwind - a park (the stepwise/replay frontier) OR a
+/// review-tier budget refusal - as opposed to a genuine terminal failure (spec 64
+/// criterion 1). Both dispositions get the SAME treatment everywhere a worktree-keep
+/// decision reads them: a park hands work to an out-of-process agent that resumes in
+/// this exact tree, and a budget refusal is symmetric with the implementer's `Ok(false)`
+/// refusal (also worktree-preserving) - neither is a crash a caller should tear a
+/// worktree down over. One predicate for both, so every site that answers "should this
+/// unwind KEEP the worktree" (or, negated, "is this the genuine error to prioritize over
+/// a co-chunked park/refusal") reads it from ONE place instead of hand-spelling the
+/// `is_parked(e) || is_budget_refused(e)` disjunct (or its De Morgan negation) at each
+/// call site - the exact duplication that let round 2 and round 3's masking defects hide
+/// (arch-u1c1-r3-predicate-now-also-negated).
+fn is_parked_or_budget_refused(e: &Error) -> bool {
+    is_parked(e) || is_budget_refused(e)
+}
+
 /// The number of times a reviewer whose result is DEGENERATE (empty or whitespace-only)
 /// is respawned before the run halts (Gap 18, spec 07). A degenerate reviewer result is
 /// an INFRASTRUCTURE fault, not a verdict, so the conductor respawns the SAME reviewer
@@ -3091,7 +3107,22 @@ impl RunCtx<'_> {
         let phase = self.resume_phase(st);
         let wt = self.stage_worktree(st)?;
         let dir = wt.as_ref().map(|w| w.dir.clone()).unwrap_or_default();
-        let result = self.run_single_stage(stages, st, wt.as_ref(), &dir, phase);
+        // Out-of-band any-parked signal (spec 64 c1 round 4,
+        // sdet-u1c1-r3-unit-worktree-torn-down-beside-genuine-park): the SAME shape
+        // `run_fan_out_stage` reads from `run_fan_out_review_loop` for the review-worktree
+        // kind, applied here one level up for the UNIT-worktree kind. `run_single_stage`
+        // threads this straight through to `review_unit`'s lens tier
+        // (`run_review_agents_concurrently`), which sets it the moment ANY lens in ANY
+        // concurrent chunk parks or is budget-refused - independently of which single
+        // `Result` this call ultimately propagates. Without this, a genuine terminal error
+        // from one lens in a chunk (correctly prioritized over a co-chunked park by the
+        // swap in `run_review_agents_concurrently`) would read as a plain non-parked Err
+        // here, and the UNIT's own durable worktree would be torn down out from under a
+        // sibling lens that is genuinely parked and will resume in this exact worktree from
+        // a later conductor process - the mirror image of the review-worktree defect this
+        // criterion exists to close.
+        let any_parked = std::sync::atomic::AtomicBool::new(false);
+        let result = self.run_single_stage(stages, st, wt.as_ref(), &dir, phase, &any_parked);
         // A PARKED return is not the stage ending - it is the stage HANDING WORK to
         // out-of-process agents that run BETWEEN conductor processes, in this worktree,
         // against this build cache. Removing either here deletes the tree the parked
@@ -3103,7 +3134,12 @@ impl RunCtx<'_> {
         // and branch; teardown happens on the TERMINAL returns only. The full
         // phase-aware lifecycle (ensure-on-park, sweep liveness) is specced separately;
         // this is the minimal keep that lets the loop converge at all.
-        let parked_unwind = matches!(&result, Err(e) if is_parked(e) || is_budget_refused(e));
+        //
+        // `parked_unwind` reads `any_parked` FIRST, apart from whichever single Result
+        // `run_single_stage` propagates - a chunk with a genuine error AND a park answers
+        // this independently of which one the swap prioritized (see the comment above).
+        let parked_unwind = any_parked.load(Ordering::SeqCst)
+            || matches!(&result, Err(e) if is_parked_or_budget_refused(e));
         if let Some(w) = &wt {
             if !parked_unwind {
                 let _ = w.remove();
@@ -3345,6 +3381,27 @@ impl RunCtx<'_> {
     /// or flapped gates) BEFORE running any tier. With no depth policy configured, routing
     /// returns the effective panel unchanged and logs nothing, so behavior is byte-for-byte
     /// unchanged (tiering is opt-in).
+    ///
+    /// `any_parked` (spec 64 c1 round 4, sdet-u1c1-r3-unit-worktree-torn-down-beside-genuine-
+    /// park) is the CALLER's out-of-band any-parked signal, passed straight through to
+    /// [`Self::run_review_agents_concurrently`] for the lens tier - the ONE tier that runs a
+    /// concurrent chunk where a genuine error can mask a co-chunked sibling's park in whichever
+    /// single `Result` this function propagates. `run_stage` (the single-lane caller) reads it
+    /// after `run_single_stage` returns, apart from the propagated `Result`, so a lens's park
+    /// still keeps the unit's worktree even when a sibling lens in the SAME chunk genuinely
+    /// errors and that error is (correctly) what this function's `?` propagates - the exact
+    /// mirror, one level up, of the review-worktree fix `run_fan_out_stage` already applies to
+    /// `run_fan_out_review_loop`. The adversary and adjudicator are single sequential spawns (no
+    /// concurrent chunk to mask), so a park/budget-refusal from either of THEM still shows up
+    /// directly on the propagated `Result`, unchanged. `run_speculation`'s call site does not
+    /// read the signal back (an Err from ANY tier here already propagates out of its phase-B
+    /// loop via `?` without touching any candidate's worktree, so it is already conservative);
+    /// it passes a throwaway `AtomicBool` to satisfy this shared signature.
+    // Each argument is a distinct, already-documented review input (stage, worktree dir,
+    // attempt, the two routing/deferral flags, the blast-radius view, and now the caller's
+    // any-parked out-param) - the same primitive-argument shape `reviewer_spawn_opts` and
+    // `run_reviewer` carry, allowed for the same reason.
+    #[allow(clippy::too_many_arguments)]
     fn review_unit(
         &self,
         st: &Stage,
@@ -3353,6 +3410,7 @@ impl RunCtx<'_> {
         flapped: bool,
         defer_reviewed: bool,
         blast_radius: &[String],
+        any_parked: &std::sync::atomic::AtomicBool,
     ) -> Result<ReviewOutcome, Error> {
         // Risk-tiered review depth (spec 03 / spec 13 unit 4): route this unit to the
         // LIGHT or FULL panel from its observable risk - the grounded blast-radius size,
@@ -3375,14 +3433,12 @@ impl RunCtx<'_> {
         // TIER 1: the lenses emit their findings to the graph (review_protocol); the
         // projector folds them ABOUT the unit's files live.
         if !lenses.is_empty() {
-            // This unit's DURABLE worktree keep-vs-remove decision (`run_stage`,
-            // unchanged by spec 64 c1 round 3) derives entirely from the single `Result`
-            // this call propagates, exactly as before this fix - so the out-of-band
-            // any-parked signal has no consumer on this path. A throwaway `AtomicBool`
-            // satisfies the shared function's signature without changing `review_unit`'s
-            // own behavior.
-            let lens_any_parked = std::sync::atomic::AtomicBool::new(false);
-            self.run_review_agents_concurrently(st, &lenses, dir, attempt, &lens_any_parked)?;
+            // Spec 64 c1 round 4: forward the CALLER's any-parked signal (see this
+            // function's doc comment) rather than a throwaway local - `run_stage` reads it
+            // back after `run_single_stage` returns, so the unit's own worktree survives a
+            // lens park even when a co-chunked sibling's genuine error is what this call's
+            // `?` propagates below.
+            self.run_review_agents_concurrently(st, &lenses, dir, attempt, any_parked)?;
         }
         // TIER 2: the adversary grounds AFTER the lenses, so `graph_context` surfaces
         // their findings; it tries to prove them wrong and emits its own findings.
@@ -3542,6 +3598,10 @@ impl RunCtx<'_> {
         }
     }
 
+    /// `any_parked` (spec 64 c1 round 4) is threaded straight through, unread, to the
+    /// [`Self::review_unit`] call below - it is `run_stage`'s out-of-band any-parked
+    /// signal, read there AFTER this function returns, independently of whatever `Result`
+    /// this function itself propagates (see `run_stage`'s doc comment at its call site).
     fn run_single_stage(
         &self,
         stages: &BTreeMap<String, Stage>,
@@ -3549,6 +3609,7 @@ impl RunCtx<'_> {
         wt: Option<&Worktree>,
         dir: &str,
         phase: ResumePhase,
+        any_parked: &std::sync::atomic::AtomicBool,
     ) -> Result<bool, Error> {
         // Resume-continuity, Reviewed phase: the unit's review was APPROVED in a prior
         // window and its branch carries the committed, approved code - only the merge
@@ -3891,8 +3952,15 @@ impl RunCtx<'_> {
                     // structural width forces the full panel for a beyond-cap high-risk file, and a
                     // wide structural change earns the full panel by size. On the non-symbols
                     // default `radius.safe == radius.precise`, so routing is byte-for-byte unchanged.
-                    let review =
-                        self.review_unit(st, dir, attempts, attempts > 0, false, &radius.safe)?;
+                    let review = self.review_unit(
+                        st,
+                        dir,
+                        attempts,
+                        attempts > 0,
+                        false,
+                        &radius.safe,
+                        any_parked,
+                    )?;
                     // A contradiction against a PRIOR integrated unit (spec 12, unit 4): the
                     // adjudicator named another, already-integrated unit as the real defect
                     // source. QUEUE the rollback for the run loop to drain after this wave
@@ -4281,7 +4349,17 @@ impl RunCtx<'_> {
             // every lane>0 to the FULL panel (sdet-u13rt-flapped-conflates-lane-in-speculation).
             // Route the tier over the UNCAPPED safe-superset view (spec 16 unit 3), as the
             // single-lane path does; `radius.safe == radius.precise` on the non-symbols default.
-            let review = self.review_unit(st, &dir, lane, false, true, &radius.safe)?;
+            //
+            // A throwaway `AtomicBool` for the any-parked out-param (spec 64 c1 round 4,
+            // see `review_unit`'s doc comment): this phase-B loop already never tears a
+            // candidate's worktree down on an `Err` from `review_unit` - the `?` below
+            // propagates straight out of `run_speculation` on ANY error (park, budget
+            // refusal, or genuine crash) without reaching the per-candidate/final cleanup
+            // loops, so every candidate's worktree already survives regardless. The signal
+            // has no consumer to correct here.
+            let lane_any_parked = std::sync::atomic::AtomicBool::new(false);
+            let review =
+                self.review_unit(st, &dir, lane, false, true, &radius.safe, &lane_any_parked)?;
             // A candidate's review may name a PRIOR integrated unit as the real defect source
             // (spec 12, unit 4), independent of whether it approves this candidate: queue the
             // rollback exactly as the single-lane path does, so the reverse gear is not lost.
@@ -4627,7 +4705,7 @@ impl RunCtx<'_> {
         // chunk to mask), so a park/budget-refusal from either of THEM still shows up
         // directly on `result` - the `matches!` disjunct below still catches those.
         let parked_unwind = any_lens_parked.load(Ordering::SeqCst)
-            || matches!(&result, Err(e) if is_parked(e) || is_budget_refused(e));
+            || matches!(&result, Err(e) if is_parked_or_budget_refused(e));
         if let Some(w) = &review_wt {
             // A read-only review worktree carries no work to checkpoint, so a TERMINAL
             // return removes the transient dir AND its throwaway branch unconditionally,
@@ -4847,7 +4925,7 @@ impl RunCtx<'_> {
             // being the one propagated (see the doc comment above).
             if chunk_results
                 .iter()
-                .any(|r| matches!(r, Err(e) if is_parked(e) || is_budget_refused(e)))
+                .any(|r| matches!(r, Err(e) if is_parked_or_budget_refused(e)))
             {
                 any_parked.store(true, Ordering::SeqCst);
             }
@@ -4865,7 +4943,7 @@ impl RunCtx<'_> {
             // unaffected.
             if let Some(pos) = chunk_results
                 .iter()
-                .position(|r| matches!(r, Err(e) if !is_parked(e) && !is_budget_refused(e)))
+                .position(|r| matches!(r, Err(e) if !is_parked_or_budget_refused(e)))
             {
                 chunk_results.swap(0, pos);
             }
@@ -5015,7 +5093,7 @@ impl RunCtx<'_> {
                     // drivers (cli / workflow) never RECORD a spawn result, so `review_spawn_errored`
                     // is false there and a genuine in-process review failure still propagates to
                     // remediation exactly as before - only a REPLAYED recorded error re-parks.
-                    if !is_parked(&e) && !is_budget_refused(&e) && self.review_spawn_errored(&id)? {
+                    if !is_parked_or_budget_refused(&e) && self.review_spawn_errored(&id)? {
                         continue;
                     }
                     return Err(Error(format!(
@@ -5524,7 +5602,7 @@ impl RunCtx<'_> {
         // stepwise/replay frontier) and resumes in a LATER conductor process, in this
         // exact throwaway worktree - the identical defect class `run_fan_out_stage` and
         // `run_stage` both fix with the same `parked_unwind` guard, mirrored here.
-        let parked_unwind = matches!(&result, Err(e) if is_parked(e) || is_budget_refused(e));
+        let parked_unwind = matches!(&result, Err(e) if is_parked_or_budget_refused(e));
         if let Some(w) = &review_wt {
             if !parked_unwind {
                 let _ = w.remove();
@@ -21212,6 +21290,129 @@ mod tests {
     }
 
     #[test]
+    fn a_parked_lens_keeps_the_unit_worktree_beside_a_genuine_sibling_crash() {
+        // Spec 64 c1 round 4 (sdet-u1c1-r3-unit-worktree-torn-down-beside-genuine-park,
+        // upheld live by adv2-u1c1-r4-severe-finding-upheld-live): the MIRROR IMAGE of
+        // `a_parked_lens_keeps_the_review_worktree_even_beside_a_lower_indexed_sibling_crash`
+        // above, for the UNIT-worktree kind rather than the review-worktree kind.
+        //
+        // Round 3 wired `run_review_agents_concurrently`'s out-of-band `any_parked` signal
+        // through to `run_fan_out_stage` (the review-worktree call site) but NOT through
+        // `review_unit` to `run_stage`'s own pre-existing `parked_unwind` gate (the
+        // UNIT-worktree call site) - `review_unit` passed the shared function a throwaway
+        // `AtomicBool` it never read, so `run_stage`'s `parked_unwind` derived solely from
+        // the single `Result` `run_single_stage` propagated. Round 3's OWN swap (prioritize
+        // a genuine terminal error over a co-chunked park, so the error is what a caller's
+        // `?` propagates) then had a side effect nobody had measured on this path: a lens
+        // that genuinely crashes correctly propagates its error, but the UNIT's own durable
+        // worktree was torn down out from under a SIBLING lens that is genuinely parked and
+        // will resume in that exact worktree from a later conductor process - the identical
+        // defect class spec 64 c1 exists to close, just recurring on the other worktree kind.
+        //
+        // Two lenses in ONE concurrent chunk: "a" PARKS, "b" hits a genuine terminal crash.
+        // Both must hold from this ONE mixed chunk:
+        //   1. "b"'s genuine crash still propagates and HALTS the run loudly (spec 19c) -
+        //      the swap in `run_review_agents_concurrently` still prioritizes it, unchanged.
+        //   2. the UNIT'S OWN worktree survives anyway - "a" genuinely parked and will
+        //      resume in exactly this tree from a later conductor process - answered by the
+        //      `any_parked` AtomicBool `run_stage` now threads through `run_single_stage`
+        //      into `review_unit`'s lens tier, read independently of whichever single
+        //      `Result` `run_single_stage` propagates.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.agents.insert("b".into(), agent("b"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "solo".into(),
+            Stage {
+                name: "solo".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["a".into(), "b".into()],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("work.rs".into()),
+            output: "reviewed it".into(),
+            park_spawn_ids: [spawn_id("solo", &lens_role("a"), 0)].into_iter().collect(),
+            fail_spawn_ids: [spawn_id("solo", &lens_role("b"), 0)].into_iter().collect(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        // Requirement (1): "b"'s genuine crash still halts the run loudly - it must NOT be
+        // masked by "a"'s park in the same concurrent chunk.
+        let err = match run(&cfg, &deps) {
+            Ok(_) => panic!(
+                "\"b\"'s genuine terminal crash must still halt the run loudly, not be masked \
+                 by \"a\"'s park in the same concurrent chunk"
+            ),
+            Err(e) => e,
+        };
+        assert!(
+            err.0.contains("simulated mid-spawn crash"),
+            "the propagated error must be \"b\"'s genuine crash, not \"a\"'s park: {}",
+            err.0
+        );
+        assert!(
+            driver.spawned("a"),
+            "the parking lens must actually have run (and parked), or this test proves nothing"
+        );
+        assert!(
+            driver.spawned("b"),
+            "the crashing lens must actually have run, or this test proves nothing about masking"
+        );
+
+        // Requirement (2): the UNIT's own worktree survives anyway, because "a" genuinely
+        // parked - answered by `run_stage`'s `any_parked` signal, threaded through
+        // `run_single_stage` into `review_unit`'s lens tier, read apart from whichever
+        // single Result `run_single_stage` propagates.
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let worktree = unit_worktree_dir(&scratch, "solo");
+        assert!(
+            std::path::Path::new(&worktree).exists(),
+            "a PARKED sibling must keep the UNIT's own worktree even when a co-chunked lens \
+             genuinely crashed terminally: {worktree}"
+        );
+        assert!(
+            worktree_registered_on(&repo_path, &unit_branch("solo")),
+            "the kept unit worktree must stay REGISTERED with git (not just a leftover dir): \
+             {worktree}"
+        );
+        // The durable unit branch is untouched by this park (only a successful integrate
+        // deletes it, `run_stage`'s existing - unchanged - split): survives regardless.
+        let branch_tip = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args(["rev-parse", &unit_branch("solo")])
+            .output()
+            .unwrap();
+        let branch_tip = String::from_utf8_lossy(&branch_tip.stdout)
+            .trim()
+            .to_string();
+        assert!(
+            !branch_tip.is_empty(),
+            "a parked unit's durable branch must survive (git rev-parse must resolve it)"
+        );
+    }
+
+    #[test]
     fn a_worktree_less_stage_gate_inherits_the_shared_target() {
         // Gap 19 sentinel arm: a stage whose agent declares `isolation: none` runs with NO
         // worktree (dir ""), so there is no per-unit tree to isolate and its gate must inherit
@@ -21682,6 +21883,184 @@ mod tests {
             std::path::Path::new(&dir).exists(),
             "a PARKED sibling must keep the shared review worktree even when a co-chunked \
              lens exhausted into a degenerate-reviewer HALT: {dir}"
+        );
+        assert!(
+            worktree_registered_on(&repo_path, &branch),
+            "the kept review worktree must stay REGISTERED with git: {dir}"
+        );
+    }
+
+    #[test]
+    fn the_swap_to_front_prioritizes_a_genuine_error_at_a_non_zero_chunk_index() {
+        // sdet-u1c1-r3-swap-index-independence-never-exercised (upheld by mutation:
+        // adv2-u1c1-r4-swap-index-independence-upheld-by-mutation): round 3's whole point
+        // was that `run_review_agents_concurrently`'s swap-to-front
+        // (conductor.rs:`chunk_results.swap(0, pos)`) prioritizes a genuine terminal error
+        // over a park/budget-refused sibling REGARDLESS OF INDEX - but every test up to
+        // this point only ever exercised the trivial `pos == 0` case (the genuine error
+        // already at the front, where the swap is a no-op). Neutralizing the swap entirely
+        // left the whole suite green, proving the position-independence claim itself was
+        // never driven to a genuine non-zero `pos`.
+        //
+        // Three lenses in ONE chunk (MAX_CONCURRENCY is 4, so all three fit together): "x"
+        // (index 0) and "z" (index 2) PARK, "y" (index 1, neither first nor last) hits a
+        // genuine terminal crash. The swap must move "y"'s error from position 1 to the
+        // front, not just leave a position-0 error alone.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        for id in ["x", "y", "z"] {
+            cfg.agents.insert(id.into(), agent(id));
+        }
+        cfg.workflow.stages.insert(
+            "review".into(),
+            Stage {
+                name: "review".into(),
+                agents: vec!["x".into(), "y".into(), "z".into()],
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            fail_spawn_ids: [spawn_id("review", &lens_role("y"), 0)]
+                .into_iter()
+                .collect(),
+            park_spawn_ids: [
+                spawn_id("review", &lens_role("x"), 0),
+                spawn_id("review", &lens_role("z"), 0),
+            ]
+            .into_iter()
+            .collect(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+
+        let err = match run(&cfg, &deps) {
+            Ok(_) => panic!(
+                "\"y\"'s genuine terminal crash (at chunk index 1, neither first nor last) \
+                 must still halt the run loudly, not be masked by its parked siblings"
+            ),
+            Err(e) => e,
+        };
+        assert!(
+            err.0.contains("simulated mid-spawn crash"),
+            "the propagated error must be \"y\"'s genuine crash, not a sibling's park: {}",
+            err.0
+        );
+        for id in ["x", "y", "z"] {
+            assert!(
+                driver.spawned(id),
+                "lens {id:?} must actually have run, or this test proves nothing about a \
+                 3-way mixed chunk"
+            );
+        }
+
+        // The shared review worktree survives anyway - "x" and "z" genuinely parked.
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let dir = review_worktree_dir(&scratch, "review", 0);
+        let branch = review_branch("review", 0);
+        assert!(
+            std::path::Path::new(&dir).exists(),
+            "PARKED siblings must keep the shared review worktree even when the NON-ZERO-\
+             INDEXED lens in the same chunk crashed terminally: {dir}"
+        );
+        assert!(
+            worktree_registered_on(&repo_path, &branch),
+            "the kept review worktree must stay REGISTERED with git: {dir}"
+        );
+    }
+
+    #[test]
+    fn a_budget_refused_lens_beside_a_genuinely_crashing_sibling_in_one_chunk() {
+        // sdet-u1c1-r3-budget-refused-arm-untested-in-concurrent-chunk (upheld by mutation:
+        // adv2-u1c1-r4-budget-refused-arm-upheld-by-mutation): round 3 added TWO NEW
+        // `is_budget_refused` occurrences inside `run_review_agents_concurrently` (the
+        // `any_parked` scan and the swap-exclusion predicate) - distinct from the
+        // pre-existing single-spawn budget tests below
+        // (`a_budget_refused_standalone_review_spawn_keeps_its_worktree`,
+        // `a_budget_refused_plan_critique_gate_keeps_its_review_worktree`), which both
+        // budget-refuse the ADVERSARY - a single SEQUENTIAL spawn outside this function -
+        // and so cannot reach either of these two call sites at all. Dropping the
+        // `is_budget_refused` disjunct from both left the full suite green, proving the
+        // gap is real: two lenses RACE the SAME shared budget mid-chunk, and neither test
+        // ever put a budget refusal on that race.
+        //
+        // `defaults.budget = 1`: the ONE unit of budget the standalone review stage itself
+        // needs zero of (it has no implementer/sdet spawn ahead of the lenses), so both
+        // lenses "a" and "b" race for it; whichever wins is ADMITTED and (both are marked
+        // `fail_spawn_ids`) crashes genuinely, and the other is refused deterministically
+        // by the shared atomic budget counter - regardless of which one wins the race, the
+        // outcome (one crash, one budget-refusal) is the same, so this test needs no
+        // control over thread scheduling to be deterministic.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.agents.insert("b".into(), agent("b"));
+        cfg.workflow.defaults.budget = 1;
+        cfg.workflow.stages.insert(
+            "review".into(),
+            Stage {
+                name: "review".into(),
+                agents: vec!["a".into(), "b".into()],
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            fail_spawn_ids: [
+                spawn_id("review", &lens_role("a"), 0),
+                spawn_id("review", &lens_role("b"), 0),
+            ]
+            .into_iter()
+            .collect(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+
+        // Exactly one of the two lenses is admitted by the budget and genuinely crashes;
+        // the swap-exclusion predicate must not let the OTHER's budget-refusal win the
+        // propagated Result over the genuine crash.
+        let err = match run(&cfg, &deps) {
+            Ok(_) => panic!(
+                "the admitted lens's genuine terminal crash must still halt the run loudly, \
+                 not be masked by its sibling's budget refusal in the same concurrent chunk"
+            ),
+            Err(e) => e,
+        };
+        assert!(
+            err.0.contains("simulated mid-spawn crash"),
+            "the propagated error must be the admitted lens's genuine crash, not the \
+             refused sibling's budget-refusal sentinel: {}",
+            err.0
+        );
+
+        // The shared review worktree survives anyway - the OTHER lens was genuinely
+        // budget-refused, the SAME worktree-preserving disposition as a park (spec 64 c1):
+        // the `any_parked` scan's `is_budget_refused` arm must have caught it.
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let dir = review_worktree_dir(&scratch, "review", 0);
+        let branch = review_branch("review", 0);
+        assert!(
+            std::path::Path::new(&dir).exists(),
+            "a BUDGET-REFUSED sibling must keep the shared review worktree even when the \
+             lens that raced ahead of it crashed terminally: {dir}"
         );
         assert!(
             worktree_registered_on(&repo_path, &branch),
