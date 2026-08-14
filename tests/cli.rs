@@ -3221,6 +3221,188 @@ fn step_halts_on_an_exhausted_lens_beside_a_parked_sibling_and_keeps_the_unit_wo
     );
 }
 
+/// Spec 64, criterion 3 (ensure-on-park, defense in depth: `Worktree::ensure_present` in
+/// `src/worktree.rs`, called from `run_single_stage` in `src/conductor.rs` immediately
+/// before `review_unit`): the conductor's next hand-off restores a unit worktree an
+/// out-of-band actor deleted, before the review tier's agent consumes it.
+///
+/// The implementer's own regression
+/// (`review_unit_restores_a_worktree_a_gate_deleted_out_of_band`, `conductor.rs`'s `mod
+/// tests`) proves the call site is reached, using a synchronous, single-process `Stub`
+/// driver and a `RecordingRunner` whose `run` fabricates the deletion entirely in memory -
+/// it never runs a real gate subprocess, never creates a real git-registered worktree, and
+/// so never exercises the REAL `Worktree::create` adopt-or-create machinery
+/// `ensure_present` actually calls to restore one. This test drives a REAL implementer
+/// into a REAL, git-backed unit worktree, then a REAL `sh -c` gate whose OWN command
+/// deletes that worktree directory wholesale (leaving its `.git/worktrees/<id>` admin
+/// entry behind - the "dir gone, admin entry stale" shape the historical fault took, per
+/// this spec's own Goal section) before reporting PASS, and checks purely from outside -
+/// filesystem existence, `git worktree list --porcelain`, and `git rev-parse` - that the
+/// lens spawn parked immediately afterward finds the worktree restored, registered, and
+/// checked out at the unit branch's current tip.
+#[test]
+fn step_restores_the_unit_worktree_a_gate_deletes_before_the_review_spawn() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("agents").join("a.md"),
+        "---\nid: a\nmodel: sonnet\ntools: [Read]\n---\nReview it.\n",
+    )
+    .unwrap();
+
+    // A marker OUTSIDE the worktree (the scratch root itself, `.rigger/tmp`, which the
+    // deletion below never touches) self-reports whether the gate's own `rm -rf` really
+    // removed the directory it ran in - the non-vacuity check a single opaque subprocess
+    // call otherwise denies an outside observer.
+    let marker = rigger.join("tmp").join("gate-deleted-marker.txt");
+    let marker_str = marker.to_str().unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        format!(
+            r#"name: ensureonparktest
+defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok:
+    run: 'd=$(pwd); cd / && rm -rf "$d"; ( [ -d "$d" ] && echo present || echo absent ) > "{marker}"'
+    kind: core
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    on_pass: none
+    review:
+      lenses: [a]
+"#,
+            marker = marker_str
+        ),
+    )
+    .unwrap();
+
+    // Step 1: the unit is ready, so its implementer spawn parks - the real, git-backed
+    // isolation this fixture deliberately keeps means the unit's own durable worktree is
+    // created right here, before the implementer has produced anything.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/implementer#0""#) && out.contains(r#""done":false"#),
+        "step 1 parks the implementer; got: {out:?}"
+    );
+
+    let wt_dir = root.join(".rigger").join("tmp").join("rigger-wt-solo");
+    assert!(
+        wt_dir.exists(),
+        "premise: a parked implementer must already have its unit worktree on disk: {}",
+        wt_dir.display()
+    );
+
+    // Write the implementer's "diff" directly into the worktree it was already handed,
+    // the shape a real out-of-process agent takes, never a CLI-supplied patch.
+    std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
+
+    // Commit it immediately, ahead of `run_single_stage`'s own pre-gate commit (which
+    // only runs once step 2 below reaches this unit again). This is NOT modeling the
+    // implementer (a real agent never commits); it defends this test's premise against
+    // an UNRELATED, already out-of-scope hazard: the step-start sweep on this branch
+    // (`Worktree::sweep_terminal`) has no liveness conjunct yet (spec 64 criterion 4, a
+    // sibling unit not merged here) and force-removes any worktree whose branch has not
+    // yet diverged from the run branch - exactly this window, between `rigger result`
+    // and this unit's own first commit. A previously-recorded hazard in this same
+    // codebase names the identical fault and the identical mitigation (advance the
+    // branch past the run branch immediately, so `merge-base --is-ancestor` is false and
+    // the sweep skips it) - applied here so this test exercises ONLY criterion 3's own
+    // surface, never criterion 4's still-open gap.
+    for args in [&["add", "-A"][..], &["commit", "-q", "-m", "wip"]] {
+        let ok = Command::new("git")
+            .args(args)
+            .current_dir(&wt_dir)
+            .status()
+            .expect("git must be runnable")
+            .success();
+        assert!(
+            ok,
+            "git {args:?} must succeed committing the test's setup diff"
+        );
+    }
+
+    let (_o, err, ok) = run_rigger(
+        root,
+        &["result", "solo/implementer#0", "implemented the unit"],
+    );
+    assert!(
+        ok,
+        "recording the implementer result must succeed; stderr: {err}"
+    );
+
+    // Step 2: the implementer replays, the pre-gate commit lands the file, and the `ok`
+    // gate runs - as ITS OWN side effect it deletes the worktree wholesale, then still
+    // reports PASS (a real `rm -rf` exits 0). If `run_single_stage` did not restore the
+    // worktree via `Worktree::ensure_present` before spawning the review tier, the
+    // lens's assigned dir would be handed out already gone.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the second step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/lens:a#0""#) && out.contains(r#""done":false"#),
+        "step 2 must reach and park the review tier's lens spawn, or the gate never \
+         passed and this test proves nothing about ensure-on-park; got: {out:?}\n\
+         stderr: {err}"
+    );
+
+    // Non-vacuity: the gate's own command really did remove the worktree wholesale
+    // before the assertions below run, self-reported from a marker location the
+    // deletion itself never touches.
+    let marker_content = std::fs::read_to_string(&marker).unwrap_or_default();
+    assert_eq!(
+        marker_content.trim(),
+        "absent",
+        "premise: the gate's own rm -rf must actually have removed the worktree \
+         wholesale, or this test proves nothing about a restore: {marker_content:?}"
+    );
+
+    // The review tier's lens spawn found the worktree RESTORED, not the gone dir a
+    // gate-side deletion would otherwise hand out.
+    assert!(
+        wt_dir.exists(),
+        "the review tier's lens spawn must find the unit worktree restored: {}",
+        wt_dir.display()
+    );
+    let list = git_out(root, &["worktree", "list", "--porcelain"])
+        .expect("git worktree list must succeed in the seeded repo");
+    assert!(
+        list.contains("rigger/u/solo"),
+        "the restored worktree must be REGISTERED with git again, not just a leftover \
+         dir nobody re-added: {list}"
+    );
+
+    // Checked out at the unit branch's CURRENT tip (the implementer's own committed
+    // file), never rewound or re-created from an older point.
+    assert!(
+        wt_dir.join("work.rs").exists(),
+        "the restored worktree must be checked out at the implementer's own committed \
+         tip, containing its landed file: {}",
+        wt_dir.display()
+    );
+    let branch_tip = git_out(root, &["rev-parse", "rigger/u/solo"])
+        .expect("the unit branch must resolve a tip after the pre-gate commit");
+    let head_after = git_out(&wt_dir, &["rev-parse", "HEAD"]).expect(
+        "the restored worktree must resolve its own HEAD - a bare leftover dir with no \
+         `.git` admin link would fail this",
+    );
+    assert_eq!(
+        head_after, branch_tip,
+        "the restored worktree must be checked out at the SAME tip the durable unit \
+         branch carries - never rewound or re-created from an older point"
+    );
+}
+
 /// Spec 50, criterion 2 (the REGISTRY lifecycle): `rigger step` REGISTERS this instance in the
 /// machine-global state directory - the project root plus a CREDENTIAL-FREE store identity, with a
 /// live heartbeat - so a machine-level dash can DISCOVER it without a coordination protocol. The
