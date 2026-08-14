@@ -24,7 +24,10 @@ use rigger::dash;
 use rigger::driver::cli;
 use rigger::driver::replay::{spawn_scratch_path, ReplayDriver};
 use rigger::eventstore::namespace::Namespaced;
-use rigger::eventstore::{sqlite::Store, Direction, Event, EventStore, ExpectedRevision, Filter};
+use rigger::eventstore::{
+    sqlite::{PrunedDerived, Store},
+    Direction, Event, EventStore, ExpectedRevision, Filter,
+};
 use rigger::gate::{ExecRunner, Gate, GateResult, Runner};
 use rigger::grounder::Grounder;
 use rigger::ledger::{self, RunState};
@@ -5982,41 +5985,84 @@ fn reset_derived(loc: &StoreLocation) -> Res {
         &Namespaced::prefix_for(&loc.identity()),
         &rigger::ingest::derived_index_identity(),
     )?;
+    println!("{}", derived_prune_report(&pruned));
+    Ok(())
+}
+
+/// The one line `rigger reset --derived` prints, rendered from what the prune actually did.
+///
+/// A pure function of the report, and separate from the command, because THREE of its four
+/// compaction states are unreachable from a happy-path run of the binary - a reclamation the
+/// truncating checkpoint declined, a rewrite that failed after the deletes committed, and a
+/// rewrite that was deliberately not run - and each of them is a state whose whole purpose is to
+/// be READ correctly by an operator. A report only the lucky path renders is a report nothing
+/// pins.
+fn derived_prune_report(pruned: &PrunedDerived) -> String {
     let per_type = pruned
         .removed
         .iter()
         .map(|(t, n)| format!("{t} {n}"))
         .collect::<Vec<_>>()
         .join(", ");
-    // WHAT THE NUMBER MEANS, both ways round. Zero removed is the expected report on a log the
-    // ingest dedup has kept clean since it was written, and an operator who reads "pruned 0" as a
-    // failure will go looking for a defect that is not there - so the line SAYS that, rather than
-    // reading as a successful prune of a log that had nothing to shed. And the reclamation is a
-    // measurement that can decline to be taken: while a concurrent reader holds a write-ahead-log
-    // snapshot the truncating checkpoint is refused and the freed pages stay in the `-wal` file,
-    // so it is reported as unmeasured instead of as a byte count the operator's own `ls` would
-    // contradict.
-    let reclaimed = match pruned.reclaimed_bytes {
-        Some(bytes) => format!("reclaimed {bytes} byte(s) on disk"),
-        None => "the freed pages could not be folded back into the file: a concurrent reader held \
-                 the write-ahead log, so they land at the next checkpoint and this run reclaimed \
-                 an unmeasured amount"
+    // WHAT HAPPENED TO THE FILE, in the four states the prune can leave it. The deletes have
+    // committed before any of this is decided, so none of them is a failure of the prune:
+    //   - the rewrite failed: the rows are gone anyway, so the operator gets the counts, the
+    //     failure by name, and the two facts that follow from the ordering (the deletes are
+    //     durable; a re-run is safe). Anything less is an "error" about a log that WAS pruned.
+    //   - nothing was deleted: the file is deliberately not rewritten, because a full rewrite
+    //     there holds the write lock for a whole scan and stages a second copy of the log in the
+    //     temporary directory to reclaim nothing. Zero bytes is the measurement, not a missing one.
+    //   - the reclamation was measured: report the bytes.
+    //   - the truncating checkpoint was declined by a concurrent reader: the freed pages stay in
+    //     the write-ahead log, so it is reported as unmeasured rather than as a byte count the
+    //     operator's own `ls` would contradict.
+    let compaction = match (&pruned.compaction_error, pruned.reclaimed_bytes) {
+        (Some(err), _) => format!(
+            "the log file could NOT be compacted afterwards: {err}. The deletes are committed and \
+             durable, so nothing was lost and re-running the command is safe"
+        ),
+        (None, _) if pruned.total_removed() == 0 => "nothing was deleted, so the log file was \
+                                                    left exactly as it stands rather than \
+                                                    rewritten to reclaim nothing"
+            .to_string(),
+        (None, Some(bytes)) => {
+            format!("then compacted the log file and reclaimed {bytes} byte(s) on disk")
+        }
+        (None, None) => "then compacted the log file, but the freed pages could not be folded \
+                         back into the file: a concurrent reader held the write-ahead log, so \
+                         they land at the next checkpoint and this run reclaimed an unmeasured \
+                         amount"
             .to_string(),
     };
-    let nothing_to_shed = if pruned.total_removed() == 0 {
+    // WHAT THE COUNT MEANS, both ways round, because each direction is misread in its own way.
+    //
+    // ZERO is the expected report on a log whose derived index holds one recording per distinct
+    // key, and an operator who reads "pruned 0" as a failure goes looking for a defect that is not
+    // there. It is justified by WHAT THIS LOG HOLDS and never by WHEN it was written: a log
+    // written since the ingest dedup existed still re-records a file's whole batch whenever that
+    // file's content returns to a generation the log already recorded, so "written after the
+    // dedup" implies nothing about the count.
+    //
+    // NON-ZERO on such a log is therefore NOT evidence the dedup is broken - it is that
+    // by-design duplication being shed - and saying so is the same sentence's other half: an
+    // operator who has just been told zero is normal will otherwise read a non-zero prune as the
+    // dedup having failed.
+    let what_the_count_means = if pruned.total_removed() == 0 {
         " - a log whose derived index already holds one recording per distinct key has no \
-         redundancy to shed, so this is the expected report on a log written since the ingest \
-         dedup existed, not a failed prune"
+         redundancy to shed, so this is the expected report on such a log, not a failed prune"
     } else {
-        ""
+        " - a non-zero count is not a sign the ingest dedup is broken: a file whose content \
+         RETURNS to a generation the log already recorded (a revert, a branch switch, a checkout \
+         back) re-records its whole batch by design, because a dedup that suppressed it would \
+         strand the graph on the version the file has since moved past, and this is that \
+         duplication being shed"
     };
-    println!(
+    format!(
         "reset --derived: pruned {} redundant derived-index event(s) from the event log \
-         ({per_type}), then compacted the log file ({reclaimed}) - every non-derived event and \
-         the latest recording of every content key are preserved{nothing_to_shed}",
+         ({per_type}), {compaction} - every non-derived event and the latest recording of every \
+         content key are preserved{what_the_count_means}",
         pruned.total_removed(),
-    );
-    Ok(())
+    )
 }
 
 /// `rigger reset --runs` (spec 21, unit 2) - drop the decisions and findings of every
@@ -15678,6 +15724,129 @@ mod tests {
             dash_pgid, parent_pgid,
             "the spawned dash is in a DIFFERENT process group than the step process that spawned \
              it - so tearing down the step command's process group does not reap the dash"
+        );
+    }
+
+    // --- Spec 60, criterion 5: what `rigger reset --derived` SAYS about what it did ---
+
+    /// A prune report with `removed` rows spread over the shipped derived types and the given
+    /// reclamation state. Built from the real type list so a fifth derived type cannot leave this
+    /// pinning a report shape nothing renders.
+    fn report_of(removed: usize, reclaimed: Option<u64>, failure: Option<&str>) -> String {
+        let types = rigger::ingest::DERIVED_INDEX_TYPES;
+        let pruned = PrunedDerived {
+            removed: types
+                .iter()
+                .enumerate()
+                .map(|(i, t)| (t.to_string(), if i == 0 { removed } else { 0 }))
+                .collect(),
+            reclaimed_bytes: reclaimed,
+            compaction_error: failure.map(str::to_string),
+        };
+        derived_prune_report(&pruned)
+    }
+
+    /// Spec 60, criterion 5: a compaction that failed AFTER the deletes committed is reported, not
+    /// swallowed into an error that says only that something went wrong.
+    ///
+    /// The rows are gone from the log by then. An operator told only "error" cannot tell that from
+    /// a prune that never ran, so they cannot know whether to run it again, and they never see the
+    /// per-type counts the command exists to give them. The line therefore carries the counts, the
+    /// failure by name, and the two things that follow from the ordering: the deletes are durable
+    /// and a re-run is safe.
+    #[test]
+    fn a_compaction_that_failed_after_the_deletes_is_reported_beside_the_counts() {
+        let out = report_of(7, None, Some("database or disk is full"));
+        assert!(
+            out.contains("pruned 7 redundant derived-index event(s)"),
+            "a failed compaction must not cost the operator the counts; got {out:?}"
+        );
+        assert!(
+            out.contains("database or disk is full"),
+            "the report must NAME the failure, or an operator cannot act on it; got {out:?}"
+        );
+        for (fact, needle) in [
+            ("say the deletes survived it", "deletes are committed"),
+            ("say a re-run is safe", "re-running"),
+        ] {
+            assert!(
+                out.contains(needle),
+                "the failed-compaction report must {fact} ({needle:?}); got {out:?}"
+            );
+        }
+        assert!(
+            !out.contains("byte(s) on disk"),
+            "a compaction that failed reclaimed nothing it can put a number on; got {out:?}"
+        );
+    }
+
+    /// Spec 60, criterion 5: a prune that shed nothing says the file was left as it stands, and
+    /// justifies itself by WHAT THIS LOG HOLDS - never by WHEN the log was written.
+    ///
+    /// A log written since the ingest dedup existed does NOT always prune to zero: a file whose
+    /// content returns to a generation the log already recorded re-records that whole batch by
+    /// design, so "written after the dedup" implies nothing about the count. Justifying the zero
+    /// report that way is the sentence an operator uses to decide whether a NON-zero prune means
+    /// the dedup is broken, so it has to be a statement about the log in front of them.
+    #[test]
+    fn a_prune_that_shed_nothing_is_justified_by_this_log_not_by_when_it_was_written() {
+        let out = report_of(0, Some(0), None);
+        for (fact, needle) in [
+            ("say WHY nothing was shed", "no redundancy to shed"),
+            ("say the report is the EXPECTED one", "expected report"),
+            ("say it is not a failure", "not a failed prune"),
+            (
+                "say the file was not rewritten",
+                "left exactly as it stands",
+            ),
+        ] {
+            assert!(
+                out.contains(needle),
+                "the report on a clean log must {fact} ({needle:?}); got {out:?}"
+            );
+        }
+        assert!(
+            !out.contains("written since"),
+            "the zero report must not rest on WHEN the log was written: a log written since the \
+             dedup existed still re-records a file's batch whenever its content returns to a \
+             generation the log already held, so that reasoning would make a perfectly correct \
+             non-zero prune look like a broken dedup. Got {out:?}"
+        );
+    }
+
+    /// Spec 60, criterion 5: a prune that DID shed rows explains why a deduplicated log still had
+    /// something to shed, and carries none of the clean-log clause.
+    #[test]
+    fn a_prune_that_shed_rows_explains_the_duplication_a_deduplicated_log_still_accumulates() {
+        let out = report_of(12, Some(4096), None);
+        for (fact, needle) in [
+            ("name the shape that re-records a batch", "RETURNS"),
+            ("give the operator the ordinary cause", "revert"),
+            (
+                "say it is not a broken dedup",
+                "not a sign the ingest dedup is broken",
+            ),
+        ] {
+            assert!(
+                out.contains(needle),
+                "a non-zero prune must {fact} ({needle:?}), or an operator reads it as the dedup \
+                 having failed; got {out:?}"
+            );
+        }
+        for needle in [
+            "no redundancy to shed",
+            "expected report",
+            "not a failed prune",
+        ] {
+            assert!(
+                !out.contains(needle),
+                "the clean-log clause must not print on a prune that shed rows ({needle:?}); got \
+                 {out:?}"
+            );
+        }
+        assert!(
+            out.contains("reclaimed 4096 byte(s) on disk"),
+            "a measured reclamation is reported as the measurement it is; got {out:?}"
         );
     }
 }

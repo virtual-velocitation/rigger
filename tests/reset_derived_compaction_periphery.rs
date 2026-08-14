@@ -1168,10 +1168,12 @@ const SHIPPED_DOCS: [&str; 2] = [
 /// stayed at their pre-change text, so the guidance for a command that deletes from an append-only
 /// log was not actually shipped to anyone.
 ///
-/// So the shipped bytes are read directly and held to the five things an operator must know before
-/// running it - WHAT IT KEEPS, WHAT IT COSTS, that the file shrinks, WHAT IT CANNOT RECLAIM, and
-/// that the two prunes compose - plus the proof that these documents were rendered from the real
-/// context at all.
+/// So the shipped bytes are read directly and held to the things an operator must know before
+/// running it - WHAT IT KEEPS, WHAT IT COSTS (both what the other events cost, which is nothing,
+/// and what the rewrite costs, which is a full copy of the log on a partition they are probably
+/// not watching), that the file shrinks, WHAT IT CANNOT RECLAIM, the one case in which a
+/// deduplicated log still has rows to shed, and that the two prunes compose - plus the proof that
+/// these documents were rendered from the real context at all.
 ///
 /// AND THEN TO THE RENDERER'S OWN TEXT, WORD FOR WORD, which is the assertion that can actually go
 /// red on staleness. A list of substrings cannot: a uniformly stale render satisfies every one of
@@ -1202,6 +1204,18 @@ fn the_committed_operator_documents_ship_the_derived_prunes_guidance() {
             ("say what it costs everything else", "byte-for-byte"),
             ("say the file actually shrinks", "shrinks on disk"),
             ("say what it CANNOT reclaim", "WHAT IT CANNOT RECLAIM"),
+            (
+                "say when a DEDUPLICATED log still prunes rows",
+                "RETURNED to a generation the log had already recorded",
+            ),
+            (
+                "say where the compaction stages its copy of the log",
+                "temporary directory",
+            ),
+            (
+                "say a prune with nothing to shed does not rewrite the file",
+                "leaves the file exactly as it found it",
+            ),
             (
                 "show the two prunes composing",
                 "rigger reset --runs --derived",
@@ -3597,11 +3611,11 @@ fn the_shipped_policy_declares_the_fold_s_own_partition_and_the_prune_applies_th
 // ---------------------------------------------------------------------------------------
 // 20. The report on a log with NOTHING TO SHED - a promise the shipped documents now make.
 //
-// The committed operator guidance states, in the paragraph section 7 pins word for word, that a
-// log written since the ingest dedup existed holds one event per distinct fact, that `rigger reset
-// --derived` deletes ZERO rows from it "and reports so", and that this is the expected report
-// rather than a failure. That is a claim about the BINARY, made in a document, and the only thing
-// that can hold the two together is a test that runs the binary on such a log.
+// The committed operator guidance states, in the paragraph section 7 pins word for word, that on a
+// log holding no key twice `rigger reset --derived` deletes ZERO rows from it "and reports so",
+// and that this is the expected report rather than a failure. That is a claim about the BINARY,
+// made in a document, and the only thing that can hold the two together is a test that runs the
+// binary on such a log.
 //
 // It is the case an operator is most likely to meet first and least able to interpret: a command
 // that deletes from an append-only log printing `pruned 0` looks exactly like a command that
@@ -3818,5 +3832,101 @@ fn the_command_reports_an_unmeasurable_reclamation_as_unmeasured_rather_than_as_
         "the unmeasured report must tell an operator where the freed pages went, or it reads as a \
          prune that failed to reclaim rather than one whose reclamation was deferred; got \
          {contended:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------------------
+// 22. WHAT A PRUNE THAT SHED NOTHING MUST NOT DO: rewrite the whole file.
+//
+// Section 20 pins what the zero-delete prune SAYS. This pins what it COSTS, which is the half a
+// row-and-date comparison cannot see: a full file rewrite leaves every row byte-for-byte too, so
+// section 20 is satisfied by a command that vacuumed the entire log to reclaim nothing.
+//
+// It is the path the shipped guidance calls the expected one, so it is the path an operator runs
+// most often, and the rewrite is the most expensive thing the command can do: it holds the write
+// lock for a full scan of the log, stages a COMPLETE second copy of the database in the operating
+// system's temporary directory - which on the ordinary layout is a different, much smaller
+// filesystem than the one holding `.rigger/` - and reclaims exactly the pages the deletes freed,
+// which on this path is none of them. Skipping it is also what keeps the post-commit failure of
+// section 23 off the path where there was nothing to fail for.
+//
+// FREE PAGES ARE PLANTED FIRST, because an untouched file and a vacuumed one are indistinguishable
+// unless the vacuum has something to reclaim. A table created and dropped leaves its pages on the
+// freelist; VACUUM drives that count to zero and shrinks `page_count` with it, so both counts
+// standing still is the assertion that no rewrite ran.
+// ---------------------------------------------------------------------------------------
+
+/// A whole-number `PRAGMA` read through a connection of its own, so the measurement never depends
+/// on the state of the connection the store is using.
+fn pragma_i64(db: &Path, pragma: &str) -> i64 {
+    rusqlite::Connection::open(db)
+        .expect("open the event log")
+        .query_row(&format!("PRAGMA {pragma}"), [], |r| r.get(0))
+        .unwrap_or_else(|e| panic!("read PRAGMA {pragma}: {e}"))
+}
+
+/// Leave roughly `pages` worth of reclaimable free pages in `db`: a table filled and dropped
+/// releases its pages to the freelist, where they stay until something vacuums the file.
+fn plant_free_pages(db: &Path, rows: u64) {
+    let conn = rusqlite::Connection::open(db).expect("open the event log");
+    conn.execute_batch(&format!(
+        "CREATE TABLE junk(x BLOB);
+         INSERT INTO junk(x)
+           WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c WHERE i < {rows})
+           SELECT randomblob(600) FROM c;
+         DROP TABLE junk;"
+    ))
+    .expect("plant reclaimable free pages");
+}
+
+#[test]
+fn a_prune_that_sheds_nothing_leaves_the_file_unrewritten() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("clean.db");
+    let backend = Store::open(db.to_str().unwrap()).unwrap();
+    // ONE recording per replay key: the clean log the shipped guidance describes, differing from
+    // every duplicated fixture in this file by exactly the round count.
+    seed_namespace(&backend, "clean", 1);
+    plant_free_pages(&db, 3_000);
+
+    let pages_before = pragma_i64(&db, "page_count");
+    let free_before = pragma_i64(&db, "freelist_count");
+    assert!(
+        free_before > 100,
+        "the fixture must leave real free pages, or an untouched file and a vacuumed one look \
+         identical; the freelist holds {free_before} page(s)"
+    );
+
+    let pruned = prune_all_types(&backend, &Namespaced::prefix_for("clean"));
+    assert_eq!(
+        pruned.total_removed(),
+        0,
+        "the fixture holds no key twice, so nothing may be shed; got {:?}",
+        pruned.removed
+    );
+    assert_eq!(
+        pruned.reclaimed_bytes,
+        Some(0),
+        "a prune that deleted nothing reclaimed nothing, and that is a MEASUREMENT rather than a \
+         measurement it could not take: `None` means `unmeasured` and would send an operator \
+         looking for pages that land at some later checkpoint. Got {:?}",
+        pruned.reclaimed_bytes
+    );
+    assert_eq!(
+        pruned.compaction_error, None,
+        "a compaction that never ran cannot have failed"
+    );
+
+    assert_eq!(
+        pragma_i64(&db, "freelist_count"),
+        free_before,
+        "a prune that shed nothing must not rewrite the file: VACUUM empties the freelist, so a \
+         freelist that shrank is a full rewrite that ran to reclaim zero deleted rows"
+    );
+    assert_eq!(
+        pragma_i64(&db, "page_count"),
+        pages_before,
+        "a prune that shed nothing must not shrink the file either: nothing but a rewrite can \
+         reduce the page count, so a smaller file is the rewrite this path exists to skip"
     );
 }
