@@ -698,6 +698,474 @@ impl Store {
         tx.commit().map_err(be)?;
         Ok(renamed as usize)
     }
+
+    /// Prune the DUPLICATION an already-bloated log accumulated in its derived index, and reclaim
+    /// the disk it held: for each type `identity` covers, keep the LATEST event per distinct
+    /// content key within each stream under `stream_prefix`, carry that key's earliest valid-time
+    /// onto the recording it keeps, delete every earlier recording, then `VACUUM` so the file
+    /// actually shrinks.
+    ///
+    /// This is the COMPACTION half of spec 60 - the supported way to shed duplication a store
+    /// accreted BEFORE the ingest dedup existed. The dedup above the port stops new duplication;
+    /// this removes the pile already on disk. Deleting rows and reclaiming a file is a mechanic of
+    /// the embedded store, so it lives here rather than on the port: a backend that cannot do it
+    /// says so to the operator instead of silently reporting a prune that did not happen.
+    ///
+    /// It takes the SAME [`ContentIdentity`] policy value the guard above is configured with,
+    /// rather than a metadata-key string plus a type list plus a carry list: the policy already
+    /// exists as one injected value, and re-spelling its fields as positional parameters is a
+    /// second parallel expression of one rule that can be passed in the wrong order and can drift
+    /// a call site at a time. The valid-time partition property 2 rests on is part of that value
+    /// ([`ContentIdentity::with_reasserting_types`]) for exactly that reason, and it is CHECKED
+    /// here before a single row is read, because it is the one input to this function that can
+    /// corrupt the projection while leaving every row looking intact.
+    ///
+    /// Four properties, each load-bearing:
+    ///
+    /// 1. **Per KEY, not per subject.** A content key names a file AND its content generation, so
+    ///    a superseded generation is a DISTINCT key whose latest recording survives. The
+    ///    justification is not that some reader re-reads superseded generations - the sink rule
+    ///    deliberately seeds from the LATEST generation only, and says so. It is that per-key is
+    ///    the FAIL-SAFE direction, stated as three properties rather than as a belief about a
+    ///    consumer: it deletes a strict SUBSET of what a per-subject rule would delete; it leaves
+    ///    the per-key `MAX(position)` byte-identical, because only recordings BEHIND a key's
+    ///    survivor are eligible; and its unit of redundancy is exactly the ingest dedup's - the
+    ///    whole `<prefix>/<file>@<hash>#<i>` key - so the prune can never call redundant anything
+    ///    the layer above it would have re-emitted. A per-subject rule would have to decide which
+    ///    of a subject's generations is dead, which is a judgement this store has no standing to
+    ///    make; per-key makes none.
+    /// 2. **A RE-ASSERTED key's valid-time is CARRIED, not dropped.** A projection that
+    ///    re-asserts a fact in place keeps its EARLIEST valid-time ("it has held since it first
+    ///    became true"), so deleting that key's earliest recording would silently re-date the
+    ///    fact to whichever recording survived - and for the design-intent edge class the date IS
+    ///    the value. The policy's own declaration ([`ContentIdentity::reasserts`]) names the types
+    ///    this is true of; each of their surviving rows takes its group's `MIN(valid_from)` before
+    ///    the deletes run. Because a minimum is
+    ///    associative and every deleted row's valid-time is at or above the minimum retained on
+    ///    its survivor, the compacted log then yields exactly the valid-times the whole log
+    ///    yields. A type NOT named here is one whose batch SUPERSEDES the subject's prior
+    ///    assertions, so the surviving (latest) recording's own valid-time is already the one a
+    ///    fold arrives at, and carrying an earlier one onto it would MOVE the graph rather than
+    ///    preserve it. WHICH types are which is not this store's knowledge to hold - it is a fact
+    ///    about the fold, so it arrives as data (see `contextgraph::refold_supersedes_prior_edges`
+    ///    and `ingest::reasserted_derived_types`, where the partition is derived once).
+    ///
+    ///    THERE IS NO SAFE DEFAULT FOR AN UNDECLARED PARTITION, so this REFUSES rather than
+    ///    picking one. Treating an undeclared policy as "nothing re-asserts" would not be the
+    ///    fail-safe direction: the deletes below run over every covered type either way, so an
+    ///    unnamed re-asserting type would have its earliest recordings deleted with no carry and
+    ///    every one of its facts silently re-dated - the exact corruption this property exists to
+    ///    prevent. The opposite default fails the other way, dragging a superseded fact back to a
+    ///    date its fold retired. A policy that never declared the partition, or that declares a
+    ///    type it does not cover, is therefore an [`Error::Backend`] before any row is read.
+    ///    Declaring an EMPTY list is a different thing and is honored: it is a caller stating that
+    ///    none of its types re-assert.
+    /// 3. **Nothing else is touched.** Only the types `identity` covers are eligible, and within
+    ///    them only a row whose key is recorded again LATER in the same stream. A row with no key
+    ///    at all names no content generation and is never provably redundant, so it is left alone -
+    ///    the fail-safe direction. Every surviving row keeps its position, its per-stream revision,
+    ///    its type, its id, its payload bytes and its metadata; the ONLY column this writes is the
+    ///    valid-time of a surviving DERIVED row whose duplicates it deleted, and it writes the
+    ///    value the fold would have derived anyway. No non-derived row is read, written, or moved.
+    /// 4. **The gaps it leaves are safe.** Deleting from the middle of a stream leaves holes in
+    ///    that stream's revisions, which is exactly why [`Store::append`] reads the stream's
+    ///    current revision as `MAX(revision)` rather than counting rows - see the comment there.
+    /// 5. **Everything after the commit is a REPORT, not an outcome.** The deletes are durable the
+    ///    moment the transaction commits; the space reclamation that follows can still fail, and
+    ///    when it does this returns the counts with the failure NAMED beside them rather than an
+    ///    `Err` that says only that something went wrong with a log which HAS been pruned. And it
+    ///    only runs at all when the FILE has free space to reclaim - never merely because this
+    ///    pass deleted something, and never merely because it did not. A file holding no free
+    ///    page is left exactly as it stands rather than rewritten in full to reclaim nothing;
+    ///    a file holding free pages is reclaimed even by a pass that deleted nothing, which is
+    ///    what makes re-running the command after a failed reclamation the remedy this reports
+    ///    tell an operator it is.
+    pub fn prune_derived_index(
+        &self,
+        stream_prefix: &str,
+        identity: &ContentIdentity,
+    ) -> Result<PrunedDerived, Error> {
+        self.prune_derived_index_compacting_with(stream_prefix, identity, compact_in_place)
+    }
+
+    /// [`Store::prune_derived_index`] with its post-commit space reclamation INJECTED.
+    ///
+    /// The seam exists because that step's real failures - a temporary directory too small for the
+    /// full copy the rewrite stages there, a writer holding the file past the busy timeout - are
+    /// properties of the machine, not of this code, so the only way to pin what the prune does
+    /// WITH a failure is to hand it one. Production has exactly one implementation
+    /// ([`compact_in_place`]) and the public entry point above passes it; nothing chooses.
+    fn prune_derived_index_compacting_with(
+        &self,
+        stream_prefix: &str,
+        identity: &ContentIdentity,
+        compact: impl FnOnce(&Connection) -> Result<Compaction, Error>,
+    ) -> Result<PrunedDerived, Error> {
+        // THE PARTITION IS CHECKED BEFORE ANY ROW IS READ (property 2). Both failures here are
+        // silent when they are wrong - a re-dated fact leaves every row looking perfectly intact -
+        // so they are refused rather than defaulted, and refused up front so a policy that cannot
+        // be acted on never takes the write lock at all.
+        let Some(declared) = identity.reasserting() else {
+            return Err(Error::Backend(format!(
+                "prune_derived_index: the content-identity policy for {:?} has not declared which \
+                 of its types re-assert a fact in place (ContentIdentity::with_reasserting_types). \
+                 Without it a compaction cannot know whether a key's EARLIEST recorded valid-time \
+                 is the one the projection holds, and either default silently re-dates facts. \
+                 Refusing rather than guessing.",
+                identity.types()
+            )));
+        };
+        if let Some(stray) = declared.iter().find(|t| !identity.covers(t)) {
+            return Err(Error::Backend(format!(
+                "prune_derived_index: the content-identity policy declares {stray:?} as \
+                 re-asserting, but does not cover that type ({:?}). A declaration naming a type \
+                 this policy will never prune describes some other policy, so it cannot be the \
+                 partition for this one. Refusing rather than pruning against a declaration that \
+                 does not fit.",
+                identity.types()
+            )));
+        }
+
+        let key = key_expr(identity.meta_key());
+        // Property 2: the survivor of every DUPLICATED key inherits its group's EARLIEST
+        // valid-time, so the fact keeps the date it first became true. Runs BEFORE the delete,
+        // while the group is still whole.
+        //
+        // ONE set-based pass, deliberately: the group's minimum and its survivor come from a
+        // SINGLE grouped scan of the type's rows (`HAVING COUNT(*) > 1` is what keeps a key
+        // recorded once from ever being rewritten, and the survivor is that group's
+        // `MAX(position)` - the same row `ROW_NUMBER() ... ORDER BY position DESC` calls `rn = 1`
+        // below). Written as a correlated `MIN()` subquery per survivor instead, this re-scans the
+        // type's rows once PER CARRIED ROW: on a real pre-dedup log with no index on the key
+        // expression that is hours of held write lock for a prune whose deletes take seconds, and
+        // the cost grows with the square of the log it exists to shrink.
+        let carry = format!(
+            "UPDATE events
+                SET valid_from = g.earliest
+               FROM (SELECT MIN(valid_from)  AS earliest,
+                            MAX(position)    AS survivor
+                       FROM events
+                      WHERE type = ?1
+                        AND substr(stream, 1, length(?2)) = ?2
+                        AND {key} IS NOT NULL
+                      GROUP BY stream, {key}
+                     HAVING COUNT(*) > 1) AS g
+              WHERE events.position = g.survivor"
+        );
+        // Every recording of a covered key EXCEPT the last one in its stream. `ROW_NUMBER` ranks a
+        // key's recordings newest-first, so `rn = 1` is the surviving one and everything beyond it
+        // is a superseded duplicate.
+        let sql = format!(
+            "DELETE FROM events WHERE position IN (
+               SELECT position FROM (
+                 SELECT position, ROW_NUMBER() OVER (
+                          PARTITION BY stream, {key} ORDER BY position DESC) AS rn
+                 FROM events
+                 WHERE type = ?1
+                   AND substr(stream, 1, length(?2)) = ?2
+                   AND {key} IS NOT NULL
+               ) WHERE rn > 1
+             )"
+        );
+
+        let mut guard = self.conn.lock().unwrap();
+        // THE OPERATOR'S BEFORE, taken before a single row is deleted. What the reclamation is
+        // reported as is the space the LOG LOST ON DISK across the whole command, so it is
+        // measured where the command starts rather than derived from a page count inside the
+        // rewrite: a page count is the database's LOGICAL size, it counts pages living only in an
+        // un-checkpointed `-wal`, and a figure computed from it can name a reclamation over a
+        // file that grew. This is the number an operator reproduces by measuring the log before
+        // they run the command and again after, which is the only check they can make.
+        //
+        // `None` for a database with no file behind it (`:memory:`, a temporary database): there
+        // are no bytes on disk to have lost, so the reclamation below is reported as UNMEASURED
+        // rather than as a zero that claims a measurement was taken.
+        let db_file = guard
+            .path()
+            .filter(|p| !p.is_empty())
+            .map(|p| p.to_string());
+        let on_disk_before = db_file.as_deref().map(bytes_on_disk);
+        let types = identity.types();
+        let mut removed: Vec<(String, usize)> = Vec::with_capacity(types.len());
+        {
+            // ONE transaction for the whole prune: a partial compaction is not a state an operator
+            // can reason about. The carry-forward shares it, so a log can never be left with its
+            // duplicates deleted and its survivors' valid-times un-carried.
+            //
+            // WHAT `BEGIN IMMEDIATE` BUYS, AND WHAT IT DOES NOT. It takes the write lock up front,
+            // so this transaction cannot fail the deferred lock upgrade a read-then-write
+            // transaction attempts half way through - that failure mode is closed. It does NOT
+            // make a concurrent appender safe: the lock is held for the WHOLE delete, which on a
+            // large log runs for longer than `busy_timeout` (5000ms, set in `SCHEMA` above -
+            // measured at roughly 8s of held lock on a 165MB log), and an appender that waits out
+            // its timeout gets `database is locked` and does NOT retry. So a prune over a big log
+            // can cost a concurrent writer its append. That is why this is maintenance run BETWEEN
+            // runs and never against a live one, which is what the shipped guidance says; the
+            // window is bounded here, not eliminated.
+            let tx = guard
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(be)?;
+            {
+                let mut carry_stmt = tx.prepare(&carry).map_err(be)?;
+                let mut stmt = tx.prepare(&sql).map_err(be)?;
+                for t in types {
+                    // `Some(_)` throughout: the undeclared case returned above, so every covered
+                    // type here has an answer and none is defaulted.
+                    if identity.reasserts(t) == Some(true) {
+                        carry_stmt
+                            .execute(params![t.as_str(), stream_prefix])
+                            .map_err(be)?;
+                    }
+                    let n = stmt
+                        .execute(params![t.as_str(), stream_prefix])
+                        .map_err(be)?;
+                    removed.push((t.clone(), n));
+                }
+            }
+            tx.commit().map_err(be)?;
+        }
+
+        // FROM HERE ON THE DELETES ARE DURABLE, so nothing below may turn this call into an
+        // `Err`. An error return would tell the operator only that something failed, about a log
+        // that HAS been pruned: not the per-type counts, not that a prune happened at all - the
+        // one outcome this command's design says an operator cannot detect. So the reclamation's
+        // failure is CARRIED BACK beside the counts instead, and the same honesty that reports an
+        // unmeasurable reclamation as unmeasured reports an unrun one as named.
+        //
+        // AND WHETHER IT RUNS AT ALL IS DECIDED BY THE FILE, not by this pass's deletes - see
+        // [`compact_in_place`], which skips a file holding no free page. The two directions are
+        // one rule and both matter. A rewrite over a file with nothing to reclaim holds the write
+        // lock for a full scan and stages a COMPLETE copy of the database in the temporary
+        // directory SQLite resolves (a different, typically much smaller filesystem than the one
+        // holding the log) to reclaim nothing at all - and that is the path the shipped guidance
+        // calls the expected one, so it is the path an operator runs most. A rewrite gated the
+        // OTHER way, on this pass having deleted something, would never run again over the log a
+        // FAILED reclamation leaves behind: the first pass took the duplication, so the re-run
+        // this report tells the operator is safe deletes nothing, and the space it was told to
+        // re-run for would stay in the file forever.
+        match compact(&guard) {
+            // Nothing to reclaim, nothing rewritten: zero bytes is the MEASUREMENT here, not a
+            // measurement that could not be taken - but only where a FILE existed to measure.
+            // A database with no file behind it has no reading to report, and a `Some(0)`
+            // beside `on_disk_measured: false` would claim a measurement the flag denies;
+            // unmeasured is the honest report there, exactly as on the pending path below.
+            Ok(Compaction::Skipped) => Ok(PrunedDerived {
+                removed,
+                reclaimed_bytes: db_file.as_deref().map(|_| 0),
+                compaction_ran: false,
+                on_disk_measured: db_file.is_some(),
+                compaction_error: None,
+            }),
+            // The rewrite ran and its result is on disk NOW, so the before taken above and the
+            // after taken here bracket the whole command: their difference is what the log lost.
+            Ok(Compaction::Landed) => Ok(PrunedDerived {
+                removed,
+                reclaimed_bytes: db_file
+                    .as_deref()
+                    .zip(on_disk_before)
+                    .map(|(db, before)| before.saturating_sub(bytes_on_disk(db))),
+                compaction_ran: true,
+                on_disk_measured: db_file.is_some(),
+                compaction_error: None,
+            }),
+            // The rewrite ran but its result has NOT landed: the freed frames are still in the
+            // write-ahead log, so any difference measured now is between two states of a move
+            // that has not finished. Unmeasured is the honest report.
+            Ok(Compaction::Pending) => Ok(PrunedDerived {
+                removed,
+                reclaimed_bytes: None,
+                compaction_ran: true,
+                on_disk_measured: db_file.is_some(),
+                compaction_error: None,
+            }),
+            Err(e) => Ok(PrunedDerived {
+                removed,
+                reclaimed_bytes: None,
+                compaction_ran: true,
+                on_disk_measured: db_file.is_some(),
+                compaction_error: Some(e.to_string()),
+            }),
+        }
+    }
+}
+
+/// Total bytes the database at `db` occupies on disk: the main file plus its write-ahead log,
+/// which is where a WAL-mode database's most recent pages live until a checkpoint folds them
+/// back. Counting only the main file would report a reclamation over a log whose `-wal` had just
+/// grown by more than the file shrank.
+///
+/// A file that is not there counts as zero rather than failing: the `-wal` does not exist before
+/// the first write and is deleted on a clean close, and neither absence is an error about the
+/// space the log occupies.
+fn bytes_on_disk(db: &str) -> u64 {
+    let len = |p: &str| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+    len(db) + len(&format!("{db}-wal"))
+}
+
+/// What the post-commit space reclamation did to the file, which is the only thing about it the
+/// prune cannot work out for itself.
+///
+/// Three outcomes rather than a byte count, because HOW MANY bytes the log lost is a property of
+/// the whole command (measured either side of it by [`Store::prune_derived_index`]) while WHETHER
+/// the file was rewritten, and whether the rewrite has landed on disk yet, are properties only
+/// this step knows. Reported as a value rather than inferred by the caller from a zero, because
+/// "was not rewritten" and "was rewritten and reclaimed nothing" are different things to tell an
+/// operator and neither can be read off a number.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Compaction {
+    /// The file held no reclaimable free space, so it was NOT rewritten at all.
+    Skipped,
+    /// The file was rewritten and the result is on disk now: the truncating checkpoint folded the
+    /// write-ahead log back into the main file.
+    Landed,
+    /// The file was rewritten, but the freed frames are still in the `-wal`: a concurrent reader
+    /// held a snapshot of the write-ahead log, so they land at some later checkpoint instead.
+    Pending,
+}
+
+/// Reclaim on disk the space the file is holding free, and report whether that reclamation has
+/// landed - or that there was none to do.
+///
+/// Separated from the prune because it runs AFTER the commit, where a failure is a fact to report
+/// rather than an outcome to propagate: by the time this is called the deletes are durable, so its
+/// `Err` describes an un-reclaimed log rather than an un-pruned one.
+fn compact_in_place(conn: &Connection) -> Result<Compaction, Error> {
+    // WHAT THERE IS TO RECLAIM DECIDES WHETHER THE FILE IS TOUCHED - not what this pass deleted.
+    // The freelist is where every delete's freed pages go and where they stay until something
+    // vacuums, so it is the exact question "is a rewrite worth its cost", asked of the file
+    // rather than of the caller. It answers the two directions the caller must not get wrong:
+    // a file with nothing to reclaim is never rewritten to reclaim nothing, and a file that IS
+    // holding free space is reclaimed even when this pass deleted none of it - which is what
+    // makes re-running the command the real remedy for a reclamation that failed.
+    let free_pages: i64 = conn
+        .query_row("PRAGMA freelist_count", [], |r| r.get(0))
+        .map_err(be)?;
+    if free_pages == 0 {
+        return Ok(Compaction::Skipped);
+    }
+    // VACUUM cannot run inside a transaction, so it follows the commit.
+    conn.execute_batch("VACUUM").map_err(be)?;
+    // Fold the WAL back into the main file so the shrink lands on disk NOW rather than at some
+    // later checkpoint: the reported reclamation must match what the operator sees on disk.
+    //
+    // `PRAGMA wal_checkpoint` RETURNS ITS OUTCOME, and TRUNCATE is the mode that can decline:
+    // its first column is 1 when a reader still held a snapshot of the write-ahead log, in
+    // which case the frames stay in the `-wal` file and the file on disk did NOT shrink -
+    // total bytes on disk can even go UP. Discarding that column is what would turn the
+    // caller's before-and-after into a claim, so it is read. Retried a bounded number of
+    // times because a blocked checkpoint is transient (the deletes are already committed and
+    // the vacuum is done, so this is only about WHEN the frames land), and when it is still
+    // blocked the reclamation is reported as UNKNOWN rather than as a number the operator's
+    // own `ls` contradicts.
+    for attempt in 0..CHECKPOINT_TRUNCATE_ATTEMPTS {
+        let busy: i64 = conn
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))
+            .map_err(be)?;
+        if busy == 0 {
+            return Ok(Compaction::Landed);
+        }
+        if attempt + 1 < CHECKPOINT_TRUNCATE_ATTEMPTS {
+            std::thread::sleep(CHECKPOINT_TRUNCATE_BACKOFF);
+        }
+    }
+    Ok(Compaction::Pending)
+}
+
+/// How many times [`compact_in_place`] asks a blocked `wal_checkpoint(TRUNCATE)` again before it
+/// reports the on-disk reclamation as unmeasured, and how long it waits between asks.
+///
+/// Bounded and short on purpose: the prune's transaction has already committed and its vacuum has
+/// already run by the time this matters, so the only thing at stake is whether the freed frames
+/// land in the main file NOW or at the next checkpoint some later writer performs. Waiting a
+/// reader out indefinitely would trade a correct, honestly-reported result for a hang.
+const CHECKPOINT_TRUNCATE_ATTEMPTS: u32 = 5;
+const CHECKPOINT_TRUNCATE_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// What one [`Store::prune_derived_index`] pass removed: the rows deleted PER TYPE (in the order
+/// the caller named the types, including the types nothing was removed from), the bytes the log
+/// lost on disk, whether it was rewritten to lose them at all, whether there was a file to
+/// measure them over in the first place, and - when the reclamation failed after the deletes had
+/// committed - what went wrong with it.
+///
+/// Per type, not just a total, because that is what an operator can check a prune against: a
+/// single number cannot be compared to what the log was expected to hold. And the reclamation's
+/// failure is a FIELD rather than an error return for the same reason: the deletes are durable
+/// before the reclamation is attempted, so a prune whose reclamation failed still has counts an
+/// operator needs, and an `Err` carrying only the failure describes a log that was in fact pruned.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PrunedDerived {
+    /// `(type, rows deleted)`, in the order the caller named the types.
+    pub removed: Vec<(String, usize)>,
+    /// Bytes the LOG LOST ON DISK across this whole call, or `None` when that could not be
+    /// measured because a concurrent reader still held a write-ahead-log snapshot when the
+    /// truncating checkpoint ran, because the reclamation itself failed (see
+    /// [`PrunedDerived::compaction_error`]), or because the database has no file behind it (see
+    /// [`PrunedDerived::on_disk_measured`], which is what tells those last two `None`s apart).
+    ///
+    /// MEASURED, NOT DERIVED, and measured over the pair of files an operator's own `du` would
+    /// add up: the main database plus its `-wal`, sampled before the deletes and again after the
+    /// rewrite has landed. A page-count delta is a tempting substitute and is not the same
+    /// number - it is the database's LOGICAL size, it counts pages living only in an
+    /// un-checkpointed write-ahead log, and a report built from it can name a reclamation over a
+    /// file that grew.
+    ///
+    /// An `Option`, not a `0`. The bytes are on disk only once the checkpoint folds the
+    /// write-ahead log back into the main file and truncates it; while a reader holds a snapshot
+    /// that fold is declined, the freed frames stay in the `-wal`, and any difference measured
+    /// then is between two states of a move that has not finished. `None` says "unmeasured, the
+    /// pages land at the next checkpoint" and is the honest report; `Some(0)` would claim a
+    /// measurement that found nothing.
+    ///
+    /// ONE case is `Some(0)` and is exact: a pass over a file holding NO FREE SPACE, where the
+    /// rewrite is deliberately not run at all (see [`PrunedDerived::compaction_ran`]). There
+    /// "zero bytes reclaimed" is the measurement rather than a measurement that could not be
+    /// taken, and reporting it as `None` would send an operator looking for pages that some later
+    /// checkpoint will land.
+    pub reclaimed_bytes: Option<u64>,
+    /// Whether the file was REWRITTEN at all.
+    ///
+    /// `false` says the rewrite was deliberately skipped because the file held no reclaimable
+    /// free page - the most expensive thing this command can do, declined because it would have
+    /// reclaimed nothing. It is carried as its own fact because it cannot be read off the byte
+    /// count: "not rewritten" and "rewritten, and it reclaimed nothing" are different things to
+    /// tell an operator watching a compaction, and both would be `Some(0)`.
+    ///
+    /// It is NOT "this pass deleted nothing". A pass that deleted nothing still rewrites a file
+    /// that has space to reclaim, which is exactly what makes re-running the command the remedy
+    /// for a reclamation that failed after the deletes committed.
+    pub compaction_ran: bool,
+    /// Whether the before-measurement was TAKEN AT ALL: `true` when this database has a file on
+    /// disk, so the pair of sizes the reclamation is a difference of were both sampled; `false`
+    /// for a database with no file behind it (`:memory:`, a temporary database), where there was
+    /// never anything on disk to measure.
+    ///
+    /// It exists because `reclaimed_bytes: None` alongside `compaction_ran: true` has TWO causes
+    /// and the difference is invisible in the numbers: the truncating checkpoint was declined by
+    /// a concurrent reader (the bytes exist and land later), or this database has no file (there
+    /// are no bytes and none ever land). A consumer told only "unmeasured" cannot tell them
+    /// apart, so it either reports one cause for both - asserting a reader it was never told
+    /// about - or reports neither. Only the prune knows, so the prune carries it.
+    ///
+    /// It says nothing about whether the AFTER measurement was usable: a checkpoint a reader
+    /// declined leaves this `true` and the byte count `None`, which is exactly the pair that
+    /// separates the two causes.
+    pub on_disk_measured: bool,
+    /// Why the space reclamation did not complete, when it was attempted and failed - `None` when
+    /// it succeeded, and `None` when there was no free space for it to reclaim.
+    ///
+    /// It is reported rather than returned because it happens AFTER the commit: the rows are gone
+    /// from the log whatever this says, so it names a log that is pruned but not shrunk, and
+    /// re-running the prune is safe AND useful - the second pass finds nothing to delete, but the
+    /// space this one failed to reclaim is still free in the file, so the reclamation is tried
+    /// again over it.
+    pub compaction_error: Option<String>,
+}
+
+impl PrunedDerived {
+    /// Every row this pass deleted, across all types.
+    pub fn total_removed(&self) -> usize {
+        self.removed.iter().map(|(_, n)| n).sum()
+    }
 }
 
 fn be<E: std::fmt::Display>(e: E) -> Error {
@@ -733,11 +1201,17 @@ fn sql_literal(s: &str) -> String {
 /// and never mistakes one key for another. Pinned by
 /// `a_metadata_key_that_no_json_path_can_address_suppresses_nothing`.
 fn key_expr(meta_key: &str) -> String {
+    format!("json_extract(meta, {})", key_path(meta_key))
+}
+
+/// The quoted JSON path a content key is addressed by (`$."<meta_key>"`), as a SQL literal - the
+/// ONE rendering of the path, shared by every expression that reads a content key.
+fn key_path(meta_key: &str) -> String {
     let path = format!(
         "$.\"{}\"",
         meta_key.replace('\\', "\\\\").replace('"', "\\\"")
     );
-    format!("json_extract(meta, {})", sql_literal(&path))
+    sql_literal(&path)
 }
 
 /// The `IN (...)` list of the covered event types, rendered once at configuration.
@@ -953,14 +1427,23 @@ impl EventStore for Store {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(be)?;
 
-        let count: i64 = tx
+        // The stream's current revision is the HIGHEST revision it holds, not its row count minus
+        // one. The two agree on every stream that has only ever been appended to, and they part
+        // company the moment a stream has had rows DELETED from it - which the supported
+        // compaction (`Store::prune_derived_index`) does, leaving holes in the revision sequence.
+        // A count-derived cursor would then reissue a revision the stream still holds and collide
+        // on the `UNIQUE(stream, revision)` index, so a compacted store would refuse the next
+        // append. Compaction may not renumber the survivors to close the holes (that would REWRITE
+        // events it is only allowed to preserve), so the CURSOR moves instead of the rows. It is
+        // also the cheaper read: `MAX(revision)` is a seek on the tail of the `UNIQUE(stream,
+        // revision)` index, where a `COUNT(*)` walks every row the stream holds.
+        let last_revision: Revision = tx
             .query_row(
-                "SELECT COUNT(*) FROM events WHERE stream = ?1",
-                [stream],
+                "SELECT COALESCE(MAX(revision), ?2) FROM events WHERE stream = ?1",
+                params![stream, NO_STREAM],
                 |r| r.get(0),
             )
             .map_err(be)?;
-        let last_revision: Revision = count - 1; // NO_STREAM (-1) when the stream is empty
         let ok = match expected {
             ExpectedRevision::Any => true,
             ExpectedRevision::NoStream => last_revision == NO_STREAM,
@@ -980,7 +1463,7 @@ impl EventStore for Store {
         // per-stream revision, so the revision cursor advances only on a write and the
         // stream ends up advanced by exactly the events written.
         let mut placements: Vec<Option<Position>> = Vec::with_capacity(events.len());
-        let mut revision = count;
+        let mut revision = last_revision + 1;
         // Every suppression verdict is taken against the log as it stood when this
         // append began, BEFORE any of this batch's own rows exist.
         let verdicts = self.redundant_flags(&tx, stream, events, readiness)?;
@@ -2806,6 +3289,234 @@ mod tests {
                 .len(),
             batch.len(),
             "the log holds exactly one copy of the file's batch"
+        );
+    }
+
+    // --- Spec 60, criterion 5: the prune's POST-COMMIT half is reported, never propagated ---
+
+    /// A store holding `rounds` recordings of one derived-index replay key, in one namespaced
+    /// stream, plus a non-derived event that no prune may touch. The duplication the prune sheds.
+    fn seeded_with_duplicated_key(path: &str, rounds: usize) -> Store {
+        let s = Store::open(path).unwrap();
+        let mut events = vec![Event::new("RunStarted", b"{}".to_vec())];
+        for _ in 0..rounds {
+            events.push(
+                Event::new(
+                    crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                    b"{}".to_vec(),
+                )
+                .with_meta(crate::ingest::META_REPLAY_KEY, "gc/src/a.rs@h1#0"),
+            );
+        }
+        s.append("run", ExpectedRevision::Any, &events).unwrap();
+        s
+    }
+
+    /// The number of rows the log holds for the seeded replay key, read through a connection of
+    /// its own so the count is the file's and not the store's view of it.
+    fn recordings_of_the_key(path: &str) -> i64 {
+        // Read through the store's OWN key expression, so the count can never be of a key this
+        // store spells differently from the way the test wrote it.
+        let sql = format!(
+            "SELECT COUNT(*) FROM events WHERE {} = ?1",
+            key_expr(crate::ingest::META_REPLAY_KEY)
+        );
+        Connection::open(path)
+            .unwrap()
+            .query_row(&sql, params!["gc/src/a.rs@h1#0"], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// Spec 60, criterion 5: everything after the commit is a REPORT, never an error return.
+    ///
+    /// The deletes are durable the moment the transaction commits, so a failure in the space
+    /// reclamation that follows it describes a log that HAS been pruned. Propagating it hands the
+    /// operator an error and nothing else - not the per-type counts, not the fact that a prune
+    /// happened at all - which is precisely the undetectable outcome this command's design names
+    /// as the one it must never produce. So the failure is carried back beside the counts.
+    ///
+    /// The failing step is INJECTED rather than provoked, because the real triggers (a temporary
+    /// directory too small for the full copy the rewrite stages there, a writer holding the file
+    /// past the busy timeout) are properties of the machine the test runs on and would make this
+    /// pin conditional on the filesystem. That the real step can fail at all is pinned separately
+    /// by `the_real_compaction_step_reports_a_file_it_cannot_rewrite_as_an_error`.
+    #[test]
+    fn a_compaction_that_fails_after_the_commit_still_reports_what_was_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path = path.to_str().unwrap();
+        let s = seeded_with_duplicated_key(path, 4);
+
+        let pruned = s
+            .prune_derived_index_compacting_with(
+                "",
+                &crate::ingest::derived_index_identity(),
+                |_| Err(Error::Backend("database or disk is full".into())),
+            )
+            .expect("a compaction that failed after the deletes committed is not a failed prune");
+
+        assert_eq!(
+            pruned.total_removed(),
+            3,
+            "the report must still name what the committed transaction deleted; got {:?}",
+            pruned.removed
+        );
+        assert_eq!(
+            pruned.reclaimed_bytes, None,
+            "a reclamation whose step failed is unmeasured, not zero"
+        );
+        assert!(
+            pruned
+                .compaction_error
+                .as_deref()
+                .is_some_and(|e| e.contains("database or disk is full")),
+            "the report must NAME the failure, or an operator cannot tell a skipped compaction \
+             from a failed one; got {:?}",
+            pruned.compaction_error
+        );
+        assert_eq!(
+            recordings_of_the_key(path),
+            1,
+            "and the deletes really are committed: that is why the failure below them cannot be \
+             an error return"
+        );
+    }
+
+    /// Spec 60, criterion 5: the post-commit step this store guards against failing really can
+    /// fail, so the capture above is not a defense against an imaginary error.
+    ///
+    /// A file the process cannot write is the reachable shape of every trigger: the rewrite needs
+    /// to write both the database and a full copy of it, and either can be refused.
+    ///
+    /// FREE PAGES ARE PLANTED FIRST because the rewrite is triggered by the space there is to
+    /// reclaim: on a file holding none, the honest answer is to skip the rewrite entirely, and a
+    /// step that was never asked to write cannot report that it could not.
+    #[test]
+    fn the_real_compaction_step_reports_a_file_it_cannot_rewrite_as_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        drop(Store::open(path.to_str().unwrap()).unwrap());
+        plant_free_pages(&path, 400);
+        let readonly = Connection::open_with_flags(
+            &path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+        )
+        .unwrap();
+        let err = compact_in_place(&readonly)
+            .expect_err("a database this connection cannot write cannot be rewritten in place");
+        assert!(
+            matches!(err, Error::Backend(_)),
+            "the step reports a backend failure; got {err:?}"
+        );
+    }
+
+    /// Leave roughly `rows` blobs' worth of reclaimable free pages in `db`: a table filled and
+    /// dropped releases its pages to the freelist, where they stay until something vacuums.
+    fn plant_free_pages(db: &std::path::Path, rows: u64) {
+        let conn = Connection::open(db).expect("open the log to plant free pages");
+        conn.execute_batch(&format!(
+            "CREATE TABLE junk(x BLOB);
+             INSERT INTO junk(x)
+               WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c WHERE i < {rows})
+               SELECT randomblob(600) FROM c;
+             DROP TABLE junk;"
+        ))
+        .expect("plant reclaimable free pages");
+    }
+
+    /// A whole-number `PRAGMA` read through a connection of its own, so the measurement never
+    /// depends on the state of the connection the store is using.
+    fn pragma_i64(db: &std::path::Path, pragma: &str) -> i64 {
+        Connection::open(db)
+            .expect("open the log to read a pragma")
+            .query_row(&format!("PRAGMA {pragma}"), [], |r| r.get(0))
+            .unwrap_or_else(|e| panic!("read PRAGMA {pragma}: {e}"))
+    }
+
+    /// Spec 60, criterion 5: THE REMEDY THE REPORT PROMISES EXISTS. When the reclamation fails
+    /// after the deletes have committed, the command tells the operator that re-running it is
+    /// safe - and [`PrunedDerived::compaction_error`] says in so many words that the second pass
+    /// "tries the reclamation again". That promise is only true if what triggers the rewrite is
+    /// the space there is to reclaim rather than the rows THIS pass deleted: the first pass
+    /// deleted them all, so a second pass deletes nothing, and a rewrite gated on its own deletes
+    /// would never run again on that log. The space would then be unreclaimable through this
+    /// command forever, with the report cheerfully telling the operator to re-run it.
+    ///
+    /// So the failure is injected on the first pass and the REAL step runs on the second, over a
+    /// log whose freed pages are still sitting in the file.
+    #[test]
+    fn a_rerun_reclaims_the_space_a_failed_reclamation_left_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path_str = path.to_str().unwrap().to_string();
+        let s = seeded_with_duplicated_key(&path_str, 4);
+        // The deletes of a handful of small rows can free no whole page at all, which would leave
+        // this asserting that nothing was reclaimed from a file with nothing in it to reclaim.
+        // Planted free pages make the reclamation a definite figure without changing what it is.
+        plant_free_pages(&path, 3_000);
+        let free_before = pragma_i64(&path, "freelist_count");
+        let pages_before = pragma_i64(&path, "page_count");
+        assert!(
+            free_before > 100,
+            "the fixture must leave real free pages, or a reclaimed file and an untouched one \
+             look identical; the freelist holds {free_before} page(s)"
+        );
+
+        // FIRST PASS: the deletes commit, the reclamation fails.
+        let first = s
+            .prune_derived_index_compacting_with(
+                "",
+                &crate::ingest::derived_index_identity(),
+                |_| Err(Error::Backend("database or disk is full".into())),
+            )
+            .expect("a compaction that failed after the deletes committed is not a failed prune");
+        assert!(
+            first.total_removed() > 0,
+            "the first pass must be the one that sheds the duplication; got {:?}",
+            first.removed
+        );
+        assert!(
+            first.compaction_error.is_some(),
+            "the first pass's reclamation must have failed, or there is nothing for the re-run to \
+             retry; got {first:?}"
+        );
+        assert!(
+            pragma_i64(&path, "freelist_count") >= free_before,
+            "a reclamation that failed reclaimed nothing: the free pages must still be in the file"
+        );
+
+        // SECOND PASS, the one the report told the operator to run. It deletes nothing - the first
+        // pass took the duplication - and it must still reclaim the space the first pass could not.
+        let second = s
+            .prune_derived_index("", &crate::ingest::derived_index_identity())
+            .expect("the re-run the report promises is safe");
+        assert_eq!(
+            second.total_removed(),
+            0,
+            "the re-run deletes nothing - that is exactly why a rewrite gated on deletes would \
+             never retry the reclamation; got {:?}",
+            second.removed
+        );
+        assert_eq!(
+            second.compaction_error, None,
+            "the re-run's reclamation must succeed; got {second:?}"
+        );
+        assert!(
+            second.reclaimed_bytes.is_some_and(|b| b > 0),
+            "the re-run must RECLAIM the space the failed pass left behind, or the report's \
+             promise that re-running is safe is a promise that re-running is pointless; got \
+             {second:?}"
+        );
+        assert_eq!(
+            pragma_i64(&path, "freelist_count"),
+            0,
+            "and the file must actually be compact afterwards: VACUUM drives the freelist to zero"
+        );
+        assert!(
+            pragma_i64(&path, "page_count") < pages_before,
+            "the re-run must shrink the file it reclaimed from: {pages_before} page(s) before"
         );
     }
 }

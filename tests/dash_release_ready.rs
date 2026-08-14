@@ -42,13 +42,13 @@ fn served_state(events: Vec<Event>) -> Value {
     let provider = move |_instance: Option<&str>| -> Result<DashInputs, String> {
         Ok((events.clone(), Graph::default(), Vec::new(), HashMap::new()))
     };
-    // A free loopback port: bind an ephemeral listener, learn its port, release it, serve there.
-    let port = TcpListener::bind(("127.0.0.1", 0))
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    // A free loopback port this harness OWNS from `bind` through `serve_on`: the listener is handed
+    // to the server, never dropped and re-bound. Releasing it first would leave the port free for
+    // the whole handoff window, so a sibling test's `bind(0)` in this same binary could be handed
+    // it; one `serve` then wins the re-bind and the loser's client CONNECTS SUCCESSFULLY to it and
+    // reads the OTHER test's fixture - a content failure no connect-error retry can see.
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let addr = listener.local_addr().unwrap();
     // The lazy `/api/graph` provider (spec 45, criterion 1): this test drives the state poll, which
     // never consults it, so an empty graph provider satisfies `serve`'s `Fn() -> Graph` bound.
     let graph_provider = |_instance: Option<&str>| Graph::default();
@@ -57,11 +57,11 @@ fn served_state(events: Vec<Event>) -> Value {
             rigger::contextgraph::CallGraph::default()
         };
     let instances_provider = Vec::new;
-    // A detached server thread: `serve` loops until the process ends; we drive one request.
+    // A detached server thread: `serve_on` loops until the process ends; we drive one request.
     // `run_branch`/`base` are the same values `cmd_dash` threads from `resolve_run_base`.
     std::thread::spawn(move || {
-        let _ = dash::serve(
-            addr,
+        let _ = dash::serve_on(
+            listener,
             provider,
             graph_provider,
             calls_provider,

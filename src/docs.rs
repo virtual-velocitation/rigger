@@ -175,6 +175,53 @@ fn discipline_body(ctx: &DocsContext) -> String {
          driver (see the one-blessed-driver anti-patterns above), whereas `rigger reset \
          --runs` is a one-shot prune you run BEFORE launching the loop.\n"
     );
+    let _ = writeln!(s, "## Event log hygiene: the derived-index prune\n");
+    let _ = writeln!(
+        s,
+        "The EVENT LOG accumulates separately from the graph, and has its own prune: `rigger \
+         reset --derived`. Each run's project-ingest pass records the project's derived index - \
+         the code entities, inferred edges, design links, and doc concepts folded from your \
+         sources - and a log written before that pass deduplicated across runs holds the WHOLE \
+         index once per run, which is re-derivable duplication rather than history. `rigger reset \
+         --derived` keeps the LATEST event per replay key of each derived index type, deletes the \
+         superseded re-recordings, and compacts the file so events.db shrinks on disk. Every \
+         other event survives byte-for-byte - lessons, decisions, findings, gate verdicts, and \
+         the whole run history `rigger stats` and replay read. The live graph is unchanged: every \
+         recording of one key folds to the same rows, and the prune carries a pruned key's \
+         EARLIEST recorded valid-time onto the recording it keeps, so a design fact keeps the \
+         date it first became true rather than being re-dated to whichever recording survived. \
+         WHAT IT CANNOT RECLAIM, because this decides whether it is worth running at all: it only \
+         ever sheds DUPLICATE recordings of one key, never the index itself. The last recording \
+         of every key stays, so on a log that holds no key twice `rigger reset --derived` deletes \
+         ZERO rows from it and reports so - that is the expected report on a clean log, not a \
+         failure, and the derived index remains the bulk of the log by design because it is what \
+         the graph is folded from. WHEN A DEDUPLICATED LOG STILL HAS SOMETHING TO SHED, because \
+         a non-zero prune is otherwise read as a broken dedup: a log written since the dedup \
+         existed holds one recording per distinct fact EXCEPT where a file's content has \
+         RETURNED to a generation the log had already recorded - a revert, a branch switch, a \
+         checkout back - which re-records that file's whole batch by design, since a dedup that \
+         suppressed an already-recorded key would strand the graph on the version the file has \
+         since moved past. A prune that sheds rows on such a log is shedding that duplication, \
+         not covering for a defect; a log written BEFORE the dedup sheds the whole accumulated \
+         pile instead. WHAT IT COSTS TO RUN: the compaction rewrites events.db in full and stages \
+         a COMPLETE COPY of the log in SQLite's temporary directory while it does, so the free \
+         space it needs is on whichever filesystem that resolves to rather than on the partition \
+         holding .rigger/ - SQLITE_TMPDIR if you set it, else TMPDIR, else the first of /var/tmp, \
+         /usr/tmp, /tmp that exists and is writable, which on a Linux box with TMPDIR unset means \
+         /var/tmp and NOT /tmp. Set TMPDIR yourself if the default lands somewhere too small for \
+         a second copy of your log. It rewrites only when the FILE is holding reclaimable free \
+         pages, which is not the same as this run having deleted something: a prune with nothing \
+         to shed from an already-compact log leaves the file exactly as it found it and reports \
+         reclaiming zero, while a prune that sheds nothing from a log still holding free pages \
+         reclaims them. That is what makes the re-run a real remedy - if the rewrite fails after \
+         the deletes have committed, the command still reports what it removed and names the \
+         failure, and because the deletes are durable and the space they freed is still free in \
+         the file, re-running it is both safe and the way to reclaim that space. The two flags \
+         COMPOSE \
+         and each prunes its own accumulation: `rigger reset --runs --derived` sheds the dead-run \
+         graph rows and the duplicated index in one pass. Both are one-shot maintenance you run \
+         BETWEEN runs, never against a live one.\n"
+    );
 
     let _ = writeln!(s, "## Spec shape\n");
     let _ = writeln!(
@@ -413,6 +460,106 @@ mod tests {
                      (found {banned:?}); a prune reclaims disk, it does not speed a fold"
                 );
             }
+        }
+    }
+
+    /// Spec 60, criterion 5 (the shipped operator guidance for SUPPORTED COMPACTION): the same
+    /// discipline body names `rigger reset --derived` as the EVENT LOG's own prune, so `--runs`
+    /// is no longer rendered as THE prune command while a second one exists.
+    ///
+    /// It pins the four things an operator must know before running a command that deletes from
+    /// an append-only log: WHAT IT KEEPS (the latest event per replay key of each derived index
+    /// type), WHAT IT COSTS (nothing else - every other event survives byte-for-byte, so lessons,
+    /// decisions, findings and the run history `stats` and replay read are untouched), that the
+    /// FILE actually shrinks, and that the two flags COMPOSE rather than one superseding the
+    /// other. Both shipped outputs render from `discipline_body`, so the skill and the handbook
+    /// chapter cannot disagree and a drift here would drift for every consumer at once.
+    #[test]
+    fn discipline_names_reset_derived_as_the_event_logs_own_prune() {
+        let ctx = sentinel_ctx();
+        for (label, out) in [
+            ("skill", render_using_rigger_skill(&ctx)),
+            ("handbook", render_handbook_discipline(&ctx)),
+        ] {
+            assert!(
+                out.contains("rigger reset --derived"),
+                "{label} must name `rigger reset --derived` as the event log's own prune"
+            );
+            assert!(
+                out.contains("EVENT LOG"),
+                "{label} must say WHICH store the derived prune compacts - the event log, not \
+                 the graph"
+            );
+            assert!(
+                out.contains("LATEST event per replay key"),
+                "{label} must state what the derived prune KEEPS, so an operator can predict it"
+            );
+            assert!(
+                out.contains("byte-for-byte"),
+                "{label} must state that every other event survives the derived prune untouched"
+            );
+            assert!(
+                out.contains("shrinks on disk"),
+                "{label} must state that the derived prune shrinks events.db on disk"
+            );
+            assert!(
+                out.contains("rigger reset --runs --derived"),
+                "{label} must show the two prunes COMPOSING, each shedding its own accumulation"
+            );
+
+            // WHEN A DEDUPLICATED LOG STILL HAS SOMETHING TO SHED. "A log written since the dedup
+            // prunes to zero" is FALSE as a universal: a file whose content returns to a
+            // generation the log already recorded re-records its whole batch by design (an
+            // ever-recorded key test would strand the graph on the version the file moved past),
+            // so a revert, a branch switch or a checkout back leaves duplication a modern log
+            // sheds. That sentence is the one an operator uses to decide whether a non-zero prune
+            // means the dedup is broken, so the exception ships with the rule.
+            assert!(
+                out.contains("RETURNED to a generation the log had already recorded"),
+                "{label} must state the ONE case in which a log written since the dedup still \
+                 prunes rows, or a correct non-zero prune reads as a broken dedup"
+            );
+            assert!(
+                out.contains("revert"),
+                "{label} must give that case its ordinary name, so an operator recognizes it"
+            );
+
+            // WHAT IT COSTS TO RUN, which is not on the partition the operator is watching: the
+            // rewrite stages a complete copy of the log in the temporary directory, and it only
+            // runs when the FILE has free space to reclaim.
+            assert!(
+                out.contains("temporary directory"),
+                "{label} must say where the compaction stages its copy of the log, since the free \
+                 space it needs is not on the partition holding the log"
+            );
+            // AND WHICH DIRECTORY THAT IS, resolved the way SQLite resolves it. This sentence
+            // exists for exactly one job - telling an operator WHICH filesystem must hold a full
+            // copy of their log - so naming the wrong one is worse than saying nothing. SQLite's
+            // unix resolution is SQLITE_TMPDIR, then TMPDIR, then the first of /var/tmp, /usr/tmp
+            // and /tmp that it can use, so with TMPDIR unset the answer is /var/tmp and /tmp is
+            // never consulted.
+            for needle in ["SQLITE_TMPDIR", "TMPDIR", "/var/tmp"] {
+                assert!(
+                    out.contains(needle),
+                    "{label} must name how the temporary directory RESOLVES ({needle:?}): an \
+                     operator reads this to decide which filesystem needs the free space, and a \
+                     guess at the default sends them to the wrong one"
+                );
+            }
+            assert!(
+                out.contains("leaves the file exactly as it found it"),
+                "{label} must say that a prune with nothing to shed does NOT rewrite the file, or \
+                 the expected case reads as costing a full compaction"
+            );
+            // AND WHAT A RE-RUN AFTER A FAILED REWRITE ACTUALLY DOES. The command tells an
+            // operator that re-running is safe; the document has to tell them it is also the way
+            // to get the space back, which is only true because the rewrite is triggered by the
+            // free space in the file rather than by the rows that run deleted.
+            assert!(
+                out.contains("reclaimable free pages"),
+                "{label} must say what triggers the rewrite - the free pages in the file, not \
+                 this run's deletes - or a re-run after a failed reclamation reads as pointless"
+            );
         }
     }
 

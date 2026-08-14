@@ -28,8 +28,46 @@ impl<'a> Namespaced<'a> {
     pub fn new(inner: &'a dyn EventStore, project: &str) -> Self {
         Namespaced {
             inner,
-            prefix: format!("proj-{project}-"),
+            prefix: Self::prefix_for(project),
         }
+    }
+
+    /// The stream-name prefix that scopes `project`'s streams: the wire form of the namespace,
+    /// written here so a consumer takes it rather than re-spelling it.
+    ///
+    /// It is published because a store-level MAINTENANCE operation has to address a project's
+    /// streams without going through the decorator: the compacting prune
+    /// (`sqlite::Store::prune_derived_index`) works on the backend directly, since deleting rows
+    /// and reclaiming the file are not port operations. Reading the prefix from here rather than
+    /// re-spelling `proj-<id>-` at the call site is what keeps that maintenance and every
+    /// namespaced read and write on ONE SPELLING of the namespace, so a change to the wire form
+    /// can never leave a maintenance command addressing streams that no longer exist.
+    ///
+    /// It is not yet the only site that spells the form: the one-time project-identity migration
+    /// composes `proj-<id>-` itself for the two namespaces it renames BETWEEN (`main.rs`'s
+    /// `migrate_project_identity`), because one of those two is a LEGACY identity that is not this
+    /// project's identity any more. Taking the form from here is therefore the discipline this
+    /// function offers every new consumer, and the state the tree is converging on - it is not an
+    /// invariant that already holds everywhere, and stating it as one would put the next reader
+    /// wrong about where to look after changing the form.
+    ///
+    /// WHAT ONE SPELLING IS NOT: a separator-free string prefix is not a boundary between ids
+    /// where one is a prefix of another. `proj-alpha-` matches every stream of a project named
+    /// `alpha-beta` too, and no predicate over this form can tell the two apart, because the
+    /// boundary is ambiguous in the FORM: `alpha` + `-beta-run` and `alpha-beta` + `-run` are the
+    /// same bytes. Every prefix-scoped read on this decorator - `read_all`, `subscribe_all`, and
+    /// any caller-supplied filter prefix composed onto it - shares that property exactly.
+    ///
+    /// NOR ARE THE TWO SLICES BYTE-FOR-BYTE THE SAME PREDICATE, and the difference runs in the
+    /// safe direction rather than being absent. The sqlite adapter's prefix-scoped reads match
+    /// with SQL `LIKE '<prefix>%'` and no `ESCAPE` clause, so an `_` or a `%` inside a project id
+    /// is a WILDCARD there - a project directory named `my_repo` gives a read slice that also
+    /// matches `myXrepo`'s streams. The compacting prune matches the prefix LITERALLY
+    /// (`substr(stream, 1, length(?)) = ?`), so its slice is a subset of what those reads see,
+    /// never a superset. For a command that deletes rows that is the direction to be wrong in: the
+    /// prune can only ever reach streams the project's own reads already reach.
+    pub fn prefix_for(project: &str) -> String {
+        format!("proj-{project}-")
     }
 
     fn scoped(&self, stream: &str) -> String {
