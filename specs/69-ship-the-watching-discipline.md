@@ -55,9 +55,12 @@ orchestrator's own surfaces the moment it happens instead of waiting to be polle
   needed a local script is the proof every consumer needs the command). `rigger watch` polls
   the store and status authorities on an interval (default 180s, `--interval <s>`) and prints
   ONE LINE PER ANOMALY to stdout, silent otherwise, each line naming the signal, the subject,
-  and the response skill: a spawn id accumulating results without consumption (>= 3), an
-  escalated unit, a dead driver, store shrink or the out-of-order-revision signature, and a
-  status dash line nothing serves. The dead-driver signal is a CONJUNCTION, tuned by its
+  and the response skill - ONE PER SKILL SIGNAL, pinned so the command and the watch skill
+  can never disagree about what is watched: a spawn id accumulating results without
+  consumption (>= 3), an escalated unit, a unit's reject-recurrence reaching the diagnose
+  threshold (>= 3, re-alerted on each further increment - churn is a trend, and the moment to
+  audit it is BEFORE the next attempt spends), a dead driver, store shrink or the
+  out-of-order-revision signature, and a status dash line nothing serves. The dead-driver signal is a CONJUNCTION, tuned by its
   first live false positive: store not advancing for a full hour AND no step process AND
   every agent heartbeat stale (>30 min) - an adjudicator re-running two gate lanes writes
   nothing to the store for half an hour while its heartbeat stays fresh, and an alert that
@@ -131,11 +134,13 @@ orchestrator's own surfaces the moment it happens instead of waiting to be polle
   command references accuracy-pinned. This criterion OWNS the skill content; registry
   install mechanics are spec 68's, NOT this spec's.
 - [ ] a test proves THE WATCHDOG: `rigger watch --once` on a store seeded with a
-  multi-result spawn, an escalated unit, and an out-of-order tail prints one line per anomaly
-  naming signal, subject, and response skill; on a clean store it prints nothing; the
-  streaming mode dedupes a persisting anomaly until it clears. This criterion OWNS the
-  watchdog command; the driver-relayed attention push is the wire criteria's, NOT this
-  one's - the watchdog must work with the driver dead.
+  multi-result spawn, an escalated unit, a unit at reject-recurrence three, and an
+  out-of-order tail prints one line per anomaly naming signal, subject, and response skill;
+  on a clean store it prints nothing; the streaming mode dedupes a persisting anomaly until
+  it clears and re-alerts a churn count on each increment; and the command's signal set
+  covers every signal the watch skill names, pinned so the two cannot drift apart. This
+  criterion OWNS the watchdog command; the driver-relayed attention push is the wire
+  criteria's, NOT this one's - the watchdog must work with the driver dead.
 - [ ] a test proves STATUS NEVER LIES ABOUT THE DASH: with a marker naming a dead pid, status
   prints the not-serving line (naming the dead pid and the restart) and no URL; with a
   live serving dash, today's URL line is unchanged; `--json` carries the same truth. This
