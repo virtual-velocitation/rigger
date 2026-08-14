@@ -4344,3 +4344,232 @@ fn the_reclamation_the_command_reports_is_the_space_the_file_actually_lost() {
          reclaimed"
     );
 }
+
+// ---------------------------------------------------------------------------------------
+// 26. THE FACT THE REPORT CANNOT INFER: whether the file was REWRITTEN at all.
+//
+// `PrunedDerived` now carries `compaction_ran` beside the counts and the byte figure, and it is
+// the one field of that report a caller cannot work out from the others. Both of the states it
+// separates report `Some(0)` bytes - a file that was left alone because it held nothing to
+// reclaim, and a rewrite that ran and reclaimed nothing - and they are different things to tell
+// an operator watching a compaction. Every consumer of this report outside the crate reads it
+// through this struct, so the field is a contract of its own and not an implementation detail of
+// the one caller that formats it today.
+//
+// WHAT IT MUST NOT BE is the thing it was, twice, in this unit's own history: `total_removed() ==
+// 0`. That inference is wrong in exactly the case the shipped guidance sends an operator into. A
+// reclamation that fails after the deletes have committed leaves a log that is already pruned and
+// still holding the free pages, and the failure report tells them re-running is safe AND that it
+// retries the reclamation. That re-run deletes nothing. Inferred from the delete count it would
+// report a file left untouched while it was rewriting it, and a rewrite gated the same way would
+// never run at all - so the remedy the command prints would be a sentence about nothing.
+//
+// Sections 22 and 23 pin the BEHAVIOUR from both sides (nothing to reclaim means no rewrite;
+// something to reclaim means a rewrite even on a pass that shed nothing), at the store and
+// through the binary, by watching the file's bytes and its freelist. This section pins the
+// REPORT: that the flag an out-of-crate caller reads tracks that same behaviour, in the two
+// directions and in the arm where the rewrite ran but its result has not landed on disk yet.
+//
+// The two passes in the first test shed EXACTLY THE SAME NOTHING - one clean log, no key recorded
+// twice, pruned twice - so the delete count cannot be what they differ by. The only thing that
+// changes between them is the free space in the file, which is the whole claim.
+// ---------------------------------------------------------------------------------------
+
+#[test]
+fn the_rewrite_flag_follows_the_file_and_not_this_passs_delete_count() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("flag.db");
+    let backend = Store::open(db.to_str().unwrap()).unwrap();
+    let prefix = Namespaced::prefix_for("flag");
+    // ONE recording per replay key: every pass below sheds nothing, which is what makes the two
+    // reports comparable at all.
+    seed_namespace(&backend, "flag", 1);
+    // AND A SETTLED FILE. The seeding itself leaves pages on the freelist, so the state this test
+    // is about - a file with nothing to reclaim - has to be established rather than assumed.
+    prune_all_types(&backend, &prefix);
+    assert_eq!(
+        pragma_i64(&db, "freelist_count"),
+        0,
+        "the fixture must start from a file holding no reclaimable page, or the two passes below \
+         differ by something other than the free space in the file"
+    );
+
+    // PASS ONE: nothing deleted, and nothing in the file to reclaim.
+    let bytes_before = file_bytes(&db);
+    let skipped = prune_all_types(&backend, &prefix);
+    assert_eq!(
+        skipped.total_removed(),
+        0,
+        "the fixture holds no key twice, so nothing may be shed; got {:?}",
+        skipped.removed
+    );
+    assert!(
+        !skipped.compaction_ran,
+        "a file holding no reclaimable page must be reported as NOT rewritten: the rewrite is the \
+         most expensive thing this command does, and declining it is a fact the operator is owed \
+         rather than one they infer from a zero. Got {skipped:?}"
+    );
+    assert_eq!(
+        skipped.reclaimed_bytes,
+        Some(0),
+        "and the zero beside it is a MEASUREMENT - there was nothing to reclaim - never an \
+         unmeasured reclamation; got {skipped:?}"
+    );
+    assert_eq!(
+        skipped.compaction_error, None,
+        "a rewrite that never ran cannot have failed; got {skipped:?}"
+    );
+    assert_eq!(
+        file_bytes(&db),
+        bytes_before,
+        "and the flag must be TRUE OF THE FILE: a VACUUM rewrites every byte, so an unchanged \
+         byte string is what says the report of a skipped rewrite describes a skipped rewrite"
+    );
+
+    // PASS TWO: the same log and the same zero deletes, over a file that is now holding free
+    // space. This is the shape a reclamation that failed after its deletes committed leaves
+    // behind, and the shape the failure report tells an operator to re-run out of.
+    plant_free_pages(&db, 3_000);
+    let pages_before = pragma_i64(&db, "page_count");
+    let rewrote = prune_all_types(&backend, &prefix);
+    assert_eq!(
+        rewrote.total_removed(),
+        skipped.total_removed(),
+        "both passes must shed the same nothing, or the flag below could be following the delete \
+         count after all; skipped {:?}, rewrote {:?}",
+        skipped.removed,
+        rewrote.removed
+    );
+    assert!(
+        rewrote.compaction_ran,
+        "a pass that deleted nothing over a file WITH space to reclaim rewrites it, and must say \
+         so: this is the re-run the failure report calls the remedy, and a report that told the \
+         operator their log was left alone would make that remedy read as having done nothing. \
+         Got {rewrote:?}"
+    );
+    assert!(
+        rewrote.reclaimed_bytes.is_some_and(|b| b > 0),
+        "and it reclaimed real space, so the flag is not a constant; got {rewrote:?}"
+    );
+    assert_eq!(
+        rewrote.compaction_error, None,
+        "an uncontended rewrite over a writable file must not fail; got {rewrote:?}"
+    );
+    assert_eq!(
+        pragma_i64(&db, "freelist_count"),
+        0,
+        "and again the flag must be TRUE OF THE FILE: VACUUM drives the freelist to zero, which \
+         is what says a report of a rewrite describes a rewrite. Got {rewrote:?}"
+    );
+    assert!(
+        pragma_i64(&db, "page_count") < pages_before,
+        "the rewritten file must be smaller than the {pages_before} page(s) it held; got \
+         {rewrote:?}"
+    );
+}
+
+/// The arm where the rewrite RAN and its result has not reached the disk yet, which is the one an
+/// inference from the byte count gets exactly backwards.
+///
+/// A truncating checkpoint declines while any reader still holds a snapshot of the write-ahead
+/// log, so the freed frames stay in the `-wal` and the reclamation is reported as unmeasured -
+/// `None`, the same value a failure reports. Read the flag off the bytes and this file, freshly
+/// vacuumed, is indistinguishable from one nobody touched. It is the difference between telling
+/// an operator "the pages land at the next checkpoint" and telling them their log was left
+/// exactly as it stands, which is the sentence they would check their own `ls` against.
+#[test]
+fn a_declined_checkpoint_reports_the_rewrite_that_ran_rather_than_a_file_left_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("declined.db");
+    let backend = Store::open(db.to_str().unwrap()).unwrap();
+    let prefix = Namespaced::prefix_for("declined");
+    seed_namespace(&backend, "declined", 6);
+    // ROOM TO RECLAIM, or the rewrite is honestly skipped and the checkpoint this test is about
+    // is never asked for: the seeded duplication is a handful of small rows that can free no
+    // whole page.
+    plant_free_pages(&db, 3_000);
+    let free_before = pragma_i64(&db, "freelist_count");
+    assert!(
+        free_before > 100,
+        "the fixture must leave real free pages; the freelist holds {free_before} page(s)"
+    );
+
+    // A READER PARKED ON THE WRITE-AHEAD LOG - an open read transaction from a second connection,
+    // which is what a second rigger process holds.
+    let reader = rusqlite::Connection::open(&db).expect("open a second connection");
+    reader
+        .execute_batch("BEGIN")
+        .expect("begin the reader's transaction");
+    let _: i64 = reader
+        .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+        .expect("take a read snapshot");
+
+    let report = prune_all_types(&backend, &prefix);
+    drop(reader);
+
+    assert_eq!(
+        report.reclaimed_bytes, None,
+        "the premise of this test: the checkpoint was declined, so the reclamation is UNMEASURED. \
+         Got {report:?}"
+    );
+    assert_eq!(
+        report.compaction_error, None,
+        "and it was declined, not failed - the vacuum itself succeeded under the parked reader; \
+         got {report:?}"
+    );
+    assert!(
+        report.compaction_ran,
+        "the file WAS rewritten, and an unmeasured reclamation must not be reported as a file \
+         left alone: `None` bytes says only that the figure could not be taken, so the flag is \
+         the only thing separating a deferred reclamation from a rewrite that never ran. Got \
+         {report:?}"
+    );
+    assert_eq!(
+        pragma_i64(&db, "freelist_count"),
+        0,
+        "and the flag is TRUE OF THE FILE: the vacuum ran and drove the freelist to zero even \
+         though its result had not landed on disk when the report was made. Got {report:?}"
+    );
+}
+
+/// The edge of the on-disk measurement itself: a store with NO FILE behind it.
+///
+/// `Store::open(":memory:")` is a published entry point of this API (its own doc comment names
+/// it), and the reclamation the prune reports is defined as the bytes the log lost ON DISK -
+/// measured over the database file and its `-wal`, because that is the pair an operator's own
+/// `du` adds up. An in-memory database has neither, so there is no measurement to take, and the
+/// honest report is `None`: a `Some(0)` here would tell a caller that a measurement was taken
+/// over a file that does not exist and found nothing. The distinction is invisible from inside
+/// the crate's own file-backed suites, and it is the difference between "unmeasured" and "we
+/// looked and the log lost nothing".
+#[test]
+fn a_store_with_no_file_behind_it_reports_the_reclamation_as_unmeasured() {
+    let backend = Store::open(":memory:").expect("open an in-memory store");
+    let prefix = Namespaced::prefix_for("memory");
+    // ENOUGH DUPLICATION that the deletes free whole pages: the rewrite is triggered by the free
+    // space in the database, so a fixture too small to free a page would exercise the skipped arm
+    // instead of the measurement edge this test is about.
+    seed_namespace(&backend, "memory", 400);
+
+    let pruned = prune_all_types(&backend, &prefix);
+    assert!(
+        pruned.total_removed() > 0,
+        "the fixture records each key 400 times, so the prune must shed the earlier recordings; \
+         got {pruned:?}"
+    );
+    assert!(
+        pruned.compaction_ran,
+        "the deletes freed whole pages, so the rewrite ran: this test is about what the RUN \
+         reports, not about the skipped arm. Got {pruned:?}"
+    );
+    assert_eq!(
+        pruned.compaction_error, None,
+        "the rewrite of an in-memory database must not fail; got {pruned:?}"
+    );
+    assert_eq!(
+        pruned.reclaimed_bytes, None,
+        "a database with no file behind it has no bytes ON DISK to have lost, so the reclamation \
+         is UNMEASURED. `Some(0)` would claim a measurement was taken - the one value this field \
+         reserves for a file that was really looked at and had nothing to give back. Got {pruned:?}"
+    );
+}
