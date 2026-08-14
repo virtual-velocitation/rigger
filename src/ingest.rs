@@ -278,9 +278,19 @@ pub fn is_derived_index_type(type_: &str) -> bool {
     DERIVED_INDEX_TYPES.contains(&type_)
 }
 
-/// Split a derived-index content key `<prefix>/<file>@<hash>#<i>` into
-/// `(<prefix>/<file>, <hash>)`: the BATCH IDENTITY (which file's batch this is) and the CONTENT
-/// GENERATION of that batch. `None` when the key is not that shape.
+/// WHERE a derived-index content key `<prefix>/<file>@<hash>#<i>` splits: `(the byte range of the
+/// BATCH IDENTITY - which file's batch this is - , the byte range of that batch's CONTENT
+/// GENERATION)`, both indexing `key`. `None` when the key is not that shape.
+///
+/// This is THE parser of the form [`key_batch`] builds, and it is PUBLISHED because the format has
+/// more than one reader: the suppression predicate below cuts its identity and generation from it,
+/// and a composition root configuring a store's content-identity guard
+/// ([`crate::eventstore::ContentIdentity`], whose [`crate::eventstore::ContentKeySplit`] is exactly
+/// this signature) hands it in verbatim. A reader that re-spells the format instead is not a style
+/// problem: a hand-rolled copy of this split had drifted by one byte at the identity boundary while
+/// the assertion written to catch that drift stayed green over both spellings, because it only
+/// asked whether SOME split was found. The store still parses no key of its own - the split is
+/// configuration handed IN, and this is the module that owns the format to hand.
 ///
 /// The identity deliberately carries the `<prefix>` segment, so one file's code (`gc`) and design
 /// (`gd`) batches are two independent identities that never overwrite each other's generation -
@@ -289,7 +299,16 @@ pub fn is_derived_index_type(type_: &str) -> bool {
 /// cross-module naming habit; the shape (a `/`, an `@`, and a `#<digits>` tail) is what the key
 /// authority actually guarantees. `<file>` may itself contain `/`, `@` or `#`, so the tail and the
 /// hash are split from the RIGHT.
-fn derived_key_parts(key: &str) -> Option<(&str, &str)> {
+///
+/// The identity range ends BEFORE the `@` that separates it from the generation, which is exactly
+/// the property a store's range seek rests on and no more: the identity STARTS the key and every
+/// key naming this batch begins with it, so "this batch's history" is one bounded prefix range. It
+/// is not self-delimiting, so that range is a SUPERSET - `gc/README`'s range also covers
+/// `gc/README.md@h#0` - and that is the store's own documented case rather than a defect introduced
+/// here: a foreign subject nested in the range is skipped WHOLE by its own range in one step, and a
+/// walk that runs out of steps answers "undetermined", which appends. The excess can only ever cost
+/// steps, never a drop.
+pub fn derived_key_spans(key: &str) -> Option<(std::ops::Range<usize>, std::ops::Range<usize>)> {
     let (prefix, remainder) = key.split_once('/')?;
     if prefix.is_empty() {
         return None;
@@ -303,8 +322,18 @@ fn derived_key_parts(key: &str) -> Option<(&str, &str)> {
         return None;
     }
     // `key` is `<prefix>` + '/' + `<file>` + '@' + `<hash>` + '#' + `<i>`, so the identity is the
-    // key's leading `prefix.len() + 1 + file.len()` bytes - all three substrings borrow `key`.
-    Some((&key[..prefix.len() + 1 + file.len()], hash))
+    // key's leading `prefix.len() + 1 + file.len()` bytes and the generation is the `hash.len()`
+    // bytes that follow the `@` terminating it.
+    let identity = prefix.len() + 1 + file.len();
+    Some((0..identity, identity + 1..identity + 1 + hash.len()))
+}
+
+/// [`derived_key_spans`] as the two slices themselves - `(<prefix>/<file>, <hash>)` - for the
+/// callers that want the text rather than the offsets. ONE parse, two views: it cuts the ranges
+/// that function returns and computes nothing of its own.
+fn derived_key_parts(key: &str) -> Option<(&str, &str)> {
+    let (identity, generation) = derived_key_spans(key)?;
+    Some((&key[identity], &key[generation]))
 }
 
 /// The ONE project-scoped suppression predicate, expressed as the set of replay keys a derived-index
