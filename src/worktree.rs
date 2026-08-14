@@ -146,6 +146,30 @@ impl Worktree {
         })
     }
 
+    /// Re-assert THIS worktree exists on its branch, at the tip [`Self::create`] would
+    /// hand out, right now (ensure-on-park, spec 64 criterion 3: defense in depth).
+    ///
+    /// `stage_worktree` (the conductor's caller) already guarantees the worktree exists
+    /// exactly ONCE, at the top of a unit's `run_stage` call - but that single call can
+    /// go on to reach a LATER spawn point (the review tier, after the gates run - real
+    /// wall-clock time) in the SAME process. An out-of-band actor that deletes the
+    /// worktree in that window - the historical fault this whole spec closes: an agent
+    /// finding its assigned worktree gone at spawn - would otherwise hand the next spawn
+    /// a `dir` string whose directory no longer exists. Calling this again immediately
+    /// before every such LATER spawn closes that window with the SAME deterministic
+    /// adopt-or-create machinery `stage_worktree`'s first call already uses, so it never
+    /// deviates behavior for the common case: a worktree that is still exactly where it
+    /// was left is the FAST `worktree_on_branch` path-lookup inside [`Self::create`], a
+    /// cheap no-op.
+    ///
+    /// Never mutates the branch tip or discards commits - `Self::create`'s adopt path
+    /// checks out the branch's CURRENT head exactly as it is; this only guarantees the
+    /// DIR is present and checked out.
+    pub fn ensure_present(&self) -> Result<(), Error> {
+        Worktree::create(&self.repo, &self.dir, &self.branch)?;
+        Ok(())
+    }
+
     /// Whether the unit's branch has at least one commit beyond the base the run is
     /// integrating into - i.e. the branch carries committed work to REUSE on resume.
     /// A branch that exists but never advanced past the base (`git worktree add -b`

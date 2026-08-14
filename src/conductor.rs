@@ -3947,6 +3947,17 @@ impl RunCtx<'_> {
                             (META_WORKTREE_SHA, &reviewed_sha),
                         ],
                     )?;
+                    // Ensure-on-park, defense in depth (spec 64 criterion 3): `stage_worktree`
+                    // asserted this worktree exists exactly ONCE, before this call began - the
+                    // gates that just ran above are real wall-clock time (a genuine cargo
+                    // build/test), the exact window in which an out-of-band actor could delete
+                    // it before the review tier's spawns below consume it. Re-assert now, right
+                    // before handing it out again, with the SAME deterministic adopt-or-create
+                    // machinery `stage_worktree` already uses - a no-op when nothing disturbed
+                    // it (see [`Worktree::ensure_present`]).
+                    if let Some(w) = wt {
+                        w.ensure_present()?;
+                    }
                     // Route the review tier over the UNCAPPED safe-superset view (spec 16 unit 3),
                     // not the capped precise seed: high-risk membership tested over the full
                     // structural width forces the full panel for a beyond-cap high-risk file, and a
@@ -21290,6 +21301,206 @@ mod tests {
     }
 
     #[test]
+    fn review_unit_restores_a_worktree_a_gate_deleted_out_of_band() {
+        // Spec 64, criterion 3 (ensure-on-park, defense in depth). `stage_worktree`
+        // guarantees the unit worktree exists exactly ONCE, at `run_stage`'s entry - real
+        // wall-clock time elapses running the gates before this SAME process reaches the
+        // review tier's spawn point below. An out-of-band deletion in that window (the
+        // historical fault this whole spec closes: an agent finding its assigned worktree
+        // gone at spawn) must self-heal in the binary, not in the reviewer's opening
+        // minutes. This proves it with a gate whose OWN side effect is exactly that
+        // deletion (`RecordingRunner::deleting_worktree`), so by the time the parked
+        // adjudicator's spawn is inspected below, the gate has ALREADY destroyed the
+        // worktree once - `review_unit` must have put it back before handing it out.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("g".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "solo".into(),
+            Stage {
+                name: "solo".into(),
+                agent: "worker".into(),
+                gates: vec!["g".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("work.rs".into()),
+            output: "reviewed it".into(),
+            park_spawn_ids: [spawn_id("solo", ROLE_ADJUDICATOR, 0)]
+                .into_iter()
+                .collect(),
+            ..Stub::new()
+        };
+        let runner = RecordingRunner::deleting_worktree();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+
+        assert!(
+            driver.spawned("judge"),
+            "the adjudicator must actually have been spawned (and parked), or this test proves nothing"
+        );
+        assert_eq!(
+            runner.calls(),
+            vec!["g".to_string()],
+            "the gate must really have run (and deleted the worktree as its side effect), or this test proves nothing: {:?}",
+            runner.calls()
+        );
+
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let worktree = unit_worktree_dir(&scratch, "solo");
+        assert!(
+            std::path::Path::new(&worktree).exists(),
+            "review_unit must restore the worktree the gate deleted, before handing it to the parked adjudicator: {worktree}"
+        );
+        assert!(
+            worktree_registered_on(&repo_path, &unit_branch("solo")),
+            "the restored worktree must be a REGISTERED git worktree, not just a leftover dir: {worktree}"
+        );
+        let branch_tip = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args(["rev-parse", &unit_branch("solo")])
+            .output()
+            .unwrap();
+        let branch_tip = String::from_utf8_lossy(&branch_tip.stdout)
+            .trim()
+            .to_string();
+        assert!(
+            !branch_tip.is_empty(),
+            "the unit's durable branch must survive the gate's deletion (git rev-parse must resolve it)"
+        );
+        assert_eq!(
+            worktree::head_sha_of(&worktree),
+            branch_tip,
+            "the restored worktree must be checked out at the unit branch's handed-out tip - \
+             the implementer's own commit, not a fresh branch off some other HEAD"
+        );
+    }
+
+    #[test]
+    fn a_second_step_restores_a_still_parked_units_worktree_deleted_out_of_band() {
+        // Spec 64, criterion 3 (ensure-on-park). The MIRROR case of
+        // `review_unit_restores_a_worktree_a_gate_deleted_out_of_band` above: instead of a
+        // deletion WITHIN one process (during gates), this is a deletion BETWEEN two
+        // `rigger step` processes - the dominant historical pattern (an agent's assigned
+        // worktree found absent at spawn, sighted 11+ times against a single unit before
+        // this spec). A unit that is STILL parked (its spawn's result is not yet recorded)
+        // remains in the wave's `ready` set on every subsequent step, so
+        // `stage_worktree`'s deterministic adopt-or-create ([`Worktree::create`]) runs
+        // again at the top of `run_stage` before this second process re-reaches the SAME
+        // park point - proving the courier's NEXT hand-off never lands an agent in a
+        // directory that does not exist, even after an out-of-band deletion nothing else
+        // in this process caused or witnessed.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("g".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "solo".into(),
+            Stage {
+                name: "solo".into(),
+                agent: "worker".into(),
+                gates: vec!["g".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("work.rs".into()),
+            output: "reviewed it".into(),
+            park_spawn_ids: [spawn_id("solo", ROLE_ADJUDICATOR, 0)]
+                .into_iter()
+                .collect(),
+            ..Stub::new()
+        };
+        let runner = RecordingRunner::new(&[]);
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        // FIRST process: the adjudicator parks (its id is never recorded, so `Stub` parks
+        // it identically on every call - the SAME id `park_spawn_ids` names, matching the
+        // real replay driver's own idempotent re-park of an unanswered id).
+        run(&cfg, &deps).unwrap();
+
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let worktree = unit_worktree_dir(&scratch, "solo");
+        assert!(
+            std::path::Path::new(&worktree).exists(),
+            "premise: a parked stage keeps its worktree (criterion 1) - the first process must leave it on disk: {worktree}"
+        );
+        let branch_tip_before = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args(["rev-parse", &unit_branch("solo")])
+            .output()
+            .unwrap();
+        let branch_tip_before = String::from_utf8_lossy(&branch_tip_before.stdout)
+            .trim()
+            .to_string();
+
+        // OUT-OF-BAND DELETION: something outside any conductor process - not this run,
+        // not a gate - removes the worktree dir wholesale, exactly as the historical
+        // sightings describe (dir gone, `.git/worktrees` admin entry gone too).
+        std::fs::remove_dir_all(&worktree).unwrap();
+        assert!(
+            !std::path::Path::new(&worktree).exists(),
+            "premise: the out-of-band deletion must actually remove it, or this test proves nothing"
+        );
+
+        // SECOND process (the conductor's next hand-off): the adjudicator's id is STILL
+        // unrecorded, so the unit is STILL not terminal and re-enters `run_stage`, which
+        // re-asserts the worktree via the SAME deterministic adopt-or-create machinery
+        // BEFORE reaching the (still-parking) adjudicator spawn again.
+        run(&cfg, &deps).unwrap();
+
+        assert!(
+            std::path::Path::new(&worktree).exists(),
+            "the conductor's next hand-off must restore the worktree an out-of-band actor deleted: {worktree}"
+        );
+        assert!(
+            worktree_registered_on(&repo_path, &unit_branch("solo")),
+            "the restored worktree must be a REGISTERED git worktree, not just a leftover dir: {worktree}"
+        );
+        assert_eq!(
+            worktree::head_sha_of(&worktree),
+            branch_tip_before,
+            "the restored worktree must be checked out at the SAME unit branch tip the first \
+             process handed out - the implementer's own commit is never lost or rewound"
+        );
+    }
+
+    #[test]
     fn a_parked_lens_keeps_the_unit_worktree_beside_a_genuine_sibling_crash() {
         // Spec 64 c1 round 4 (sdet-u1c1-r3-unit-worktree-torn-down-beside-genuine-park,
         // upheld live by adv2-u1c1-r4-severe-finding-upheld-live): the MIRROR IMAGE of
@@ -23343,6 +23554,14 @@ mod tests {
         materialize_cache: bool,
         /// Gate ids that must FAIL; everything else passes.
         fail: HashSet<String>,
+        /// When set, a run DELETES the worktree dir it is passed (`dir`, not the `target`
+        /// cache) as its OWN side effect - a stand-in for the out-of-band actor spec 64
+        /// criterion 3 (ensure-on-park) defends against. A gate takes real wall-clock time
+        /// (a genuine cargo build/test) - exactly the window in which something else could
+        /// delete the worktree between `stage_worktree`'s single ensure at `run_stage` entry
+        /// and a LATER spawn point (the review tier) this SAME process reaches once the gate
+        /// returns.
+        delete_worktree_dir: bool,
     }
     impl RecordingRunner {
         fn new(fail: &[&str]) -> Self {
@@ -23351,6 +23570,7 @@ mod tests {
                 targets: Mutex::new(Vec::new()),
                 materialize_cache: false,
                 fail: fail.iter().map(|s| s.to_string()).collect(),
+                delete_worktree_dir: false,
             }
         }
         /// Like [`Self::new`] but the runner also creates each non-empty `target_dir` on disk -
@@ -23358,6 +23578,15 @@ mod tests {
         fn materializing() -> Self {
             RecordingRunner {
                 materialize_cache: true,
+                ..RecordingRunner::new(&[])
+            }
+        }
+        /// A runner whose gate DELETES the worktree dir it ran in, simulating an out-of-band
+        /// deletion that lands between this gate's return and the review tier's next spawn
+        /// (spec 64 criterion 3).
+        fn deleting_worktree() -> Self {
+            RecordingRunner {
+                delete_worktree_dir: true,
                 ..RecordingRunner::new(&[])
             }
         }
@@ -23369,12 +23598,15 @@ mod tests {
         }
     }
     impl gate::Runner for RecordingRunner {
-        fn run(&self, g: &Gate, _dir: &str, target: &str) -> gate::GateResult {
+        fn run(&self, g: &Gate, dir: &str, target: &str) -> gate::GateResult {
             self.calls.lock().unwrap().push(g.id.clone());
             self.targets.lock().unwrap().push(target.to_string());
             if self.materialize_cache && !target.is_empty() {
                 let _ = std::fs::create_dir_all(target);
                 let _ = std::fs::write(std::path::Path::new(target).join("built.rlib"), b"x");
+            }
+            if self.delete_worktree_dir && !dir.is_empty() {
+                let _ = std::fs::remove_dir_all(dir);
             }
             let pass = !self.fail.contains(&g.id);
             gate::GateResult {
