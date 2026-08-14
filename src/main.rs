@@ -1384,8 +1384,11 @@ rigger_peers)\n  \
 rigger reset --runs         drop every superseded / dead run's decisions and\n                              \
 findings from the context graph, keeping every lesson and\n                              \
 the active run's own decisions/findings. Sheds dead-run\n                              \
-grounding noise without wiping the store - the event log\n                              \
-is left untouched\n  \
+grounding noise without wiping the store: it deletes no\n                              \
+event. reset itself does write the log once, on a store\n                              \
+still under the legacy basename namespace: the one-time\n                              \
+identity migration renames those streams and records one\n                              \
+DecisionMade before either mode prunes\n  \
 rigger reset --derived      compact the EVENT LOG: keep the latest event per\n                              \
 replay key of each derived index type, delete the\n                              \
 superseded re-recordings, and vacuum so the file shrinks\n                              \
@@ -5991,12 +5994,13 @@ fn reset_derived(loc: &StoreLocation) -> Res {
 
 /// The one line `rigger reset --derived` prints, rendered from what the prune actually did.
 ///
-/// A pure function of the report, and separate from the command, because THREE of its four
+/// A pure function of the report, and separate from the command, because FOUR of its five
 /// compaction states are unreachable from a happy-path run of the binary - a reclamation the
-/// truncating checkpoint declined, a rewrite that failed after the deletes committed, and a
-/// rewrite that was deliberately not run - and each of them is a state whose whole purpose is to
-/// be READ correctly by an operator. A report only the lucky path renders is a report nothing
-/// pins.
+/// truncating checkpoint declined, a rewrite that failed after the deletes committed, a rewrite
+/// that was deliberately not run, and a database with no file behind it (which `rigger reset
+/// --derived` never opens at all, though the store this renders is a published entry point that
+/// does) - and each of them is a state whose whole purpose is to be READ correctly by an
+/// operator. A report only the lucky path renders is a report nothing pins.
 fn derived_prune_report(pruned: &PrunedDerived) -> String {
     let per_type = pruned
         .removed
@@ -6022,26 +6026,39 @@ fn derived_prune_report(pruned: &PrunedDerived) -> String {
     //   - the truncating checkpoint was declined by a concurrent reader: the freed pages stay in
     //     the write-ahead log, so it is reported as unmeasured rather than as a byte count the
     //     operator's own `ls` would contradict.
+    //   - the database has no file behind it at all: there was never a before-measurement to
+    //     take, so the same "rewritten, no number" shape arrives from a different cause and says
+    //     so. Read from `on_disk_measured`, never folded into the declined-checkpoint arm: those
+    //     two are the ONLY producers of that shape, and naming a concurrent reader for the second
+    //     asserts a cause this function was not handed - it would send a reader looking for a
+    //     writer that does not exist and promise pages at a checkpoint that will never put a byte
+    //     on a disk this database does not use.
     let compaction = match (
         &pruned.compaction_error,
         pruned.compaction_ran,
         pruned.reclaimed_bytes,
+        pruned.on_disk_measured,
     ) {
-        (Some(err), _, _) => format!(
+        (Some(err), _, _, _) => format!(
             "the log file could NOT be compacted afterwards: {err}. The deletes are committed and \
              durable, so nothing was lost and re-running the command is safe - and it retries the \
              reclamation, because the space this run could not reclaim is still free in the file"
         ),
-        (None, false, _) => "the log file was holding no reclaimable free page, so it was left \
-                             exactly as it stands rather than rewritten to reclaim nothing"
+        (None, false, _, _) => "the log file was holding no reclaimable free page, so it was left \
+                                exactly as it stands rather than rewritten to reclaim nothing"
             .to_string(),
-        (None, true, Some(bytes)) => {
+        (None, true, Some(bytes), _) => {
             format!("then compacted the log file and reclaimed {bytes} byte(s) on disk")
         }
-        (None, true, None) => "then compacted the log file, but the freed pages could not be \
-                               folded back into the file: a concurrent reader held the \
-                               write-ahead log, so they land at the next checkpoint and this run \
-                               reclaimed an unmeasured amount"
+        (None, true, None, true) => "then compacted the log file, but the freed pages could not \
+                                     be folded back into the file: a concurrent reader held the \
+                                     write-ahead log, so they land at the next checkpoint and \
+                                     this run reclaimed an unmeasured amount"
+            .to_string(),
+        (None, true, None, false) => "then compacted the log, which has no file behind it (an \
+                                      in-memory or temporary database): there are no bytes on \
+                                      disk to have been reclaimed, so the reclamation is \
+                                      unmeasured rather than zero"
             .to_string(),
     };
     // WHAT THE COUNT MEANS, both ways round, because each direction is misread in its own way.
@@ -6078,9 +6095,21 @@ fn derived_prune_report(pruned: &PrunedDerived) -> String {
 /// `rigger reset --runs` (spec 21, unit 2) - drop the decisions and findings of every
 /// SUPERSEDED / dead run from the context graph, PRESERVING every `LessonLearned` and the
 /// active run's decisions and findings. It is the supported way to shed dead-run noise
-/// without deleting the whole store: the event log is untouched, so `rigger stats`, replay,
+/// without deleting the whole store: this prune DELETES NO EVENT, so `rigger stats`, replay,
 /// and cross-run history stay intact - only the graph the grounder reads is pruned (there is
 /// no way to shed the noise today short of wiping `graph.db` wholesale).
+///
+/// WHAT THE COMMAND AROUND IT DOES WRITE TO THE LOG, stated here because this function's own
+/// report used to promise an untouched log and no longer can: [`cmd_reset`] runs the one-time
+/// spec-09 identity migration before EITHER mode, so on a store still filed under the legacy
+/// basename namespace that migration renames its streams to the minted identity and appends one
+/// `DecisionMade` recording the rename. No event is dropped, reordered, or altered in content by
+/// it, and it prints its own line when it fires - but "the event log is untouched" is not true of
+/// a `rigger reset --runs` on the one class of store the migration exists for, so the printed
+/// report says what IS true instead. The migration is deliberately not gated on `--derived`:
+/// `reset_runs` reads through `Namespaced::new(backend, &loc.identity())`, so skipping it on an
+/// unmigrated store would read an empty stream and report a confident prune of zero dead-run
+/// nodes - the silent no-op the migration is there to prevent, moved from one mode to the other.
 ///
 /// This is pure orchestration over two single authorities: the disposition comes from the
 /// run-attribution primitive ([`superseded_graph_nodes`] over `run::run_attribution` +
@@ -6111,7 +6140,11 @@ fn reset_runs(loc: &StoreLocation, selection: &StoreSelection) -> Res {
     println!(
         "reset --runs: pruned {} dead-run node(s) and reclaimed {} superseded edge(s) from the \
          context graph, then compacted the graph file (reclaimed {} byte(s) on disk) - every \
-         lesson, the active run, and every live edge are preserved; the event log is untouched",
+         lesson, the active run, and every live edge are preserved; this prune deletes no event \
+         from the log. The one thing `rigger reset` writes there is the one-time identity \
+         migration it runs first: on a store still under the legacy basename namespace that \
+         renames its streams and records one DecisionMade, and it prints its own line when it \
+         does",
         removed.nodes, removed.superseded_edges, reclaimed_bytes
     );
     Ok(())
@@ -15745,11 +15778,16 @@ mod tests {
     ///
     /// `compaction_ran` is a parameter of its own rather than inferred from `reclaimed`, for the
     /// same reason the report reads it rather than inferring it: a file that was not rewritten
-    /// and a rewrite that reclaimed nothing are both `Some(0)` and are different states.
+    /// and a rewrite that reclaimed nothing are both `Some(0)` and are different states. So is
+    /// `on_disk_measured`, for the same reason again one level down: a rewrite whose bytes could
+    /// not be measured because a reader declined the checkpoint and one whose bytes never existed
+    /// because the database has no file are BOTH a rewritten file with no number, and only the
+    /// caller of the prune knows which.
     fn report_of(
         removed: usize,
         compaction_ran: bool,
         reclaimed: Option<u64>,
+        on_disk_measured: bool,
         failure: Option<&str>,
     ) -> String {
         let types = rigger::ingest::DERIVED_INDEX_TYPES;
@@ -15761,6 +15799,7 @@ mod tests {
                 .collect(),
             reclaimed_bytes: reclaimed,
             compaction_ran,
+            on_disk_measured,
             compaction_error: failure.map(str::to_string),
         };
         derived_prune_report(&pruned)
@@ -15776,7 +15815,7 @@ mod tests {
     /// and a re-run is safe.
     #[test]
     fn a_compaction_that_failed_after_the_deletes_is_reported_beside_the_counts() {
-        let out = report_of(7, true, None, Some("database or disk is full"));
+        let out = report_of(7, true, None, true, Some("database or disk is full"));
         assert!(
             out.contains("pruned 7 redundant derived-index event(s)"),
             "a failed compaction must not cost the operator the counts; got {out:?}"
@@ -15810,7 +15849,7 @@ mod tests {
     /// the dedup is broken, so it has to be a statement about the log in front of them.
     #[test]
     fn a_prune_that_shed_nothing_is_justified_by_this_log_not_by_when_it_was_written() {
-        let out = report_of(0, false, Some(0), None);
+        let out = report_of(0, false, Some(0), true, None);
         for (fact, needle) in [
             ("say WHY nothing was shed", "no redundancy to shed"),
             ("say the report is the EXPECTED one", "expected report"),
@@ -15844,7 +15883,7 @@ mod tests {
     /// run that compacted it, and would make the advice look like it had done nothing.
     #[test]
     fn a_pass_that_deleted_nothing_but_reclaimed_space_reports_the_reclamation() {
-        let out = report_of(0, true, Some(8192), None);
+        let out = report_of(0, true, Some(8192), true, None);
         assert!(
             out.contains("reclaimed 8192 byte(s) on disk"),
             "the re-run's reclamation is what the operator was told to run for; got {out:?}"
@@ -15860,7 +15899,7 @@ mod tests {
     /// something to shed, and carries none of the clean-log clause.
     #[test]
     fn a_prune_that_shed_rows_explains_the_duplication_a_deduplicated_log_still_accumulates() {
-        let out = report_of(12, true, Some(4096), None);
+        let out = report_of(12, true, Some(4096), true, None);
         for (fact, needle) in [
             ("name the shape that re-records a batch", "RETURNS"),
             ("give the operator the ordinary cause", "revert"),
@@ -15889,6 +15928,55 @@ mod tests {
         assert!(
             out.contains("reclaimed 4096 byte(s) on disk"),
             "a measured reclamation is reported as the measurement it is; got {out:?}"
+        );
+    }
+
+    /// Spec 60, criterion 5: an unmeasured reclamation has TWO causes, and the report may only
+    /// name the one it was actually told about.
+    ///
+    /// `reclaimed_bytes: None` with the rewrite having run means either "a concurrent reader held
+    /// the write-ahead log so the checkpoint was declined" or "this database has no file behind
+    /// it, so there were never any bytes on disk to measure" - and the store yields the SAME
+    /// `(no error, rewritten, no bytes)` triple for both. Rendering a concurrent reader for the
+    /// second is the report asserting a cause it was never handed: it sends an operator looking
+    /// for a reader that does not exist, and tells them pages will land at a checkpoint that will
+    /// never move a byte onto a disk this database does not use. `on_disk_measured` is the fact
+    /// that separates them, so it is carried beside the count rather than guessed at from it.
+    #[test]
+    fn an_unmeasurable_database_is_not_reported_as_a_checkpoint_a_reader_declined() {
+        let no_file = report_of(5, true, None, false, None);
+        let declined = report_of(5, true, None, true, None);
+
+        assert!(
+            !no_file.contains("concurrent reader"),
+            "a database with no file behind it was never told a reader held anything - naming one \
+             invents the cause; got {no_file:?}"
+        );
+        assert!(
+            !no_file.contains("next checkpoint"),
+            "and there is no checkpoint that will land bytes on a disk this database does not \
+             write to; got {no_file:?}"
+        );
+        assert!(
+            no_file.contains("no file behind it"),
+            "the report must say WHY the figure is missing: the database has no file on disk to \
+             measure; got {no_file:?}"
+        );
+        assert!(
+            no_file.contains("pruned 5 redundant derived-index event(s)"),
+            "and an unmeasurable reclamation must not cost the operator the counts; got \
+             {no_file:?}"
+        );
+
+        assert!(
+            declined.contains("concurrent reader"),
+            "the OTHER cause of the same triple still reads as itself - this is the arm the file \
+             case must not be folded into; got {declined:?}"
+        );
+        assert_ne!(
+            no_file, declined,
+            "the two causes of an unmeasured reclamation must not render to one sentence, or the \
+             distinction is carried and then thrown away"
         );
     }
 }

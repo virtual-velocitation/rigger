@@ -889,10 +889,19 @@ impl Store {
         let mut removed: Vec<(String, usize)> = Vec::with_capacity(types.len());
         {
             // ONE transaction for the whole prune: a partial compaction is not a state an operator
-            // can reason about, and `BEGIN IMMEDIATE` takes the write lock up front so a concurrent
-            // appender queues on `busy_timeout` rather than failing a deferred lock upgrade. The
-            // carry-forward shares it, so a log can never be left with its duplicates deleted and
-            // its survivors' valid-times un-carried.
+            // can reason about. The carry-forward shares it, so a log can never be left with its
+            // duplicates deleted and its survivors' valid-times un-carried.
+            //
+            // WHAT `BEGIN IMMEDIATE` BUYS, AND WHAT IT DOES NOT. It takes the write lock up front,
+            // so this transaction cannot fail the deferred lock upgrade a read-then-write
+            // transaction attempts half way through - that failure mode is closed. It does NOT
+            // make a concurrent appender safe: the lock is held for the WHOLE delete, which on a
+            // large log runs for longer than `busy_timeout` (5000ms, set in `SCHEMA` above -
+            // measured at roughly 8s of held lock on a 165MB log), and an appender that waits out
+            // its timeout gets `database is locked` and does NOT retry. So a prune over a big log
+            // can cost a concurrent writer its append. That is why this is maintenance run BETWEEN
+            // runs and never against a live one, which is what the shipped guidance says; the
+            // window is bounded here, not eliminated.
             let tx = guard
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(be)?;
@@ -941,6 +950,7 @@ impl Store {
                 removed,
                 reclaimed_bytes: Some(0),
                 compaction_ran: false,
+                on_disk_measured: db_file.is_some(),
                 compaction_error: None,
             }),
             // The rewrite ran and its result is on disk NOW, so the before taken above and the
@@ -952,6 +962,7 @@ impl Store {
                     .zip(on_disk_before)
                     .map(|(db, before)| before.saturating_sub(bytes_on_disk(db))),
                 compaction_ran: true,
+                on_disk_measured: db_file.is_some(),
                 compaction_error: None,
             }),
             // The rewrite ran but its result has NOT landed: the freed frames are still in the
@@ -961,12 +972,14 @@ impl Store {
                 removed,
                 reclaimed_bytes: None,
                 compaction_ran: true,
+                on_disk_measured: db_file.is_some(),
                 compaction_error: None,
             }),
             Err(e) => Ok(PrunedDerived {
                 removed,
                 reclaimed_bytes: None,
                 compaction_ran: true,
+                on_disk_measured: db_file.is_some(),
                 compaction_error: Some(e.to_string()),
             }),
         }
@@ -1067,8 +1080,9 @@ const CHECKPOINT_TRUNCATE_BACKOFF: std::time::Duration = std::time::Duration::fr
 
 /// What one [`Store::prune_derived_index`] pass removed: the rows deleted PER TYPE (in the order
 /// the caller named the types, including the types nothing was removed from), the bytes the log
-/// lost on disk and whether it was rewritten to lose them at all, and - when the reclamation
-/// failed after the deletes had committed - what went wrong with it.
+/// lost on disk, whether it was rewritten to lose them at all, whether there was a file to
+/// measure them over in the first place, and - when the reclamation failed after the deletes had
+/// committed - what went wrong with it.
 ///
 /// Per type, not just a total, because that is what an operator can check a prune against: a
 /// single number cannot be compared to what the log was expected to hold. And the reclamation's
@@ -1082,7 +1096,8 @@ pub struct PrunedDerived {
     /// Bytes the LOG LOST ON DISK across this whole call, or `None` when that could not be
     /// measured because a concurrent reader still held a write-ahead-log snapshot when the
     /// truncating checkpoint ran, because the reclamation itself failed (see
-    /// [`PrunedDerived::compaction_error`]), or because the database has no file behind it.
+    /// [`PrunedDerived::compaction_error`]), or because the database has no file behind it (see
+    /// [`PrunedDerived::on_disk_measured`], which is what tells those last two `None`s apart).
     ///
     /// MEASURED, NOT DERIVED, and measured over the pair of files an operator's own `du` would
     /// add up: the main database plus its `-wal`, sampled before the deletes and again after the
@@ -1116,6 +1131,22 @@ pub struct PrunedDerived {
     /// that has space to reclaim, which is exactly what makes re-running the command the remedy
     /// for a reclamation that failed after the deletes committed.
     pub compaction_ran: bool,
+    /// Whether the before-measurement was TAKEN AT ALL: `true` when this database has a file on
+    /// disk, so the pair of sizes the reclamation is a difference of were both sampled; `false`
+    /// for a database with no file behind it (`:memory:`, a temporary database), where there was
+    /// never anything on disk to measure.
+    ///
+    /// It exists because `reclaimed_bytes: None` alongside `compaction_ran: true` has TWO causes
+    /// and the difference is invisible in the numbers: the truncating checkpoint was declined by
+    /// a concurrent reader (the bytes exist and land later), or this database has no file (there
+    /// are no bytes and none ever land). A consumer told only "unmeasured" cannot tell them
+    /// apart, so it either reports one cause for both - asserting a reader it was never told
+    /// about - or reports neither. Only the prune knows, so the prune carries it.
+    ///
+    /// It says nothing about whether the AFTER measurement was usable: a checkpoint a reader
+    /// declined leaves this `true` and the byte count `None`, which is exactly the pair that
+    /// separates the two causes.
+    pub on_disk_measured: bool,
     /// Why the space reclamation did not complete, when it was attempted and failed - `None` when
     /// it succeeded, and `None` when there was no free space for it to reclaim.
     ///

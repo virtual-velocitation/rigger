@@ -34,8 +34,8 @@
 //!      COMMITTED bytes and on the RUNNING binary, with no render in the loop.
 //!   7. **The two-store dissociation the composition made load-bearing.** `reset` now drives TWO
 //!      prunes over TWO different stores, and each states in its own output that it leaves the
-//!      other alone - `--runs` prints "the event log is untouched", the shipped `--derived`
-//!      guidance says the live graph is unchanged. Neither claim is reachable from a test that runs
+//!      other alone - `--runs` prints that it "deletes no event" from the log, the shipped
+//!      `--derived` guidance says the live graph is unchanged. Neither claim is reachable from a test that runs
 //!      one mode against one store, so both are pinned here against a project whose event log AND
 //!      context graph are populated, together with the composition that follows from them: running
 //!      the two together lands EXACTLY the two effects, neither more nor less.
@@ -1470,8 +1470,8 @@ fn seed_both_stores(root: &Path, rounds: u64) {
 }
 
 /// `rigger reset` drives TWO prunes over TWO stores, and each one tells the operator it left the
-/// other alone: `reset --runs` prints "the event log is untouched", and the shipped `--derived`
-/// guidance says the live graph is unchanged. Both claims are load-bearing precisely BECAUSE the modes
+/// other alone: `reset --runs` prints that it deletes no event from the log, and the shipped
+/// `--derived` guidance says the live graph is unchanged. Both claims are load-bearing precisely BECAUSE the modes
 /// compose - an operator who runs them together has no way to attribute a loss to one of them, so
 /// each has to be safe for the other's store on its own.
 ///
@@ -1523,15 +1523,18 @@ fn each_reset_mode_sheds_only_its_own_accumulation_and_composing_them_does_exact
         "the three fixtures must start from an identical graph"
     );
 
-    // `--runs` PRUNES THE GRAPH AND ONLY THE GRAPH. Its own report promises the event log is
-    // untouched, so every row keeps its bytes AND its numbering: a row that survived but was
-    // renumbered or repositioned is not an untouched log.
+    // `--runs` PRUNES THE GRAPH AND ONLY THE GRAPH. Its own report promises it deletes no event,
+    // so every row keeps its bytes AND its numbering: a row that survived but was renumbered or
+    // repositioned is not an untouched log. This project is already under its minted identity, so
+    // the identity migration `cmd_reset` runs first is a no-op here and the log really is
+    // byte-for-byte identical; the one store class where it is NOT is pinned by
+    // reset_runs_alone_migrates_a_legacy_store_and_its_report_says_what_that_wrote.
     let (out, err, ok) = run_rigger(runs_only.path(), &["reset", "--runs"]);
     assert!(ok, "reset --runs must succeed; stderr: {err}\n{out}");
     let after_runs_log = raw_rows(&event_log(runs_only.path()));
     assert!(
         after_runs_log == seed_log,
-        "reset --runs reports that the event log is untouched, so every row must survive \
+        "reset --runs reports that it deletes no event, so every row must survive \
          byte-for-byte, position and revision included; the log differs at {}, and the command \
          said: {out:?}",
         first_difference(&row_marks(&after_runs_log), &row_marks(&seed_log))
@@ -3395,6 +3398,118 @@ fn a_reset_from_a_nested_worktree_migrates_and_compacts_the_store_it_walked_up_t
     );
 }
 
+/// `rigger reset --runs` runs the identity migration too, and its printed report has to be true
+/// of THAT, not just of the graph prune underneath it.
+///
+/// The migration is wired into `cmd_reset` for every sqlite invocation rather than into
+/// `--derived` alone, and it must be: `reset_runs` reads through the project's MINTED namespace,
+/// so on a store still filed under the legacy basename it would read an empty stream and report a
+/// confident prune of zero dead-run nodes. But that makes `--runs` a command that writes the
+/// event log on exactly the old-store class it is most likely to be pointed at, and the report
+/// used to end "the event log is untouched". This pins the corrected claim against the store the
+/// claim is about, both halves at once: NOTHING IS DELETED (every seeded row survives with its
+/// position, type, id, payload bytes and revision intact, only its stream re-namespaced) and
+/// EXACTLY ONE EVENT IS APPENDED (the migration's own `DecisionMade`) - and the printed line says
+/// both rather than promising an untouched file.
+#[test]
+fn reset_runs_alone_migrates_a_legacy_store_and_its_report_says_what_that_wrote() {
+    const ROUNDS: u64 = 3;
+    let project = tempfile::tempdir().expect("create a temp project");
+    let (legacy, minted) = seed_project_under_the_legacy_namespace(project.path(), ROUNDS);
+    let legacy_ns = Namespaced::prefix_for(&legacy);
+    let minted_ns = Namespaced::prefix_for(&minted);
+
+    let before = raw_rows(&event_log(project.path()));
+    assert!(
+        !rows_in(&before, &legacy_ns).is_empty() && rows_in(&before, &minted_ns).is_empty(),
+        "the premise: this store's whole history is under the LEGACY namespace, which is the only \
+         shape on which reset writes the log at all"
+    );
+
+    let (out, err, ok) = run_rigger(project.path(), &["reset", "--runs"]);
+    assert!(ok, "reset --runs must succeed; stderr: {err}\n{out}");
+
+    // NOTHING WAS DELETED, and nothing was renumbered or re-dated: each seeded row is still there,
+    // in order, with only its stream moved into the minted namespace. That is the half of the
+    // claim an operator cannot check afterwards, so it is checked here column by column.
+    let after = raw_rows(&event_log(project.path()));
+    let carried: Vec<Row> = before
+        .iter()
+        .map(|r| {
+            let suffix =
+                r.1.strip_prefix(&legacy_ns)
+                    .expect("every seeded row is under the legacy namespace");
+            (
+                r.0,
+                format!("{minted_ns}{suffix}"),
+                r.2.clone(),
+                r.3.clone(),
+                r.4.clone(),
+                r.5.clone(),
+                r.6,
+            )
+        })
+        .collect();
+    assert!(
+        after.starts_with(&carried),
+        "reset --runs deletes no event: every row must survive with its position, type, id, \
+         payload and revision, renamed into the minted namespace and nothing more. It differs at \
+         {}; the command said: {out:?}",
+        first_difference(&row_marks(&after), &row_marks(&carried))
+    );
+
+    // AND EXACTLY ONE EVENT WAS APPENDED: the migration's record of itself, in the minted
+    // namespace. One, not zero (the migration really did fire on this store) and not two (nothing
+    // else about `--runs` writes the log).
+    let appended = &after[carried.len()..];
+    assert_eq!(
+        appended.len(),
+        1,
+        "the migration records itself with ONE event and the graph prune writes none, so a \
+         legacy-store `reset --runs` appends exactly one row; it appended {:?}",
+        appended.iter().map(|r| (&r.1, &r.2)).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        appended[0].2,
+        rigger::contextgraph::TYPE_DECISION_MADE,
+        "and it is the existing DecisionMade the migration is recorded with - no event type is \
+         minted for it; got {:?}",
+        appended[0].2
+    );
+    assert!(
+        appended[0].1.starts_with(&minted_ns),
+        "recorded under the identity the history was migrated TO, or the audit trail of the \
+         migration is filed where the migration moved the history away from; got {:?}",
+        appended[0].1
+    );
+    assert!(
+        rows_in(&after, &legacy_ns).is_empty(),
+        "and the legacy namespace is empty afterwards, or the migration did not complete"
+    );
+
+    // THE REPORT SAYS SO. The old sentence promised an untouched event log two lines under a
+    // command that had just renamed every stream in it.
+    assert!(
+        !out.contains("the event log is untouched"),
+        "the report must not promise an untouched log on the one store class where reset writes \
+         it; got {out:?}"
+    );
+    for (fact, needle) in [
+        ("say the prune itself deletes nothing", "deletes no event"),
+        ("name the one thing reset does write", "identity migration"),
+        ("name what that migration records", "DecisionMade"),
+        (
+            "tell the operator how to see it happen",
+            "prints its own line",
+        ),
+    ] {
+        assert!(
+            out.contains(needle),
+            "the reset --runs report must {fact} ({needle:?}); got {out:?}"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------------------
 // 18. The key split the policy publishes.
 //
@@ -4524,6 +4639,15 @@ fn a_declined_checkpoint_reports_the_rewrite_that_ran_rather_than_a_file_left_al
          the only thing separating a deferred reclamation from a rewrite that never ran. Got \
          {report:?}"
     );
+    assert!(
+        report.on_disk_measured,
+        "and this store HAS a file, so the before-measurement was taken: that is what makes this \
+         `None` a checkpoint a reader declined rather than a database with nothing on disk to \
+         measure. The two produce the identical (no error, rewritten, no bytes) shape and this \
+         flag is the only thing between them - see \
+         a_store_with_no_file_behind_it_reports_the_reclamation_as_unmeasured for the other side \
+         of the pair. Got {report:?}"
+    );
     assert_eq!(
         pragma_i64(&db, "freelist_count"),
         0,
@@ -4571,5 +4695,15 @@ fn a_store_with_no_file_behind_it_reports_the_reclamation_as_unmeasured() {
         "a database with no file behind it has no bytes ON DISK to have lost, so the reclamation \
          is UNMEASURED. `Some(0)` would claim a measurement was taken - the one value this field \
          reserves for a file that was really looked at and had nothing to give back. Got {pruned:?}"
+    );
+    assert!(
+        !pruned.on_disk_measured,
+        "and the report must SAY WHICH unmeasured this is. The triple above - no failure, the \
+         file rewritten, no byte figure - is the identical shape a checkpoint declined by a \
+         concurrent reader produces on a real file, and a consumer handed only that shape can \
+         only guess between them. Guessing renders a concurrent reader that was never there and \
+         promises pages at a checkpoint that will never move a byte onto a disk this database \
+         does not use. This flag is the fact that separates them, and it is FALSE here because \
+         there was no before-measurement to take. Got {pruned:?}"
     );
 }
