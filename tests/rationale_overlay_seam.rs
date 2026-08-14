@@ -19,7 +19,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 
 use rigger::contextgraph::{
@@ -51,19 +51,20 @@ fn edge(from: &str, to: &str, rel: &str) -> Edge {
     }
 }
 
-/// Start `serve` on a FRESH ephemeral loopback port with two DISTINCT graphs - `whole_graph` behind
-/// the lazy whole-graph provider (`/api/graph` reads it) and `poll_graph` behind the state-poll
-/// provider (every `/api/*` request rides it) - fetch `GET <path>` once, and return the raw HTTP
-/// response. `None` means THIS attempt lost the free-port handoff race (the probe binds port 0, learns
-/// the port, releases it, and `serve` re-binds it); a `None` is always a transient handoff loss, never
-/// a content failure, so the caller retries. Production `rigger dash` binds ONE stable port once.
+/// Start the dash server on a FRESH ephemeral loopback port with two DISTINCT graphs - `whole_graph`
+/// behind the lazy whole-graph provider (`/api/graph` reads it) and `poll_graph` behind the
+/// state-poll provider (every `/api/*` request rides it) - fetch `GET <path>` once, and return the
+/// raw HTTP response, or `None` on a genuine socket-level failure.
+///
+/// The listener this attempt binds is HANDED to `serve_on`, never dropped and re-bound. Releasing it
+/// first would leave the port free for the whole handoff window, so a sibling test's `bind(0)` in
+/// this same binary could be handed it; one `serve` then wins the re-bind and the loser's client
+/// CONNECTS SUCCESSFULLY to it and reads the OTHER test's fixture - a content failure no
+/// connect-error retry can see, reddening only on a loaded machine. Owning the port from `bind`
+/// through `serve_on` closes that window by construction.
 fn try_fetch_served(path: &str, whole_graph: Graph, poll_graph: Graph) -> Option<String> {
-    let port = TcpListener::bind(("127.0.0.1", 0))
-        .ok()?
-        .local_addr()
-        .ok()?
-        .port();
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let listener = TcpListener::bind(("127.0.0.1", 0)).ok()?;
+    let addr = listener.local_addr().ok()?;
 
     // `/api/graph` reads through the SEPARATE lazy whole-graph provider (spec 45 c1); the state poll
     // reads its own, run-seeded graph. Give them DIFFERENT graphs so the served explain endpoint's
@@ -81,8 +82,8 @@ fn try_fetch_served(path: &str, whole_graph: Graph, poll_graph: Graph) -> Option
         };
     let instances_provider = Vec::new;
     std::thread::spawn(move || {
-        let _ = dash::serve(
-            addr,
+        let _ = dash::serve_on(
+            listener,
             provider,
             graph_provider,
             calls_provider,
