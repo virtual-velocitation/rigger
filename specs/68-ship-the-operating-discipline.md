@@ -56,6 +56,12 @@ menu, not a mystery.
   Driving a run stays `using-rigger`'s; authoring stays `planning-a-spec`'s; each per-op
   skill names them rather than repeating them. The set is expected to GROW (the registry
   makes an added operation a content entry); a new operational surface lands with its skill.
+  ONE CROSS-CUTTING PROHIBITION renders into EVERY skill in the registry, verbatim: an agent
+  never installs, replaces, or modifies the operator's installed rigger binary - binary
+  replacement is an operator-only action. (Recorded cost of the imitation: an agent
+  cargo-installed its own worktree tree over the operator binary mid-run; every process's
+  appends silently changed cursor semantics and two false-fixpoint completions followed. An
+  agent needing tree behavior invokes the tree build by explicit path, and only to render.)
 - **Bare `rigger reset` is a menu, not an error** (`src/main.rs::cmd_reset`): with no flags it
   exits 0 and prints each prunable accumulation with its MEASURED reclaimable size and the flag
   that prunes it (`--runs`: dead-run graph rows and bytes; `--derived`: redundant derived-index
