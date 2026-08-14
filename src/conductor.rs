@@ -4588,7 +4588,12 @@ impl RunCtx<'_> {
         // throwaway, never the main repo. A repo-less run has no checkout to protect,
         // so `dir` stays empty there (the project cwd, guarded by `assert_isolated_cwd`
         // which is a no-op when no repo is configured). The worktree is torn down on
-        // every exit path here, including the early-return ones inside the loop.
+        // every TERMINAL exit path here, including the early-return ones inside the
+        // loop - but NOT on a parked (or budget-refused) unwind (spec 64 criterion 1):
+        // a reviewer/adjudicator spawn parks and resumes in a LATER conductor process,
+        // in this SAME throwaway worktree, exactly like a unit's own worktree - the
+        // identical defect class `run_stage`'s split (below `parked_unwind`) fixes for
+        // the unit-worktree kind, applied here to the review-worktree kind.
         //
         // The review worktree derives from the stage AND the review attempt (spec 06);
         // seed the attempt from the prior log's folded remediation count exactly as
@@ -4601,11 +4606,16 @@ impl RunCtx<'_> {
             .map(|w| w.dir.clone())
             .unwrap_or_default();
         let result = self.run_fan_out_review_loop(st, &dir);
+        let parked_unwind = matches!(&result, Err(e) if is_parked(e) || is_budget_refused(e));
         if let Some(w) = &review_wt {
-            // A read-only review worktree carries no work to checkpoint, so the
-            // transient dir AND its throwaway branch are both removed unconditionally.
-            let _ = w.remove();
-            let _ = Worktree::delete_branch(&self.deps.repo, &w.branch);
+            // A read-only review worktree carries no work to checkpoint, so a TERMINAL
+            // return removes the transient dir AND its throwaway branch unconditionally,
+            // exactly as before. A PARKED (or budget-refused) unwind keeps both - the
+            // out-of-process reviewer runs BETWEEN conductor processes in this exact tree.
+            if !parked_unwind {
+                let _ = w.remove();
+                let _ = Worktree::delete_branch(&self.deps.repo, &w.branch);
+            }
         }
         result
     }
@@ -5432,9 +5442,16 @@ impl RunCtx<'_> {
         let result = self.plan_critique_loop(
             &gate_st, plan_name, &dir, stages, proposed, integrated, terminal,
         );
+        // Spec 64 criterion 1: the adversary or adjudicator can PARK mid-review (the
+        // stepwise/replay frontier) and resumes in a LATER conductor process, in this
+        // exact throwaway worktree - the identical defect class `run_fan_out_stage` and
+        // `run_stage` both fix with the same `parked_unwind` guard, mirrored here.
+        let parked_unwind = matches!(&result, Err(e) if is_parked(e) || is_budget_refused(e));
         if let Some(w) = &review_wt {
-            let _ = w.remove();
-            let _ = Worktree::delete_branch(&self.deps.repo, &w.branch);
+            if !parked_unwind {
+                let _ = w.remove();
+                let _ = Worktree::delete_branch(&self.deps.repo, &w.branch);
+            }
         }
         result
     }
@@ -21008,6 +21025,115 @@ mod tests {
     }
 
     #[test]
+    fn a_parked_review_spawn_keeps_the_unit_worktree_registered_and_its_cache() {
+        // Spec 64, criterion 1 (the split this criterion OWNS): a stage that PARKS a
+        // spawn - here, the adjudicator, mid three-tier review - is NOT the stage
+        // ending; it is handing work to an out-of-process agent that resumes in this
+        // SAME worktree, against this SAME build cache, in a later `rigger step`. So
+        // `run_stage`'s teardown (conductor.rs:3106-3110) must KEEP the worktree, its
+        // registration, and the cargo-target-<slug> cache sibling on a parked_unwind -
+        // never remove them as it does on a terminal return. Non-vacuous: the gate
+        // really builds into the per-unit cache (materializing runner) BEFORE the
+        // adjudicator parks, so "still present" is a real survival, not an artifact
+        // that was never created.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "solo".into(),
+            Stage {
+                name: "solo".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lens".into()],
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("work.rs".into()),
+            output: "reviewed it".into(),
+            park_spawn_ids: [spawn_id("solo", ROLE_ADJUDICATOR, 0)]
+                .into_iter()
+                .collect(),
+            ..Stub::new()
+        };
+        let runner = RecordingRunner::materializing();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        // The park propagates out of `run` as a clean step-end (matches every other
+        // parked-driver test in this module), not an error.
+        run(&cfg, &deps).unwrap();
+
+        assert!(
+            driver.spawned("judge"),
+            "the adjudicator must actually have been spawned (and parked), or this test proves nothing"
+        );
+
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let worktree = unit_worktree_dir(&scratch, "solo");
+        let cache = crate::worktree::unit_cache_sibling(&worktree).unwrap();
+        assert_eq!(
+            runner.targets(),
+            vec![cache.clone()],
+            "the gate really built into the per-unit cache before the park: {:?}",
+            runner.targets()
+        );
+        assert!(
+            std::path::Path::new(&worktree).exists(),
+            "a parked stage must KEEP its unit worktree on disk, not remove it: {worktree}"
+        );
+        assert!(
+            worktree_registered_on(&repo_path, &unit_branch("solo")),
+            "a parked stage's worktree must stay REGISTERED with git (not just a leftover dir): {worktree}"
+        );
+        assert!(
+            std::path::Path::new(&cache).exists(),
+            "a parked stage must KEEP its cargo-target-<slug> cache sibling: {cache}"
+        );
+        // Checked out at the handed-out tip: the worktree's HEAD is exactly the unit
+        // branch's tip - nothing rewound or re-created it out from under the parked agent.
+        let branch_tip = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args(["rev-parse", &unit_branch("solo")])
+            .output()
+            .unwrap();
+        let branch_tip = String::from_utf8_lossy(&branch_tip.stdout)
+            .trim()
+            .to_string();
+        // The durable branch is untouched by a park (only a successful integrate
+        // deletes it): a parked unit's checkpoint must survive - proven here by the
+        // `git rev-parse` above actually resolving a sha (a deleted branch fails it
+        // with empty stdout).
+        assert!(
+            !branch_tip.is_empty(),
+            "a parked unit's durable branch must survive (git rev-parse must resolve it)"
+        );
+        assert_eq!(
+            worktree::head_sha_of(&worktree),
+            branch_tip,
+            "the kept worktree must be checked out at the unit branch's handed-out tip"
+        );
+    }
+
+    #[test]
     fn a_worktree_less_stage_gate_inherits_the_shared_target() {
         // Gap 19 sentinel arm: a stage whose agent declares `isolation: none` runs with NO
         // worktree (dir ""), so there is no per-unit tree to isolate and its gate must inherit
@@ -21231,6 +21357,62 @@ mod tests {
         assert!(
             parallel,
             "a standalone review stage spawns its lenses on the parallel fan-out path"
+        );
+    }
+
+    #[test]
+    fn a_parked_lens_keeps_the_standalone_review_stages_worktree() {
+        // Spec 64, criterion 1 (Design bullet 2 / decision
+        // p64r4-u1-owns-review-worktree-park-gating): the SAME split that keeps a UNIT's
+        // worktree alive across a park must protect a standalone review stage's throwaway
+        // `rigger-review-*` worktree too - `run_fan_out_stage` removed it (and its throwaway
+        // branch) UNCONDITIONALLY on every exit before this fix, including a parked
+        // reviewer, the identical defect class for the review-worktree kind.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.workflow.stages.insert(
+            "review".into(),
+            Stage {
+                name: "review".into(),
+                agents: vec!["lens".into()],
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            park_spawn_ids: [spawn_id("review", &lens_role("lens"), 0)]
+                .into_iter()
+                .collect(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+
+        assert!(
+            driver.spawned("lens"),
+            "the lens must actually have been spawned (and parked), or this test proves nothing"
+        );
+
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let dir = review_worktree_dir(&scratch, "review", 0);
+        let branch = review_branch("review", 0);
+        assert!(
+            std::path::Path::new(&dir).exists(),
+            "a parked standalone-review stage must KEEP its throwaway review worktree: {dir}"
+        );
+        assert!(
+            worktree_registered_on(&repo_path, &branch),
+            "the kept review worktree must stay REGISTERED with git: {dir}"
         );
     }
 
@@ -28329,6 +28511,63 @@ mod tests {
             0,
             "resume: the fan-out must stay HELD while the gate is mid-review; workers: {:?}",
             d2.calls.lock().unwrap()
+        );
+    }
+
+    #[test]
+    fn a_parked_plan_critique_gate_keeps_its_review_worktree() {
+        // Spec 64, criterion 1 (Design bullet 2 / decision
+        // p64r4-u1-owns-review-worktree-park-gating): the SAME parked_unwind split applies
+        // to `run_plan_critique_gate`'s throwaway review worktree - it removed the dir and
+        // its throwaway branch UNCONDITIONALLY on every exit before this fix, including a
+        // parked adversary or adjudicator mid-review, the identical defect class the
+        // unit-worktree split (this criterion) already fixes for `run_stage`.
+        let dir = tempfile::tempdir().unwrap();
+        let criterion = "the widget renderer is implemented";
+        std::fs::write(
+            dir.path().join("feature.rs"),
+            format!("// {criterion}\nfn render() {{}}\n"),
+        )
+        .unwrap();
+        let cfg = critique_cfg();
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let st = Store::open(":memory:").unwrap();
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let split = vec![(
+            TYPE_UNIT_PROPOSED.to_string(),
+            json!({"id":"u-a","agent":"worker","criterion":criterion,"needs":[]}),
+        )];
+        let driver = ParkingGateDriver::new(split);
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: vec![criterion.to_string()],
+        };
+        run(&cfg, &deps).unwrap();
+
+        assert!(
+            driver.count("adversary") >= 1,
+            "the adversary must actually have been spawned (and parked), or this test proves nothing; calls: {:?}",
+            driver.calls.lock().unwrap()
+        );
+
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let wt_dir = review_worktree_dir(&scratch, "plan-critique", 0);
+        let branch = review_branch("plan-critique", 0);
+        assert!(
+            std::path::Path::new(&wt_dir).exists(),
+            "a parked plan-critique gate must KEEP its throwaway review worktree: {wt_dir}"
+        );
+        assert!(
+            worktree_registered_on(&repo_path, &branch),
+            "the kept review worktree must stay REGISTERED with git: {wt_dir}"
         );
     }
     /// THE CONDUCTOR'S ONE-EVENT MUTATION AUTHORITY IS A SINGLE-EVENT APPEND TOO, and it
