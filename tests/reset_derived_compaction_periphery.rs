@@ -4707,3 +4707,127 @@ fn a_store_with_no_file_behind_it_reports_the_reclamation_as_unmeasured() {
          there was no before-measurement to take. Got {pruned:?}"
     );
 }
+
+// ---------------------------------------------------------------------------------------
+// 27. THE BYTE FIGURE AND THE MEASUREMENT IT CLAIMS TO BE.
+//
+// `on_disk_measured` is section 26's sibling, and it answers exactly one question for a consumer
+// of this report: was the PAIR OF ON-DISK SIZES the reclamation is a difference of ever sampled
+// at all? It exists because `reclaimed_bytes: None` has two causes that are invisible in the
+// numbers - a truncating checkpoint a concurrent reader declined, and a database with no file
+// behind it - and a consumer handed only "unmeasured" has to guess between them.
+//
+// It is only worth something if the byte figure beside it AGREES with it, and the two are set
+// independently: the flag from the database's own path, the figure from whichever of the four
+// compaction arms the pass happened to take. So their agreement is a property of the STRUCT, not
+// of any one arm, and it is the property every reader of the report takes for granted: A BYTE
+// FIGURE IS ONLY EVER REPORTED WHERE A MEASUREMENT WAS TAKEN.
+//
+// `Some(n)` is documented as MEASURED - the field's own text says it is the pair of sizes an
+// operator's own `du` would add up, sampled before the deletes and again after the rewrite - and
+// section 22 leans on `Some(0)` meaning precisely "the file was really looked at and had nothing
+// to give back", which is the one thing that separates it from `None`. A `Some` standing beside
+// `on_disk_measured: false` therefore says both things at once: a measurement was taken, and no
+// measurement was taken. There is no reading of that pair, so a caller either believes the number
+// - and reports a reclamation of a file that does not exist - or learns to distrust every number
+// the report carries.
+//
+// Section 26 reaches the flag in the arm where the rewrite RAN: its result pending on a real
+// file, its bytes never existing on a fileless one. The arm below is the OTHER one an
+// out-of-crate caller reaches, and the one the shipped guidance calls the expected path - the
+// rewrite SKIPPED, decided by the file's free pages and never by this pass's deletes. A fileless
+// database reaches it exactly the way a file with nothing to reclaim does, so the two are driven
+// here side by side as one shape with one difference, and the invariant is asserted over every
+// report either of them produced rather than at the single point where it is easiest to see.
+//
+// Invisible from inside the crate: every file-backed suite has a file, so the flag is true
+// throughout and the pair can never disagree.
+// ---------------------------------------------------------------------------------------
+
+#[test]
+fn a_prune_reports_a_byte_figure_only_where_it_had_a_file_to_measure_one_over() {
+    // THE CONTROL, over a real file: one recording per replay key and a settling pass first, so
+    // the pass under test sheds nothing AND finds no free page. That is the skipped arm, where
+    // the zero is a measurement that WAS taken - the reading section 22 depends on.
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("measured.db");
+    let on_disk = Store::open(db.to_str().unwrap()).expect("open a file-backed store");
+    let on_disk_prefix = Namespaced::prefix_for("measured");
+    seed_namespace(&on_disk, "measured", 1);
+    let on_disk_settle = prune_all_types(&on_disk, &on_disk_prefix);
+    assert_eq!(
+        pragma_i64(&db, "freelist_count"),
+        0,
+        "the control must hold no reclaimable free page before the pass under test, or it is not \
+         in the arm this section is about"
+    );
+
+    let measured = prune_all_types(&on_disk, &on_disk_prefix);
+    assert!(
+        !measured.compaction_ran,
+        "the control is the SKIPPED arm: the file held nothing to reclaim, so it was not \
+         rewritten. Got {measured:?}"
+    );
+    assert!(
+        measured.on_disk_measured,
+        "this store has a file, so the before-measurement was taken; got {measured:?}"
+    );
+    assert_eq!(
+        measured.reclaimed_bytes,
+        Some(0),
+        "and over a file that was really looked at, ZERO IS THE MEASUREMENT - the whole meaning \
+         of `Some(0)` here, and what the fileless case below must not borrow. Got {measured:?}"
+    );
+
+    // THE SAME SHAPE with the one thing that matters changed: no file behind the database. Same
+    // seeding, same settling pass, same arm - so nothing but the missing file can account for a
+    // difference in what the report says about the measurement.
+    let fileless = Store::open(":memory:").expect("open an in-memory store");
+    let fileless_prefix = Namespaced::prefix_for("fileless");
+    seed_namespace(&fileless, "fileless", 1);
+    let fileless_settle = prune_all_types(&fileless, &fileless_prefix);
+
+    let unmeasured = prune_all_types(&fileless, &fileless_prefix);
+    assert_eq!(
+        unmeasured.total_removed(),
+        0,
+        "the fixture holds no key twice, so nothing may be shed; got {:?}",
+        unmeasured.removed
+    );
+    assert!(
+        !unmeasured.compaction_ran,
+        "the fileless store must reach the SAME arm as the control, or the two are not one shape \
+         with one difference; got {unmeasured:?}"
+    );
+    assert!(
+        !unmeasured.on_disk_measured,
+        "a database with no file behind it took no before-measurement, and the flag says so; got \
+         {unmeasured:?}"
+    );
+    assert_eq!(
+        unmeasured.reclaimed_bytes, None,
+        "SO IT MAY NOT HAND BACK A BYTE FIGURE. `Some(0)` here claims a measurement over a file \
+         that does not exist, and claims it standing beside the flag that says no measurement was \
+         taken - the one combination this report has no reading for. The honest answer is the one \
+         the field's own documentation already gives for a database with no file behind it: \
+         unmeasured, told apart from a checkpoint a reader declined by the flag rather than by \
+         the number. Got {unmeasured:?}"
+    );
+
+    // AND AS THE RULE IT IS, over every report either store produced here - the settling passes
+    // included, which are the same arm reached from a different starting state. A cross-field
+    // invariant asserted only where it is easiest to see is a rule that holds at one point.
+    for (which, pruned) in [
+        ("the file-backed settling pass", &on_disk_settle),
+        ("the file-backed pass under test", &measured),
+        ("the fileless settling pass", &fileless_settle),
+        ("the fileless pass under test", &unmeasured),
+    ] {
+        assert!(
+            pruned.reclaimed_bytes.is_none() || pruned.on_disk_measured,
+            "{which} reported a byte figure without a measurement behind it. Every `Some` in this \
+             field is defined as a difference of two sampled sizes, so one may only appear where \
+             the sampling happened. Got {pruned:?}"
+        );
+    }
+}
