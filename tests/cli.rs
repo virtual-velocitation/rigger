@@ -3026,6 +3026,201 @@ stages:
     );
 }
 
+/// Scaffold a project with ONE full unit stage - `agent: worker` (so a REAL, gated
+/// implementer runs and its OWN durable worktree is created), gated by a trivial inline
+/// `ok` gate, then reviewed by TWO lenses in its per-unit review panel. Unlike
+/// [`write_standalone_review_workflow`] (no `agent:`, `run_fan_out_stage`'s throwaway
+/// `rigger-review-*` worktree), this is the OTHER worktree kind spec 64 criterion 1
+/// covers: the unit's own durable `rigger-wt-<unit>` worktree on its `rigger/u/<unit>`
+/// branch, torn down (or not) by `run_stage`'s `parked_unwind` gate rather than
+/// `run_fan_out_stage`'s. No `isolation: none` on any agent, for the same reason
+/// [`write_standalone_review_workflow`] omits it: this test needs the real, git-backed
+/// worktree the round-4 regression tears down, not the offline no-worktree shape most
+/// other `step` fixtures deliberately choose.
+fn write_unit_review_lenses_workflow(root: &Path) {
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
+    )
+    .unwrap();
+    for id in ["a", "b"] {
+        std::fs::write(
+            rigger.join("agents").join(format!("{id}.md")),
+            format!("---\nid: {id}\nmodel: sonnet\ntools: [Read]\n---\nReview it.\n"),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: unitworktreeparktest
+defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok: { run: "true", kind: core }
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    on_pass: none
+    review:
+      lenses: [a, b]
+"#,
+    )
+    .unwrap();
+}
+
+/// Spec 64, criterion 1, round 4 (sdet-u1c1-r3-unit-worktree-torn-down-beside-genuine-park,
+/// upheld live by adv2-u1c1-r4-severe-finding-upheld-live): the MIRROR IMAGE, at the real
+/// binary boundary, of `step_halts_on_an_exhausted_reviewer_beside_a_parked_sibling_and_
+/// keeps_the_review_worktree` above - for the UNIT's own durable worktree rather than a
+/// standalone review's throwaway one.
+///
+/// Round 3 wired `run_review_agents_concurrently`'s out-of-band `any_parked` signal through
+/// to `run_fan_out_stage` (the review-worktree call site) but not through `review_unit` to
+/// `run_stage`'s own pre-existing `parked_unwind` gate (the unit-worktree call site) -
+/// `review_unit` passed the shared function a throwaway `AtomicBool` it never read, so
+/// `run_stage`'s `parked_unwind` derived solely from the single `Result`
+/// `run_single_stage` propagated. Round 3's own swap (prioritize a genuine terminal error
+/// over a co-chunked park, so the error is what a caller's `?` propagates) then had a side
+/// effect nobody had measured on THIS path: a lens that genuinely crashes correctly
+/// propagates its error, but the UNIT's own worktree was torn down out from under a
+/// SIBLING lens that is genuinely parked and will resume in that exact worktree from a
+/// later conductor process - the identical defect class spec 64 c1 exists to close, just
+/// recurring on the other worktree kind.
+///
+/// This is the TRUE PERIPHERY of round 4's fix, not a restatement of it: the implementer's
+/// own regression (`a_parked_lens_keeps_the_unit_worktree_beside_a_genuine_sibling_crash`,
+/// `conductor.rs`'s `mod tests`) proves the fix's ALGORITHM correct with a synchronous,
+/// single-process `Stub` driver that decides both lenses' outcomes from a fixed id set
+/// before `run()` is even called. It cannot exercise the mechanism this criterion actually
+/// gates: [`rigger::driver::replay::ReplayDriver`] parks a spawn as a durable event, then
+/// REPLAYS it only once a LATER, SEPARATE process finds its result already in the log - so
+/// a real mixed chunk (one sibling genuinely dead, another still open) can only arise from
+/// an out-of-process courier resolving one before the other BETWEEN conductor invocations.
+/// It also drives a REAL implementer through a REAL gate first, so the worktree under test
+/// is the unit's own durable checkpoint (`rigger-wt-solo` on `rigger/u/solo`), not a
+/// synthetic one a Stub driver never actually created on disk.
+///
+/// Lens "a" PARKS and is left unanswered every step (re-parking each time); lens "b" is
+/// exhausted via the same reviewer-error re-park mechanism (spec 51) round 2's test uses -
+/// a plain recorded error re-parks a fresh `~retryN` attempt (bounded by
+/// `REVIEWER_RESPAWN_BOUND`) until it converges on a genuine `is_degenerate_reviewer` halt.
+/// Two requirements from that one real halt: "b"'s exhaustion must surface LOUDLY (spec
+/// 19c), not be masked by "a"'s park in the same final concurrent chunk; and the UNIT's
+/// OWN worktree must survive anyway, because "a" genuinely parked and will resume in
+/// exactly this tree from a later conductor process.
+#[test]
+fn step_halts_on_an_exhausted_lens_beside_a_parked_sibling_and_keeps_the_unit_worktree() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_unit_review_lenses_workflow(root);
+
+    // Step 1: the unit is ready, so its implementer spawn parks - the real, git-backed
+    // isolation this fixture deliberately keeps means the unit's own durable worktree is
+    // created right here, before the implementer has even produced a diff.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/implementer#0""#) && out.contains(r#""done":false"#),
+        "step 1 parks the implementer; got: {out:?}"
+    );
+
+    let wt_dir = root.join(".rigger").join("tmp").join("rigger-wt-solo");
+    assert!(
+        wt_dir.exists(),
+        "a parked implementer must already have its unit worktree on disk (round 1's own \
+         criterion, load-bearing for the rest of this test): {}",
+        wt_dir.display()
+    );
+
+    // Write the implementer's "diff" directly into the worktree it was already handed -
+    // the shape a real out-of-process agent takes (it edits files in its assigned tree,
+    // then reports done), never a CLI-supplied patch.
+    std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
+    let (_o, err, ok) = run_rigger(
+        root,
+        &["result", "solo/implementer#0", "implemented the unit"],
+    );
+    assert!(
+        ok,
+        "recording the implementer result must succeed; stderr: {err}"
+    );
+
+    // Step 2: the implementer replays, the pre-gate commit lands the written file, the `ok`
+    // gate passes, and the per-unit review parks BOTH lenses in one concurrent chunk - the
+    // real fan-out shape a two-lens panel takes on nearly every unit.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the second step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/lens:a#0""#) && out.contains(r#""id":"solo/lens:b#0""#),
+        "both lenses must actually have parked in the same wave, or this test proves nothing \
+         about a mixed chunk; got: {out:?}"
+    );
+
+    // An out-of-process courier posts nothing but failures for "b" - its original spawn,
+    // then each deterministic `~retryN` respawn `run_reviewer` re-parks in turn (spec 51's
+    // reviewer-error-re-park) - while "a" is left unanswered throughout, so it re-parks in
+    // the same chunk on every step including the final one that halts. Capped well above
+    // any real bound so a genuine infinite-repark regression fails LOUDLY here instead of
+    // hanging the suite.
+    let mut ok_step = true;
+    let mut last_err = String::new();
+    let mut retry = 0u32;
+    while ok_step {
+        assert!(
+            retry <= 8,
+            "the reviewer-error-repark loop did not halt within a sane number of rounds - \
+             either the respawn bound regressed or this test's premise is wrong"
+        );
+        let id = if retry == 0 {
+            "solo/lens:b#0".to_string()
+        } else {
+            format!("solo/lens:b#0~retry{retry}")
+        };
+        let (_o, err_r, ok_r) = run_rigger(
+            root,
+            &["result", &id, "boundary-genuine-crash-marker", "--error"],
+        );
+        assert!(
+            ok_r,
+            "recording a failure for {id:?} must succeed; stderr: {err_r}"
+        );
+        let (_out, err_s, ok_s) = run_rigger(root, &["step"]);
+        ok_step = ok_s;
+        last_err = err_s;
+        retry += 1;
+    }
+
+    // The exhausted lens must halt LOUDLY, naming the dead reviewer - not be silently
+    // masked by "a"'s park in the same final concurrent chunk (the round-2 defect class,
+    // now proven closed on the unit-worktree call site round 4 fixes).
+    assert!(
+        last_err.contains("\"solo\"") && last_err.contains("\"b\"") && last_err.contains("lens"),
+        "the halt must name the exhausted reviewer (stage, tier, agent): {last_err}"
+    );
+
+    // The UNIT's OWN worktree survives anyway - "a" genuinely parked in this same final
+    // chunk and resumes in exactly this tree from a later conductor process. This is the
+    // round-4 regression: pre-round-4, "b"'s genuine halt correctly propagated but tore
+    // this SAME worktree down out from under "a"'s park.
+    assert!(
+        wt_dir.exists(),
+        "a PARKED sibling must keep the UNIT's own worktree even when a co-chunked lens \
+         exhausted into a loud halt, across a REAL process boundary: {}",
+        wt_dir.display()
+    );
+    let list = git_out(root, &["worktree", "list", "--porcelain"])
+        .expect("git worktree list must succeed in the seeded repo");
+    assert!(
+        list.contains("rigger/u/solo"),
+        "the kept unit worktree must stay REGISTERED with git, checked out on its durable \
+         unit branch: {list}"
+    );
+}
+
 /// Spec 50, criterion 2 (the REGISTRY lifecycle): `rigger step` REGISTERS this instance in the
 /// machine-global state directory - the project root plus a CREDENTIAL-FREE store identity, with a
 /// live heartbeat - so a machine-level dash can DISCOVER it without a coordination protocol. The
