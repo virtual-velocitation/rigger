@@ -31,10 +31,11 @@ use rigger::grounder::{grounder_for, is_retired_grounder, retired_grounder_error
 use std::path::PathBuf;
 use std::process::Command;
 
-/// The compiled `rigger` binary under test (Cargo sets this for integration tests).
-fn rigger_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_rigger")
-}
+// The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
+// `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
+// and every suite that spawns the product then dies with a bare NotFound.
+mod common;
+use common::rigger_bin;
 
 /// Assert that `grounder` (a value a shipped config ACTUALLY carries) is a LIVE name: not a
 /// retired engine, and, fed through the public resolver, it does NOT trip the retirement

@@ -8,10 +8,11 @@
 use std::path::Path;
 use std::process::Command;
 
-/// The compiled `rigger` binary under test (Cargo sets this for integration tests).
-fn rigger_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_rigger")
-}
+// The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
+// `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
+// and every suite that spawns the product then dies with a bare NotFound.
+mod common;
+use common::rigger_bin;
 
 /// A throwaway project dir that is its own git repo, so `project_identity()` (which
 /// scopes the namespaced streams) is stable across the emit and the peers reads.
@@ -9055,7 +9056,7 @@ fn stage_rigger_shim(root: &Path) -> String {
     let shim = bindir.join("rigger");
     std::fs::write(
         &shim,
-        format!("#!/bin/sh\nexec \"{}\" \"$@\"\n", rigger_bin()),
+        format!("#!/bin/sh\nexec \"{}\" \"$@\"\n", rigger_bin().display()),
     )
     .unwrap();
     #[cfg(unix)]
@@ -9329,7 +9330,7 @@ fn stage_failing_docs_rigger_shim(root: &Path) -> String {
         format!(
             "#!/bin/sh\nif [ \"$1\" = docs ]; then\n  echo 'boom: rigger docs failed' 1>&2\n  \
              exit 1\nfi\nexec \"{}\" \"$@\"\n",
-            rigger_bin()
+            rigger_bin().display()
         ),
     )
     .unwrap();

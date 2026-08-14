@@ -1354,10 +1354,15 @@ fn cli_project() -> tempfile::TempDir {
     dir
 }
 
+// The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
+// `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
+// and every suite that spawns the product then dies with a bare NotFound.
+mod common;
+
 /// Run `rigger <args...>` in `root` through the COMPILED binary, returning its stdout.
 fn run_rigger(root: &std::path::Path, args: &[&str]) -> String {
     let state = tempfile::tempdir().expect("a temp XDG_STATE_HOME");
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_rigger"))
+    let out = std::process::Command::new(common::rigger_bin())
         .args(args)
         .current_dir(root)
         // Never let a short-lived invocation spawn a real dashboard, and never let it

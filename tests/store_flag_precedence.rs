@@ -33,10 +33,11 @@ use std::process::{Command, Output};
 
 use tempfile::TempDir;
 
-/// The compiled `rigger` binary under test (Cargo sets this for integration tests).
-fn rigger_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_rigger")
-}
+// The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
+// `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
+// and every suite that spawns the product then dies with a bare NotFound.
+mod common;
+use common::rigger_bin;
 
 /// An unreachable but well-formed server address: nothing listens on this loopback port, so the
 /// eager connect (fail-fast) is refused immediately. We prove WHICH backend the flag selected, not
