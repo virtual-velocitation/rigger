@@ -6008,30 +6008,40 @@ fn derived_prune_report(pruned: &PrunedDerived) -> String {
     // committed before any of this is decided, so none of them is a failure of the prune:
     //   - the rewrite failed: the rows are gone anyway, so the operator gets the counts, the
     //     failure by name, and the two facts that follow from the ordering (the deletes are
-    //     durable; a re-run is safe). Anything less is an "error" about a log that WAS pruned.
-    //   - nothing was deleted: the file is deliberately not rewritten, because a full rewrite
-    //     there holds the write lock for a whole scan and stages a second copy of the log in the
-    //     temporary directory to reclaim nothing. Zero bytes is the measurement, not a missing one.
-    //   - the reclamation was measured: report the bytes.
+    //     durable; a re-run is safe, and it retries the reclamation because what triggers the
+    //     rewrite is the free space still in the file). Anything less is an "error" about a log
+    //     that WAS pruned.
+    //   - the file had no free space to reclaim: it is deliberately not rewritten, because a full
+    //     rewrite there holds the write lock for a whole scan and stages a second copy of the log
+    //     in the temporary directory to reclaim nothing. Zero bytes is the measurement, not a
+    //     missing one. Read from `compaction_ran`, never inferred from a zero count: a pass that
+    //     deleted nothing still rewrites a file that HAS space to reclaim, and telling an
+    //     operator their log was left alone while it was being rewritten is the misreport this
+    //     whole line exists to avoid.
+    //   - the reclamation was measured: report the bytes the log lost on disk.
     //   - the truncating checkpoint was declined by a concurrent reader: the freed pages stay in
     //     the write-ahead log, so it is reported as unmeasured rather than as a byte count the
     //     operator's own `ls` would contradict.
-    let compaction = match (&pruned.compaction_error, pruned.reclaimed_bytes) {
-        (Some(err), _) => format!(
+    let compaction = match (
+        &pruned.compaction_error,
+        pruned.compaction_ran,
+        pruned.reclaimed_bytes,
+    ) {
+        (Some(err), _, _) => format!(
             "the log file could NOT be compacted afterwards: {err}. The deletes are committed and \
-             durable, so nothing was lost and re-running the command is safe"
+             durable, so nothing was lost and re-running the command is safe - and it retries the \
+             reclamation, because the space this run could not reclaim is still free in the file"
         ),
-        (None, _) if pruned.total_removed() == 0 => "nothing was deleted, so the log file was \
-                                                    left exactly as it stands rather than \
-                                                    rewritten to reclaim nothing"
+        (None, false, _) => "the log file was holding no reclaimable free page, so it was left \
+                             exactly as it stands rather than rewritten to reclaim nothing"
             .to_string(),
-        (None, Some(bytes)) => {
+        (None, true, Some(bytes)) => {
             format!("then compacted the log file and reclaimed {bytes} byte(s) on disk")
         }
-        (None, None) => "then compacted the log file, but the freed pages could not be folded \
-                         back into the file: a concurrent reader held the write-ahead log, so \
-                         they land at the next checkpoint and this run reclaimed an unmeasured \
-                         amount"
+        (None, true, None) => "then compacted the log file, but the freed pages could not be \
+                               folded back into the file: a concurrent reader held the \
+                               write-ahead log, so they land at the next checkpoint and this run \
+                               reclaimed an unmeasured amount"
             .to_string(),
     };
     // WHAT THE COUNT MEANS, both ways round, because each direction is misread in its own way.
@@ -15732,7 +15742,16 @@ mod tests {
     /// A prune report with `removed` rows spread over the shipped derived types and the given
     /// reclamation state. Built from the real type list so a fifth derived type cannot leave this
     /// pinning a report shape nothing renders.
-    fn report_of(removed: usize, reclaimed: Option<u64>, failure: Option<&str>) -> String {
+    ///
+    /// `compaction_ran` is a parameter of its own rather than inferred from `reclaimed`, for the
+    /// same reason the report reads it rather than inferring it: a file that was not rewritten
+    /// and a rewrite that reclaimed nothing are both `Some(0)` and are different states.
+    fn report_of(
+        removed: usize,
+        compaction_ran: bool,
+        reclaimed: Option<u64>,
+        failure: Option<&str>,
+    ) -> String {
         let types = rigger::ingest::DERIVED_INDEX_TYPES;
         let pruned = PrunedDerived {
             removed: types
@@ -15741,6 +15760,7 @@ mod tests {
                 .map(|(i, t)| (t.to_string(), if i == 0 { removed } else { 0 }))
                 .collect(),
             reclaimed_bytes: reclaimed,
+            compaction_ran,
             compaction_error: failure.map(str::to_string),
         };
         derived_prune_report(&pruned)
@@ -15756,7 +15776,7 @@ mod tests {
     /// and a re-run is safe.
     #[test]
     fn a_compaction_that_failed_after_the_deletes_is_reported_beside_the_counts() {
-        let out = report_of(7, None, Some("database or disk is full"));
+        let out = report_of(7, true, None, Some("database or disk is full"));
         assert!(
             out.contains("pruned 7 redundant derived-index event(s)"),
             "a failed compaction must not cost the operator the counts; got {out:?}"
@@ -15790,7 +15810,7 @@ mod tests {
     /// the dedup is broken, so it has to be a statement about the log in front of them.
     #[test]
     fn a_prune_that_shed_nothing_is_justified_by_this_log_not_by_when_it_was_written() {
-        let out = report_of(0, Some(0), None);
+        let out = report_of(0, false, Some(0), None);
         for (fact, needle) in [
             ("say WHY nothing was shed", "no redundancy to shed"),
             ("say the report is the EXPECTED one", "expected report"),
@@ -15814,11 +15834,33 @@ mod tests {
         );
     }
 
+    /// Spec 60, criterion 5: "the file was left alone" is a statement about THE REWRITE, not about
+    /// the row count - so a pass that deleted nothing and DID rewrite the file says so.
+    ///
+    /// This is the pass an operator reaches by following the failed-reclamation report's own
+    /// advice: the first run's deletes committed and its rewrite failed, so the re-run sheds no
+    /// rows and reclaims the space that was left behind. A report that read "nothing was deleted"
+    /// as "nothing was rewritten" would tell that operator their log was untouched by the very
+    /// run that compacted it, and would make the advice look like it had done nothing.
+    #[test]
+    fn a_pass_that_deleted_nothing_but_reclaimed_space_reports_the_reclamation() {
+        let out = report_of(0, true, Some(8192), None);
+        assert!(
+            out.contains("reclaimed 8192 byte(s) on disk"),
+            "the re-run's reclamation is what the operator was told to run for; got {out:?}"
+        );
+        assert!(
+            !out.contains("left exactly as it stands"),
+            "a run that rewrote the file must never say it left it alone - that is the sentence \
+             an operator checks the advice against; got {out:?}"
+        );
+    }
+
     /// Spec 60, criterion 5: a prune that DID shed rows explains why a deduplicated log still had
     /// something to shed, and carries none of the clean-log clause.
     #[test]
     fn a_prune_that_shed_rows_explains_the_duplication_a_deduplicated_log_still_accumulates() {
-        let out = report_of(12, Some(4096), None);
+        let out = report_of(12, true, Some(4096), None);
         for (fact, needle) in [
             ("name the shape that re-records a batch", "RETURNS"),
             ("give the operator the ordinary cause", "revert"),
