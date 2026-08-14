@@ -204,13 +204,20 @@ fn discipline_body(ctx: &DocsContext) -> String {
          since moved past. A prune that sheds rows on such a log is shedding that duplication, \
          not covering for a defect; a log written BEFORE the dedup sheds the whole accumulated \
          pile instead. WHAT IT COSTS TO RUN: the compaction rewrites events.db in full and stages \
-         a COMPLETE COPY of the log in the operating system's temporary directory while it does, \
-         so the free space it needs is on /tmp (or wherever TMPDIR points) rather than on the \
-         partition holding .rigger/. It rewrites only when it actually deleted something - a \
-         prune with nothing to shed leaves the file exactly as it found it and reports reclaiming \
-         zero - and if the rewrite fails after the deletes have committed, the command still \
-         reports what it removed and names the failure: the deletes are durable, so nothing is \
-         lost and re-running it is safe. The two flags COMPOSE \
+         a COMPLETE COPY of the log in SQLite's temporary directory while it does, so the free \
+         space it needs is on whichever filesystem that resolves to rather than on the partition \
+         holding .rigger/ - SQLITE_TMPDIR if you set it, else TMPDIR, else the first of /var/tmp, \
+         /usr/tmp, /tmp that exists and is writable, which on a Linux box with TMPDIR unset means \
+         /var/tmp and NOT /tmp. Set TMPDIR yourself if the default lands somewhere too small for \
+         a second copy of your log. It rewrites only when the FILE is holding reclaimable free \
+         pages, which is not the same as this run having deleted something: a prune with nothing \
+         to shed from an already-compact log leaves the file exactly as it found it and reports \
+         reclaiming zero, while a prune that sheds nothing from a log still holding free pages \
+         reclaims them. That is what makes the re-run a real remedy - if the rewrite fails after \
+         the deletes have committed, the command still reports what it removed and names the \
+         failure, and because the deletes are durable and the space they freed is still free in \
+         the file, re-running it is both safe and the way to reclaim that space. The two flags \
+         COMPOSE \
          and each prunes its own accumulation: `rigger reset --runs --derived` sheds the dead-run \
          graph rows and the duplicated index in one pass. Both are one-shot maintenance you run \
          BETWEEN runs, never against a live one.\n"
@@ -519,16 +526,39 @@ mod tests {
 
             // WHAT IT COSTS TO RUN, which is not on the partition the operator is watching: the
             // rewrite stages a complete copy of the log in the temporary directory, and it only
-            // runs when rows were actually deleted.
+            // runs when the FILE has free space to reclaim.
             assert!(
                 out.contains("temporary directory"),
                 "{label} must say where the compaction stages its copy of the log, since the free \
                  space it needs is not on the partition holding the log"
             );
+            // AND WHICH DIRECTORY THAT IS, resolved the way SQLite resolves it. This sentence
+            // exists for exactly one job - telling an operator WHICH filesystem must hold a full
+            // copy of their log - so naming the wrong one is worse than saying nothing. SQLite's
+            // unix resolution is SQLITE_TMPDIR, then TMPDIR, then the first of /var/tmp, /usr/tmp
+            // and /tmp that it can use, so with TMPDIR unset the answer is /var/tmp and /tmp is
+            // never consulted.
+            for needle in ["SQLITE_TMPDIR", "TMPDIR", "/var/tmp"] {
+                assert!(
+                    out.contains(needle),
+                    "{label} must name how the temporary directory RESOLVES ({needle:?}): an \
+                     operator reads this to decide which filesystem needs the free space, and a \
+                     guess at the default sends them to the wrong one"
+                );
+            }
             assert!(
                 out.contains("leaves the file exactly as it found it"),
                 "{label} must say that a prune with nothing to shed does NOT rewrite the file, or \
                  the expected case reads as costing a full compaction"
+            );
+            // AND WHAT A RE-RUN AFTER A FAILED REWRITE ACTUALLY DOES. The command tells an
+            // operator that re-running is safe; the document has to tell them it is also the way
+            // to get the space back, which is only true because the rewrite is triggered by the
+            // free space in the file rather than by the rows that run deleted.
+            assert!(
+                out.contains("reclaimable free pages"),
+                "{label} must say what triggers the rewrite - the free pages in the file, not \
+                 this run's deletes - or a re-run after a failed reclamation reads as pointless"
             );
         }
     }

@@ -774,8 +774,12 @@ impl Store {
     ///    moment the transaction commits; the space reclamation that follows can still fail, and
     ///    when it does this returns the counts with the failure NAMED beside them rather than an
     ///    `Err` that says only that something went wrong with a log which HAS been pruned. And it
-    ///    only runs at all when something was deleted: a pass that deleted nothing has nothing
-    ///    to reclaim, so the file is left exactly as it stands rather than rewritten in full.
+    ///    only runs at all when the FILE has free space to reclaim - never merely because this
+    ///    pass deleted something, and never merely because it did not. A file holding no free
+    ///    page is left exactly as it stands rather than rewritten in full to reclaim nothing;
+    ///    a file holding free pages is reclaimed even by a pass that deleted nothing, which is
+    ///    what makes re-running the command after a failed reclamation the remedy this reports
+    ///    tell an operator it is.
     pub fn prune_derived_index(
         &self,
         stream_prefix: &str,
@@ -795,7 +799,7 @@ impl Store {
         &self,
         stream_prefix: &str,
         identity: &ContentIdentity,
-        compact: impl FnOnce(&Connection) -> Result<Option<u64>, Error>,
+        compact: impl FnOnce(&Connection) -> Result<Compaction, Error>,
     ) -> Result<PrunedDerived, Error> {
         // THE PARTITION IS CHECKED BEFORE ANY ROW IS READ (property 2). Both failures here are
         // silent when they are wrong - a re-dated fact leaves every row looking perfectly intact -
@@ -865,6 +869,22 @@ impl Store {
         );
 
         let mut guard = self.conn.lock().unwrap();
+        // THE OPERATOR'S BEFORE, taken before a single row is deleted. What the reclamation is
+        // reported as is the space the LOG LOST ON DISK across the whole command, so it is
+        // measured where the command starts rather than derived from a page count inside the
+        // rewrite: a page count is the database's LOGICAL size, it counts pages living only in an
+        // un-checkpointed `-wal`, and a figure computed from it can name a reclamation over a
+        // file that grew. This is the number an operator reproduces by measuring the log before
+        // they run the command and again after, which is the only check they can make.
+        //
+        // `None` for a database with no file behind it (`:memory:`, a temporary database): there
+        // are no bytes on disk to have lost, so the reclamation below is reported as UNMEASURED
+        // rather than as a zero that claims a measurement was taken.
+        let db_file = guard
+            .path()
+            .filter(|p| !p.is_empty())
+            .map(|p| p.to_string());
+        let on_disk_before = db_file.as_deref().map(bytes_on_disk);
         let types = identity.types();
         let mut removed: Vec<(String, usize)> = Vec::with_capacity(types.len());
         {
@@ -903,52 +923,111 @@ impl Store {
         // failure is CARRIED BACK beside the counts instead, and the same honesty that reports an
         // unmeasurable reclamation as unmeasured reports an unrun one as named.
         //
-        // AND IT ONLY RUNS WHEN SOMETHING WAS DELETED. On a log the ingest dedup has kept clean
-        // the loop above deletes nothing, which is the report the shipped guidance calls the
-        // expected one - and a rewrite there holds the write lock for a full scan and stages a
-        // COMPLETE copy of the database in the operating system's temporary directory (a
-        // different, typically much smaller filesystem than the one holding the log) to reclaim
-        // exactly the pages the deletes freed: none of them. Skipping it is not a cheaper
-        // approximation of the report, it is the SAME report - zero rows deleted reclaims zero
-        // bytes, and that is a measurement rather than a measurement that could not be taken.
-        if removed.iter().all(|(_, n)| *n == 0) {
-            return Ok(PrunedDerived {
+        // AND WHETHER IT RUNS AT ALL IS DECIDED BY THE FILE, not by this pass's deletes - see
+        // [`compact_in_place`], which skips a file holding no free page. The two directions are
+        // one rule and both matter. A rewrite over a file with nothing to reclaim holds the write
+        // lock for a full scan and stages a COMPLETE copy of the database in the temporary
+        // directory SQLite resolves (a different, typically much smaller filesystem than the one
+        // holding the log) to reclaim nothing at all - and that is the path the shipped guidance
+        // calls the expected one, so it is the path an operator runs most. A rewrite gated the
+        // OTHER way, on this pass having deleted something, would never run again over the log a
+        // FAILED reclamation leaves behind: the first pass took the duplication, so the re-run
+        // this report tells the operator is safe deletes nothing, and the space it was told to
+        // re-run for would stay in the file forever.
+        match compact(&guard) {
+            // Nothing to reclaim, nothing rewritten: zero bytes is the MEASUREMENT here, not a
+            // measurement that could not be taken.
+            Ok(Compaction::Skipped) => Ok(PrunedDerived {
                 removed,
                 reclaimed_bytes: Some(0),
+                compaction_ran: false,
                 compaction_error: None,
-            });
-        }
-        match compact(&guard) {
-            Ok(reclaimed_bytes) => Ok(PrunedDerived {
+            }),
+            // The rewrite ran and its result is on disk NOW, so the before taken above and the
+            // after taken here bracket the whole command: their difference is what the log lost.
+            Ok(Compaction::Landed) => Ok(PrunedDerived {
                 removed,
-                reclaimed_bytes,
+                reclaimed_bytes: db_file
+                    .as_deref()
+                    .zip(on_disk_before)
+                    .map(|(db, before)| before.saturating_sub(bytes_on_disk(db))),
+                compaction_ran: true,
+                compaction_error: None,
+            }),
+            // The rewrite ran but its result has NOT landed: the freed frames are still in the
+            // write-ahead log, so any difference measured now is between two states of a move
+            // that has not finished. Unmeasured is the honest report.
+            Ok(Compaction::Pending) => Ok(PrunedDerived {
+                removed,
+                reclaimed_bytes: None,
+                compaction_ran: true,
                 compaction_error: None,
             }),
             Err(e) => Ok(PrunedDerived {
                 removed,
                 reclaimed_bytes: None,
+                compaction_ran: true,
                 compaction_error: Some(e.to_string()),
             }),
         }
     }
 }
 
-/// Reclaim on disk the space a committed prune freed, and report how many bytes of it actually
-/// landed in the file - `None` when that could not be measured.
+/// Total bytes the database at `db` occupies on disk: the main file plus its write-ahead log,
+/// which is where a WAL-mode database's most recent pages live until a checkpoint folds them
+/// back. Counting only the main file would report a reclamation over a log whose `-wal` had just
+/// grown by more than the file shrank.
+///
+/// A file that is not there counts as zero rather than failing: the `-wal` does not exist before
+/// the first write and is deleted on a clean close, and neither absence is an error about the
+/// space the log occupies.
+fn bytes_on_disk(db: &str) -> u64 {
+    let len = |p: &str| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+    len(db) + len(&format!("{db}-wal"))
+}
+
+/// What the post-commit space reclamation did to the file, which is the only thing about it the
+/// prune cannot work out for itself.
+///
+/// Three outcomes rather than a byte count, because HOW MANY bytes the log lost is a property of
+/// the whole command (measured either side of it by [`Store::prune_derived_index`]) while WHETHER
+/// the file was rewritten, and whether the rewrite has landed on disk yet, are properties only
+/// this step knows. Reported as a value rather than inferred by the caller from a zero, because
+/// "was not rewritten" and "was rewritten and reclaimed nothing" are different things to tell an
+/// operator and neither can be read off a number.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Compaction {
+    /// The file held no reclaimable free space, so it was NOT rewritten at all.
+    Skipped,
+    /// The file was rewritten and the result is on disk now: the truncating checkpoint folded the
+    /// write-ahead log back into the main file.
+    Landed,
+    /// The file was rewritten, but the freed frames are still in the `-wal`: a concurrent reader
+    /// held a snapshot of the write-ahead log, so they land at some later checkpoint instead.
+    Pending,
+}
+
+/// Reclaim on disk the space the file is holding free, and report whether that reclamation has
+/// landed - or that there was none to do.
 ///
 /// Separated from the prune because it runs AFTER the commit, where a failure is a fact to report
 /// rather than an outcome to propagate: by the time this is called the deletes are durable, so its
 /// `Err` describes an un-reclaimed log rather than an un-pruned one.
-fn compact_in_place(conn: &Connection) -> Result<Option<u64>, Error> {
-    // VACUUM cannot run inside a transaction, so it follows the commit. Read the page count
-    // FIRST: the committed deletes have moved their pages onto the freelist, which `page_count`
-    // still counts - that is the pre-compaction size the reclamation is measured against.
-    let page_size: i64 = conn
-        .query_row("PRAGMA page_size", [], |r| r.get(0))
+fn compact_in_place(conn: &Connection) -> Result<Compaction, Error> {
+    // WHAT THERE IS TO RECLAIM DECIDES WHETHER THE FILE IS TOUCHED - not what this pass deleted.
+    // The freelist is where every delete's freed pages go and where they stay until something
+    // vacuums, so it is the exact question "is a rewrite worth its cost", asked of the file
+    // rather than of the caller. It answers the two directions the caller must not get wrong:
+    // a file with nothing to reclaim is never rewritten to reclaim nothing, and a file that IS
+    // holding free space is reclaimed even when this pass deleted none of it - which is what
+    // makes re-running the command the real remedy for a reclamation that failed.
+    let free_pages: i64 = conn
+        .query_row("PRAGMA freelist_count", [], |r| r.get(0))
         .map_err(be)?;
-    let before: i64 = conn
-        .query_row("PRAGMA page_count", [], |r| r.get(0))
-        .map_err(be)?;
+    if free_pages == 0 {
+        return Ok(Compaction::Skipped);
+    }
+    // VACUUM cannot run inside a transaction, so it follows the commit.
     conn.execute_batch("VACUUM").map_err(be)?;
     // Fold the WAL back into the main file so the shrink lands on disk NOW rather than at some
     // later checkpoint: the reported reclamation must match what the operator sees on disk.
@@ -956,30 +1035,24 @@ fn compact_in_place(conn: &Connection) -> Result<Option<u64>, Error> {
     // `PRAGMA wal_checkpoint` RETURNS ITS OUTCOME, and TRUNCATE is the mode that can decline:
     // its first column is 1 when a reader still held a snapshot of the write-ahead log, in
     // which case the frames stay in the `-wal` file and the file on disk did NOT shrink -
-    // total bytes on disk can even go UP. Discarding that column is what turns the page-count
-    // delta below from a measurement into a claim, so it is read. Retried a bounded number of
+    // total bytes on disk can even go UP. Discarding that column is what would turn the
+    // caller's before-and-after into a claim, so it is read. Retried a bounded number of
     // times because a blocked checkpoint is transient (the deletes are already committed and
     // the vacuum is done, so this is only about WHEN the frames land), and when it is still
     // blocked the reclamation is reported as UNKNOWN rather than as a number the operator's
     // own `ls` contradicts.
-    let mut checkpointed = false;
     for attempt in 0..CHECKPOINT_TRUNCATE_ATTEMPTS {
         let busy: i64 = conn
             .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))
             .map_err(be)?;
         if busy == 0 {
-            checkpointed = true;
-            break;
+            return Ok(Compaction::Landed);
         }
         if attempt + 1 < CHECKPOINT_TRUNCATE_ATTEMPTS {
             std::thread::sleep(CHECKPOINT_TRUNCATE_BACKOFF);
         }
     }
-    let after: i64 = conn
-        .query_row("PRAGMA page_count", [], |r| r.get(0))
-        .map_err(be)?;
-    let reclaimed_pages = before.saturating_sub(after).max(0) as u64;
-    Ok(checkpointed.then(|| reclaimed_pages * page_size.max(0) as u64))
+    Ok(Compaction::Pending)
 }
 
 /// How many times [`compact_in_place`] asks a blocked `wal_checkpoint(TRUNCATE)` again before it
@@ -993,9 +1066,9 @@ const CHECKPOINT_TRUNCATE_ATTEMPTS: u32 = 5;
 const CHECKPOINT_TRUNCATE_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// What one [`Store::prune_derived_index`] pass removed: the rows deleted PER TYPE (in the order
-/// the caller named the types, including the types nothing was removed from), the bytes the
-/// vacuum reclaimed on disk, and - when the reclamation failed after the deletes had committed -
-/// what went wrong with it.
+/// the caller named the types, including the types nothing was removed from), the bytes the log
+/// lost on disk and whether it was rewritten to lose them at all, and - when the reclamation
+/// failed after the deletes had committed - what went wrong with it.
 ///
 /// Per type, not just a total, because that is what an operator can check a prune against: a
 /// single number cannot be compared to what the log was expected to hold. And the reclamation's
@@ -1006,31 +1079,51 @@ const CHECKPOINT_TRUNCATE_BACKOFF: std::time::Duration = std::time::Duration::fr
 pub struct PrunedDerived {
     /// `(type, rows deleted)`, in the order the caller named the types.
     pub removed: Vec<(String, usize)>,
-    /// Bytes the vacuum reclaimed ON DISK, or `None` when that could not be measured because a
-    /// concurrent reader still held a write-ahead-log snapshot when the truncating checkpoint ran,
-    /// or because the reclamation itself failed (see [`PrunedDerived::compaction_error`]).
+    /// Bytes the LOG LOST ON DISK across this whole call, or `None` when that could not be
+    /// measured because a concurrent reader still held a write-ahead-log snapshot when the
+    /// truncating checkpoint ran, because the reclamation itself failed (see
+    /// [`PrunedDerived::compaction_error`]), or because the database has no file behind it.
     ///
-    /// An `Option`, not a `0`, and not the page-count delta reported regardless. The delta is the
-    /// LOGICAL size the database shrank by; it becomes bytes on disk only once the checkpoint
-    /// folds the write-ahead log back into the main file and truncates it. While a reader holds a
-    /// snapshot that fold is declined, the freed frames stay in the `-wal` file, and total bytes
-    /// on disk can go UP - so the same number that is exact in the uncontended case is simply
-    /// wrong in the contended one, with nothing in it to tell the two apart. `None` says
-    /// "unmeasured, the pages land at the next checkpoint" and is the honest report; `Some(0)`
-    /// would claim a measurement that found nothing.
+    /// MEASURED, NOT DERIVED, and measured over the pair of files an operator's own `du` would
+    /// add up: the main database plus its `-wal`, sampled before the deletes and again after the
+    /// rewrite has landed. A page-count delta is a tempting substitute and is not the same
+    /// number - it is the database's LOGICAL size, it counts pages living only in an
+    /// un-checkpointed write-ahead log, and a report built from it can name a reclamation over a
+    /// file that grew.
     ///
-    /// ONE case is `Some(0)` and is exact: a pass that DELETED NOTHING. There the file is
-    /// deliberately not rewritten at all, so "zero bytes reclaimed" is the measurement rather than
-    /// a measurement that could not be taken, and reporting it as `None` would send an operator
-    /// looking for pages that some later checkpoint will land.
+    /// An `Option`, not a `0`. The bytes are on disk only once the checkpoint folds the
+    /// write-ahead log back into the main file and truncates it; while a reader holds a snapshot
+    /// that fold is declined, the freed frames stay in the `-wal`, and any difference measured
+    /// then is between two states of a move that has not finished. `None` says "unmeasured, the
+    /// pages land at the next checkpoint" and is the honest report; `Some(0)` would claim a
+    /// measurement that found nothing.
+    ///
+    /// ONE case is `Some(0)` and is exact: a pass over a file holding NO FREE SPACE, where the
+    /// rewrite is deliberately not run at all (see [`PrunedDerived::compaction_ran`]). There
+    /// "zero bytes reclaimed" is the measurement rather than a measurement that could not be
+    /// taken, and reporting it as `None` would send an operator looking for pages that some later
+    /// checkpoint will land.
     pub reclaimed_bytes: Option<u64>,
+    /// Whether the file was REWRITTEN at all.
+    ///
+    /// `false` says the rewrite was deliberately skipped because the file held no reclaimable
+    /// free page - the most expensive thing this command can do, declined because it would have
+    /// reclaimed nothing. It is carried as its own fact because it cannot be read off the byte
+    /// count: "not rewritten" and "rewritten, and it reclaimed nothing" are different things to
+    /// tell an operator watching a compaction, and both would be `Some(0)`.
+    ///
+    /// It is NOT "this pass deleted nothing". A pass that deleted nothing still rewrites a file
+    /// that has space to reclaim, which is exactly what makes re-running the command the remedy
+    /// for a reclamation that failed after the deletes committed.
+    pub compaction_ran: bool,
     /// Why the space reclamation did not complete, when it was attempted and failed - `None` when
-    /// it succeeded, and `None` when there was nothing deleted for it to reclaim.
+    /// it succeeded, and `None` when there was no free space for it to reclaim.
     ///
     /// It is reported rather than returned because it happens AFTER the commit: the rows are gone
     /// from the log whatever this says, so it names a log that is pruned but not shrunk, and
-    /// re-running the prune is safe (the second pass finds nothing to delete and tries the
-    /// reclamation again).
+    /// re-running the prune is safe AND useful - the second pass finds nothing to delete, but the
+    /// space this one failed to reclaim is still free in the file, so the reclamation is tried
+    /// again over it.
     pub compaction_error: Option<String>,
 }
 
@@ -3260,11 +3353,16 @@ mod tests {
     ///
     /// A file the process cannot write is the reachable shape of every trigger: the rewrite needs
     /// to write both the database and a full copy of it, and either can be refused.
+    ///
+    /// FREE PAGES ARE PLANTED FIRST because the rewrite is triggered by the space there is to
+    /// reclaim: on a file holding none, the honest answer is to skip the rewrite entirely, and a
+    /// step that was never asked to write cannot report that it could not.
     #[test]
     fn the_real_compaction_step_reports_a_file_it_cannot_rewrite_as_an_error() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("events.db");
         drop(Store::open(path.to_str().unwrap()).unwrap());
+        plant_free_pages(&path, 400);
         let readonly = Connection::open_with_flags(
             &path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
@@ -3277,6 +3375,114 @@ mod tests {
         assert!(
             matches!(err, Error::Backend(_)),
             "the step reports a backend failure; got {err:?}"
+        );
+    }
+
+    /// Leave roughly `rows` blobs' worth of reclaimable free pages in `db`: a table filled and
+    /// dropped releases its pages to the freelist, where they stay until something vacuums.
+    fn plant_free_pages(db: &std::path::Path, rows: u64) {
+        let conn = Connection::open(db).expect("open the log to plant free pages");
+        conn.execute_batch(&format!(
+            "CREATE TABLE junk(x BLOB);
+             INSERT INTO junk(x)
+               WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c WHERE i < {rows})
+               SELECT randomblob(600) FROM c;
+             DROP TABLE junk;"
+        ))
+        .expect("plant reclaimable free pages");
+    }
+
+    /// A whole-number `PRAGMA` read through a connection of its own, so the measurement never
+    /// depends on the state of the connection the store is using.
+    fn pragma_i64(db: &std::path::Path, pragma: &str) -> i64 {
+        Connection::open(db)
+            .expect("open the log to read a pragma")
+            .query_row(&format!("PRAGMA {pragma}"), [], |r| r.get(0))
+            .unwrap_or_else(|e| panic!("read PRAGMA {pragma}: {e}"))
+    }
+
+    /// Spec 60, criterion 5: THE REMEDY THE REPORT PROMISES EXISTS. When the reclamation fails
+    /// after the deletes have committed, the command tells the operator that re-running it is
+    /// safe - and [`PrunedDerived::compaction_error`] says in so many words that the second pass
+    /// "tries the reclamation again". That promise is only true if what triggers the rewrite is
+    /// the space there is to reclaim rather than the rows THIS pass deleted: the first pass
+    /// deleted them all, so a second pass deletes nothing, and a rewrite gated on its own deletes
+    /// would never run again on that log. The space would then be unreclaimable through this
+    /// command forever, with the report cheerfully telling the operator to re-run it.
+    ///
+    /// So the failure is injected on the first pass and the REAL step runs on the second, over a
+    /// log whose freed pages are still sitting in the file.
+    #[test]
+    fn a_rerun_reclaims_the_space_a_failed_reclamation_left_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path_str = path.to_str().unwrap().to_string();
+        let s = seeded_with_duplicated_key(&path_str, 4);
+        // The deletes of a handful of small rows can free no whole page at all, which would leave
+        // this asserting that nothing was reclaimed from a file with nothing in it to reclaim.
+        // Planted free pages make the reclamation a definite figure without changing what it is.
+        plant_free_pages(&path, 3_000);
+        let free_before = pragma_i64(&path, "freelist_count");
+        let pages_before = pragma_i64(&path, "page_count");
+        assert!(
+            free_before > 100,
+            "the fixture must leave real free pages, or a reclaimed file and an untouched one \
+             look identical; the freelist holds {free_before} page(s)"
+        );
+
+        // FIRST PASS: the deletes commit, the reclamation fails.
+        let first = s
+            .prune_derived_index_compacting_with(
+                "",
+                &crate::ingest::derived_index_identity(),
+                |_| Err(Error::Backend("database or disk is full".into())),
+            )
+            .expect("a compaction that failed after the deletes committed is not a failed prune");
+        assert!(
+            first.total_removed() > 0,
+            "the first pass must be the one that sheds the duplication; got {:?}",
+            first.removed
+        );
+        assert!(
+            first.compaction_error.is_some(),
+            "the first pass's reclamation must have failed, or there is nothing for the re-run to \
+             retry; got {first:?}"
+        );
+        assert!(
+            pragma_i64(&path, "freelist_count") >= free_before,
+            "a reclamation that failed reclaimed nothing: the free pages must still be in the file"
+        );
+
+        // SECOND PASS, the one the report told the operator to run. It deletes nothing - the first
+        // pass took the duplication - and it must still reclaim the space the first pass could not.
+        let second = s
+            .prune_derived_index("", &crate::ingest::derived_index_identity())
+            .expect("the re-run the report promises is safe");
+        assert_eq!(
+            second.total_removed(),
+            0,
+            "the re-run deletes nothing - that is exactly why a rewrite gated on deletes would \
+             never retry the reclamation; got {:?}",
+            second.removed
+        );
+        assert_eq!(
+            second.compaction_error, None,
+            "the re-run's reclamation must succeed; got {second:?}"
+        );
+        assert!(
+            second.reclaimed_bytes.is_some_and(|b| b > 0),
+            "the re-run must RECLAIM the space the failed pass left behind, or the report's \
+             promise that re-running is safe is a promise that re-running is pointless; got \
+             {second:?}"
+        );
+        assert_eq!(
+            pragma_i64(&path, "freelist_count"),
+            0,
+            "and the file must actually be compact afterwards: VACUUM drives the freelist to zero"
+        );
+        assert!(
+            pragma_i64(&path, "page_count") < pages_before,
+            "the re-run must shrink the file it reclaimed from: {pages_before} page(s) before"
         );
     }
 }

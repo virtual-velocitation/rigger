@@ -549,6 +549,12 @@ fn a_reader_holding_the_write_ahead_log_makes_the_reclamation_unmeasured_not_wro
     let solo_db = dir.path().join("uncontended.db");
     let solo = Store::open(solo_db.to_str().unwrap()).unwrap();
     seed_namespace(&solo, "contended", 6);
+    // ROOM TO RECLAIM on both logs. The rewrite runs over a file holding reclaimable free pages,
+    // and the seeded duplication is a handful of small rows that can free no whole page - so
+    // without this both prunes would honestly skip the rewrite and the checkpoint this test is
+    // about would never be asked for.
+    plant_free_pages(&db, 3_000);
+    plant_free_pages(&solo_db, 3_000);
     let solo_report = solo
         .prune_derived_index(&prefix, &rigger::ingest::derived_index_identity())
         .expect("prune the uncontended log");
@@ -3775,6 +3781,12 @@ fn the_command_reports_an_unmeasurable_reclamation_as_unmeasured_rather_than_as_
     let dir = temp_project();
     let root = dir.path();
     seed_project(root, ROUNDS);
+    // ROOM TO RECLAIM. The rewrite runs over a file that is holding reclaimable free pages, and
+    // the seeded duplication is a few small rows that can free no whole page at all - so without
+    // this both runs below would honestly skip the rewrite and neither arm of the contrast would
+    // be reached. Planted free pages change nothing about what the reclamation MEANS: the vacuum
+    // reclaims the pages the file is not using, however they came to be free.
+    plant_free_pages(&event_log(root), 3_000);
     let reader =
         rusqlite::Connection::open(event_log(root)).expect("open a second connection to the log");
     reader
@@ -3795,6 +3807,7 @@ fn the_command_reports_an_unmeasurable_reclamation_as_unmeasured_rather_than_as_
     // THE CONTROL. A second project seeded identically, with nobody reading it.
     let solo_dir = temp_project();
     seed_project(solo_dir.path(), ROUNDS);
+    plant_free_pages(&event_log(solo_dir.path()), 3_000);
     let (uncontended, err, ok) = run_rigger(solo_dir.path(), &["reset", "--derived"]);
     assert!(
         ok,
@@ -3836,24 +3849,31 @@ fn the_command_reports_an_unmeasurable_reclamation_as_unmeasured_rather_than_as_
 }
 
 // ---------------------------------------------------------------------------------------
-// 22. WHAT A PRUNE THAT SHED NOTHING MUST NOT DO: rewrite the whole file.
+// 22. WHAT DECIDES WHETHER THE FILE IS REWRITTEN: the space there is to reclaim, not the rows
+//     this pass deleted.
 //
 // Section 20 pins what the zero-delete prune SAYS. This pins what it COSTS, which is the half a
 // row-and-date comparison cannot see: a full file rewrite leaves every row byte-for-byte too, so
 // section 20 is satisfied by a command that vacuumed the entire log to reclaim nothing.
 //
-// It is the path the shipped guidance calls the expected one, so it is the path an operator runs
-// most often, and the rewrite is the most expensive thing the command can do: it holds the write
-// lock for a full scan of the log, stages a COMPLETE second copy of the database in the operating
-// system's temporary directory - which on the ordinary layout is a different, much smaller
-// filesystem than the one holding `.rigger/` - and reclaims exactly the pages the deletes freed,
-// which on this path is none of them. Skipping it is also what keeps the post-commit failure of
-// section 23 off the path where there was nothing to fail for.
+// The rewrite is the most expensive thing the command can do: it holds the write lock for a full
+// scan of the log, stages a COMPLETE second copy of the database in the temporary directory
+// SQLite resolves - which on the ordinary layout is a different, much smaller filesystem than the
+// one holding `.rigger/` - and reclaims exactly the free pages the file is holding. So a file
+// holding none must not be rewritten at all.
 //
-// FREE PAGES ARE PLANTED FIRST, because an untouched file and a vacuumed one are indistinguishable
-// unless the vacuum has something to reclaim. A table created and dropped leaves its pages on the
-// freelist; VACUUM drives that count to zero and shrinks `page_count` with it, so both counts
-// standing still is the assertion that no rewrite ran.
+// BUT THE TRIGGER IS THE FREE SPACE, NOT THE DELETES, and that is the second half of this
+// section. A rewrite gated on the rows THIS pass deleted skips the file whenever the deletes
+// already happened - which is exactly the state a prune whose reclamation FAILED leaves behind,
+// and exactly the state the failure report tells the operator to re-run out of. Gated that way
+// the re-run deletes nothing, skips the rewrite, and reclaims nothing, forever. The two tests
+// below are therefore one property from both sides: nothing to reclaim means no rewrite, and
+// something to reclaim means a rewrite even on a pass that shed nothing.
+//
+// FREE PAGES ARE PLANTED in the second, because an untouched file and a vacuumed one are
+// indistinguishable unless the vacuum has something to reclaim. A table created and dropped
+// leaves its pages on the freelist; VACUUM drives that count to zero and shrinks `page_count`
+// with it.
 // ---------------------------------------------------------------------------------------
 
 /// A whole-number `PRAGMA` read through a connection of its own, so the measurement never depends
@@ -3879,23 +3899,37 @@ fn plant_free_pages(db: &Path, rows: u64) {
     .expect("plant reclaimable free pages");
 }
 
+/// Every byte of `db` as it stands on disk. A VACUUM rewrites the whole file - at the very least
+/// the header's change counter moves - so an unchanged byte string is the assertion that no
+/// rewrite ran, which neither `page_count` nor `freelist_count` can make about a file that had
+/// nothing to reclaim in the first place.
+fn file_bytes(db: &Path) -> Vec<u8> {
+    std::fs::read(db).unwrap_or_else(|e| panic!("read {}: {e}", db.display()))
+}
+
 #[test]
-fn a_prune_that_sheds_nothing_leaves_the_file_unrewritten() {
+fn a_prune_with_nothing_to_reclaim_leaves_the_file_unrewritten() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("clean.db");
     let backend = Store::open(db.to_str().unwrap()).unwrap();
     // ONE recording per replay key: the clean log the shipped guidance describes, differing from
     // every duplicated fixture in this file by exactly the round count.
     seed_namespace(&backend, "clean", 1);
-    plant_free_pages(&db, 3_000);
-
-    let pages_before = pragma_i64(&db, "page_count");
+    // AND A FILE WITH NOTHING IN IT TO RECLAIM. The vacuum below is skipped because of THIS, not
+    // because of the zero deletes, so the fixture has to establish it rather than assume it.
+    backend
+        .prune_derived_index(
+            &Namespaced::prefix_for("clean"),
+            &rigger::ingest::derived_index_identity(),
+        )
+        .expect("settle the fixture into a compact file");
     let free_before = pragma_i64(&db, "freelist_count");
-    assert!(
-        free_before > 100,
-        "the fixture must leave real free pages, or an untouched file and a vacuumed one look \
-         identical; the freelist holds {free_before} page(s)"
+    assert_eq!(
+        free_before, 0,
+        "the fixture must hold no reclaimable free page, or this pins the wrong reason for the \
+         rewrite being skipped"
     );
+    let bytes_before = file_bytes(&db);
 
     let pruned = prune_all_types(&backend, &Namespaced::prefix_for("clean"));
     assert_eq!(
@@ -3907,72 +3941,117 @@ fn a_prune_that_sheds_nothing_leaves_the_file_unrewritten() {
     assert_eq!(
         pruned.reclaimed_bytes,
         Some(0),
-        "a prune that deleted nothing reclaimed nothing, and that is a MEASUREMENT rather than a \
-         measurement it could not take: `None` means `unmeasured` and would send an operator \
-         looking for pages that land at some later checkpoint. Got {:?}",
+        "a prune over a file with no free space reclaimed nothing, and that is a MEASUREMENT \
+         rather than a measurement it could not take: `None` means `unmeasured` and would send an \
+         operator looking for pages that land at some later checkpoint. Got {:?}",
         pruned.reclaimed_bytes
     );
     assert_eq!(
         pruned.compaction_error, None,
         "a compaction that never ran cannot have failed"
     );
-
     assert_eq!(
-        pragma_i64(&db, "freelist_count"),
-        free_before,
-        "a prune that shed nothing must not rewrite the file: VACUUM empties the freelist, so a \
-         freelist that shrank is a full rewrite that ran to reclaim zero deleted rows"
-    );
-    assert_eq!(
-        pragma_i64(&db, "page_count"),
-        pages_before,
-        "a prune that shed nothing must not shrink the file either: nothing but a rewrite can \
-         reduce the page count, so a smaller file is the rewrite this path exists to skip"
+        file_bytes(&db),
+        bytes_before,
+        "a prune with nothing to reclaim must not rewrite the file: a VACUUM here would hold the \
+         write lock for a full scan and stage a second copy of the log in the temporary directory \
+         to reclaim not one page"
     );
 }
 
-// ---------------------------------------------------------------------------------------
-// 23. THE COMMAND on the path the shipped guidance calls the expected one - what it costs.
-//
-// Section 22 pins the store primitive: a pass that deleted nothing does not rewrite the file.
-// This pins the same property of the COMMAND, which is what the operator documents describe and
-// what an operator actually runs, and which is strictly more than that one call - `rigger reset
-// --derived` parses its modes, resolves the store by walking up from the working directory, runs
-// the spec-09 identity migration over it, and only then prunes. A rewrite reintroduced anywhere
-// along that path - a maintenance step added beside the prune, a compaction moved up into the
-// command - is invisible to a test that calls the store directly, and it is the command's cost,
-// not the primitive's, that the shipped sentence "leaves the file exactly as it found it" is a
-// promise about.
-//
-// The cost is the reason this matters at all. On this path the rewrite would hold the write lock
-// for a full scan of the log, stage a COMPLETE second copy of the database in the operating
-// system's temporary directory - a different and typically much smaller filesystem than the one
-// holding `.rigger/` - and reclaim exactly the pages the deletes freed, which here is none of
-// them. Section 20 cannot see any of that: it compares rows and dates, and a full VACUUM
-// preserves every row and every date, so a command that rewrote the entire log to reclaim nothing
-// passes it.
-//
-// FREE PAGES ARE PLANTED FIRST, for the same reason as section 22: an untouched file and a
-// vacuumed one are indistinguishable unless the vacuum has something to reclaim.
-// ---------------------------------------------------------------------------------------
-
 #[test]
-fn the_command_does_not_rewrite_the_file_it_had_nothing_to_shed_from() {
-    let dir = temp_project();
-    let root = dir.path();
-    // ONE recording per replay key - the clean log of section 20, differing from the duplicated
-    // fixtures by exactly the round count.
-    seed_project(root, 1);
-    let db = event_log(root);
+fn a_prune_that_shed_nothing_still_reclaims_the_free_space_the_file_is_holding() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("left-behind.db");
+    let backend = Store::open(db.to_str().unwrap()).unwrap();
+    // A CLEAN LOG - no key recorded twice, so this pass deletes nothing - over a file that IS
+    // holding reclaimable space. That is the shape a prune whose reclamation failed leaves
+    // behind, and the shape the failure report tells the operator to re-run out of.
+    seed_namespace(&backend, "left-behind", 1);
     plant_free_pages(&db, 3_000);
 
     let pages_before = pragma_i64(&db, "page_count");
     let free_before = pragma_i64(&db, "freelist_count");
     assert!(
         free_before > 100,
-        "the fixture must leave real free pages, or an untouched file and a rewritten one look \
+        "the fixture must leave real free pages, or an untouched file and a vacuumed one look \
          identical; the freelist holds {free_before} page(s)"
     );
+
+    let pruned = prune_all_types(&backend, &Namespaced::prefix_for("left-behind"));
+    assert_eq!(
+        pruned.total_removed(),
+        0,
+        "the fixture holds no key twice, so this must be the zero-delete pass; got {:?}",
+        pruned.removed
+    );
+    assert!(
+        pruned.reclaimed_bytes.is_some_and(|b| b > 0),
+        "a pass that deleted nothing must still reclaim the space the FILE is holding, or the \
+         space a failed reclamation left behind is unreclaimable through this command forever; \
+         got {pruned:?}"
+    );
+    assert_eq!(
+        pragma_i64(&db, "freelist_count"),
+        0,
+        "the rewrite must actually have run: VACUUM drives the freelist to zero"
+    );
+    assert!(
+        pragma_i64(&db, "page_count") < pages_before,
+        "and it must shrink the file it reclaimed from: {pages_before} page(s) before"
+    );
+}
+
+// ---------------------------------------------------------------------------------------
+// 23. THE COMMAND on the path the shipped guidance calls the expected one - what it costs.
+//
+// Section 22 pins the store primitive from both sides: nothing to reclaim means no rewrite, and
+// something to reclaim means a rewrite even on a pass that shed nothing. This pins the same
+// property of the COMMAND, which is what the operator documents describe and what an operator
+// actually runs, and which is strictly more than that one call - `rigger reset --derived` parses
+// its modes, resolves the store by walking up from the working directory, runs the spec-09
+// identity migration over it, and only then prunes. A rewrite reintroduced anywhere along that
+// path - a maintenance step added beside the prune, a compaction moved up into the command - is
+// invisible to a test that calls the store directly, and it is the command's cost, not the
+// primitive's, that the shipped sentence "leaves the file exactly as it found it" is a promise
+// about.
+//
+// The cost is the reason this matters at all. On a file with nothing to reclaim the rewrite would
+// hold the write lock for a full scan of the log, stage a COMPLETE second copy of the database in
+// the temporary directory SQLite resolves - a different and typically much smaller filesystem
+// than the one holding `.rigger/` - and reclaim not one page. Section 20 cannot see any of that:
+// it compares rows and dates, and a full VACUUM preserves every row and every date, so a command
+// that rewrote the entire log to reclaim nothing passes it.
+//
+// AND THE OTHER SIDE IS THE OPERATOR'S REMEDY. The failure report tells them re-running is safe;
+// a re-run deletes nothing, so a command that rewrote only when its own pass deleted something
+// would never reclaim that space again. The second test runs the shipped binary over exactly that
+// log - clean, but holding free pages - and holds it to reclaiming them.
+// ---------------------------------------------------------------------------------------
+
+#[test]
+fn the_command_does_not_rewrite_a_file_it_has_nothing_to_reclaim_from() {
+    let dir = temp_project();
+    let root = dir.path();
+    // ONE recording per replay key - the clean log of section 20, differing from the duplicated
+    // fixtures by exactly the round count.
+    seed_project(root, 1);
+    let db = event_log(root);
+    // AND A FILE ALREADY COMPACT. The rewrite is skipped because there is nothing to reclaim, so
+    // the fixture establishes that rather than assuming it: a first pass settles the file, and
+    // the pass this test measures is the one after it.
+    let (settle, err, ok) = run_rigger(root, &["reset", "--derived"]);
+    assert!(
+        ok,
+        "settling the fixture must succeed; stdout {settle:?}, stderr {err:?}"
+    );
+    let free_before = pragma_i64(&db, "freelist_count");
+    assert_eq!(
+        free_before, 0,
+        "the fixture must hold no reclaimable free page, or this pins the wrong reason for the \
+         rewrite being skipped. Settling run was {settle:?}"
+    );
+    let bytes_before = file_bytes(&db);
 
     let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
     assert!(
@@ -3996,21 +4075,15 @@ fn the_command_does_not_rewrite_the_file_it_had_nothing_to_shed_from() {
         "a run that did not compact the file must not report bytes reclaimed from it; got {out:?}"
     );
 
-    // AND WHAT IT ACTUALLY DID. VACUUM drives the freelist to zero and shrinks the page count
-    // with it, so both counts standing still is the assertion that no rewrite ran - anywhere in
-    // the command, not only in the prune.
+    // AND WHAT IT ACTUALLY DID. A VACUUM rewrites the whole file, so an unchanged byte string is
+    // the assertion that no rewrite ran anywhere in the command - not only in the prune, and not
+    // only where a page count could have seen it.
     assert_eq!(
-        pragma_i64(&db, "freelist_count"),
-        free_before,
-        "the command must not rewrite a file it shed nothing from: VACUUM empties the freelist, \
-         so a freelist that shrank is a full rewrite of the log to reclaim zero deleted rows - on \
-         the path the shipped guidance calls the expected one. Report was {out:?}"
-    );
-    assert_eq!(
-        pragma_i64(&db, "page_count"),
-        pages_before,
-        "and it must not shrink the file either: nothing but a rewrite reduces the page count. \
-         Report was {out:?}"
+        file_bytes(&db),
+        bytes_before,
+        "the command must not rewrite a file it has nothing to reclaim from - the path the \
+         shipped guidance calls the expected one is the one an operator runs most. Report was \
+         {out:?}"
     );
 
     // THE COMMITTED DOCUMENTS PROMISE EXACTLY THIS COST, read from the bytes an operator opens so
@@ -4025,6 +4098,53 @@ fn the_command_does_not_rewrite_the_file_it_had_nothing_to_shed_from() {
              the log, or the run above is behaviour nobody was told to expect"
         );
     }
+}
+
+#[test]
+fn the_command_reclaims_the_free_space_a_failed_reclamation_left_in_the_file() {
+    let dir = temp_project();
+    let root = dir.path();
+    // THE STATE A FAILED RECLAMATION LEAVES: the duplication is already gone (so this pass deletes
+    // nothing) and the space it freed is still sitting in the file.
+    seed_project(root, 1);
+    let db = event_log(root);
+    plant_free_pages(&db, 3_000);
+
+    let pages_before = pragma_i64(&db, "page_count");
+    let free_before = pragma_i64(&db, "freelist_count");
+    assert!(
+        free_before > 100,
+        "the fixture must leave real free pages, or an untouched file and a rewritten one look \
+         identical; the freelist holds {free_before} page(s)"
+    );
+
+    let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
+    assert!(
+        ok,
+        "the re-run must succeed; stdout {out:?}, stderr {err:?}"
+    );
+    assert!(
+        out.contains("pruned 0 redundant derived-index event(s)"),
+        "the fixture must be the zero-delete re-run this test is about; got {out:?}"
+    );
+    assert!(
+        out.contains("byte(s) on disk"),
+        "the re-run the failure report calls safe must actually reclaim the space, or it is safe \
+         only in the sense of being pointless; got {out:?}"
+    );
+    assert!(
+        !out.contains("left exactly as it stands"),
+        "a run that DID rewrite the file must not tell the operator it left it alone; got {out:?}"
+    );
+    assert_eq!(
+        pragma_i64(&db, "freelist_count"),
+        0,
+        "VACUUM drives the freelist to zero: the rewrite must really have run. Report was {out:?}"
+    );
+    assert!(
+        pragma_i64(&db, "page_count") < pages_before,
+        "and the file must be smaller than the {pages_before} page(s) it held. Report was {out:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------------------
@@ -4173,6 +4293,13 @@ fn the_reclamation_the_command_reports_is_the_space_the_file_actually_lost() {
 
     let page_size = pragma_i64(&db, "page_size");
     let pages_before = pragma_i64(&db, "page_count");
+    let wal = db.with_extension("db-wal");
+    // WHAT AN OPERATOR MEASURES: the bytes the log occupies on disk before the command runs -
+    // the main file plus whatever its write-ahead log is holding. This is deliberately NOT the
+    // page-count arithmetic the implementation could do internally: a page count is the LOGICAL
+    // size of the database, it includes pages that live only in an un-checkpointed `-wal`, and a
+    // report computed from it can name a reclamation while the file on disk grew.
+    let on_disk_before = file_len(&db) + file_len(&wal);
 
     let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
     assert!(ok, "the prune must succeed; stdout {out:?}, stderr {err:?}");
@@ -4183,6 +4310,7 @@ fn the_reclamation_the_command_reports_is_the_space_the_file_actually_lost() {
     );
 
     let pages_after = pragma_i64(&db, "page_count");
+    let on_disk_after = file_len(&db) + file_len(&wal);
     let reclaimed = reported_reclaimed_bytes(&out);
     assert!(
         pages_after < pages_before,
@@ -4191,23 +4319,24 @@ fn the_reclamation_the_command_reports_is_the_space_the_file_actually_lost() {
     );
     assert_eq!(
         reclaimed,
-        (pages_before - pages_after) as u64 * page_size as u64,
-        "the reported reclamation must be the space the file lost - {pages_before} page(s) before \
-         and {pages_after} after, at {page_size} bytes each. A number that is not this one is a \
-         claim an operator can disprove with `ls`. Report was {out:?}"
+        on_disk_before - on_disk_after,
+        "the reported reclamation must be the bytes the log actually lost on disk - \
+         {on_disk_before} before the command and {on_disk_after} after it, main file plus \
+         write-ahead log. A number that is not this one is a claim an operator can disprove with \
+         `du`. Report was {out:?}"
     );
 
-    // AND IT LANDED ON DISK. The delta above is a LOGICAL measurement; it is bytes an operator
-    // can see only because the truncating checkpoint folded the write-ahead log back into the
-    // file. If the frames were still in the `-wal`, the file would not be the size the number
-    // says it is - the exact case section 21 makes the command report as unmeasured instead.
+    // AND IT LANDED IN THE MAIN FILE. The number above is a delta over main-plus-`-wal`; this is
+    // what says the freed space really left the pair rather than moving between them, which it
+    // does only because the truncating checkpoint folded the write-ahead log back into the file.
+    // If the frames were still in the `-wal`, the file would not be the size the pages say it is
+    // - the exact case section 21 makes the command report as unmeasured instead.
     assert_eq!(
         file_len(&db),
         pages_after as u64 * page_size as u64,
         "the log on disk must be exactly the pages it now holds, or the reclamation was reported \
          as landed while the freed frames were still in the write-ahead log"
     );
-    let wal = db.with_extension("db-wal");
     assert_eq!(
         file_len(&wal),
         0,
