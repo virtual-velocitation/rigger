@@ -3922,6 +3922,23 @@ impl RunCtx<'_> {
                 let gate_outcome =
                     self.run_gates(st, dir, attempts, GateSelection::Narrowed(&blast_radius))?;
                 if gate_outcome.pass {
+                    // Ensure-on-park, defense in depth (spec 64 criterion 3): `stage_worktree`
+                    // asserted this worktree exists exactly ONCE, before this call began - the
+                    // gates that just ran above are real wall-clock time (a genuine cargo
+                    // build/test), the exact window in which an out-of-band actor could delete
+                    // it before the review tier's spawns below consume it. Re-assert now, right
+                    // before handing it out again, with the SAME deterministic adopt-or-create
+                    // machinery `stage_worktree` already uses - a no-op when nothing disturbed
+                    // it (see [`Worktree::ensure_present`]). This MUST run before the sha stamp
+                    // immediately below: a gate that deleted the worktree as its own side
+                    // effect (proven live above) would otherwise leave `head_sha_of` reading a
+                    // directory that does not exist yet, silently stamping an EMPTY sha
+                    // (`unwrap_or_default`) instead of the tree the review tier is about to
+                    // judge (adj-u3c3 round-2 reject: sdet-u3c3-verified-sha-stamped-before-
+                    // restore).
+                    if let Some(w) = wt {
+                        w.ensure_present()?;
+                    }
                     // The verified status carries the gate evidence (item 4): each
                     // gate that ran summarized for the ledger's per-unit evidence.
                     // Replay-keyed on unit + attempt so a re-step past this unit's
@@ -3929,9 +3946,10 @@ impl RunCtx<'_> {
                     // still an event of the implementer spawn, so it carries the same
                     // requested alias and resolved id as the green status (spec 05 line 52).
                     // The worktree HEAD the tiers are about to judge (spec 11, unit 1):
-                    // the implementer's committed tree (committed above, before gating),
-                    // stamped so a later reject/approve on the SAME sha reads as a
-                    // flip-flop. Empty (omitted) on a repo-less unit with no worktree.
+                    // the implementer's committed tree (committed above, before gating,
+                    // and just re-asserted present by `ensure_present` above), stamped so
+                    // a later reject/approve on the SAME sha reads as a flip-flop. Empty
+                    // (omitted) on a repo-less unit with no worktree.
                     let reviewed_sha = worktree::head_sha_of(dir);
                     self.emit_keyed_meta(
                         &format!("{}/verified#{attempts}", st.name),
@@ -3947,17 +3965,6 @@ impl RunCtx<'_> {
                             (META_WORKTREE_SHA, &reviewed_sha),
                         ],
                     )?;
-                    // Ensure-on-park, defense in depth (spec 64 criterion 3): `stage_worktree`
-                    // asserted this worktree exists exactly ONCE, before this call began - the
-                    // gates that just ran above are real wall-clock time (a genuine cargo
-                    // build/test), the exact window in which an out-of-band actor could delete
-                    // it before the review tier's spawns below consume it. Re-assert now, right
-                    // before handing it out again, with the SAME deterministic adopt-or-create
-                    // machinery `stage_worktree` already uses - a no-op when nothing disturbed
-                    // it (see [`Worktree::ensure_present`]).
-                    if let Some(w) = wt {
-                        w.ensure_present()?;
-                    }
                     // Route the review tier over the UNCAPPED safe-superset view (spec 16 unit 3),
                     // not the capped precise seed: high-risk membership tested over the full
                     // structural width forces the full panel for a beyond-cap high-risk file, and a
@@ -6376,6 +6383,18 @@ impl RunCtx<'_> {
             Some(w) => w,
             None => return Ok(Integration::default()),
         };
+        // Ensure-on-park, defense in depth (spec 64 criterion 3), centralized: EVERY caller
+        // of this function reaches it after a real exhaustive gate run (wall-clock time - a
+        // genuine cargo build/test), the exact window in which an out-of-band actor (or a
+        // gate's own side effect) could delete the worktree before the read just below
+        // consumes it. `run_single_stage` alone has THREE such call sites (the live
+        // post-approval integrate door, the `ResumePhase::Reviewed` resumed-merge door, and
+        // speculation's winning-candidate door) - re-asserting once HERE, at the one shared
+        // mutation authority every dir-touching integrate goes through, covers all of them
+        // uniformly instead of duplicating an inline call at each (adj-u3c3 round-2 reject:
+        // adv-u3c3-ensure-present-covers-only-one-of-three-same-function-windows). A no-op
+        // fast path when nothing disturbed the tree (see [`Worktree::ensure_present`]).
+        wt.ensure_present()?;
         // The unit's changed files span the commit-before-gates seam (§3.2): the
         // implementer's work is now committed, so a plain `git status` is clean -
         // we take the COMMITTED diff vs base unioned with any residual dirty files,
@@ -21497,6 +21516,290 @@ mod tests {
             branch_tip_before,
             "the restored worktree must be checked out at the SAME unit branch tip the first \
              process handed out - the implementer's own commit is never lost or rewound"
+        );
+    }
+
+    #[test]
+    fn verified_worktree_sha_is_stamped_after_a_gate_side_deletion_is_restored() {
+        // Spec 64 criterion 3, adjudication round 2 (sdet-u3c3-verified-sha-stamped-before-
+        // restore, UPHELD): the round-1 attempt computed the `verified` event's
+        // `worktree_sha` (`reviewed_sha = worktree::head_sha_of(dir)`) BEFORE
+        // `ensure_present` restored a worktree a gate deleted as its own side effect - so
+        // `head_sha_of` read a directory that did not exist yet and silently stamped an
+        // EMPTY sha (`unwrap_or_default`, worktree.rs), violating the spec-11-unit-1
+        // contract this same file already tests elsewhere: the verified sha must be a real
+        // 40-hex sha agreeing with the tree the review tiers actually judge. Reusing the
+        // exact gate-deletes-the-worktree scenario `review_unit_restores_a_worktree_a_
+        // gate_deleted_out_of_band` above proves, this additionally inspects the recorded
+        // `verified` event's stamped sha - which that test never asserted on.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("g".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "solo".into(),
+            Stage {
+                name: "solo".into(),
+                agent: "worker".into(),
+                gates: vec!["g".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("work.rs".into()),
+            output: "reviewed it".into(),
+            park_spawn_ids: [spawn_id("solo", ROLE_ADJUDICATOR, 0)]
+                .into_iter()
+                .collect(),
+            ..Stub::new()
+        };
+        let runner = RecordingRunner::deleting_worktree();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+
+        assert_eq!(
+            runner.calls(),
+            vec!["g".to_string()],
+            "the gate must really have run (and deleted the worktree as its side effect), or this test proves nothing: {:?}",
+            runner.calls()
+        );
+
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let worktree = unit_worktree_dir(&scratch, "solo");
+        let restored_sha = worktree::head_sha_of(&worktree);
+        assert_eq!(
+            restored_sha.len(),
+            40,
+            "premise: the worktree must actually be restored with a resolvable HEAD, or this \
+             test proves nothing: {restored_sha:?}"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let verified = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"verified\"")
+            })
+            .expect("a verified status must have been recorded");
+        let verified_sha = verified
+            .meta
+            .get(META_WORKTREE_SHA)
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(
+            verified_sha.len(),
+            40,
+            "the verified event's worktree_sha must be a real 40-hex sha, not empty - it must \
+             be stamped AFTER the gate-deleted worktree is restored, not before: {verified_sha:?}"
+        );
+        assert!(
+            verified_sha.chars().all(|c| c.is_ascii_hexdigit()),
+            "the stamped sha must be real hex: {verified_sha:?}"
+        );
+        assert_eq!(
+            verified_sha, restored_sha,
+            "the stamped sha must be the RESTORED tree's actual HEAD - the one the review tier \
+             is about to judge, not a snapshot taken during the deletion window"
+        );
+    }
+
+    #[test]
+    fn a_resumed_reviewed_unit_restores_a_worktree_the_exhaustive_gate_deleted() {
+        // Spec 64 criterion 3, adjudication round 2 (adv-u3c3-ensure-present-covers-only-one-
+        // of-three-same-function-windows, UPHELD, window 1 of 2). The `ResumePhase::Reviewed`
+        // branch (a prior window recorded an approved `reviewed` status but the merge was
+        // interrupted) re-runs the exhaustive gate suite and then calls `integrate_and_emit`
+        // - which reads the worktree (`wt.changed_since_base()`) - with no re-assert between
+        // them anywhere in that branch, protected only by `stage_worktree`'s one entry-time
+        // assert. A gate that deletes the worktree as its own side effect during that
+        // exhaustive run must self-heal via `integrate_and_emit`'s own re-assert, not
+        // collapse the wave into a hard error.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        // The prior window implemented and got unit "s" APPROVED (`reviewed`), but the
+        // merge itself was interrupted before landing - resume must integrate directly
+        // (ResumePhase::Reviewed), re-running the exhaustive gate suite at the integrate
+        // door with no lens/adversary/adjudicator re-spawn.
+        commit_on_unit_branch(&repo_path, "s", "feature.rs", "fn feature() {}\n");
+
+        let st = Store::open(":memory:").unwrap();
+        seed_events_in_run(
+            &st,
+            &[],
+            &[
+                Event::new(
+                    ledger::TYPE_UNIT_STARTED,
+                    serde_json::to_vec(
+                        &json!({"id": "s", "agent": "worker", "branch": unit_branch("s")}),
+                    )
+                    .unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_STATUS,
+                    serde_json::to_vec(&json!({"id": "s", "status": "verified"})).unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_STATUS,
+                    serde_json::to_vec(&json!({"id": "s", "status": "reviewed"})).unwrap(),
+                ),
+            ],
+        );
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("adversary".into(), agent("adversary"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lens".into()],
+                    adversary: "adversary".into(),
+                    adjudicator: "judge".into(),
+                    tiers: None,
+                },
+                ..Default::default()
+            },
+        );
+
+        let driver = Stub::new();
+        let runner = RecordingRunner::deleting_worktree();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert!(
+            !driver.spawned("worker")
+                && !driver.spawned("lens")
+                && !driver.spawned("adversary")
+                && !driver.spawned("judge"),
+            "premise: an already-approved unit must resume straight to integrate with NO \
+             lifecycle spawns, or this test is not exercising the Reviewed resume branch"
+        );
+        assert_eq!(
+            runner.calls(),
+            vec!["ok".to_string()],
+            "the exhaustive gate must really have run (and deleted the worktree as its side \
+             effect), or this test proves nothing: {:?}",
+            runner.calls()
+        );
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "the resumed-reviewed unit must self-heal the gate-deleted worktree inside \
+             integrate_and_emit and integrate, not collapse the wave to a hard error"
+        );
+        assert!(
+            repo.path().join("feature.rs").exists(),
+            "the approved work must land in the base"
+        );
+    }
+
+    #[test]
+    fn a_live_approved_unit_restores_a_worktree_the_integrate_door_exhaustive_gate_deleted() {
+        // Spec 64 criterion 3, adjudication round 2 (adv-u3c3-ensure-present-covers-only-one-
+        // of-three-same-function-windows, UPHELD, window 2 of 2). The main loop's
+        // post-approval path runs the integrate door's EXHAUSTIVE gate suite (a SECOND,
+        // separately-timed gate run after the one the pre-review `ensure_present` protects)
+        // and then calls `integrate_and_emit`, with no re-assert in between. Here the gate
+        // is scoped with `inputs:` that never intersect the unit's blast radius (empty, no
+        // grounder configured below - see `gate_intersects_radius`), so the narrowed inner
+        // loop always SKIPS it and it runs for the FIRST time only at the exhaustive
+        // integrate door - exactly the unprotected window the adversary identified. It must
+        // self-heal via `integrate_and_emit`'s own re-assert, not collapse the wave into a
+        // hard error.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert(
+            "door".into(),
+            gate_def_inputs("true", &["never-matches/**"]),
+        );
+        cfg.workflow.stages.insert(
+            "solo".into(),
+            Stage {
+                name: "solo".into(),
+                agent: "worker".into(),
+                gates: vec!["door".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("work.rs".into()),
+            output_by_agent: HashMap::from([(
+                "judge".to_string(),
+                r#"{"verdict":"approve"}"#.to_string(),
+            )]),
+            ..Stub::new()
+        };
+        let runner = RecordingRunner::deleting_worktree();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_eq!(
+            runner.calls(),
+            vec!["door".to_string()],
+            "the gate must have run exactly once - skipped by the narrowed inner loop \
+             (no grounder, so the blast radius is always empty) and run for real only at \
+             the exhaustive integrate door, or this test proves nothing: {:?}",
+            runner.calls()
+        );
+        assert_eq!(
+            rs.units["solo"].status,
+            ledger::Status::Integrated,
+            "the unit must self-heal the worktree the exhaustive door gate deleted inside \
+             integrate_and_emit and integrate, not collapse the wave to a hard error"
+        );
+        assert!(
+            repo.path().join("work.rs").exists(),
+            "the approved work must land in the base"
         );
     }
 
