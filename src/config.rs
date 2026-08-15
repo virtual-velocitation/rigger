@@ -619,6 +619,18 @@ pub struct BuildConfig {
     /// configuration.
     #[serde(default)]
     pub cache_dir: String,
+    /// The `CARGO_BUILD_JOBS` cap on each build's OWN internal parallelism (spec
+    /// 65, JOBS CAP - unit 4). `0` (the default) means unset, matching this
+    /// config's existing zero-as-unset convention (see
+    /// [`Defaults::budget`]/[`Defaults::max_retries`]/[`Defaults::speculation_width`]):
+    /// the ambient/cargo default jobs count is left untouched, byte-for-byte
+    /// back-compatible with every workflow committed before this field existed. A
+    /// positive value reaches every build via the ONE resolver
+    /// ([`crate::gate::BuildEnv::resolve`]), independent of `wrapper`, so
+    /// `build.max_concurrent` (unit 3's slot budget) times `jobs` can be sized to
+    /// the machine.
+    #[serde(default)]
+    pub jobs: u32,
 }
 
 /// Workflow is the declarative loop: a DAG of stages, a gate library, and defaults.
@@ -2781,6 +2793,30 @@ class: product\n";
                 .unwrap();
         assert_eq!(wf.build.wrapper, "sccache");
         assert_eq!(wf.build.cache_dir, "/shared/cache");
+    }
+
+    /// Spec 65 unit 4 (JOBS CAP): `build.jobs` is the config plumbing
+    /// [`crate::gate::BuildEnv::resolve`]'s jobs facet reads. Omitted (the common
+    /// case) parses to `0` - unset, matching this config's own zero-as-unset
+    /// convention (`budget`, `max_retries`, `speculation_width`) - so a pre-existing
+    /// workflow with no opinion on `build.jobs` is byte-for-byte back-compatible. An
+    /// explicit positive value parses through untouched.
+    #[test]
+    fn build_config_parses_jobs_and_defaults_to_zero_when_omitted() {
+        let wf: Workflow = serde_yaml::from_str("name: x\n").unwrap();
+        assert_eq!(
+            wf.build.jobs, 0,
+            "an omitted build: section defaults jobs to 0 (unset)"
+        );
+
+        let wf: Workflow = serde_yaml::from_str("build:\n  jobs: 4\n").unwrap();
+        assert_eq!(wf.build.jobs, 4);
+
+        // jobs is independent of wrapper - both may be set together without either
+        // suppressing the other's parse.
+        let wf: Workflow = serde_yaml::from_str("build:\n  wrapper: sccache\n  jobs: 8\n").unwrap();
+        assert_eq!(wf.build.wrapper, "sccache");
+        assert_eq!(wf.build.jobs, 8);
     }
 
     #[test]
