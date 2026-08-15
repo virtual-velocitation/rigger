@@ -3240,8 +3240,18 @@ fn step_halts_on_an_exhausted_lens_beside_a_parked_sibling_and_keeps_the_unit_wo
 /// filesystem existence, `git worktree list --porcelain`, and `git rev-parse` - that the
 /// lens spawn parked immediately afterward finds the worktree restored, registered, and
 /// checked out at the unit branch's current tip.
+///
+/// Round 2 also reads the real event store this run wrote to and checks the `verified`
+/// `UnitStatus`'s stamped `worktree_sha`, closing adjudication round 1's UPHELD reject
+/// (`sdet-u3c3-verified-sha-stamped-before-restore`: the sha was stamped BEFORE the
+/// restore, silently empty in exactly this scenario) at the same real-binary boundary,
+/// not just through the implementer's in-crate `Stub`-driven regression.
 #[test]
 fn step_restores_the_unit_worktree_a_gate_deletes_before_the_review_spawn() {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore};
+
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     let rigger = root.join(".rigger");
@@ -3400,6 +3410,252 @@ stages:
         head_after, branch_tip,
         "the restored worktree must be checked out at the SAME tip the durable unit \
          branch carries - never rewound or re-created from an older point"
+    );
+
+    // Round 2 (adjudication reject sdet-u3c3-verified-sha-stamped-before-restore, UPHELD):
+    // the FIRST attempt stamped the `verified` event's `worktree_sha` BEFORE
+    // `ensure_present` restored the gate-deleted worktree, so `head_sha_of` silently read
+    // an absent directory and stamped an empty sha. The fix reordered the restore ahead of
+    // the stamp. Prove that reorder holds through the REAL binary, not just the
+    // implementer's own in-crate `Stub`-driven regression
+    // (`verified_worktree_sha_is_stamped_after_a_gate_side_deletion_is_restored`,
+    // `conductor.rs`'s `mod tests`): read the `verified` `UnitStatus` this same run just
+    // recorded, from the real sqlite-backed store this binary wrote to, and check its
+    // stamped `worktree_sha` is a real 40-hex sha agreeing with the restored tree's HEAD -
+    // never empty, never a stale snapshot taken during the deletion window.
+    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    let events = store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap();
+    let verified = events
+        .iter()
+        .find(|e| {
+            e.type_ == rigger::ledger::TYPE_UNIT_STATUS
+                && String::from_utf8_lossy(&e.data).contains(r#""status":"verified"#)
+        })
+        .expect("a verified status must have been recorded for the unit before review");
+    let verified_sha = verified
+        .meta
+        .get(rigger::conductor::META_WORKTREE_SHA)
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        verified_sha.len(),
+        40,
+        "the verified event's worktree_sha must be a real 40-hex sha, not empty - it must \
+         be stamped AFTER the gate-deleted worktree is restored, not before: {verified_sha:?}"
+    );
+    assert!(
+        verified_sha.chars().all(|c| c.is_ascii_hexdigit()),
+        "the stamped sha must be real hex: {verified_sha:?}"
+    );
+    assert_eq!(
+        verified_sha, head_after,
+        "the stamped sha must be the RESTORED tree's actual HEAD - the one the review tier \
+         is about to judge, not a snapshot taken during the deletion window"
+    );
+}
+
+/// Spec 64, criterion 3, adjudication round 2 (`adv-u3c3-ensure-present-covers-only-one-of-
+/// three-same-function-windows`, UPHELD): the round-1 fix's single `ensure_present` call
+/// site (guarded above) protects only the window before the review tier spawns. The SAME
+/// `run_single_stage` function reaches `integrate_and_emit` again, after a SECOND real
+/// gate run, on two more doors with no re-assert in between - the main loop's post-approval
+/// EXHAUSTIVE gate door being the one reachable end-to-end through the CLI without seeding
+/// events directly. Round 2 centralized the fix INSIDE `integrate_and_emit` itself (`src/
+/// conductor.rs`, right before `wt.changed_since_base()`), a single call shared by every
+/// dir-touching integrate door.
+///
+/// The implementer's own regression
+/// (`a_live_approved_unit_restores_a_worktree_the_integrate_door_exhaustive_gate_deleted`,
+/// `conductor.rs`'s `mod tests`) proves this using the in-process `Stub` driver and
+/// `RecordingRunner::deleting_worktree`, which fabricates the deletion in memory and never
+/// exercises the real `Worktree::create` adopt-or-create machinery or a real git merge.
+/// This test drives a REAL implementer into a REAL git-backed unit worktree, gets a REAL
+/// adjudicator approval, and only THEN lets a REAL `sh -c` gate - scoped with `inputs`
+/// that never match the (grounder-less, always-empty) blast radius, so it is skipped by
+/// every narrowed inner-loop run and fires for the FIRST time only at the exhaustive
+/// integrate door - delete the worktree wholesale before reporting PASS. If
+/// `integrate_and_emit` did not restore it first, `wt.changed_since_base()` would shell
+/// into a directory that no longer exists and the whole wave would collapse to a hard
+/// error (independently reproduced empirically by the adversary: `git -C <missing-dir>`
+/// exits 128, unrecognized by any of `run_stage`'s named sentinel arms) - strictly worse
+/// than the review-tier-only window the round-1 fix alone covers. Checked purely from
+/// outside: the step call must still finish cleanly (no halt, no collapsed wave), the unit
+/// must reach `integrated`, and the approved file must land in the base repo's working
+/// tree.
+#[test]
+fn step_integrates_after_the_exhaustive_gate_deletes_the_worktree_post_approval() {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore};
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("agents").join("judge.md"),
+        "---\nid: judge\nmodel: sonnet\ntools: [Read]\n---\nAdjudicate it.\n",
+    )
+    .unwrap();
+
+    // A marker OUTSIDE the worktree self-reports whether the door gate's own `rm -rf`
+    // really ran (and when) - the non-vacuity check a single opaque subprocess call
+    // otherwise denies an outside observer.
+    let marker = rigger.join("tmp").join("door-gate-deleted-marker.txt");
+    let marker_str = marker.to_str().unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        format!(
+            r#"name: ensureonparkintegratetest
+defaults:
+  grounder: nop
+  budget: 60
+gates:
+  door:
+    run: 'd=$(pwd); cd / && rm -rf "$d"; ( [ -d "$d" ] && echo present || echo absent ) > "{marker}"'
+    kind: core
+    inputs: [never-matches/**]
+stages:
+  solo:
+    agent: worker
+    gates: [door]
+    review:
+      adjudicator: judge
+"#,
+            marker = marker_str
+        ),
+    )
+    .unwrap();
+
+    // Step 1: the implementer parks; its real, git-backed unit worktree is created now.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/implementer#0""#) && out.contains(r#""done":false"#),
+        "step 1 parks the implementer; got: {out:?}"
+    );
+
+    let wt_dir = root.join(".rigger").join("tmp").join("rigger-wt-solo");
+    assert!(
+        wt_dir.exists(),
+        "premise: a parked implementer must already have its unit worktree on disk: {}",
+        wt_dir.display()
+    );
+
+    // Write the implementer's "diff" directly into the worktree it was already handed, and
+    // commit it immediately - the same premise-defending mitigation the sibling test above
+    // documents in full: it advances the unit branch past the run branch before the
+    // step-start sweep (spec 64 criterion 4, unmerged here) can see an undiverged tip.
+    std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
+    for args in [&["add", "-A"][..], &["commit", "-q", "-m", "wip"]] {
+        let ok = Command::new("git")
+            .args(args)
+            .current_dir(&wt_dir)
+            .status()
+            .expect("git must be runnable")
+            .success();
+        assert!(
+            ok,
+            "git {args:?} must succeed committing the test's setup diff"
+        );
+    }
+
+    let (_o, err, ok) = run_rigger(
+        root,
+        &["result", "solo/implementer#0", "implemented the unit"],
+    );
+    assert!(
+        ok,
+        "recording the implementer result must succeed; stderr: {err}"
+    );
+
+    // Step 2: the implementer replays and the pre-gate commit lands the file. The `door`
+    // gate is scoped with `inputs` that never intersect the unit's blast radius (no
+    // grounder is configured, so the radius is always empty) - the narrowed inner loop
+    // therefore SKIPS it entirely, and review proceeds straight to parking the adjudicator.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the second step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/adjudicator#0""#) && out.contains(r#""done":false"#),
+        "step 2 must gate (skipping the scoped door gate) and park the adjudicator; got: \
+         {out:?}\nstderr: {err}"
+    );
+    assert!(
+        !marker.exists(),
+        "premise: the door gate must NOT have run yet - it is scoped away from the empty \
+         blast radius in the narrowed inner loop, so this step must never have executed it"
+    );
+
+    // A real approve verdict.
+    let (_o, err, ok) = run_rigger(
+        root,
+        &["result", "solo/adjudicator#0", r#"{"verdict":"approve"}"#],
+    );
+    assert!(
+        ok,
+        "recording the adjudicator's approve must succeed; stderr: {err}"
+    );
+
+    // Step 3: the approve folds through. The main loop's post-approval path now runs the
+    // EXHAUSTIVE gate suite - the door gate's first and only real run - which deletes the
+    // worktree wholesale as its own side effect, then still reports PASS (a real `rm -rf`
+    // exits 0). `integrate_and_emit` must restore it via `Worktree::ensure_present` before
+    // `changed_since_base` reads it, or the whole wave collapses to a hard error instead of
+    // completing.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok,
+        "the integrate step must succeed - a missing self-heal collapses the wave to a \
+         hard error instead; stderr: {err}\nstdout: {out:?}"
+    );
+    assert!(
+        out.contains(r#""done":true"#) && !out.contains(r#""halted":"#),
+        "the approved unit must reach a clean, non-halted fixpoint; got: {out:?}"
+    );
+
+    // Non-vacuity: the door gate's own command really did remove the worktree wholesale.
+    let marker_content = std::fs::read_to_string(&marker).unwrap_or_default();
+    assert_eq!(
+        marker_content.trim(),
+        "absent",
+        "premise: the exhaustive door gate's own rm -rf must actually have removed the \
+         worktree wholesale, or this test proves nothing about a restore: {marker_content:?}"
+    );
+
+    // The unit reached `integrated`, not stuck or failed.
+    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    let events = store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_INTEGRATED),
+        "the unit must self-heal the exhaustive-gate-deleted worktree inside \
+         integrate_and_emit and reach `integrated`, not collapse the wave"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_FAILED
+                || e.type_ == rigger::ledger::TYPE_UNIT_ESCALATED),
+        "the self-heal must land cleanly - no failed or escalated unit"
+    );
+
+    // The approved work actually landed in the base repo's working tree.
+    assert!(
+        root.join("work.rs").exists(),
+        "the approved work must land in the base after integrate: {}",
+        root.display()
     );
 }
 
