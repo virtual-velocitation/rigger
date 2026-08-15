@@ -1909,18 +1909,25 @@ fn cmd_step(args: &[String]) -> Res {
     // it) while the unit is still live in review, so `sweep_terminal` is handed the CURRENT
     // run's live branches (the same `current_run_units` fold `reclaim_orphan_scratch` below
     // reads - one liveness authority, not a parallel notion) and spares any of them outright,
-    // even one that would otherwise pass the ancestry test. Best-effort: an unreadable stream
-    // degrades to an empty live set (the pre-existing ancestry-only behavior), never blocking
-    // the step.
+    // even one that would otherwise pass the ancestry test.
+    //
+    // `live_branches_for_sweep` fails CLOSED on an unreadable stream (`None`): liveness can only
+    // be UNDER- not OVER-determined, so a `store.read_stream` error skips the sweep call
+    // OUTRIGHT below, never runs it with a live set silently degraded to empty (which would
+    // revert to the pre-c4 ancestry-only rule this criterion exists to close). Its own doc
+    // comment carries the full rationale and is where its unit test lives; the `sweep_terminal`
+    // call itself stays INLINE here (not pulled into that helper) because
+    // `worktree_sweep_completes_before_any_add_within_one_step` (spec 51, criterion 5) pins its
+    // presence and lock->sweep->add ordering directly in `cmd_step`'s own source text.
     if let Some(root) = &scratch_root {
-        let live_branches = match store.read_stream(conductor::STREAM, 0, Direction::Forward) {
-            Ok(events) => current_run_units(&events).live_branches,
-            Err(_) => std::collections::HashSet::new(),
-        };
-        match rigger::worktree::sweep_terminal(&repo, root, RUN_BRANCH, &live_branches) {
-            Ok(0) => {}
-            Ok(n) => eprintln!("rigger step: swept {n} terminal worktree(s) from {root}"),
-            Err(e) => eprintln!("rigger step: scratch sweep skipped: {e}"),
+        if let Some(live_branches) =
+            live_branches_for_sweep(store.read_stream(conductor::STREAM, 0, Direction::Forward))
+        {
+            match rigger::worktree::sweep_terminal(&repo, root, RUN_BRANCH, &live_branches) {
+                Ok(0) => {}
+                Ok(n) => eprintln!("rigger step: swept {n} terminal worktree(s) from {root}"),
+                Err(e) => eprintln!("rigger step: scratch sweep skipped: {e}"),
+            }
         }
     }
 
@@ -2149,6 +2156,35 @@ fn cmd_step(args: &[String]) -> Res {
     }
     println!("{}", serde_json::to_string(&step)?);
     Ok(())
+}
+
+/// The step-start sweep's liveness decision (spec 64, criterion 4 fix): given the outcome of
+/// reading the CURRENT run's stream, decide the live branches `cmd_step` hands to
+/// `worktree::sweep_terminal` - or that the sweep must not run at all. Pulled out of [`cmd_step`]
+/// (which is not reachable through the crate API - `main.rs` is a binary) purely so this
+/// decision is independently unit-testable; the `sweep_terminal` call itself stays inline in
+/// `cmd_step` (see the call site's comment for why).
+///
+/// Fails CLOSED (`None`) on an unreadable stream, mirroring the fail-closed convention
+/// `reclaim_orphan_scratch` and `terminal_and_no_live_worker` already use elsewhere in
+/// `cmd_step`: liveness can only be UNDER- not OVER-determined, so when `store.read_stream`
+/// errors (a real failure class under WAL-mode concurrent writers - see `SQLITE_BUSY_SNAPSHOT` in
+/// `eventstore/sqlite.rs`) this returns `None` and prints a warning, which the caller reads as
+/// "skip the sweep entirely" - never as an empty live set. An empty live set means "nobody is
+/// live" (still runs the sweep, reclaiming everything the ancestry rule would), the OPPOSITE of
+/// "we don't know who is live" - conflating the two is exactly the rejected bug this closes: it
+/// would silently revert to the pre-c4 ancestry-only rule that force-removes a live unit's
+/// empty-diff worktree mid-review.
+fn live_branches_for_sweep(
+    read: Result<Vec<Event>, rigger::eventstore::Error>,
+) -> Option<std::collections::HashSet<String>> {
+    match read {
+        Ok(events) => Some(current_run_units(&events).live_branches),
+        Err(e) => {
+            eprintln!("rigger step: scratch sweep skipped (liveness unreadable): {e}");
+            None
+        }
+    }
 }
 
 /// The NO-STILL-ADVANCING-WORK core of the never-delete-live-owned rail as ONE predicate (spec 34,
@@ -10881,6 +10917,44 @@ mod tests {
         assert_eq!(run.live_branches, slugs(["rigger/u/unit-6"]));
         assert_eq!(live_slugs(&run.live_branches), slugs(["unit-6"]));
         assert_eq!(run.dead_slugs, slugs(["unit-old", "unit-gone"]));
+    }
+
+    /// Spec 64, criterion 4 fix (the rejected round): an unreadable run stream must make the
+    /// step-start sweep decision fail CLOSED (`None`, read by `cmd_step` as "skip the sweep
+    /// call entirely"), never degrade to `Some(HashSet::new())` - the rejected bug, which
+    /// `sweep_terminal` would still run with an EMPTY live set, silently reverting to the
+    /// pre-c4 ancestry-only rule that force-removes a live unit's empty-diff worktree mid-review.
+    /// `Err` is asserted first (the exact arm the prior round shipped with zero coverage of);
+    /// `Ok` is asserted too, so this also pins that a readable stream still hands back the SAME
+    /// fold `current_run_units` computes elsewhere in this function - one liveness authority,
+    /// not a second one reimplemented here.
+    #[test]
+    fn live_branches_for_sweep_fails_closed_on_an_unreadable_stream_but_folds_a_readable_one() {
+        let err = live_branches_for_sweep(Err(rigger::eventstore::Error::Backend(
+            "simulated read failure (e.g. SQLITE_BUSY_SNAPSHOT under a concurrent writer)"
+                .to_string(),
+        )));
+        assert_eq!(
+            err, None,
+            "an unreadable run stream must decide None (skip the sweep outright), never \
+             Some(empty set) - the rejected silent degrade that still runs the sweep"
+        );
+
+        let events = vec![
+            Event::new(
+                runscope::TYPE_RUN_STARTED,
+                br#"{"run":"r1","criteria":["c"]}"#.to_vec(),
+            ),
+            Event::new(
+                ledger::TYPE_UNIT_STARTED,
+                br#"{"id":"unit-6","branch":"rigger/u/unit-6"}"#.to_vec(),
+            ),
+        ];
+        assert_eq!(
+            live_branches_for_sweep(Ok(events)),
+            Some(slugs(["rigger/u/unit-6"])),
+            "a readable stream decides Some(the current_run_units fold) - the sweep still runs"
+        );
     }
 
     #[test]
