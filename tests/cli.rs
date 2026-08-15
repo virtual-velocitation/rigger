@@ -2562,6 +2562,120 @@ fn worktree_sweep_completes_before_any_add_within_one_step() {
     );
 }
 
+/// Spec 64, criterion 4 (`src/worktree.rs::sweep_terminal` learns liveness; its caller
+/// `cmd_step` in `src/main.rs` now folds `current_run_units(events).live_branches` and
+/// hands it in): the step-start terminal-worktree sweep must SPARE a unit that is still
+/// LIVE in the current run even though its branch tip is - trivially - an ancestor of the
+/// run branch (the empty-diff shape: nothing has been committed into the unit branch
+/// yet), while it must still RECLAIM an unrelated worktree in the IDENTICAL git shape
+/// whose branch belongs to no live unit of this run. The merged-only ancestry rule the
+/// sweep used before this criterion cannot tell these two apart on its own - both pass
+/// `merge-base --is-ancestor`.
+///
+/// Drives the REAL compiled binary (`rigger step`) twice with no courier result recorded
+/// for the unit in between, so the very seam this criterion changed (`cmd_step`'s
+/// step-start sweep call) runs a second time while the unit is still parked, waiting on
+/// its implementer's result. An UNCOMMITTED canary file written into each worktree after
+/// step 1 is the differentiator a bare "the dir still exists" check cannot give:
+/// `stage_worktree`'s own adopt-or-create machinery (`Worktree::create`) also runs at the
+/// top of every step for every in-flight unit and would silently RE-CREATE a
+/// wrongly-swept worktree from the unit branch's last COMMIT before this test's own
+/// assertions ever ran - masking exactly the bug this test exists to catch. A freshly
+/// re-created checkout carries no uncommitted file, so the canary surviving is proof the
+/// worktree was never removed at all, not proof it was removed and then rebuilt.
+#[test]
+fn step_start_sweep_spares_a_live_units_empty_diff_worktree_but_reclaims_a_dead_ancestor_leftover()
+{
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_reviewless_git_unit_workflow(root);
+
+    let scratch = root.join("scratchroot");
+    let tmp = scratch.to_str().unwrap();
+
+    // Step 1: the "solo" unit's implementer parks - a real, git-backed unit worktree is
+    // created now, checked out on `rigger/u/solo` at whatever `rigger-run` currently
+    // points to. Nothing has landed yet, so the branch tip trivially equals the run tip -
+    // the empty-diff shape this criterion targets.
+    let (out, err, ok) = run_rigger_envs(root, &["step"], &[("RIGGER_TMPDIR", tmp)]);
+    assert!(ok, "the first step must succeed; stderr:\n{err}");
+    assert!(
+        out.contains(r#""id":"solo/implementer#0""#) && out.contains(r#""done":false"#),
+        "step 1 must park the implementer; got: {out:?}"
+    );
+
+    let live_wt = scratch.join("rigger-wt-solo");
+    assert!(
+        live_wt.exists(),
+        "premise: a parked implementer must already have its unit worktree on disk: {}",
+        live_wt.display()
+    );
+    let live_canary = live_wt.join("canary-live.txt");
+    std::fs::write(&live_canary, "spared\n").unwrap();
+
+    // Plant an UNRELATED worktree in the exact same git shape: a branch whose tip is
+    // (trivially) an ancestor of `rigger-run`, registered under the same scratch root -
+    // but that belongs to NO unit this run ever started. From `sweep_terminal`'s own
+    // git-only view this is indistinguishable from the live unit's worktree above except
+    // for the one thing this criterion adds: it is absent from the current run's
+    // `live_branches`. Stands in for a crashed process's leftover registration without
+    // needing to actually kill a subprocess mid-flight to construct one.
+    let dead_wt = scratch.join("rigger-wt-leftover-orphan");
+    git_ok(
+        root,
+        &[
+            "worktree",
+            "add",
+            dead_wt.to_str().unwrap(),
+            "-b",
+            "rigger/u/leftover-orphan",
+            "rigger-run",
+        ],
+    );
+    let dead_canary = dead_wt.join("canary-dead.txt");
+    std::fs::write(&dead_canary, "reclaimed\n").unwrap();
+
+    // Step 2: no courier result was recorded for "solo/implementer#0", so it is still the
+    // very same outstanding spawn - and the run's `current_run_units` fold still reads it
+    // as LIVE. This step's OWN step-start sweep is the one under test.
+    let (out, err, ok) = run_rigger_envs(root, &["step"], &[("RIGGER_TMPDIR", tmp)]);
+    assert!(ok, "the second step must succeed; stderr:\n{err}");
+    assert!(
+        out.contains(r#""id":"solo/implementer#0""#) && out.contains(r#""done":false"#),
+        "step 2 must still be waiting on the very same outstanding implementer spawn, or \
+         this test proves nothing about the step-start sweep seeing it live; got: {out:?}"
+    );
+
+    // The LIVE unit's worktree survives - the canary proves it was never removed, not
+    // merely that a fresh one now happens to exist at the same path.
+    assert!(
+        live_canary.exists(),
+        "the step-start sweep must SPARE a live unit's worktree even though its branch \
+         tip is an ancestor of the run branch (the empty-diff shape); the canary is gone, \
+         so it was removed (and possibly silently rebuilt) despite the unit still being \
+         live; stderr:\n{err}"
+    );
+
+    // The UNRELATED, not-live worktree in the identical git shape is reclaimed.
+    assert!(
+        !dead_wt.exists(),
+        "the step-start sweep must still reclaim a worktree whose branch belongs to no \
+         live unit of this run, even in the identical empty-diff shape as the live one \
+         above; it survived under {}\nstderr:\n{err}",
+        dead_wt.display()
+    );
+    let list = git_out(root, &["worktree", "list", "--porcelain"]).unwrap_or_default();
+    assert!(
+        !list.contains("rigger/u/leftover-orphan"),
+        "the reclaimed worktree must also be DEREGISTERED from git, not just directory-\
+         deleted: {list}"
+    );
+    assert!(
+        list.contains("rigger/u/solo"),
+        "the live unit's worktree must still be registered with git: {list}"
+    );
+}
+
 /// The `workflows/rigger.js` native-driver source, read at test time from the crate manifest
 /// dir. The driver is embedded into the binary via `include_str!` (not reachable through the
 /// crate API) and runs only under the workflow harness (top-level await, the injected
