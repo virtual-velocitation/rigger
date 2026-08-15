@@ -14,6 +14,18 @@ pub struct Worktree {
     pub dir: String,
     pub branch: String,
     repo: String,
+    /// Serializes [`Self::ensure_present`]'s call into [`Self::create`]'s mutation path
+    /// (spec 64 criterion 3, round 5: adv-u3c3r4-concurrent-lens-ensure-present-races-
+    /// worktree-create, sdet-u3c3r4-concurrent-lenses-race-ensure-present-on-the-same-
+    /// worktree, both UPHELD). The review tier's lens fan-out shares ONE `&Worktree`
+    /// across N real OS threads (`run_review_agents_concurrently`), and each calls
+    /// `ensure_present` independently before its own spawn - `create`'s own doc comment
+    /// above states its `git worktree add`/adopt path does not support concurrent
+    /// callers. This lock is per-WORKTREE (not per-run), so it serializes only concurrent
+    /// re-asserts of THIS SAME instance - it never adds contention across different
+    /// units racing in `run_batch`, a separate, already-known, wider admin-directory race
+    /// this unit does not own. `()` payload: only mutual exclusion is needed.
+    reassert_mu: std::sync::Mutex<()>,
 }
 
 /// What [`Worktree::ensure_run_branch`] did, so the caller can tell the operator when
@@ -94,14 +106,19 @@ impl Worktree {
             // worktree, adopt it directly - a check on the dir's own HEAD, with no
             // `git worktree list` porcelain parse and no re-`add` (which git refuses for a
             // branch already checked out). (This handles sequential resume/supersede, not
-            // a true create-race: two processes that both see the branch absent still race
-            // the underlying `git worktree add -b`; rigger drives unit-worktree creation
-            // single-threaded within one `rigger step`, so that is not a first-class case.)
+            // a true create-race: two INDEPENDENT `Worktree::create` calls - two separate
+            // processes, or two units' own worktrees within one `run_batch` - that both see
+            // the branch absent still race the underlying `git worktree add -b`; rigger
+            // drives unit-worktree creation single-threaded within one `rigger step`, so
+            // that shape is not a first-class case. [`Self::ensure_present`]'s OWN repeat
+            // calls on the SAME instance are a different shape - N threads that already
+            // share one `&Worktree` - and that one IS serialized, by `reassert_mu`.)
             if worktree_on_branch(dir, branch) {
                 return Ok(Worktree {
                     dir: dir.to_string(),
                     branch: branch.to_string(),
                     repo: repo.to_string(),
+                    reassert_mu: std::sync::Mutex::new(()),
                 });
             }
             // FALLBACK - adopt-or-prune, for a dir DELETED out from under git (the branch
@@ -115,6 +132,7 @@ impl Worktree {
                         dir: existing,
                         branch: branch.to_string(),
                         repo: repo.to_string(),
+                        reassert_mu: std::sync::Mutex::new(()),
                     });
                 }
                 git(repo, &["worktree", "prune"])?;
@@ -143,6 +161,7 @@ impl Worktree {
             dir: dir.to_string(),
             branch: branch.to_string(),
             repo: repo.to_string(),
+            reassert_mu: std::sync::Mutex::new(()),
         })
     }
 
@@ -165,7 +184,18 @@ impl Worktree {
     /// Never mutates the branch tip or discards commits - `Self::create`'s adopt path
     /// checks out the branch's CURRENT head exactly as it is; this only guarantees the
     /// DIR is present and checked out.
+    ///
+    /// Concurrent-caller safe (spec 64 criterion 3, round 5), UNLIKE a bare `Self::create`
+    /// call: the review tier's lens fan-out shares ONE `&Worktree` across N real OS
+    /// threads (`run_review_agents_concurrently`), each calling this independently right
+    /// before its own spawn - so two threads can both find the dir gone at once. `reassert_
+    /// mu` serializes this instance's calls into `Self::create`'s mutation path, so at most
+    /// one thread actually runs `git worktree add`/adopt at a time; the rest either take
+    /// the cheap no-op fast path once the winner has restored it, or (rare: the winner's
+    /// OWN restore was itself raced out from under it) retry. Per-INSTANCE, not global - it
+    /// never adds contention across a DIFFERENT unit's worktree.
     pub fn ensure_present(&self) -> Result<(), Error> {
+        let _lock = self.reassert_mu.lock().unwrap();
         Worktree::create(&self.repo, &self.dir, &self.branch)?;
         Ok(())
     }
@@ -2477,6 +2507,62 @@ mod tests {
         assert!(
             list.contains(&healthy_dir),
             "the healthy worktree stays registered after healing"
+        );
+    }
+
+    #[test]
+    fn concurrent_ensure_present_on_a_deleted_worktree_never_races_create() {
+        // Spec 64 criterion 3, adjudication round 4
+        // (adv-u3c3r4-concurrent-lens-ensure-present-races-worktree-create,
+        // sdet-u3c3r4-concurrent-lenses-race-ensure-present-on-the-same-worktree, UPHELD):
+        // the review tier's lens fan-out (`run_review_agents_concurrently`) runs REAL
+        // concurrent OS threads that all share ONE `&Worktree` reference and each calls
+        // `ensure_present` independently before its own spawn. `Worktree::create`'s own doc
+        // comment above states its mutation path does not support concurrent callers ("two
+        // processes that both see the branch absent still race the underlying `git worktree
+        // add -b`"), and there was no lock anywhere enforcing that. This drives that EXACT
+        // shape directly against the mechanism: N real threads sharing one `Worktree` whose
+        // dir was deleted out from under git, all calling `ensure_present` at once. Every
+        // call must succeed - none may observe the underlying `git worktree add`/adopt race
+        // (a torn admin-dir read, an `already exists`, or any other transient git failure).
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let root = scratch_root(&repo_path, "", None);
+        let dir = format!("{root}/{UNIT_WORKTREE_PREFIX}racer");
+        let wt = Worktree::create(&repo_path, &dir, "rigger/u/racer").unwrap();
+
+        // Out-of-band deletion: the exact scenario `ensure_present` exists to self-heal -
+        // the dir is gone but the branch (the durable checkpoint) still exists.
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(
+            !std::path::Path::new(&dir).exists(),
+            "premise: the out-of-band deletion must actually remove it, or this test proves \
+             nothing"
+        );
+
+        // N concurrent callers sharing the SAME `&Worktree`, matching the lens fan-out's own
+        // sharing of one `wt: Option<&Worktree>` reference across threads (MAX_CONCURRENCY =
+        // 4 in production; over-subscribe here to widen the race window).
+        let results: Vec<Result<(), Error>> = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..8).map(|_| s.spawn(|| wt.ensure_present())).collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+
+        for (i, r) in results.iter().enumerate() {
+            assert!(
+                r.is_ok(),
+                "every concurrent ensure_present call must succeed - call {i} raced the \
+                 underlying git mutation: {r:?}"
+            );
+        }
+        assert!(
+            std::path::Path::new(&dir).is_dir(),
+            "the worktree must exist after the concurrent re-assert: {dir}"
+        );
+        assert!(
+            worktree_on_branch(&dir, "rigger/u/racer"),
+            "the restored worktree must be checked out on its own branch, not left in a \
+             half-recreated state"
         );
     }
 }
