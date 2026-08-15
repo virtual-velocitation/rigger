@@ -4296,6 +4296,444 @@ esac
     );
 }
 
+/// Spec 64 criterion 3, adjudication round 4 (`adv-u3c3r4-concurrent-lens-ensure-present-races-
+/// worktree-create`, `sdet-u3c3r4-concurrent-lenses-race-ensure-present-on-the-same-worktree`,
+/// `arch-u3c3r4-speculation-winner-sha-unguarded`, all UPHELD; fixed round 5 with a per-
+/// `Worktree` `reassert_mu` mutex and a pre-read `ensure_present()` call in
+/// `emit_speculation_winner_status`).
+///
+/// The implementer's own regressions
+/// (`worktree::tests::concurrent_ensure_present_on_a_deleted_worktree_never_races_create`,
+/// `conductor::tests::speculation_lenses_restore_a_gate_deleted_worktree_without_racing_and_stamp_the_winner_sha`)
+/// prove both fixes purely in-process: N real threads sharing a bare `Worktree`, and a
+/// `RecordingRunner`/`Stub` driver standing in for the gates and the review agents - never an
+/// actual `git worktree add` race between two REAL OS PROCESSES, nor the real `rigger run` ->
+/// `run_speculation` -> `emit_speculation_winner_status` call path through the compiled binary.
+///
+/// This drives it end to end: a `speculation_width: 2` unit with an UNSCOPED gate (`ok`, no
+/// `inputs`, so it runs at both the narrowed AND exhaustive gate doors - spec 64 c3 round 2's
+/// own technique) whose own `rm -rf` deletes candidate 0's worktree wholesale every time it
+/// runs, reviewed by a two-lens panel (`a`, `b`) that fans out as REAL concurrent OS threads,
+/// each spawning its own real `claude` subprocess (a fake shim substituted onto PATH, role-
+/// selected by a marker in each agent's own persona, mirroring the sibling end-to-end test
+/// above). Before round 5's fix, two real threads racing `Worktree::create`'s `git worktree
+/// add`/adopt path against the SAME dir is a genuine git race (not fabricated); and
+/// `emit_speculation_winner_status`'s `winner_sha` read - right after the exhaustive gate's
+/// SECOND deletion - had no re-assert guard of its own.
+#[test]
+fn run_speculation_restores_a_gate_deleted_worktree_across_concurrent_lenses_and_stamps_a_real_winner_sha(
+) {
+    use std::os::unix::fs::PermissionsExt;
+
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore};
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nRIGGERTEST_WORKER: do the \
+         unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("agents").join("a.md"),
+        "---\nid: a\nmodel: sonnet\ntools: [Read]\n---\nRIGGERTEST_LENS_A: review it.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("agents").join("b.md"),
+        "---\nid: b\nmodel: sonnet\ntools: [Read]\n---\nRIGGERTEST_LENS_B: review it.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("agents").join("judge.md"),
+        "---\nid: judge\nmodel: sonnet\ntools: [Read]\n---\nRIGGERTEST_ADJUDICATOR: adjudicate \
+         it.\n",
+    )
+    .unwrap();
+
+    // Two markers OUTSIDE the worktree self-report each gate's own `rm -rf` really running
+    // (and really removing the dir): `ok` is UNSCOPED (no `inputs`) so it runs for real in
+    // the NARROWED pass, before the lens fan-out - but a gate verdict replays from the SAME
+    // `(unit, attempt, gate)` key regardless of selection (spec 12, unit 1), so re-listing it
+    // would only REPLAY, not re-run, at the exhaustive pass. `door` is scoped with `inputs`
+    // that never intersect the always-empty (no grounder) blast radius (round 3's own
+    // technique, `step_integrates_after_the_exhaustive_gate_deletes_the_worktree_post_approval`
+    // above) - SKIPPED (not run, not cached) at the narrowed pass, so its FIRST real run lands
+    // at the exhaustive pass, right before the winner-sha read.
+    let narrowed_marker = rigger
+        .join("tmp")
+        .join("speculation-narrowed-deleted-marker.txt");
+    let exhaustive_marker = rigger
+        .join("tmp")
+        .join("speculation-exhaustive-deleted-marker.txt");
+    std::fs::create_dir_all(narrowed_marker.parent().unwrap()).unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        format!(
+            r#"name: ensureonparkspeculationwinnertest
+defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok:
+    run: 'd=$(pwd); cd / && rm -rf "$d"; ( [ -d "$d" ] && echo present || echo absent ) >> "{narrowed}"'
+  door:
+    run: 'd=$(pwd); cd / && rm -rf "$d"; ( [ -d "$d" ] && echo present || echo absent ) >> "{exhaustive}"'
+    inputs: [never-matches/**]
+stages:
+  solo:
+    agent: worker
+    gates: [ok, door]
+    on_pass: none
+    speculation_width: 2
+    review:
+      lenses: [a, b]
+      adjudicator: judge
+"#,
+            narrowed = narrowed_marker.to_str().unwrap(),
+            exhaustive = exhaustive_marker.to_str().unwrap(),
+        ),
+    )
+    .unwrap();
+
+    let fakebin = tempfile::tempdir().unwrap();
+    let claude_path = fakebin.path().join("claude");
+    std::fs::write(
+        &claude_path,
+        r#"#!/bin/sh
+sp=""
+next=0
+for a in "$@"; do
+  if [ "$next" = "1" ]; then
+    sp="$a"
+    next=0
+  fi
+  if [ "$a" = "--system-prompt" ]; then
+    next=1
+  fi
+done
+case "$sp" in
+  *RIGGERTEST_LENS_A*)
+    echo lensA >> "$RIGGERTEST_LENS_MARKER"
+    echo "reviewed: no blocker"
+    ;;
+  *RIGGERTEST_LENS_B*)
+    echo lensB >> "$RIGGERTEST_LENS_MARKER"
+    echo "reviewed: no blocker"
+    ;;
+  *RIGGERTEST_ADJUDICATOR*)
+    echo '{"verdict":"approve"}'
+    ;;
+  *RIGGERTEST_WORKER*)
+    echo "pub fn work() {}" > work.rs
+    ;;
+  *)
+    echo "fake-claude: unrecognized system prompt: $sp" 1>&2
+    exit 1
+    ;;
+esac
+"#,
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&claude_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&claude_path, perms).unwrap();
+
+    // Both lenses self-report having run into ONE shared file, OUTSIDE the worktree the
+    // gate's own deletion never touches - the non-vacuity check that they really are two
+    // independent real subprocesses, not one call standing in for both.
+    let lens_marker = root.join("lens-ran-marker.txt");
+    let path_env = format!(
+        "{}:{}",
+        fakebin.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["run"],
+        &[
+            ("PATH", &path_env),
+            ("RIGGERTEST_LENS_MARKER", lens_marker.to_str().unwrap()),
+        ],
+    );
+    assert!(
+        ok,
+        "the speculation run must succeed - a missing concurrent-lens serialization surfaces \
+         as a real git race, and a missing pre-read re-assert surfaces as an empty-sha stamp \
+         or a hard ENOENT instead; stderr: {err}\nstdout: {out}"
+    );
+
+    // Non-vacuity: both lenses really ran as their own real subprocess, concurrently sharing
+    // the SAME candidate worktree the gate deleted.
+    let lens_report = std::fs::read_to_string(&lens_marker).unwrap_or_default();
+    assert!(
+        lens_report.contains("lensA") && lens_report.contains("lensB"),
+        "premise: both lenses must actually have run as real concurrent processes against the \
+         same shared worktree, or this test proves nothing about the race: {lens_report:?}"
+    );
+
+    // Non-vacuity: BOTH doors really deleted the worktree wholesale - the unscoped `ok` gate
+    // for real at the narrowed pass (opening the concurrent-lens race window), and the
+    // `inputs`-scoped `door` gate for the FIRST time at the exhaustive pass (opening the
+    // winner-sha race window) - two DISTINCT real deletions, not one gate replayed twice.
+    let narrowed_report = std::fs::read_to_string(&narrowed_marker).unwrap_or_default();
+    assert_eq!(
+        narrowed_report.trim(),
+        "absent",
+        "premise: the unscoped `ok` gate must have deleted the worktree wholesale in the \
+         narrowed pass, before the lens fan-out, or this test proves nothing about the race: \
+         {narrowed_report:?}"
+    );
+    let exhaustive_report = std::fs::read_to_string(&exhaustive_marker).unwrap_or_default();
+    assert_eq!(
+        exhaustive_report.trim(),
+        "absent",
+        "premise: the `door` gate, skipped in the narrowed pass, must run for the first time \
+         in the exhaustive pass and delete the worktree wholesale right before the winner-sha \
+         read, or this test proves nothing about that guard: {exhaustive_report:?}"
+    );
+
+    // The candidate's worktree is restored and REGISTERED with git (not a leftover dir) after
+    // the run, checked out on its own unit branch.
+    let wt_dir = root.join(".rigger").join("tmp").join("rigger-wt-solo");
+    assert!(
+        wt_dir.is_dir(),
+        "the candidate worktree must be restored after the run: {}",
+        wt_dir.display()
+    );
+    let list = git_out(root, &["worktree", "list", "--porcelain"])
+        .expect("git worktree list must succeed in the seeded repo");
+    assert!(
+        list.contains(wt_dir.to_str().unwrap()),
+        "the restored candidate worktree must be REGISTERED with git, not a leftover dir: {list}"
+    );
+
+    // The deferred winner status carries a real 40-hex worktree_sha - the RESTORED tree's
+    // actual HEAD, not an empty sentinel snapshotted during the deletion window.
+    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    let events = store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap();
+    let verified = events
+        .iter()
+        .find(|e| {
+            e.type_ == rigger::ledger::TYPE_UNIT_STATUS
+                && String::from_utf8_lossy(&e.data).contains(r#""status":"verified"#)
+        })
+        .expect("the speculation winner's deferred verified status must have been recorded");
+    let winner_sha = verified
+        .meta
+        .get(rigger::conductor::META_WORKTREE_SHA)
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        winner_sha.len(),
+        40,
+        "the speculation winner's verified event must carry a real 40-hex worktree_sha, not \
+         empty - it must be stamped AFTER a re-assert restores whatever the exhaustive gate \
+         just deleted, not a snapshot taken during the deletion window: {winner_sha:?}"
+    );
+    assert!(
+        winner_sha.chars().all(|c| c.is_ascii_hexdigit()),
+        "the stamped sha must be real hex: {winner_sha:?}"
+    );
+    let head_after = git_out(&wt_dir, &["rev-parse", "HEAD"])
+        .expect("the restored worktree must resolve its own HEAD");
+    assert_eq!(
+        winner_sha, head_after,
+        "the stamped sha must be the RESTORED tree's actual HEAD"
+    );
+
+    assert!(
+        !events
+            .iter()
+            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_FAILED
+                || e.type_ == rigger::ledger::TYPE_UNIT_ESCALATED),
+        "the self-heal must land cleanly - no failed or escalated unit"
+    );
+}
+
+/// Spec 64 criterion 3, adjudication round 4 (`arch-u3c3r4-speculation-reject-sha-unguarded`,
+/// UPHELD; fixed round 5 with a pre-read `ensure_present()` call in
+/// `record_speculation_reject`). Mirrors
+/// `run_end_to_end_restores_a_worktree_a_reviewer_agent_deletes_mid_review` above for the
+/// SPECULATION candidate's review-reject arm: the implementer's own regression
+/// (`conductor::tests::speculation_reject_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored`)
+/// proves it purely in-process against a `Stub` driver; this drives it through the real
+/// compiled binary instead.
+///
+/// A `speculation_width: 2` unit with NO lenses (isolating this from the concurrent-lens
+/// mechanism the sibling test above already covers) whose adjudicator ALWAYS rejects AND
+/// deletes its own `$PWD` wholesale as a side effect before reporting - a real subprocess
+/// spawn deleting the worktree BETWEEN `review_unit`'s pre-spawn re-assert and
+/// `record_speculation_reject`'s `head_sha_of` read, the exact window round 5 closes. Both
+/// candidates lose (the same adjudicator persona rejects lane 0 AND lane 1), so the unit
+/// escalates - a legitimate terminal fixpoint, not a run failure (mirrors
+/// `step_carries_the_escalated_set_when_a_fixpoint_is_reached_with_a_wedged_unit`'s own
+/// exit-0-on-escalation contract).
+#[test]
+fn speculation_reject_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored_end_to_end(
+) {
+    use std::os::unix::fs::PermissionsExt;
+
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore};
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nRIGGERTEST_WORKER: do the \
+         unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("agents").join("judge.md"),
+        "---\nid: judge\nmodel: sonnet\ntools: [Read]\n---\nRIGGERTEST_ADJUDICATOR_REJECT_DELETE: \
+         adjudicate it.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: ensureonparkspeculationrejecttest
+defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok: { run: "true" }
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    on_pass: merge
+    speculation_width: 2
+    review:
+      adjudicator: judge
+"#,
+    )
+    .unwrap();
+
+    let fakebin = tempfile::tempdir().unwrap();
+    let claude_path = fakebin.path().join("claude");
+    std::fs::write(
+        &claude_path,
+        r#"#!/bin/sh
+sp=""
+next=0
+for a in "$@"; do
+  if [ "$next" = "1" ]; then
+    sp="$a"
+    next=0
+  fi
+  if [ "$a" = "--system-prompt" ]; then
+    next=1
+  fi
+done
+case "$sp" in
+  *RIGGERTEST_ADJUDICATOR_REJECT_DELETE*)
+    d="$(pwd)"
+    cd / || exit 1
+    rm -rf "$d"
+    if [ -d "$d" ]; then echo present >> "$RIGGERTEST_MARKER"; else echo absent >> "$RIGGERTEST_MARKER"; fi
+    echo '{"verdict":"reject"}'
+    ;;
+  *RIGGERTEST_WORKER*)
+    echo "pub fn work() {}" > work.rs
+    ;;
+  *)
+    echo "fake-claude: unrecognized system prompt: $sp" 1>&2
+    exit 1
+    ;;
+esac
+"#,
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&claude_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&claude_path, perms).unwrap();
+
+    let marker = root.join("adjudicator-deleted-marker.txt");
+    let path_env = format!(
+        "{}:{}",
+        fakebin.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["run"],
+        &[
+            ("PATH", &path_env),
+            ("RIGGERTEST_MARKER", marker.to_str().unwrap()),
+        ],
+    );
+    assert!(
+        ok,
+        "an all-candidates-rejected speculation group must still reach a clean escalated \
+         fixpoint (exit 0), not a hard failure; stderr: {err}\nstdout: {out}"
+    );
+
+    // Non-vacuity: the adjudicator's own real subprocess really did delete its candidate's
+    // worktree wholesale, self-reported from a location outside the worktree the deletion
+    // itself never touches - once per candidate (both lane 0 and lane 1 reject).
+    let marker_content = std::fs::read_to_string(&marker).unwrap_or_default();
+    let deletions: Vec<&str> = marker_content.lines().collect();
+    assert!(
+        deletions.len() >= 2 && deletions.iter().all(|l| l.trim() == "absent"),
+        "premise: the adjudicator's own process must actually have removed each candidate's \
+         worktree wholesale (one per lane), or this test proves nothing about a restore: \
+         {marker_content:?}"
+    );
+
+    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    let events = store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap();
+
+    // The group really escalated (both candidates lost) - the terminal state this test's
+    // premise depends on, not a run that silently found some other way to "succeed".
+    assert!(
+        events
+            .iter()
+            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_ESCALATED),
+        "premise: an always-rejecting adjudicator across both speculation candidates must \
+         escalate the unit, or this test proves nothing about the reject arm; events: {events:?}"
+    );
+
+    // At least one speculation-candidate reject carries a real 40-hex worktree sha - stamped
+    // AFTER a re-assert restored what the adjudicator's own spawn had just deleted, never a
+    // snapshot taken during the deletion window.
+    let status_key = format!(
+        "\"status\":\"{}\"",
+        rigger::conductor::STATUS_SPECULATION_REJECTED
+    );
+    let reject_with_sha = events.iter().find(|e| {
+        e.type_ == rigger::ledger::TYPE_UNIT_STATUS
+            && String::from_utf8_lossy(&e.data).contains(&status_key)
+            && e.meta
+                .get(rigger::conductor::META_WORKTREE_SHA)
+                .is_some_and(|s| s.len() == 40 && s.chars().all(|c| c.is_ascii_hexdigit()))
+    });
+    assert!(
+        reject_with_sha.is_some(),
+        "a speculation-candidate review-reject must carry a real 40-hex worktree sha even \
+         when the adjudicator's own spawn deleted the tree as its side effect - it must be \
+         stamped AFTER a re-assert restores it, not a snapshot taken during the deletion \
+         window; events: {events:?}"
+    );
+}
+
 /// Spec 50, criterion 2 (the REGISTRY lifecycle): `rigger step` REGISTERS this instance in the
 /// machine-global state directory - the project root plus a CREDENTIAL-FREE store identity, with a
 /// live heartbeat - so a machine-level dash can DISCOVER it without a coordination protocol. The
