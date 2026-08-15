@@ -600,10 +600,13 @@ pub struct StoreConfig {
 /// BuildConfig is the committed `build:` config the shared build-environment resolver
 /// reads (spec 65 - one build-environment authority): a single resolver
 /// ([`crate::gate::BuildEnv::resolve`]) derives the actual env vars from these two
-/// values and applies them to EVERY build the loop runs. Plain config-shape data
-/// only - the resolution logic itself (verbatim wrapper passthrough today; `auto`
-/// PATH-probing and the named-but-absent hard error are spec 65 unit 2's job) lives
-/// in `gate.rs`, not here, so this stays a pure value type like its siblings.
+/// values and applies them to gate builds (run via [`crate::gate::Runner::run`] by
+/// [`crate::gate::ExecRunner`]) and the blocking `driver::cli` agent driver - the
+/// two sites wired so far (see [`crate::gate::BuildEnv`] for the disclosed gap on
+/// the remaining agent-spawn paths). Plain config-shape data only - the resolution
+/// logic itself (verbatim wrapper passthrough today; `auto` PATH-probing and the
+/// named-but-absent hard error are spec 65 unit 2's job) lives in `gate.rs`, not
+/// here, so this stays a pure value type like its siblings.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
 pub struct BuildConfig {
     /// The `RUSTC_WRAPPER` binary name, `auto` to probe PATH, or `off`/empty (the
@@ -643,8 +646,10 @@ pub struct Workflow {
     pub dash: String,
     /// The shared build-environment config (spec 65): `wrapper` / `cache_dir`, read
     /// by the ONE resolver ([`crate::gate::BuildEnv::resolve`]) that derives the env
-    /// applied to every build the loop runs. Absent (the common case) resolves to no
-    /// wrapper - today's ambient-environment behavior, unchanged.
+    /// applied to gate builds and the blocking `driver::cli` agent driver - the two
+    /// sites wired so far, not yet every agent-spawn path in the crate (see
+    /// [`crate::gate::BuildEnv`]). Absent (the common case) resolves to no wrapper -
+    /// today's ambient-environment behavior, unchanged.
     #[serde(default)]
     pub build: BuildConfig,
     #[serde(default)]
