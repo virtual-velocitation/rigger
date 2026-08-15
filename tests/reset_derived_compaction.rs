@@ -20,6 +20,8 @@
 //!     the revert proof (criterion 3), and the storage guard (criterion 4). Those are pinned by
 //!     their own units' tests and are not re-litigated here.
 
+mod common;
+
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision};
@@ -30,10 +32,6 @@ use std::time::{Duration, UNIX_EPOCH};
 // ---------------------------------------------------------------------------------------
 // Harness
 // ---------------------------------------------------------------------------------------
-
-fn rigger_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_rigger")
-}
 
 /// A throwaway project: its own git repo, so `project_identity()` resolves to the directory's
 /// basename exactly as it does for a real project, and a seed appended under that identity lands
@@ -86,7 +84,7 @@ fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
 }
 
 fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (String, String, bool) {
-    let mut cmd = Command::new(rigger_bin());
+    let mut cmd = Command::new(common::rigger_bin());
     cmd.args(args).current_dir(cwd);
     cmd.env("RIGGER_NO_DASH", "1");
     let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
