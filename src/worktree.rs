@@ -733,7 +733,20 @@ fn reclaim_cache_sibling(worktree_dir: &str) {
 /// cache here. On the dominant graceful path [`Worktree::remove`] already reclaimed it, so
 /// this sweep never sees that worktree at all. Reclamation is best-effort and never aborts
 /// the sweep.
-pub fn sweep_terminal(repo: &str, root: &str, run_branch: &str) -> Result<usize, Error> {
+/// `live_branches` is the `rigger/u/<slug>` set of the CURRENT run's non-terminal units (the
+/// same run-scoped fold the conductor already reads to decide liveness elsewhere - see
+/// `current_run_units` in `main.rs`), never a process-memory list. The merged-only ancestry
+/// rule alone is not sufficient: a PARKED unit whose attempt produced an EMPTY diff has a
+/// branch tip that IS an ancestor of `run_branch` (trivially - it never advanced past it)
+/// while the unit is still live in review, so `live_branches` is checked BEFORE the ancestry
+/// test and spares such a worktree outright; a merged-or-dead, not-live worktree is still
+/// reclaimed exactly as before.
+pub fn sweep_terminal(
+    repo: &str,
+    root: &str,
+    run_branch: &str,
+    live_branches: &std::collections::HashSet<String>,
+) -> Result<usize, Error> {
     git(repo, &["worktree", "prune"])?;
     let out = run_git(repo, &["worktree", "list", "--porcelain"]).map_err(Error)?;
     let mut removed = 0;
@@ -743,7 +756,7 @@ pub fn sweep_terminal(repo: &str, root: &str, run_branch: &str) -> Result<usize,
             dir = Some(d.to_string());
         } else if let Some(branch) = line.strip_prefix("branch refs/heads/") {
             let Some(d) = dir.take() else { continue };
-            if !d.starts_with(root) || branch == run_branch {
+            if !d.starts_with(root) || branch == run_branch || live_branches.contains(branch) {
                 continue;
             }
             let merged =
@@ -1453,7 +1466,13 @@ mod tests {
         std::fs::write(std::path::Path::new(&live_dir).join("wip.txt"), "wip\n").unwrap();
         live.commit("rigger: in-flight").unwrap();
 
-        let removed = sweep_terminal(&repo_path, &root, "rigger-run").unwrap();
+        let removed = sweep_terminal(
+            &repo_path,
+            &root,
+            "rigger-run",
+            &std::collections::HashSet::new(),
+        )
+        .unwrap();
         assert_eq!(removed, 1, "exactly the terminal worktree is swept");
         assert!(
             !std::path::Path::new(&done_dir).exists(),
@@ -1462,6 +1481,45 @@ mod tests {
         assert!(
             std::path::Path::new(&live_dir).join("wip.txt").exists(),
             "the in-flight worktree is untouched"
+        );
+    }
+
+    #[test]
+    fn sweep_terminal_spares_a_live_units_worktree_even_at_the_empty_diff_run_tip() {
+        // Spec 64 criterion 4: the merged-only ancestry rule alone is NOT sufficient. A
+        // PARKED unit whose attempt produced an EMPTY diff has a branch tip that IS an
+        // ancestor of the run branch (trivially - it never advanced past it) while the
+        // unit is still LIVE in review. Liveness - read from the current run's event-log
+        // slice, passed in as `live_branches` - must spare it despite it passing the
+        // ancestry test; a dead unit in the identical empty-diff shape is still swept.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        run_git(&repo_path, &["checkout", "-b", "rigger-run"]).unwrap();
+        let root = scratch_root(&repo_path, "", None);
+
+        // Live, empty-diff: branch created off the run branch, never advanced (so it IS
+        // an ancestor of run_branch, exactly like a terminal unit) but its unit is still
+        // in-flight per the current run's log.
+        let live_dir = format!("{root}/rigger-wt-live-empty-diff");
+        Worktree::create(&repo_path, &live_dir, "rigger/u/live-empty-diff").unwrap();
+
+        // Dead, empty-diff: the identical shape, but no live unit claims its branch - this
+        // is the case the pre-existing ancestry rule already swept and must keep sweeping.
+        let dead_dir = format!("{root}/rigger-wt-dead-empty-diff");
+        Worktree::create(&repo_path, &dead_dir, "rigger/u/dead-empty-diff").unwrap();
+
+        let mut live_branches = std::collections::HashSet::new();
+        live_branches.insert("rigger/u/live-empty-diff".to_string());
+
+        let removed = sweep_terminal(&repo_path, &root, "rigger-run", &live_branches).unwrap();
+        assert_eq!(removed, 1, "only the dead empty-diff worktree is swept");
+        assert!(
+            std::path::Path::new(&live_dir).exists(),
+            "the live unit's worktree survives despite its branch tip equalling the run tip"
+        );
+        assert!(
+            !std::path::Path::new(&dead_dir).exists(),
+            "a dead unit in the identical empty-diff shape is still reclaimed"
         );
     }
 
@@ -1496,7 +1554,13 @@ mod tests {
         let live_cache = format!("{root}/{UNIT_CACHE_PREFIX}live");
         std::fs::create_dir_all(&live_cache).unwrap();
 
-        let removed = sweep_terminal(&repo_path, &root, "rigger-run").unwrap();
+        let removed = sweep_terminal(
+            &repo_path,
+            &root,
+            "rigger-run",
+            &std::collections::HashSet::new(),
+        )
+        .unwrap();
         assert_eq!(removed, 1, "exactly the terminal unit worktree is swept");
         assert!(
             !std::path::Path::new(&done_cache).exists(),

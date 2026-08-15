@@ -1849,16 +1849,6 @@ fn cmd_step(args: &[String]) -> Res {
             )
         })?;
         warn_on_run_branch_divergence("rigger step", setup, &args.base, args.base_explicit);
-        // The maintenance half of Gap 14: every step starts by sweeping the scratch
-        // root's terminal worktrees (integrated units, review scaffolding), so leaks
-        // from crashed or superseded step processes are reclaimed by the loop itself
-        // instead of accumulating until a human notices a full disk.
-        let root = rigger::worktree::scratch_root_from_env(&repo, &cfg.workflow.defaults.workdir);
-        match rigger::worktree::sweep_terminal(&repo, &root, RUN_BRANCH) {
-            Ok(0) => {}
-            Ok(n) => eprintln!("rigger step: swept {n} terminal worktree(s) from {root}"),
-            Err(e) => eprintln!("rigger step: scratch sweep skipped: {e}"),
-        }
     }
 
     // Migrate a pre-spec-09 store's legacy-namespace history to the minted identity once,
@@ -1906,6 +1896,33 @@ fn cmd_step(args: &[String]) -> Res {
             &cfg.workflow.defaults.workdir,
         ))
     };
+
+    // The maintenance half of Gap 14, made liveness-aware (spec 64, criterion 4): every step
+    // starts by sweeping the scratch root's terminal worktrees (integrated units, review
+    // scaffolding), so leaks from crashed or superseded step processes are reclaimed by the
+    // loop itself instead of accumulating until a human notices a full disk. Placed here (after
+    // the store opens and any `--fresh` boundary is settled, but still BEFORE the
+    // definition-pin HALT below) so it keeps running at step start on every step, including one
+    // that goes on to halt on drift - exactly as before this criterion. The merged-only git
+    // ancestry rule alone is not sufficient: a PARKED unit whose attempt produced an EMPTY diff
+    // has a branch tip that IS an ancestor of the run branch (trivially - it never advanced past
+    // it) while the unit is still live in review, so `sweep_terminal` is handed the CURRENT
+    // run's live branches (the same `current_run_units` fold `reclaim_orphan_scratch` below
+    // reads - one liveness authority, not a parallel notion) and spares any of them outright,
+    // even one that would otherwise pass the ancestry test. Best-effort: an unreadable stream
+    // degrades to an empty live set (the pre-existing ancestry-only behavior), never blocking
+    // the step.
+    if let Some(root) = &scratch_root {
+        let live_branches = match store.read_stream(conductor::STREAM, 0, Direction::Forward) {
+            Ok(events) => current_run_units(&events).live_branches,
+            Err(_) => std::collections::HashSet::new(),
+        };
+        match rigger::worktree::sweep_terminal(&repo, root, RUN_BRANCH, &live_branches) {
+            Ok(0) => {}
+            Ok(n) => eprintln!("rigger step: swept {n} terminal worktree(s) from {root}"),
+            Err(e) => eprintln!("rigger step: scratch sweep skipped: {e}"),
+        }
+    }
 
     // Definition pinning (spec 13, unit 1): pin this run's definition (a fresh run) or enforce
     // it (a live run). A drifted live-run definition WITHOUT `--rebase-definition` HALTS here,
