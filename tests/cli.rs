@@ -4734,6 +4734,605 @@ esac
     );
 }
 
+/// Spec 64, criterion 3, adjudication round 5 finding
+/// `sdet-u3c3r5-resumed-reviewed-gate-failure-failed-sha-still-empty-sentinel` (UPHELD; fixed
+/// round 6 with the identical one-line guard already used at six sibling sites - `if let
+/// Some(w) = wt { w.ensure_present()?; }` - immediately before the `failed_sha` read at
+/// `run_single_stage`'s `ResumePhase::Reviewed` exhaustive-gate-FAILURE arm).
+///
+/// A unit whose PRIOR window recorded `reviewed` (the adjudicator already approved it; only
+/// the merge was interrupted) resumes straight to the integrate door on the VERY NEXT step,
+/// skipping implement and review entirely - so this arm is reached with NO agent spawn at all
+/// in this process, purely from a real git-backed unit branch (the prior window's durable
+/// checkpoint) plus a seeded `UnitStatus{"status":"reviewed"}` event standing in for the
+/// interrupted window's own recorded verdict. A throwaway first step BOOTSTRAPS the run (mints
+/// the real `RunStarted` every fold scopes through, and creates the unit's real worktree/branch
+/// at their deterministic path) - the seed then lands AFTER that boundary, in the SAME slice
+/// `resume_phase` folds, exactly like a real interrupted window's residue. Its resumed
+/// exhaustive re-gate (spec 12, unit 3: "done" is measured against the exhaustive suite even
+/// on a resumed approve) is real wall-clock time and the last thing that touches the worktree
+/// before the read this round guards - its own `sh -c` command deletes the worktree wholesale
+/// as a side effect, then reports FAIL (a real `rm -rf` followed by `exit 1`). Before round 6,
+/// `head_sha_of` read the now-missing dir and silently stamped an empty sentinel, the same
+/// class every sibling in this unit was rejected over.
+#[test]
+fn resumed_reviewed_unit_stamps_a_real_failed_sha_after_the_exhaustive_gates_own_deletion_is_restored(
+) {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore};
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
+    )
+    .unwrap();
+
+    // A marker OUTSIDE the worktree self-reports whether the gate's own `rm -rf` really ran -
+    // the non-vacuity check a single opaque subprocess call otherwise denies an outside
+    // observer.
+    let marker = rigger
+        .join("tmp")
+        .join("resumed-gate-fail-deleted-marker.txt");
+    let marker_str = marker.to_str().unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        format!(
+            r#"name: ensureonparkresumedgatefailtest
+defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok:
+    run: 'd=$(pwd); cd / && rm -rf "$d"; ( [ -d "$d" ] && echo present || echo absent ) > "{marker}"; exit 1'
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+"#,
+            marker = marker_str
+        ),
+    )
+    .unwrap();
+
+    // Step 1 (bootstrap): mints the run's `RunStarted` and creates the unit's real,
+    // git-backed worktree/branch at their deterministic path. Its own parked implementer is
+    // never resulted - it is simply abandoned, standing in for the prior window this test's
+    // premise depends on (a window whose OWN later steps carried it to `reviewed` and then
+    // died before the merge).
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the bootstrap step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/implementer#0""#),
+        "the bootstrap step must park the implementer, creating the unit's worktree; got: \
+         {out:?}"
+    );
+    let wt_dir = root.join(".rigger").join("tmp").join("rigger-wt-solo");
+    assert!(
+        wt_dir.exists(),
+        "premise: the bootstrap step must already have created the unit's worktree: {}",
+        wt_dir.display()
+    );
+
+    // The prior window's own committed work, written directly into the ALREADY-CREATED
+    // worktree and committed - the durable checkpoint a real interrupted window leaves on the
+    // unit's branch.
+    std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
+    git_ok(&wt_dir, &["add", "-A"]);
+    git_ok(
+        &wt_dir,
+        &[
+            "commit",
+            "-q",
+            "-m",
+            "prior window: implemented and reviewed",
+        ],
+    );
+    // Captured NOW, while the worktree is known to exist: `run_stage`'s own caller removes a
+    // unit's worktree DIR (never its branch) on any TERMINAL, non-parked return - including
+    // the `UnitFailed` this test drives - so the dir this test's own commit landed in will
+    // itself be gone again by the time the step below returns. The branch is the durable
+    // checkpoint; this sha is what a re-`ensure_present` checks the SAME branch back out to.
+    let expected_sha = git_out(&wt_dir, &["rev-parse", "HEAD"])
+        .expect("the committed worktree must resolve its own HEAD");
+
+    // The prior window's own recorded verdict: the unit is `reviewed`, only the merge is
+    // outstanding. Seeded AFTER the bootstrap step's `RunStarted`, so it lands in the SAME
+    // slice `resume_phase` folds (`current_run` scopes to the suffix from the latest
+    // `RunStarted` onward) - together with the committed branch above (`branch_has_work`),
+    // this is everything `resume_phase` needs to route the very next step straight into
+    // `ResumePhase::Reviewed`, with no implementer or review spawn in that process at all.
+    seed_run_events(
+        root,
+        &[("UnitStatus", r#"{"id":"solo","status":"reviewed"}"#)],
+    );
+
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok,
+        "a resumed unit whose exhaustive re-gate goes red must still complete the step \
+         cleanly (a recorded UnitFailed under bounded remediation - never a hard process \
+         failure); stderr: {err}\nstdout: {out}"
+    );
+
+    // Non-vacuity: the gate's own command really did remove the worktree wholesale.
+    let marker_content = std::fs::read_to_string(&marker).unwrap_or_default();
+    assert_eq!(
+        marker_content.trim(),
+        "absent",
+        "premise: the exhaustive gate's own rm -rf must actually have removed the worktree \
+         wholesale, or this test proves nothing about a restore: {marker_content:?}"
+    );
+
+    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    let events = store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap();
+    let failed = events
+        .iter()
+        .find(|e| e.type_ == rigger::ledger::TYPE_UNIT_FAILED)
+        .expect("the resumed unit's red exhaustive re-gate must record a UnitFailed");
+    let failed_sha = failed
+        .meta
+        .get(rigger::conductor::META_WORKTREE_SHA)
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        failed_sha.len(),
+        40,
+        "the failed event's worktree_sha must be a real 40-hex sha, not the empty sentinel a \
+         read taken during the deletion window would silently stamp: {failed_sha:?}"
+    );
+    assert!(
+        failed_sha.chars().all(|c| c.is_ascii_hexdigit()),
+        "the stamped sha must be real hex: {failed_sha:?}"
+    );
+    assert_eq!(
+        failed_sha, expected_sha,
+        "the stamped sha must be the RESTORED tree's actual HEAD, not a snapshot taken during \
+         the deletion window"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_INTEGRATED),
+        "a red exhaustive re-gate on resume must never integrate"
+    );
+}
+
+/// Spec 64, criterion 3, adjudication round 5 finding
+/// `adv-u3c3r5-two-more-unguarded-empty-sha-siblings` (UPHELD; fixed round 6 with the
+/// identical guard at `run_single_stage`'s `ResumePhase::Reviewed` `integration.blocked` arm).
+///
+/// The mirror image of the sibling test above: this time the resumed unit's exhaustive
+/// re-gate PASSES, so `run_single_stage` reaches `integrate_and_emit`, which merges the
+/// branch into the base repo and then re-gates the MERGED tree (spec 12, unit 5,
+/// `GateSelection::PostMerge`, run against `self.deps.repo` - a DIFFERENT directory than the
+/// unit worktree). An out-of-band actor deleting the unit worktree during that real wall-clock
+/// window is invisible to `integrate_and_emit`'s own internal re-assert (which ran BEFORE the
+/// post-merge re-gate, over the pre-merge tree) - so nothing protects the `failed_sha` read on
+/// this specific `integration.blocked` arm without round 6's fix. The gate command here is
+/// unscoped (no `inputs`), so it genuinely runs twice at two distinct verdict keys - once
+/// against the worktree (the exhaustive check, passes) and once against the merged base repo
+/// (the post-merge re-gate, fails and deletes the worktree as its side effect) - never a
+/// fabricated in-memory deletion. The base repo gets an unrelated commit of its own between
+/// the bootstrap and the resume, so the merge is a genuine three-way merge rather than a
+/// fast-forward - a fast-forward's merged tree is byte-identical to the worktree's own
+/// pre-merge tree, which would CACHE-HIT the exhaustive check's green verdict (spec 12, unit
+/// 1's content-address cache) and never run the post-merge command at all.
+#[test]
+fn resumed_reviewed_unit_stamps_a_real_failed_sha_after_the_post_merge_re_gates_own_deletion_is_restored(
+) {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore};
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
+    )
+    .unwrap();
+
+    // The unit's own deterministic worktree dir, computed the SAME way `rigger step` itself
+    // computes it - known up front so the gate script below can target it by an absolute
+    // path, exactly the "an out-of-band actor deletes the worktree" shape this arm guards
+    // against (never the gate deleting its OWN cwd, since the post-merge re-gate's cwd is the
+    // base repo, a different directory entirely).
+    let wt_dir = root.join(".rigger").join("tmp").join("rigger-wt-solo");
+    let wt_dir_str = wt_dir.to_str().unwrap();
+    // A flag OUTSIDE the worktree that survives its deletion: the gate's first real
+    // invocation (the pre-merge exhaustive check, run in the worktree) passes and sets it;
+    // its second real invocation (the post-merge re-gate, run in the base repo - a distinct
+    // verdict key, never cache-answered) finds it set, deletes the worktree, and fails.
+    let flag = rigger.join("tmp").join("postmerge-resumed-flag");
+    let flag_str = flag.to_str().unwrap();
+    let marker = rigger
+        .join("tmp")
+        .join("postmerge-resumed-deleted-marker.txt");
+    let marker_str = marker.to_str().unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        format!(
+            r#"name: ensureonparkresumedpostmergetest
+defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok:
+    run: 'if [ -f "{flag}" ]; then rm -rf "{wtdir}"; ( [ -d "{wtdir}" ] && echo present || echo absent ) > "{marker}"; exit 1; else touch "{flag}"; fi'
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+"#,
+            flag = flag_str,
+            wtdir = wt_dir_str,
+            marker = marker_str
+        ),
+    )
+    .unwrap();
+
+    // Step 1 (bootstrap): mints the run's `RunStarted` and creates the unit's real,
+    // git-backed worktree/branch at their deterministic path. Its own parked implementer is
+    // never resulted - it is simply abandoned, standing in for the prior window this test's
+    // premise depends on (a window whose OWN later steps carried it to `reviewed` and then
+    // died before the merge).
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the bootstrap step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/implementer#0""#),
+        "the bootstrap step must park the implementer, creating the unit's worktree; got: \
+         {out:?}"
+    );
+    assert!(
+        wt_dir.exists(),
+        "premise: the bootstrap step must already have created the unit's worktree: {}",
+        wt_dir.display()
+    );
+
+    // The prior window's own committed work, written directly into the ALREADY-CREATED
+    // worktree and committed - the durable checkpoint a real interrupted window leaves on the
+    // unit's branch.
+    std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
+    git_ok(&wt_dir, &["add", "-A"]);
+    git_ok(
+        &wt_dir,
+        &[
+            "commit",
+            "-q",
+            "-m",
+            "prior window: implemented and reviewed",
+        ],
+    );
+    // Captured NOW, while the worktree is known to exist: `run_stage`'s own caller removes a
+    // unit's worktree DIR (never its branch) on any TERMINAL, non-parked return - including
+    // the `UnitFailed` this test drives - so the dir this test's own commit landed in will
+    // itself be gone again by the time the step below returns. The branch is the durable
+    // checkpoint; this sha is what a re-`ensure_present` checks the SAME branch back out to.
+    let expected_sha = git_out(&wt_dir, &["rev-parse", "HEAD"])
+        .expect("the committed worktree must resolve its own HEAD");
+
+    // Advance the BASE repo's own checkout with an unrelated commit, so the unit's merge is a
+    // genuine three-way merge (both sides added a distinct file since their common ancestor)
+    // rather than a fast-forward. This is load-bearing for the content-address cache (spec 12,
+    // unit 1): a fast-forward merge's tree is byte-identical to the worktree's own pre-merge
+    // tree, so the post-merge re-gate would CACHE-HIT the exhaustive check's green verdict
+    // (same command, same tree digest) and never run the command a second time at all - never
+    // exercising the arm this test targets. A real divergence gives the merged tree its own
+    // distinct digest, forcing the post-merge re-gate to run for real.
+    std::fs::write(root.join("base-advanced.txt"), "unrelated base commit\n").unwrap();
+    // Add ONLY the new file, never `-A`: the unit's own worktree is a nested git checkout
+    // under `.rigger/tmp/`, and a broad `add -A` at the base repo's root would stage it as an
+    // embedded repository (a gitlink), corrupting the very tree this test drives a merge over.
+    git_ok(root, &["add", "base-advanced.txt"]);
+    git_ok(root, &["commit", "-q", "-m", "unrelated base advance"]);
+
+    // The prior window's own recorded verdict: the unit is `reviewed`, only the merge is
+    // outstanding. Seeded AFTER the bootstrap step's `RunStarted`, so it lands in the SAME
+    // slice `resume_phase` folds.
+    seed_run_events(
+        root,
+        &[("UnitStatus", r#"{"id":"solo","status":"reviewed"}"#)],
+    );
+
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok,
+        "a resumed unit whose post-merge re-gate goes red must still complete the step \
+         cleanly (a rolled-back merge and a recorded UnitFailed - never a hard process \
+         failure); stderr: {err}\nstdout: {out}"
+    );
+
+    // Non-vacuity: the post-merge re-gate's own command really did remove the worktree
+    // wholesale.
+    let marker_content = std::fs::read_to_string(&marker).unwrap_or_default();
+    assert_eq!(
+        marker_content.trim(),
+        "absent",
+        "premise: the post-merge re-gate's own rm -rf must actually have removed the \
+         worktree wholesale, or this test proves nothing about a restore: {marker_content:?}"
+    );
+
+    // The merge was rolled back (spec 12, unit 5): the base repo's own working tree must NOT
+    // carry the file a landed integration would have.
+    assert!(
+        !root.join("work.rs").exists(),
+        "a RED post-merge re-gate must roll the merge back - the file must never land in the \
+         base repo's working tree"
+    );
+
+    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    let events = store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap();
+    let failed = events
+        .iter()
+        .find(|e| e.type_ == rigger::ledger::TYPE_UNIT_FAILED)
+        .expect("the resumed unit's red post-merge re-gate must record a UnitFailed");
+    let failed_sha = failed
+        .meta
+        .get(rigger::conductor::META_WORKTREE_SHA)
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        failed_sha.len(),
+        40,
+        "the failed event's worktree_sha must be a real 40-hex sha, not the empty sentinel a \
+         read taken during the deletion window would silently stamp: {failed_sha:?}"
+    );
+    assert!(
+        failed_sha.chars().all(|c| c.is_ascii_hexdigit()),
+        "the stamped sha must be real hex: {failed_sha:?}"
+    );
+    assert_eq!(
+        failed_sha, expected_sha,
+        "the stamped sha must be the RESTORED tree's actual HEAD, not a snapshot taken during \
+         the deletion window"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_INTEGRATED),
+        "a rolled-back post-merge re-gate on resume must never integrate"
+    );
+}
+
+/// Spec 64, criterion 3, adjudication round 5 finding
+/// `adv-u3c3r5-two-more-unguarded-empty-sha-siblings` (UPHELD; fixed round 6 with
+/// `candidates[i].wt.ensure_present()` immediately before the `failed_sha` read at
+/// `run_speculation`'s own `integration.blocked` arm).
+///
+/// The THIRD sibling round 6 closes, on the SPECULATION surface this time: a
+/// `speculation_width: 2` unit whose winning candidate's post-merge re-gate goes red. The
+/// exhaustive post-merge re-gate that produces `blocked` here runs against `self.deps.repo`
+/// (the base repo), never re-touching `candidates[i].wt.dir` - so `integrate_and_emit`'s own
+/// internal re-assert (which ran BEFORE that re-gate, over the pre-merge worktree) cannot
+/// cover this read either. The unscoped `ok` gate's FIRST real invocation (candidate 0's
+/// pre-merge narrowed check) passes and arms a flag; every real invocation after that -
+/// candidate 0's own post-merge re-gate, and (a candidate 1 that also reaches its own
+/// post-merge door) candidate 1's - finds the flag armed, deletes candidate 0's worktree, and
+/// fails, so this drives the target arm at least once with no candidate ever winning: the
+/// group exhausts both candidates and ESCALATES, a legitimate terminal fixpoint (mirrors
+/// `speculation_reject_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored_end_to_end`'s
+/// own exit-0-on-escalation contract above), driven through the real, subprocess-per-spawn
+/// `rigger run` so both candidates' implementer and adjudicator spawns are real, synchronous
+/// subprocesses in the SAME process - never a fabricated in-memory deletion.
+#[test]
+fn run_speculation_stamps_a_real_failed_sha_after_the_post_merge_re_gates_own_deletion_is_restored()
+{
+    use std::os::unix::fs::PermissionsExt;
+
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore};
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nRIGGERTEST_WORKER: do the \
+         unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("agents").join("judge.md"),
+        "---\nid: judge\nmodel: sonnet\ntools: [Read]\n---\nRIGGERTEST_ADJUDICATOR: adjudicate \
+         it.\n",
+    )
+    .unwrap();
+
+    // Candidate 0 uses the unit's CANONICAL deterministic worktree/branch (the same dir a
+    // single-lane unit would use) - known up front so the gate script can target it directly,
+    // the "out-of-band actor deletes the worktree" shape this arm guards against.
+    let wt_dir0 = root.join(".rigger").join("tmp").join("rigger-wt-solo");
+    let wt_dir0_str = wt_dir0.to_str().unwrap();
+    let flag = rigger.join("tmp").join("spec-postmerge-flag");
+    let flag_str = flag.to_str().unwrap();
+    let marker = root.join("spec-postmerge-deleted-marker.txt");
+    let marker_str = marker.to_str().unwrap();
+    // Candidate 1's own implementer (see the fake `claude` below) advances the BASE repo with
+    // an unrelated commit of its own as a side effect, once candidate 0's already ran - this
+    // is load-bearing for the content-address cache (spec 12, unit 1): candidate 0's merge
+    // would otherwise be a clean FAST-FORWARD (nothing else ever touches the base repo), whose
+    // merged tree is byte-identical to its own pre-merge worktree tree - a digest match that
+    // would CACHE-HIT the narrowed check's green verdict and never run the post-merge command
+    // at all. Phase A completes both candidates' implementer spawns before Phase B evaluates
+    // either one, so this advance is already in place by the time candidate 0 reaches its
+    // merge.
+    let root_str = root.to_str().unwrap();
+    let lane0_marker = rigger.join("tmp").join("spec-lane0-implemented-marker");
+    let lane0_marker_str = lane0_marker.to_str().unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        format!(
+            r#"name: ensureonparkspeculationpostmergetest
+defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok:
+    run: 'if [ -f "{flag}" ]; then rm -rf "{wtdir0}"; ( [ -d "{wtdir0}" ] && echo present || echo absent ) > "{marker}"; exit 1; else touch "{flag}"; fi'
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    speculation_width: 2
+    review:
+      adjudicator: judge
+"#,
+            flag = flag_str,
+            wtdir0 = wt_dir0_str,
+            marker = marker_str
+        ),
+    )
+    .unwrap();
+
+    let fakebin = tempfile::tempdir().unwrap();
+    let claude_path = fakebin.path().join("claude");
+    std::fs::write(
+        &claude_path,
+        format!(
+            r#"#!/bin/sh
+sp=""
+next=0
+for a in "$@"; do
+  if [ "$next" = "1" ]; then
+    sp="$a"
+    next=0
+  fi
+  if [ "$a" = "--system-prompt" ]; then
+    next=1
+  fi
+done
+case "$sp" in
+  *RIGGERTEST_ADJUDICATOR*)
+    echo '{{"verdict":"approve"}}'
+    ;;
+  *RIGGERTEST_WORKER*)
+    echo "pub fn work() {{}}" > work.rs
+    if [ -f "{lane0_marker}" ]; then
+      echo "unrelated base commit" > "{root_dir}/base-advanced.txt"
+      git -C "{root_dir}" add base-advanced.txt
+      git -C "{root_dir}" commit -q -m "unrelated base advance (lane 1 side effect)"
+    else
+      touch "{lane0_marker}"
+    fi
+    ;;
+  *)
+    echo "fake-claude: unrecognized system prompt: $sp" 1>&2
+    exit 1
+    ;;
+esac
+"#,
+            lane0_marker = lane0_marker_str,
+            root_dir = root_str,
+        ),
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&claude_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&claude_path, perms).unwrap();
+
+    let path_env = format!(
+        "{}:{}",
+        fakebin.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let (out, err, ok) = run_rigger_envs(root, &["run"], &[("PATH", &path_env)]);
+    assert!(
+        ok,
+        "a speculation group whose only winnable merges break post-merge must still reach a \
+         clean escalated fixpoint (exit 0), not a hard failure; stderr: {err}\nstdout: {out}"
+    );
+
+    // Non-vacuity: the post-merge re-gate's own command really did remove candidate 0's
+    // worktree wholesale at least once.
+    let marker_content = std::fs::read_to_string(&marker).unwrap_or_default();
+    assert_eq!(
+        marker_content.trim(),
+        "absent",
+        "premise: the post-merge re-gate's own rm -rf must actually have removed the \
+         candidate worktree wholesale, or this test proves nothing about a restore: \
+         {marker_content:?}"
+    );
+
+    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    let events = store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap();
+
+    // The group really escalated (no candidate's merge survived its post-merge re-gate) - the
+    // terminal state this test's premise depends on.
+    assert!(
+        events
+            .iter()
+            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_ESCALATED),
+        "premise: a speculation group whose every winnable merge breaks post-merge must \
+         escalate the unit, or this test proves nothing about the blocked arm; events: \
+         {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_INTEGRATED),
+        "no candidate may integrate when every merge broke post-merge"
+    );
+
+    // Every UnitFailed this run recorded (candidate 0's post-merge block, and candidate 1's
+    // own if it also reached the same door) carries a real 40-hex worktree sha - stamped
+    // AFTER a re-assert restores what the post-merge re-gate's own spawn just deleted, never
+    // a snapshot taken during the deletion window. At least candidate 0's own (attempts:1)
+    // must be present.
+    let failed: Vec<_> = events
+        .iter()
+        .filter(|e| e.type_ == rigger::ledger::TYPE_UNIT_FAILED)
+        .collect();
+    assert!(
+        !failed.is_empty(),
+        "the blocked post-merge merge(s) must record at least one UnitFailed; events: \
+         {events:?}"
+    );
+    assert!(
+        failed
+            .iter()
+            .any(|e| String::from_utf8_lossy(&e.data).contains(r#""attempts":1"#)),
+        "candidate 0's own post-merge block must record a UnitFailed at attempts:1; events: \
+         {events:?}"
+    );
+    for e in &failed {
+        let sha = e
+            .meta
+            .get(rigger::conductor::META_WORKTREE_SHA)
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(
+            sha.len(),
+            40,
+            "every post-merge-blocked UnitFailed's worktree_sha must be a real 40-hex sha, \
+             not the empty sentinel a read taken during the deletion window would silently \
+             stamp: {sha:?} event={e:?}"
+        );
+        assert!(
+            sha.chars().all(|c| c.is_ascii_hexdigit()),
+            "the stamped sha must be real hex: {sha:?}"
+        );
+    }
+}
+
 /// Spec 50, criterion 2 (the REGISTRY lifecycle): `rigger step` REGISTERS this instance in the
 /// machine-global state directory - the project root plus a CREDENTIAL-FREE store identity, with a
 /// live heartbeat - so a machine-level dash can DISCOVER it without a coordination protocol. The
