@@ -3659,6 +3659,643 @@ stages:
     );
 }
 
+/// Spec 64, criterion 3, adjudication round 3 finding
+/// `adv-u3c3r3-reviewed-and-failed-sha-empty-sentinel-inversion` (UPHELD, approve-arm half,
+/// closed by round 4): round 2 fixed the empty-sha bug for the `verified` stamp
+/// (`step_restores_the_unit_worktree_a_gate_deletes_before_the_review_spawn` above), but
+/// left the SAME bug open at the `reviewed` stamp's own `head_sha_of` read. This proves the
+/// round-4 fix at the real-binary boundary, extending sha-stamp coverage from `verified` to
+/// `reviewed`, over a full three-tier panel with a between-`rigger-step` deletion repeated
+/// at every hand-off, so each restore is independently checked (dir existence, git
+/// registration, and HEAD-vs-branch-tip agreement) rather than trusted from one probe.
+///
+/// This does NOT discriminate round 4's specific NEW mechanism (the re-assert moved from
+/// one call before `review_unit` to one call per tier inside `run_reviewer`): every
+/// deletion here happens BETWEEN two `rigger step` processes, and `stage_worktree`'s
+/// pre-existing, already real-binary-tested adopt-or-create restore (round 1, see
+/// `step_restores_the_unit_worktree_a_gate_deletes_before_the_review_spawn`) runs once at
+/// the top of EVERY step invocation - healing any between-step deletion before review even
+/// begins, regardless of round 4. Verified empirically, not assumed: mutating OUT round 4's
+/// per-tier re-assert left this test GREEN (see the progress log and
+/// `run_end_to_end_restores_a_worktree_a_reviewer_agent_deletes_mid_review` below, which
+/// closes that specific gap through the synchronous CLI driver instead - the only path a
+/// deletion WITHIN one process, between two tiers, can occur through a real agent spawn).
+#[test]
+fn step_stamps_a_real_reviewed_sha_after_repeated_between_step_deletions() {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore};
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
+    )
+    .unwrap();
+    for (id, body) in [
+        ("a", "Review it."),
+        ("adv", "Try to break it."),
+        ("judge", "Adjudicate it."),
+    ] {
+        std::fs::write(
+            rigger.join("agents").join(format!("{id}.md")),
+            format!("---\nid: {id}\nmodel: sonnet\ntools: [Read]\n---\n{body}\n"),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: ensureonparktierstest
+defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok: { run: "true", kind: core }
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    on_pass: none
+    review:
+      lenses: [a]
+      adversary: adv
+      adjudicator: judge
+"#,
+    )
+    .unwrap();
+
+    let wt_dir = root.join(".rigger").join("tmp").join("rigger-wt-solo");
+
+    // Step 1: the implementer parks; its real, git-backed unit worktree is created now.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/implementer#0""#) && out.contains(r#""done":false"#),
+        "step 1 parks the implementer; got: {out:?}"
+    );
+    assert!(
+        wt_dir.exists(),
+        "premise: the unit worktree must exist after step 1: {}",
+        wt_dir.display()
+    );
+
+    // Write the implementer's "diff" directly into the worktree it was already handed, and
+    // commit it immediately - the same premise-defending mitigation the sibling tests above
+    // document in full (advances the unit branch past the run branch before the step-start
+    // sweep, which has no liveness conjunct yet, can see an undiverged tip).
+    std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
+    for args in [&["add", "-A"][..], &["commit", "-q", "-m", "wip"]] {
+        let ok = Command::new("git")
+            .args(args)
+            .current_dir(&wt_dir)
+            .status()
+            .expect("git must be runnable")
+            .success();
+        assert!(
+            ok,
+            "git {args:?} must succeed committing the test's setup diff"
+        );
+    }
+    let (_o, err, ok) = run_rigger(
+        root,
+        &["result", "solo/implementer#0", "implemented the unit"],
+    );
+    assert!(
+        ok,
+        "recording the implementer result must succeed; stderr: {err}"
+    );
+
+    // Step 2: the `ok` gate passes cleanly (no deletion of its own), and the review panel
+    // parks its FIRST tier, the lens.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the second step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/lens:a#0""#) && out.contains(r#""done":false"#),
+        "step 2 must park the lens; got: {out:?}\nstderr: {err}"
+    );
+    let (_o, err, ok) = run_rigger(root, &["result", "solo/lens:a#0", "reviewed: no blocker"]);
+    assert!(ok, "recording the lens result must succeed; stderr: {err}");
+
+    // OUT-OF-BAND DELETION 1: mimic an out-of-band actor removing the worktree in the real
+    // wall-clock gap between the lens tier resolving and the adversary tier's own spawn -
+    // exactly the window round 2's single before-`review_unit` re-assert left unprotected,
+    // and round 4's per-tier re-assert (moved into `run_reviewer`) now covers.
+    assert!(
+        wt_dir.exists(),
+        "premise: the worktree must exist before this deletion"
+    );
+    std::fs::remove_dir_all(&wt_dir).unwrap();
+    assert!(
+        !wt_dir.exists(),
+        "premise: the out-of-band deletion must actually have removed it"
+    );
+
+    // Step 3: the adversary tier's spawn must find the worktree RESTORED, not gone.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the third step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/adversary#0""#) && out.contains(r#""done":false"#),
+        "step 3 must park the adversary, finding the restored worktree, not collapse; got: \
+         {out:?}\nstderr: {err}"
+    );
+    assert!(
+        wt_dir.exists(),
+        "the adversary tier's spawn must find the unit worktree restored: {}",
+        wt_dir.display()
+    );
+    let list = git_out(root, &["worktree", "list", "--porcelain"])
+        .expect("git worktree list must succeed in the seeded repo");
+    assert!(
+        list.contains("rigger/u/solo"),
+        "the restored worktree must be REGISTERED with git again, not just a leftover dir: {list}"
+    );
+    let branch_tip = git_out(root, &["rev-parse", "rigger/u/solo"])
+        .expect("the unit branch must resolve a tip after the pre-gate commit");
+    let head_at_adversary = git_out(&wt_dir, &["rev-parse", "HEAD"])
+        .expect("the restored worktree must resolve its own HEAD");
+    assert_eq!(
+        head_at_adversary, branch_tip,
+        "the restored worktree must be checked out at the durable branch's actual tip"
+    );
+
+    let (_o, err, ok) = run_rigger(root, &["result", "solo/adversary#0", "tried and failed"]);
+    assert!(
+        ok,
+        "recording the adversary result must succeed; stderr: {err}"
+    );
+
+    // OUT-OF-BAND DELETION 2: the SAME window, one tier later - the adversary-to-adjudicator
+    // hand-off. Round 4's fix is a per-tier re-assert inside the ONE shared `run_reviewer`
+    // authority, so this must self-heal exactly like deletion 1 did, not just the second tier.
+    std::fs::remove_dir_all(&wt_dir).unwrap();
+    assert!(
+        !wt_dir.exists(),
+        "premise: the second out-of-band deletion must have removed it"
+    );
+
+    // Step 4: the adjudicator tier's spawn must ALSO find the worktree restored.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the fourth step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/adjudicator#0""#) && out.contains(r#""done":false"#),
+        "step 4 must park the adjudicator, finding the restored worktree; got: {out:?}\nstderr: \
+         {err}"
+    );
+    assert!(
+        wt_dir.exists(),
+        "the adjudicator tier's spawn must ALSO find the unit worktree restored, proving the \
+         re-assert runs before EVERY tier's spawn, not only the one right after the lens: {}",
+        wt_dir.display()
+    );
+    let list = git_out(root, &["worktree", "list", "--porcelain"])
+        .expect("git worktree list must succeed in the seeded repo");
+    assert!(
+        list.contains("rigger/u/solo"),
+        "the twice-restored worktree must still be REGISTERED with git: {list}"
+    );
+
+    let (_o, err, ok) = run_rigger(
+        root,
+        &["result", "solo/adjudicator#0", r#"{"verdict":"approve"}"#],
+    );
+    assert!(
+        ok,
+        "recording the adjudicator's approve must succeed; stderr: {err}"
+    );
+
+    // OUT-OF-BAND DELETION 3: closes the sibling finding's approve-arm half - the window
+    // between the adjudicator's own spawn returning approved and the `reviewed` event's
+    // `worktree_sha` stamp being read, which round 2 already fixed for the sibling
+    // `verified` stamp but round 3 found unfixed here.
+    std::fs::remove_dir_all(&wt_dir).unwrap();
+    assert!(
+        !wt_dir.exists(),
+        "premise: the third out-of-band deletion must have removed it"
+    );
+
+    // Step 5: the approve folds through (`on_pass: none`, so the unit reaches `reviewed`
+    // and stops - no further gate/integrate door to cross).
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok,
+        "the fifth step must succeed - a missing self-heal here would surface as a hard \
+         error reading the deleted tree's HEAD; stderr: {err}\nstdout: {out:?}"
+    );
+    assert!(
+        out.contains(r#""done":true"#),
+        "the reviewed, unmerged unit must reach a clean fixpoint; got: {out:?}"
+    );
+    // Note: `wt_dir` is gone again by now - a genuinely TERMINAL (non-parked) return tears
+    // the worktree down as ordinary end-of-stage cleanup (`run_stage`, unconditional on any
+    // non-parked result), unrelated to ensure-on-park. What this step must have done BEFORE
+    // that teardown is restore the tree long enough to stamp a real `reviewed_sha` - checked
+    // below via the recorded event, the only outside-observable evidence of that window.
+
+    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    let events = store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap();
+    let reviewed = events
+        .iter()
+        .find(|e| {
+            e.type_ == rigger::ledger::TYPE_UNIT_STATUS
+                && String::from_utf8_lossy(&e.data).contains(r#""status":"reviewed"#)
+        })
+        .expect("a reviewed status must have been recorded for the unit");
+    let reviewed_sha = reviewed
+        .meta
+        .get(rigger::conductor::META_WORKTREE_SHA)
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        reviewed_sha.len(),
+        40,
+        "the reviewed event's worktree_sha must be a real 40-hex sha, not empty - it must be \
+         stamped AFTER a re-assert restores whatever the adjudicator's own spawn (or an \
+         out-of-band actor) deleted, not a snapshot taken during the deletion window: \
+         {reviewed_sha:?}"
+    );
+    assert!(
+        reviewed_sha.chars().all(|c| c.is_ascii_hexdigit()),
+        "the stamped sha must be real hex: {reviewed_sha:?}"
+    );
+    assert_eq!(
+        reviewed_sha, branch_tip,
+        "the stamped sha must be the durable branch's actual tip - the RESTORED tree's real \
+         HEAD, not a snapshot taken during the deletion window"
+    );
+}
+
+/// Mirrors `step_stamps_a_real_reviewed_sha_after_repeated_between_step_deletions` above for
+/// the REJECT arm (`run_single_stage`'s `failed_sha` stamp on the review-reject
+/// `UnitFailed`, `adv-u3c3r3-reviewed-and-failed-sha-empty-sentinel-inversion`'s second
+/// sibling site, closed by round 4): the same empty-sha bug survives on a reject exactly as
+/// on an approve - the fold this field feeds (spec 11 unit 1's flip-flop detection) needs it
+/// real on EITHER verdict. Same scope note as the sibling test: this proves the STAMP is
+/// correct after a between-step restore (extending real-binary sha coverage to
+/// `failed_sha`), not round 4's specific per-tier mechanism - see that test's doc comment
+/// for why a between-step deletion cannot discriminate the two, and
+/// `run_end_to_end_restores_a_worktree_a_reviewer_agent_deletes_mid_review` for the test
+/// that does. The implementer's own regression
+/// (`failed_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored`,
+/// `conductor.rs`'s `mod tests`) proves the algorithm in-process; this drives a REAL
+/// adjudicator to a REJECT verdict through the real binary, deletes the worktree directly
+/// (out-of-band) between the recorded reject and the next step, and proves the resulting
+/// `UnitFailed` event's
+/// `worktree_sha` is a real 40-hex sha of the restored tree, never the empty sentinel a
+/// pre-round-4 binary would have stamped.
+#[test]
+fn step_stamps_a_real_failed_sha_after_a_deletion_before_the_reject_stamp() {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore};
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("agents").join("judge.md"),
+        "---\nid: judge\nmodel: sonnet\ntools: [Read]\n---\nAdjudicate it.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: ensureonparkfailedshatest
+defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok: { run: "true", kind: core }
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    on_pass: none
+    review:
+      adjudicator: judge
+"#,
+    )
+    .unwrap();
+
+    let wt_dir = root.join(".rigger").join("tmp").join("rigger-wt-solo");
+
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/implementer#0""#) && out.contains(r#""done":false"#),
+        "step 1 parks the implementer; got: {out:?}"
+    );
+
+    std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
+    for args in [&["add", "-A"][..], &["commit", "-q", "-m", "wip"]] {
+        let ok = Command::new("git")
+            .args(args)
+            .current_dir(&wt_dir)
+            .status()
+            .expect("git must be runnable")
+            .success();
+        assert!(
+            ok,
+            "git {args:?} must succeed committing the test's setup diff"
+        );
+    }
+    let (_o, err, ok) = run_rigger(
+        root,
+        &["result", "solo/implementer#0", "implemented the unit"],
+    );
+    assert!(
+        ok,
+        "recording the implementer result must succeed; stderr: {err}"
+    );
+
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the second step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/adjudicator#0""#) && out.contains(r#""done":false"#),
+        "step 2 must park the adjudicator; got: {out:?}\nstderr: {err}"
+    );
+
+    let (_o, err, ok) = run_rigger(
+        root,
+        &["result", "solo/adjudicator#0", r#"{"verdict":"reject"}"#],
+    );
+    assert!(
+        ok,
+        "recording the adjudicator's reject must succeed; stderr: {err}"
+    );
+
+    // OUT-OF-BAND DELETION: the window between the adjudicator's own spawn returning
+    // reject and the `failed_sha` read in `run_single_stage`'s remediation fall-through.
+    assert!(
+        wt_dir.exists(),
+        "premise: the worktree must exist before this deletion"
+    );
+    std::fs::remove_dir_all(&wt_dir).unwrap();
+    assert!(
+        !wt_dir.exists(),
+        "premise: the out-of-band deletion must actually have removed it"
+    );
+
+    // Step 3: the reject folds through remediation (a fresh implementer attempt parks) -
+    // either way this step must not collapse, and the UnitFailed event it records along the
+    // way must carry a real sha.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok,
+        "the third step must succeed - a missing self-heal here would surface as a hard \
+         error reading the deleted tree's HEAD; stderr: {err}\nstdout: {out:?}"
+    );
+
+    // The restored tree's own HEAD is the independent, outside-git ground truth for what
+    // the failed_sha stamp should read, read immediately after step 3 returns (before any
+    // further attempt has a chance to write to the same dir).
+    let head_after = git_out(&wt_dir, &["rev-parse", "HEAD"])
+        .expect("the restored worktree must resolve its own HEAD after step 3");
+
+    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    let events = store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap();
+    let failed = events
+        .iter()
+        .find(|e| e.type_ == rigger::ledger::TYPE_UNIT_FAILED)
+        .expect("a review-reject UnitFailed must have been recorded");
+    let failed_sha = failed
+        .meta
+        .get(rigger::conductor::META_WORKTREE_SHA)
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        failed_sha.len(),
+        40,
+        "the failed event's worktree_sha must be a real 40-hex sha, not empty - it must be \
+         stamped AFTER a re-assert restores the out-of-band-deleted tree, not a snapshot \
+         taken during the deletion window: {failed_sha:?}"
+    );
+    assert!(
+        failed_sha.chars().all(|c| c.is_ascii_hexdigit()),
+        "the stamped sha must be real hex: {failed_sha:?}"
+    );
+    assert_eq!(
+        failed_sha, head_after,
+        "the stamped sha must be the restored tree's actual HEAD, not a snapshot taken \
+         during the deletion window"
+    );
+}
+
+/// Spec 64, criterion 3, adjudication round 3 finding
+/// `adv-u3c3r3-ensure-present-covers-only-the-first-tier` (UPHELD, closed by round 4's
+/// `impl-u3c3-r4-reassert-centralized-in-run-reviewer`): the TRUE periphery of round 4's
+/// fix, not a restatement of it.
+///
+/// The window round 4 actually closes exists WITHIN one process, between two REAL
+/// synchronous agent spawns. The implementer's own in-crate regression
+/// (`review_tier_boundary_restores_a_worktree_a_prior_tier_deleted`, `conductor.rs`'s `mod
+/// tests`) proves the algorithm with a synchronous, single-process `Stub` driver whose OWN
+/// `spawn` call deletes the directory as a side effect. The stepwise/replay driver `rigger
+/// step` drives (every OTHER periphery test in this file) cannot reach this window: a
+/// genuinely NEW spawn always PARKS without touching the worktree, so every tier-to-tier
+/// hand-off crosses a real PROCESS boundary, and `stage_worktree`'s pre-existing,
+/// already-real-binary-tested adopt-or-create restore (round 1) runs once at the top of
+/// EVERY `rigger step` invocation - healing any out-of-band deletion BEFORE review even
+/// begins, regardless of round 4's fix. Verified empirically, not assumed: the sibling
+/// tests above document that they went GREEN under a mutation that disabled round 4's
+/// per-tier re-assert, before this test was written to close the actual gap.
+///
+/// This drives the REAL `cli::Driver` instead - the synchronous, subprocess-per-spawn path
+/// `rigger run` uses - with a fake `claude` executable substituted onto `PATH` (the same
+/// shimming technique `src/driver/cli.rs`'s own `spawn_shells_out_and_bridges_the_agents_
+/// emits` unit test uses for the driver alone, extended here through the whole compiled
+/// binary and a real git-backed unit worktree). The fake agent plays four roles, selected
+/// by a marker embedded in each agent's own persona (which `build_system_prompt` forwards
+/// verbatim into `--system-prompt`): the worker writes a file; the LENS - the review
+/// panel's own FIRST tier, standing in for the "review agents doing unprompted forensic
+/// self-repair" this spec's Goal section names as the motivating harm - deletes its own
+/// `$PWD` (the unit worktree) wholesale as a side effect of running, the identical shape
+/// `RecordingRunner::deleting_worktree` proves at the gate boundary but here at the
+/// review-TIER spawn boundary instead; the adversary and adjudicator behave normally. If
+/// `run_reviewer`'s per-tier re-assert does not run immediately before the ADVERSARY's
+/// spawn - the very next tier after the lens, in the SAME process - `Command::current_dir`
+/// on the now-missing directory fails at the OS boundary with a real ENOENT, which no
+/// sentinel arm in `run_stage` recognizes, and the whole `rigger run` process exits
+/// non-zero instead of completing.
+#[cfg(unix)]
+#[test]
+fn run_end_to_end_restores_a_worktree_a_reviewer_agent_deletes_mid_review() {
+    use std::os::unix::fs::PermissionsExt;
+
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore};
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nRIGGERTEST_WORKER: do the \
+         unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("agents").join("a.md"),
+        "---\nid: a\nmodel: sonnet\ntools: [Read]\n---\nRIGGERTEST_LENS_DELETE: review it.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("agents").join("adv.md"),
+        "---\nid: adv\nmodel: sonnet\ntools: [Read]\n---\nRIGGERTEST_ADVERSARY: try to break \
+         it.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("agents").join("judge.md"),
+        "---\nid: judge\nmodel: sonnet\ntools: [Read]\n---\nRIGGERTEST_ADJUDICATOR: adjudicate \
+         it.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: ensureonparkendtoendtest
+defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok: { run: "true", kind: core }
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    on_pass: none
+    review:
+      lenses: [a]
+      adversary: adv
+      adjudicator: judge
+"#,
+    )
+    .unwrap();
+
+    // A fake `claude` executable, substituted onto PATH ahead of the real system PATH. Its
+    // behavior is selected by a marker embedded in each agent's own persona (above), which
+    // the driver forwards verbatim into `--system-prompt`; the lens's own branch deletes
+    // its `$PWD` wholesale (mirroring a real gate's `rm -rf`, per the sibling gate-based
+    // tests above) before reporting, self-describing the deletion to `$RIGGERTEST_MARKER`
+    // (a location OUTSIDE the worktree the deletion itself never touches).
+    let fakebin = tempfile::tempdir().unwrap();
+    let claude_path = fakebin.path().join("claude");
+    std::fs::write(
+        &claude_path,
+        r#"#!/bin/sh
+sp=""
+next=0
+for a in "$@"; do
+  if [ "$next" = "1" ]; then
+    sp="$a"
+    next=0
+  fi
+  if [ "$a" = "--system-prompt" ]; then
+    next=1
+  fi
+done
+case "$sp" in
+  *RIGGERTEST_LENS_DELETE*)
+    d="$(pwd)"
+    cd / || exit 1
+    rm -rf "$d"
+    if [ -d "$d" ]; then echo present > "$RIGGERTEST_MARKER"; else echo absent > "$RIGGERTEST_MARKER"; fi
+    echo "reviewed: no blocker"
+    ;;
+  *RIGGERTEST_ADVERSARY*)
+    echo "tried and failed"
+    ;;
+  *RIGGERTEST_ADJUDICATOR*)
+    echo '{"verdict":"approve"}'
+    ;;
+  *RIGGERTEST_WORKER*)
+    echo "pub fn work() {}" > work.rs
+    ;;
+  *)
+    echo "fake-claude: unrecognized system prompt: $sp" 1>&2
+    exit 1
+    ;;
+esac
+"#,
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&claude_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&claude_path, perms).unwrap();
+
+    let marker = root.join("lens-deleted-marker.txt");
+    let path_env = format!(
+        "{}:{}",
+        fakebin.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["run"],
+        &[
+            ("PATH", &path_env),
+            ("RIGGERTEST_MARKER", marker.to_str().unwrap()),
+        ],
+    );
+    assert!(
+        ok,
+        "the end-to-end run must succeed - a missing per-tier self-heal surfaces as a real \
+         ENOENT spawning the adversary in the now-deleted worktree instead; stderr: {err}\n\
+         stdout: {out}"
+    );
+
+    // Non-vacuity: the lens's own fake-agent process really did delete the worktree
+    // wholesale, self-reported from a location outside the worktree the deletion itself
+    // never touches.
+    let marker_content = std::fs::read_to_string(&marker).unwrap_or_default();
+    assert_eq!(
+        marker_content.trim(),
+        "absent",
+        "premise: the lens's own process must actually have removed the worktree wholesale, \
+         or this test proves nothing about a restore: {marker_content:?}"
+    );
+
+    // The unit reached `reviewed`, not stuck, failed, or escalated - so the adversary and
+    // adjudicator tiers both really ran to completion in the SAME worktree the lens
+    // deleted, in the SAME process.
+    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    let events = store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap();
+    assert!(
+        events.iter().any(|e| {
+            e.type_ == rigger::ledger::TYPE_UNIT_STATUS
+                && String::from_utf8_lossy(&e.data).contains(r#""status":"reviewed"#)
+        }),
+        "the unit must self-heal the lens-deleted worktree before the adversary's own real \
+         subprocess spawn and reach `reviewed`, not collapse the run; events: {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_FAILED
+                || e.type_ == rigger::ledger::TYPE_UNIT_ESCALATED),
+        "the self-heal must land cleanly - no failed or escalated unit"
+    );
+}
+
 /// Spec 50, criterion 2 (the REGISTRY lifecycle): `rigger step` REGISTERS this instance in the
 /// machine-global state directory - the project root plus a CREDENTIAL-FREE store identity, with a
 /// live heartbeat - so a machine-level dash can DISCOVER it without a coordination protocol. The
