@@ -4447,7 +4447,7 @@ impl RunCtx<'_> {
                 // winner), so a speculating unit would report inflated review quality to the
                 // spec-13 self-improvement loop. A fold-neutral marker keeps the shared unit
                 // `Fresh` for resume while the metrics fold counts the reject.
-                self.record_speculation_reject(st, lane, &dir, &group)?;
+                self.record_speculation_reject(st, lane, &dir, &group, &candidates[i].wt)?;
                 continue; // rejected candidate loses; try the next candidate.
             }
             // A candidate that passed its narrowed gates AND the adjudicator. Assert the
@@ -4588,6 +4588,15 @@ impl RunCtx<'_> {
                 (META_SPEC_GROUP, group),
             ],
         )?;
+        // Ensure-on-park, defense in depth (spec 64 criterion 3, round 5,
+        // arch-u3c3r4-speculation-winner-sha-unguarded, UPHELD): the caller's own
+        // exhaustive gate run (real wall-clock time - a genuine cargo build/test) is the
+        // LAST thing that touches `dir` before this read, and for an `on_pass: none` unit
+        // there is no `integrate_and_emit` call in between to re-assert it - mirroring the
+        // identical bug class already fixed for the single-lane `verified`/`reviewed`/
+        // `failed` stamps. Re-assert right before the read, never relying on an earlier
+        // spawn-time re-assert to still be valid by the time this line runs.
+        candidate.wt.ensure_present()?;
         let winner_sha = worktree::head_sha_of(dir);
         self.emit_keyed_meta(
             &format!("{}/verified#{lane}", st.name),
@@ -4657,7 +4666,19 @@ impl RunCtx<'_> {
         lane: u32,
         dir: &str,
         group: &str,
+        // Ensure-on-park, defense in depth (spec 64 criterion 3, round 5): the candidate's
+        // OWN worktree, so this can re-assert immediately before its own `head_sha_of`
+        // read below - never inferred or reconstructed from `dir` alone.
+        wt: &Worktree,
     ) -> Result<(), Error> {
+        // Ensure-on-park, defense in depth (spec 64 criterion 3, round 5,
+        // arch-u3c3r4-speculation-reject-sha-unguarded, UPHELD): `review_unit` re-asserts
+        // before the adjudicator's OWN spawn, but that spawn is itself real wall-clock time
+        // in which its OWN side effect (or an out-of-band actor) could delete the tree
+        // AFTER it returns reject and BEFORE this read - the identical bug class already
+        // fixed for the single-lane `failed_sha` stamp, mirrored here for the speculation
+        // candidate's reject sibling.
+        wt.ensure_present()?;
         self.emit_keyed_meta(
             &format!("{}/spec-rejected#{lane}", st.name),
             ledger::TYPE_UNIT_STATUS,
@@ -22194,6 +22215,200 @@ mod tests {
         assert!(
             repo.path().join("work.rs").exists(),
             "the approved work must land in the base"
+        );
+    }
+
+    #[test]
+    fn speculation_lenses_restore_a_gate_deleted_worktree_without_racing_and_stamp_the_winner_sha()
+    {
+        // Spec 64 criterion 3, adjudication round 4
+        // (adv-u3c3r4-concurrent-lens-ensure-present-races-worktree-create,
+        // sdet-u3c3r4-concurrent-lenses-race-ensure-present-on-the-same-worktree,
+        // arch-u3c3r4-speculation-winner-sha-unguarded, all UPHELD). `run_speculation`'s
+        // phase B has NO single-threaded pre-review re-assert the way `run_single_stage`
+        // does (that guard lives only on the single-lane path) - so a candidate's narrowed
+        // gate deleting its worktree hands the concurrent lens fan-out a MISSING dir
+        // directly, and TWO real lens threads both call `ensure_present` on the SAME shared
+        // `&Worktree` at once. This drives that with this project's own real shape (>= 2
+        // lenses in one concurrency chunk, spec 64 c3 round 4's own remedy), proving the
+        // run completes with no git race, AND (the sibling finding) that
+        // `emit_speculation_winner_status`'s `winner_sha` - read after the LATER exhaustive
+        // gate ALSO deletes the tree, with no re-assert of its own before this fix - is a
+        // real 40-hex sha of the restored tree, never an empty sentinel.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lensA".into(), agent("lensA"));
+        cfg.agents.insert("lensB".into(), agent("lensB"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                // `none`: emit_speculation_winner_status runs directly after the
+                // exhaustive gate, with no integrate_and_emit re-assert in between - the
+                // exact unguarded window the arch finding names.
+                on_pass: "none".into(),
+                speculation_width: 2,
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lensA".into(), "lensB".into()],
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            output: r#"{"verdict":"approve"}"#.into(),
+            ..Stub::new()
+        };
+        let runner = RecordingRunner::deleting_worktree();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let result = run(&cfg, &deps);
+        assert!(
+            result.is_ok(),
+            "two concurrently-spawned lenses re-asserting the SAME gate-deleted speculation \
+             worktree must never race the underlying `git worktree add`: {:?}",
+            result.err()
+        );
+
+        assert!(
+            driver.spawned("lensA") && driver.spawned("lensB") && driver.spawned("judge"),
+            "premise: both lenses and the adjudicator must actually have run, or this test \
+             proves nothing"
+        );
+
+        // Candidate 0 uses the CANONICAL unit worktree dir/branch.
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let worktree = unit_worktree_dir(&scratch, "s");
+        let restored_sha = worktree::head_sha_of(&worktree);
+        assert_eq!(
+            restored_sha.len(),
+            40,
+            "premise: the worktree must actually be restored with a resolvable HEAD, or \
+             this test proves nothing: {restored_sha:?}"
+        );
+        assert!(
+            worktree_registered_on(&repo_path, &unit_branch("s")),
+            "the restored worktree must be a REGISTERED git worktree, not a leftover dir"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let verified = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"verified\"")
+            })
+            .expect("the deferred winner verified status must have been recorded");
+        let winner_sha = verified
+            .meta
+            .get(META_WORKTREE_SHA)
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(
+            winner_sha.len(),
+            40,
+            "the speculation winner's verified event must carry a real 40-hex worktree_sha, \
+             not empty - it must be stamped AFTER a re-assert restores whatever the \
+             exhaustive gate deleted, not a snapshot taken during the deletion window: \
+             {winner_sha:?}"
+        );
+        assert!(
+            winner_sha.chars().all(|c| c.is_ascii_hexdigit()),
+            "the stamped sha must be real hex: {winner_sha:?}"
+        );
+        assert_eq!(
+            winner_sha, restored_sha,
+            "the stamped sha must be the RESTORED tree's actual HEAD"
+        );
+    }
+
+    #[test]
+    fn speculation_reject_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored()
+    {
+        // Spec 64 criterion 3, adjudication round 4
+        // (arch-u3c3r4-speculation-reject-sha-unguarded, UPHELD): mirrors
+        // `failed_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored`
+        // (the single-lane sibling) for the speculation candidate REJECT arm -
+        // `record_speculation_reject`'s `worktree_sha` was read with no re-assert between
+        // the adjudicator's own spawn (which here deletes the tree as its side effect while
+        // still rejecting) and this read.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                speculation_width: 2,
+                review: crate::config::ReviewPanel {
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            output_by_agent: HashMap::from([(
+                "judge".to_string(),
+                r#"{"verdict":"reject"}"#.to_string(),
+            )]),
+            delete_dir_by_agent: ["judge".to_string()].into_iter().collect(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+
+        assert!(
+            driver.spawned("judge"),
+            "premise: the adjudicator must have run, or this test proves nothing"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let reject_with_sha = events.iter().find(|e| {
+            e.type_ == ledger::TYPE_UNIT_STATUS
+                && String::from_utf8_lossy(&e.data).contains(STATUS_SPECULATION_REJECTED)
+                && e.meta
+                    .get(META_WORKTREE_SHA)
+                    .is_some_and(|s| s.len() == 40 && s.chars().all(|c| c.is_ascii_hexdigit()))
+        });
+        assert!(
+            reject_with_sha.is_some(),
+            "a speculation-candidate review-reject must carry a real 40-hex worktree sha even \
+             when the adjudicator's own spawn deleted the tree as its side effect - it must \
+             be stamped AFTER a re-assert restores it, not a snapshot taken during the \
+             deletion window"
         );
     }
 
