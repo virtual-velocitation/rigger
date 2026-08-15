@@ -1050,6 +1050,14 @@ pub struct SpawnOpts {
     /// Empty for a stage with no criterion (a plan/canary spawn), which then serializes
     /// exactly as before - a purely additive field the blocking drivers ignore.
     pub title: String,
+    /// The resolved build environment (spec 65's ONE build-environment authority,
+    /// [`gate::BuildEnv::vars`]) - `(name, value)` env vars this spawn's agent process
+    /// must carry, so its OWN `cargo test`/`cargo build` invocations hit the same
+    /// wrapper cache under the same settings a gate build gets. Empty when no wrapper
+    /// is configured (today's ambient-environment behavior, unchanged). The blocking
+    /// cli driver applies every pair to its spawned `Command`; a driver with no
+    /// subprocess of its own (a test double) may ignore it.
+    pub env: Vec<(String, String)>,
 }
 
 /// AgentDriver spawns an agent to completion. The agent records events it emits
@@ -3332,6 +3340,11 @@ impl RunCtx<'_> {
             // construction if a reviewer ever were given a ladder.
             attempt,
             run_id: self.run_id.clone(),
+            // The ONE build-environment authority (spec 65): a reviewer verifying inside
+            // the unit's worktree gets the same wrapper/cache/incremental vars a gate
+            // build and the implementer got, so its own `cargo` invocations share the
+            // cache too.
+            env: self.build_env().vars().to_vec(),
         })
     }
 
@@ -3859,6 +3872,10 @@ impl RunCtx<'_> {
                             // unit 4) - the same `attempts` the alias stamp above uses.
                             attempt: attempts,
                             run_id: self.run_id.clone(),
+                            // The ONE build-environment authority (spec 65): the implementer's
+                            // own `cargo build`/`cargo test` invocations get the same
+                            // wrapper/cache/incremental vars a gate build gets.
+                            env: self.build_env().vars().to_vec(),
                         },
                         &emit,
                     )
@@ -4331,6 +4348,9 @@ impl RunCtx<'_> {
                         title: st.coverage.trim().to_string(),
                         attempt: lane,
                         run_id: self.run_id.clone(),
+                        // The ONE build-environment authority (spec 65): every speculation
+                        // candidate's own `cargo` invocations share the same wrapper cache.
+                        env: self.build_env().vars().to_vec(),
                     },
                     &emit,
                 )
@@ -5701,6 +5721,11 @@ impl RunCtx<'_> {
                     // attempt drives the planner's ladder rung exactly as a unit's
                     // remediation attempt drives its implementer's (spec 10 unit 4).
                     attempt: critique_attempt,
+                    // The ONE build-environment authority (spec 65): a planner is not
+                    // guaranteed to build, but carries the same resolved env uniformly
+                    // like every other spawn, so a planner that does explore via cargo
+                    // shares the cache too.
+                    env: self.build_env().vars().to_vec(),
                 },
                 &emit,
             )
@@ -5925,6 +5950,20 @@ impl RunCtx<'_> {
         }
     }
 
+    /// The resolved build environment for this run (spec 65's ONE build-environment
+    /// authority): re-derived from the committed `build.wrapper` / `build.cache_dir`
+    /// config each call rather than cached, since [`gate::BuildEnv::resolve`] is a
+    /// pure, cheap string operation - a single resolver, called from every site that
+    /// needs it, so a gate build ([`run_gates`](Self::run_gates),
+    /// [`run_deferred_gates`](Self::run_deferred_gates)) and an agent-spawn build
+    /// (every `SpawnOpts.env`) can never derive two disagreeing copies.
+    fn build_env(&self) -> gate::BuildEnv {
+        gate::BuildEnv::resolve(
+            &self.cfg.workflow.build.wrapper,
+            &self.cfg.workflow.build.cache_dir,
+        )
+    }
+
     /// Run a stage's inline gates for its `attempt`, returning whether they all passed
     /// and the compact evidence of any failure. Each gate's verdict is REPLAY-KEYED on
     /// the `(unit, attempt, gate)` coordinate (spec 04, criterion 4): the first step to
@@ -5956,6 +5995,10 @@ impl RunCtx<'_> {
         // `isolation: none` agent or a repo-less run) has no per-unit tree to isolate, so
         // `unit_cache_sibling` returns None and the gate inherits the ambient/shared target.
         let target = crate::worktree::unit_cache_sibling(dir).unwrap_or_default();
+        // The ONE build-environment authority (spec 65): resolved once per call and
+        // threaded to every gate this attempt runs, so they all build under the same
+        // wrapper/cache/incremental settings an agent-spawn build gets too.
+        let build_env = self.build_env();
         // The content address of this attempt's gate inputs (spec 12, unit 1): the git
         // tree-SHA of the committed worktree (the whole tree by default - unit 3 narrows it
         // to a gate's `inputs:`). Computed ONCE - every gate this attempt reads the same
@@ -6059,7 +6102,8 @@ impl RunCtx<'_> {
             // unit 2): a clean pass; a flaky/infra failure that reran and PASSED (a
             // FlakyVerdict pass-with-warning); or a real failure (product/flaky demote,
             // infra hold).
-            let (pass, flaky, ratchet, evidence) = self.run_gate_with_taxonomy(&g, dir, &target);
+            let (pass, flaky, ratchet, evidence) =
+                self.run_gate_with_taxonomy(&g, dir, &target, &build_env);
             // The compact gate evidence is threaded into the GateVerdict event payload
             // (item 3): a real run otherwise discarded it, so neither the ledger nor the
             // workflow driver ever saw WHY a gate passed or failed. `flaky` rides as the
@@ -6108,8 +6152,9 @@ impl RunCtx<'_> {
         g: &Gate,
         dir: &str,
         target: &str,
+        build_env: &gate::BuildEnv,
     ) -> (bool, bool, GateRatchet, String) {
-        let res = self.deps.gates.run(g, dir, target);
+        let res = self.deps.gates.run(g, dir, target, build_env);
         if res.pass {
             return (true, false, GateRatchet::CleanPass, res.evidence);
         }
@@ -6150,7 +6195,7 @@ impl RunCtx<'_> {
                 // unit's gate, never the wider wave.
                 std::thread::sleep(delay);
             }
-            let retry = self.deps.gates.run(g, dir, target);
+            let retry = self.deps.gates.run(g, dir, target, build_env);
             if retry.pass {
                 // MIXED: the gate failed then passed - a FlakyVerdict pass-with-warning.
                 let evidence = format!(
@@ -6314,8 +6359,10 @@ impl RunCtx<'_> {
                     // It measures the ONE integrated tree, so it keeps inheriting the
                     // shared build cache (empty target_dir) - a per-unit cache would be
                     // wrong here, and this is exactly the tree `rigger step`'s inline
-                    // courier gates also build against (Gap 19).
-                    let res = self.deps.gates.run(&g, "", "");
+                    // courier gates also build against (Gap 19). It still carries the ONE
+                    // build-environment authority's resolved wrapper/cache/incremental vars
+                    // (spec 65), same as every other gate this run's config resolves.
+                    let res = self.deps.gates.run(&g, "", "", &self.build_env());
                     // The deferred phase-boundary gate keeps its single-run semantics (no
                     // taxonomy RERUN): it measures the ONE integrated tree once, so its
                     // verdict carries no flaky annotation (a whole-tree deferred rerun is
@@ -21322,6 +21369,125 @@ mod tests {
         }
     }
 
+    /// A driver that records the `SpawnOpts.env` handed to each spawn (spec 65) - lets a
+    /// test assert the ONE build-environment authority reaches an agent spawn exactly as
+    /// it reaches a gate build.
+    struct EnvRecordingDriver {
+        envs: Mutex<Vec<Vec<(String, String)>>>,
+    }
+    impl EnvRecordingDriver {
+        fn new() -> Self {
+            EnvRecordingDriver {
+                envs: Mutex::new(Vec::new()),
+            }
+        }
+        fn envs(&self) -> Vec<Vec<(String, String)>> {
+            self.envs.lock().unwrap().clone()
+        }
+    }
+    impl AgentDriver for EnvRecordingDriver {
+        fn spawn(
+            &self,
+            _a: &AgentDef,
+            _prompt: &str,
+            opts: &SpawnOpts,
+            _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            self.envs.lock().unwrap().push(opts.env.clone());
+            Ok(AgentResult::default())
+        }
+    }
+
+    /// Every recorded call's `(name, value)` vars, in invocation order - the shape both
+    /// [`RecordingRunner::build_envs`] and [`EnvRecordingDriver::envs`] return.
+    type RecordedEnvs = Vec<Vec<(String, String)>>;
+
+    #[test]
+    fn one_build_environment_authority_reaches_both_a_gate_build_and_an_agent_spawn() {
+        // spec 65 c1's own Done-when, the reason this unit exists: with a wrapper
+        // configured, BOTH a gate build and an agent spawn's environment carry the SAME
+        // resolved wrapper/cache-dir/incremental-off vars - the ONE authority, never two
+        // independently-derived copies. With the default (no wrapper / `off`), NEITHER
+        // carries anything.
+        fn run_once(build: config::BuildConfig) -> (RecordedEnvs, RecordedEnvs) {
+            let repo = init_repo();
+            let mut cfg = Config::default();
+            cfg.agents.insert("a".into(), agent("a"));
+            cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+            cfg.workflow.build = build;
+            cfg.workflow.stages.insert(
+                "solo".into(),
+                Stage {
+                    name: "solo".into(),
+                    agent: "a".into(),
+                    gates: vec!["ok".into()],
+                    on_pass: "none".into(),
+                    ..Default::default()
+                },
+            );
+            let store = Store::open(":memory:").unwrap();
+            let driver = EnvRecordingDriver::new();
+            let runner = RecordingRunner::new(&[]);
+            let deps = Deps {
+                store: &store,
+                driver: &driver,
+                gates: &runner,
+                repo: repo.path().to_str().unwrap().to_string(),
+                grounder: None,
+                graph: None,
+                criteria: Vec::new(),
+            };
+            run(&cfg, &deps).unwrap();
+            (runner.build_envs(), driver.envs())
+        }
+
+        let configured = config::BuildConfig {
+            wrapper: "sccache".into(),
+            cache_dir: "/shared/build-cache".into(),
+        };
+        let want: HashMap<String, String> = [
+            ("RUSTC_WRAPPER".to_string(), "sccache".to_string()),
+            ("SCCACHE_DIR".to_string(), "/shared/build-cache".to_string()),
+            ("CARGO_INCREMENTAL".to_string(), "0".to_string()),
+        ]
+        .into_iter()
+        .collect();
+
+        let (gate_envs, spawn_envs) = run_once(configured);
+        assert!(!gate_envs.is_empty(), "the gate must have run");
+        for env in &gate_envs {
+            let got: HashMap<String, String> = env.iter().cloned().collect();
+            assert_eq!(
+                got, want,
+                "a configured wrapper must reach the gate build: {env:?}"
+            );
+        }
+        assert!(!spawn_envs.is_empty(), "the implementer must have spawned");
+        for env in &spawn_envs {
+            let got: HashMap<String, String> = env.iter().cloned().collect();
+            assert_eq!(
+                got, want,
+                "the SAME configured wrapper must reach the agent spawn: {env:?}"
+            );
+        }
+
+        // The default (no wrapper configured): neither site carries anything.
+        let (off_gate_envs, off_spawn_envs) = run_once(config::BuildConfig::default());
+        assert!(!off_gate_envs.is_empty(), "the gate must have run");
+        assert!(
+            off_gate_envs.iter().all(Vec::is_empty),
+            "no wrapper configured must inject nothing into the gate build: {off_gate_envs:?}"
+        );
+        assert!(
+            !off_spawn_envs.is_empty(),
+            "the implementer must have spawned"
+        );
+        assert!(
+            off_spawn_envs.iter().all(Vec::is_empty),
+            "no wrapper configured must inject nothing into the agent spawn: {off_spawn_envs:?}"
+        );
+    }
+
     #[test]
     fn a_units_per_unit_cache_is_reclaimed_when_its_worktree_is_removed() {
         // Gap 19 (the DOMINANT graceful path): a gate that runs INSIDE a unit's worktree
@@ -23562,7 +23728,13 @@ mod tests {
         evidence: String,
     }
     impl gate::Runner for FlakyGate {
-        fn run(&self, _g: &Gate, _dir: &str, _target: &str) -> gate::GateResult {
+        fn run(
+            &self,
+            _g: &Gate,
+            _dir: &str,
+            _target: &str,
+            _build_env: &gate::BuildEnv,
+        ) -> gate::GateResult {
             let n = self.runs.fetch_add(1, Ordering::SeqCst);
             if n < self.fail_first {
                 gate::GateResult {
@@ -24629,6 +24801,10 @@ mod tests {
         /// The CARGO_TARGET_DIR (`target_dir`) handed to each run, in invocation order -
         /// lets a test assert two units' gate environments never share a target (Gap 19).
         targets: Mutex<Vec<String>>,
+        /// The resolved [`gate::BuildEnv`] vars handed to each run, in invocation order
+        /// (spec 65) - lets a test assert the ONE build-environment authority reaches
+        /// every gate build.
+        build_envs: Mutex<Vec<Vec<(String, String)>>>,
         /// When set, a run with a non-empty `target_dir` MATERIALIZES that dir on disk (as a
         /// real cargo build would), so a graceful-lifecycle test can prove the per-unit cache
         /// is reclaimed when the unit's worktree is later removed (Gap 19).
@@ -24649,6 +24825,7 @@ mod tests {
             RecordingRunner {
                 calls: Mutex::new(Vec::new()),
                 targets: Mutex::new(Vec::new()),
+                build_envs: Mutex::new(Vec::new()),
                 materialize_cache: false,
                 fail: fail.iter().map(|s| s.to_string()).collect(),
                 delete_worktree_dir: false,
@@ -24677,11 +24854,24 @@ mod tests {
         fn targets(&self) -> Vec<String> {
             self.targets.lock().unwrap().clone()
         }
+        fn build_envs(&self) -> Vec<Vec<(String, String)>> {
+            self.build_envs.lock().unwrap().clone()
+        }
     }
     impl gate::Runner for RecordingRunner {
-        fn run(&self, g: &Gate, dir: &str, target: &str) -> gate::GateResult {
+        fn run(
+            &self,
+            g: &Gate,
+            dir: &str,
+            target: &str,
+            build_env: &gate::BuildEnv,
+        ) -> gate::GateResult {
             self.calls.lock().unwrap().push(g.id.clone());
             self.targets.lock().unwrap().push(target.to_string());
+            self.build_envs
+                .lock()
+                .unwrap()
+                .push(build_env.vars().to_vec());
             if self.materialize_cache && !target.is_empty() {
                 let _ = std::fs::create_dir_all(target);
                 let _ = std::fs::write(std::path::Path::new(target).join("built.rlib"), b"x");
@@ -24806,7 +24996,13 @@ mod tests {
         }
     }
     impl gate::Runner for FailFirstRunner {
-        fn run(&self, g: &Gate, _dir: &str, _target: &str) -> gate::GateResult {
+        fn run(
+            &self,
+            g: &Gate,
+            _dir: &str,
+            _target: &str,
+            _build_env: &gate::BuildEnv,
+        ) -> gate::GateResult {
             let mut calls = self.calls.lock().unwrap();
             let prior = calls.iter().filter(|c| **c == g.id).count();
             calls.push(g.id.clone());
@@ -27802,7 +27998,13 @@ mod tests {
         evidence: String,
     }
     impl gate::Runner for FailOneGate {
-        fn run(&self, g: &Gate, _dir: &str, _target: &str) -> gate::GateResult {
+        fn run(
+            &self,
+            g: &Gate,
+            _dir: &str,
+            _target: &str,
+            _build_env: &gate::BuildEnv,
+        ) -> gate::GateResult {
             if g.id == self.fail {
                 gate::GateResult {
                     pass: false,
@@ -28696,7 +28898,13 @@ mod tests {
         saw_dirty: std::sync::atomic::AtomicBool,
     }
     impl gate::Runner for CleanTreeGate {
-        fn run(&self, _g: &Gate, dir: &str, _target: &str) -> gate::GateResult {
+        fn run(
+            &self,
+            _g: &Gate,
+            dir: &str,
+            _target: &str,
+            _build_env: &gate::BuildEnv,
+        ) -> gate::GateResult {
             let out = std::process::Command::new("git")
                 .arg("-C")
                 .arg(dir)

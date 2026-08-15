@@ -28,7 +28,7 @@ use rigger::eventstore::{
     sqlite::{PrunedDerived, Store},
     Direction, Event, EventStore, ExpectedRevision, Filter,
 };
-use rigger::gate::{ExecRunner, Gate, GateResult, Runner};
+use rigger::gate::{BuildEnv, ExecRunner, Gate, GateResult, Runner};
 use rigger::grounder::Grounder;
 use rigger::ledger::{self, RunState};
 use rigger::metrics::{self, Metrics};
@@ -4600,7 +4600,7 @@ fn format_stats_diff(run_id: &str, rev: &str, base: &Metrics, cand: &Metrics) ->
 struct ReplayRunner;
 
 impl Runner for ReplayRunner {
-    fn run(&self, g: &Gate, _dir: &str, _target_dir: &str) -> GateResult {
+    fn run(&self, g: &Gate, _dir: &str, _target_dir: &str, _build_env: &BuildEnv) -> GateResult {
         GateResult {
             pass: false,
             evidence: format!(
