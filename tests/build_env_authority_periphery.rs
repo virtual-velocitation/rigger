@@ -95,6 +95,26 @@ fn as_map(env: &BuildEnv) -> std::collections::BTreeMap<String, String> {
     env.vars().iter().cloned().collect()
 }
 
+/// Serializes every test in this file that touches the REAL process environment:
+/// `build_env_resolve_falls_back_to_the_default_cache_dir_when_unset` transitively
+/// READS `XDG_STATE_HOME`/`HOME` through `BuildEnv::resolve`'s empty-`cache_dir`
+/// fallback (`gate::default_cache_dir`), and
+/// `one_build_environment_authority_reaches_a_real_gate_subprocess_and_a_real_agent_
+/// subprocess` WRITES via `std::env::remove_var`. `cargo test` runs both as concurrent
+/// threads within this one test binary by default; a concurrent env read racing a
+/// concurrent env write is a genuine hazard at the POSIX `setenv`/`getenv` level
+/// regardless of which keys either side touches (the same hazard `registry::
+/// state_home_from`'s own doc comment names as the reason it takes explicit values
+/// instead of reading ambient env itself). Held for the duration of each test that
+/// touches env, so the two can never interleave.
+static ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    ENV_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[test]
 fn build_config_round_trips_through_the_real_on_disk_loader_and_feeds_the_resolver() {
     // The configured case: a real `.rigger/workflow.yml` on disk, loaded through the
@@ -149,7 +169,10 @@ fn build_env_resolve_falls_back_to_the_default_cache_dir_when_unset() {
     // configured wrapper with an EMPTY cache_dir must still resolve a non-empty
     // `<WRAPPER>_DIR` (the documented `<state home>/rigger/build-cache` default, or the
     // documented bare-relative-name fallback in a truly homeless environment) rather
-    // than pointing the wrapper at nothing.
+    // than pointing the wrapper at nothing. This branch reads `XDG_STATE_HOME`/`HOME`
+    // (real ambient env), so it holds `ENV_TEST_LOCK` for the same reason the
+    // `remove_var` test below does - see that lock's doc comment.
+    let _guard = env_test_lock();
     let resolved = as_map(&BuildEnv::resolve("sccache", ""));
     let dir = resolved
         .get("SCCACHE_DIR")
@@ -311,7 +334,9 @@ fn one_build_environment_authority_reaches_a_real_gate_subprocess_and_a_real_age
     // inherited ambient value, not the authority correctly injecting nothing. Removed
     // from THIS process only, before either real subprocess is spawned, so every child
     // this test spawns starts from a deterministic baseline regardless of the
-    // operator's own shell.
+    // operator's own shell. Guarded by ENV_TEST_LOCK (see its doc comment) so this
+    // mutation never races the OTHER test in this file that reads ambient env.
+    let _guard = env_test_lock();
     std::env::remove_var("RUSTC_WRAPPER");
     std::env::remove_var("SCCACHE_DIR");
     std::env::remove_var("CARGO_INCREMENTAL");

@@ -189,12 +189,16 @@ pub fn auto_demote(g: &Gate, pass: bool) -> (Autonomy, bool) {
     }
 }
 
-/// BuildEnv is the ONE build-environment authority (spec 65): the env vars a single
-/// resolver derives from committed config and applies uniformly to EVERY build the
-/// loop runs - inline/deferred gate builds ([`ExecRunner::run`]) and agent-spawn
-/// builds (the agent driver's spawned process) - so a gate build and an agent's own
-/// `cargo test` invocation hit the same compilation cache under the same settings.
-/// One resolver, two injection sites; neither derives its own competing copy.
+/// BuildEnv is the ONE build-environment authority (spec 65): a single resolver
+/// derives the env vars from committed config and applies them everywhere a caller
+/// threads it through. Wired so far: inline/deferred gate builds ([`ExecRunner::run`])
+/// and the blocking `driver::cli` agent driver's spawned process (via
+/// `conductor::SpawnOpts`), so a gate build and that driver's own `cargo test`
+/// invocation hit the same compilation cache under the same settings. The turn-key
+/// `rigger workflow` Node-shim driver and `driver::replay`'s wire contract do not
+/// carry these vars yet - a disclosed, tracked gap for a follow-on unit, not
+/// something this resolver claims to reach today. One resolver, two wired
+/// injection sites; neither derives its own competing copy.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BuildEnv {
     vars: Vec<(String, String)>,
@@ -260,12 +264,19 @@ impl BuildEnv {
 
 /// The default shared build-cache location when `build.cache_dir` is unset:
 /// `<state home>/rigger/build-cache`, reusing the registry's own state-home
-/// authority so every project and worktree on the machine shares one cache absent
+/// precedence so every project and worktree on the machine shares one cache absent
 /// configuration (spec 65). Falls back to a bare relative name in a truly homeless
 /// environment (no `XDG_STATE_HOME`/`HOME`) - the wrapper still gets pointed
 /// SOMEWHERE consistent rather than left unset.
+///
+/// Reads `XDG_STATE_HOME`/`HOME` itself, once, right here, and hands them to
+/// [`crate::registry::state_home_from`] - the registry's PURE core - rather than
+/// calling the registry's own ambient-reading [`crate::registry::state_home`], so
+/// this stays the ONE place outside `registry.rs` that touches those two vars
+/// instead of hiding the read behind an opaque wrapper a caller cannot reason
+/// about.
 fn default_cache_dir() -> String {
-    crate::registry::state_home()
+    crate::registry::state_home_from(std::env::var_os("XDG_STATE_HOME"), std::env::var_os("HOME"))
         .map(|h| h.join("rigger").join("build-cache"))
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|| "rigger-build-cache".to_string())

@@ -106,7 +106,11 @@ pub fn state_home() -> Option<PathBuf> {
 /// The PURE core of [`state_home`] over explicit `XDG_STATE_HOME` / `HOME` values, so the
 /// precedence (XDG wins; an empty value is "unset") is unit-tested with no process-global env
 /// mutation - which would race the crate's other multi-threaded tests that read the environment.
-fn state_home_from(
+/// `pub(crate)` (not just test-visible) so any OTHER site in the crate that needs this same
+/// precedence over its own explicitly-read env values - [`crate::gate::default_cache_dir`] is
+/// the first - composes it directly instead of reaching for the ambient-reading [`state_home`]
+/// and duplicating this logic behind it.
+pub(crate) fn state_home_from(
     xdg: Option<std::ffi::OsString>,
     home: Option<std::ffi::OsString>,
 ) -> Option<PathBuf> {
