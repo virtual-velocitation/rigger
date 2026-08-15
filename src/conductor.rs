@@ -3398,8 +3398,9 @@ impl RunCtx<'_> {
     /// loop via `?` without touching any candidate's worktree, so it is already conservative);
     /// it passes a throwaway `AtomicBool` to satisfy this shared signature.
     // Each argument is a distinct, already-documented review input (stage, worktree dir,
-    // attempt, the two routing/deferral flags, the blast-radius view, and now the caller's
-    // any-parked out-param) - the same primitive-argument shape `reviewer_spawn_opts` and
+    // attempt, the two routing/deferral flags, the blast-radius view, the caller's
+    // any-parked out-param, and now the unit worktree object itself for the ensure-on-park
+    // re-assert) - the same primitive-argument shape `reviewer_spawn_opts` and
     // `run_reviewer` carry, allowed for the same reason.
     #[allow(clippy::too_many_arguments)]
     fn review_unit(
@@ -3411,6 +3412,12 @@ impl RunCtx<'_> {
         defer_reviewed: bool,
         blast_radius: &[String],
         any_parked: &std::sync::atomic::AtomicBool,
+        // Ensure-on-park, defense in depth (spec 64 criterion 3, round 4): the unit's
+        // OWN worktree `dir` names, threaded straight to `run_reviewer` (via each tier
+        // helper below) so it can re-assert immediately before EVERY tier's spawn, and
+        // read again immediately before this function's own `reviewed`-sha stamp -
+        // never inferred or reconstructed here.
+        wt: Option<&Worktree>,
     ) -> Result<ReviewOutcome, Error> {
         // Risk-tiered review depth (spec 03 / spec 13 unit 4): route this unit to the
         // LIGHT or FULL panel from its observable risk - the grounded blast-radius size,
@@ -3438,12 +3445,12 @@ impl RunCtx<'_> {
             // back after `run_single_stage` returns, so the unit's own worktree survives a
             // lens park even when a co-chunked sibling's genuine error is what this call's
             // `?` propagates below.
-            self.run_review_agents_concurrently(st, &lenses, dir, attempt, any_parked)?;
+            self.run_review_agents_concurrently(st, &lenses, dir, attempt, any_parked, wt)?;
         }
         // TIER 2: the adversary grounds AFTER the lenses, so `graph_context` surfaces
         // their findings; it tries to prove them wrong and emits its own findings.
         if !adversary.is_empty() {
-            self.run_adversary(st, &adversary, dir, attempt)?;
+            self.run_adversary(st, &adversary, dir, attempt, wt)?;
         }
         if adjudicator.is_empty() {
             return Ok(ReviewOutcome::approved(String::new()));
@@ -3451,7 +3458,7 @@ impl RunCtx<'_> {
         // TIER 3: the adjudicator grounds last, reads the lenses' and adversary's
         // findings from the graph, and renders the gating verdict.
         let (approved, reason, adj_resolved) =
-            self.run_adjudicator(st, &adjudicator, dir, attempt)?;
+            self.run_adjudicator(st, &adjudicator, dir, attempt, wt)?;
         // A COMPENSATION target (spec 12, unit 4): the verdict may name a PRIOR integrated
         // unit as the real defect source, INDEPENDENTLY of whether it approves this unit.
         // Carried on the outcome so the run loop can roll that unit back after the wave.
@@ -3470,6 +3477,19 @@ impl RunCtx<'_> {
                 outcome.compensate = compensate;
                 outcome.adj_resolved = adj_resolved;
                 return Ok(outcome);
+            }
+            // Ensure-on-park, defense in depth (spec 64 criterion 3, round 4,
+            // adv-u3c3r3-reviewed-and-failed-sha-empty-sentinel-inversion, UPHELD):
+            // `run_reviewer` re-asserted before the adjudicator's OWN spawn above, but
+            // that spawn is itself real wall-clock time in which its OWN side effect (or
+            // an out-of-band actor) could delete the tree AFTER it returns approved and
+            // BEFORE the sha read immediately below - the identical bug class round 2
+            // already fixed for the `verified` stamp (the re-assert right before ITS own
+            // `head_sha_of` read, in `run_single_stage`), mirrored here right before this
+            // stamp's own read, never relying on a spawn-time re-assert to still be valid
+            // by the time this line runs.
+            if let Some(w) = wt {
+                w.ensure_present()?;
             }
             // The adjudicator's verdict reason is folded into the unit's `reviewed`
             // evidence (item 4). Replay-keyed on unit + attempt: a repo-less unit that
@@ -3635,6 +3655,17 @@ impl RunCtx<'_> {
                 // do NOT integrate a failing tree. Record the failure so the unit re-enters
                 // its lifecycle next step rather than wedging forever on a `reviewed` status
                 // it can never safely merge.
+                //
+                // Ensure-on-park, defense in depth (spec 64 criterion 3, round 6,
+                // sdet-u3c3r5-resumed-reviewed-gate-failure-failed-sha-still-empty-sentinel,
+                // UPHELD): the exhaustive gate run just above is real wall-clock time (a
+                // genuine cargo build/test), the last thing that touches `dir` before this
+                // read, and this arm returns BEFORE ever reaching `integrate_and_emit`'s own
+                // centralized re-assert - so nothing else protects this read. Mirrors the
+                // identical fix already applied to every sibling stamp in this unit.
+                if let Some(w) = wt {
+                    w.ensure_present()?;
+                }
                 let failed_sha = worktree::head_sha_of(dir);
                 self.emit_meta(
                     ledger::TYPE_UNIT_FAILED,
@@ -3655,6 +3686,16 @@ impl RunCtx<'_> {
                 // back; record the failure so the unit re-enters its lifecycle next step and
                 // re-implements against the changed world, rather than wedging on a `reviewed`
                 // status it can never safely merge.
+                //
+                // Ensure-on-park, defense in depth (spec 64 criterion 3, round 6,
+                // adv-u3c3r5-two-more-unguarded-empty-sha-siblings, UPHELD): the post-merge
+                // re-gate that produced this `blocked` result runs `GateSelection::PostMerge`
+                // against `self.deps.repo`, never re-touching `dir` - so `integrate_and_emit`'s
+                // own internal re-assert (which ran BEFORE that re-gate) cannot cover this
+                // read. Re-assert immediately before it, same as every sibling site.
+                if let Some(w) = wt {
+                    w.ensure_present()?;
+                }
                 let failed_sha = worktree::head_sha_of(dir);
                 self.emit_meta(
                     ledger::TYPE_UNIT_FAILED,
@@ -3922,6 +3963,23 @@ impl RunCtx<'_> {
                 let gate_outcome =
                     self.run_gates(st, dir, attempts, GateSelection::Narrowed(&blast_radius))?;
                 if gate_outcome.pass {
+                    // Ensure-on-park, defense in depth (spec 64 criterion 3): `stage_worktree`
+                    // asserted this worktree exists exactly ONCE, before this call began - the
+                    // gates that just ran above are real wall-clock time (a genuine cargo
+                    // build/test), the exact window in which an out-of-band actor could delete
+                    // it before the review tier's spawns below consume it. Re-assert now, right
+                    // before handing it out again, with the SAME deterministic adopt-or-create
+                    // machinery `stage_worktree` already uses - a no-op when nothing disturbed
+                    // it (see [`Worktree::ensure_present`]). This MUST run before the sha stamp
+                    // immediately below: a gate that deleted the worktree as its own side
+                    // effect (proven live above) would otherwise leave `head_sha_of` reading a
+                    // directory that does not exist yet, silently stamping an EMPTY sha
+                    // (`unwrap_or_default`) instead of the tree the review tier is about to
+                    // judge (adj-u3c3 round-2 reject: sdet-u3c3-verified-sha-stamped-before-
+                    // restore).
+                    if let Some(w) = wt {
+                        w.ensure_present()?;
+                    }
                     // The verified status carries the gate evidence (item 4): each
                     // gate that ran summarized for the ledger's per-unit evidence.
                     // Replay-keyed on unit + attempt so a re-step past this unit's
@@ -3929,9 +3987,10 @@ impl RunCtx<'_> {
                     // still an event of the implementer spawn, so it carries the same
                     // requested alias and resolved id as the green status (spec 05 line 52).
                     // The worktree HEAD the tiers are about to judge (spec 11, unit 1):
-                    // the implementer's committed tree (committed above, before gating),
-                    // stamped so a later reject/approve on the SAME sha reads as a
-                    // flip-flop. Empty (omitted) on a repo-less unit with no worktree.
+                    // the implementer's committed tree (committed above, before gating,
+                    // and just re-asserted present by `ensure_present` above), stamped so
+                    // a later reject/approve on the SAME sha reads as a flip-flop. Empty
+                    // (omitted) on a repo-less unit with no worktree.
                     let reviewed_sha = worktree::head_sha_of(dir);
                     self.emit_keyed_meta(
                         &format!("{}/verified#{attempts}", st.name),
@@ -3960,6 +4019,7 @@ impl RunCtx<'_> {
                         false,
                         &radius.safe,
                         any_parked,
+                        wt,
                     )?;
                     // A contradiction against a PRIOR integrated unit (spec 12, unit 4): the
                     // adjudicator named another, already-integrated unit as the real defect
@@ -4081,6 +4141,16 @@ impl RunCtx<'_> {
 
             let rem = safety::remediate(attempts, self.max_retries());
             attempts = rem.attempts;
+            // Ensure-on-park, defense in depth (spec 64 criterion 3, round 4,
+            // adv-u3c3r3-reviewed-and-failed-sha-empty-sentinel-inversion, UPHELD): the
+            // SAME bug class the `reviewed` stamp above now guards against - a review
+            // tier's own spawn (most reachably the adjudicator's, on the reject arm this
+            // stamp is reached from) could have deleted the tree as its side effect AFTER
+            // `run_reviewer`'s per-spawn re-assert ran and BEFORE this read. Re-assert
+            // immediately before it, mirroring the `verified` stamp's fix.
+            if let Some(w) = wt {
+                w.ensure_present()?;
+            }
             // Stamp the reviewed worktree sha (spec 11, unit 1): on a review reject this
             // is the sha the tiers judged, so the flip-flop fold can pair it with a later
             // approve on the SAME sha. Harmless on a gate/spawn failure (the fold only
@@ -4358,8 +4428,16 @@ impl RunCtx<'_> {
             // loops, so every candidate's worktree already survives regardless. The signal
             // has no consumer to correct here.
             let lane_any_parked = std::sync::atomic::AtomicBool::new(false);
-            let review =
-                self.review_unit(st, &dir, lane, false, true, &radius.safe, &lane_any_parked)?;
+            let review = self.review_unit(
+                st,
+                &dir,
+                lane,
+                false,
+                true,
+                &radius.safe,
+                &lane_any_parked,
+                Some(&candidates[i].wt),
+            )?;
             // A candidate's review may name a PRIOR integrated unit as the real defect source
             // (spec 12, unit 4), independent of whether it approves this candidate: queue the
             // rollback exactly as the single-lane path does, so the reverse gear is not lost.
@@ -4390,7 +4468,7 @@ impl RunCtx<'_> {
                 // winner), so a speculating unit would report inflated review quality to the
                 // spec-13 self-improvement loop. A fold-neutral marker keeps the shared unit
                 // `Fresh` for resume while the metrics fold counts the reject.
-                self.record_speculation_reject(st, lane, &dir, &group)?;
+                self.record_speculation_reject(st, lane, &dir, &group, &candidates[i].wt)?;
                 continue; // rejected candidate loses; try the next candidate.
             }
             // A candidate that passed its narrowed gates AND the adjudicator. Assert the
@@ -4437,6 +4515,16 @@ impl RunCtx<'_> {
                 // `Reviewed`/`Verified`), so a resume RE-ENTERS `run_speculation` instead of
                 // mis-routing to the review-skipping single-lane `Reviewed` path on the canonical
                 // lane.
+                //
+                // Ensure-on-park, defense in depth (spec 64 criterion 3, round 6,
+                // adv-u3c3r5-two-more-unguarded-empty-sha-siblings, UPHELD): the exhaustive
+                // post-merge re-gate that produced this `blocked` result runs against
+                // `self.deps.repo`, never re-touching `candidates[i].wt.dir` - so
+                // `integrate_and_emit`'s own internal re-assert (which ran BEFORE that
+                // re-gate) cannot cover this read. Re-assert immediately before it, matching
+                // the identical guard `emit_speculation_winner_status` already uses on this
+                // same candidate below.
+                candidates[i].wt.ensure_present()?;
                 let failed_sha = worktree::head_sha_of(&dir);
                 self.emit_meta(
                     ledger::TYPE_UNIT_FAILED,
@@ -4531,6 +4619,15 @@ impl RunCtx<'_> {
                 (META_SPEC_GROUP, group),
             ],
         )?;
+        // Ensure-on-park, defense in depth (spec 64 criterion 3, round 5,
+        // arch-u3c3r4-speculation-winner-sha-unguarded, UPHELD): the caller's own
+        // exhaustive gate run (real wall-clock time - a genuine cargo build/test) is the
+        // LAST thing that touches `dir` before this read, and for an `on_pass: none` unit
+        // there is no `integrate_and_emit` call in between to re-assert it - mirroring the
+        // identical bug class already fixed for the single-lane `verified`/`reviewed`/
+        // `failed` stamps. Re-assert right before the read, never relying on an earlier
+        // spawn-time re-assert to still be valid by the time this line runs.
+        candidate.wt.ensure_present()?;
         let winner_sha = worktree::head_sha_of(dir);
         self.emit_keyed_meta(
             &format!("{}/verified#{lane}", st.name),
@@ -4600,7 +4697,19 @@ impl RunCtx<'_> {
         lane: u32,
         dir: &str,
         group: &str,
+        // Ensure-on-park, defense in depth (spec 64 criterion 3, round 5): the candidate's
+        // OWN worktree, so this can re-assert immediately before its own `head_sha_of`
+        // read below - never inferred or reconstructed from `dir` alone.
+        wt: &Worktree,
     ) -> Result<(), Error> {
+        // Ensure-on-park, defense in depth (spec 64 criterion 3, round 5,
+        // arch-u3c3r4-speculation-reject-sha-unguarded, UPHELD): `review_unit` re-asserts
+        // before the adjudicator's OWN spawn, but that spawn is itself real wall-clock time
+        // in which its OWN side effect (or an out-of-band actor) could delete the tree
+        // AFTER it returns reject and BEFORE this read - the identical bug class already
+        // fixed for the single-lane `failed_sha` stamp, mirrored here for the speculation
+        // candidate's reject sibling.
+        wt.ensure_present()?;
         self.emit_keyed_meta(
             &format!("{}/spec-rejected#{lane}", st.name),
             ledger::TYPE_UNIT_STATUS,
@@ -4760,9 +4869,13 @@ impl RunCtx<'_> {
             // and the adversary's findings from the graph, and its verdict gates the
             // stage. So the three tiers inform each other via the graph, not via the
             // conductor splicing one agent's stdout into another's prompt.
-            self.run_review_agents_concurrently(st, &lenses, dir, attempts, any_lens_parked)?;
+            // `None`: this throwaway review-only worktree keeps its OWN create/discard
+            // lifecycle (see this function's own doc comment), never the durable unit
+            // worktree `run_reviewer`'s ensure-on-park re-assert (spec 64 criterion 3)
+            // guards - unchanged by that fix.
+            self.run_review_agents_concurrently(st, &lenses, dir, attempts, any_lens_parked, None)?;
             if !st.adversary.is_empty() {
-                self.run_adversary(st, &st.adversary, dir, attempts)?;
+                self.run_adversary(st, &st.adversary, dir, attempts, None)?;
             }
             // The neutral adjudicator's verdict gates the stage (§3.2), fail-closed:
             // it approves ONLY on an explicit `approve`, blocking integration
@@ -4770,7 +4883,7 @@ impl RunCtx<'_> {
             let (approved, reason, adj_resolved) = if st.adjudicator.is_empty() {
                 (true, String::new(), String::new())
             } else {
-                self.run_adjudicator(st, &st.adjudicator, dir, attempts)?
+                self.run_adjudicator(st, &st.adjudicator, dir, attempts, None)?
             };
 
             // A standalone review stage integrates no code of its own, so there is nothing to
@@ -4908,6 +5021,7 @@ impl RunCtx<'_> {
         dir: &str,
         attempt: u32,
         any_parked: &std::sync::atomic::AtomicBool,
+        wt: Option<&Worktree>,
     ) -> Result<(), Error> {
         // Bounded fan-out pool (§6): run the lenses in chunks of at most
         // MAX_CONCURRENCY, each chunk a scoped thread group. Every lens still runs;
@@ -4916,7 +5030,7 @@ impl RunCtx<'_> {
             let mut chunk_results: Vec<Result<(), Error>> = std::thread::scope(|s| {
                 let handles: Vec<_> = chunk
                     .iter()
-                    .map(|a| s.spawn(move || self.run_lens(st, a, dir, attempt)))
+                    .map(|a| s.spawn(move || self.run_lens(st, a, dir, attempt, wt)))
                     .collect();
                 handles.into_iter().map(|h| h.join().unwrap()).collect()
             });
@@ -4964,7 +5078,14 @@ impl RunCtx<'_> {
     /// adjudicator, and its fellow lenses retrieve it. Its stdout is no longer captured
     /// to thread into another agent's prompt - the graph is the channel. Budget-refused
     /// spawns (item 9) surface as an error so the run halts.
-    fn run_lens(&self, st: &Stage, agent_id: &str, dir: &str, attempt: u32) -> Result<(), Error> {
+    fn run_lens(
+        &self,
+        st: &Stage,
+        agent_id: &str,
+        dir: &str,
+        attempt: u32,
+        wt: Option<&Worktree>,
+    ) -> Result<(), Error> {
         // A lens's output is not a verdict - it emits its findings to the graph - so the
         // substantive result is discarded here; the shared `run_reviewer` loop only needs
         // it to be non-degenerate (Gap 18) before the review proceeds. The lens attributes
@@ -4982,6 +5103,7 @@ impl RunCtx<'_> {
             // empty stdout is degenerate only when it also emitted no ReviewFinding.
             false,
             &prompt,
+            wt,
         )?;
         Ok(())
     }
@@ -5031,6 +5153,14 @@ impl RunCtx<'_> {
         parallel: bool,
         stdout_is_verdict: bool,
         prompt: &str,
+        // Ensure-on-park, defense in depth (spec 64 criterion 3, round 4): the unit
+        // worktree this tier's spawn runs in, or `None` when the caller has none to
+        // offer - a review-only throwaway worktree (the standalone-review-stage and
+        // plan-critique-gate callers), which keeps its OWN separate create/discard
+        // lifecycle, untouched here. `Some` when the caller ultimately traces back to a
+        // unit's OWN durable worktree (`review_unit`, reached from both the single-lane
+        // and speculation lifecycles).
+        wt: Option<&Worktree>,
     ) -> Result<AgentResult, Error> {
         let agent_def = self.cfg.agents.get(agent_id).ok_or_else(|| {
             Error(format!(
@@ -5045,6 +5175,17 @@ impl RunCtx<'_> {
             let opts = self.reviewer_spawn_opts(&id, tier, agent_id, dir, attempt, parallel, st)?;
             if !self.reserve_spawn(&id) {
                 return Err(budget_refused(&st.name, tier, agent_id));
+            }
+            // Ensure-on-park, defense in depth (spec 64 criterion 3, round 4,
+            // adv-u3c3r3-ensure-present-covers-only-the-first-tier, UPHELD): `run_reviewer`
+            // is the ONE shared authority every tier (lens/adversary/adjudicator) and every
+            // retry-respawn funnels through, so re-asserting HERE - immediately before the
+            // spawn that is about to consume `dir` - covers all three tiers uniformly,
+            // instead of the round-2 fix's single call before `review_unit` began (which
+            // could only protect whichever tier ran FIRST). A no-op fast path when nothing
+            // disturbed the tree since the LAST re-assert (see [`Worktree::ensure_present`]).
+            if let Some(w) = wt {
+                w.ensure_present()?;
             }
             // Count the ReviewFindings this spawn emits to the graph - a lens/adversary's
             // REAL work channel (the review_protocol). A reviewer that emitted its findings
@@ -5299,6 +5440,7 @@ impl RunCtx<'_> {
         adv_id: &str,
         dir: &str,
         attempt: u32,
+        wt: Option<&Worktree>,
     ) -> Result<(), Error> {
         // Like a lens, the adversary emits its findings to the graph rather than
         // returning a verdict, so its substantive result is discarded; `run_reviewer`
@@ -5317,6 +5459,7 @@ impl RunCtx<'_> {
             // so an empty stdout is degenerate only when it emitted no ReviewFinding.
             false,
             &prompt,
+            wt,
         )?;
         Ok(())
     }
@@ -5335,6 +5478,7 @@ impl RunCtx<'_> {
         adj_id: &str,
         dir: &str,
         attempt: u32,
+        wt: Option<&Worktree>,
     ) -> Result<(bool, String, String), Error> {
         // Unlike the other tiers the adjudicator's result IS the verdict, so it is read
         // here (not discarded). `run_reviewer` guarantees it is non-degenerate before it
@@ -5353,6 +5497,7 @@ impl RunCtx<'_> {
             // stdout is degenerate on every path (including a replayed recorded result).
             true,
             &prompt,
+            wt,
         )?;
         // The resolved model the adjudicator ran as (spec 05 line 52) rides back with the
         // verdict so the `reviewed` status - this spawn's unit event - can carry it.
@@ -5673,6 +5818,9 @@ impl RunCtx<'_> {
             let prompt = self.build_dag_critique_prompt(stages, &radii, &conflicts, &prior_reason);
             // TIER 2: the adversary reviews the DAG and emits its findings to the graph
             // (the review_protocol), so the adjudicator - grounding after it - reads them.
+            // `None`: like `run_fan_out_review_loop`, this gate reviews in a throwaway
+            // read-only worktree of the DAG under critique, never a durable unit
+            // worktree - outside ensure-on-park's (spec 64 criterion 3) blast radius.
             if !gate_st.adversary.is_empty() {
                 self.run_reviewer(
                     gate_st,
@@ -5684,6 +5832,7 @@ impl RunCtx<'_> {
                     false,
                     false,
                     &format!("{prompt}{}", review_protocol(ROLE_ADVERSARY)),
+                    None,
                 )?;
             }
             // TIER 3: the adjudicator renders the gating verdict over the DAG, fail-closed.
@@ -5700,6 +5849,7 @@ impl RunCtx<'_> {
                     false,
                     true,
                     &prompt,
+                    None,
                 )?;
                 (
                     verdict_approves(&result.output),
@@ -6365,6 +6515,18 @@ impl RunCtx<'_> {
             Some(w) => w,
             None => return Ok(Integration::default()),
         };
+        // Ensure-on-park, defense in depth (spec 64 criterion 3), centralized: EVERY caller
+        // of this function reaches it after a real exhaustive gate run (wall-clock time - a
+        // genuine cargo build/test), the exact window in which an out-of-band actor (or a
+        // gate's own side effect) could delete the worktree before the read just below
+        // consumes it. `run_single_stage` alone has THREE such call sites (the live
+        // post-approval integrate door, the `ResumePhase::Reviewed` resumed-merge door, and
+        // speculation's winning-candidate door) - re-asserting once HERE, at the one shared
+        // mutation authority every dir-touching integrate goes through, covers all of them
+        // uniformly instead of duplicating an inline call at each (adj-u3c3 round-2 reject:
+        // adv-u3c3-ensure-present-covers-only-one-of-three-same-function-windows). A no-op
+        // fast path when nothing disturbed the tree (see [`Worktree::ensure_present`]).
+        wt.ensure_present()?;
         // The unit's changed files span the commit-before-gates seam (§3.2): the
         // implementer's work is now committed, so a plain `git status` is clean -
         // we take the COMMITTED diff vs base unioned with any residual dirty files,
@@ -9144,6 +9306,19 @@ mod tests {
         /// The order agents were spawned in, by id - used to assert the lenses ->
         /// adversary -> adjudicator three-tier review order.
         call_order: Mutex<Vec<String>>,
+        /// Per-agent id: THIS agent's own spawn deletes `opts.dir` wholesale, right
+        /// before returning success - simulating a REVIEWER's own side effect
+        /// destroying the worktree mid-review (spec 64 criterion 3, round 4), the same
+        /// defect class a gate's own side effect already proves via `RecordingRunner::
+        /// deleting_worktree`, but at the review-TIER spawn boundary `run_reviewer`
+        /// owns instead of the gate boundary.
+        delete_dir_by_agent: std::collections::HashSet<String>,
+        /// Per-agent id, in spawn order: whether `opts.dir` already existed on disk at
+        /// the moment THIS spawn began - recorded before `delete_dir_by_agent`'s own
+        /// side effect (if any) runs for this same spawn. Lets a test prove a LATER
+        /// tier's spawn found the worktree ensure-on-park restored, not the gone dir a
+        /// PRIOR tier's own deletion left behind (spec 64 criterion 3, round 4).
+        dir_existed_at_spawn: Mutex<HashMap<String, Vec<bool>>>,
     }
     impl Stub {
         fn new() -> Self {
@@ -9167,6 +9342,8 @@ mod tests {
                 titles_by_agent: Mutex::new(HashMap::new()),
                 prompts_by_agent: Mutex::new(HashMap::new()),
                 call_order: Mutex::new(Vec::new()),
+                delete_dir_by_agent: std::collections::HashSet::new(),
+                dir_existed_at_spawn: Mutex::new(HashMap::new()),
             }
         }
 
@@ -9232,6 +9409,19 @@ mod tests {
                 .iter()
                 .any(|id| id == agent_id)
         }
+
+        /// Whether `opts.dir` existed on disk at the moment each of the named agent's
+        /// spawns began, in spawn order (spec 64 criterion 3, round 4: proves a LATER
+        /// review tier's spawn found the worktree ensure-on-park restored, not the gone
+        /// dir a PRIOR tier's own `delete_dir_by_agent` side effect left behind).
+        fn dir_existed_when_spawned(&self, agent_id: &str) -> Vec<bool> {
+            self.dir_existed_at_spawn
+                .lock()
+                .unwrap()
+                .get(agent_id)
+                .cloned()
+                .unwrap_or_default()
+        }
     }
     impl AgentDriver for Stub {
         fn spawn(
@@ -9268,6 +9458,15 @@ mod tests {
                 .push(prompt.to_string());
             self.call_order.lock().unwrap().push(a.id.clone());
             self.spawn_ids.lock().unwrap().push(opts.id.clone());
+            // Recorded BEFORE this spawn's own `delete_dir_by_agent` side effect (below)
+            // runs, so it reflects whether the CALLER (`run_reviewer`'s ensure-on-park
+            // re-assert) already restored a dir a PRIOR tier's own spawn deleted.
+            self.dir_existed_at_spawn
+                .lock()
+                .unwrap()
+                .entry(a.id.clone())
+                .or_default()
+                .push(!opts.dir.is_empty() && Path::new(&opts.dir).exists());
             if self.fail_spawn || self.fail_spawn_ids.contains(&opts.id) {
                 return Err(Error("simulated mid-spawn crash".into()));
             }
@@ -9302,6 +9501,15 @@ mod tests {
                 for (t, v) in per {
                     emit(t, v.clone())?;
                 }
+            }
+            // A REVIEWER's own side effect destroying the worktree mid-review (spec 64
+            // criterion 3, round 4), mirroring `RecordingRunner::deleting_worktree`'s
+            // gate-side deletion but at this review-tier spawn boundary: the SAME
+            // machinery `run_reviewer`'s ensure-on-park re-assert must self-heal before
+            // the NEXT tier's spawn, or before a stamp that reads the tree right after
+            // THIS spawn returns.
+            if !opts.dir.is_empty() && self.delete_dir_by_agent.contains(&a.id) {
+                let _ = std::fs::remove_dir_all(&opts.dir);
             }
             let output = self
                 .output_by_spawn_id
@@ -21428,6 +21636,952 @@ mod tests {
     }
 
     #[test]
+    fn review_unit_restores_a_worktree_a_gate_deleted_out_of_band() {
+        // Spec 64, criterion 3 (ensure-on-park, defense in depth). `stage_worktree`
+        // guarantees the unit worktree exists exactly ONCE, at `run_stage`'s entry - real
+        // wall-clock time elapses running the gates before this SAME process reaches the
+        // review tier's spawn point below. An out-of-band deletion in that window (the
+        // historical fault this whole spec closes: an agent finding its assigned worktree
+        // gone at spawn) must self-heal in the binary, not in the reviewer's opening
+        // minutes. This proves it with a gate whose OWN side effect is exactly that
+        // deletion (`RecordingRunner::deleting_worktree`), so by the time the parked
+        // adjudicator's spawn is inspected below, the gate has ALREADY destroyed the
+        // worktree once - `review_unit` must have put it back before handing it out.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("g".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "solo".into(),
+            Stage {
+                name: "solo".into(),
+                agent: "worker".into(),
+                gates: vec!["g".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("work.rs".into()),
+            output: "reviewed it".into(),
+            park_spawn_ids: [spawn_id("solo", ROLE_ADJUDICATOR, 0)]
+                .into_iter()
+                .collect(),
+            ..Stub::new()
+        };
+        let runner = RecordingRunner::deleting_worktree();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+
+        assert!(
+            driver.spawned("judge"),
+            "the adjudicator must actually have been spawned (and parked), or this test proves nothing"
+        );
+        assert_eq!(
+            runner.calls(),
+            vec!["g".to_string()],
+            "the gate must really have run (and deleted the worktree as its side effect), or this test proves nothing: {:?}",
+            runner.calls()
+        );
+
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let worktree = unit_worktree_dir(&scratch, "solo");
+        assert!(
+            std::path::Path::new(&worktree).exists(),
+            "review_unit must restore the worktree the gate deleted, before handing it to the parked adjudicator: {worktree}"
+        );
+        assert!(
+            worktree_registered_on(&repo_path, &unit_branch("solo")),
+            "the restored worktree must be a REGISTERED git worktree, not just a leftover dir: {worktree}"
+        );
+        let branch_tip = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args(["rev-parse", &unit_branch("solo")])
+            .output()
+            .unwrap();
+        let branch_tip = String::from_utf8_lossy(&branch_tip.stdout)
+            .trim()
+            .to_string();
+        assert!(
+            !branch_tip.is_empty(),
+            "the unit's durable branch must survive the gate's deletion (git rev-parse must resolve it)"
+        );
+        assert_eq!(
+            worktree::head_sha_of(&worktree),
+            branch_tip,
+            "the restored worktree must be checked out at the unit branch's handed-out tip - \
+             the implementer's own commit, not a fresh branch off some other HEAD"
+        );
+    }
+
+    #[test]
+    fn a_second_step_restores_a_still_parked_units_worktree_deleted_out_of_band() {
+        // Spec 64, criterion 3 (ensure-on-park). The MIRROR case of
+        // `review_unit_restores_a_worktree_a_gate_deleted_out_of_band` above: instead of a
+        // deletion WITHIN one process (during gates), this is a deletion BETWEEN two
+        // `rigger step` processes - the dominant historical pattern (an agent's assigned
+        // worktree found absent at spawn, sighted 11+ times against a single unit before
+        // this spec). A unit that is STILL parked (its spawn's result is not yet recorded)
+        // remains in the wave's `ready` set on every subsequent step, so
+        // `stage_worktree`'s deterministic adopt-or-create ([`Worktree::create`]) runs
+        // again at the top of `run_stage` before this second process re-reaches the SAME
+        // park point - proving the courier's NEXT hand-off never lands an agent in a
+        // directory that does not exist, even after an out-of-band deletion nothing else
+        // in this process caused or witnessed.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("g".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "solo".into(),
+            Stage {
+                name: "solo".into(),
+                agent: "worker".into(),
+                gates: vec!["g".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("work.rs".into()),
+            output: "reviewed it".into(),
+            park_spawn_ids: [spawn_id("solo", ROLE_ADJUDICATOR, 0)]
+                .into_iter()
+                .collect(),
+            ..Stub::new()
+        };
+        let runner = RecordingRunner::new(&[]);
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        // FIRST process: the adjudicator parks (its id is never recorded, so `Stub` parks
+        // it identically on every call - the SAME id `park_spawn_ids` names, matching the
+        // real replay driver's own idempotent re-park of an unanswered id).
+        run(&cfg, &deps).unwrap();
+
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let worktree = unit_worktree_dir(&scratch, "solo");
+        assert!(
+            std::path::Path::new(&worktree).exists(),
+            "premise: a parked stage keeps its worktree (criterion 1) - the first process must leave it on disk: {worktree}"
+        );
+        let branch_tip_before = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args(["rev-parse", &unit_branch("solo")])
+            .output()
+            .unwrap();
+        let branch_tip_before = String::from_utf8_lossy(&branch_tip_before.stdout)
+            .trim()
+            .to_string();
+
+        // OUT-OF-BAND DELETION: something outside any conductor process - not this run,
+        // not a gate - removes the worktree dir wholesale, exactly as the historical
+        // sightings describe (dir gone, `.git/worktrees` admin entry gone too).
+        std::fs::remove_dir_all(&worktree).unwrap();
+        assert!(
+            !std::path::Path::new(&worktree).exists(),
+            "premise: the out-of-band deletion must actually remove it, or this test proves nothing"
+        );
+
+        // SECOND process (the conductor's next hand-off): the adjudicator's id is STILL
+        // unrecorded, so the unit is STILL not terminal and re-enters `run_stage`, which
+        // re-asserts the worktree via the SAME deterministic adopt-or-create machinery
+        // BEFORE reaching the (still-parking) adjudicator spawn again.
+        run(&cfg, &deps).unwrap();
+
+        assert!(
+            std::path::Path::new(&worktree).exists(),
+            "the conductor's next hand-off must restore the worktree an out-of-band actor deleted: {worktree}"
+        );
+        assert!(
+            worktree_registered_on(&repo_path, &unit_branch("solo")),
+            "the restored worktree must be a REGISTERED git worktree, not just a leftover dir: {worktree}"
+        );
+        assert_eq!(
+            worktree::head_sha_of(&worktree),
+            branch_tip_before,
+            "the restored worktree must be checked out at the SAME unit branch tip the first \
+             process handed out - the implementer's own commit is never lost or rewound"
+        );
+    }
+
+    #[test]
+    fn verified_worktree_sha_is_stamped_after_a_gate_side_deletion_is_restored() {
+        // Spec 64 criterion 3, adjudication round 2 (sdet-u3c3-verified-sha-stamped-before-
+        // restore, UPHELD): the round-1 attempt computed the `verified` event's
+        // `worktree_sha` (`reviewed_sha = worktree::head_sha_of(dir)`) BEFORE
+        // `ensure_present` restored a worktree a gate deleted as its own side effect - so
+        // `head_sha_of` read a directory that did not exist yet and silently stamped an
+        // EMPTY sha (`unwrap_or_default`, worktree.rs), violating the spec-11-unit-1
+        // contract this same file already tests elsewhere: the verified sha must be a real
+        // 40-hex sha agreeing with the tree the review tiers actually judge. Reusing the
+        // exact gate-deletes-the-worktree scenario `review_unit_restores_a_worktree_a_
+        // gate_deleted_out_of_band` above proves, this additionally inspects the recorded
+        // `verified` event's stamped sha - which that test never asserted on.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("g".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "solo".into(),
+            Stage {
+                name: "solo".into(),
+                agent: "worker".into(),
+                gates: vec!["g".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("work.rs".into()),
+            output: "reviewed it".into(),
+            park_spawn_ids: [spawn_id("solo", ROLE_ADJUDICATOR, 0)]
+                .into_iter()
+                .collect(),
+            ..Stub::new()
+        };
+        let runner = RecordingRunner::deleting_worktree();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+
+        assert_eq!(
+            runner.calls(),
+            vec!["g".to_string()],
+            "the gate must really have run (and deleted the worktree as its side effect), or this test proves nothing: {:?}",
+            runner.calls()
+        );
+
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let worktree = unit_worktree_dir(&scratch, "solo");
+        let restored_sha = worktree::head_sha_of(&worktree);
+        assert_eq!(
+            restored_sha.len(),
+            40,
+            "premise: the worktree must actually be restored with a resolvable HEAD, or this \
+             test proves nothing: {restored_sha:?}"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let verified = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"verified\"")
+            })
+            .expect("a verified status must have been recorded");
+        let verified_sha = verified
+            .meta
+            .get(META_WORKTREE_SHA)
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(
+            verified_sha.len(),
+            40,
+            "the verified event's worktree_sha must be a real 40-hex sha, not empty - it must \
+             be stamped AFTER the gate-deleted worktree is restored, not before: {verified_sha:?}"
+        );
+        assert!(
+            verified_sha.chars().all(|c| c.is_ascii_hexdigit()),
+            "the stamped sha must be real hex: {verified_sha:?}"
+        );
+        assert_eq!(
+            verified_sha, restored_sha,
+            "the stamped sha must be the RESTORED tree's actual HEAD - the one the review tier \
+             is about to judge, not a snapshot taken during the deletion window"
+        );
+    }
+
+    #[test]
+    fn review_tier_boundary_restores_a_worktree_a_prior_tier_deleted() {
+        // Spec 64 criterion 3, adjudication round 3 (adv-u3c3r3-ensure-present-covers-
+        // only-the-first-tier, UPHELD): the round-2 fix re-asserted the worktree exactly
+        // ONCE, immediately before `review_unit` began - so it could only protect the
+        // FIRST tier `review_unit` reaches. Each of the three tiers (lens, adversary,
+        // adjudicator) is its own real, wall-clock-blocking spawn, all funneled through
+        // the SAME shared authority `run_reviewer` - so a tier's OWN side effect deleting
+        // the worktree (the identical shape a gate's own side effect already proves via
+        // `RecordingRunner::deleting_worktree`) left the NEXT tier's spawn a gone dir,
+        // with nothing between tiers to restore it. This drives the LENS to delete the
+        // worktree as its side effect, then proves the ADVERSARY - the very next tier
+        // `run_reviewer` reaches - finds it RESTORED at spawn entry, not gone.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("adversary".into(), agent("adversary"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "solo".into(),
+            Stage {
+                name: "solo".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lens".into()],
+                    adversary: "adversary".into(),
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("work.rs".into()),
+            output_by_agent: HashMap::from([
+                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
+                ("lens".to_string(), "reviewed: no blocker".to_string()),
+                ("adversary".to_string(), "tried and failed".to_string()),
+            ]),
+            delete_dir_by_agent: ["lens".to_string()].into_iter().collect(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+
+        assert!(
+            driver.spawned("lens") && driver.spawned("adversary") && driver.spawned("judge"),
+            "premise: all three tiers must actually have run, or this test proves nothing"
+        );
+        let adversary_saw = driver.dir_existed_when_spawned("adversary");
+        assert_eq!(
+            adversary_saw,
+            vec![true],
+            "the adversary's spawn must find the worktree the lens deleted as its own \
+             side effect already RESTORED by run_reviewer's ensure-on-park re-assert, not \
+             the gone dir the lens's spawn left behind: {adversary_saw:?}"
+        );
+        let judge_saw = driver.dir_existed_when_spawned("judge");
+        assert_eq!(
+            judge_saw,
+            vec![true],
+            "the adjudicator's spawn must ALSO find the worktree restored, proving the \
+             re-assert runs before EVERY tier's spawn, not only the one right after the \
+             lens: {judge_saw:?}"
+        );
+    }
+
+    #[test]
+    fn reviewed_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored() {
+        // Spec 64 criterion 3, adjudication round 3
+        // (adv-u3c3r3-reviewed-and-failed-sha-empty-sentinel-inversion, UPHELD): round 2
+        // fixed the identical empty-sha bug for the `verified` stamp (re-assert before its
+        // sha read), but the `reviewed` stamp's `META_WORKTREE_SHA` was still computed
+        // with NO re-assert between the adjudicator's own spawn returning approved and
+        // this read - so a reviewer whose own side effect deletes the tree as it approves
+        // left the stamp empty. This drives the adjudicator to delete the worktree AS its
+        // side effect while still returning an approve verdict, then proves the recorded
+        // `reviewed` event's stamped sha is a real 40-hex sha of the RESTORED tree, never
+        // empty.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "solo".into(),
+            Stage {
+                name: "solo".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                // `none`, not `merge`: a successful merge deletes the unit's OWN branch
+                // once integrated, leaving nothing in the bare repo to independently
+                // recompute the expected sha against afterward. Leaving the unit
+                // reviewed-but-unmerged keeps its durable branch resolvable so this test
+                // can verify the STAMPED sha against the actual committed tip from
+                // outside, exactly like the `verified`-stamp sibling test does via its
+                // parked worktree.
+                on_pass: "none".into(),
+                review: crate::config::ReviewPanel {
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("work.rs".into()),
+            output_by_agent: HashMap::from([(
+                "judge".to_string(),
+                r#"{"verdict":"approve"}"#.to_string(),
+            )]),
+            delete_dir_by_agent: ["judge".to_string()].into_iter().collect(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+
+        assert!(
+            driver.spawned("judge"),
+            "premise: the adjudicator must have run, or this test proves nothing"
+        );
+
+        // The unit's durable branch survives an unmerged `reviewed` completion (only a
+        // successful MERGE reclaims it), so its tip is the independent, outside-git
+        // ground truth for what the adjudicator's own deletion-then-restore actually
+        // left checked out.
+        let branch_tip = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args(["rev-parse", &unit_branch("solo")])
+            .output()
+            .unwrap();
+        let branch_tip = String::from_utf8_lossy(&branch_tip.stdout)
+            .trim()
+            .to_string();
+        assert_eq!(
+            branch_tip.len(),
+            40,
+            "premise: the unit's durable branch must resolve a real tip, or this test \
+             proves nothing: {branch_tip:?}"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let reviewed = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"reviewed\"")
+            })
+            .expect("a reviewed status must have been recorded");
+        let reviewed_sha = reviewed
+            .meta
+            .get(META_WORKTREE_SHA)
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(
+            reviewed_sha.len(),
+            40,
+            "the reviewed event's worktree_sha must be a real 40-hex sha, not empty - it \
+             must be stamped AFTER a re-assert that restores whatever the adjudicator's \
+             own spawn deleted, not a snapshot taken during the deletion window: \
+             {reviewed_sha:?}"
+        );
+        assert!(
+            reviewed_sha.chars().all(|c| c.is_ascii_hexdigit()),
+            "the stamped sha must be real hex: {reviewed_sha:?}"
+        );
+        assert_eq!(
+            reviewed_sha, branch_tip,
+            "the stamped sha must be the durable branch's actual tip - the RESTORED \
+             tree's real HEAD, not a snapshot taken during the deletion window"
+        );
+    }
+
+    #[test]
+    fn failed_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored() {
+        // Mirrors `reviewed_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_
+        // is_restored` above for the REJECT arm (`failed_sha` at the review-reject
+        // `UnitFailed`, adv-u3c3r3-reviewed-and-failed-sha-empty-sentinel-inversion's
+        // second sibling site): the same empty-sha bug survives on a reject exactly as on
+        // an approve, and the fold this field feeds (spec 11 unit 1's flip-flop detection)
+        // needs it real on EITHER verdict.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "solo".into(),
+            Stage {
+                name: "solo".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("work.rs".into()),
+            output_by_agent: HashMap::from([(
+                "judge".to_string(),
+                r#"{"verdict":"reject"}"#.to_string(),
+            )]),
+            delete_dir_by_agent: ["judge".to_string()].into_iter().collect(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+
+        assert!(
+            driver.spawned("judge"),
+            "premise: the adjudicator must have run, or this test proves nothing"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let reject_with_sha = events.iter().find(|e| {
+            e.type_ == ledger::TYPE_UNIT_FAILED
+                && e.meta
+                    .get(META_WORKTREE_SHA)
+                    .is_some_and(|s| s.len() == 40 && s.chars().all(|c| c.is_ascii_hexdigit()))
+        });
+        assert!(
+            reject_with_sha.is_some(),
+            "a review-reject UnitFailed must carry a real 40-hex worktree sha even when the \
+             adjudicator's own spawn deleted the tree as its side effect - it must be \
+             stamped AFTER a re-assert restores it, not a snapshot taken during the \
+             deletion window"
+        );
+    }
+
+    #[test]
+    fn a_resumed_reviewed_unit_restores_a_worktree_the_exhaustive_gate_deleted() {
+        // Spec 64 criterion 3, adjudication round 2 (adv-u3c3-ensure-present-covers-only-one-
+        // of-three-same-function-windows, UPHELD, window 1 of 2). The `ResumePhase::Reviewed`
+        // branch (a prior window recorded an approved `reviewed` status but the merge was
+        // interrupted) re-runs the exhaustive gate suite and then calls `integrate_and_emit`
+        // - which reads the worktree (`wt.changed_since_base()`) - with no re-assert between
+        // them anywhere in that branch, protected only by `stage_worktree`'s one entry-time
+        // assert. A gate that deletes the worktree as its own side effect during that
+        // exhaustive run must self-heal via `integrate_and_emit`'s own re-assert, not
+        // collapse the wave into a hard error.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        // The prior window implemented and got unit "s" APPROVED (`reviewed`), but the
+        // merge itself was interrupted before landing - resume must integrate directly
+        // (ResumePhase::Reviewed), re-running the exhaustive gate suite at the integrate
+        // door with no lens/adversary/adjudicator re-spawn.
+        commit_on_unit_branch(&repo_path, "s", "feature.rs", "fn feature() {}\n");
+
+        let st = Store::open(":memory:").unwrap();
+        seed_events_in_run(
+            &st,
+            &[],
+            &[
+                Event::new(
+                    ledger::TYPE_UNIT_STARTED,
+                    serde_json::to_vec(
+                        &json!({"id": "s", "agent": "worker", "branch": unit_branch("s")}),
+                    )
+                    .unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_STATUS,
+                    serde_json::to_vec(&json!({"id": "s", "status": "verified"})).unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_STATUS,
+                    serde_json::to_vec(&json!({"id": "s", "status": "reviewed"})).unwrap(),
+                ),
+            ],
+        );
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("adversary".into(), agent("adversary"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lens".into()],
+                    adversary: "adversary".into(),
+                    adjudicator: "judge".into(),
+                    tiers: None,
+                },
+                ..Default::default()
+            },
+        );
+
+        let driver = Stub::new();
+        let runner = RecordingRunner::deleting_worktree();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert!(
+            !driver.spawned("worker")
+                && !driver.spawned("lens")
+                && !driver.spawned("adversary")
+                && !driver.spawned("judge"),
+            "premise: an already-approved unit must resume straight to integrate with NO \
+             lifecycle spawns, or this test is not exercising the Reviewed resume branch"
+        );
+        assert_eq!(
+            runner.calls(),
+            vec!["ok".to_string()],
+            "the exhaustive gate must really have run (and deleted the worktree as its side \
+             effect), or this test proves nothing: {:?}",
+            runner.calls()
+        );
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "the resumed-reviewed unit must self-heal the gate-deleted worktree inside \
+             integrate_and_emit and integrate, not collapse the wave to a hard error"
+        );
+        assert!(
+            repo.path().join("feature.rs").exists(),
+            "the approved work must land in the base"
+        );
+    }
+
+    #[test]
+    fn a_live_approved_unit_restores_a_worktree_the_integrate_door_exhaustive_gate_deleted() {
+        // Spec 64 criterion 3, adjudication round 2 (adv-u3c3-ensure-present-covers-only-one-
+        // of-three-same-function-windows, UPHELD, window 2 of 2). The main loop's
+        // post-approval path runs the integrate door's EXHAUSTIVE gate suite (a SECOND,
+        // separately-timed gate run after the one the pre-review `ensure_present` protects)
+        // and then calls `integrate_and_emit`, with no re-assert in between. Here the gate
+        // is scoped with `inputs:` that never intersect the unit's blast radius (empty, no
+        // grounder configured below - see `gate_intersects_radius`), so the narrowed inner
+        // loop always SKIPS it and it runs for the FIRST time only at the exhaustive
+        // integrate door - exactly the unprotected window the adversary identified. It must
+        // self-heal via `integrate_and_emit`'s own re-assert, not collapse the wave into a
+        // hard error.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert(
+            "door".into(),
+            gate_def_inputs("true", &["never-matches/**"]),
+        );
+        cfg.workflow.stages.insert(
+            "solo".into(),
+            Stage {
+                name: "solo".into(),
+                agent: "worker".into(),
+                gates: vec!["door".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("work.rs".into()),
+            output_by_agent: HashMap::from([(
+                "judge".to_string(),
+                r#"{"verdict":"approve"}"#.to_string(),
+            )]),
+            ..Stub::new()
+        };
+        let runner = RecordingRunner::deleting_worktree();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_eq!(
+            runner.calls(),
+            vec!["door".to_string()],
+            "the gate must have run exactly once - skipped by the narrowed inner loop \
+             (no grounder, so the blast radius is always empty) and run for real only at \
+             the exhaustive integrate door, or this test proves nothing: {:?}",
+            runner.calls()
+        );
+        assert_eq!(
+            rs.units["solo"].status,
+            ledger::Status::Integrated,
+            "the unit must self-heal the worktree the exhaustive door gate deleted inside \
+             integrate_and_emit and integrate, not collapse the wave to a hard error"
+        );
+        assert!(
+            repo.path().join("work.rs").exists(),
+            "the approved work must land in the base"
+        );
+    }
+
+    #[test]
+    fn speculation_lenses_restore_a_gate_deleted_worktree_without_racing_and_stamp_the_winner_sha()
+    {
+        // Spec 64 criterion 3, adjudication round 4
+        // (adv-u3c3r4-concurrent-lens-ensure-present-races-worktree-create,
+        // sdet-u3c3r4-concurrent-lenses-race-ensure-present-on-the-same-worktree,
+        // arch-u3c3r4-speculation-winner-sha-unguarded, all UPHELD). `run_speculation`'s
+        // phase B has NO single-threaded pre-review re-assert the way `run_single_stage`
+        // does (that guard lives only on the single-lane path) - so a candidate's narrowed
+        // gate deleting its worktree hands the concurrent lens fan-out a MISSING dir
+        // directly, and TWO real lens threads both call `ensure_present` on the SAME shared
+        // `&Worktree` at once. This drives that with this project's own real shape (>= 2
+        // lenses in one concurrency chunk, spec 64 c3 round 4's own remedy), proving the
+        // run completes with no git race, AND (the sibling finding) that
+        // `emit_speculation_winner_status`'s `winner_sha` - read after the LATER exhaustive
+        // gate ALSO deletes the tree, with no re-assert of its own before this fix - is a
+        // real 40-hex sha of the restored tree, never an empty sentinel.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lensA".into(), agent("lensA"));
+        cfg.agents.insert("lensB".into(), agent("lensB"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                // `none`: emit_speculation_winner_status runs directly after the
+                // exhaustive gate, with no integrate_and_emit re-assert in between - the
+                // exact unguarded window the arch finding names.
+                on_pass: "none".into(),
+                speculation_width: 2,
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lensA".into(), "lensB".into()],
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            output: r#"{"verdict":"approve"}"#.into(),
+            ..Stub::new()
+        };
+        let runner = RecordingRunner::deleting_worktree();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let result = run(&cfg, &deps);
+        assert!(
+            result.is_ok(),
+            "two concurrently-spawned lenses re-asserting the SAME gate-deleted speculation \
+             worktree must never race the underlying `git worktree add`: {:?}",
+            result.err()
+        );
+
+        assert!(
+            driver.spawned("lensA") && driver.spawned("lensB") && driver.spawned("judge"),
+            "premise: both lenses and the adjudicator must actually have run, or this test \
+             proves nothing"
+        );
+
+        // Candidate 0 uses the CANONICAL unit worktree dir/branch.
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let worktree = unit_worktree_dir(&scratch, "s");
+        let restored_sha = worktree::head_sha_of(&worktree);
+        assert_eq!(
+            restored_sha.len(),
+            40,
+            "premise: the worktree must actually be restored with a resolvable HEAD, or \
+             this test proves nothing: {restored_sha:?}"
+        );
+        assert!(
+            worktree_registered_on(&repo_path, &unit_branch("s")),
+            "the restored worktree must be a REGISTERED git worktree, not a leftover dir"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let verified = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"verified\"")
+            })
+            .expect("the deferred winner verified status must have been recorded");
+        let winner_sha = verified
+            .meta
+            .get(META_WORKTREE_SHA)
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(
+            winner_sha.len(),
+            40,
+            "the speculation winner's verified event must carry a real 40-hex worktree_sha, \
+             not empty - it must be stamped AFTER a re-assert restores whatever the \
+             exhaustive gate deleted, not a snapshot taken during the deletion window: \
+             {winner_sha:?}"
+        );
+        assert!(
+            winner_sha.chars().all(|c| c.is_ascii_hexdigit()),
+            "the stamped sha must be real hex: {winner_sha:?}"
+        );
+        assert_eq!(
+            winner_sha, restored_sha,
+            "the stamped sha must be the RESTORED tree's actual HEAD"
+        );
+    }
+
+    #[test]
+    fn speculation_reject_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored()
+    {
+        // Spec 64 criterion 3, adjudication round 4
+        // (arch-u3c3r4-speculation-reject-sha-unguarded, UPHELD): mirrors
+        // `failed_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored`
+        // (the single-lane sibling) for the speculation candidate REJECT arm -
+        // `record_speculation_reject`'s `worktree_sha` was read with no re-assert between
+        // the adjudicator's own spawn (which here deletes the tree as its side effect while
+        // still rejecting) and this read.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                speculation_width: 2,
+                review: crate::config::ReviewPanel {
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            output_by_agent: HashMap::from([(
+                "judge".to_string(),
+                r#"{"verdict":"reject"}"#.to_string(),
+            )]),
+            delete_dir_by_agent: ["judge".to_string()].into_iter().collect(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+
+        assert!(
+            driver.spawned("judge"),
+            "premise: the adjudicator must have run, or this test proves nothing"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let reject_with_sha = events.iter().find(|e| {
+            e.type_ == ledger::TYPE_UNIT_STATUS
+                && String::from_utf8_lossy(&e.data).contains(STATUS_SPECULATION_REJECTED)
+                && e.meta
+                    .get(META_WORKTREE_SHA)
+                    .is_some_and(|s| s.len() == 40 && s.chars().all(|c| c.is_ascii_hexdigit()))
+        });
+        assert!(
+            reject_with_sha.is_some(),
+            "a speculation-candidate review-reject must carry a real 40-hex worktree sha even \
+             when the adjudicator's own spawn deleted the tree as its side effect - it must \
+             be stamped AFTER a re-assert restores it, not a snapshot taken during the \
+             deletion window"
+        );
+    }
+
+    #[test]
     fn a_parked_lens_keeps_the_unit_worktree_beside_a_genuine_sibling_crash() {
         // Spec 64 c1 round 4 (sdet-u1c1-r3-unit-worktree-torn-down-beside-genuine-park,
         // upheld live by adv2-u1c1-r4-severe-finding-upheld-live): the MIRROR IMAGE of
@@ -23481,6 +24635,14 @@ mod tests {
         materialize_cache: bool,
         /// Gate ids that must FAIL; everything else passes.
         fail: HashSet<String>,
+        /// When set, a run DELETES the worktree dir it is passed (`dir`, not the `target`
+        /// cache) as its OWN side effect - a stand-in for the out-of-band actor spec 64
+        /// criterion 3 (ensure-on-park) defends against. A gate takes real wall-clock time
+        /// (a genuine cargo build/test) - exactly the window in which something else could
+        /// delete the worktree between `stage_worktree`'s single ensure at `run_stage` entry
+        /// and a LATER spawn point (the review tier) this SAME process reaches once the gate
+        /// returns.
+        delete_worktree_dir: bool,
     }
     impl RecordingRunner {
         fn new(fail: &[&str]) -> Self {
@@ -23489,6 +24651,7 @@ mod tests {
                 targets: Mutex::new(Vec::new()),
                 materialize_cache: false,
                 fail: fail.iter().map(|s| s.to_string()).collect(),
+                delete_worktree_dir: false,
             }
         }
         /// Like [`Self::new`] but the runner also creates each non-empty `target_dir` on disk -
@@ -23496,6 +24659,15 @@ mod tests {
         fn materializing() -> Self {
             RecordingRunner {
                 materialize_cache: true,
+                ..RecordingRunner::new(&[])
+            }
+        }
+        /// A runner whose gate DELETES the worktree dir it ran in, simulating an out-of-band
+        /// deletion that lands between this gate's return and the review tier's next spawn
+        /// (spec 64 criterion 3).
+        fn deleting_worktree() -> Self {
+            RecordingRunner {
+                delete_worktree_dir: true,
                 ..RecordingRunner::new(&[])
             }
         }
@@ -23507,12 +24679,15 @@ mod tests {
         }
     }
     impl gate::Runner for RecordingRunner {
-        fn run(&self, g: &Gate, _dir: &str, target: &str) -> gate::GateResult {
+        fn run(&self, g: &Gate, dir: &str, target: &str) -> gate::GateResult {
             self.calls.lock().unwrap().push(g.id.clone());
             self.targets.lock().unwrap().push(target.to_string());
             if self.materialize_cache && !target.is_empty() {
                 let _ = std::fs::create_dir_all(target);
                 let _ = std::fs::write(std::path::Path::new(target).join("built.rlib"), b"x");
+            }
+            if self.delete_worktree_dir && !dir.is_empty() {
+                let _ = std::fs::remove_dir_all(dir);
             }
             let pass = !self.fail.contains(&g.id);
             gate::GateResult {
