@@ -597,6 +597,27 @@ pub struct StoreConfig {
     pub url: String,
 }
 
+/// BuildConfig is the committed `build:` config the shared build-environment resolver
+/// reads (spec 65 - one build-environment authority): a single resolver
+/// ([`crate::gate::BuildEnv::resolve`]) derives the actual env vars from these two
+/// values and applies them to EVERY build the loop runs. Plain config-shape data
+/// only - the resolution logic itself (verbatim wrapper passthrough today; `auto`
+/// PATH-probing and the named-but-absent hard error are spec 65 unit 2's job) lives
+/// in `gate.rs`, not here, so this stays a pure value type like its siblings.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+pub struct BuildConfig {
+    /// The `RUSTC_WRAPPER` binary name, `auto` to probe PATH, or `off`/empty (the
+    /// default) to disable the shared-cache layer entirely.
+    #[serde(default)]
+    pub wrapper: String,
+    /// The shared compilation-cache directory. Empty (the default) resolves to
+    /// `<state home>/rigger/build-cache` (the resolver's own default), so every
+    /// project and worktree on the machine shares one cache absent explicit
+    /// configuration.
+    #[serde(default)]
+    pub cache_dir: String,
+}
+
 /// Workflow is the declarative loop: a DAG of stages, a gate library, and defaults.
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct Workflow {
@@ -620,6 +641,12 @@ pub struct Workflow {
     /// deserializer treats `off` as a plain scalar, not a boolean).
     #[serde(default)]
     pub dash: String,
+    /// The shared build-environment config (spec 65): `wrapper` / `cache_dir`, read
+    /// by the ONE resolver ([`crate::gate::BuildEnv::resolve`]) that derives the env
+    /// applied to every build the loop runs. Absent (the common case) resolves to no
+    /// wrapper - today's ambient-environment behavior, unchanged.
+    #[serde(default)]
+    pub build: BuildConfig,
     #[serde(default)]
     pub gates: BTreeMap<String, Gate>,
     #[serde(default)]
@@ -2728,6 +2755,27 @@ class: product\n";
             let w: Workflow = serde_yaml::from_str(&format!("dash: \"{v}\"\n")).unwrap();
             assert!(w.dash_enabled(), "`dash: {v:?}` keeps the dash ON");
         }
+    }
+
+    /// Spec 65: `build.wrapper` / `build.cache_dir` are the config plumbing the shared
+    /// build-environment resolver reads. An omitted `build:` section (the common case)
+    /// resolves to the defaults - empty wrapper, empty cache_dir - so the workflow's ONE
+    /// resolver ([`crate::gate::BuildEnv::resolve`]) treats it exactly like an explicit
+    /// `wrapper: off`.
+    #[test]
+    fn build_config_parses_wrapper_and_cache_dir_and_defaults_when_omitted() {
+        let wf: Workflow = serde_yaml::from_str("name: x\n").unwrap();
+        assert_eq!(
+            wf.build.wrapper, "",
+            "an omitted build: section defaults empty"
+        );
+        assert_eq!(wf.build.cache_dir, "");
+
+        let wf: Workflow =
+            serde_yaml::from_str("build:\n  wrapper: sccache\n  cache_dir: /shared/cache\n")
+                .unwrap();
+        assert_eq!(wf.build.wrapper, "sccache");
+        assert_eq!(wf.build.cache_dir, "/shared/cache");
     }
 
     #[test]

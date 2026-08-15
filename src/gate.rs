@@ -126,7 +126,9 @@ pub enum Action {
 }
 
 /// Runner runs a gate command in a working directory (`dir`, "" = current dir) under an
-/// optional `CARGO_TARGET_DIR` override (`target_dir`, "" = inherit the ambient env).
+/// optional `CARGO_TARGET_DIR` override (`target_dir`, "" = inherit the ambient env) and
+/// the resolved shared [`BuildEnv`] (spec 65's ONE build-environment authority - the
+/// default/empty `BuildEnv` applies nothing, leaving today's behavior unchanged).
 ///
 /// A gate that runs INSIDE a unit's worktree is handed a unit-keyed `target_dir` (Gap 19)
 /// so divergent unit trees never share one build cache - a compile error a gate sees is
@@ -134,7 +136,7 @@ pub enum Action {
 /// gate on the single integrated tree (the deferred phase-boundary gate, and the courier's
 /// inline `rigger step` gates) is handed "" and keeps inheriting the shared cache.
 pub trait Runner: Send + Sync {
-    fn run(&self, g: &Gate, dir: &str, target_dir: &str) -> GateResult;
+    fn run(&self, g: &Gate, dir: &str, target_dir: &str, build_env: &BuildEnv) -> GateResult;
 }
 
 /// Decide maps a gate's autonomy to the conductor's action.
@@ -187,11 +189,93 @@ pub fn auto_demote(g: &Gate, pass: bool) -> (Autonomy, bool) {
     }
 }
 
+/// BuildEnv is the ONE build-environment authority (spec 65): the env vars a single
+/// resolver derives from committed config and applies uniformly to EVERY build the
+/// loop runs - inline/deferred gate builds ([`ExecRunner::run`]) and agent-spawn
+/// builds (the agent driver's spawned process) - so a gate build and an agent's own
+/// `cargo test` invocation hit the same compilation cache under the same settings.
+/// One resolver, two injection sites; neither derives its own competing copy.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BuildEnv {
+    vars: Vec<(String, String)>,
+}
+
+impl BuildEnv {
+    /// Resolve the build environment from the workflow's `build.wrapper` /
+    /// `build.cache_dir` config (§65). An empty or (case/whitespace-insensitive)
+    /// `off` wrapper resolves to NO vars at all - a build this loop runs then
+    /// inherits the ambient environment untouched, exactly as before this authority
+    /// existed; no silent injection of anything unasked for.
+    ///
+    /// A configured wrapper (any other value, taken VERBATIM) resolves to exactly
+    /// three vars:
+    /// - `RUSTC_WRAPPER` - the wrapper binary. Deciding `auto` (probe PATH for a
+    ///   known wrapper) or erroring loudly on a named-but-absent binary is spec 65
+    ///   unit 2's job (NO SILENT DEGRADE), layered on top of this foundational
+    ///   shape; this resolver passes whatever string it is given straight through.
+    /// - `<WRAPPER>_DIR` (the wrapper's binary name, uppercased, suffixed `_DIR` -
+    ///   the generic cache-directory convention ccache/sccache/buildcache all
+    ///   share, so rigger hardcodes no specific tool) - set to `cache_dir`, or the
+    ///   default [`default_cache_dir`] when unset, so every project and worktree on
+    ///   the machine shares one cache absent explicit configuration.
+    /// - `CARGO_INCREMENTAL=0` - incremental output defeats wrapper caching; the
+    ///   per-unit warm target dirs (Gap 19 / spec 64) carry the incremental win
+    ///   instead.
+    pub fn resolve(wrapper: &str, cache_dir: &str) -> BuildEnv {
+        let wrapper = wrapper.trim();
+        if wrapper.is_empty() || wrapper.eq_ignore_ascii_case("off") {
+            return BuildEnv::default();
+        }
+        let dir = if cache_dir.trim().is_empty() {
+            default_cache_dir()
+        } else {
+            cache_dir.trim().to_string()
+        };
+        let dir_var = format!("{}_DIR", wrapper.to_ascii_uppercase());
+        BuildEnv {
+            vars: vec![
+                ("RUSTC_WRAPPER".to_string(), wrapper.to_string()),
+                (dir_var, dir),
+                ("CARGO_INCREMENTAL".to_string(), "0".to_string()),
+            ],
+        }
+    }
+
+    /// The resolved vars as `(name, value)` pairs, for a caller (the agent driver's
+    /// `SpawnOpts`) that carries them onward rather than applying them to a
+    /// `Command` directly.
+    pub fn vars(&self) -> &[(String, String)] {
+        &self.vars
+    }
+
+    /// Apply every resolved var to `cmd`, so this environment reaches the process
+    /// unchanged whether the caller is a gate's own `Command` ([`ExecRunner::run`])
+    /// or an agent driver's.
+    pub fn apply(&self, cmd: &mut Command) {
+        for (k, v) in &self.vars {
+            cmd.env(k, v);
+        }
+    }
+}
+
+/// The default shared build-cache location when `build.cache_dir` is unset:
+/// `<state home>/rigger/build-cache`, reusing the registry's own state-home
+/// authority so every project and worktree on the machine shares one cache absent
+/// configuration (spec 65). Falls back to a bare relative name in a truly homeless
+/// environment (no `XDG_STATE_HOME`/`HOME`) - the wrapper still gets pointed
+/// SOMEWHERE consistent rather than left unset.
+fn default_cache_dir() -> String {
+    crate::registry::state_home()
+        .map(|h| h.join("rigger").join("build-cache"))
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "rigger-build-cache".to_string())
+}
+
 /// ExecRunner runs a gate as a shell command, reducing output to compact evidence.
 pub struct ExecRunner;
 
 impl Runner for ExecRunner {
-    fn run(&self, g: &Gate, dir: &str, target_dir: &str) -> GateResult {
+    fn run(&self, g: &Gate, dir: &str, target_dir: &str, build_env: &BuildEnv) -> GateResult {
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg(&g.run);
         if !dir.is_empty() {
@@ -204,6 +288,11 @@ impl Runner for ExecRunner {
         if !target_dir.is_empty() {
             cmd.env("CARGO_TARGET_DIR", target_dir);
         }
+        // The ONE build-environment authority's first injection site (spec 65): the
+        // resolved wrapper/cache-dir/incremental-off vars (empty when no wrapper is
+        // configured, applying nothing) so this gate build and an agent's own
+        // `cargo test` hit the same compilation cache under the same settings.
+        build_env.apply(&mut cmd);
         match cmd.output() {
             Ok(out) => {
                 let mut evidence = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -343,8 +432,16 @@ mod tests {
 
     #[test]
     fn exec_runner_reports_pass_fail() {
-        assert!(ExecRunner.run(&gate_cmd("true"), "", "").pass);
-        assert!(!ExecRunner.run(&gate_cmd("false"), "", "").pass);
+        assert!(
+            ExecRunner
+                .run(&gate_cmd("true"), "", "", &BuildEnv::default())
+                .pass
+        );
+        assert!(
+            !ExecRunner
+                .run(&gate_cmd("false"), "", "", &BuildEnv::default())
+                .pass
+        );
     }
 
     #[test]
@@ -359,7 +456,7 @@ mod tests {
             }
         }
         cmd.push_str("false");
-        let res = ExecRunner.run(&gate_cmd(&cmd), "", "");
+        let res = ExecRunner.run(&gate_cmd(&cmd), "", "", &BuildEnv::default());
         assert!(!res.pass);
 
         let lines: Vec<&str> = res.evidence.lines().collect();
@@ -383,6 +480,7 @@ mod tests {
             &gate_cmd("test \"$CARGO_TARGET_DIR\" = /tmp/rigger-gap19-probe"),
             "",
             "/tmp/rigger-gap19-probe",
+            &BuildEnv::default(),
         );
         assert!(
             with.pass,
@@ -393,6 +491,7 @@ mod tests {
             &gate_cmd("test \"$CARGO_TARGET_DIR\" != /tmp/rigger-gap19-probe"),
             "",
             "",
+            &BuildEnv::default(),
         );
         assert!(
             without.pass,
@@ -408,5 +507,114 @@ mod tests {
             autonomy: Autonomy::Manual,
             history: vec![],
         }
+    }
+
+    #[test]
+    fn build_env_resolves_no_vars_when_wrapper_is_off_or_empty() {
+        // spec 65: no wrapper configured (empty, the default) or an explicit `off` must
+        // resolve to NO vars at all - a build the loop runs then inherits the ambient
+        // environment untouched, exactly as before this authority existed. No silent
+        // degrade in the other direction either: nothing is injected when nothing was
+        // asked for.
+        assert!(BuildEnv::resolve("", "").vars().is_empty());
+        assert!(BuildEnv::resolve("off", "/some/cache").vars().is_empty());
+        // Matched case- and whitespace-insensitively, like the workflow's other on/off
+        // scalars (`dash`, `autonomy`).
+        assert!(BuildEnv::resolve("  OFF  ", "").vars().is_empty());
+    }
+
+    #[test]
+    fn build_env_resolves_wrapper_cache_dir_and_incremental_off_when_configured() {
+        // With a wrapper configured, ONE resolver derives exactly three vars: the
+        // wrapper itself (verbatim - `auto`/absent-on-PATH resolution is spec 65 unit
+        // 2's job, layered on top of this foundational shape), that wrapper's own
+        // cache-directory var (the generic `<WRAPPER>_DIR` convention - rigger hardcodes
+        // no specific tool), and CARGO_INCREMENTAL=0 (incremental output defeats
+        // wrapper caching).
+        let env = BuildEnv::resolve("sccache", "/shared/build-cache");
+        let vars: std::collections::HashMap<_, _> = env.vars().iter().cloned().collect();
+        assert_eq!(
+            vars.get("RUSTC_WRAPPER").map(String::as_str),
+            Some("sccache")
+        );
+        assert_eq!(
+            vars.get("SCCACHE_DIR").map(String::as_str),
+            Some("/shared/build-cache")
+        );
+        assert_eq!(vars.get("CARGO_INCREMENTAL").map(String::as_str), Some("0"));
+        assert_eq!(env.vars().len(), 3, "exactly these three vars: {env:?}");
+    }
+
+    #[test]
+    fn build_env_derives_the_wrapper_specific_cache_dir_var_name() {
+        // The <WRAPPER>_DIR convention is generic, not hardcoded to one tool: a
+        // differently-named wrapper gets its OWN uppercased var.
+        let env = BuildEnv::resolve("ccache", "/x");
+        let vars: std::collections::HashMap<_, _> = env.vars().iter().cloned().collect();
+        assert_eq!(vars.get("CCACHE_DIR").map(String::as_str), Some("/x"));
+        assert!(!vars.contains_key("SCCACHE_DIR"));
+    }
+
+    #[test]
+    fn build_env_defaults_the_cache_dir_when_unset() {
+        // An empty cache_dir with a configured wrapper still resolves to a real,
+        // non-empty shared location (`<state home>/rigger/build-cache`) - never an
+        // empty/unset cache var, which would leave the wrapper's OWN scattered
+        // per-invocation default in play instead of one shared machine-wide cache.
+        let env = BuildEnv::resolve("sccache", "");
+        let vars: std::collections::HashMap<_, _> = env.vars().iter().cloned().collect();
+        let dir = vars.get("SCCACHE_DIR").expect("a default cache dir var");
+        assert!(!dir.is_empty());
+        assert!(
+            dir.ends_with(&format!("rigger{}build-cache", std::path::MAIN_SEPARATOR)),
+            "default cache dir must be <state home>/rigger/build-cache, got {dir:?}"
+        );
+    }
+
+    #[test]
+    fn exec_runner_applies_the_build_env_it_is_given() {
+        // The ONE build-environment authority's first injection site: a gate build
+        // carries whatever BuildEnv it is handed (spec 65). With a wrapper configured,
+        // the gate command sees RUSTC_WRAPPER/<WRAPPER>_DIR/CARGO_INCREMENTAL=0; with
+        // the default (no wrapper), it sees none of them - the ambient env is
+        // untouched, exactly like the existing empty-target_dir behavior.
+        let env = BuildEnv::resolve("sccache", "/shared/build-cache");
+        let with = ExecRunner.run(
+            &gate_cmd(
+                "test \"$RUSTC_WRAPPER\" = sccache && test \"$SCCACHE_DIR\" = /shared/build-cache \
+                 && test \"$CARGO_INCREMENTAL\" = 0",
+            ),
+            "",
+            "",
+            &env,
+        );
+        assert!(
+            with.pass,
+            "a configured BuildEnv must reach the gate: {with:?}"
+        );
+
+        let without = ExecRunner.run(
+            &gate_cmd("test -z \"$RUSTC_WRAPPER\" && test -z \"$SCCACHE_DIR\""),
+            "",
+            "",
+            &BuildEnv::default(),
+        );
+        assert!(
+            without.pass,
+            "the default (empty) BuildEnv must not force any wrapper var: {without:?}"
+        );
+    }
+
+    #[test]
+    fn build_env_apply_sets_every_resolved_var_on_a_command() {
+        let env = BuildEnv::resolve("sccache", "/shared/build-cache");
+        let mut cmd = Command::new("sh");
+        env.apply(&mut cmd);
+        cmd.arg("-c").arg(
+            "test \"$RUSTC_WRAPPER\" = sccache && test \"$SCCACHE_DIR\" = /shared/build-cache \
+             && test \"$CARGO_INCREMENTAL\" = 0",
+        );
+        let status = cmd.status().unwrap();
+        assert!(status.success(), "apply must set every resolved var");
     }
 }

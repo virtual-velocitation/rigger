@@ -469,6 +469,11 @@ fn canary_opts(item: &CanaryItem, role: &str, agent: &AgentDef) -> SpawnOpts {
         // A canary is a synthetic self-test, not a unit doing spec work, so it carries no
         // live work-line (spec 19a, c4): an empty title stays byte-identical on the wire.
         title: String::new(),
+        // A canary reviewer runs no build of its own (it judges a corpus snippet already
+        // in the prompt, isolation: false, no worktree) - the shared build environment
+        // (spec 65) has nothing to reach here, so this stays empty rather than resolving
+        // config this spawn never uses.
+        env: Vec::new(),
     }
 }
 
