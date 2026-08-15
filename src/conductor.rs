@@ -3655,6 +3655,17 @@ impl RunCtx<'_> {
                 // do NOT integrate a failing tree. Record the failure so the unit re-enters
                 // its lifecycle next step rather than wedging forever on a `reviewed` status
                 // it can never safely merge.
+                //
+                // Ensure-on-park, defense in depth (spec 64 criterion 3, round 6,
+                // sdet-u3c3r5-resumed-reviewed-gate-failure-failed-sha-still-empty-sentinel,
+                // UPHELD): the exhaustive gate run just above is real wall-clock time (a
+                // genuine cargo build/test), the last thing that touches `dir` before this
+                // read, and this arm returns BEFORE ever reaching `integrate_and_emit`'s own
+                // centralized re-assert - so nothing else protects this read. Mirrors the
+                // identical fix already applied to every sibling stamp in this unit.
+                if let Some(w) = wt {
+                    w.ensure_present()?;
+                }
                 let failed_sha = worktree::head_sha_of(dir);
                 self.emit_meta(
                     ledger::TYPE_UNIT_FAILED,
@@ -3675,6 +3686,16 @@ impl RunCtx<'_> {
                 // back; record the failure so the unit re-enters its lifecycle next step and
                 // re-implements against the changed world, rather than wedging on a `reviewed`
                 // status it can never safely merge.
+                //
+                // Ensure-on-park, defense in depth (spec 64 criterion 3, round 6,
+                // adv-u3c3r5-two-more-unguarded-empty-sha-siblings, UPHELD): the post-merge
+                // re-gate that produced this `blocked` result runs `GateSelection::PostMerge`
+                // against `self.deps.repo`, never re-touching `dir` - so `integrate_and_emit`'s
+                // own internal re-assert (which ran BEFORE that re-gate) cannot cover this
+                // read. Re-assert immediately before it, same as every sibling site.
+                if let Some(w) = wt {
+                    w.ensure_present()?;
+                }
                 let failed_sha = worktree::head_sha_of(dir);
                 self.emit_meta(
                     ledger::TYPE_UNIT_FAILED,
@@ -4494,6 +4515,16 @@ impl RunCtx<'_> {
                 // `Reviewed`/`Verified`), so a resume RE-ENTERS `run_speculation` instead of
                 // mis-routing to the review-skipping single-lane `Reviewed` path on the canonical
                 // lane.
+                //
+                // Ensure-on-park, defense in depth (spec 64 criterion 3, round 6,
+                // adv-u3c3r5-two-more-unguarded-empty-sha-siblings, UPHELD): the exhaustive
+                // post-merge re-gate that produced this `blocked` result runs against
+                // `self.deps.repo`, never re-touching `candidates[i].wt.dir` - so
+                // `integrate_and_emit`'s own internal re-assert (which ran BEFORE that
+                // re-gate) cannot cover this read. Re-assert immediately before it, matching
+                // the identical guard `emit_speculation_winner_status` already uses on this
+                // same candidate below.
+                candidates[i].wt.ensure_present()?;
                 let failed_sha = worktree::head_sha_of(&dir);
                 self.emit_meta(
                     ledger::TYPE_UNIT_FAILED,
