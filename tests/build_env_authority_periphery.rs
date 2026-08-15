@@ -132,6 +132,7 @@ fn build_config_round_trips_through_the_real_on_disk_loader_and_feeds_the_resolv
     let resolved = as_map(&BuildEnv::resolve(
         &cfg.workflow.build.wrapper,
         &cfg.workflow.build.cache_dir,
+        cfg.workflow.build.jobs,
     ));
     assert_eq!(
         resolved.get("RUSTC_WRAPPER").map(String::as_str),
@@ -157,7 +158,11 @@ fn build_config_round_trips_through_the_real_on_disk_loader_and_feeds_the_resolv
     assert_eq!(cfg.workflow.build.wrapper, "");
     assert_eq!(cfg.workflow.build.cache_dir, "");
     assert_eq!(
-        BuildEnv::resolve(&cfg.workflow.build.wrapper, &cfg.workflow.build.cache_dir),
+        BuildEnv::resolve(
+            &cfg.workflow.build.wrapper,
+            &cfg.workflow.build.cache_dir,
+            cfg.workflow.build.jobs,
+        ),
         BuildEnv::default(),
         "an omitted build: section must resolve to the empty BuildEnv - no injection"
     );
@@ -173,7 +178,7 @@ fn build_env_resolve_falls_back_to_the_default_cache_dir_when_unset() {
     // (real ambient env), so it holds `ENV_TEST_LOCK` for the same reason the
     // `remove_var` test below does - see that lock's doc comment.
     let _guard = env_test_lock();
-    let resolved = as_map(&BuildEnv::resolve("sccache", ""));
+    let resolved = as_map(&BuildEnv::resolve("sccache", "", 0));
     let dir = resolved
         .get("SCCACHE_DIR")
         .expect("a configured wrapper must always resolve SOME cache dir");
@@ -352,6 +357,7 @@ fn one_build_environment_authority_reaches_a_real_gate_subprocess_and_a_real_age
     let configured = BuildConfig {
         wrapper: "sccache".into(),
         cache_dir: "/shared/build-cache".into(),
+        jobs: 0,
     };
     let (gate_evidence, agent_outputs) = run_once(configured, &agent_bin);
     assert_lines_present(

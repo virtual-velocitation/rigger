@@ -194,11 +194,11 @@ pub fn auto_demote(g: &Gate, pass: bool) -> (Autonomy, bool) {
 /// threads it through. Wired so far: inline/deferred gate builds ([`ExecRunner::run`])
 /// and the blocking `driver::cli` agent driver's spawned process (via
 /// `conductor::SpawnOpts`), so a gate build and that driver's own `cargo test`
-/// invocation hit the same compilation cache under the same settings. The turn-key
-/// `rigger workflow` Node-shim driver and `driver::replay`'s wire contract do not
-/// carry these vars yet - a disclosed, tracked gap for a follow-on unit, not
-/// something this resolver claims to reach today. One resolver, two wired
-/// injection sites; neither derives its own competing copy.
+/// invocation hit the same compilation cache under the same settings, at the same
+/// jobs cap. The turn-key `rigger workflow` Node-shim driver and `driver::replay`'s
+/// wire contract do not carry these vars yet - a disclosed, tracked gap for a
+/// follow-on unit, not something this resolver claims to reach today. One resolver,
+/// two wired injection sites; neither derives its own competing copy.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BuildEnv {
     vars: Vec<(String, String)>,
@@ -206,10 +206,11 @@ pub struct BuildEnv {
 
 impl BuildEnv {
     /// Resolve the build environment from the workflow's `build.wrapper` /
-    /// `build.cache_dir` config (§65). An empty or (case/whitespace-insensitive)
-    /// `off` wrapper resolves to NO vars at all - a build this loop runs then
-    /// inherits the ambient environment untouched, exactly as before this authority
-    /// existed; no silent injection of anything unasked for.
+    /// `build.cache_dir` / `build.jobs` config (§65). An empty or
+    /// (case/whitespace-insensitive) `off` wrapper resolves NO wrapper vars at all -
+    /// a build this loop runs then inherits the ambient environment untouched,
+    /// exactly as before this authority existed; no silent injection of anything
+    /// unasked for.
     ///
     /// A configured wrapper (any other value, taken VERBATIM) resolves to exactly
     /// three vars:
@@ -225,24 +226,31 @@ impl BuildEnv {
     /// - `CARGO_INCREMENTAL=0` - incremental output defeats wrapper caching; the
     ///   per-unit warm target dirs (Gap 19 / spec 64) carry the incremental win
     ///   instead.
-    pub fn resolve(wrapper: &str, cache_dir: &str) -> BuildEnv {
+    ///
+    /// `jobs` (spec 65 unit 4 - JOBS CAP) is its OWN facet, independent of the
+    /// wrapper: `0` (the config default) means unset and injects nothing, leaving
+    /// cargo's own ambient default parallelism untouched; a positive value resolves
+    /// to `CARGO_BUILD_JOBS`, added whether or not a wrapper is configured, so
+    /// `build.max_concurrent` (unit 3's slot budget) x `build.jobs` can be sized to
+    /// the machine regardless of the compilation-cache layer.
+    pub fn resolve(wrapper: &str, cache_dir: &str, jobs: u32) -> BuildEnv {
         let wrapper = wrapper.trim();
-        if wrapper.is_empty() || wrapper.eq_ignore_ascii_case("off") {
-            return BuildEnv::default();
+        let mut vars = Vec::new();
+        if !(wrapper.is_empty() || wrapper.eq_ignore_ascii_case("off")) {
+            let dir = if cache_dir.trim().is_empty() {
+                default_cache_dir()
+            } else {
+                cache_dir.trim().to_string()
+            };
+            let dir_var = format!("{}_DIR", wrapper.to_ascii_uppercase());
+            vars.push(("RUSTC_WRAPPER".to_string(), wrapper.to_string()));
+            vars.push((dir_var, dir));
+            vars.push(("CARGO_INCREMENTAL".to_string(), "0".to_string()));
         }
-        let dir = if cache_dir.trim().is_empty() {
-            default_cache_dir()
-        } else {
-            cache_dir.trim().to_string()
-        };
-        let dir_var = format!("{}_DIR", wrapper.to_ascii_uppercase());
-        BuildEnv {
-            vars: vec![
-                ("RUSTC_WRAPPER".to_string(), wrapper.to_string()),
-                (dir_var, dir),
-                ("CARGO_INCREMENTAL".to_string(), "0".to_string()),
-            ],
+        if jobs > 0 {
+            vars.push(("CARGO_BUILD_JOBS".to_string(), jobs.to_string()));
         }
+        BuildEnv { vars }
     }
 
     /// The resolved vars as `(name, value)` pairs, for a caller (the agent driver's
@@ -527,11 +535,11 @@ mod tests {
         // environment untouched, exactly as before this authority existed. No silent
         // degrade in the other direction either: nothing is injected when nothing was
         // asked for.
-        assert!(BuildEnv::resolve("", "").vars().is_empty());
-        assert!(BuildEnv::resolve("off", "/some/cache").vars().is_empty());
+        assert!(BuildEnv::resolve("", "", 0).vars().is_empty());
+        assert!(BuildEnv::resolve("off", "/some/cache", 0).vars().is_empty());
         // Matched case- and whitespace-insensitively, like the workflow's other on/off
         // scalars (`dash`, `autonomy`).
-        assert!(BuildEnv::resolve("  OFF  ", "").vars().is_empty());
+        assert!(BuildEnv::resolve("  OFF  ", "", 0).vars().is_empty());
     }
 
     #[test]
@@ -542,7 +550,7 @@ mod tests {
         // cache-directory var (the generic `<WRAPPER>_DIR` convention - rigger hardcodes
         // no specific tool), and CARGO_INCREMENTAL=0 (incremental output defeats
         // wrapper caching).
-        let env = BuildEnv::resolve("sccache", "/shared/build-cache");
+        let env = BuildEnv::resolve("sccache", "/shared/build-cache", 0);
         let vars: std::collections::HashMap<_, _> = env.vars().iter().cloned().collect();
         assert_eq!(
             vars.get("RUSTC_WRAPPER").map(String::as_str),
@@ -560,7 +568,7 @@ mod tests {
     fn build_env_derives_the_wrapper_specific_cache_dir_var_name() {
         // The <WRAPPER>_DIR convention is generic, not hardcoded to one tool: a
         // differently-named wrapper gets its OWN uppercased var.
-        let env = BuildEnv::resolve("ccache", "/x");
+        let env = BuildEnv::resolve("ccache", "/x", 0);
         let vars: std::collections::HashMap<_, _> = env.vars().iter().cloned().collect();
         assert_eq!(vars.get("CCACHE_DIR").map(String::as_str), Some("/x"));
         assert!(!vars.contains_key("SCCACHE_DIR"));
@@ -572,7 +580,7 @@ mod tests {
         // non-empty shared location (`<state home>/rigger/build-cache`) - never an
         // empty/unset cache var, which would leave the wrapper's OWN scattered
         // per-invocation default in play instead of one shared machine-wide cache.
-        let env = BuildEnv::resolve("sccache", "");
+        let env = BuildEnv::resolve("sccache", "", 0);
         let vars: std::collections::HashMap<_, _> = env.vars().iter().cloned().collect();
         let dir = vars.get("SCCACHE_DIR").expect("a default cache dir var");
         assert!(!dir.is_empty());
@@ -589,7 +597,7 @@ mod tests {
         // the gate command sees RUSTC_WRAPPER/<WRAPPER>_DIR/CARGO_INCREMENTAL=0; with
         // the default (no wrapper), it sees none of them - the ambient env is
         // untouched, exactly like the existing empty-target_dir behavior.
-        let env = BuildEnv::resolve("sccache", "/shared/build-cache");
+        let env = BuildEnv::resolve("sccache", "/shared/build-cache", 0);
         let with = ExecRunner.run(
             &gate_cmd(
                 "test \"$RUSTC_WRAPPER\" = sccache && test \"$SCCACHE_DIR\" = /shared/build-cache \
@@ -618,7 +626,7 @@ mod tests {
 
     #[test]
     fn build_env_apply_sets_every_resolved_var_on_a_command() {
-        let env = BuildEnv::resolve("sccache", "/shared/build-cache");
+        let env = BuildEnv::resolve("sccache", "/shared/build-cache", 0);
         let mut cmd = Command::new("sh");
         env.apply(&mut cmd);
         cmd.arg("-c").arg(
@@ -627,5 +635,58 @@ mod tests {
         );
         let status = cmd.status().unwrap();
         assert!(status.success(), "apply must set every resolved var");
+    }
+
+    #[test]
+    fn build_env_jobs_cap_reaches_the_build_when_set() {
+        // spec 65, JOBS CAP (unit 4): a configured `build.jobs` must resolve to
+        // CARGO_BUILD_JOBS, threaded through the SAME BuildEnv the wrapper vars ride -
+        // no second, competing env-derivation path.
+        let env = BuildEnv::resolve("", "", 4);
+        let vars: std::collections::HashMap<_, _> = env.vars().iter().cloned().collect();
+        assert_eq!(vars.get("CARGO_BUILD_JOBS").map(String::as_str), Some("4"));
+    }
+
+    #[test]
+    fn build_env_jobs_cap_is_independent_of_the_wrapper() {
+        // The jobs cap is its own facet of the build environment: it must reach the
+        // build whether or not a compilation-cache wrapper is configured, and a
+        // configured wrapper must not suppress it or vice versa.
+        let env = BuildEnv::resolve("sccache", "/shared/build-cache", 8);
+        let vars: std::collections::HashMap<_, _> = env.vars().iter().cloned().collect();
+        assert_eq!(vars.get("CARGO_BUILD_JOBS").map(String::as_str), Some("8"));
+        assert_eq!(
+            vars.get("RUSTC_WRAPPER").map(String::as_str),
+            Some("sccache")
+        );
+        assert_eq!(env.vars().len(), 4, "wrapper's 3 vars plus jobs: {env:?}");
+    }
+
+    #[test]
+    fn build_env_jobs_cap_unset_leaves_the_ambient_default_untouched() {
+        // 0 (the config default, matching the budget/max_retries/speculation_width
+        // zero-as-unset convention) means unset - CARGO_BUILD_JOBS must NOT be
+        // injected, so an un-set workflow leaves cargo's own ambient default jobs
+        // count untouched, exactly as before this criterion existed.
+        assert!(!BuildEnv::resolve("", "", 0)
+            .vars()
+            .iter()
+            .any(|(k, _)| k == "CARGO_BUILD_JOBS"));
+        assert!(!BuildEnv::resolve("sccache", "/x", 0)
+            .vars()
+            .iter()
+            .any(|(k, _)| k == "CARGO_BUILD_JOBS"));
+    }
+
+    #[test]
+    fn exec_runner_applies_the_jobs_cap_it_is_given() {
+        // The jobs cap reaches a real gate subprocess through the SAME injection site
+        // (ExecRunner::run) the wrapper vars already use - no second call needed.
+        let env = BuildEnv::resolve("", "", 3);
+        let res = ExecRunner.run(&gate_cmd("test \"$CARGO_BUILD_JOBS\" = 3"), "", "", &env);
+        assert!(
+            res.pass,
+            "a configured jobs cap must reach the gate: {res:?}"
+        );
     }
 }

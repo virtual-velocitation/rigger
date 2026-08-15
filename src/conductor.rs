@@ -5952,15 +5952,17 @@ impl RunCtx<'_> {
 
     /// The resolved build environment for this run (spec 65's ONE build-environment
     /// authority): re-derived from the committed `build.wrapper` / `build.cache_dir`
-    /// config each call rather than cached, since [`gate::BuildEnv::resolve`] is a
-    /// pure, cheap string operation - a single resolver, called from every site that
-    /// needs it, so a gate build ([`run_gates`](Self::run_gates),
-    /// [`run_deferred_gates`](Self::run_deferred_gates)) and an agent-spawn build
-    /// (every `SpawnOpts.env`) can never derive two disagreeing copies.
+    /// / `build.jobs` config each call rather than cached, since
+    /// [`gate::BuildEnv::resolve`] is a pure, cheap operation - a single resolver,
+    /// called from every site that needs it, so a gate build ([`run_gates`]
+    /// (Self::run_gates), [`run_deferred_gates`](Self::run_deferred_gates)) and an
+    /// agent-spawn build (every `SpawnOpts.env`) can never derive two disagreeing
+    /// copies, including the jobs cap (spec 65 unit 4).
     fn build_env(&self) -> gate::BuildEnv {
         gate::BuildEnv::resolve(
             &self.cfg.workflow.build.wrapper,
             &self.cfg.workflow.build.cache_dir,
+            self.cfg.workflow.build.jobs,
         )
     }
 
@@ -21444,6 +21446,7 @@ mod tests {
         let configured = config::BuildConfig {
             wrapper: "sccache".into(),
             cache_dir: "/shared/build-cache".into(),
+            jobs: 0,
         };
         let want: HashMap<String, String> = [
             ("RUSTC_WRAPPER".to_string(), "sccache".to_string()),
