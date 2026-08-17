@@ -259,10 +259,13 @@ mod tests {
 
         // Kill the holder's WHOLE process group ABNORMALLY (SIGKILL) - neither it nor its
         // child runs any cleanup, so only the kernel's own release-on-exit can free the
-        // slot.
+        // slot. The `--` separator is load-bearing: without it, kill(1) parses the
+        // negative-pid operand as an option and the syscall targets a DIFFERENT group
+        // than the one named (strace-verified; recorded as d65-u3-group-kill-argv-hazard).
         let pgid = holder.id();
         let _ = Command::new("kill")
             .arg("-9")
+            .arg("--")
             .arg(format!("-{pgid}"))
             .status();
         holder.wait().expect("reap the killed fixture holder");
