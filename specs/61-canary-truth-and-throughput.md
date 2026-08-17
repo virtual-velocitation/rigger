@@ -1,85 +1,64 @@
 # 61 - Canary truth and throughput: real attribution, honest rates, parallel tiers
 
 **Goal:** make `rigger canary` report what actually happened and finish in the time the work
-takes (issues #24 and #22). Two defects and one cost problem:
+takes (issues #24 and #22). Three defects:
 
-1. **Attribution is always empty.** `caught_by` came back `[]` on EVERY corpus item of a live
-   run - including all four planted defects the panel correctly rejected - so the scorecard
-   printed `0/4 (0.0%)` per tier. That reads as "tier 1 and tier 2 are blind" when the per-item
-   records show the opposite, and it caused a real misdiagnosis (the actual defect was both
-   known-good controls being rejected - a false-positive problem with the opposite fix). The
-   catch test (`src/canary.rs::Finding::catches`) requires a finding's `about` entry to equal
-   `item.anchor` EXACTLY; a live reviewer that names the same file any other way (absolute path,
-   worktree-relative path, or with surrounding text) never matches. Root-cause the live-path
-   miss and make attribution hold for how real reviewers actually name files.
-2. **The false-positive rate is not reported.** Rejecting a known-good control is arguably the
-   more expensive failure (it burns a remediation cycle on correct work and, repeated, exhausts
-   `max_retries` and escalates a unit that was already right), yet today it must be
-   reconstructed by reading raw per-item records. `verdict_correct` is already present and
-   sufficient.
-3. **Everything runs serially.** One child process at a time across the whole run - including
-   the four tier-1 lenses that `workflow.yml` declares parallel and the run loop already fans
-   out - and corpus items, which are fully independent, run one after another. Measured: ~22
-   minutes per item, 2.5+ hours for a 6-item corpus, with NOTHING on stdout until the end (the
-   only liveness signal was inspecting child processes).
+1. **Attribution is always empty.** `caught_by` came back `[]` on every item of a live run -
+   including all four planted defects the panel correctly rejected - printing `0/4 (0.0%)`
+   per tier and causing a real misdiagnosis. The catch test
+   (`src/canary.rs::Finding::catches`) requires `about` to equal `item.anchor` EXACTLY; live
+   reviewers name the same file as absolute paths, worktree-relative paths, or inside text.
+2. **The false-positive rate is not reported.** Rejecting a known-good control burns a
+   remediation cycle and, repeated, escalates a correct unit - yet it must be reconstructed
+   from raw per-item records. `verdict_correct` is already present and sufficient.
+3. **Everything runs serially.** One child at a time - even the four tier-1 lenses declared
+   parallel - and independent corpus items queue. Measured: ~22 min/item, 2.5+ hours for 6
+   items, nothing on stdout until the end.
 
 ## Design
 
-- **Attribution** (`src/canary.rs`): a tier catches the defect when it raises a finding about
-  the anchor under tolerant matching - the finding's `about` entry and the item's `anchor`
-  refer to the same file whether the reviewer spelled it repo-relative, absolute, or as a path
-  suffix. Tolerance is BOUNDED at path-segment boundaries: `corpus/a.rs` matches anchor `a.rs`
-  because the suffix begins at a `/`, while `extra.rs` does not - a substring match would score
-  the wrong file. The scored `caught_by` is populated from the findings each tier actually
-  raised, per tier, exactly as the in-process tests already model. If a live run's findings
-  genuinely cannot be attributed (a tier raised nothing), the per-tier line says so honestly.
-- **No fake zeros** (`src/canary.rs`, scorecard render): a rate is printed ONLY when its inputs
-  were actually measured. When attribution recovered nothing for any item that was
-  nevertheless correctly rejected, the per-tier line renders `n/a` with a one-line reason
-  rather than `0/N (0.0%)` - an unpopulated field must not look like a measurement.
-- **False positives first-class** (`src/canary.rs`, scorecard render): the summary reports the
-  control (non-planted) items as their own line - how many known-good controls were approved
-  vs rejected - so a false-positive problem is visible at the same glance as the catch rate.
-- **Parallel tiers and sharded items** (`src/canary.rs`, reusing `crate::parallel`): within an
-  item, the tier-1 lenses run concurrently (they are independent by the same declaration the
-  run loop honors); the adversary still follows the lenses and the adjudicator still follows
-  the adversary (each consumes the prior tier's findings - legitimately sequential).
-  Independent corpus items shard across workers. A `--jobs <n>` flag caps total concurrent
-  agent spawns; its default is greater than 1 and sane for the corpus size (not unbounded).
-  One scorecard aggregates everything regardless of sharding.
-- **Observable progress** (`src/canary.rs`): the parent prints a per-item line to stdout as
-  each item completes (id, verdict correctness, tiers caught, elapsed), so a multi-hour run is
-  visibly alive without inspecting child processes.
-- **Per-tier model pinning for measurement runs** (`src/canary.rs`, `src/main.rs`): a repeatable
-  `--model <tier>=<id>` flag (tiers: `lens`, `adversary`, `adjudicator`) overrides the model the
-  named tier's agents resolve for THIS canary run only - config untouched, aliases allowed but
-  ids passed through verbatim so an experiment can pin exact ids. The scorecard header records
-  the binary build, the corpus content hash, and each tier's RESOLVED model id (from the same
-  `model_for_attempt` authority), so an A/B arm is auditable from its scorecard alone. This is
-  the instrument `docs/experiments/2026-08-11-lens-model-ab-protocol.md` pre-registers; the
-  per-item records additionally carry the count of findings each tier raised (the over-flagging
-  measure), alongside the existing attribution.
-- **Per-spawn timing in stats** (`src/metrics.rs` / `src/main.rs::cmd_stats`): per-agent wall
-  time becomes derivable from the log: `rigger stats` pairs each recorded spawn request with
-  its recorded result by spawn id and reports duration aggregates (per tier/agent: count,
-  total, mean), so "which tier dominates a run's wall clock" is answerable with data. A
-  request with NO recorded result (a dead worker) is excluded from every duration aggregate
-  and reported as its own unpaired count - a fabricated or zero duration must never enter a
-  mean. If the recorded result event does not already carry what pairing needs, it gains a
-  meta stamp on the EXISTING event - no new event type.
+- **Attribution** (`src/canary.rs`): a tier catches when it raises a finding about the anchor
+  under tolerant matching - repo-relative, absolute, or path-suffix spellings of the same
+  file all match. Tolerance is BOUNDED at path-segment boundaries: `corpus/a.rs` matches
+  anchor `a.rs` (suffix begins at `/`), `extra.rs` does not. `caught_by` is populated from
+  the findings each tier actually raised; a tier that raised nothing reads honestly as such.
+- **No fake zeros** (scorecard render): a rate prints ONLY when its inputs were measured.
+  Correct rejections with empty attribution render `n/a` with a one-line reason, never
+  `0/N (0.0%)`.
+- **False positives first-class** (scorecard render): the summary reports control items as
+  their own line - known-good approved vs rejected - visible at the same glance as the catch
+  rate.
+- **Parallel tiers and sharded items** (`src/canary.rs`, reusing `crate::parallel`): within
+  an item the tier-1 lenses run concurrently; the adversary follows the lenses and the
+  adjudicator the adversary (legitimately sequential). Independent items shard across
+  workers. `--jobs <n>` caps total concurrent spawns; default greater than 1 and sane for
+  the corpus size. One scorecard aggregates regardless of sharding.
+- **Observable progress**: the parent prints a per-item stdout line as each item completes
+  (id, verdict correctness, tiers caught, elapsed).
+- **Per-tier model pinning** (`src/canary.rs`, `src/main.rs`): repeatable `--model <tier>=<id>`
+  (tiers: `lens`, `adversary`, `adjudicator`) overrides the named tier's model for THIS run
+  only - config untouched, ids passed through verbatim. The scorecard header records binary
+  build, corpus content hash, and each tier's RESOLVED model id (the `model_for_attempt`
+  authority), so an A/B arm is auditable from its scorecard alone (the instrument
+  `docs/experiments/2026-08-11-lens-model-ab-protocol.md` pre-registers). Per-item records
+  also carry each tier's finding count (the over-flagging measure).
+- **Per-spawn timing in stats** (`src/metrics.rs` / `src/main.rs::cmd_stats`): `rigger stats`
+  pairs each recorded spawn request with its result by spawn id and reports duration
+  aggregates (per tier/agent: count, total, mean). An unpaired request (dead worker) is
+  excluded from every aggregate and reported as its own count - a fabricated or zero
+  duration never enters a mean. If pairing needs more than the existing result event
+  carries, it gains a meta stamp on the EXISTING event - no new event type.
 
 ## Notes (non-criteria)
 
-- Tier semantics are unchanged: lenses are collectively one tier for catch purposes; the
-  adjudicator's position-bias stability probe (natural + reversed order) stays as is.
-- The corpus format, defect classes, and fail-closed adjudication authority are untouched.
-- Crash-resume disposition, decided here: a canary run is ONE-SHOT and run-scope-free. An
-  interrupted run is restarted from scratch; the per-item stdout lines already printed are its
-  partial record, and no resume/replay machinery is owed by any unit.
-- Concurrency-vs-determinism, decided here: the fan-out and sharding criteria are pinned with
-  the DETERMINISTIC test driver the existing unit tests use - a live-model run is not
-  reproducible and is not what those criteria measure. Parallelism must not reorder or alter
-  what the fake driver's serial run scores.
+- Tier semantics unchanged: lenses are collectively one tier for catch purposes; the
+  adjudicator's position-bias probe stays as is.
+- Corpus format, defect classes, and fail-closed adjudication authority untouched.
+- Crash-resume disposition, decided here: a canary run is ONE-SHOT and run-scope-free;
+  an interrupted run restarts from scratch; no resume machinery is owed.
+- Concurrency-vs-determinism, decided here: fan-out and sharding criteria are pinned with
+  the DETERMINISTIC test driver; a live-model run is not what they measure. Parallelism must
+  not reorder or alter what the fake driver's serial run scores.
 - No new event type is introduced anywhere in this spec.
 
 ## Global constraints
@@ -88,11 +67,9 @@ takes (issues #24 and #22). Two defects and one cost problem:
   external tool or project in code, comments, or commit messages.
 - Both feature lanes stay green: `cargo fmt --check`; `cargo clippy --all-targets -D warnings`;
   `cargo test` - on default features AND `--no-default-features`.
-- Determinism where it counts: parallel execution must not change any scored outcome or the
-  scorecard's content (ordering of concurrent completion may not leak into scoring), pinned by
-  test.
-- Honest reporting: no line on the scorecard may render a rate whose underlying attribution
-  was not measured.
+- Determinism where it counts: parallel execution must not change any scored outcome or
+  scorecard content, pinned by test.
+- Honest reporting: no scorecard line may render a rate whose attribution was not measured.
 
 ## Done when
 

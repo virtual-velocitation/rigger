@@ -1,51 +1,39 @@
 # 71 - The store defends its own order
 
-**Goal:** make the event store's ordering invariant self-enforcing, so the corruption class a
-live incident just demonstrated can never again proceed silently. The recorded chain: a
-compaction (which leaves revision gaps by design) ran against a live store; a WRITER BUILT
-BEFORE the gap-tolerant cursor then appended at reissued gap revisions (count-derived cursor);
-every subsequent event sorted BELOW the run boundary in the conductor's revision-ordered read;
-and the run re-drove an already-answered spawn for 37 rounds because its results were
-invisible. Three defenses, one per hole: the append path refuses to write disorder, the
-compaction refuses to run under live writers, and validate detects the signature in an
-already-damaged store.
+**Goal:** make the event store's ordering invariant self-enforcing. Recorded incident: a
+compaction (which leaves revision gaps by design) ran against a live store; a writer built
+before the gap-tolerant cursor appended at reissued gap revisions; every later event sorted
+BELOW the run boundary in revision order; the run re-drove an answered spawn for 37 rounds.
+Three defenses, one per hole: append refuses disorder, compaction refuses live writers,
+validate detects the signature after the fact.
 
 ## Design
 
 - **Append asserts monotonicity** (`src/eventstore/sqlite.rs`, inside the same transaction as
-  the cursor seek at :1081 and the insert): before committing, the append verifies the
-  revision it is about to write is STRICTLY GREATER than the revision of the stream's LAST
-  ROW IN POSITION ORDER (one indexed seek). A violation fails the append loudly, naming the
-  stream, both revisions, and the likely cause (a stale writer after a compaction - reinstall
-  or restart the writer). Constraints walk, written in: EMPTY stream - no tail row, the
-  assertion vacuously passes (the `COALESCE` seed is the cursor). CONCURRENT writers - the
-  seek, the assertion, and the insert share ONE transaction, so a racing sibling serializes
-  behind it and re-seeks a fresh tail; a race must surface as retry-or-refusal THROUGH THE
-  NAMED ERROR, never as a bare `UNIQUE(stream, revision)` constraint failure (an
-  unattributable collision is the confusing failure this spec exists to abolish).
-  CRASH-RESUME and COLD START - the tail is read from the log each append, never cached, so
-  a fresh process asserts identically. This converts silent disordering into an immediate,
-  attributable error at the FIRST bad write - the correct writer never trips it (its cursor
-  IS the max), so the assertion costs one seek inside a transaction already taken.
-- **Compaction refuses live writers** (`src/main.rs`, `rigger reset --derived`): the prune
-  refuses to run while the run machinery is live - a held step lock, in-flight spawns in the
-  current run's slice, or a fresh driver registration - naming what is live and instructing
-  the operator to stop it first (or pass an explicit override flag whose help text owns the
-  risk). Compaction is operator maintenance; mid-run mutation of the log is how the incident
-  started.
+  the cursor seek at :1081 and the insert): before committing, verify the revision to be
+  written is STRICTLY GREATER than the stream's last row in position order (one indexed
+  seek). A violation fails loudly, naming stream, both revisions, and the likely cause (a
+  stale writer after a compaction - reinstall or restart the writer). Constraints walk:
+  EMPTY stream - no tail row, vacuously passes. CONCURRENT writers - seek, assertion, and
+  insert share one transaction; a racing sibling serializes and re-seeks; a race surfaces as
+  retry-or-refusal through the NAMED error, never a bare `UNIQUE(stream, revision)` failure.
+  CRASH-RESUME / COLD START - the tail is read from the log each append, never cached. The
+  correct writer never trips it (its cursor IS the max); cost is one seek in a transaction
+  already taken.
+- **Compaction refuses live writers** (`src/main.rs`, `rigger reset --derived`): refuse while
+  the run machinery is live (held step lock, in-flight spawns in the current run's slice, or
+  a fresh driver registration), naming what is live and how to stop it, with an explicit
+  override flag whose help text owns the risk.
 - **Validate detects the signature** (`src/main.rs::cmd_validate`, advisory like its
-  siblings): a stream whose position order and revision order DISAGREE is reported with the
-  count of out-of-order rows and the affected range, naming the repair path. This is the
-  after-the-fact detector for a store damaged before this spec landed, and the regression
-  alarm if any future writer evades the append assertion.
+  siblings): a stream whose position order and revision order disagree is reported with the
+  out-of-order row count and affected range, naming the repair path.
 
 ## Notes (non-criteria)
 
 - The append assertion is the load-bearing defense; the other two are belt and braces. All
-  three fail LOUDLY in their own name - none may silently repair, reorder, or drop anything.
-- Repair itself stays a documented operator procedure (renumber-by-position, two-phase), not
-  a command, until a second incident justifies automating it; validate names the procedure's
-  doc location.
+  three fail LOUDLY; none may silently repair, reorder, or drop anything.
+- Repair stays a documented operator procedure (renumber-by-position, two-phase), not a
+  command; validate names the procedure's doc location.
 - No new event type is introduced anywhere in this spec.
 
 ## Global constraints
@@ -54,8 +42,8 @@ already-damaged store.
   harnesses or to projects unrelated to the mechanism.
 - Both feature lanes stay green: `cargo fmt --check`; `cargo clippy --all-targets -D warnings`;
   `cargo test` - on default features AND `--no-default-features`.
-- Fail-safe directions only: the assertion may only ever REFUSE a write; the compaction guard
-  may only ever refuse a prune; validate may only ever report. No path gains repair-by-side-effect.
+- Fail-safe directions only: the assertion may only refuse a write; the compaction guard may
+  only refuse a prune; validate may only report. No path gains repair-by-side-effect.
 - The port contract suite (`src/eventstore/contract.rs`) pins the assertion so every backend
   owes the same refusal.
 
