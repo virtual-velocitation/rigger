@@ -41,6 +41,10 @@
 > - [Grounding as a Tool](architecture-addendum-grounding-as-tool.md) - pushes only the small
 >   deterministic intent layer into an agent's prompt and serves the large reference bulk on
 >   demand through a real graph query tool, removing a measured push-truncation defect.
+> - [The Resident Conductor](architecture-addendum-resident-conductor.md) - one resident
+>   rigger process per project owns the run and parents every subprocess it starts, ending
+>   work by handle instead of inference; the socket is the singleton, the store gets one
+>   writer, and the command line (and the workflow's couriers) become clients.
 
 ---
 
