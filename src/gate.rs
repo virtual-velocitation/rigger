@@ -728,7 +728,13 @@ mod tests {
         // The jobs cap reaches a real gate subprocess through the SAME injection site
         // (ExecRunner::run) the wrapper vars already use - no second call needed.
         let env = BuildEnv::resolve("", "", 3);
-        let res = ExecRunner.run(&gate_cmd("test \"$CARGO_BUILD_JOBS\" = 3"), "", "", &env);
+        let res = ExecRunner.run(
+            &gate_cmd("test \"$CARGO_BUILD_JOBS\" = 3"),
+            "",
+            "",
+            &env,
+            &BuildBudget::default(),
+        );
         assert!(
             res.pass,
             "a configured jobs cap must reach the gate: {res:?}"
