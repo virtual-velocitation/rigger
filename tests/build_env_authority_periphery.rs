@@ -1,6 +1,8 @@
-//! Periphery (contract / API / integration) tests for spec 65 criterion 1: the ONE
+//! Periphery (contract / API / integration) tests for spec 65 criteria 1 and 4: the ONE
 //! build-environment authority - `gate::BuildEnv::resolve` and its two injection sites
-//! (`gate::ExecRunner::run`, `driver::cli::Driver::spawn`).
+//! (`gate::ExecRunner::run`, `driver::cli::Driver::spawn`) - and criterion 4's JOBS CAP
+//! facet (`build.jobs` -> `CARGO_BUILD_JOBS`), which rides the SAME resolver and the
+//! SAME two injection sites rather than a competing seam of its own.
 //!
 //! WHAT THE INSIDE-OUT TESTS ARE STRUCTURALLY BLIND TO.
 //!
@@ -44,11 +46,30 @@
 //!    prevent (a build tool silently caching under different keys at the two sites, or a
 //!    silent injection when none was asked for).
 //!
+//! 4. `build_config_round_trips_an_explicit_jobs_value_through_the_real_on_disk_loader`:
+//!    the same real `.rigger/workflow.yml` on-disk gap test 1 closes for
+//!    `wrapper`/`cache_dir`, closed for `jobs` - a real workflow.yml with an explicit
+//!    `build.jobs`, loaded through the real `config::load` entry point, must feed the
+//!    resolver the exact value an operator committed, with no wrapper implied.
+//! 5. `jobs_cap_reaches_a_real_gate_subprocess_and_a_real_agent_subprocess_independent_
+//!    of_wrapper`: drives a full `conductor::run` exactly like test 3, but with ONLY
+//!    `build.jobs` set (no wrapper) - proves `CARGO_BUILD_JOBS` reaches BOTH real
+//!    boundaries (the real gate subprocess AND the real agent subprocess) from one run,
+//!    and that it does so WITHOUT injecting any wrapper var. Closes the exact gap this
+//!    file's own out-of-scope note used to name: the unit-level tests in `gate.rs` prove
+//!    `resolve()`'s in-memory output and (via a lone `ExecRunner::run` call) ONE real
+//!    subprocess, but never the agent-spawn injection site, and never through the real
+//!    `conductor::run` wiring that proves it is the SAME resolved value at both sites.
+//! 6. `jobs_cap_coexists_with_a_configured_wrapper_at_both_real_injection_sites`: the
+//!    same proof in the other direction - `build.jobs` set ALONGSIDE a configured
+//!    wrapper must reach both real subprocesses together, neither suppressing the
+//!    other, matching this authority's "independent facet" design.
+//!
 //! Out of scope, owned by sibling units per spec 65: `auto`/named-but-absent wrapper
-//! resolution (unit 2), the build-budget flock (unit 3), the jobs cap (unit 4), and the
-//! `validate`/`setup` reporting surfaces (unit 5). The turn-key Agent-SDK path
-//! (`shim/shim.mjs`) carries no diff in this unit (a separate, not-yet-wired injection
-//! site per the implementer's own record) and so is not exercised here either.
+//! resolution (unit 2), the build-budget flock (unit 3), and the `validate`/`setup`
+//! reporting surfaces (unit 5). The turn-key Agent-SDK path (`shim/shim.mjs`) carries no
+//! diff in this unit (a separate, not-yet-wired injection site per the implementer's own
+//! record) and so is not exercised here either.
 //!
 //! Nothing here is feature-gated: `BuildEnv`, `ExecRunner`, `cli::Driver`, and
 //! `config::load` are all compiled and exercised in both feature lanes.
@@ -132,6 +153,7 @@ fn build_config_round_trips_through_the_real_on_disk_loader_and_feeds_the_resolv
     let resolved = as_map(&BuildEnv::resolve(
         &cfg.workflow.build.wrapper,
         &cfg.workflow.build.cache_dir,
+        cfg.workflow.build.jobs,
     ));
     assert_eq!(
         resolved.get("RUSTC_WRAPPER").map(String::as_str),
@@ -157,9 +179,45 @@ fn build_config_round_trips_through_the_real_on_disk_loader_and_feeds_the_resolv
     assert_eq!(cfg.workflow.build.wrapper, "");
     assert_eq!(cfg.workflow.build.cache_dir, "");
     assert_eq!(
-        BuildEnv::resolve(&cfg.workflow.build.wrapper, &cfg.workflow.build.cache_dir),
+        BuildEnv::resolve(
+            &cfg.workflow.build.wrapper,
+            &cfg.workflow.build.cache_dir,
+            cfg.workflow.build.jobs,
+        ),
         BuildEnv::default(),
         "an omitted build: section must resolve to the empty BuildEnv - no injection"
+    );
+}
+
+#[test]
+fn build_config_round_trips_an_explicit_jobs_value_through_the_real_on_disk_loader() {
+    // spec 65 unit 4 (JOBS CAP): `build.jobs` is its own field of the SAME `build:`
+    // block, and closes the SAME real-on-disk-loader gap the test above closes for
+    // `wrapper`/`cache_dir` - `config.rs`'s own unit test parses `jobs` via a bare
+    // `serde_yaml::from_str` literal, never through the real `config::load` entry point
+    // (agent parsing + `Config::validate` included).
+    let project = tempfile::tempdir().expect("create temp project");
+    write_workflow(project.path(), "build:\n  jobs: 6\n");
+    let cfg = config::load(project.path().to_str().unwrap())
+        .expect("load a valid workflow.yml with an explicit build.jobs value");
+    assert_eq!(cfg.workflow.build.jobs, 6);
+    assert_eq!(
+        cfg.workflow.build.wrapper, "",
+        "an explicit jobs value with no wrapper key must not imply one"
+    );
+    let resolved = as_map(&BuildEnv::resolve(
+        &cfg.workflow.build.wrapper,
+        &cfg.workflow.build.cache_dir,
+        cfg.workflow.build.jobs,
+    ));
+    assert_eq!(
+        resolved.get("CARGO_BUILD_JOBS").map(String::as_str),
+        Some("6"),
+        "the real on-disk jobs value must reach the resolver: {resolved:?}"
+    );
+    assert!(
+        !resolved.contains_key("RUSTC_WRAPPER"),
+        "jobs alone must inject no wrapper vars: {resolved:?}"
     );
 }
 
@@ -173,7 +231,7 @@ fn build_env_resolve_falls_back_to_the_default_cache_dir_when_unset() {
     // (real ambient env), so it holds `ENV_TEST_LOCK` for the same reason the
     // `remove_var` test below does - see that lock's doc comment.
     let _guard = env_test_lock();
-    let resolved = as_map(&BuildEnv::resolve("sccache", ""));
+    let resolved = as_map(&BuildEnv::resolve("sccache", "", 0));
     let dir = resolved
         .get("SCCACHE_DIR")
         .expect("a configured wrapper must always resolve SOME cache dir");
@@ -239,12 +297,14 @@ impl AgentDriver for RealDriverSpy {
 const UNIT: &str = "a";
 const GATE: &str = "envgate";
 
-/// A small, controlled gate command: three `echo` lines, well under the evidence
-/// compactor's `MAX_LINES` cap, so every line survives verbatim into the recorded
+/// A small, controlled gate command: four `echo` lines, well under the evidence
+/// compactor's `MAX_LINES` (5) cap, so every line survives verbatim into the recorded
 /// `GateVerdict` - unlike a raw `env` dump, whose relevant line has no guaranteed
 /// position and is not guaranteed to survive the compactor's "last few lines" fallback.
-const GATE_CMD: &str =
-    "echo RUSTC_WRAPPER=$RUSTC_WRAPPER; echo SCCACHE_DIR=$SCCACHE_DIR; echo CARGO_INCREMENTAL=$CARGO_INCREMENTAL";
+/// `CARGO_BUILD_JOBS` (unit 4, JOBS CAP) rides alongside the wrapper vars as its own
+/// independent facet of the same resolved `BuildEnv`.
+const GATE_CMD: &str = "echo RUSTC_WRAPPER=$RUSTC_WRAPPER; echo SCCACHE_DIR=$SCCACHE_DIR; \
+     echo CARGO_INCREMENTAL=$CARGO_INCREMENTAL; echo CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS";
 
 /// Drive one full `conductor::run` with `build` configured, a REAL `ExecRunner` for the
 /// stage's one gate, and a `RealDriverSpy` wrapping the REAL `cli::Driver` (spawning
@@ -317,6 +377,10 @@ const CONFIGURED_LINES: [&str; 3] = [
 /// nothing injected them (the default/off case).
 const UNSET_LINES: [&str; 3] = ["RUSTC_WRAPPER=", "SCCACHE_DIR=", "CARGO_INCREMENTAL="];
 
+/// `CARGO_BUILD_JOBS`, unset - what a real `sh -c`/subprocess must echo when `build.jobs`
+/// is 0 (the config default). Spec 65 unit 4, JOBS CAP.
+const JOBS_UNSET_LINE: &str = "CARGO_BUILD_JOBS=";
+
 fn assert_lines_present(haystack: &str, wanted: &[&str], why: &str) {
     for line in wanted {
         assert!(
@@ -352,6 +416,7 @@ fn one_build_environment_authority_reaches_a_real_gate_subprocess_and_a_real_age
     let configured = BuildConfig {
         wrapper: "sccache".into(),
         cache_dir: "/shared/build-cache".into(),
+        jobs: 0,
     };
     let (gate_evidence, agent_outputs) = run_once(configured, &agent_bin);
     assert_lines_present(
@@ -383,6 +448,127 @@ fn one_build_environment_authority_reaches_a_real_gate_subprocess_and_a_real_age
             out,
             &UNSET_LINES,
             "no wrapper configured must inject nothing into the real agent subprocess",
+        );
+    }
+}
+
+#[test]
+fn jobs_cap_reaches_a_real_gate_subprocess_and_a_real_agent_subprocess_independent_of_wrapper() {
+    // spec 65 unit 4 (JOBS CAP): `build.jobs` must reach BOTH real injection sites this
+    // authority owns - a real gate subprocess AND a real agent subprocess spawned in the
+    // SAME run - exactly like the test above proves for the wrapper vars. The unit-level
+    // tests in `gate.rs` prove `resolve()`'s in-memory output and, via ONE direct
+    // `ExecRunner::run` call, ONE real subprocess; neither proves the agent-spawn
+    // injection site, and neither goes through the real `conductor::run` wiring that
+    // proves the SAME resolved value reaches both boundaries together - the gap this
+    // file's own scope note used to name against unit 4.
+    let _guard = env_test_lock();
+    std::env::remove_var("RUSTC_WRAPPER");
+    std::env::remove_var("SCCACHE_DIR");
+    std::env::remove_var("CARGO_INCREMENTAL");
+    std::env::remove_var("CARGO_BUILD_JOBS");
+
+    let agent_bin = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/env-echo-agent.sh");
+    assert!(
+        agent_bin.exists(),
+        "the fixture agent {agent_bin:?} must exist"
+    );
+
+    // Configured: jobs alone (no wrapper) must reach BOTH real subprocesses, and must
+    // inject NO wrapper var - the "independent facet" half of the design.
+    let configured = BuildConfig {
+        wrapper: "".into(),
+        cache_dir: "".into(),
+        jobs: 6,
+    };
+    let (gate_evidence, agent_outputs) = run_once(configured, &agent_bin);
+    assert_lines_present(
+        &gate_evidence,
+        &["CARGO_BUILD_JOBS=6"],
+        "a configured jobs cap must reach the real gate subprocess",
+    );
+    assert_lines_present(
+        &gate_evidence,
+        &UNSET_LINES,
+        "jobs alone must inject no wrapper var into the real gate subprocess",
+    );
+    assert!(!agent_outputs.is_empty(), "the agent must have spawned");
+    for out in &agent_outputs {
+        assert_lines_present(
+            out,
+            &["CARGO_BUILD_JOBS=6"],
+            "the SAME configured jobs cap must reach the real agent subprocess",
+        );
+        assert_lines_present(
+            out,
+            &UNSET_LINES,
+            "jobs alone must inject no wrapper var into the real agent subprocess",
+        );
+    }
+
+    // Unset (the config default, 0): the "unset leaves the ambient default untouched"
+    // half of the criterion - CARGO_BUILD_JOBS must reach NEITHER real subprocess.
+    let (off_gate_evidence, off_agent_outputs) = run_once(BuildConfig::default(), &agent_bin);
+    assert_lines_present(
+        &off_gate_evidence,
+        &[JOBS_UNSET_LINE],
+        "an unset jobs cap must inject nothing into the real gate subprocess",
+    );
+    assert!(!off_agent_outputs.is_empty(), "the agent must have spawned");
+    for out in &off_agent_outputs {
+        assert_lines_present(
+            out,
+            &[JOBS_UNSET_LINE],
+            "an unset jobs cap must inject nothing into the real agent subprocess",
+        );
+    }
+}
+
+#[test]
+fn jobs_cap_coexists_with_a_configured_wrapper_at_both_real_injection_sites() {
+    // The other half of the "independent facet" design: a configured wrapper must NOT
+    // suppress a configured jobs cap, at the SAME two real boundaries, in the SAME run -
+    // proving the real-subprocess-level analog of the in-memory unit test
+    // `build_env_jobs_cap_is_independent_of_the_wrapper` in `gate.rs`.
+    let _guard = env_test_lock();
+    std::env::remove_var("RUSTC_WRAPPER");
+    std::env::remove_var("SCCACHE_DIR");
+    std::env::remove_var("CARGO_INCREMENTAL");
+    std::env::remove_var("CARGO_BUILD_JOBS");
+
+    let agent_bin = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/env-echo-agent.sh");
+    assert!(
+        agent_bin.exists(),
+        "the fixture agent {agent_bin:?} must exist"
+    );
+
+    let configured = BuildConfig {
+        wrapper: "sccache".into(),
+        cache_dir: "/shared/build-cache".into(),
+        jobs: 8,
+    };
+    let (gate_evidence, agent_outputs) = run_once(configured, &agent_bin);
+    assert_lines_present(
+        &gate_evidence,
+        &CONFIGURED_LINES,
+        "a configured wrapper must still reach the real gate subprocess alongside jobs",
+    );
+    assert_lines_present(
+        &gate_evidence,
+        &["CARGO_BUILD_JOBS=8"],
+        "a configured jobs cap must reach the real gate subprocess alongside the wrapper",
+    );
+    assert!(!agent_outputs.is_empty(), "the agent must have spawned");
+    for out in &agent_outputs {
+        assert_lines_present(
+            out,
+            &CONFIGURED_LINES,
+            "a configured wrapper must still reach the real agent subprocess alongside jobs",
+        );
+        assert_lines_present(
+            out,
+            &["CARGO_BUILD_JOBS=8"],
+            "a configured jobs cap must reach the real agent subprocess alongside the wrapper",
         );
     }
 }
