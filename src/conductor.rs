@@ -11,6 +11,7 @@ use std::sync::Mutex;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::budget::{self, BuildBudget};
 use crate::config::{AgentDef, Config, Stage};
 use crate::contextgraph::{self, Graph, Projection};
 use crate::eventstore::{Appended, Direction, Event, EventStore};
@@ -5966,6 +5967,22 @@ impl RunCtx<'_> {
         )
     }
 
+    /// The resolved machine-wide build budget for this run (spec 65): re-derived from the
+    /// committed `build.max_concurrent` config each call, just like [`build_env`]
+    /// (Self::build_env) - a single resolver, called from every gate-build call site
+    /// ([`run_gates`](Self::run_gates), [`run_deferred_gates`](Self::run_deferred_gates)),
+    /// so no site ever derives its own disagreeing slot count or directory. The slot
+    /// directory itself is [`budget::default_slot_dir`] - the OS temp dir, shared by every
+    /// rigger process on the machine, never configurable per-project (the budget spans
+    /// every project checked out on the machine, so it cannot live under any one
+    /// project's own `.rigger/`).
+    fn build_budget(&self) -> BuildBudget {
+        BuildBudget::new(
+            self.cfg.workflow.build.max_concurrent,
+            budget::default_slot_dir(),
+        )
+    }
+
     /// Run a stage's inline gates for its `attempt`, returning whether they all passed
     /// and the compact evidence of any failure. Each gate's verdict is REPLAY-KEYED on
     /// the `(unit, attempt, gate)` coordinate (spec 04, criterion 4): the first step to
@@ -6001,6 +6018,9 @@ impl RunCtx<'_> {
         // threaded to every gate this attempt runs, so they all build under the same
         // wrapper/cache/incremental settings an agent-spawn build gets too.
         let build_env = self.build_env();
+        // The machine-wide build budget (spec 65): resolved once per call, alongside
+        // `build_env`, and threaded to every gate this attempt runs.
+        let budget = self.build_budget();
         // The content address of this attempt's gate inputs (spec 12, unit 1): the git
         // tree-SHA of the committed worktree (the whole tree by default - unit 3 narrows it
         // to a gate's `inputs:`). Computed ONCE - every gate this attempt reads the same
@@ -6105,7 +6125,7 @@ impl RunCtx<'_> {
             // FlakyVerdict pass-with-warning); or a real failure (product/flaky demote,
             // infra hold).
             let (pass, flaky, ratchet, evidence) =
-                self.run_gate_with_taxonomy(&g, dir, &target, &build_env);
+                self.run_gate_with_taxonomy(&g, dir, &target, &build_env, &budget);
             // The compact gate evidence is threaded into the GateVerdict event payload
             // (item 3): a real run otherwise discarded it, so neither the ledger nor the
             // workflow driver ever saw WHY a gate passed or failed. `flaky` rides as the
@@ -6155,8 +6175,9 @@ impl RunCtx<'_> {
         dir: &str,
         target: &str,
         build_env: &gate::BuildEnv,
+        budget: &BuildBudget,
     ) -> (bool, bool, GateRatchet, String) {
-        let res = self.deps.gates.run(g, dir, target, build_env);
+        let res = self.deps.gates.run(g, dir, target, build_env, budget);
         if res.pass {
             return (true, false, GateRatchet::CleanPass, res.evidence);
         }
@@ -6197,7 +6218,7 @@ impl RunCtx<'_> {
                 // unit's gate, never the wider wave.
                 std::thread::sleep(delay);
             }
-            let retry = self.deps.gates.run(g, dir, target, build_env);
+            let retry = self.deps.gates.run(g, dir, target, build_env, budget);
             if retry.pass {
                 // MIXED: the gate failed then passed - a FlakyVerdict pass-with-warning.
                 let evidence = format!(
@@ -6363,8 +6384,13 @@ impl RunCtx<'_> {
                     // wrong here, and this is exactly the tree `rigger step`'s inline
                     // courier gates also build against (Gap 19). It still carries the ONE
                     // build-environment authority's resolved wrapper/cache/incremental vars
-                    // (spec 65), same as every other gate this run's config resolves.
-                    let res = self.deps.gates.run(&g, "", "", &self.build_env());
+                    // (spec 65), same as every other gate this run's config resolves - and
+                    // the same machine-wide build budget, so this phase-boundary gate waits
+                    // for a slot exactly like every inline gate does.
+                    let res =
+                        self.deps
+                            .gates
+                            .run(&g, "", "", &self.build_env(), &self.build_budget());
                     // The deferred phase-boundary gate keeps its single-run semantics (no
                     // taxonomy RERUN): it measures the ONE integrated tree once, so its
                     // verdict carries no flaky annotation (a whole-tree deferred rerun is
@@ -21447,6 +21473,7 @@ mod tests {
             wrapper: "sccache".into(),
             cache_dir: "/shared/build-cache".into(),
             jobs: 0,
+            ..Default::default()
         };
         let want: HashMap<String, String> = [
             ("RUSTC_WRAPPER".to_string(), "sccache".to_string()),
@@ -23737,6 +23764,7 @@ mod tests {
             _dir: &str,
             _target: &str,
             _build_env: &gate::BuildEnv,
+            _budget: &BuildBudget,
         ) -> gate::GateResult {
             let n = self.runs.fetch_add(1, Ordering::SeqCst);
             if n < self.fail_first {
@@ -24868,6 +24896,7 @@ mod tests {
             dir: &str,
             target: &str,
             build_env: &gate::BuildEnv,
+            _budget: &BuildBudget,
         ) -> gate::GateResult {
             self.calls.lock().unwrap().push(g.id.clone());
             self.targets.lock().unwrap().push(target.to_string());
@@ -25005,6 +25034,7 @@ mod tests {
             _dir: &str,
             _target: &str,
             _build_env: &gate::BuildEnv,
+            _budget: &BuildBudget,
         ) -> gate::GateResult {
             let mut calls = self.calls.lock().unwrap();
             let prior = calls.iter().filter(|c| **c == g.id).count();
@@ -28007,6 +28037,7 @@ mod tests {
             _dir: &str,
             _target: &str,
             _build_env: &gate::BuildEnv,
+            _budget: &BuildBudget,
         ) -> gate::GateResult {
             if g.id == self.fail {
                 gate::GateResult {
@@ -28907,6 +28938,7 @@ mod tests {
             dir: &str,
             _target: &str,
             _build_env: &gate::BuildEnv,
+            _budget: &BuildBudget,
         ) -> gate::GateResult {
             let out = std::process::Command::new("git")
                 .arg("-C")

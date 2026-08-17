@@ -6,6 +6,11 @@
 //! standalone, config-driven product.
 
 pub mod blocker;
+/// The machine-wide build concurrency budget (spec 65): a flock-based slot directory that
+/// caps how many actual compiler invocations run at once, across every rigger process on
+/// the machine. Wired at the gate-build call site ([`crate::gate::ExecRunner::run`]) only -
+/// slots bound builds, never agents.
+pub mod budget;
 pub mod canary;
 /// Deterministic coupling-community detection (spec 53, the CODE lens): the offline pass that
 /// groups code entities and files by how densely they call and reference one another, regardless of
