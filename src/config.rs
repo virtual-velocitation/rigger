@@ -599,8 +599,9 @@ pub struct StoreConfig {
 
 /// BuildConfig is the committed `build:` config the shared build-environment resolver
 /// reads (spec 65 - one build-environment authority): a single resolver
-/// ([`crate::gate::BuildEnv::resolve`]) derives the actual env vars from these two
-/// values and applies them to gate builds (run via [`crate::gate::Runner::run`] by
+/// ([`crate::gate::BuildEnv::resolve`]) derives the actual env vars from these three
+/// fields (`wrapper`/`cache_dir` as one facet, `jobs` as an independent one - see
+/// below) and applies them to gate builds (run via [`crate::gate::Runner::run`] by
 /// [`crate::gate::ExecRunner`]) and the blocking `driver::cli` agent driver - the
 /// two sites wired so far (see [`crate::gate::BuildEnv`] for the disclosed gap on
 /// the remaining agent-spawn paths). Plain config-shape data only - the resolution
