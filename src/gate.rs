@@ -582,21 +582,29 @@ const LINE_CAP: usize = 200;
 /// Cap on the number of signal lines carried in the evidence (§3.3).
 const MAX_LINES: usize = 5;
 
-/// Reduce a gate's raw output to a compact summary (§3.3): the verdict
-/// (`PASS`/`FAIL`) followed by up to five lines that signal failure - lines
-/// containing `error`, `fail`, `panic`, or `assert` (case-insensitive), or the
-/// last five non-empty lines if none match. Each line is length-capped; the raw
-/// log is never carried.
+/// Reduce a gate's raw output to a compact summary (§3.3; ranking per spec
+/// 70 criterion 2): the verdict (`PASS`/`FAIL`) followed by up to five lines
+/// that signal failure. Genuine failure syntax (a `FAILED` test line, a
+/// rustc `error[...]` code, a `panicked at` location, or the `failures:` /
+/// `test result: FAILED` summary) fills the budget first; other lines merely
+/// containing `error`, `fail`, `panic`, or `assert` (case-insensitive) fill
+/// any remaining slots. A passing `test <name> ... ok` line never occupies a
+/// slot, even when the test's own name contains one of those keywords. If
+/// nothing signals, the last five non-empty lines are used instead. Each
+/// line is length-capped; the raw log is never carried.
 fn compact(pass: bool, s: &str) -> String {
     let verdict = if pass { "PASS" } else { "FAIL" };
     let lines: Vec<&str> = s.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
 
-    let signal: Vec<&str> = lines
+    // Real failure markers rank above mere keyword hits, so a keyword hit
+    // can only consume a slot once every marker has been carried.
+    let markers = lines.iter().filter(|l| is_failure_marker(l)).copied();
+    let keyword_hits = lines
         .iter()
-        .filter(|l| is_signal(l))
-        .take(MAX_LINES)
-        .copied()
-        .collect();
+        .filter(|l| is_signal(l) && !is_failure_marker(l))
+        .copied();
+    let signal: Vec<&str> = markers.chain(keyword_hits).take(MAX_LINES).collect();
+
     let chosen: Vec<&str> = if signal.is_empty() {
         // No failure-signalling line matched: fall back to the last few lines.
         let start = lines.len().saturating_sub(MAX_LINES);
@@ -613,8 +621,33 @@ fn compact(pass: bool, s: &str) -> String {
     out
 }
 
-/// Whether a line signals a failure (matched case-insensitively).
+/// Whether a line reports a passing test result (`test <name> ... ok`). Such
+/// a line must never consume an evidence slot, even when the test's own name
+/// contains a failure keyword like `assert` or `panic` (spec 70 criterion 2).
+fn is_passing_test_line(line: &str) -> bool {
+    line.starts_with("test ") && line.ends_with("... ok")
+}
+
+/// Whether a line is genuine cargo/rustc failure syntax rather than a mere
+/// keyword hit: a `FAILED` test result, a compiler error code, a panic
+/// location, or the `failures:` / `test result: FAILED` summary lines. These
+/// rank above other keyword-matching lines (spec 70 criterion 2).
+fn is_failure_marker(line: &str) -> bool {
+    (line.starts_with("test ") && line.ends_with("... FAILED"))
+        || line.starts_with("error[")
+        || line.contains("panicked at")
+        || line == "failures:"
+        || line.starts_with("test result: FAILED")
+}
+
+/// Whether a line signals a failure (matched case-insensitively): `error`,
+/// `fail`, `panic`, or `assert` anywhere in the line - except a passing
+/// `... ok` test-result line, which never signals even when its test name
+/// happens to contain one of those keywords.
 fn is_signal(line: &str) -> bool {
+    if is_passing_test_line(line) {
+        return false;
+    }
     let lower = line.to_lowercase();
     ["error", "fail", "panic", "assert"]
         .iter()
@@ -719,6 +752,46 @@ mod tests {
                     &BuildBudget::default()
                 )
                 .pass
+        );
+    }
+
+    #[test]
+    fn evidence_names_failure_not_crowded_out_by_passing_keyword_named_tests() {
+        // spec 70 criterion 2: passing tests whose own NAMES contain a
+        // failure keyword (assert/panic/error/fail) must never crowd the
+        // real FAILED line and failures summary out of the five-line budget.
+        let output = "\
+running 7 tests
+test test_assert_boundary ... ok
+test test_panic_recovery ... ok
+test test_error_handling_ok ... ok
+test test_failover_logic ... ok
+test test_assertion_helper ... ok
+test really_failing_test ... FAILED
+
+failures:
+
+---- really_failing_test stdout ----
+thread 'really_failing_test' panicked at src/lib.rs:10:5:
+assertion failed: false
+
+failures:
+    really_failing_test
+
+test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+";
+        let evidence = compact(false, output);
+        assert!(
+            evidence.contains("test really_failing_test ... FAILED"),
+            "evidence must name the actual failing test: {evidence:?}"
+        );
+        assert!(
+            evidence.contains("test result: FAILED"),
+            "evidence must carry the failures summary: {evidence:?}"
+        );
+        assert!(
+            !evidence.lines().any(|l| l.ends_with("... ok")),
+            "no passing '... ok' line may occupy an evidence slot: {evidence:?}"
         );
     }
 
