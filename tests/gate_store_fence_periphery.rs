@@ -56,6 +56,19 @@
 //!    rigger_courier` (the fix) resolves exactly as the unfenced baseline would - refusing
 //!    over a never-initialized fixture - even with a real `RIGGER_STORE_FENCE_DIR` set on
 //!    this test binary's own process.
+//! 4. `a_real_fenced_couriers_scratch_store_is_reclaimed_when_the_worktree_is_removed`:
+//!    ground (b) of the u3 reject (`adv-u3-fence-dir-leaks-forever-uncleaned`), closed by the
+//!    round-2 fix's `worktree::reclaim_cache_sibling` change and its own new unit test
+//!    (`worktree_remove_also_reclaims_the_store_fence_sibling`). That unit test proves
+//!    `reclaim_cache_sibling` deletes a FABRICATED fence-sibling dir built from two dummy
+//!    files written by hand - it never proves the directory a REAL fenced courier (test 1
+//!    above) actually leaves behind (created by `require_store_dir`, not by the test) is the
+//!    one `reclaim_cache_sibling` finds, nor that the real, production teardown entry point
+//!    (`Worktree::remove`) reclaims it through the exact derivation `gate.rs` and
+//!    `worktree.rs` now share (`STORE_FENCE_SUFFIX`). This test wires both real paths
+//!    together - a real `ExecRunner`-spawned courier creates the fence sibling, then the
+//!    real `Worktree::remove` reclaims it - the integration neither unit test (one never
+//!    creates the directory, the other never runs a courier) can see.
 //!
 //! Both cwd and target_dir are passed to `ExecRunner::run` explicitly for every call in this
 //! file - never left empty to "inherit the ambient cwd" - so the only variable that ever
@@ -67,7 +80,10 @@ use std::path::Path;
 use std::process::Command;
 
 use rigger::budget::BuildBudget;
-use rigger::gate::{Autonomy, BuildEnv, ExecRunner, Gate, Kind, Runner, STORE_FENCE_ENV};
+use rigger::gate::{
+    Autonomy, BuildEnv, ExecRunner, Gate, Kind, Runner, STORE_FENCE_ENV, STORE_FENCE_SUFFIX,
+};
+use rigger::worktree::{unit_cache_sibling, Worktree};
 
 mod common;
 use common::rigger_bin;
@@ -311,5 +327,97 @@ fn a_periphery_couriers_shared_command_ignores_an_inherited_ambient_fence() {
     assert!(
         !ambient_fence.path().join("events.db").exists(),
         "a courier that correctly ignored the ambient fence must never write into it either"
+    );
+}
+
+/// A real `git init` + one empty commit, so `Worktree::create` has a HEAD to branch a real
+/// unit worktree off of - the shape every real `rigger step` unit worktree is created
+/// against, distinct from `build_topology`'s bare `git init` (which only ever needs a store
+/// dir, never a worktree add).
+fn init_repo_with_head() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let p = dir.path().to_str().unwrap();
+    for args in [
+        &["init", "-q"][..],
+        &["config", "user.email", "t@example.com"],
+        &["config", "user.name", "t"],
+        &["commit", "--allow-empty", "-q", "-m", "init"],
+    ] {
+        Command::new("git")
+            .args(args)
+            .current_dir(p)
+            .status()
+            .expect("git fixture command");
+    }
+    dir
+}
+
+#[test]
+fn a_real_fenced_couriers_scratch_store_is_reclaimed_when_the_worktree_is_removed() {
+    let repo = init_repo_with_head();
+    let repo_path = repo.path().to_string_lossy().into_owned();
+    std::fs::create_dir_all(Path::new(&repo_path).join(".rigger")).unwrap();
+    let live_events = Path::new(&repo_path).join(".rigger").join("events.db");
+    std::fs::File::create(&live_events).unwrap();
+    let live_before = std::fs::read(&live_events).unwrap();
+
+    // The real production derivation (conductor's `unit_worktree_dir`, mirrored here): a
+    // unit worktree lives under `<repo>/.rigger/tmp/rigger-wt-<slug>`, a sibling of its own
+    // `cargo-target-<slug>` cache. `Worktree::create` is the SAME entry point `rigger step`
+    // uses - not a hand-built directory - so this test exercises the real `git worktree add`
+    // path, not a double of it.
+    let root = rigger::worktree::scratch_root(&repo_path, "", None);
+    let worktree_dir = format!("{root}/rigger-wt-reclaim-probe");
+    let worktree = Worktree::create(&repo_path, &worktree_dir, "rigger/u/reclaim-probe")
+        .expect("create a real unit worktree");
+    std::fs::create_dir_all(Path::new(&worktree.dir).join(".rigger")).unwrap();
+    std::fs::write(
+        Path::new(&worktree.dir)
+            .join(".rigger")
+            .join("workflow.yml"),
+        "stages: []\n",
+    )
+    .unwrap();
+
+    // The exact target_dir the conductor's own `run_gates` would pass for this worktree
+    // (Gap 19) - reconstructed via the SAME single authority `reclaim_cache_sibling` uses,
+    // so this test can never silently drift from the real derivation.
+    let target_dir =
+        unit_cache_sibling(&worktree.dir).expect("a unit worktree dir must derive a cache sibling");
+    let fence_dir = format!("{target_dir}{STORE_FENCE_SUFFIX}");
+
+    let result = ExecRunner.run(
+        &emit_gate("reclaim-emit", "reclaim-probe"),
+        &worktree.dir,
+        &target_dir,
+        &BuildEnv::default(),
+        &BuildBudget::default(),
+    );
+    assert!(
+        result.pass,
+        "a real fenced courier must succeed before this test ever tears its worktree down: \
+         {result:?}"
+    );
+    assert!(
+        Path::new(&fence_dir).join("events.db").exists(),
+        "a real fenced courier must leave a real, openable events.db at the derived fence \
+         sibling {fence_dir} - if this fails, the fence itself (test 1) is broken, not the \
+         reclaim this test targets"
+    );
+
+    // The real production teardown entry point - not a call into reclaim_cache_sibling
+    // directly, which is a private fn only Worktree::remove and sweep_terminal may reach.
+    worktree.remove().expect("remove the real unit worktree");
+
+    assert!(
+        !Path::new(&fence_dir).exists(),
+        "removing the unit worktree via the real Worktree::remove path must reclaim the \
+         real fence sibling a real fenced courier left behind, leaked at {fence_dir}"
+    );
+    let live_after = std::fs::read(&live_events).unwrap();
+    assert_eq!(
+        live_before, live_after,
+        "the repo's live store must stay byte-identical throughout a fenced courier that \
+         writes, then gets torn down and reclaimed"
     );
 }
