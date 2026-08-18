@@ -39,6 +39,14 @@ infrastructure failures into the unit under test:
 - If the store-resolution authority lacks an env override, the fence adds one - additive,
   defaulted off, honored only when set by the gate runner.
 - No new event type is introduced anywhere in this spec.
+- Two non-blocking gaps surfaced during review, named here so they are not lost when this
+  spec closes: `cmd_setup`'s hook narration (`src/main.rs`, the `install_precommit_hook` call
+  comment and the `InstallOutcome::Installed` println under `match hook`) still describes the
+  pre-unit-1 stage-and-commit contract even though the hook now refuses instead of staging on
+  drift, and no test pins the corrected string; and no meta-test enforces the
+  `tests/common::rigger_courier()` store-fence-clearing convention on future test files, unlike
+  the existing precedent for the product-binary authority. Neither affects a Done-when
+  criterion of this spec; a future pass should close both.
 
 ## Global constraints
 
