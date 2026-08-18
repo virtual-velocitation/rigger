@@ -137,6 +137,14 @@ pub enum Action {
 /// then always that unit's own, never a concurrent neighbour poisoning a shared target. A
 /// gate on the single integrated tree (the deferred phase-boundary gate, and the courier's
 /// inline `rigger step` gates) is handed "" and keeps inheriting the shared cache.
+///
+/// The SAME non-empty `target_dir` signal also fences the gate's own store resolution
+/// (spec 70 criterion 3, "the gate store fence"): [`ExecRunner::run`] pins
+/// [`STORE_FENCE_ENV`] to a scratch location derived from `target_dir`, so a store-opening
+/// courier the gate's spawned process runs (a test invoking `rigger emit`/`result`/`peers`/
+/// `reported`, say) can never walk up past the unit worktree into the repo's LIVE run
+/// stream - `main.rs::require_store_dir` honors that env var. A gate on the integrated
+/// tree ("" target_dir) is never fenced, exactly as it is never given a target_dir.
 pub trait Runner: Send + Sync {
     fn run(
         &self,
@@ -523,6 +531,16 @@ pub fn resolve_build_layer(
     )
 }
 
+/// The env var [`ExecRunner::run`] pins to fence a unit-worktree gate's store resolution
+/// (spec 70 criterion 3). `main.rs`'s store-resolution authority
+/// (`require_store_dir`/`walk_stores_from`) honors this when set, PINNING resolution to
+/// the named scratch directory instead of walking up - so a gate-spawned process (a test
+/// invoking a store-opening courier) can never reach the repo's live store. Additive and
+/// defaulted off: unset, resolution is byte-identical to before this existed. Set ONLY by
+/// the gate runner around a gate's spawned process, never by a test itself - "the fence is
+/// the gate runner's job, not each test's" (spec 70 Design).
+pub const STORE_FENCE_ENV: &str = "RIGGER_STORE_FENCE_DIR";
+
 /// ExecRunner runs a gate as a shell command, reducing output to compact evidence.
 pub struct ExecRunner;
 
@@ -546,6 +564,13 @@ impl Runner for ExecRunner {
         // untouched (the integrated-tree/deferred gate keeps the shared cache).
         if !target_dir.is_empty() {
             cmd.env("CARGO_TARGET_DIR", target_dir);
+            // The gate store fence (spec 70 criterion 3), on the SAME signal: a non-empty
+            // target_dir means this gate runs inside a unit worktree, so a store-opening
+            // courier the gate's spawned process runs must never walk up into the repo's
+            // LIVE run stream. Pin a sibling scratch dir (never inside target_dir itself,
+            // which cargo owns and may wipe) so main.rs's store-resolution authority
+            // resolves there instead of walking up.
+            cmd.env(STORE_FENCE_ENV, format!("{target_dir}-store-fence"));
         }
         // The ONE build-environment authority's first injection site (spec 65): the
         // resolved wrapper/cache-dir/incremental-off vars (empty when no wrapper is
@@ -782,6 +807,44 @@ mod tests {
         assert!(
             without.pass,
             "an empty target_dir must not force a CARGO_TARGET_DIR override: {without:?}"
+        );
+    }
+
+    #[test]
+    fn exec_runner_fences_gate_store_resolution_when_target_dir_is_given() {
+        // Spec 70 criterion 3 (the gate store fence): a gate that runs INSIDE a unit
+        // worktree is signaled by the SAME non-empty target_dir Gap 19 already carries
+        // (a gate on the single integrated tree gets "" and is never fenced). ExecRunner
+        // pins STORE_FENCE_ENV to an isolated scratch location derived from target_dir, so
+        // any store-opening courier the gate's spawned process runs (a test invoking
+        // `rigger emit`/`result`/`peers`/`reported`, say) resolves to that fenced, empty
+        // location instead of walking up into the repo's LIVE run stream - main.rs's
+        // require_store_dir honors this env var (see the main.rs-side fence test). The
+        // fence is the gate runner's job here, not each test's.
+        let with = ExecRunner.run(
+            &gate_cmd(&format!(
+                "test \"${STORE_FENCE_ENV}\" = /tmp/rigger-gap19-probe-store-fence"
+            )),
+            "",
+            "/tmp/rigger-gap19-probe",
+            &BuildEnv::default(),
+            &BuildBudget::default(),
+        );
+        assert!(
+            with.pass,
+            "a non-empty target_dir must fence the gate's store resolution via {STORE_FENCE_ENV}: {with:?}"
+        );
+
+        let without = ExecRunner.run(
+            &gate_cmd(&format!("test -z \"${STORE_FENCE_ENV}\"")),
+            "",
+            "",
+            &BuildEnv::default(),
+            &BuildBudget::default(),
+        );
+        assert!(
+            without.pass,
+            "an empty target_dir (the integrated-tree/deferred gate) must not force a store fence: {without:?}"
         );
     }
 
