@@ -12117,6 +12117,63 @@ fn docs_renders_the_skill_and_handbook_with_code_facts_verbatim() {
     assert_eq!(std::fs::read_to_string(&handbook_path).unwrap(), handbook);
 }
 
+/// Spec 68, criterion 1 (the render pipeline covers the WHOLE registry, end to end): `rigger
+/// docs` renders EVERY entry in `rigger::docs::skill_registry` - not only the pre-existing
+/// `using-rigger` skill the sibling test above drives, but the second, generalized entry
+/// `planning-a-spec` too - to its own committed path, carrying its own loadable frontmatter,
+/// its authoring recipe, AND the operator-binary prohibition every registry skill is stamped
+/// with structurally. Driving the real binary proves the registry generalization
+/// (`write_docs` looping over `skill_registry()`) actually reaches a SECOND skill, not just
+/// the one the pre-generalization implementation already handled - the class of regression an
+/// in-process unit test that only checks set membership (names/paths match) cannot catch: a
+/// loop that silently renders the first entry twice, or a path bug specific to a
+/// two-or-more-entry registry, would still satisfy a length/name check but ship the wrong
+/// bytes here.
+#[test]
+fn docs_renders_every_registry_skill_including_planning_a_spec() {
+    let proj = temp_project();
+    let root = proj.path();
+
+    let (stdout, stderr, ok) = run_rigger(root, &["docs"]);
+    assert!(ok, "rigger docs must succeed; stderr: {stderr}");
+    assert!(
+        stdout.contains("skills/planning-a-spec/SKILL.md"),
+        "rigger docs must report rendering the SECOND registry entry too; got: {stdout}"
+    );
+
+    let planning_path = root.join("skills/planning-a-spec/SKILL.md");
+    let planning = std::fs::read_to_string(&planning_path)
+        .expect("rigger docs must have written the planning-a-spec skill to disk");
+
+    assert!(
+        planning.starts_with("---\nname: planning-a-spec\n"),
+        "the second registry entry must open with its own loadable frontmatter; got: {}",
+        &planning[..planning.len().min(60)]
+    );
+    assert!(
+        planning.contains("**1. Ground the Goal in evidence.**")
+            && planning.contains("**7. Preflight, then launch.**"),
+        "the rendered planning-a-spec skill must carry its authoring recipe; got:\n{planning}"
+    );
+    // The operator-binary prohibition (spec 68, Design) is stamped on EVERY registry entry
+    // structurally, including a skill whose body carries no code-derived facts to interpolate.
+    assert!(
+        planning.contains("## Operator binary boundary")
+            && planning.contains("never installs, replaces, or modifies the operator's"),
+        "the rendered planning-a-spec skill must carry the operator-binary prohibition; \
+         got:\n{planning}"
+    );
+
+    // Byte-stable across runs (the drift check depends on it).
+    let (_o2, _e2, ok2) = run_rigger(root, &["docs"]);
+    assert!(ok2);
+    assert_eq!(
+        std::fs::read_to_string(&planning_path).unwrap(),
+        planning,
+        "a second render of the second registry entry must be byte-identical"
+    );
+}
+
 /// Spec 46, criterion 2 (the pre-run graph-hygiene guidance ships to CONSUMERS, end to
 /// end): the discipline is not merely present in an in-process render - it must survive the
 /// whole composition path (docs_context -> render -> write) that the real `rigger docs`
@@ -12335,6 +12392,73 @@ fn validate_fails_when_the_committed_using_rigger_docs_drift_and_passes_when_in_
     );
 }
 
+/// Spec 68, criterion 1 (the docs-drift GATE covers the WHOLE registry, end to end): `rigger
+/// validate` FAILS when the committed `planning-a-spec` skill - the second, generalized
+/// registry entry - drifts from a fresh render, even while the pre-existing `using-rigger`
+/// skill and the handbook stay perfectly in sync; and it stays SILENT about the untouched
+/// original entry. The sibling
+/// `validate_fails_when_the_committed_using_rigger_docs_drift_and_passes_when_in_sync` test
+/// proves the ORIGINAL entry is still gated; this one proves the gate was not merely widened
+/// to accept a second file without actually CHECKING it - a regression the implementer's own
+/// in-process `install_and_docs_each_cover_exactly_the_registry_no_more_no_less` unit test
+/// (which only proves `docs_drift`'s CALLER loops over the registry's names, not that each
+/// iteration's byte comparison is wired to the right file) would not catch.
+#[test]
+fn validate_docs_drift_gate_covers_the_second_registry_entry() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_o, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    let (_o, err, ok) = run_rigger(root, &["docs"]);
+    assert!(ok, "rigger docs must succeed; stderr:\n{err}");
+
+    let planning_path = root.join("skills/planning-a-spec/SKILL.md");
+    let using_rigger_path = root.join("skills/using-rigger/SKILL.md");
+    assert!(
+        planning_path.exists(),
+        "rigger docs must have written the second registry entry"
+    );
+
+    // IN SYNC -> validate passes.
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "validate must pass when every registry entry is in sync; stderr:\n{err}"
+    );
+
+    // Drift ONLY the second registry entry; the original entry and the handbook stay fresh.
+    append_line(&planning_path, "hand-edited line the render never emits");
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        !ok,
+        "validate must FAIL when the SECOND registry entry drifts, even though the original \
+         entry is untouched; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("skills/planning-a-spec/SKILL.md") && err.contains("rigger docs"),
+        "the drift failure must name the drifted second entry and the `rigger docs` fix; \
+         stderr:\n{err}"
+    );
+    assert!(
+        !err.contains("skills/using-rigger/SKILL.md"),
+        "the untouched original entry must NOT be reported as drifted; stderr:\n{err}"
+    );
+
+    // Re-render restores sync -> validate passes again (the gate is not stuck failing).
+    let (_o, _e, ok) = run_rigger(root, &["docs"]);
+    assert!(ok, "re-rendering the docs must succeed");
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "validate must pass again once the second entry's drift is re-rendered; stderr:\n{err}"
+    );
+    assert!(
+        using_rigger_path.exists(),
+        "the original entry was never touched and must still exist"
+    );
+}
+
 /// Spec 20, unit 3 (setup install + project overlay, end to end): `rigger setup` installs
 /// the rendered `using-rigger` skill as a file DISTINCT from the `/rigger` workflow, and a
 /// project overlay adds this repo's specifics (base branch, specs location) into the
@@ -12407,6 +12531,80 @@ fn setup_installs_the_using_rigger_skill_with_project_overlay() {
         committed.contains("origin/main") && !committed.contains("origin/trunk"),
         "the committed shared source keeps the default base ref; the overlay only \
          customized the install"
+    );
+}
+
+/// Spec 68, criterion 1 (the INSTALL seam covers the WHOLE registry, end to end): `rigger
+/// setup` installs EVERY entry in the registry into the consumer project, not only the
+/// pre-existing `using-rigger` skill - `planning-a-spec` lands at its own installed path,
+/// carrying the operator-binary prohibition, and setup REPORTS installing it. A no-op rerun
+/// leaves the second entry untouched (no report line, no moved mtime), exactly like the
+/// original one. Driving the real binary proves the install seam (`install_skills` looping
+/// over `skill_registry()`) was actually generalized, not just the render/drift seams the
+/// sibling tests above cover - install is a THIRD, independent consumer of the registry (its
+/// own function, its own loop over `(name, InstallOutcome)` pairs), so a bug specific to that
+/// loop (installing only the first entry, or reusing one `InstallOutcome` across every entry)
+/// would pass every other test in this file and only show up here.
+#[test]
+fn setup_installs_every_registry_skill_into_the_consumer_project() {
+    let proj = temp_project();
+    let root = proj.path();
+
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+
+    let using_rigger_installed = root.join(".claude/skills/using-rigger/SKILL.md");
+    let planning_installed = root.join(".claude/skills/planning-a-spec/SKILL.md");
+    assert!(
+        using_rigger_installed.exists(),
+        "setup must still install the original registry entry"
+    );
+    assert!(
+        planning_installed.exists(),
+        "setup must ALSO install the second, generalized registry entry at \
+         .claude/skills/planning-a-spec/SKILL.md"
+    );
+    assert!(
+        out.contains("planning-a-spec skill")
+            && out.contains(".claude/skills/planning-a-spec/SKILL.md"),
+        "setup must report installing the second registry entry too; got:\n{out}"
+    );
+
+    let installed = std::fs::read_to_string(&planning_installed)
+        .expect("the second registry entry was installed");
+    assert!(
+        installed.starts_with("---\nname: planning-a-spec\n"),
+        "the installed second entry is a loadable skill; got: {}",
+        &installed[..installed.len().min(60)]
+    );
+    assert!(
+        installed.contains("## Operator binary boundary"),
+        "the installed second entry must carry the operator-binary prohibition too; \
+         got:\n{installed}"
+    );
+
+    // Re-running setup on an up-to-date project is a true no-op for BOTH entries, not just the
+    // original one - no file's mtime moves and no install/refresh line is printed for it.
+    let before = std::fs::metadata(&planning_installed)
+        .unwrap()
+        .modified()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let (out2, err2, ok2) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok2, "a no-op setup rerun must succeed; stderr:\n{err2}");
+    assert!(
+        !out2.contains("installed the planning-a-spec skill")
+            && !out2.contains("refreshed the drifted planning-a-spec skill"),
+        "an already-current second entry must not be reported as installed/refreshed; \
+         got:\n{out2}"
+    );
+    let after = std::fs::metadata(&planning_installed)
+        .unwrap()
+        .modified()
+        .unwrap();
+    assert_eq!(
+        before, after,
+        "an up-to-date second entry must not even move its mtime"
     );
 }
 
@@ -12713,6 +12911,91 @@ fn setup_precommit_hook_passes_untouched_when_the_render_matches() {
     assert_eq!(
         committed_after, fresh_skill_before,
         "the already-fresh doc must land byte-identical - the hook must not touch it"
+    );
+}
+
+/// Spec 68, criterion 1 (the fast pre-commit hook's scope is a DELIBERATE non-generalization,
+/// end to end): the commit-time hook still compares ONLY the `using-rigger` skill and the
+/// handbook chapter - spec 70's pre-existing, hand-enumerated scope - and was NOT widened to
+/// walk the whole registry (`rigger validate` is the gate that covers every registry entry;
+/// see `validate_docs_drift_gate_covers_the_second_registry_entry` above). This matters MORE,
+/// not less, now that `write_docs` was generalized: the hook's own internal `rigger docs` call
+/// (it re-renders before comparing) now rewrites EVERY registry file on disk as a side effect,
+/// including `planning-a-spec` - so this test also re-pins spec 70's "never stages anything
+/// itself" invariant across that wider write: an untracked, hand-edited `planning-a-spec`
+/// working-tree copy must survive the hook's internal re-render UNABSORBED by git (never
+/// silently added to an unrelated commit), and the commit must never be blocked or slowed by
+/// it, exactly as if the hook had never touched it at all.
+#[test]
+fn setup_precommit_hook_never_drift_checks_or_stages_a_registry_entry_outside_its_scope() {
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    setup_selfhosting_repo_with_fresh_docs(root);
+
+    // `setup_selfhosting_repo_with_fresh_docs` only tracks the two spec-70 files; the second
+    // registry entry that `rigger docs` also wrote during the fixture is left UNTRACKED - the
+    // exact state an operator mid-edit on a new skill would be in.
+    let planning_path = root.join("skills/planning-a-spec/SKILL.md");
+    assert!(
+        planning_path.exists(),
+        "the fixture's `rigger docs` call must have written the second registry entry too"
+    );
+    let status_before = git_out(
+        root,
+        &["status", "--porcelain", "skills/planning-a-spec/SKILL.md"],
+    )
+    .unwrap_or_default();
+    assert!(
+        status_before.starts_with("??"),
+        "the second registry entry must start UNTRACKED (never staged by the fixture); \
+         got:\n{status_before}"
+    );
+
+    // Simulate an operator's in-progress, unstaged hand-edit to it.
+    std::fs::write(&planning_path, "WIP hand-edit, not a render\n").unwrap();
+
+    let commit_path = stage_rigger_shim(root);
+    std::fs::write(root.join("code.txt"), "an unrelated change\n").unwrap();
+    git_ok(root, &["add", "code.txt"]);
+    let out = Command::new("git")
+        .args(["commit", "-q", "-m", "unrelated change"])
+        .current_dir(root)
+        .env("PATH", &commit_path)
+        .output()
+        .expect("git must be runnable");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        out.status.success(),
+        "the commit must succeed - the hook must never drift-check or block on a registry \
+         entry outside its fixed scope; stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.to_lowercase().contains("refusing"),
+        "the hook must never refuse over a registry entry it does not scope; stderr:\n{stderr}"
+    );
+
+    let tree = git_out(root, &["ls-tree", "-r", "--name-only", "HEAD"]).unwrap_or_default();
+    assert!(
+        tree.contains("code.txt"),
+        "the unrelated change must ride the commit; tree:\n{tree}"
+    );
+    assert!(
+        !tree.contains("planning-a-spec"),
+        "the out-of-scope registry entry must NEVER be staged/committed by the hook's internal \
+         re-render, even though that render rewrote its bytes on disk; tree:\n{tree}"
+    );
+    // It stays exactly as untracked as before - the hook's internal `rigger docs` call may
+    // have rewritten its BYTES, but git's view of it (untracked) is unchanged.
+    let status_after = git_out(
+        root,
+        &["status", "--porcelain", "skills/planning-a-spec/SKILL.md"],
+    )
+    .unwrap_or_default();
+    assert!(
+        status_after.starts_with("??"),
+        "the out-of-scope entry must still be untracked after the commit, unabsorbed by it; \
+         got:\n{status_after}"
     );
 }
 
