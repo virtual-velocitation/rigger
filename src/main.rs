@@ -31,6 +31,7 @@ use rigger::eventstore::{
 };
 use rigger::gate::{
     resolve_build_layer, resolved_cache_dir, BuildEnv, ExecRunner, Gate, GateResult, Runner,
+    STORE_FENCE_ENV,
 };
 use rigger::grounder::Grounder;
 use rigger::ledger::{self, RunState};
@@ -1601,6 +1602,33 @@ fn server_store_location(cwd: &Path) -> StoreLocation {
 /// is deliberately NOT routed through here: it legitimately BOOTSTRAPS the store on the
 /// first step of a fresh project.
 fn require_store_dir() -> Result<(StoreLocation, StoreSelection), Box<dyn std::error::Error>> {
+    // The gate store fence (spec 70 criterion 3): the gate runner (`gate::ExecRunner::run`)
+    // pins STORE_FENCE_ENV around a unit-worktree gate's spawned process so a store-opening
+    // courier command IT runs (a test invoking `rigger emit`/`result`/`peers`/`reported`)
+    // resolves to the fenced scratch dir named here, never walking up into the repo's LIVE
+    // run stream. Checked BEFORE store_selection/the walk so a fenced courier never even
+    // reads the real backend config or touches the ambient filesystem above `cwd` - a
+    // fenced gate sees strictly less ambient state, never more. Additive and defaulted
+    // off: unset (every caller that is not a gate's own spawned process), resolution is
+    // byte-identical to before this fence existed.
+    if let Ok(fenced) = std::env::var(STORE_FENCE_ENV) {
+        let fenced = fenced.trim();
+        if !fenced.is_empty() {
+            let dir = PathBuf::from(fenced);
+            // The fenced location is a scratch sibling ExecRunner names but never
+            // creates (it must not create it INSIDE target_dir, which cargo owns and
+            // may wipe - see ExecRunner::run). A store-opening courier that resolves
+            // here is about to `Store::open` a path inside it; sqlite/rusqlite refuses
+            // to create a database file in a directory that does not yet exist, so an
+            // uncreated fence would fail every fenced courier outright instead of
+            // landing it in an isolated EMPTY store - the opposite of "isolate more".
+            // Creating it here (the one store-resolution authority every courier
+            // funnels through) covers every current and future caller of this env var
+            // uniformly, not just ExecRunner's specific choice of path.
+            std::fs::create_dir_all(&dir)?;
+            return Ok((StoreLocation { dir }, StoreSelection::Sqlite));
+        }
+    }
     let sel = store_selection(None, None)?;
     let cwd = std::env::current_dir()?;
     // A server-backed project shares ONE remote store; there is no local `events.db` to walk to,
@@ -11776,6 +11804,110 @@ mod tests {
             "a single store in scope bypasses nothing; got {:?}",
             walk.shadows
         );
+    }
+
+    // ---- gate store fence (spec 70 criterion 3): pinned store resolution, never a live store ----
+
+    /// Mutates the process-global CWD and `STORE_FENCE_ENV`; shares the `cwd` serial key
+    /// with every other cwd-sensitive test in this file so none of them observe each
+    /// other's changed CWD mid-window.
+    #[test]
+    #[serial_test::serial(cwd)]
+    fn require_store_dir_pins_to_the_fence_env_and_never_reaches_the_live_store_above_it() {
+        struct Restore(std::path::PathBuf);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                let _ = std::env::set_current_dir(&self.0);
+                std::env::remove_var(STORE_FENCE_ENV);
+            }
+        }
+        let prev = std::env::current_dir().unwrap();
+        let _restore = Restore(prev);
+        std::env::remove_var(STORE_FENCE_ENV);
+
+        // The REAL production topology this defect hits (matching
+        // find_store_dir_from_walks_past_a_storeless_rigger_to_the_real_store_above): a
+        // git-linked unit worktree nested under `.rigger/tmp`, carrying no events.db of
+        // its own, with the repo root's real (LIVE) store above it.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git_init_quiet(root);
+        std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
+        let live_events = root.join(RIGGER_DIR).join("events.db");
+        std::fs::write(&live_events, b"LIVE-STORE-BYTES-BEFORE").unwrap();
+        let live_before = std::fs::read(&live_events).unwrap();
+
+        let worktree = root.join(RIGGER_DIR).join("tmp").join("rigger-wt-x");
+        std::fs::create_dir_all(worktree.join(RIGGER_DIR)).unwrap();
+        std::fs::write(
+            worktree.join(RIGGER_DIR).join("workflow.yml"),
+            "stages: []\n",
+        )
+        .unwrap();
+        std::env::set_current_dir(&worktree).unwrap();
+
+        // WITHOUT the fence: a real courier from inside the worktree walks up and binds
+        // the repo's LIVE store - today's sanctioned behavior for a deliberate agent
+        // command (spec 05), reconfirmed here as the baseline the fence must override.
+        let (unfenced_loc, _unfenced_sel) =
+            require_store_dir().expect("an unfenced courier must resolve the live store above it");
+        assert_eq!(
+            unfenced_loc.dir,
+            root.join(RIGGER_DIR),
+            "without a fence, resolution walks up to the repo's live store (the baseline)"
+        );
+
+        // WITH the fence set (as ExecRunner sets it for a unit-worktree gate): resolution
+        // must land at the fenced scratch dir instead - never the live store above.
+        let fence = tempfile::tempdir().unwrap();
+        let fence_rigger = fence.path().join(RIGGER_DIR);
+        std::env::set_var(STORE_FENCE_ENV, &fence_rigger);
+        let (fenced_loc, fenced_sel) =
+            require_store_dir().expect("a fenced courier must resolve the pinned scratch dir");
+        std::env::remove_var(STORE_FENCE_ENV);
+        assert_eq!(
+            fenced_loc.dir, fence_rigger,
+            "a fenced courier must resolve to the pinned scratch dir, not the live store"
+        );
+        assert_ne!(
+            fenced_loc.dir,
+            root.join(RIGGER_DIR),
+            "a fenced courier must never resolve to the repo's live store dir"
+        );
+        assert!(fenced_sel.is_sqlite(), "the fence pins the sqlite backend");
+
+        // The live store is byte-identical before and after the fenced resolution.
+        let live_after = std::fs::read(&live_events).unwrap();
+        assert_eq!(
+            live_before, live_after,
+            "the live store must be untouched by a fenced gate's resolution"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(cwd)]
+    fn require_store_dir_fence_is_off_by_default() {
+        // Additive, defaulted off (spec 70 Notes): with STORE_FENCE_ENV unset, an
+        // unfenced courier's resolution is byte-identical to before the fence existed -
+        // a plain store at the cwd resolves normally.
+        struct Restore(std::path::PathBuf);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                let _ = std::env::set_current_dir(&self.0);
+            }
+        }
+        let prev = std::env::current_dir().unwrap();
+        let _restore = Restore(prev);
+        std::env::remove_var(STORE_FENCE_ENV);
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
+        std::fs::File::create(root.join(RIGGER_DIR).join("events.db")).unwrap();
+        std::env::set_current_dir(root).unwrap();
+
+        let (loc, _sel) = require_store_dir().expect("a plain store must resolve normally");
+        assert_eq!(loc.dir, root.join(RIGGER_DIR));
     }
 
     // ---- `rigger result` stderr advisories: orphan id and superseding result ----

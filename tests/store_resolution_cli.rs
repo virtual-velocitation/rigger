@@ -47,7 +47,6 @@ use tempfile::TempDir;
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
-use common::rigger_bin;
 
 /// A throwaway project: its own git repo (so identity resolves exactly as a real project's does)
 /// with an empty `.rigger/` and no event log yet. The `TempDir` is returned so it outlives the
@@ -74,7 +73,7 @@ fn local_event_log(root: &Path) -> PathBuf {
 /// is truly unset regardless of the ambient environment). `RIGGER_NO_DASH` keeps the run's
 /// dashboard from starting under test.
 fn run_bare_result(root: &Path, conn: Option<&str>) -> Output {
-    let mut cmd = Command::new(rigger_bin());
+    let mut cmd = common::rigger_courier();
     cmd.args(["result", "u/impl#0", "--error", "a self-report"])
         .current_dir(root)
         .env("RIGGER_NO_DASH", "1")
@@ -184,7 +183,7 @@ fn an_empty_kurrentdb_conn_is_treated_as_unset_not_a_server_with_no_address() {
 /// truly unset regardless of the ambient environment); `RIGGER_NO_DASH` keeps the run's dashboard
 /// from starting under test.
 fn run_read(root: &Path, args: &[&str], conn: Option<&str>) -> Output {
-    let mut cmd = Command::new(rigger_bin());
+    let mut cmd = common::rigger_courier();
     cmd.args(args)
         .current_dir(root)
         .env("RIGGER_NO_DASH", "1")

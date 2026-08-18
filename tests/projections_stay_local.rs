@@ -127,7 +127,6 @@ fn the_graph_and_progress_projections_open_via_the_local_sqlite_constructors() {
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
-use common::rigger_bin;
 
 /// The project identity the binary resolves for `root` (the git top-level basename, or the
 /// tracked `.rigger/project.id`) - the identity that namespaces the LOCAL progress projection,
@@ -227,7 +226,7 @@ fn graph_build_against_the_server_keeps_graph_db_local_and_the_log_on_the_server
         // Build the graph with ONLY the server configured (no `--eventstore` flag) - the surface a
         // server-backed project uses. The event LOG is resolved through `resolve_store` (-> server);
         // the graph PROJECTION is opened directly as local sqlite.
-        let out = Command::new(rigger_bin())
+        let out = common::rigger_courier()
             .args(["graph", "build"])
             .current_dir(root)
             .env("KURRENTDB_CONN", &conn)
@@ -284,7 +283,7 @@ fn progress_against_the_server_keeps_progress_db_local_and_the_log_on_the_server
         // A bare `rigger progress` - no `--eventstore` flag - the exact surface a worker uses. It
         // resolves the run store (-> server, read-only, to scope the report) and appends to the
         // SEPARATE progress store, which must stay LOCAL sqlite.
-        let out = Command::new(rigger_bin())
+        let out = common::rigger_courier()
             .args([
                 "progress",
                 "u5-projections/implementer#0",

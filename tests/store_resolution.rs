@@ -142,7 +142,6 @@ fn the_single_resolver_exists_and_the_old_per_command_helper_is_retired() {
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
-use common::rigger_bin;
 
 /// The project identity the binary resolves for `root` (the git top-level basename, or the
 /// tracked `.rigger/project.id`), mirrored here so a read-back of the server binds the exact
@@ -243,7 +242,7 @@ fn a_courier_in_a_project_configured_for_the_server_resolves_the_server_store() 
         // A bare courier - `rigger emit`, no `--eventstore` flag - the exact surface a worker's
         // self-report uses. Before this criterion it wrote to LOCAL sqlite; now it must resolve
         // the shared server the project is configured for.
-        let out = Command::new(rigger_bin())
+        let out = common::rigger_courier()
             .args([
                 "emit",
                 "DecisionMade",
@@ -345,7 +344,7 @@ fn a_server_courier_in_a_nested_worktree_files_under_the_owning_root_identity() 
 
         // A bare courier - `rigger emit`, no `--eventstore` flag - run FROM the nested worktree,
         // the exact surface a spawned worker's self-report uses inside its unit worktree.
-        let out = Command::new(rigger_bin())
+        let out = common::rigger_courier()
             .args([
                 "emit",
                 "DecisionMade",
