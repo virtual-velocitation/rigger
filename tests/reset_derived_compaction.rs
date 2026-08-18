@@ -722,10 +722,29 @@ fn a_compacted_log_folds_to_the_same_live_graph_reads_clean_and_still_accepts_ap
 // ---------------------------------------------------------------------------------------
 
 #[test]
-fn reset_composes_derived_with_runs_and_still_refuses_a_bare_or_unknown_reset() {
+fn reset_composes_derived_with_runs_bare_reset_previews_it_and_an_unknown_mode_still_refuses() {
     let dir = temp_project();
     let root = dir.path();
     seed_bloated_log(root);
+
+    // A BARE `rigger reset` is a MENU, not an error (spec 68 supersedes the pre-spec-68 refusal
+    // this test used to pin): it exits 0 and previews - read-only - the SAME total the real
+    // `--derived` prune below actually removes.
+    let (menu, menu_err, menu_ok) = run_rigger(root, &["reset"]);
+    assert!(
+        menu_ok,
+        "a bare `rigger reset` must exit 0; stderr: {menu_err}"
+    );
+    assert!(
+        menu.contains("--runs:") && menu.contains("--derived:"),
+        "the bare menu must name both modes; got: {menu:?}"
+    );
+    let total_duplicates = REMOVED_CODE_ENTITIES + REMOVED_EDGES + REMOVED_DOC_LINKS;
+    assert!(
+        menu.contains(&format!("{total_duplicates} duplicate event(s)")),
+        "the bare menu's --derived line must preview the same total the real prune below \
+         removes ({total_duplicates}); got: {menu:?}"
+    );
 
     // Each flag prunes its own accumulation, and they compose in one invocation.
     let (out, err, ok) = run_rigger(root, &["reset", "--runs", "--derived"]);
@@ -742,14 +761,7 @@ fn reset_composes_derived_with_runs_and_still_refuses_a_bare_or_unknown_reset() 
         "the composed --derived prune must do the same work it does alone; got: {out:?}"
     );
 
-    // A bare `rigger reset` still never prunes silently, and an unknown mode is refused rather
-    // than ignored.
-    let (_, err, ok) = run_rigger(root, &["reset"]);
-    assert!(!ok, "a bare `rigger reset` must still refuse");
-    assert!(
-        err.contains("--derived") && err.contains("--runs"),
-        "the refusal must name both modes; got: {err:?}"
-    );
+    // An unknown mode is refused rather than ignored - only a TRULY bare reset is the menu.
     let (_, err, ok) = run_rigger(root, &["reset", "--everything"]);
     assert!(!ok, "an unknown reset mode must be refused");
     assert!(

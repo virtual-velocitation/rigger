@@ -18,7 +18,7 @@ use rigger::conductor::{self, Deps};
 use rigger::config;
 use rigger::contextgraph::{
     self,
-    sqlite::{Located, Projector},
+    sqlite::{Located, Projector, PruneStats},
     Projection,
 };
 use rigger::dash;
@@ -6089,10 +6089,16 @@ fn release_ready_lines(run_events: &[Event], run_branch: &str, base: &str) -> Ve
 /// `rigger reset` - the supported prunes, one flag per accumulation.
 ///
 /// Each mode sheds a DIFFERENT pile, so they name themselves explicitly and compose in one
-/// invocation; a bare `rigger reset` never prunes silently.
+/// invocation.
 ///
 ///   - `--runs` (spec 21, unit 2) prunes the CONTEXT GRAPH: see [`reset_runs`].
 ///   - `--derived` (spec 60, criterion 5) compacts the EVENT LOG: see [`reset_derived`].
+///
+/// A BARE `rigger reset` (no flags at all) is a MENU, not an error (spec 68, "the reset
+/// surface"): see [`reset_menu`]. Only a TRULY empty `args` takes that path - any non-empty
+/// args that select no mode (an unknown flag, or `--force-live` alone) fall through to
+/// [`reset_modes`]'s existing refusal exactly as before this menu existed, so that refusal and
+/// its tests are untouched.
 ///
 /// PRECHECKS FIRST, and exactly what they promise. The flags are parsed and the backend
 /// requirement of every requested mode is settled BEFORE the first prune runs, so a composed
@@ -6104,6 +6110,14 @@ fn release_ready_lines(run_events: &[Event], run_branch: &str, base: &str) -> Ve
 /// statement of the composition, and it is deliberately not called all-or-nothing: two files
 /// cannot be committed together, and claiming otherwise would tell an operator not to look.
 fn cmd_reset(args: &[String]) -> Res {
+    if args.is_empty() {
+        let (loc, selection) = require_store_dir()?;
+        if selection.is_sqlite() {
+            migrate_identity_at(&loc)?;
+        }
+        return reset_menu(&loc, &selection);
+    }
+
     let modes = reset_modes(args)?;
 
     let (loc, selection) = require_store_dir()?;
@@ -6162,6 +6176,90 @@ fn cmd_reset(args: &[String]) -> Res {
         reset_derived(&loc)?;
     }
     Ok(())
+}
+
+/// Bare `rigger reset` (spec 68, "the reset surface"): a MENU, not an error. Prints one line per
+/// prunable accumulation `--runs` / `--derived` would act on, each with a MEASURED count and the
+/// flag that acts on it, then exits 0. Read-only by construction - every number here comes from a
+/// `SELECT`, never from running a prune, so invoking the bare command is always safe to do "just
+/// to look".
+///
+/// WHY A COUNT, NOT A DISK-BYTE FORECAST. The flagged reports name bytes RECLAIMED
+/// (`derived_prune_report`, `reset_runs`'s own line) because they measure a real before/after
+/// across the mutation that just ran - `PrunedDerived::reclaimed_bytes`'s own docs are explicit
+/// that this is "MEASURED, NOT DERIVED" over the actual rewrite, and `Projector::compact`'s docs
+/// say the same of `VACUUM`: a page-count delta is only meaningful once the rewrite has happened.
+/// There is no honest byte figure to preview BEFORE that rewrite runs - printing one here would
+/// be exactly the fabricated number this whole command's design otherwise refuses to print. A
+/// COUNT of what would be removed is the real, read-only measurement the preview CAN make
+/// ([`contextgraph::sqlite::Projector::count_prunable`] /
+/// [`eventstore::sqlite::Store::count_derived_duplicates`], each the read-only twin of the
+/// predicate its flagged prune deletes by), so that is what this menu reports.
+fn reset_menu(loc: &StoreLocation, selection: &StoreSelection) -> Res {
+    // --runs: works over ANY backend, exactly like a real `--runs` does (the context graph is
+    // always a local file; only the EVENT log may be server-backed) - so this reads the whole run
+    // stream through the resolved backend precisely as `reset_runs` does.
+    let backend = resolve_store(selection, &loc.file("events.db"))?;
+    let store = Namespaced::new(backend.as_ref(), &loc.identity());
+    let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    let drop = superseded_graph_nodes(&events);
+    let boundary = superseded_edge_boundary(&events);
+    let graph = Projector::open(&loc.file("graph.db"), &loc.identity())?;
+    let stats = graph.count_prunable(&drop, boundary)?;
+    println!("{}", runs_menu_line(&stats));
+
+    // --derived: a mechanic of the embedded sqlite store (see `reset_derived`'s own doc) - honest
+    // per backend rather than a number a server-backed project could never actually reclaim.
+    if selection.is_sqlite() {
+        let es = open_sqlite_store(&loc.file("events.db"))?;
+        let duplicates = es.count_derived_duplicates(
+            &Namespaced::prefix_for(&loc.identity()),
+            &rigger::ingest::derived_index_identity(),
+        )?;
+        println!("{}", derived_menu_line(selection, Some(&duplicates)));
+    } else {
+        println!("{}", derived_menu_line(selection, None));
+    }
+    Ok(())
+}
+
+/// The `--runs` line of [`reset_menu`], pure over the already-measured [`PruneStats`] so the
+/// wording is unit-testable without a store.
+fn runs_menu_line(stats: &PruneStats) -> String {
+    format!(
+        "--runs: {} dead-run node(s) and {} superseded edge(s) prunable from the context graph; \
+         rerun `rigger reset --runs` to reclaim them",
+        stats.nodes, stats.superseded_edges
+    )
+}
+
+/// The `--derived` line of [`reset_menu`], pure over the already-measured per-type duplicate
+/// counts (or their absence, on a backend that cannot compact) so both branches are
+/// unit-testable without a store or a live server: `duplicates` is `Some` on the sqlite backend
+/// (`selection.is_sqlite()`) and `None` on any other, and this reads `selection` only to name the
+/// backend it is honest about.
+fn derived_menu_line(selection: &StoreSelection, duplicates: Option<&[(String, usize)]>) -> String {
+    match duplicates {
+        Some(counts) => {
+            let total: usize = counts.iter().map(|(_, n)| n).sum();
+            format!(
+                "--derived: {total} duplicate event(s) prunable from the event log across {} \
+                 derived type(s); rerun `rigger reset --derived` to compact them",
+                counts.len()
+            )
+        }
+        None => {
+            debug_assert!(
+                !selection.is_sqlite(),
+                "derived_menu_line: a `None` count on the sqlite backend would hide a real \
+                 measurement the caller could have taken"
+            );
+            "--derived: unavailable on this backend - compaction deletes rows from the event log \
+             and vacuums the file, a mechanic of the embedded sqlite events.db store; this \
+             project is configured for the server-backed store, which rigger cannot compact"
+                .to_string()
+        }
+    }
 }
 
 /// Which prunes one `rigger reset` invocation was asked for.
@@ -17064,6 +17162,88 @@ mod tests {
             err.to_string().contains("at least one mode"),
             "a bare --force-live must fall through the same 'at least one mode' refusal as a \
              bare reset; got {err}"
+        );
+    }
+
+    // --- Spec 68, criterion 3: the bare-menu report lines (pure, no store, no live server) ---
+
+    #[test]
+    fn runs_menu_line_names_the_measured_counts_and_the_flag() {
+        let line = runs_menu_line(&PruneStats {
+            nodes: 4,
+            superseded_edges: 2,
+        });
+        assert!(
+            line.contains("--runs:"),
+            "must name its own flag; got {line:?}"
+        );
+        assert!(
+            line.contains("4 dead-run node(s)") && line.contains("2 superseded edge(s)"),
+            "must name the measured counts; got {line:?}"
+        );
+        assert!(
+            line.contains("--runs"),
+            "must tell the operator which flag reclaims it; got {line:?}"
+        );
+
+        let zero = runs_menu_line(&PruneStats::default());
+        assert!(
+            zero.contains("0 dead-run node(s)") && zero.contains("0 superseded edge(s)"),
+            "an empty store must report zero, not omit the line; got {zero:?}"
+        );
+    }
+
+    #[test]
+    fn derived_menu_line_sums_the_measured_duplicate_counts_and_names_the_flag() {
+        let counts = vec![
+            ("CodeEntityExtracted".to_string(), 3usize),
+            ("EdgeInferred".to_string(), 0usize),
+            ("DocLinkExtracted".to_string(), 5usize),
+        ];
+        let line = derived_menu_line(&StoreSelection::Sqlite, Some(&counts));
+        assert!(
+            line.contains("--derived:"),
+            "must name its own flag; got {line:?}"
+        );
+        assert!(
+            line.contains("8 duplicate event(s)"),
+            "must sum the per-type counts (3+0+5=8); got {line:?}"
+        );
+        assert!(
+            line.contains("3 derived type(s)"),
+            "must name how many types were measured; got {line:?}"
+        );
+        assert!(
+            line.contains("--derived"),
+            "must tell the operator which flag compacts it; got {line:?}"
+        );
+
+        let zero = derived_menu_line(&StoreSelection::Sqlite, Some(&[]));
+        assert!(
+            zero.contains("0 duplicate event(s)"),
+            "an empty store must report zero, not omit the line; got {zero:?}"
+        );
+    }
+
+    /// The per-backend honesty branch (spec 68 Design: "a backend where a prune is unavailable
+    /// says so on that line"). `StoreSelection` is private to this module, so this is the ONE
+    /// place able to construct `Server(..)` directly and prove the wording without a live
+    /// server - `derived_menu_line` never opens a connection either way.
+    #[test]
+    fn derived_menu_line_on_a_server_backend_says_so_instead_of_a_fabricated_count() {
+        let server = StoreSelection::Server("esdb://127.0.0.1:2113?tls=false".to_string());
+        let line = derived_menu_line(&server, None);
+        assert!(
+            !line.contains("duplicate event(s)"),
+            "a backend that cannot compact must never print a count it could not measure; got {line:?}"
+        );
+        assert!(
+            line.contains("--derived:") && line.contains("unavailable"),
+            "must name its own flag and say it is unavailable; got {line:?}"
+        );
+        assert!(
+            line.contains("server-backed store"),
+            "must name the backend the project is actually configured for; got {line:?}"
         );
     }
 }

@@ -259,6 +259,48 @@ impl Projector {
         })
     }
 
+    /// A read-only PREVIEW of what [`prune`] would remove (spec 68, "the reset surface"): the
+    /// SAME two predicates [`prune`]'s deletes select, each run as a `SELECT COUNT(*)` instead of
+    /// a `DELETE` - how many of `node_ids` are actually present as this project's nodes, and how
+    /// many edges are retired before `superseded_before`. No transaction, no row touched, no
+    /// write lock taken, so `rigger reset`'s bare-menu preview can read this on every invocation
+    /// without ever pruning anything itself, and its printed numbers can never drift from what a
+    /// real `--runs` removes because both read the identical WHERE clauses.
+    ///
+    /// Scoped to `self.project` exactly like [`prune`] - a shared backend never counts another
+    /// project's same-id node or edge.
+    pub fn count_prunable(
+        &self,
+        node_ids: &[String],
+        superseded_before: Option<i64>,
+    ) -> Result<PruneStats, Error> {
+        let ids_json = serde_json::to_string(node_ids).map_err(be)?;
+        let conn = self.conn.lock().unwrap();
+        let nodes: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM nodes
+                 WHERE id IN (SELECT value FROM json_each(?1)) AND project = ?2",
+                params![ids_json, self.project],
+                |r| r.get(0),
+            )
+            .map_err(be)?;
+        let superseded_edges: i64 = match superseded_before {
+            Some(before) => conn
+                .query_row(
+                    "SELECT COUNT(*) FROM edges
+                     WHERE valid_to IS NOT NULL AND valid_to < ?1 AND project = ?2",
+                    params![before, self.project],
+                    |r| r.get(0),
+                )
+                .map_err(be)?,
+            None => 0,
+        };
+        Ok(PruneStats {
+            nodes: nodes.max(0) as usize,
+            superseded_edges: superseded_edges.max(0) as usize,
+        })
+    }
+
     /// Compact the on-disk graph file after a [`prune`], returning the bytes reclaimed (spec 46,
     /// criterion 3). [`prune`] drops superseded projection ROWS, but SQLite keeps the freed pages
     /// inside `graph.db` on a freelist for reuse, so the file stays as LARGE on disk as before the

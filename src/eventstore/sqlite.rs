@@ -788,6 +788,48 @@ impl Store {
         self.prune_derived_index_compacting_with(stream_prefix, identity, compact_in_place)
     }
 
+    /// A read-only PREVIEW of what [`prune_derived_index`] would delete (spec 68, "the reset
+    /// surface"): for each type `identity` covers, the count of every recording of a covered key
+    /// EXCEPT the latest one in its stream - the exact `rn > 1` predicate the delete's window
+    /// function selects, run as `SELECT COUNT(*)` instead of `DELETE`. No row is touched, no
+    /// valid-time carried, no `VACUUM` run.
+    ///
+    /// Unlike [`prune_derived_index`] this needs no [`ContentIdentity::reasserting`] declaration:
+    /// that check exists because a DELETE has to know whether a surviving row's valid-time must be
+    /// carried forward, and a count writes nothing, so the one input that check guards against
+    /// getting wrong is not read here at all.
+    ///
+    /// `rigger reset`'s bare-menu preview reads this so its printed count can never drift from
+    /// what a real `--derived` removes - both count the identical rows.
+    pub fn count_derived_duplicates(
+        &self,
+        stream_prefix: &str,
+        identity: &ContentIdentity,
+    ) -> Result<Vec<(String, usize)>, Error> {
+        let key = key_expr(identity.meta_key());
+        let sql = format!(
+            "SELECT COUNT(*) FROM (
+               SELECT position, ROW_NUMBER() OVER (
+                        PARTITION BY stream, {key} ORDER BY position DESC) AS rn
+               FROM events
+               WHERE type = ?1
+                 AND substr(stream, 1, length(?2)) = ?2
+                 AND {key} IS NOT NULL
+             ) WHERE rn > 1"
+        );
+        let types = identity.types();
+        let guard = self.conn.lock().unwrap();
+        let mut stmt = guard.prepare(&sql).map_err(be)?;
+        let mut removed: Vec<(String, usize)> = Vec::with_capacity(types.len());
+        for t in types {
+            let n: i64 = stmt
+                .query_row(params![t.as_str(), stream_prefix], |r| r.get(0))
+                .map_err(be)?;
+            removed.push((t.clone(), n.max(0) as usize));
+        }
+        Ok(removed)
+    }
+
     /// [`Store::prune_derived_index`] with its post-commit space reclamation INJECTED.
     ///
     /// The seam exists because that step's real failures - a temporary directory too small for the
