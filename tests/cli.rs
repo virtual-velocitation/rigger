@@ -8805,13 +8805,37 @@ fn validate_flags_tracked_rigger_files_with_uncommitted_modifications() {
 // `rigger validate` build.wrapper resolution (spec 65 unit 2, NO SILENT DEGRADE)
 // ---------------------------------------------------------------------------
 
-/// Append a `build:` block to a scaffolded project's `.rigger/workflow.yml` (a top-level
-/// YAML key, valid at any position after the existing scaffold content).
+/// Set a test's `build:` block on a scaffolded project's `.rigger/workflow.yml`, REPLACING
+/// any `build:` the scaffold already wrote rather than blindly appending a second one:
+/// `rigger init` (spec 65 unit 5) now scaffolds `build:\n  wrapper: auto\n` on every fresh
+/// project, so a bare append would leave two top-level `build:` keys - a YAML parse error
+/// ("duplicate field `build`"), not the single resolved block each test below means to
+/// exercise.
 fn append_build_block(root: &Path, block: &str) {
+    let path = root.join(".rigger").join("workflow.yml");
+    let existing = std::fs::read_to_string(&path).unwrap();
+    let mut without_build = String::new();
+    let mut in_build = false;
+    for line in existing.lines() {
+        if line == "build:" {
+            in_build = true;
+            continue;
+        }
+        if in_build {
+            if line.trim().is_empty() || line.starts_with(' ') || line.starts_with('\t') {
+                continue; // still inside the scaffolded build: block (or its trailing blank)
+            }
+            in_build = false;
+        }
+        without_build.push_str(line);
+        without_build.push('\n');
+    }
+    std::fs::write(&path, without_build).unwrap();
+
     use std::io::Write;
     let mut wf = std::fs::OpenOptions::new()
         .append(true)
-        .open(root.join(".rigger").join("workflow.yml"))
+        .open(&path)
         .unwrap();
     writeln!(wf, "{block}").unwrap();
 }
@@ -8931,6 +8955,70 @@ fn validate_reports_the_resolved_wrapper_when_auto_finds_a_known_wrapper_on_path
     assert!(
         out.lines().any(|l| l == "build wrapper: sccache"),
         "auto finding sccache on PATH must report it through validate; stdout:\n{out}"
+    );
+}
+
+/// Spec 65 unit 5 (HONEST SURFACES), end to end through the real CLI: with a wrapper
+/// active AND a custom `max_concurrent`, `rigger validate` reports the wrapper, the cache
+/// dir it resolved to, AND the resolved budget - all three, not just the wrapper the
+/// earlier (spec 65 unit 2) test above already covers.
+#[test]
+fn validate_reports_cache_dir_and_budget_alongside_the_wrapper() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    let cache_dir = root.join("my-cache");
+    append_build_block(
+        root,
+        &format!(
+            "build:\n  wrapper: auto\n  cache_dir: {}\n  max_concurrent: 7\n",
+            cache_dir.display()
+        ),
+    );
+
+    let path = path_with_fake_wrapper(root, "sccache");
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
+    assert!(
+        ok,
+        "a found wrapper with a custom budget must not fail validate; \
+         stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        out.lines()
+            .any(|l| l == format!("build cache dir: {}", cache_dir.display())),
+        "the resolved cache dir must be reported; stdout:\n{out}"
+    );
+    assert!(
+        out.lines().any(|l| l == "build budget: 7"),
+        "the resolved max_concurrent budget must be reported; stdout:\n{out}"
+    );
+}
+
+/// With the wrapper layer off, `rigger validate` still reports the budget (it gates every
+/// compiler invocation regardless of the wrapper) but NO cache dir line - an inactive
+/// layer touches no cache dir, so a claimed one would be fabricated.
+#[test]
+fn validate_reports_budget_but_no_cache_dir_when_the_wrapper_is_off() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    append_build_block(root, "build:\n  wrapper: off\n  max_concurrent: 2\n");
+
+    let (out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(ok, "wrapper: off must not fail validate; stderr:\n{err}");
+    assert!(
+        out.lines().any(|l| l == "build wrapper: none"),
+        "an off wrapper reports none; stdout:\n{out}"
+    );
+    assert!(
+        out.lines().any(|l| l == "build budget: 2"),
+        "the budget is still reported with the wrapper off; stdout:\n{out}"
+    );
+    assert!(
+        !out.lines().any(|l| l.starts_with("build cache dir:")),
+        "an off wrapper must report no cache dir line at all; stdout:\n{out}"
     );
 }
 

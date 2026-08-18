@@ -29,7 +29,9 @@ use rigger::eventstore::{
     sqlite::{PrunedDerived, Store},
     Direction, Event, EventStore, ExpectedRevision, Filter,
 };
-use rigger::gate::{resolve_build_layer, BuildEnv, ExecRunner, Gate, GateResult, Runner};
+use rigger::gate::{
+    resolve_build_layer, resolved_cache_dir, BuildEnv, ExecRunner, Gate, GateResult, Runner,
+};
 use rigger::grounder::Grounder;
 use rigger::ledger::{self, RunState};
 use rigger::metrics::{self, Metrics};
@@ -6732,19 +6734,24 @@ fn cmd_validate(args: &[String]) -> Res {
         cfg.workflow.stages.len(),
         cfg.workflow.gates.len()
     );
-    // Build-environment wrapper report (spec 65 unit 2, NO SILENT DEGRADE): a
-    // named-but-absent `build.wrapper`, or a named wrapper whose cache dir cannot be
-    // created, already failed above (`config::load`'s `Config::validate` rejects both at
-    // run start, before `cfg` could exist), so by this point resolution can only succeed -
-    // this SURFACES what it resolved to, so an `auto` probe that quietly found nothing (or
-    // found a wrapper whose cache dir turned out unusable) is SEEN as "none" here rather
-    // than silently doing nothing invisibly. Reads through the SAME `resolve_build_layer`
-    // authority `Config::validate` and the conductor's build-environment authority use -
-    // never a second, independently re-derived report.
-    match resolve_build_layer(&cfg.workflow.build.wrapper, &cfg.workflow.build.cache_dir) {
-        Ok(Some(w)) => println!("build wrapper: {w}"),
-        Ok(None) => println!("build wrapper: none"),
-        Err(e) => return Err(e.to_string().into()),
+    // Build-environment SURFACES report (spec 65 units 2 and 5, NO SILENT DEGRADE /
+    // HONEST SURFACES): a named-but-absent `build.wrapper`, or a named wrapper whose cache
+    // dir cannot be created, already failed above (`config::load`'s `Config::validate`
+    // rejects both at run start, before `cfg` could exist), so by this point resolution
+    // can only succeed - this SURFACES what it resolved to (wrapper, cache dir, budget) so
+    // an `auto` probe that quietly found nothing (or found a wrapper whose cache dir turned
+    // out unusable) is SEEN as "none" here rather than silently doing nothing invisibly.
+    // Reads through the SAME `resolve_build_layer` authority `Config::validate` and the
+    // conductor's build-environment authority use - never a second, independently
+    // re-derived report; the formatting itself lives in the pure, unit-tested
+    // `build_environment_report` below so this edge stays a thin resolve-then-print.
+    let wrapper =
+        match resolve_build_layer(&cfg.workflow.build.wrapper, &cfg.workflow.build.cache_dir) {
+            Ok(w) => w,
+            Err(e) => return Err(e.to_string().into()),
+        };
+    for line in build_environment_report(wrapper.as_deref(), &cfg.workflow.build) {
+        println!("{line}");
     }
     // Non-fatal advisories (spec 05:55): surface config/install drift so it is seen,
     // not discovered by accident. Each is a stderr warning that never changes the exit
@@ -6793,6 +6800,47 @@ fn cmd_validate(args: &[String]) -> Res {
         return Err(failure.into());
     }
     Ok(())
+}
+
+/// The build-environment lines `rigger validate` prints (spec 65 unit 5, HONEST SURFACES):
+/// given the wrapper ALREADY resolved by [`resolve_build_layer`] (the same authority
+/// `Config::validate`'s run-start check and the conductor's build-environment authority
+/// read - this never re-derives it), render:
+/// - the wrapper name, or `none` when the layer is inactive;
+/// - the cache dir it resolved to (via [`resolved_cache_dir`], the SAME ternary
+///   [`BuildEnv::resolve`] and the cache-dir probe use) - ONLY when a wrapper is actually
+///   active, since an inactive layer touches no cache dir and claiming one would fabricate
+///   a surface nothing backs;
+/// - the machine-wide build budget, ALWAYS: `build.max_concurrent` gates every compiler
+///   invocation this loop runs (spec 65 unit 3) regardless of whether a wrapper is
+///   configured, so an operator sees it even with the wrapper off. `0` is the documented
+///   unlimited convention (mirrors `defaults.budget`), reported in words rather than a
+///   bare, easily-misread `0`.
+///
+/// Pure formatting over already-resolved values, so it is unit-tested without touching
+/// PATH or the filesystem; the effectful wrapper resolution stays at the `cmd_validate`
+/// edge that calls this.
+fn build_environment_report(wrapper: Option<&str>, build: &config::BuildConfig) -> Vec<String> {
+    let mut lines = Vec::new();
+    match wrapper {
+        Some(w) => {
+            lines.push(format!("build wrapper: {w}"));
+            lines.push(format!(
+                "build cache dir: {}",
+                resolved_cache_dir(&build.cache_dir)
+            ));
+        }
+        None => lines.push("build wrapper: none".to_string()),
+    }
+    lines.push(format!(
+        "build budget: {}",
+        if build.max_concurrent == 0 {
+            "unlimited".to_string()
+        } else {
+            build.max_concurrent.to_string()
+        }
+    ));
+    lines
 }
 
 /// The non-fatal `rigger validate` advisories (spec 05:55), in report order:
@@ -8981,6 +9029,13 @@ review:\n    \
 lenses: [architecture-reviewer, sdet]   # tier 1: the expert lenses\n    \
 adversary: adversary           # tier 2: reviews the lenses and refutes them\n    \
 adjudicator: adjudicator   # tier 3: neutral judge; its verdict gates the unit\n\
+\n\
+# The compilation-cache wrapper (spec 65): `auto` probes PATH for a known wrapper\n\
+# (sccache, ccache) and uses it when present, so a machine that already has one\n\
+# installed benefits with no further config; `off` disables the shared-cache\n\
+# layer entirely. See `rigger validate` for the resolved wrapper/cache dir/budget.\n\
+build:\n  \
+wrapper: auto\n\
 \n\
 gates:                    # a reusable library of commands, referenced by name\n  \
 build: { run: \"echo build ok; true\", kind: core }\n  \
@@ -15389,6 +15444,108 @@ mod tests {
         assert!(
             !units.trim_end().ends_with('*'),
             "an unchanged row carries no flag; got: {units:?}"
+        );
+    }
+
+    // --- Spec 65 unit 5: `rigger validate` SURFACES the resolved wrapper, cache dir, and
+    // budget; `rigger setup` writes `build: { wrapper: auto }` for new projects only. ---
+
+    /// With a wrapper active, `rigger validate` reports the wrapper name, the cache dir it
+    /// resolved to, AND the budget - three lines, in that order, so an operator sees the
+    /// whole resolved build environment at a glance (Design: "wrapper ... cache dir, slot
+    /// budget"). The cache dir line reads through the SAME [`resolved_cache_dir`] the
+    /// [`BuildEnv`] resolver and the cache-dir probe use - never a second independently
+    /// re-derived path.
+    #[test]
+    fn build_environment_report_with_a_wrapper_lists_wrapper_cache_dir_and_budget() {
+        let build = config::BuildConfig {
+            wrapper: "sccache".to_string(),
+            cache_dir: "/tmp/example-cache".to_string(),
+            jobs: 0,
+            max_concurrent: 4,
+        };
+        let lines = build_environment_report(Some("sccache"), &build);
+        assert_eq!(
+            lines,
+            vec![
+                "build wrapper: sccache".to_string(),
+                "build cache dir: /tmp/example-cache".to_string(),
+                "build budget: 4".to_string(),
+            ]
+        );
+    }
+
+    /// With no wrapper resolved (`off`, or `auto` finding nothing), NO cache dir line is
+    /// printed - an inactive layer touches no cache dir, so claiming one would be a fabricated
+    /// surface - but the budget line still prints: `build.max_concurrent` gates every compiler
+    /// invocation this loop runs regardless of whether a wrapper is configured.
+    #[test]
+    fn build_environment_report_with_no_wrapper_omits_cache_dir_but_keeps_budget() {
+        let build = config::BuildConfig {
+            wrapper: String::new(),
+            cache_dir: String::new(),
+            jobs: 0,
+            max_concurrent: 8,
+        };
+        let lines = build_environment_report(None, &build);
+        assert_eq!(
+            lines,
+            vec![
+                "build wrapper: none".to_string(),
+                "build budget: 8".to_string(),
+            ]
+        );
+    }
+
+    /// `max_concurrent: 0` is the documented unlimited convention (matching
+    /// `defaults.budget`'s own `0` = unlimited); the report says so in words, never a bare
+    /// misleading `0`.
+    #[test]
+    fn build_environment_report_zero_max_concurrent_reports_unlimited() {
+        let build = config::BuildConfig {
+            max_concurrent: 0,
+            ..Default::default()
+        };
+        let lines = build_environment_report(None, &build);
+        assert!(
+            lines.iter().any(|l| l == "build budget: unlimited"),
+            "a zero max_concurrent must report as unlimited, got: {lines:?}"
+        );
+    }
+
+    /// The scaffolded workflow (`rigger init`/`setup` on a NEW project) declares
+    /// `build: { wrapper: auto }` (spec 65 Design: "`rigger setup` writes the `build:`
+    /// section with `wrapper: auto` for new projects") - a fresh project benefits from a
+    /// machine's already-installed compilation-cache wrapper with no further config.
+    #[test]
+    fn scaffold_workflow_declares_build_wrapper_auto() {
+        let wf: config::Workflow =
+            serde_yaml::from_str(SCAFFOLD_WORKFLOW).expect("the scaffolded workflow must parse");
+        assert_eq!(
+            wf.build.wrapper, "auto",
+            "a freshly scaffolded workflow.yml must default build.wrapper to auto"
+        );
+    }
+
+    /// `rigger setup`/`init` NEVER clobbers an existing `workflow.yml` (spec 65 Design:
+    /// "never clobbers an existing one") - including a committed `build:` section that
+    /// differs from the fresh-project default. A project that has already opted OUT
+    /// (`wrapper: off`) must stay opted out across a rerun, never silently flipped back to
+    /// `auto`.
+    #[test]
+    fn init_project_never_clobbers_an_existing_build_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let rigger_dir = dir.path().join(RIGGER_DIR);
+        std::fs::create_dir_all(&rigger_dir).unwrap();
+        let workflow_path = rigger_dir.join("workflow.yml");
+        std::fs::write(&workflow_path, "name: custom\nbuild:\n  wrapper: off\n").unwrap();
+
+        init_project(dir.path()).expect("a rerun over an existing project must succeed");
+
+        let after = std::fs::read_to_string(&workflow_path).unwrap();
+        assert_eq!(
+            after, "name: custom\nbuild:\n  wrapper: off\n",
+            "an existing workflow.yml's build: section must be left byte-for-byte untouched"
         );
     }
 

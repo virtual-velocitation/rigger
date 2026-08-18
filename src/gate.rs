@@ -295,12 +295,14 @@ fn default_cache_dir() -> String {
         .unwrap_or_else(|| "rigger-build-cache".to_string())
 }
 
-/// The cache-directory value both [`BuildEnv::resolve`] (what the `_DIR` env var carries)
-/// and the build-layer cache-dir probe (spec 65 unit 2, below) need: the configured
-/// `cache_dir` verbatim when set, or [`default_cache_dir`] when it is empty/whitespace-only.
-/// Extracted so both read the exact same resolved path from ONE place rather than two
-/// independent copies of this ternary that could silently drift apart.
-fn resolved_cache_dir(cache_dir: &str) -> String {
+/// The cache-directory value [`BuildEnv::resolve`] (what the `_DIR` env var carries), the
+/// build-layer cache-dir probe (spec 65 unit 2, below), AND `rigger validate`'s SURFACES
+/// report (spec 65 unit 5 - reads this directly rather than re-deriving the same ternary a
+/// third time) all need: the configured `cache_dir` verbatim when set, or
+/// [`default_cache_dir`] when it is empty/whitespace-only. `pub` so it is the one place
+/// every caller across the crate reads, never a second independent copy that could
+/// silently drift from this one.
+pub fn resolved_cache_dir(cache_dir: &str) -> String {
     if cache_dir.trim().is_empty() {
         default_cache_dir()
     } else {
