@@ -402,6 +402,44 @@ fn reset_derived_refuses_an_in_flight_spawn_naming_its_id_and_prunes_nothing() {
 }
 
 // ---------------------------------------------------------------------------------------
+// Fail-safe: an unreadable signal must refuse, never read as quiet
+// ---------------------------------------------------------------------------------------
+
+/// A malformed `SpawnRequested` body in the current run's slice makes the in-flight-spawn read
+/// fail to decode. The pure-composition unit test already proves the internal function returns
+/// `Err`; this periphery test proves the FULL wire end to end - that `cmd_reset`'s own error
+/// propagation actually surfaces that as a failed compiled-binary invocation (a non-zero exit and
+/// a non-empty message on stderr), not a swallowed error read as "nothing in flight" by some
+/// layer between the guard and the process exit code. The refusal must be TOTAL: the malformed
+/// event, and everything else in the log, survives untouched.
+#[test]
+fn reset_derived_fails_the_cli_on_a_malformed_current_run_spawn_event_and_prunes_nothing() {
+    let dir = temp_project();
+    let root = dir.path();
+    // A `SpawnRequested` body missing every field `spawn::recorded` needs to decode it - valid
+    // JSON, but not a valid request, so the current-run in-flight-spawn read fails outright
+    // rather than seeing "no spawns in flight".
+    seed_run_events(root, &[("SpawnRequested", "{}")]);
+    let before = row_count(root);
+
+    let (out, err, ok) = run_rigger(root, &["reset", "--derived"], &[]);
+    assert!(
+        !ok,
+        "a malformed current-run spawn event must fail the CLI, never read as quiet; \
+         stdout: {out:?}"
+    );
+    assert!(
+        !err.is_empty(),
+        "the CLI failure must carry a message an operator can act on"
+    );
+    assert_eq!(
+        row_count(root),
+        before,
+        "a refusal on an unreadable signal must prune NOTHING"
+    );
+}
+
+// ---------------------------------------------------------------------------------------
 // Signal 4: a fresh driver registration
 // ---------------------------------------------------------------------------------------
 
