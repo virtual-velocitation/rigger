@@ -1398,7 +1398,16 @@ replay key of each derived index type, delete the\n                             
 superseded re-recordings, and vacuum so the file shrinks\n                              \
 on disk. Every other event survives. Sheds the\n                              \
 duplication a log accreted before the ingest dedup;\n                              \
-composes with --runs (each prunes its own accumulation)\n  \
+composes with --runs (each prunes its own accumulation).\n                              \
+Refuses while run machinery looks live (a held step\n                              \
+lock, a non-terminal unit, an in-flight spawn, or a live\n                              \
+driver registration), naming what is live: compaction\n                              \
+leaves revision gaps by design, and a stale writer can\n                              \
+reissue one and reorder the log - the corruption this\n                              \
+guard exists to prevent. --force-live skips the check\n                              \
+entirely and checks nothing: pass it only once you are\n                              \
+certain no writer is using this store, since forcing\n                              \
+past a genuinely live writer is exactly that corruption\n  \
 rigger validate             load and validate the workflow + agents\n  \
 rigger init                 set up a project: scaffold .rigger/ (workflow.yml +\n                              \
 an agents/ folder) and install the Claude Code\n                              \
@@ -1814,9 +1823,18 @@ const STEP_BUSY_TOKEN: &str = "another `rigger step` is already running";
 /// and loudly ([`STEP_BUSY_TOKEN`]) rather than blocking - a driver whose courier gets the
 /// refusal backs off and retries, which keeps the run flowing without ever running two
 /// steps at once. See the call site for why concurrent steps corrupt the run.
-fn acquire_step_lock() -> Result<std::fs::File, Box<dyn std::error::Error>> {
+///
+/// `rigger_dir` is the `.rigger` directory the lock file (`step.lock`) lives under, so a caller
+/// resolves it exactly as it resolves every other store file: `cmd_step` always runs against the
+/// CWD-relative [`RIGGER_DIR`] (it just ensured that directory exists), while a probe run from a
+/// nested worktree - [`refuse_derived_reset_if_live`]'s live-writer guard (spec 71, criterion 2) -
+/// passes the STORE'S resolved [`StoreLocation::dir`] instead. A caller that instead hardcoded
+/// [`RIGGER_DIR`] here would probe the wrong (or nonexistent) `.rigger` under its own cwd and
+/// misread "not this repo's `.rigger`" as "the lock is held" - the false refusal a nested-worktree
+/// caller must never produce.
+fn acquire_step_lock(rigger_dir: &Path) -> Result<std::fs::File, Box<dyn std::error::Error>> {
     use fs2::FileExt;
-    let path = Path::new(RIGGER_DIR).join("step.lock");
+    let path = rigger_dir.join("step.lock");
     let f = std::fs::OpenOptions::new()
         .create(true)
         .write(true)
@@ -1853,7 +1871,7 @@ fn cmd_step(args: &[String]) -> Res {
     // first's minutes-long gate still runs. Held for the whole step and released when this
     // process exits (even on crash/kill), so a dead step never wedges the run. The guard
     // binds a name so it is not dropped early.
-    let _step_lock = acquire_step_lock()?;
+    let _step_lock = acquire_step_lock(Path::new(RIGGER_DIR))?;
 
     // Anchor + check out the run branch before the conductor branches any unit worktree
     // off HEAD. Guarded on a real repo so the repo-less unit-test path is untouched. A
@@ -6113,11 +6131,34 @@ fn cmd_reset(args: &[String]) -> Res {
         )
         .into());
     }
-
     if modes.runs {
         reset_runs(&loc, &selection)?;
     }
     if modes.derived {
+        // COMPACTION REFUSES LIVE WRITERS (spec 71, criterion 2): `--derived` leaves revision
+        // gaps by design, and a writer built before this compaction ran can reissue one of those
+        // gaps and reorder the log (the incident spec 71 records) if the log changes under it.
+        // `--force-live` is the explicit, named escape hatch that skips this check entirely (it
+        // verifies nothing - the operator owns that risk once they pass it). The registry read
+        // is resolved HERE, at the composition root, and handed in - the guard itself never
+        // reads the ambient environment (see `refuse_derived_reset_if_live`'s docs).
+        //
+        // Deliberately checked AFTER `--runs` (not alongside the STATIC backend-mismatch
+        // precheck above): the live-writer guard reads a DYNAMIC snapshot that is scoped
+        // entirely to the event log, so a composed `reset --runs --derived` under a live signal
+        // still completes `--runs`'s OWN, independent, already-safe prune of the graph
+        // (`graph.db` - a different file, never at risk from a live event-log writer); only
+        // `--derived` itself refuses. This is the same "each mode sheds only its own
+        // accumulation, and an earlier prune's completion is reported before a later refusal"
+        // honesty this function's own docs already commit to for a genuine IO/lock fault -
+        // extended here to a live-writer refusal, not just an unexpected error.
+        if !modes.force_live {
+            refuse_derived_reset_if_live(
+                &loc,
+                &selection,
+                rigger::registry::default_dir().as_deref(),
+            )?;
+        }
         reset_derived(&loc)?;
     }
     Ok(())
@@ -6127,10 +6168,18 @@ fn cmd_reset(args: &[String]) -> Res {
 struct ResetModes {
     runs: bool,
     derived: bool,
+    /// The override for `--derived`'s live-writer guard (spec 71, criterion 2): skips
+    /// [`refuse_derived_reset_if_live`] entirely rather than acting on what it would have found -
+    /// the operator asked to compact WHATEVER the run machinery looks like, and this flag owns
+    /// that risk (see its help text and [`live_writer_refusal`]). Meaningless on its own; only
+    /// `--derived` ever reads it. Not itself a mode - a bare `--force-live` with no
+    /// `--runs`/`--derived` still falls through the "at least one mode" refusal below exactly as
+    /// before this flag existed.
+    force_live: bool,
 }
 
 /// Parse `rigger reset`'s flags: any combination of the named modes, in any order, each at most
-/// once, and at least one of them.
+/// once, and at least one of them; `--force-live` composes with either and is at most once too.
 ///
 /// Every mode is explicit and an unrecognized argument is REFUSED rather than ignored, because
 /// both failure modes here are silent: a bare `reset` that guessed a mode would prune something
@@ -6139,15 +6188,17 @@ fn reset_modes(args: &[String]) -> Result<ResetModes, Box<dyn std::error::Error>
     let mut modes = ResetModes {
         runs: false,
         derived: false,
+        force_live: false,
     };
     for arg in args {
         let slot = match arg.as_str() {
             "--runs" => &mut modes.runs,
             "--derived" => &mut modes.derived,
+            "--force-live" => &mut modes.force_live,
             other => {
                 return Err(format!(
-                    "reset: expected --runs and/or --derived, got {other}: \
-                     rigger reset --runs | rigger reset --derived"
+                    "reset: expected --runs and/or --derived (with an optional --force-live), \
+                     got {other}: rigger reset --runs | rigger reset --derived [--force-live]"
                 )
                 .into())
             }
@@ -6301,6 +6352,168 @@ fn derived_prune_report(pruned: &PrunedDerived) -> String {
          content key are preserved{what_the_count_means}",
         pruned.total_removed(),
     )
+}
+
+/// The reasons `rigger reset --derived` must refuse (spec 71, criterion 2), from four
+/// already-gathered facts - the recorded incident this guard exists to prevent is a compaction
+/// that ran WHILE a writer was still appending, so each fact covers a different shape that writer
+/// can take and none alone covers every shape:
+///   - `step_lock_held`: a `rigger step` is running right now, possibly mid-wave before it has
+///     even parked a spawn (the narrowest, most immediate signal - see [`acquire_step_lock`]).
+///   - `live_units`: the CURRENT run's non-terminal unit branches ([`current_run_units`], the
+///     SAME authority `cmd_step`'s orphan-sweep and `validate`'s residue scan already fold on) -
+///     catches a unit that is live BETWEEN spawn rounds (its last spawn answered, its next not
+///     parked yet), which an in-flight-spawn check alone would miss.
+///   - `in_flight_spawn_ids`: a recorded spawn request in the current run with no result yet
+///     ([`spawn::step_result`]'s wave) - catches a pre-unit spawn (a plan/canary round the ledger
+///     has not folded into a unit yet) that `live_units` alone would miss, AND a worker (an agent
+///     process running its own `rigger emit`/`rigger result` couriers) that may be appending even
+///     with no `step`/`run`/`serve` process alive right now.
+///   - `driver_registrations`: a live entry in the machine-global instance registry (spec 50) for
+///     THIS project's exact store - an in-process `rigger run`/`serve` (which never touches
+///     `step.lock`, and whose next spawn may not be parked yet either) elsewhere on this machine.
+///
+/// Pure (no IO) so the composition - list EVERY applicable reason, never just the first, so an
+/// operator sees the whole picture in one refusal instead of clearing one and retrying into the
+/// next - is unit-tested without any of the four. Empty means quiet: safe to compact.
+fn live_writer_reasons(
+    step_lock_held: bool,
+    live_units: &std::collections::HashSet<String>,
+    in_flight_spawn_ids: &[String],
+    driver_registrations: usize,
+) -> Vec<String> {
+    let mut reasons = Vec::new();
+    if step_lock_held {
+        reasons
+            .push("a `rigger step` is running right now (it holds .rigger/step.lock)".to_string());
+    }
+    if !live_units.is_empty() {
+        let mut slugs: Vec<&str> = live_units
+            .iter()
+            .map(|b| b.strip_prefix("rigger/u/").unwrap_or(b.as_str()))
+            .collect();
+        slugs.sort_unstable();
+        reasons.push(format!(
+            "{} unit(s) in the current run are not yet terminal: {}",
+            slugs.len(),
+            slugs.join(", "),
+        ));
+    }
+    if !in_flight_spawn_ids.is_empty() {
+        reasons.push(format!(
+            "{} spawn(s) in the current run have no recorded result yet: {}",
+            in_flight_spawn_ids.len(),
+            in_flight_spawn_ids.join(", "),
+        ));
+    }
+    if driver_registrations > 0 {
+        reasons.push(format!(
+            "{driver_registrations} driver registration(s) for this project's store are still \
+             live in the machine-global instance registry (spec 50) - a `run`/`serve`/`step` may \
+             be advancing this run elsewhere on this machine"
+        ));
+    }
+    reasons
+}
+
+/// The loud refusal `rigger reset --derived` prints for a non-empty [`live_writer_reasons`]:
+/// names every reason, the concrete risk, and the override. `--force-live` is named here and in
+/// its own help text (spec 71: "an explicit override flag whose help text owns the risk") so an
+/// operator reads the same risk-owning sentence wherever they meet the flag.
+fn live_writer_refusal(reasons: &[String]) -> String {
+    format!(
+        "reset --derived: refusing to compact the event log while run machinery looks live - {}. \
+         Compaction keeps only the latest event per replay key, which leaves REVISION GAPS by \
+         design; a writer whose append cursor was built before this compaction ran can reissue \
+         one of those gap revisions, and every later event then sorts BELOW it in revision order \
+         - the incident this guard exists to prevent, and the corruption forcing past a genuinely \
+         live writer would risk. Stop the run machinery named above and retry, or pass \
+         --force-live to compact anyway if you are certain no writer is using this store \
+         (--force-live checks nothing; it trusts you with that risk).",
+        reasons.join("; "),
+    )
+}
+
+/// Gather [`live_writer_reasons`]'s four facts and refuse `rigger reset --derived` (spec 71,
+/// criterion 2) when any applies. IMPURE (a lock probe, a store read, an optional registry read)
+/// so the decision composition itself stays pure and unit-tested without any of the four.
+///
+/// `registry_dir` is INJECTED (mirrors [`dash_resolve_attach`]'s existing DI shape) rather than
+/// read ambiently in here: the composition root (`cmd_reset`) resolves it once via
+/// [`rigger::registry::default_dir`], exactly as every other ambient-environment read in this
+/// crate is pushed to a caller rather than repeated inside a callee. `None` (a homeless
+/// environment) degrades to zero registrations - the same degrade `register_run_instance` itself
+/// takes for the identical reason: the registry's loss is harmless discovery metadata, never a
+/// signal this guard can invent.
+///
+/// FAIL-SAFE in two different ways for two different faults:
+///   - a run-stream read failure propagates as a command error rather than folding into "no
+///     in-flight spawns" - this guard may only REFUSE a prune, never approve one it could not
+///     actually verify was safe (mirrors [`terminal_and_no_live_worker`]'s convention on the
+///     opposite rail: an unreadable stream is never read as "nobody is here").
+///   - a step-lock probe error that is NOT the lock actually being held (e.g. a permission
+///     fault) also propagates as a command error rather than being misread as "a step is
+///     running": only [`STEP_BUSY_TOKEN`] in the probe's own error names a genuinely held lock,
+///     so an operator troubleshooting an unrelated IO fault gets that fault's own message
+///     instead of a misdiagnosis pointing them at a `rigger step` that is not actually running.
+fn refuse_derived_reset_if_live(
+    loc: &StoreLocation,
+    selection: &StoreSelection,
+    registry_dir: Option<&Path>,
+) -> Res {
+    // A non-blocking probe of the SAME advisory lock `rigger step` holds for its whole duration,
+    // resolved at THIS STORE's own directory (never the process cwd) - `reset --derived` is run
+    // from a nested worktree just as every other courier is (see `require_store_dir`), and a
+    // cwd-relative probe would open a `.rigger/step.lock` under the WRONG (or nonexistent)
+    // directory there. Acquiring (then immediately dropping) it proves nobody else holds it right
+    // now. A failure whose message names the busy token proves a step IS running; any OTHER
+    // failure (a permission fault, a read-only filesystem) is a real fault this command cannot
+    // silently misdiagnose as "held", so it propagates instead.
+    let step_lock_held = match acquire_step_lock(&loc.dir) {
+        Ok(_) => false,
+        Err(e) if e.to_string().contains(STEP_BUSY_TOKEN) => true,
+        Err(e) => return Err(e),
+    };
+
+    let backend = resolve_store(selection, &loc.file("events.db"))?;
+    let store = Namespaced::new(backend.as_ref(), &loc.identity());
+    let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    let live_units = current_run_units(&events).live_branches;
+    let in_flight_spawn_ids: Vec<String> = spawn::step_result(runscope::current_run(&events))?
+        .wave
+        .into_iter()
+        .map(|w| w.id)
+        .collect();
+
+    let driver_registrations = registry_dir
+        .map(|dir| {
+            let root = loc
+                .dir
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from("."));
+            let expected = registry_store_identity(selection, &root);
+            rigger::registry::read_live(
+                dir,
+                rigger::registry::now_ms(),
+                rigger::registry::DEFAULT_IDLE_MS,
+            )
+            .into_iter()
+            .filter(|inst| inst.store == expected)
+            .count()
+        })
+        .unwrap_or(0);
+
+    let reasons = live_writer_reasons(
+        step_lock_held,
+        &live_units,
+        &in_flight_spawn_ids,
+        driver_registrations,
+    );
+    if reasons.is_empty() {
+        return Ok(());
+    }
+    Err(live_writer_refusal(&reasons).into())
 }
 
 /// `rigger reset --runs` (spec 21, unit 2) - drop the decisions and findings of every
@@ -16052,10 +16265,12 @@ mod tests {
         std::fs::create_dir_all(RIGGER_DIR).unwrap();
 
         // First step holds the exclusive lock for its whole duration.
-        let held = acquire_step_lock().expect("the first step must acquire the lock");
+        let held =
+            acquire_step_lock(Path::new(RIGGER_DIR)).expect("the first step must acquire the lock");
         // A second concurrent step must REFUSE fast (not block, not double-run) and carry the
         // token the driver keys on to back off rather than tear the run down.
-        let err = acquire_step_lock().expect_err("a second concurrent step must refuse");
+        let err = acquire_step_lock(Path::new(RIGGER_DIR))
+            .expect_err("a second concurrent step must refuse");
         assert!(
             err.to_string().contains(STEP_BUSY_TOKEN),
             "the refusal must carry the busy token for the driver: {err}"
@@ -16071,7 +16286,7 @@ mod tests {
         drop(held);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let _reacquired = loop {
-            match acquire_step_lock() {
+            match acquire_step_lock(Path::new(RIGGER_DIR)) {
                 Ok(f) => break f,
                 Err(e) => {
                     assert!(
@@ -16677,6 +16892,178 @@ mod tests {
             no_file, declined,
             "the two causes of an unmeasured reclamation must not render to one sentence, or the \
              distinction is carried and then thrown away"
+        );
+    }
+
+    // --- Spec 71, criterion 2: COMPACTION REFUSES LIVE WRITERS ---
+
+    fn no_live_units() -> std::collections::HashSet<String> {
+        std::collections::HashSet::new()
+    }
+
+    /// The pure core (spec 71, criterion 2): all four facts quiet is the only quiet state.
+    #[test]
+    fn live_writer_reasons_is_empty_only_when_all_four_facts_are_quiet() {
+        assert!(
+            live_writer_reasons(false, &no_live_units(), &[], 0).is_empty(),
+            "nothing live must draw no reason"
+        );
+        assert!(!live_writer_reasons(true, &no_live_units(), &[], 0).is_empty());
+        assert!(!live_writer_reasons(
+            false,
+            &std::collections::HashSet::from(["rigger/u/a".to_string()]),
+            &[],
+            0
+        )
+        .is_empty());
+        assert!(
+            !live_writer_reasons(false, &no_live_units(), &["a/implementer#0".to_string()], 0)
+                .is_empty()
+        );
+        assert!(!live_writer_reasons(false, &no_live_units(), &[], 1).is_empty());
+    }
+
+    /// A held step lock is named by exactly what it is, and the refusal points at the override -
+    /// with a phrase that OWNS the risk, not merely the bare flag token (spec 71: "an explicit
+    /// override flag whose help text owns the risk").
+    #[test]
+    fn refusal_names_a_held_step_lock_and_the_force_live_override_owning_the_risk() {
+        let reasons = live_writer_reasons(true, &no_live_units(), &[], 0);
+        let out = live_writer_refusal(&reasons);
+        assert!(
+            out.contains("step.lock"),
+            "must name the held lock; got {out:?}"
+        );
+        assert!(
+            out.contains("--force-live"),
+            "must name the override; got {out:?}"
+        );
+        assert!(
+            out.contains("reset --derived"),
+            "must name the refused command; got {out:?}"
+        );
+        assert!(
+            out.contains("corruption"),
+            "must OWN the risk, not just name the flag; got {out:?}"
+        );
+    }
+
+    /// A unit that is still non-terminal - live BETWEEN spawn rounds, with no spawn currently in
+    /// flight - is named by its slug, distinctly from an in-flight spawn id.
+    #[test]
+    fn refusal_names_a_non_terminal_unit_between_spawn_rounds() {
+        let live_units = std::collections::HashSet::from(["rigger/u/a".to_string()]);
+        let reasons = live_writer_reasons(false, &live_units, &[], 0);
+        let out = live_writer_refusal(&reasons);
+        assert!(
+            out.contains('a') && out.contains("not yet terminal"),
+            "must name the non-terminal unit; got {out:?}"
+        );
+    }
+
+    /// In-flight spawns are named individually by id, and the count is stated.
+    #[test]
+    fn refusal_names_every_in_flight_spawn_id_and_the_count() {
+        let ids = vec!["a/implementer#0".to_string(), "b/reviewer#1".to_string()];
+        let reasons = live_writer_reasons(false, &no_live_units(), &ids, 0);
+        let out = live_writer_refusal(&reasons);
+        assert!(
+            out.contains("a/implementer#0") && out.contains("b/reviewer#1"),
+            "must name BOTH in-flight spawn ids; got {out:?}"
+        );
+        assert!(
+            out.contains('2'),
+            "must state the count of in-flight spawns; got {out:?}"
+        );
+    }
+
+    /// A live driver registration is named by its count and the mechanism (spec 50) it comes from.
+    #[test]
+    fn refusal_names_the_driver_registration_count() {
+        let reasons = live_writer_reasons(false, &no_live_units(), &[], 3);
+        let out = live_writer_refusal(&reasons);
+        assert!(
+            out.contains('3') && out.contains("registration"),
+            "must state the registration count; got {out:?}"
+        );
+    }
+
+    /// ALL applicable reasons are named together, not just the first found - so an operator sees
+    /// the whole picture in one refusal instead of clearing one and retrying into the next.
+    #[test]
+    fn refusal_names_every_applicable_reason_together_not_just_the_first() {
+        let live_units = std::collections::HashSet::from(["rigger/u/a".to_string()]);
+        let ids = vec!["b/reviewer#1".to_string()];
+        let reasons = live_writer_reasons(true, &live_units, &ids, 1);
+        let out = live_writer_refusal(&reasons);
+        assert!(out.contains("step.lock"), "must still name the lock");
+        assert!(out.contains('a'), "must still name the non-terminal unit");
+        assert!(out.contains("b/reviewer#1"), "must still name the spawn");
+        assert!(
+            out.contains("registration"),
+            "must still name the registration"
+        );
+    }
+
+    /// A malformed event in the current run's slice (the `Err(_)` sentinel of the in-flight-spawn
+    /// read) makes the guard REFUSE rather than silently read as quiet - the fail-safe direction
+    /// spec 71 requires: an unreadable signal is never treated as "nobody is here".
+    #[test]
+    fn refuse_derived_reset_if_live_fails_safe_on_a_malformed_spawn_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let rigger_dir = dir.path().join(RIGGER_DIR);
+        std::fs::create_dir_all(&rigger_dir).unwrap();
+        let loc = StoreLocation {
+            dir: rigger_dir.clone(),
+        };
+        let identity = loc.identity();
+        let db = rigger_dir.join("events.db").to_string_lossy().into_owned();
+        let backend = rigger::eventstore::sqlite::Store::open(&db).unwrap();
+        let store = Namespaced::new(&backend, &identity);
+        // A malformed SpawnRequested body: valid JSON but missing the fields `spawn::recorded`
+        // needs, so decoding it fails and `spawn::step_result` returns `Err`.
+        store
+            .append(
+                conductor::STREAM,
+                ExpectedRevision::Any,
+                &[Event::new(spawn::TYPE_SPAWN_REQUESTED, b"{}".to_vec())],
+            )
+            .unwrap();
+        drop(store);
+        drop(backend);
+
+        let err = refuse_derived_reset_if_live(&loc, &StoreSelection::Sqlite, None)
+            .expect_err("a malformed spawn event must refuse, never read as quiet");
+        assert!(
+            !err.to_string().is_empty(),
+            "the refusal must carry a message an operator can act on"
+        );
+    }
+
+    /// `reset_modes` accepts `--force-live` alongside `--derived`, at most once, and it never
+    /// implies a mode on its own - a bare `--force-live` still falls through the existing "at
+    /// least one mode" refusal exactly as before this flag existed.
+    #[test]
+    fn reset_modes_parses_force_live_alongside_derived_rejects_duplicates_and_never_implies_a_mode()
+    {
+        let modes = reset_modes(&["--derived".to_string(), "--force-live".to_string()])
+            .expect("--derived --force-live must parse");
+        assert!(modes.derived && modes.force_live && !modes.runs);
+
+        let err = match reset_modes(&["--force-live".to_string(), "--force-live".to_string()]) {
+            Err(e) => e,
+            Ok(_) => panic!("a duplicate --force-live must be refused"),
+        };
+        assert!(err.to_string().contains("more than once"), "got {err}");
+
+        let err = match reset_modes(&["--force-live".to_string()]) {
+            Err(e) => e,
+            Ok(_) => panic!("--force-live alone names no mode"),
+        };
+        assert!(
+            err.to_string().contains("at least one mode"),
+            "a bare --force-live must fall through the same 'at least one mode' refusal as a \
+             bare reset; got {err}"
         );
     }
 }

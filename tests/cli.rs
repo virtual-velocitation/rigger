@@ -2526,7 +2526,7 @@ fn worktree_sweep_completes_before_any_add_within_one_step() {
     //   (2) the terminal-worktree sweep (`worktree::sweep_terminal`) - the REMOVE half;
     //   (3) the conductor run - the first code on the step path that ADDS a unit worktree.
     let lock_at = cmd_step
-        .find("acquire_step_lock()")
+        .find("acquire_step_lock(")
         .expect("cmd_step must acquire the step lock (the worktree-mutation serialization)");
     let sweep_at = cmd_step
         .find("worktree::sweep_terminal(")

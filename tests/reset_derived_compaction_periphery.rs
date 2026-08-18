@@ -2440,8 +2440,18 @@ fn a_compacted_run_stream_still_answers_the_couriers_compare_and_append() {
         .max()
         .expect("the seed must populate the run stream");
 
-    let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
-    assert!(ok, "reset --derived must succeed; stderr: {err}\n{out}");
+    // The fixture's whole point is a spawn that is STILL PARKED when the compaction runs (see
+    // the fn docs), which is exactly the shape spec 71 criterion 2's live-writer guard now
+    // refuses by default (a real in-flight spawn, not a stray writer, is a defense-in-depth
+    // false-positive from THIS test's own fixture, not from a writer this compaction endangers -
+    // the write under test happens AFTER the compaction, not concurrently with it). `--force-live`
+    // is that guard's own named override, so it belongs here rather than answering the spawn (a
+    // real result would delete this test's own fixture for the courier's compare-and-append).
+    let (out, err, ok) = run_rigger(root, &["reset", "--derived", "--force-live"]);
+    assert!(
+        ok,
+        "reset --derived --force-live must succeed; stderr: {err}\n{out}"
+    );
 
     // The compacted stream: the two head events, plus the latest recording of each of the two
     // keys. The tail is never eligible for deletion - a row is only pruned when a LATER recording
