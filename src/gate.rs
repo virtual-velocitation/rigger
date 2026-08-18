@@ -144,7 +144,20 @@ pub enum Action {
 /// courier the gate's spawned process runs (a test invoking `rigger emit`/`result`/`peers`/
 /// `reported`, say) can never walk up past the unit worktree into the repo's LIVE run
 /// stream - `main.rs::require_store_dir` honors that env var. A gate on the integrated
-/// tree ("" target_dir) is never fenced, exactly as it is never given a target_dir.
+/// tree ("" target_dir) is never fenced, exactly as it is never given a target_dir. The
+/// fenced-sibling scratch dir this creates is reclaimed by the SAME authority that
+/// reclaims `target_dir`'s own `cargo-target-<slug>` sibling (`worktree::
+/// reclaim_cache_sibling`, sharing [`STORE_FENCE_SUFFIX`]'s naming), so a fenced gate
+/// leaves no more orphaned state on disk than the pre-existing cache sibling already did.
+///
+/// This is a process-tree-wide fence, not a per-courier one: EVERY descendant of the
+/// gate's spawned process inherits [`STORE_FENCE_ENV`] via normal env-var inheritance,
+/// including a periphery test that spawns the product binary to prove its OWN
+/// store-resolution/precedence logic against a fixture of its own choosing - a caller the
+/// fence was never meant to redirect. Such a test must defensively clear the var before it
+/// spawns its own courier (`tests/common::rigger_courier` is the one shared authority every
+/// periphery suite already spawns the product through, so this is handled once there
+/// rather than by each test file remembering it).
 pub trait Runner: Send + Sync {
     fn run(
         &self,
@@ -539,7 +552,25 @@ pub fn resolve_build_layer(
 /// defaulted off: unset, resolution is byte-identical to before this existed. Set ONLY by
 /// the gate runner around a gate's spawned process, never by a test itself - "the fence is
 /// the gate runner's job, not each test's" (spec 70 Design).
+///
+/// SCOPE: this is a process-tree-wide override - every descendant of the gate's spawned
+/// process inherits it, not just an incidental courier the gate's own test suite spawns as
+/// a side effect. A periphery test whose entire purpose is driving the product binary
+/// through its OWN store-resolution/precedence logic end to end (never the gate runner's
+/// intended protection target) must therefore defensively clear this var before spawning
+/// its own courier, or it would silently observe the fenced scratch location instead of
+/// the fixture it built - `tests/common::rigger_courier` is the one shared authority every
+/// such periphery suite spawns the product through, so it clears this ambient inheritance
+/// once, for every current and future courier-spawning call site.
 pub const STORE_FENCE_ENV: &str = "RIGGER_STORE_FENCE_DIR";
+
+/// The scratch-dir naming suffix [`ExecRunner::run`] appends to `target_dir` to derive the
+/// store fence's own sibling scratch dir (`{target_dir}{STORE_FENCE_SUFFIX}`). Shared with
+/// `worktree::reclaim_cache_sibling` (the ONE reclaim authority for a unit's
+/// `cargo-target-<slug>` cache sibling) so it reclaims the fence's sibling by the exact
+/// same name it was created under, rather than a second, independently-spelled copy that
+/// could drift from this one.
+pub const STORE_FENCE_SUFFIX: &str = "-store-fence";
 
 /// ExecRunner runs a gate as a shell command, reducing output to compact evidence.
 pub struct ExecRunner;
@@ -570,7 +601,7 @@ impl Runner for ExecRunner {
             // LIVE run stream. Pin a sibling scratch dir (never inside target_dir itself,
             // which cargo owns and may wipe) so main.rs's store-resolution authority
             // resolves there instead of walking up.
-            cmd.env(STORE_FENCE_ENV, format!("{target_dir}-store-fence"));
+            cmd.env(STORE_FENCE_ENV, format!("{target_dir}{STORE_FENCE_SUFFIX}"));
         }
         // The ONE build-environment authority's first injection site (spec 65): the
         // resolved wrapper/cache-dir/incremental-off vars (empty when no wrapper is

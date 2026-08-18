@@ -1362,7 +1362,7 @@ mod common;
 /// Run `rigger <args...>` in `root` through the COMPILED binary, returning its stdout.
 fn run_rigger(root: &std::path::Path, args: &[&str]) -> String {
     let state = tempfile::tempdir().expect("a temp XDG_STATE_HOME");
-    let out = std::process::Command::new(common::rigger_bin())
+    let out = common::rigger_courier()
         .args(args)
         .current_dir(root)
         // Never let a short-lived invocation spawn a real dashboard, and never let it
