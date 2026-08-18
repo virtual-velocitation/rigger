@@ -269,6 +269,16 @@ impl Projector {
     ///
     /// Scoped to `self.project` exactly like [`prune`] - a shared backend never counts another
     /// project's same-id node or edge.
+    ///
+    /// The `superseded_edges` count EXCLUDES any edge that touches a `node_ids` member. `prune`
+    /// deletes every edge referencing a dropped node FIRST, unconditionally, via the same
+    /// transaction's node-cascade delete - so such an edge is already gone by the time `prune`'s
+    /// own boundary delete runs and is never counted toward ITS `superseded_edges`. A decision
+    /// that superseded a prior GOVERNS-bearing decision (invalidating that predecessor's edges)
+    /// and is itself later dropped as a dead-run node is the exact shape this closes: without the
+    /// exclusion, this preview would count that predecessor's edges under BOTH `nodes` (via the
+    /// node cascade) and `superseded_edges` (via the boundary predicate), overstating what a real
+    /// prune actually removes - the one drift this function exists to make impossible.
     pub fn count_prunable(
         &self,
         node_ids: &[String],
@@ -288,8 +298,10 @@ impl Projector {
             Some(before) => conn
                 .query_row(
                     "SELECT COUNT(*) FROM edges
-                     WHERE valid_to IS NOT NULL AND valid_to < ?1 AND project = ?2",
-                    params![before, self.project],
+                     WHERE valid_to IS NOT NULL AND valid_to < ?1 AND project = ?2
+                       AND from_id NOT IN (SELECT value FROM json_each(?3))
+                       AND to_id NOT IN (SELECT value FROM json_each(?3))",
+                    params![before, self.project, ids_json],
                     |r| r.get(0),
                 )
                 .map_err(be)?,
