@@ -564,6 +564,45 @@ in `Namespaced` before injecting it, and every `rigger run` is scoped without an
 action. A hard multi-tenant boundary is just config: a dedicated file, or a dedicated
 server instance.
 
+### 5.1.3 The store defends its own order: detecting and repairing a disordered stream  **[AS-BUILT]**
+
+Two orders coexist on every event: **position**, the store's own global append order
+(assigned once, never reused, never itself disordered), and **revision**, an event's place
+within its own stream (also store-assigned, as `MAX(revision) + 1` at append time). On a
+stream that has only ever been appended to, the two always agree - whichever event lands at
+a later position also holds a higher revision. The derived-index compaction (`rigger reset
+--derived`) is the one thing that deletes rows from a live stream, and deleting rows opens
+**revision holes**: numbers a surviving row no longer occupies. A write that computes its
+next revision from something other than the stream's current maximum (a build predating the
+`MAX(revision)` cursor, for example) can land in one of those holes - the insert satisfies
+`UNIQUE(stream, revision)` outright, because a hole is not a duplicate, yet the row's
+revision does not exceed what the stream already held, so the two orders now disagree for
+that stream.
+
+`rigger validate` **detects** the signature: it walks the log in position order and tracks,
+per stream, the highest revision seen so far; any row whose revision does not exceed that
+running maximum is out of order. It reports the affected stream, the out-of-order row count,
+and the position range they span, as an advisory - report-only, exit status unchanged, never
+a repair. Repair stays a **documented operator procedure**, never a command, because
+rewriting revisions is exactly the kind of silent, automated correction the rest of this
+store refuses to perform on its own.
+
+**The repair: renumber-by-position, in two phases.** Position is the ground truth - assigned
+once, never itself disordered - so the fix is to make revision agree with it, for the
+affected stream only:
+
+1. **Compute (no writes).** Read every surviving row of the affected stream in position
+   order and assign a fresh, dense revision to each: the earliest becomes `0`, the next `1`,
+   and so on. Diff the proposal against the current `revision` column and confirm every
+   other column (`id`, `data`, `position`, ...) is unchanged - a dry run that touches
+   nothing.
+2. **Apply (one transaction, store quiescent).** With no held step lock and no in-flight run
+   touching the stream, run the computed updates keyed by `position`
+   (`UPDATE events SET revision = <new> WHERE position = <p>`) inside a single transaction.
+   Keying by position - never by the old, possibly ambiguous revision - means no two updates
+   in the batch can collide with each other mid-transaction, and the stream ends up densely
+   numbered `0..N-1`, satisfying `UNIQUE(stream, revision)` by construction.
+
 ### 5.2 The knowledge graph: a bi-temporal projection of the target project
 
 The graph is a **read model** the projector maintains by folding the global log. It is,
