@@ -12,6 +12,7 @@ pub fn assert_contract(store: &dyn EventStore) {
     append_assigns_revisions(store);
     optimistic_concurrency_reports_actual(store);
     exact_revision_concurrency_round_trips(store);
+    append_races_one_stream_serialize_to_the_named_conflict(store);
     meta_and_valid_from_round_trip(store);
     subscription_replays_then_goes_live(store);
     stream_subscription_replays_then_goes_live(store);
@@ -524,6 +525,80 @@ fn exact_revision_concurrency_round_trips(store: &dyn EventStore) {
         unchanged.len(),
         3,
         "a conflicting Exact append must be fully rejected, writing nothing"
+    );
+}
+
+/// Spec 71 - APPEND REFUSES DISORDER, the concurrency face this criterion owns. Many
+/// writers race the SAME stream under the SAME stale `ExpectedRevision::Exact`: they
+/// must serialize through the append's own transaction (never interleave into a raw
+/// `UNIQUE(stream, revision)` collision), exactly one may win, and every loser's
+/// stale expectation surfaces through the SAME named `Error::Conflict` every other
+/// stale expectation produces - never an unnamed backend error carrying the store's
+/// raw constraint text. A correct append afterward, at the revision the winner
+/// actually left the stream at, is untouched by any of it.
+fn append_races_one_stream_serialize_to_the_named_conflict(store: &dyn EventStore) {
+    let stream = "c-race-order";
+    store
+        .append(
+            stream,
+            ExpectedRevision::NoStream,
+            &[Event::new("Seed", b"0".to_vec())],
+        )
+        .expect("the seed append must succeed");
+
+    const RACERS: usize = 16;
+    let outcomes: Vec<Result<super::Appended, Error>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..RACERS)
+            .map(|i| {
+                scope.spawn(move || {
+                    store.append(
+                        stream,
+                        // Every racer shares the SAME (now stale-the-instant-one-lands)
+                        // expectation, so at most one can win.
+                        ExpectedRevision::Exact(0),
+                        &[Event::new("R", vec![i as u8])],
+                    )
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+
+    let wins = outcomes.iter().filter(|o| o.is_ok()).count();
+    assert_eq!(
+        wins, 1,
+        "exactly one racer sharing one stale expectation may win the append"
+    );
+    for outcome in &outcomes {
+        if let Err(e) = outcome {
+            assert!(
+                matches!(e, Error::Conflict { .. }),
+                "a losing racer must surface the named optimistic-concurrency error, \
+                 never an unnamed one: {e}"
+            );
+            let message = e.to_string();
+            assert!(
+                !message.to_uppercase().contains("UNIQUE"),
+                "a losing racer must never see the bare UNIQUE(stream, revision) failure \
+                 leak through as its reported error: {message}"
+            );
+        }
+    }
+
+    // A correct append, at the revision the race actually left the stream on, is
+    // untouched by any of it.
+    store
+        .append(
+            stream,
+            ExpectedRevision::Exact(1),
+            &[Event::new("Next", b"n".to_vec())],
+        )
+        .expect("a correct append at the stream's true current revision proceeds normally");
+    let all = store.read_stream(stream, 0, Direction::Forward).unwrap();
+    assert_eq!(
+        all.len(),
+        3,
+        "the seed, the one race winner, and the follow-up append - nothing more, nothing lost"
     );
 }
 

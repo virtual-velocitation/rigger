@@ -459,6 +459,26 @@ pub enum Error {
         expected: ExpectedRevision,
         actual: Revision,
     },
+    /// Spec 71 - APPEND REFUSES DISORDER. The store's position-order cursor for
+    /// `stream` (the revision its own last-written row holds) sits at or below a
+    /// revision the stream ALREADY records elsewhere: appending `attempted` would land
+    /// it at or below `recorded`, which never happens through this port alone (every
+    /// write it issues strictly extends both orders together) and is the exact
+    /// signature a stale writer leaves behind after a compaction reissues a revision
+    /// hole. Refusing here, before the write, is what keeps that signature from
+    /// silently compounding and turns what would otherwise be a bare
+    /// `UNIQUE(stream, revision)` failure into a named, actionable one.
+    #[error(
+        "event store: append to stream {stream:?} refused: revision {attempted} would sort at \
+         or below revision {recorded} already recorded for this stream - the writer is stale, \
+         most likely one running from before a compaction reissued a revision hole; reinstall \
+         or restart it"
+    )]
+    OutOfOrder {
+        stream: String,
+        attempted: Revision,
+        recorded: Revision,
+    },
     #[error("event store: {0}")]
     Backend(String),
 }

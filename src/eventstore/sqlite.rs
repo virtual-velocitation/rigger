@@ -1427,23 +1427,30 @@ impl EventStore for Store {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(be)?;
 
-        // The stream's current revision is the HIGHEST revision it holds, not its row count minus
-        // one. The two agree on every stream that has only ever been appended to, and they part
-        // company the moment a stream has had rows DELETED from it - which the supported
-        // compaction (`Store::prune_derived_index`) does, leaving holes in the revision sequence.
-        // A count-derived cursor would then reissue a revision the stream still holds and collide
-        // on the `UNIQUE(stream, revision)` index, so a compacted store would refuse the next
-        // append. Compaction may not renumber the survivors to close the holes (that would REWRITE
-        // events it is only allowed to preserve), so the CURSOR moves instead of the rows. It is
-        // also the cheaper read: `MAX(revision)` is a seek on the tail of the `UNIQUE(stream,
-        // revision)` index, where a `COUNT(*)` walks every row the stream holds.
+        // The stream's cursor is the revision its LAST ROW IN POSITION ORDER holds - the
+        // most recently written row, whatever revision number it carries - not its row
+        // count minus one and not the highest revision value the stream holds ANYWHERE.
+        // Position order and "the highest revision value" agree on every stream that has
+        // only ever been written through this function: a write only ever lands at
+        // `last_revision + 1`, so each new row is simultaneously the newest by position
+        // AND the highest by revision, and deleting an arbitrary subset of rows (what the
+        // supported compaction, `Store::prune_derived_index`, does, leaving holes in the
+        // revision sequence) cannot change that relative order among whatever survives.
+        // A count-derived cursor would reissue a revision the stream still holds and
+        // collide on the `UNIQUE(stream, revision)` index; the position-order seek is
+        // exactly as gap-tolerant (it is a seek on the same `idx_events_stream` index,
+        // reverse-ordered, not a table walk), so a compacted stream still gets its true
+        // next revision. What position order buys OVER the highest-revision-value seek is
+        // honesty when the two have already come apart: read below.
         let last_revision: Revision = tx
             .query_row(
-                "SELECT COALESCE(MAX(revision), ?2) FROM events WHERE stream = ?1",
-                params![stream, NO_STREAM],
+                "SELECT revision FROM events WHERE stream = ?1 ORDER BY position DESC LIMIT 1",
+                params![stream],
                 |r| r.get(0),
             )
-            .map_err(be)?;
+            .optional()
+            .map_err(be)?
+            .unwrap_or(NO_STREAM);
         let ok = match expected {
             ExpectedRevision::Any => true,
             ExpectedRevision::NoStream => last_revision == NO_STREAM,
@@ -1454,6 +1461,34 @@ impl EventStore for Store {
                 stream: stream.to_string(),
                 expected,
                 actual: last_revision,
+            });
+        }
+
+        // Spec 71 - APPEND REFUSES DISORDER. The candidate revision this call is about
+        // to assign, `last_revision + 1`, must exceed the HIGHEST revision the stream
+        // records anywhere - not just the one at its newest position. On every stream
+        // this function has ever written to alone the two seeks agree (the correct
+        // writer's cursor IS the max, so this never fires and costs one indexed seek in
+        // the transaction already open). They can only disagree once the stream already
+        // carries the incident's signature: a row at an EARLIER position holding a
+        // HIGHER revision than the row at the NEWEST position, left behind by a write
+        // that came from outside this function entirely (this function itself can never
+        // produce it - see the seek above). Refusing here, before the insert, is what
+        // stops that signature from silently compounding one honest append at a time,
+        // and turns what would otherwise be a bare `UNIQUE(stream, revision)` failure
+        // into a named refusal that says why.
+        let recorded_max: Revision = tx
+            .query_row(
+                "SELECT COALESCE(MAX(revision), ?2) FROM events WHERE stream = ?1",
+                params![stream, NO_STREAM],
+                |r| r.get(0),
+            )
+            .map_err(be)?;
+        if last_revision < recorded_max {
+            return Err(Error::OutOfOrder {
+                stream: stream.to_string(),
+                attempted: last_revision + 1,
+                recorded: recorded_max,
             });
         }
 
@@ -3178,6 +3213,103 @@ mod tests {
             revs, expected,
             "per-stream revisions must stay contiguous and unique under concurrency"
         );
+    }
+
+    /// Spec 71 - APPEND REFUSES DISORDER. Reproduces the incident's exact signature
+    /// out of band: this shape is UNREACHABLE through the safe `append` API alone (a
+    /// correct writer's revision cursor always strictly extends both position and
+    /// revision order together, so it can never land at or below a revision the
+    /// stream already holds - see [`Store::append`]'s own comment on that seek). A
+    /// compaction that deletes a stream's revision-1 row leaves a hole; a stale
+    /// writer (an older build, running its OWN insert - never this function) then
+    /// reissues that freed revision at the stream's NEWEST position, exactly as the
+    /// recorded incident's writer did after the log's derived-index compaction ran.
+    /// The next honest append onto that stream must refuse rather than silently
+    /// build past the disagreement, naming the stream, both revisions, and the
+    /// likely cause.
+    #[test]
+    fn append_refuses_a_stream_whose_position_order_and_revision_order_already_disagree() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("run.db");
+        let path = path.to_str().unwrap().to_string();
+        let store = Store::open(&path).unwrap();
+
+        // A healthy stream: revisions 0..=4, position order and revision order agree.
+        for i in 0..5u8 {
+            store
+                .append("s", ExpectedRevision::Any, &[Event::new("E", vec![i])])
+                .unwrap();
+        }
+
+        // Out-of-band: delete revision 1's row (the compaction's hole), then reissue
+        // that freed revision as a brand-new row at the stream's newest position (the
+        // stale writer's insert - this is exactly what `append` refuses to do itself,
+        // so it can only be reproduced by going around it).
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute("DELETE FROM events WHERE stream = 's' AND revision = 1", [])
+                .unwrap();
+            conn.execute(
+                "INSERT INTO events (stream, type, id, data, meta, valid_from, recorded_at, \
+                 revision) VALUES ('s', 'E', 'reissued', X'00', '{}', 0, 0, 1)",
+                [],
+            )
+            .unwrap();
+        }
+        // Position order for "s" is now: rev 0, rev 3, rev 4, rev 2, rev 1 (newest).
+        // MAX(revision) is still 4; the position-order tail is revision 1.
+
+        let err = store
+            .append("s", ExpectedRevision::Any, &[Event::new("E", vec![9])])
+            .expect_err("an append onto an already-disordered stream must refuse");
+        match &err {
+            Error::OutOfOrder {
+                stream,
+                attempted,
+                recorded,
+            } => {
+                assert_eq!(stream, "s", "the refusal names the stream: {err}");
+                assert_eq!(
+                    *attempted, 2,
+                    "names the revision it would have written: {err}"
+                );
+                assert_eq!(
+                    *recorded, 4,
+                    "names the revision already recorded that it would not sort after: {err}"
+                );
+            }
+            other => panic!("expected Error::OutOfOrder, got {other:?}"),
+        }
+        let message = err.to_string();
+        assert!(
+            message.to_lowercase().contains("stale"),
+            "the refusal names the likely cause: {message}"
+        );
+        assert!(
+            message.contains("compaction"),
+            "the refusal points at the likely cause's origin: {message}"
+        );
+
+        // Nothing was written: the disordered stream is exactly as it was before the
+        // refused attempt.
+        assert_eq!(
+            store.read_stream("s", 0, Direction::Forward).unwrap().len(),
+            5,
+            "a refused append writes nothing"
+        );
+
+        // A correct append on a DIFFERENT, never-disordered stream is untouched: it
+        // succeeds and reads back at revision 0, exactly as any first append does.
+        store
+            .append(
+                "clean",
+                ExpectedRevision::NoStream,
+                &[Event::new("E", vec![1])],
+            )
+            .expect("a correct append on a healthy stream proceeds normally");
+        let clean = store.read_stream("clean", 0, Direction::Forward).unwrap();
+        assert_eq!(clean.len(), 1);
+        assert_eq!(clean[0].revision, 0);
     }
 
     /// The GUARDED twin of the test above, and the shape a real run has: several
