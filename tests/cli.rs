@@ -11180,14 +11180,30 @@ fn validate_detects_a_stream_whose_position_order_and_revision_order_disagree() 
         ok,
         "validate WARNS but still exits 0 on an order signature (report-only); stderr:\n{err}"
     );
+    // Pinned to the exact reported values, not a loose digit match: `seed_order_signature`
+    // inserts revision 5 at position 1 (sets the running max), then revision 1 at position 2
+    // and revision 2 at position 3 - both out of order against the max of 5 - so the advisory
+    // MUST report exactly 2 row(s) spanning positions 2..=3 for stream `run`. A bare
+    // `err.contains('2')` would still pass on a wrong count or a shifted range (there are
+    // other digits in validate's output, e.g. the config summary and other advisories), so it
+    // proves nothing about the count/range the Done-when criterion actually requires.
     assert!(
-        err.contains("run")
-            && err.contains('2')
-            && err
-                .to_lowercase()
-                .contains("position order and revision order")
-            && err.contains("architecture.md"),
-        "the advisory names the stream, the row count, and the repair doc; stderr:\n{err}"
+        err.contains("stream run has 2 row(s)"),
+        "the advisory must name the stream and the exact out-of-order row count together; \
+         stderr:\n{err}"
+    );
+    assert!(
+        err.contains("positions 2..=3"),
+        "the advisory must name the exact affected position range; stderr:\n{err}"
+    );
+    assert!(
+        err.to_lowercase()
+            .contains("position order and revision order"),
+        "the advisory names the disagreement it detected; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("architecture.md"),
+        "the advisory names the repair doc; stderr:\n{err}"
     );
 }
 
