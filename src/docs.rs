@@ -320,6 +320,149 @@ fn discipline_body(ctx: &DocsContext) -> String {
     s
 }
 
+/// The `planning-a-spec` skill's body: the authoring procedure for writing, splitting, or
+/// amending a spec before or during a rigger loop run (the authoring counterpart to
+/// `using-rigger`'s driving discipline). Unlike `using-rigger`, it carries no code-derived
+/// facts to interpolate, so it is a plain constant rather than a `DocsContext`-parameterized
+/// template.
+const PLANNING_A_SPEC_BODY: &str = r#"---
+name: planning-a-spec
+description: Use when writing, splitting, or amending a spec for a rigger loop run - before launching /rigger on new work, when a plan-critique gate rejects a decomposition, when a run churns in review and the spec is suspect, or when turning bug reports or design discussions into Done-when criteria.
+---
+
+# Planning a spec
+
+## Overview
+
+A loop run's outcome is mostly decided at spec time. This skill is the authoring procedure for
+the failure catalog in `docs/handbook/planning-field-guide.md`; the shape rules live in
+`docs/handbook/authoring-loops.md` (rules 1-8). Follow the recipe in order - each step exists
+because skipping it has a recorded escalation attached.
+
+## The recipe
+
+**1. Ground the Goal in evidence.** State the problem with measured numbers and real anchors
+(`file.rs:line`, event counts, durations) - look them up via `rigger graph --show/--around` and
+`rigger peers`, not memory. A goal an implementer can re-verify is a goal an adjudicator can
+hold the line on.
+
+**2. Close every disposition.** Scan the draft for "or", "either", "could", "worth
+considering". Each becomes a decision recorded in Design ("BACKEND SCOPE, decided here so no
+unit has to: ...") or an explicit Notes deferral OUT of scope. A disposition left open is a
+rejection loop: implementer picks one reading, reviewer picks the other.
+
+**3. Run the constraints walk.** For every Global constraint x every criterion (and every
+mechanism Design prescribes), walk the corner-case list: empty, repeated, REVERT/rollback,
+concurrent actors, crash-resume, cold start (fresh process, empty memory). Write what must
+happen into the spec. If a prescribed mechanism fails a corner under a constraint, the spec is
+self-contradictory - fix it now; the panel will otherwise find it around attempt 5.
+
+**4. Place state explicitly.** Any criterion about dedup, persistence, recovery, budgets, or
+caches names WHERE the authoritative state lives (the log, a file, a flock) and names the
+inadequate stand-in ("an in-memory seen-set is NOT an implementation of this guard") so the
+easy-but-wrong implementation is rejected by the text, not by attempt 4's adversary.
+
+**5. Write criteria to the criterion contract.** Each checkbox is:
+- ONE observable behavior, self-contained in one-to-two sentences, copyable verbatim as a
+  unit's whole contract (the planner copies it; the conductor baseline-matches the copy);
+- named verification ("a test proves X ... pinned at the Y seam"), not just a state;
+- ownership INSIDE the checkbox ("This criterion OWNS the selection surface") with exclusions
+  on every neighbor that could claim the concern ("the advisory is criterion 3's, NOT this
+  one's").
+Type shapes, tables, long detail: a non-criteria Notes section. Two behaviors joined by "and":
+two checkboxes.
+
+**6. Carry the house constraints.** Hyphens not em dashes (U+2014 fails the diff gate); both
+feature lanes green; no new event type unless the spec's whole point is one; fallback stated
+for any criterion that might be impossible; anything the gates cannot see flagged for the
+adjudicator to demand evidence on.
+
+**7. Preflight, then launch.** `rigger validate` is mandatory (it catches model-alias drift -
+run `rigger canary --if-model-changed` on a warning); `rigger reset --runs` before a large run;
+anchor `base=` on the ref the work must land on. Launch via the /rigger workflow only.
+
+## Amending mid-run
+
+Design and Global constraints only - criteria checkboxes are the run's identity (editing one
+orphans the live run). Commit when no step is mid-flight, then `rigger emit DecisionMade` naming
+the spec file so in-flight reviewers see the change through the graph immediately. Still
+escalates? Restart fresh: durable branches carry the work, the budget resets.
+
+## Quick reference: churn signature -> planning defect
+
+| Signature in the run | Catalog class | Fix at spec time |
+|---|---|---|
+| Plan-critique rejects twins with identical criteria | F1 ownership | OWNS inside checkbox + neighbor exclusions |
+| Plan-critique names one criterion, two mitigations | F2 bundling | Split the checkbox |
+| Panel rejects every mechanism variant; `cause: spec-ambiguity` | F3 contradiction | Constraints walk (esp. revert) |
+| Implementer and reviewer disagree on a reading | F4 disposition | Decide it in Design |
+| Guard/dedup rejected as process-local | F5 state placement | Name where state lives + the banned stand-in |
+| Plan baseline-match fails, paraphrased units | F6 copyability | One-sentence criteria, detail to Notes |
+| First run after a while churns everywhere | F7 environment | validate preflight + canary on drift |
+| High attempt counts, findings about worktrees/caches/quota | F8 infra noise | Audit findings; fix infra separately |
+"#;
+
+/// Render the `planning-a-spec` skill. `ctx` is accepted only to match the registry's
+/// uniform `fn(&DocsContext) -> String` signature ([`SkillEntry`]); this body has nothing
+/// in it to interpolate from `ctx`.
+fn render_planning_a_spec_skill(_ctx: &DocsContext) -> String {
+    PLANNING_A_SPEC_BODY.to_string()
+}
+
+/// The line stamped onto EVERY registry skill's rendered content (spec 68, Design): an
+/// agent must never install, replace, or modify the operator's own installed `rigger`
+/// binary. [`SkillEntry::render`] appends this ONCE, structurally, for every entry - it is
+/// never authored into an individual skill's own body, so no entry (present or future) can
+/// ship without it by construction.
+pub const OPERATOR_BINARY_PROHIBITION: &str = "\n## Operator binary boundary\n\nAn agent \
+     never installs, replaces, or modifies the operator's installed `rigger` binary - that \
+     binary is operator-only. A tree checkout's own `rigger` build is invoked only by \
+     explicit path, and only to render (spec/docs output) - never to overwrite what is on \
+     PATH.\n";
+
+/// One skill this binary owns end-to-end (spec 68, criterion 1: the skill registry): a
+/// name and the function that renders its BODY (before the operator-binary prohibition is
+/// stamped on) from the code-derived [`DocsContext`]. An entry whose content carries no
+/// drift-prone facts (`planning-a-spec`) simply ignores `ctx`.
+///
+/// [`skill_registry`] is the ONE enumeration every surface walks - `rigger docs` (renders
+/// each entry to its committed source), `rigger setup` (installs each entry, overlay
+/// honored), and the docs-drift gate (drift-checks each entry) - so adding an entry here is
+/// the ONLY step required to make a skill render, install, and drift-check; no surface
+/// needs its own edit.
+pub struct SkillEntry {
+    pub name: &'static str,
+    render_body: fn(&DocsContext) -> String,
+}
+
+impl SkillEntry {
+    /// This entry's FULL rendered content: its body plus the
+    /// [`OPERATOR_BINARY_PROHIBITION`], stamped here - once, for every entry - rather than
+    /// by each skill's own author.
+    pub fn render(&self, ctx: &DocsContext) -> String {
+        let mut s = (self.render_body)(ctx);
+        s.push_str(OPERATOR_BINARY_PROHIBITION);
+        s
+    }
+}
+
+/// The skill registry (spec 68, criterion 1): `using-rigger` (the driving discipline) and
+/// `planning-a-spec` (the authoring discipline) today; a per-operation family joins this
+/// same list by appending entries (spec 68, criterion 2), never by adding a second,
+/// independently-walked enumeration.
+pub fn skill_registry() -> Vec<SkillEntry> {
+    vec![
+        SkillEntry {
+            name: "using-rigger",
+            render_body: render_using_rigger_skill,
+        },
+        SkillEntry {
+            name: "planning-a-spec",
+            render_body: render_planning_a_spec_skill,
+        },
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -611,16 +754,89 @@ mod tests {
         // The drift check has no false positives only if the render is pure ASCII dashes
         // (the diff gate fails on U+2014 and the other unicode dashes).
         let ctx = sentinel_ctx();
-        for out in [
+        let mut outs = vec![
             render_using_rigger_skill(&ctx),
             render_handbook_discipline(&ctx),
-        ] {
+        ];
+        for entry in skill_registry() {
+            outs.push(entry.render(&ctx));
+        }
+        for out in outs {
             for bad in ['\u{2012}', '\u{2013}', '\u{2014}', '\u{2015}', '\u{2212}'] {
                 assert!(
                     !out.contains(bad),
                     "render must not contain unicode dash {bad:?}"
                 );
             }
+        }
+    }
+
+    /// Spec 68, criterion 1: the registry is the ONE enumeration - it names
+    /// `using-rigger` and `planning-a-spec` (the two skills that exist today), each name
+    /// non-blank and present exactly once.
+    #[test]
+    fn skill_registry_names_using_rigger_and_planning_a_spec_exactly_once_each() {
+        let names: Vec<&str> = skill_registry().iter().map(|e| e.name).collect();
+        for expected in ["using-rigger", "planning-a-spec"] {
+            assert_eq!(
+                names.iter().filter(|n| **n == expected).count(),
+                1,
+                "{expected:?} must appear exactly once in the registry; got {names:?}"
+            );
+        }
+        for name in &names {
+            assert!(
+                !name.is_empty(),
+                "a registry entry must not have a blank name"
+            );
+        }
+    }
+
+    /// Spec 68, criterion 1 (the prohibition is STRUCTURAL, not hand-authored per skill):
+    /// every registry entry's `render()` carries the operator-binary prohibition exactly
+    /// once, while the entry's own BODY function (called directly, bypassing the
+    /// registry's stamp) does NOT - proving the line is appended by [`SkillEntry::render`]
+    /// itself rather than baked into any individual skill's authored content.
+    #[test]
+    fn skill_entry_render_stamps_the_operator_binary_prohibition_structurally() {
+        let ctx = sentinel_ctx();
+        for entry in skill_registry() {
+            let rendered = entry.render(&ctx);
+            assert_eq!(
+                rendered.matches(OPERATOR_BINARY_PROHIBITION).count(),
+                1,
+                "{}: render() must carry the prohibition exactly once",
+                entry.name
+            );
+            let raw_body = (entry.render_body)(&ctx);
+            assert!(
+                !raw_body.contains(OPERATOR_BINARY_PROHIBITION),
+                "{}: the skill's own body must NOT author the prohibition itself",
+                entry.name
+            );
+        }
+    }
+
+    /// The `planning-a-spec` render carries its loadable frontmatter and the recipe's
+    /// seven numbered steps, so the authoring discipline actually ships through the
+    /// registry (not just a placeholder).
+    #[test]
+    fn planning_a_spec_render_carries_frontmatter_and_the_recipe() {
+        let out = render_planning_a_spec_skill(&sentinel_ctx());
+        assert!(
+            out.starts_with("---\nname: planning-a-spec\n"),
+            "must open with skill frontmatter naming it; got: {}",
+            &out[..out.len().min(80)]
+        );
+        assert!(
+            out.contains("\ndescription: "),
+            "frontmatter needs a description"
+        );
+        for step in [
+            "**1. Ground the Goal in evidence.**",
+            "**7. Preflight, then launch.**",
+        ] {
+            assert!(out.contains(step), "recipe must carry {step:?}");
         }
     }
 }

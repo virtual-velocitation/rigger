@@ -143,12 +143,6 @@ fn workflow_path(root: &Path) -> std::path::PathBuf {
     root.join(".claude").join("workflows").join("rigger.js")
 }
 
-/// Where `rigger docs` writes the rendered `using-rigger` skill, relative to the project
-/// root. It is committed and drift-checked (spec 20, unit 2) and installed into
-/// `.claude/skills/` by `rigger setup` (unit 3), so it is a file DISTINCT from the
-/// `/rigger` workflow at [`workflow_path`]. The single source of this path.
-const USING_RIGGER_SKILL_REL: &str = "skills/using-rigger/SKILL.md";
-
 /// Where `rigger docs` writes the rendered handbook discipline chapter, relative to the
 /// project root. It lives beside the other handbook chapters and is drift-checked against
 /// a fresh render (spec 20, unit 2). The single source of this path.
@@ -8320,8 +8314,8 @@ enum InstallOutcome {
 /// observable side effect (the grounder's staleness gate keys off mtime). Parent
 /// directories are created so a fresh checkout installs cleanly. This is the SINGLE
 /// authority for the compare-then-write-if-changed install step, shared by
-/// [`install_workflow`] and [`install_skill`] so the two installs cannot drift in how they
-/// detect and report a no-op.
+/// [`install_workflow`] and [`install_skills`] so every install cannot drift in how it
+/// detects and reports a no-op.
 fn install_file_if_changed(
     path: &Path,
     contents: &[u8],
@@ -8365,33 +8359,43 @@ fn install_workflow(root: &Path) -> Result<InstallOutcome, Box<dyn std::error::E
     Ok(outcome)
 }
 
-/// Where `rigger setup` installs the rendered `using-rigger` skill, relative to the
-/// project root: `<root>/.claude/skills/using-rigger/SKILL.md`. Claude Code auto-discovers
-/// skills under `.claude/skills/`, so the installed file is a loadable skill the moment it
-/// is written - a file DISTINCT from the `/rigger` workflow at [`workflow_path`] (the
-/// workflow RUNS the loop; the skill tells an agent WHEN and HOW to drive it) and from the
-/// committed, drift-checked source at [`USING_RIGGER_SKILL_REL`] (which `rigger docs`
-/// renders and `rigger validate` re-renders against). Rooted at `root` so it is testable
-/// against a temp dir.
-fn skill_install_path(root: &Path) -> std::path::PathBuf {
+/// Where `rigger docs` writes a registry skill's rendered content, relative to the project
+/// root: `skills/<name>/SKILL.md`. Committed and drift-checked (spec 20, unit 2; spec 68,
+/// criterion 1) and installed into `.claude/skills/` by `rigger setup` (see
+/// [`skill_install_path`]) - one naming convention, one function, shared by `rigger docs`,
+/// the docs-drift gate, and the CI-lane guard, so the three can never disagree on where a
+/// skill's committed source lives.
+fn skill_source_rel(name: &str) -> String {
+    format!("skills/{name}/SKILL.md")
+}
+
+/// Where `rigger setup` installs a registry skill, relative to the project root:
+/// `<root>/.claude/skills/<name>/SKILL.md`. Claude Code auto-discovers skills under
+/// `.claude/skills/`, so the installed file is loadable the moment it is written - a file
+/// DISTINCT from the `/rigger` workflow at [`workflow_path`] (the workflow RUNS the loop;
+/// a skill tells an agent WHEN and HOW) and from the committed, drift-checked source at
+/// [`skill_source_rel`] (which `rigger docs` renders and `rigger validate` re-renders
+/// against). Rooted at `root` so it is testable against a temp dir.
+fn skill_install_path(root: &Path, name: &str) -> std::path::PathBuf {
     root.join(".claude")
         .join("skills")
-        .join("using-rigger")
+        .join(name)
         .join("SKILL.md")
 }
 
-/// Where a repo declares its `using-rigger` project overlay, relative to the project root:
-/// `<root>/.rigger/docs-overlay.yml`. Optional - an absent file means the installed skill
+/// Where a repo declares its skill-registry project overlay, relative to the project root:
+/// `<root>/.rigger/docs-overlay.yml`. Optional - an absent file means every installed skill
 /// carries only the shared defaults.
 fn docs_overlay_path(root: &Path) -> std::path::PathBuf {
     root.join(RIGGER_DIR).join("docs-overlay.yml")
 }
 
-/// A per-repo overlay that adds THIS repository's specifics to the installed `using-rigger`
-/// skill WITHOUT editing the shared discipline source. The two drift-prone facts a
-/// downstream project may differ on - the base branch a run anchors on and where the repo
-/// keeps its specs - are read from [`docs_overlay_path`] and merged onto the code-derived
-/// [`docs_context`] before the skill is rendered and installed. Both fields are OPTIONAL:
+/// A per-repo overlay that adds THIS repository's specifics to every INSTALLED registry
+/// skill WITHOUT editing the shared discipline source (overlay honored per entry - spec
+/// 68, criterion 1). The two drift-prone facts a downstream project may differ on - the
+/// base branch a run anchors on and where the repo keeps its specs - are read from
+/// [`docs_overlay_path`] and merged onto the code-derived [`docs_context`] before each
+/// skill is rendered and installed. Both fields are OPTIONAL:
 /// an absent overlay file, or an absent field, leaves the shared default in place, so the
 /// overlay only ever ADDS repo specifics and never restates the shared discipline. Unknown
 /// keys are rejected so a typo fails loudly rather than being silently ignored.
@@ -8436,28 +8440,30 @@ fn read_docs_overlay(root: &Path) -> Result<DocsOverlay, Box<dyn std::error::Err
         .map_err(|e| format!("setup: {} is not a valid docs overlay: {e}", path.display()).into())
 }
 
-/// Build the `using-rigger` skill to INSTALL under `root`: the code-derived
-/// [`docs_context`] with this repo's [overlay](read_docs_overlay) merged on, rendered
-/// through the SAME pipeline the committed source uses. The overlay only overrides context
-/// fields, so the installed skill and the drift-checked source share one render path and
-/// the discipline is never forked.
-fn render_installed_skill(root: &Path) -> Result<String, Box<dyn std::error::Error>> {
+/// Install (or refresh) EVERY skill in [`rigger::docs::skill_registry`] under `root`,
+/// returning each entry's `(name, outcome)` in registry order (spec 68, criterion 1:
+/// generalizes the single-skill `install_skill` seam over the whole registry). ONE
+/// code-derived context is built and this repo's [overlay](read_docs_overlay) merged onto
+/// it ONCE, then EVERY entry renders against that same context and installs via
+/// [`install_file_if_changed`] - so a downstream repo's base branch and specs location
+/// appear in every installed skill without anyone editing the shared discipline source,
+/// and adding an entry to the registry is the ONLY step needed to make a new skill
+/// install; this loop needs no per-skill edit. Like [`install_workflow`], each entry
+/// writes ONLY when its file is absent or has drifted, so a `rigger setup` rerun on an
+/// up-to-date repo is a true no-op that does not even move a file's mtime.
+fn install_skills(
+    root: &Path,
+) -> Result<Vec<(&'static str, InstallOutcome)>, Box<dyn std::error::Error>> {
     let mut ctx = docs_context();
     read_docs_overlay(root)?.apply(&mut ctx);
-    Ok(rigger::docs::render_using_rigger_skill(&ctx))
-}
-
-/// Install (or refresh) the rendered `using-rigger` skill at [`skill_install_path`],
-/// returning [what it did](InstallOutcome). The skill is rendered from the code-derived
-/// context with this repo's project overlay merged on ([`render_installed_skill`]), so a
-/// downstream repo's base branch and specs location appear in ITS installed skill without
-/// anyone editing the shared discipline source. Like [`install_workflow`], it writes ONLY
-/// when the file is absent or has drifted (via [`install_file_if_changed`]), so a `rigger
-/// setup` rerun on an up-to-date repo is a true no-op that does not even move the file's
-/// mtime.
-fn install_skill(root: &Path) -> Result<InstallOutcome, Box<dyn std::error::Error>> {
-    let rendered = render_installed_skill(root)?;
-    install_file_if_changed(&skill_install_path(root), rendered.as_bytes())
+    let mut outcomes = Vec::new();
+    for entry in rigger::docs::skill_registry() {
+        let rendered = entry.render(&ctx);
+        let outcome =
+            install_file_if_changed(&skill_install_path(root, entry.name), rendered.as_bytes())?;
+        outcomes.push((entry.name, outcome));
+    }
+    Ok(outcomes)
 }
 
 /// The comment line that OPENS rigger's managed block inside a `pre-commit` hook. It is a
@@ -8473,9 +8479,13 @@ const PRECOMMIT_END: &str = "# <<< END rigger docs pre-commit (managed) <<<";
 /// a documented code fact can only land carrying freshly rendered docs - never a silently
 /// rewritten stand-in for them. Four hard safety invariants are baked into the SCRIPT:
 ///
-/// - COMPARISON SCOPE: it reads and compares ONLY the two rendered outputs by explicit path
-///   (built from [`USING_RIGGER_SKILL_REL`] / [`HANDBOOK_DISCIPLINE_REL`] so the scope can
-///   never drift from what [`write_docs`] writes), never any other working-tree file.
+/// - COMPARISON SCOPE: it reads and compares ONLY the `using-rigger` skill and the handbook
+///   chapter by explicit path (built from [`skill_source_rel`]`("using-rigger")` /
+///   [`HANDBOOK_DISCIPLINE_REL`] so the scope can never drift from what [`write_docs`]
+///   writes for those two outputs), never any other working-tree file. The hook's
+///   self-hosting scope stays these two (spec 68, criterion 1 generalizes the REGISTRY,
+///   not this pre-existing fast commit-time check); every registry entry, including
+///   `planning-a-spec`, is still covered by the docs-drift GATE below (`rigger validate`).
 /// - NEVER REWRITES SILENTLY (spec 70): it never runs `git add` on the docs - staging what a
 ///   commit carries is the operator's job, always. When the fresh render DIFFERS from what is
 ///   already staged, the block REFUSES the commit (`exit 1`), naming the drifted files, the
@@ -8575,7 +8585,7 @@ __END__
     TEMPLATE
         .replace("__BEGIN__", PRECOMMIT_BEGIN)
         .replace("__END__", PRECOMMIT_END)
-        .replace("__SKILL__", USING_RIGGER_SKILL_REL)
+        .replace("__SKILL__", &skill_source_rel("using-rigger"))
         .replace("__HANDBOOK__", HANDBOOK_DISCIPLINE_REL)
 }
 
@@ -8855,11 +8865,11 @@ fn cmd_setup(args: &[String]) -> Res {
     // criterion 4).
     let scaffold = init_project(root)?;
     let workflow = install_workflow(root)?;
-    // Install the rendered `using-rigger` skill (spec 20, unit 3): a loadable front-door
-    // DISTINCT from the `/rigger` workflow, with this repo's project overlay (base branch,
-    // specs location) merged into the render. Drift-aware like the workflow, so a rerun on
-    // an up-to-date repo changes nothing.
-    let skill = install_skill(root)?;
+    // Install EVERY skill in the registry (spec 20, unit 3; spec 68, criterion 1): each a
+    // loadable front-door DISTINCT from the `/rigger` workflow, with this repo's project
+    // overlay (base branch, specs location) merged into the render. Drift-aware like the
+    // workflow, so a rerun on an up-to-date repo changes nothing.
+    let skills = install_skills(root)?;
     // Install the docs-regenerating git pre-commit hook (spec 24): on `git commit` it runs
     // `rigger docs` and stages any changed rendered outputs into the SAME commit, so a commit
     // that changes a documented code fact carries its freshly rendered docs. Drift-aware and
@@ -8890,7 +8900,9 @@ fn cmd_setup(args: &[String]) -> Res {
     };
 
     let workflow_changed = workflow != InstallOutcome::AlreadyCurrent;
-    let skill_changed = skill != InstallOutcome::AlreadyCurrent;
+    let skill_changed = skills
+        .iter()
+        .any(|(_, outcome)| *outcome != InstallOutcome::AlreadyCurrent);
     let hook_changed = hook != InstallOutcome::AlreadyCurrent;
     if !scaffold.changed()
         && !workflow_changed
@@ -8931,16 +8943,17 @@ fn cmd_setup(args: &[String]) -> Res {
         ),
         InstallOutcome::AlreadyCurrent => {}
     }
-    match skill {
-        InstallOutcome::Installed => println!(
-            "installed the using-rigger skill (.claude/skills/using-rigger/SKILL.md) - the \
-             front-door for when and how to drive a run"
-        ),
-        InstallOutcome::Refreshed => println!(
-            "refreshed the drifted using-rigger skill (.claude/skills/using-rigger/SKILL.md) to \
-             match this rigger build"
-        ),
-        InstallOutcome::AlreadyCurrent => {}
+    for (name, outcome) in &skills {
+        match outcome {
+            InstallOutcome::Installed => {
+                println!("installed the {name} skill (.claude/skills/{name}/SKILL.md)")
+            }
+            InstallOutcome::Refreshed => println!(
+                "refreshed the drifted {name} skill (.claude/skills/{name}/SKILL.md) to match \
+                 this rigger build"
+            ),
+            InstallOutcome::AlreadyCurrent => {}
+        }
     }
     match hook {
         InstallOutcome::Installed => println!(
@@ -9186,31 +9199,40 @@ fn docs_context() -> rigger::docs::DocsContext {
     }
 }
 
-/// Render both discipline outputs from [`docs_context`] and write them under `root`: the
-/// `using-rigger` skill at [`USING_RIGGER_SKILL_REL`] and the handbook discipline chapter
-/// at [`HANDBOOK_DISCIPLINE_REL`]. Returns the paths written, in a stable order. Rooted at
-/// `root` so it is testable against a temp dir without touching the process cwd; the
-/// parent directories are created so a fresh checkout renders both files.
+/// Render EVERY [registry skill](rigger::docs::skill_registry) plus the handbook
+/// discipline chapter from [`docs_context`], and write them under `root`: each skill at
+/// [`skill_source_rel`]`(entry.name)`, the handbook at [`HANDBOOK_DISCIPLINE_REL`]. Returns
+/// the paths written, in registry order followed by the handbook - a stable order. Rooted
+/// at `root` so it is testable against a temp dir without touching the process cwd; parent
+/// directories are created so a fresh checkout renders every file (spec 68, criterion 1:
+/// generalizes over the whole registry - adding an entry needs no edit here).
 fn write_docs(root: &Path) -> Result<Vec<std::path::PathBuf>, Box<dyn std::error::Error>> {
     let ctx = docs_context();
-    let skill = rigger::docs::render_using_rigger_skill(&ctx);
-    let handbook = rigger::docs::render_handbook_discipline(&ctx);
-    let skill_path = root.join(USING_RIGGER_SKILL_REL);
-    let handbook_path = root.join(HANDBOOK_DISCIPLINE_REL);
-    for (path, contents) in [(&skill_path, &skill), (&handbook_path, &handbook)] {
+    let mut outputs: Vec<(std::path::PathBuf, String)> = rigger::docs::skill_registry()
+        .into_iter()
+        .map(|entry| (root.join(skill_source_rel(entry.name)), entry.render(&ctx)))
+        .collect();
+    outputs.push((
+        root.join(HANDBOOK_DISCIPLINE_REL),
+        rigger::docs::render_handbook_discipline(&ctx),
+    ));
+    let mut written = Vec::with_capacity(outputs.len());
+    for (path, contents) in &outputs {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(path, contents)?;
+        written.push(path.clone());
     }
-    Ok(vec![skill_path, handbook_path])
+    Ok(written)
 }
 
 /// `rigger docs` renders the operating discipline from the code the binary runs on into
-/// two committed outputs - the `using-rigger` skill and the handbook discipline chapter -
-/// so the discipline stays in lock-step with behavior instead of drifting from it. Re-run
-/// it after changing a source fact or a template and commit the result; `rigger validate`
-/// (spec 20, unit 2) fails loudly if the committed copies drift from a fresh render.
+/// its committed outputs - every registry skill plus the handbook discipline chapter - so
+/// the discipline stays in lock-step with behavior instead of drifting from it. Re-run it
+/// after changing a source fact or a template and commit the result; `rigger validate`
+/// (spec 20, unit 2; spec 68, criterion 1) fails loudly if a committed copy drifts from a
+/// fresh render.
 fn cmd_docs(_args: &[String]) -> Res {
     for path in write_docs(Path::new("."))? {
         println!("rendered {}", path.display());
@@ -9219,29 +9241,29 @@ fn cmd_docs(_args: &[String]) -> Res {
 }
 
 /// The committed discipline outputs under `root` that have DRIFTED from a fresh render of
-/// the current code-derived context (spec 20, unit 2), in report order. A path is reported
-/// only when the committed file EXISTS and its BYTES differ from a fresh render; an ABSENT
-/// (or unreadable) file is skipped - these are rigger's OWN committed docs, and an operator
-/// project never carries them, so their absence is not drift (the same "nothing installed,
-/// nothing to drift" rule [`installed_workflow_drifted`] applies to the workflow). Reuses
-/// the SINGLE render authority ([`docs_context`] + `rigger::docs::render_*`) and the same
-/// [`USING_RIGGER_SKILL_REL`] / [`HANDBOOK_DISCIPLINE_REL`] path consts [`write_docs`]
+/// the current code-derived context (spec 20, unit 2; spec 68, criterion 1: the docs-drift
+/// gate covers EVERY registry entry), in report order (registry order, then the handbook).
+/// A path is reported only when the committed file EXISTS and its BYTES differ from a
+/// fresh render; an ABSENT (or unreadable) file is skipped - these are rigger's OWN
+/// committed docs, and an operator project never carries them, so their absence is not
+/// drift (the same "nothing installed, nothing to drift" rule
+/// [`installed_workflow_drifted`] applies to the workflow). Reuses the SINGLE render
+/// authority ([`docs_context`] + `rigger::docs::skill_registry`/`render_handbook_discipline`)
+/// and the same [`skill_source_rel`] / [`HANDBOOK_DISCIPLINE_REL`] paths [`write_docs`]
 /// writes, so the drift check and the write can never disagree on what "the docs" are.
 /// Rooted at `root` so the seam is testable against a temp dir without touching the cwd.
 fn docs_drift(root: &Path) -> Vec<std::path::PathBuf> {
     let ctx = docs_context();
+    let mut checks: Vec<(std::path::PathBuf, String)> = rigger::docs::skill_registry()
+        .into_iter()
+        .map(|entry| (root.join(skill_source_rel(entry.name)), entry.render(&ctx)))
+        .collect();
+    checks.push((
+        root.join(HANDBOOK_DISCIPLINE_REL),
+        rigger::docs::render_handbook_discipline(&ctx),
+    ));
     let mut drifted = Vec::new();
-    for (rel, fresh) in [
-        (
-            USING_RIGGER_SKILL_REL,
-            rigger::docs::render_using_rigger_skill(&ctx),
-        ),
-        (
-            HANDBOOK_DISCIPLINE_REL,
-            rigger::docs::render_handbook_discipline(&ctx),
-        ),
-    ] {
-        let path = root.join(rel);
+    for (path, fresh) in checks {
         // Byte comparison (not `read_to_string`): a committed file corrupted to non-UTF-8 is
         // genuinely drifted, and comparing bytes catches it rather than silently skipping it.
         match std::fs::read(&path) {
@@ -9252,12 +9274,13 @@ fn docs_drift(root: &Path) -> Vec<std::path::PathBuf> {
     drifted
 }
 
-/// The `rigger validate` docs-drift FAILURE (spec 20, unit 2): when a committed discipline
-/// output has drifted from a fresh render, a single loud message naming EVERY drifted file
-/// and the one-command fix, or `None` when the committed docs are in sync (or absent).
-/// Unlike the warning advisories, the caller surfaces this as a HARD, non-zero exit - a
-/// changed const/template/hand-edit is a definition drift that must be regenerated, not a
-/// soft nudge - so the discipline STAYS in lock-step with the code the binary runs on.
+/// The `rigger validate` docs-drift FAILURE (spec 20, unit 2; spec 68, criterion 1): when a
+/// committed discipline output has drifted from a fresh render, a single loud message
+/// naming EVERY drifted file and the one-command fix, or `None` when the committed docs
+/// are in sync (or absent). Unlike the warning advisories, the caller surfaces this as a
+/// HARD, non-zero exit - a changed const/template/hand-edit is a definition drift that
+/// must be regenerated, not a soft nudge - so the discipline STAYS in lock-step with the
+/// code the binary runs on.
 fn docs_drift_failure(root: &Path) -> Option<String> {
     let drifted = docs_drift(root);
     if drifted.is_empty() {
@@ -9269,10 +9292,10 @@ fn docs_drift_failure(root: &Path) -> Option<String> {
         .collect::<Vec<_>>()
         .join(", ");
     Some(format!(
-        "the committed using-rigger discipline docs have drifted from a fresh render ({names}): \
-         a source fact or template changed but the committed copy was not regenerated, so the \
-         discipline no longer matches the code it describes. Run `rigger docs` and commit the \
-         result so they are in lock-step again."
+        "the committed rigger skill/discipline docs have drifted from a fresh render \
+         ({names}): a source fact or template changed but the committed copy was not \
+         regenerated, so the discipline no longer matches the code it describes. Run \
+         `rigger docs` and commit the result so they are in lock-step again."
     ))
 }
 
@@ -9789,7 +9812,8 @@ mod tests {
             "guards rigger presence (graceful degrade)"
         );
         assert!(
-            hook.contains(USING_RIGGER_SKILL_REL) && hook.contains(HANDBOOK_DISCIPLINE_REL),
+            hook.contains(skill_source_rel("using-rigger").as_str())
+                && hook.contains(HANDBOOK_DISCIPLINE_REL),
             "compares exactly the two rendered outputs by path; got:\n{hook}"
         );
         assert!(
@@ -10549,20 +10573,28 @@ mod tests {
         }
     }
 
-    /// Spec 20, unit 1: `rigger docs` renders BOTH outputs and writes them to their
-    /// committed paths under the project root. Proven against a temp root so it needs no
-    /// process-cwd change: both files land at their single-source paths with the code
-    /// facts in them.
+    /// Spec 20, unit 1; spec 68, criterion 1: `rigger docs` renders EVERY registry skill
+    /// plus the handbook and writes them to their committed paths under the project root.
+    /// Proven against a temp root so it needs no process-cwd change: every file lands at
+    /// its single-source path with the code facts (and, for a skill, the operator-binary
+    /// prohibition) in it.
     #[test]
-    fn write_docs_writes_both_outputs_under_root() {
+    fn write_docs_writes_every_registry_skill_plus_the_handbook() {
         let dir = tempfile::tempdir().unwrap();
         let written = write_docs(dir.path()).unwrap();
-        let skill_path = dir.path().join(USING_RIGGER_SKILL_REL);
+        let mut expected: Vec<std::path::PathBuf> = rigger::docs::skill_registry()
+            .iter()
+            .map(|e| dir.path().join(skill_source_rel(e.name)))
+            .collect();
+        expected.push(dir.path().join(HANDBOOK_DISCIPLINE_REL));
+        assert_eq!(written, expected);
+
+        let skill_path = dir.path().join(skill_source_rel("using-rigger"));
         let handbook_path = dir.path().join(HANDBOOK_DISCIPLINE_REL);
-        assert_eq!(written, vec![skill_path.clone(), handbook_path.clone()]);
         let skill = std::fs::read_to_string(&skill_path).unwrap();
         let handbook = std::fs::read_to_string(&handbook_path).unwrap();
         assert!(skill.contains(DEFAULT_BASE_REF) && skill.contains("name: using-rigger"));
+        assert!(skill.contains(rigger::docs::OPERATOR_BINARY_PROHIBITION));
         assert!(handbook.contains(DEFAULT_BASE_REF));
         // Byte-stable: a second render writes identical bytes (the drift check needs this).
         write_docs(dir.path()).unwrap();
@@ -10570,15 +10602,62 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&handbook_path).unwrap(), handbook);
     }
 
-    /// Spec 20, unit 2 (the drift seam, at the unit level): `docs_drift` flags a committed
-    /// output whose bytes differ from a fresh render, is SILENT when the committed copies are
-    /// in sync, and SKIPS an absent file (an operator project that never carries rigger's own
-    /// committed docs must not be flagged). Proven against a temp root so it needs no cwd.
+    /// Spec 68, criterion 1 (the structural pin): the SET of names `rigger setup` installs
+    /// and the SET of skill paths `rigger docs` renders are each computed as EXACTLY
+    /// `rigger::docs::skill_registry()`'s own names - never a second, hand-maintained list
+    /// either surface could fall out of step with. Because both [`install_skills`] and
+    /// [`write_docs`] loop over the registry directly (proven above and by this equality),
+    /// adding an entry to the registry is the ONLY step that can make a skill install and
+    /// render; neither surface can be updated without the other.
+    #[test]
+    fn install_and_docs_each_cover_exactly_the_registry_no_more_no_less() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let registry_names: Vec<&str> = rigger::docs::skill_registry()
+            .iter()
+            .map(|e| e.name)
+            .collect();
+        assert!(
+            registry_names.len() >= 2,
+            "the registry must carry at least using-rigger and planning-a-spec"
+        );
+
+        let installed_names: std::collections::BTreeSet<&str> = install_skills(root)
+            .expect("install must succeed")
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        let expected: std::collections::BTreeSet<&str> = registry_names.iter().copied().collect();
+        assert_eq!(
+            installed_names, expected,
+            "rigger setup must install EXACTLY the registry's skills, no more, no less"
+        );
+
+        let written: std::collections::BTreeSet<std::path::PathBuf> =
+            write_docs(root).unwrap().into_iter().collect();
+        let mut expected_written: std::collections::BTreeSet<std::path::PathBuf> = registry_names
+            .iter()
+            .map(|name| root.join(skill_source_rel(name)))
+            .collect();
+        expected_written.insert(root.join(HANDBOOK_DISCIPLINE_REL));
+        assert_eq!(
+            written, expected_written,
+            "rigger docs must render EXACTLY the registry's skill paths plus the (non-registry) \
+             handbook, no more, no less"
+        );
+    }
+
+    /// Spec 20, unit 2 (the drift seam, at the unit level); spec 68, criterion 1 (the gate
+    /// covers EVERY registry entry): `docs_drift` flags a committed output whose bytes
+    /// differ from a fresh render, is SILENT when the committed copies are in sync, and
+    /// SKIPS an absent file (an operator project that never carries rigger's own committed
+    /// docs must not be flagged). Proven against a temp root so it needs no cwd.
     #[test]
     fn docs_drift_flags_a_changed_file_and_skips_absent_or_in_sync_ones() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        let skill_path = root.join(USING_RIGGER_SKILL_REL);
+        let skill_path = root.join(skill_source_rel("using-rigger"));
+        let other_skill_path = root.join(skill_source_rel("planning-a-spec"));
         let handbook_path = root.join(HANDBOOK_DISCIPLINE_REL);
 
         // Absent (nothing rendered yet) -> no drift, no failure: these are rigger's OWN docs,
@@ -10597,8 +10676,9 @@ mod tests {
         );
         assert!(docs_drift_failure(root).is_none());
 
-        // Hand-edit the skill the render would never produce -> ONLY the skill drifts, and
-        // the failure names it plus the `rigger docs` fix.
+        // Hand-edit the using-rigger skill the render would never produce -> ONLY that
+        // skill drifts (planning-a-spec stays in sync), and the failure names it plus the
+        // `rigger docs` fix.
         std::fs::write(&skill_path, "hand-edited, not a render\n").unwrap();
         assert_eq!(
             docs_drift(root),
@@ -10607,42 +10687,60 @@ mod tests {
         );
         let failure = docs_drift_failure(root).expect("a drifted skill must produce a failure");
         assert!(
-            failure.contains(USING_RIGGER_SKILL_REL) && failure.contains("rigger docs"),
+            failure.contains(skill_source_rel("using-rigger").as_str())
+                && failure.contains("rigger docs"),
             "the drift failure must name the drifted file and the `rigger docs` fix; got: {failure}"
         );
 
-        // Drift BOTH -> both are reported, in the skill-then-handbook order write_docs uses.
+        // Drift the OTHER registry skill too -> both are reported, in registry order.
+        std::fs::write(&other_skill_path, "hand-edited, not a render\n").unwrap();
+        assert_eq!(
+            docs_drift(root),
+            vec![skill_path.clone(), other_skill_path.clone()],
+            "both drifted skills are flagged, in registry order"
+        );
+
+        // Drift the handbook too -> it reports LAST, after every registry skill.
         std::fs::write(&handbook_path, "hand-edited handbook, not a render\n").unwrap();
-        assert_eq!(docs_drift(root), vec![skill_path, handbook_path]);
+        assert_eq!(
+            docs_drift(root),
+            vec![skill_path, other_skill_path, handbook_path]
+        );
     }
 
-    /// Spec 20, unit 2 (the CI-lane guard): the REAL committed `using-rigger` skill and the
-    /// handbook discipline chapter must be byte-identical to a fresh render of the current
-    /// code facts, so a changed const or template that was NOT followed by `rigger docs`
-    /// reddens `cargo test` in CI - not only `rigger validate` on a live checkout (the
-    /// validate fixture renders fresh in a temp project, so it is always in sync THERE and
-    /// cannot catch real repo drift). Reads the committed files from the crate manifest dir.
+    /// Spec 20, unit 2; spec 68, criterion 1 (the CI-lane guard, generalized over the whole
+    /// registry): EVERY REAL committed registry skill plus the handbook discipline chapter
+    /// must be byte-identical to a fresh render of the current code facts, so a changed
+    /// const/template/registry entry that was NOT followed by `rigger docs` reddens `cargo
+    /// test` in CI - not only `rigger validate` on a live checkout (the validate fixture
+    /// renders fresh in a temp project, so it is always in sync THERE and cannot catch real
+    /// repo drift). Reads the committed files from the crate manifest dir.
     #[test]
-    fn committed_using_rigger_docs_are_in_sync_with_a_fresh_render() {
+    fn committed_registry_docs_are_in_sync_with_a_fresh_render() {
         let ctx = docs_context();
         let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-        for (rel, fresh) in [
-            (
-                USING_RIGGER_SKILL_REL,
-                rigger::docs::render_using_rigger_skill(&ctx),
-            ),
-            (
-                HANDBOOK_DISCIPLINE_REL,
-                rigger::docs::render_handbook_discipline(&ctx),
-            ),
-        ] {
-            let path = manifest.join(rel);
+        let mut checks: Vec<(std::path::PathBuf, String)> = rigger::docs::skill_registry()
+            .into_iter()
+            .map(|entry| {
+                (
+                    manifest.join(skill_source_rel(entry.name)),
+                    entry.render(&ctx),
+                )
+            })
+            .collect();
+        checks.push((
+            manifest.join(HANDBOOK_DISCIPLINE_REL),
+            rigger::docs::render_handbook_discipline(&ctx),
+        ));
+        for (path, fresh) in checks {
             let committed = std::fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("read committed {}: {e}", path.display()));
             assert_eq!(
-                committed, fresh,
-                "the committed {rel} has drifted from a fresh render; run `rigger docs` and \
-                 commit the result so the discipline matches the code"
+                committed,
+                fresh,
+                "the committed {} has drifted from a fresh render; run `rigger docs` and \
+                 commit the result so the discipline matches the code",
+                path.display()
             );
         }
     }
@@ -13942,18 +14040,41 @@ mod tests {
         );
     }
 
-    /// Spec 20, unit 3: `rigger setup` installs the rendered `using-rigger` skill as a
-    /// file DISTINCT from the `/rigger` workflow. It lands at
+    /// Find `name`'s outcome in an [`install_skills`] result, panicking if the registry
+    /// somehow did not install it - a test-only convenience so each assertion below reads
+    /// by skill name rather than by a brittle vec index.
+    fn outcome_for<'a>(
+        outcomes: &'a [(&'static str, InstallOutcome)],
+        name: &str,
+    ) -> &'a InstallOutcome {
+        &outcomes
+            .iter()
+            .find(|e| e.0 == name)
+            .unwrap_or_else(|| panic!("{name} missing from install_skills output"))
+            .1
+    }
+
+    /// The `using-rigger` entry's [`rigger::docs::SkillEntry`], for tests that need to
+    /// render it directly (registry order is not pinned, so callers look it up by name).
+    fn registry_entry(name: &str) -> rigger::docs::SkillEntry {
+        rigger::docs::skill_registry()
+            .into_iter()
+            .find(|e| e.name == name)
+            .unwrap_or_else(|| panic!("{name} missing from the skill registry"))
+    }
+
+    /// Spec 20, unit 3; spec 68, criterion 1: `rigger setup` installs EVERY registry
+    /// skill, each as a file DISTINCT from the `/rigger` workflow. `using-rigger` lands at
     /// `.claude/skills/using-rigger/SKILL.md` (a loadable skill Claude Code
     /// auto-discovers), which is not the workflow path, and it carries the rendered skill
-    /// (loadable frontmatter). Install is re-runnable exactly like the workflow: absent ->
-    /// Installed, unchanged -> a silent no-op that does not even move the mtime, drifted ->
-    /// Refreshed.
+    /// (loadable frontmatter) PLUS the operator-binary prohibition. Install is re-runnable
+    /// exactly like the workflow: absent -> Installed, unchanged -> a silent no-op that
+    /// does not even move the mtime, drifted -> Refreshed.
     #[test]
     fn setup_installs_the_using_rigger_skill_distinct_from_the_workflow() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        let path = skill_install_path(root);
+        let path = skill_install_path(root, "using-rigger");
         assert_eq!(
             path,
             root.join(".claude")
@@ -13970,8 +14091,9 @@ mod tests {
 
         // 1. Absent -> a fresh install carrying the rendered skill (loadable frontmatter),
         //    byte-identical to a fresh default render (no overlay in this repo).
+        let outcomes = install_skills(root).expect("installing writes every skill file");
         assert_eq!(
-            install_skill(root).expect("installing writes the skill file"),
+            *outcome_for(&outcomes, "using-rigger"),
             InstallOutcome::Installed,
             "the first install reports a fresh install"
         );
@@ -13983,15 +14105,20 @@ mod tests {
         );
         assert_eq!(
             installed,
-            rigger::docs::render_using_rigger_skill(&docs_context()),
+            registry_entry("using-rigger").render(&docs_context()),
             "with no overlay the installed skill is the default code-derived render"
+        );
+        assert!(
+            installed.contains(rigger::docs::OPERATOR_BINARY_PROHIBITION),
+            "the installed skill must carry the operator-binary prohibition"
         );
 
         // 2. Already current -> a silent no-op that does not move the mtime.
         let before = std::fs::metadata(&path).unwrap().modified().unwrap();
         std::thread::sleep(std::time::Duration::from_millis(20));
+        let outcomes = install_skills(root).expect("a no-op rerun must succeed");
         assert_eq!(
-            install_skill(root).expect("a no-op rerun must succeed"),
+            *outcome_for(&outcomes, "using-rigger"),
             InstallOutcome::AlreadyCurrent,
             "an up-to-date skill must be detected as current"
         );
@@ -14003,23 +14130,26 @@ mod tests {
 
         // 3. Drifted -> refreshed to the rendered skill.
         std::fs::write(&path, "stale hand-edit\n").unwrap();
+        let outcomes = install_skills(root).expect("re-install must succeed");
         assert_eq!(
-            install_skill(root).expect("re-install must succeed"),
+            *outcome_for(&outcomes, "using-rigger"),
             InstallOutcome::Refreshed,
             "a drifted skill must be refreshed"
         );
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
-            rigger::docs::render_using_rigger_skill(&docs_context()),
+            registry_entry("using-rigger").render(&docs_context()),
             "refreshing must overwrite the drift with the rendered skill"
         );
     }
 
-    /// Spec 20, unit 3: a project overlay adds this repo's specifics - the base branch and
-    /// where specs live - into the INSTALLED skill WITHOUT editing the shared discipline
-    /// source. `.rigger/docs-overlay.yml` declares the two repo facts; they override the
-    /// code-derived context BEFORE the render, so the installed skill carries them while
-    /// the shared render still defaults for a repo with no overlay.
+    /// Spec 20, unit 3; spec 68, criterion 1 (overlay honored per entry): a project
+    /// overlay adds this repo's specifics - the base branch and where specs live - into
+    /// EVERY installed skill WITHOUT editing the shared discipline source.
+    /// `.rigger/docs-overlay.yml` declares the two repo facts; they override the
+    /// code-derived context BEFORE each render, so an installed skill that carries the
+    /// fact (`using-rigger`) reflects it while the shared render still defaults for a repo
+    /// with no overlay.
     #[test]
     fn setup_skill_install_applies_the_project_overlay() {
         let dir = tempfile::tempdir().unwrap();
@@ -14031,8 +14161,8 @@ mod tests {
         )
         .unwrap();
 
-        install_skill(root).expect("installing with an overlay must succeed");
-        let installed = std::fs::read_to_string(skill_install_path(root)).unwrap();
+        install_skills(root).expect("installing with an overlay must succeed");
+        let installed = std::fs::read_to_string(skill_install_path(root, "using-rigger")).unwrap();
 
         // The repo specifics appear in the installed skill...
         assert!(
