@@ -32,9 +32,11 @@ thin replay driver do not yet carry it (see Design and Notes).
   would fake a cache); under `auto`, an unusable wrapper or dir skips the whole layer and
   reports "none" through validate - configured-explicit fails, discovered-implicit degrades.
 - **Machine-wide build budget** (`build.max_concurrent`, DEFAULT 4; `0` means unlimited, the
-  `budget: 0` convention): a flock-based slot directory caps how many builds run concurrently
-  ACROSS every rigger process on the machine; the N+1th build waits for a slot rather than
-  stacking another compiler fleet into memory. THE AUTHORITATIVE STATE IS THE SLOT FILES: a
+  `budget: 0` convention): a flock-based slot directory caps how many of the loop's own
+  compiler invocations (the slot-acquiring build call sites) run concurrently ACROSS every
+  rigger process on the machine; the N+1th such build waits for a slot rather than stacking
+  another compiler fleet into memory. A build a worker starts outside those call sites is
+  not slot-gated. THE AUTHORITATIVE STATE IS THE SLOT FILES: a
   fixed set of `slot-<i>.lock` files under the OS temp dir (the machine-wide-flock precedent
   of the accelerator construct lock - temp dir, not the repo, because the budget spans every
   project on the machine), each held via exclusive flock for the build's duration and
