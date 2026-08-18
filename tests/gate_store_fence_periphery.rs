@@ -30,7 +30,7 @@
 //! directory before handing it back - the one store-resolution authority every courier
 //! funnels through, so the fix covers `emit`/`result`/`peers`/`reported`/`prompt` uniformly).
 //!
-//! Three tests, driving the REAL compiled `rigger` binary as a REAL OS subprocess through the
+//! Five tests, driving the REAL compiled `rigger` binary as a REAL OS subprocess through the
 //! REAL `gate::ExecRunner` - never a fake Runner, never an in-process function call:
 //!
 //! 1. `a_real_fenced_courier_actually_succeeds_and_lands_in_an_isolated_persistent_store`:
@@ -69,6 +69,17 @@
 //!    together - a real `ExecRunner`-spawned courier creates the fence sibling, then the
 //!    real `Worktree::remove` reclaims it - the integration neither unit test (one never
 //!    creates the directory, the other never runs a courier) can see.
+//! 5. `a_real_fenced_couriers_scratch_store_is_reclaimed_for_a_review_worktree_too`: the SAME
+//!    real end-to-end wiring as test 4, but for the call site u4's round-1 audit missed and
+//!    the round-1 reject found unfenced (`adv-u3c70-store-fence-half-wired-review-worktree-call-site-unfenced`
+//!    / `adv-u3c70-reclaim-shares-the-same-exclusion-fix-fence-alone-leaks`): a standalone
+//!    review worktree's EXHAUSTIVE gate pass, which always carries an EMPTY `target_dir` (a
+//!    review worktree owns no per-unit build cache), so test 4's non-empty-`target_dir`
+//!    fencing signal never fires for it - `worktree::review_fence_sibling` is the new,
+//!    dir-driven signal that does. Derives its expected fence path by calling
+//!    `review_fence_sibling` directly rather than re-typing the suffix inline, so this test
+//!    cannot silently drift from the real derivation `gate.rs` and `worktree.rs` share -
+//!    exactly the failure mode the round-1 reject's addendum named.
 //!
 //! Both cwd and target_dir are passed to `ExecRunner::run` explicitly for every call in this
 //! file - never left empty to "inherit the ambient cwd" - so the only variable that ever
@@ -83,7 +94,7 @@ use rigger::budget::BuildBudget;
 use rigger::gate::{
     Autonomy, BuildEnv, ExecRunner, Gate, Kind, Runner, STORE_FENCE_ENV, STORE_FENCE_SUFFIX,
 };
-use rigger::worktree::{unit_cache_sibling, Worktree};
+use rigger::worktree::{review_fence_sibling, unit_cache_sibling, Worktree};
 
 mod common;
 use common::rigger_bin;
@@ -459,7 +470,18 @@ fn a_real_fenced_couriers_scratch_store_is_reclaimed_for_a_review_worktree_too()
     )
     .unwrap();
 
-    let fence_dir = format!("{}{STORE_FENCE_SUFFIX}", review.dir);
+    // Derived via the real public function, not a hand-rolled format string - the SAME
+    // fidelity the unit-worktree test above holds by deriving its target_dir through
+    // `unit_cache_sibling`. Calling the real `review_fence_sibling` here (rather than
+    // re-typing `STORE_FENCE_SUFFIX` inline) is not cosmetic: this exact widen-the-fence /
+    // widen-the-reclaim pair is what the round-1 reject
+    // (`adv-u3c70-reclaim-shares-the-same-exclusion-fix-fence-alone-leaks`) named as the
+    // failure mode - a fence and a reclaim that quietly stop sharing one derivation. A
+    // hand-rolled format string here would keep passing even if `review_fence_sibling`'s
+    // formula ever drifted from what `ExecRunner::run` and `reclaim_cache_sibling` actually
+    // use, silently losing the exact regression this test exists to catch.
+    let fence_dir = review_fence_sibling(&review.dir)
+        .expect("a review worktree dir must derive a fence sibling");
 
     let result = ExecRunner.run(
         &emit_gate("review-reclaim-emit", "review-reclaim-probe"),
