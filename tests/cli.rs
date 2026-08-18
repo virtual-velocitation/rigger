@@ -9022,6 +9022,66 @@ fn validate_reports_budget_but_no_cache_dir_when_the_wrapper_is_off() {
     );
 }
 
+/// SDET periphery (spec 65 unit 5, HONEST SURFACES): every wrapper-resolution test above
+/// OVERWRITES the scaffolded `build:` block with its own hand-typed one (via
+/// `append_build_block`) before running `validate` - none of them proves the real seam
+/// between `rigger init` WRITING the scaffold and `rigger validate` READING it. This test
+/// leaves a genuinely fresh `rigger init` output - `build:\n  wrapper: auto\n`, and
+/// nothing else - completely untouched, so it is the literal bytes the scaffold constant
+/// puts on disk (not a hand-retyped equivalent that could silently drift from it) driving
+/// resolution. It also pins the two defaults an unmodified `build:` section leaves
+/// implicit and that no other CLI test asserts a value for: the cache dir line reads
+/// `<state home>/rigger/build-cache` (`BuildConfig::cache_dir`'s own doc comment - empty
+/// resolves to this, not a fabricated or blank value) and the budget line reads `4`
+/// (`BuildConfig::max_concurrent`'s own doc comment - omitted resolves to 4, not the
+/// in-memory `Default::default()` zero).
+#[test]
+fn a_fresh_scaffolded_init_resolves_and_reports_through_validate_untouched() {
+    let dir = temp_project();
+    let root = dir.path();
+    let state_home = tempfile::tempdir().unwrap();
+    let state_home_str = state_home.path().to_str().unwrap();
+
+    let (_out, err, ok) = run_rigger_envs(root, &["init"], &[("XDG_STATE_HOME", state_home_str)]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let workflow_path = root.join(".rigger").join("workflow.yml");
+    let workflow = std::fs::read_to_string(&workflow_path).unwrap();
+    assert!(
+        workflow.contains("build:\n  wrapper: auto\n"),
+        "a fresh scaffold must declare build:\\n  wrapper: auto verbatim, byte for byte, \
+         with no other key implied; workflow.yml:\n{workflow}"
+    );
+
+    let path = path_with_fake_wrapper(root, "sccache");
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["validate"],
+        &[("PATH", &path), ("XDG_STATE_HOME", state_home_str)],
+    );
+    assert!(
+        ok,
+        "an unmodified fresh scaffold must validate cleanly; stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        out.lines().any(|l| l == "build wrapper: sccache"),
+        "the untouched scaffold's auto wrapper must resolve against PATH and report the \
+         name it found; stdout:\n{out}"
+    );
+    let expected_cache_dir = state_home.path().join("rigger").join("build-cache");
+    assert!(
+        out.lines()
+            .any(|l| l == format!("build cache dir: {}", expected_cache_dir.display())),
+        "the untouched scaffold's empty cache_dir must report the documented default \
+         <state home>/rigger/build-cache; stdout:\n{out}"
+    );
+    assert!(
+        out.lines().any(|l| l == "build budget: 4"),
+        "an unmodified build: section (bare wrapper key only, max_concurrent omitted) \
+         must report the documented default of 4, not the in-memory zero; stdout:\n{out}"
+    );
+}
+
 /// A cache-dir path guaranteed to be uncreatable: `<root>/blocker` is a plain FILE, so
 /// `create_dir_all("<root>/blocker/nested/cache")` fails because a path COMPONENT already
 /// exists as a non-directory - deterministic on every OS/user (no root/permission tricks a
