@@ -11,10 +11,12 @@ than bundled, applied uniformly to every build the loop runs.
 ## Design
 
 - **One build-environment authority** (`src/gate.rs` env seam + the agent spawn env): a single
-  resolver derives the build environment from config and applies it to EVERY build the loop
-  executes - inline/deferred gates AND agent-run builds (the courier's spawn env) - so a gate
-  build and an agent's `cargo test` hit the same cache under the same budget. The existing
-  per-unit `CARGO_TARGET_DIR` isolation (Gap 19) is unchanged; the cache layer sits under it.
+  resolver derives the build environment from config and applies it to the two paths wired
+  today - inline/deferred gate builds (`gate::ExecRunner::run`) and the blocking CLI agent
+  driver (`driver/cli.rs`) - so a gate build and that driver's agent `cargo test` hit the same
+  cache under the same settings. The existing per-unit `CARGO_TARGET_DIR` isolation (Gap 19) is
+  unchanged; the cache layer sits under it. The turn-key workflow driver and the thin replay
+  driver do not yet carry it; see Notes.
 - **Compilation-cache wrapper** (`workflow.yml` `build.wrapper`): the mechanism is cargo's own
   `RUSTC_WRAPPER` - rigger hardcodes no tool. `build.wrapper: auto` (the setup default) probes
   for a known wrapper binary on PATH and uses it when present; a named wrapper is REQUIRED
@@ -80,9 +82,10 @@ than bundled, applied uniformly to every build the loop runs.
 
 ## Done when
 
-- [ ] a test proves the ONE AUTHORITY: with a wrapper configured, both a gate build and an
-  agent spawn's environment carry the wrapper, the shared cache dir, and incremental-off; with
-  `off`, neither does. This criterion OWNS the env resolver and both injection sites.
+- [ ] a test proves the ONE AUTHORITY: with a wrapper configured, both a gate build and the
+  blocking CLI driver's agent spawn environment carry the wrapper, the shared cache dir, and
+  incremental-off; with `off`, neither does. This criterion OWNS the env resolver and its two
+  wired injection sites (gate builds and the blocking CLI driver).
 - [ ] a test proves NO SILENT DEGRADE: a named wrapper absent from PATH fails the run start
   with an error naming the binary and the config key; `auto` with nothing on PATH injects
   nothing and reports "none" through validate.
