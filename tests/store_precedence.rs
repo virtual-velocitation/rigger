@@ -35,7 +35,6 @@ use tempfile::TempDir;
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
-use common::rigger_bin;
 
 /// An unreachable but well-formed server address: nothing listens on this loopback port, so the
 /// eager connect (fail-fast) is refused immediately. We prove WHICH backend the authority selected,
@@ -85,7 +84,7 @@ fn write_store_config(root: &Path, body: &str) {
 /// uses, so the store is resolved purely from the file-backed rungs under test. `RIGGER_NO_DASH`
 /// keeps the run's dashboard from starting under test.
 fn run_bare_courier(root: &Path) -> Output {
-    Command::new(rigger_bin())
+    common::rigger_courier()
         .args(["result", "u/impl#0", "--error", "a self-report"])
         .current_dir(root)
         .env("RIGGER_NO_DASH", "1")
@@ -97,7 +96,7 @@ fn run_bare_courier(root: &Path) -> Output {
 /// Run the same bare courier but WITH `KURRENTDB_CONN` set (rung 2), to prove the environment
 /// out-ranks a lower file-backed rung.
 fn run_courier_with_env(root: &Path, conn: &str) -> Output {
-    Command::new(rigger_bin())
+    common::rigger_courier()
         .args(["result", "u/impl#0", "--error", "a self-report"])
         .current_dir(root)
         .env("RIGGER_NO_DASH", "1")

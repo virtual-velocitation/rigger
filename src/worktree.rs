@@ -707,13 +707,24 @@ pub fn unit_cache_sibling(worktree_dir: &str) -> Option<String> {
 }
 
 /// Reclaim the per-unit build cache that is a SIBLING of the unit worktree at `worktree_dir`
-/// (Gap 19) - the ONE mutation authority for cache reclamation, called from both worktree
-/// removal paths: [`Worktree::remove`] (the dominant graceful teardown) and [`sweep_terminal`]
-/// (crash recovery). A no-op for any dir that owns no such cache (a review worktree, or a unit
-/// whose gates never ran cargo, has none). Best-effort: a failed reclaim of a throwaway cache
-/// must never fail worktree teardown or abort the sweep.
+/// (Gap 19) - the ONE mutation authority for cache reclamation, called from every worktree
+/// removal path: [`Worktree::remove`] (the dominant graceful teardown), [`sweep_terminal`]
+/// (crash recovery), and [`reclaim_worktree_on_branch`] (the resume-path branch GC). A no-op
+/// for any dir that owns no such cache (a review worktree, or a unit whose gates never ran
+/// cargo, has none). Best-effort: a failed reclaim of a throwaway cache must never fail
+/// worktree teardown or abort the sweep.
+///
+/// Also reclaims the gate store fence's own sibling scratch dir (spec 70 criterion 3,
+/// `cargo-target-<slug>{gate::STORE_FENCE_SUFFIX}`) at the SAME coordinate: `gate::
+/// ExecRunner::run` derives it as a further-suffixed sibling of this same cache path
+/// whenever a unit-worktree gate runs with a non-empty target_dir (the everyday case), and
+/// nothing else on any path ever removes it - left alone, it is a live sqlite events.db
+/// (plus WAL/SHM) orphaned forever on every such gate run. Reclaiming it HERE, in the one
+/// authority already reclaiming its `cargo-target-<slug>` sibling, means every current and
+/// future call site inherits the fix uniformly rather than needing its own copy.
 fn reclaim_cache_sibling(worktree_dir: &str) {
     if let Some(cache) = unit_cache_sibling(worktree_dir) {
+        let _ = std::fs::remove_dir_all(format!("{cache}{}", crate::gate::STORE_FENCE_SUFFIX));
         let _ = std::fs::remove_dir_all(cache);
     }
 }
@@ -1613,6 +1624,44 @@ mod tests {
         assert!(
             std::path::Path::new(&bystander).exists(),
             "removing a review worktree (which owns no per-unit cache) must not touch an unrelated cache dir"
+        );
+    }
+
+    #[test]
+    fn worktree_remove_also_reclaims_the_store_fence_sibling() {
+        // Ground (b) of the u3 reject (adv-u3-fence-dir-leaks-forever-uncleaned): the gate
+        // store fence (spec 70 criterion 3) creates a SECOND per-unit scratch sibling next
+        // to the `cargo-target-<slug>` cache - `cargo-target-<slug>-store-fence`, a live
+        // sqlite events.db a fenced courier subprocess opened during this unit's own test
+        // gate (gate::ExecRunner::run derives its name from target_dir, main.rs's
+        // require_store_dir creates it). Before this fix, `reclaim_cache_sibling` only knew
+        // the plain cache sibling, so every unit-worktree gate run with a non-empty
+        // target_dir (the everyday case, since `unit_cache_sibling` derives one for every
+        // real `rigger-wt-<slug>` worktree) permanently orphaned this dir even after the
+        // worktree and its cache sibling were both torn down. It must be reclaimed by the
+        // SAME authority, on the SAME dominant graceful path `Worktree::remove` already
+        // reclaims the cache sibling on.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let root = scratch_root(&repo_path, "", None);
+
+        let unit_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}fenced");
+        let unit = Worktree::create(&repo_path, &unit_dir, "rigger/u/fenced").unwrap();
+        let unit_cache = format!("{root}/{UNIT_CACHE_PREFIX}fenced");
+        std::fs::create_dir_all(&unit_cache).unwrap();
+        // The store-fence sibling ExecRunner::run derives from the SAME cache path, one
+        // suffix further (gate::STORE_FENCE_SUFFIX) - populated here exactly as a real
+        // fenced courier would leave it: a live sqlite store with WAL/SHM siblings.
+        let fence_dir = format!("{unit_cache}{}", crate::gate::STORE_FENCE_SUFFIX);
+        std::fs::create_dir_all(&fence_dir).unwrap();
+        std::fs::write(std::path::Path::new(&fence_dir).join("events.db"), "x").unwrap();
+        std::fs::write(std::path::Path::new(&fence_dir).join("events.db-wal"), "x").unwrap();
+
+        unit.remove().unwrap();
+
+        assert!(
+            !std::path::Path::new(&fence_dir).exists(),
+            "removing the unit worktree must reclaim its store-fence sibling too, leaked at {fence_dir}"
         );
     }
 

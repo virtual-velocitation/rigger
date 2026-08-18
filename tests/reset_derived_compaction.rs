@@ -84,7 +84,7 @@ fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
 }
 
 fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (String, String, bool) {
-    let mut cmd = Command::new(common::rigger_bin());
+    let mut cmd = common::rigger_courier();
     cmd.args(args).current_dir(cwd);
     cmd.env("RIGGER_NO_DASH", "1");
     let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
