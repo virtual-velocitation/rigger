@@ -36,7 +36,13 @@ thin replay driver do not yet carry it (see Design and Notes).
   compiler invocations (the slot-acquiring build call sites) run concurrently ACROSS every
   rigger process on the machine; the N+1th such build waits for a slot rather than stacking
   another compiler fleet into memory. A build a worker starts outside those call sites is
-  not slot-gated. THE AUTHORITATIVE STATE IS THE SLOT FILES: a
+  not slot-gated. This machine-wide coherence assumes every rigger process on the machine
+  resolves the SAME configured N: `acquire` loops only its own `max_concurrent` over the
+  shared slot directory, so a process configured with a smaller N never contends for the
+  higher-numbered slots a differently-configured process uses, and the two never bound each
+  other on those extra slots. Nothing enforces one shared N across projects today beyond
+  every `workflow.yml` agreeing; making it self-enforcing would mean the slot filenames
+  themselves encode N. THE AUTHORITATIVE STATE IS THE SLOT FILES: a
   fixed set of `slot-<i>.lock` files under the OS temp dir (the machine-wide-flock precedent
   of the accelerator construct lock - temp dir, not the repo, because the budget spans every
   project on the machine), each held via exclusive flock for the build's duration and
