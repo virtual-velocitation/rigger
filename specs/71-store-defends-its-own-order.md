@@ -35,6 +35,23 @@ validate detects the signature after the fact.
 - Repair stays a documented operator procedure (renumber-by-position, two-phase), not a
   command; validate names the procedure's doc location.
 - No new event type is introduced anywhere in this spec.
+- Both feature lanes audited fresh at this spec's integrated tip (criteria 1-3 already merged,
+  zero code change needed by this criterion): fmt --check clean; clippy --all-targets -D
+  warnings clean on default features AND --no-default-features; cargo test exits 0 on both -
+  default 1919 passed, 0 failed, 2 ignored, 99 suites; --no-default-features 1802 passed, 0
+  failed, 2 ignored, 99 suites.
+- One pre-existing gap surfaced by review during criterion 2, out of this spec's scope to fix
+  (the shared helper and its other two callers predate this spec's diff, untouched by it):
+  `current_run_units` (`src/main.rs`, around line 7625) folds the current run's units via
+  `ledger::project(runscope::current_run(events)).unwrap_or_default()` - a malformed body on
+  any known lifecycle event anywhere in the current run's slice silently degrades the live set
+  to EMPTY rather than failing closed, so a genuinely live unit can read as nobody-is-live to
+  every consumer of that fold (this spec's own new compaction guard included). This is the
+  third live recurrence of a bug class already rejected once elsewhere; the sibling
+  `terminal_and_no_live_worker` (`src/main.rs`, around line 2268) already shows the fix shape
+  in this same file - propagate the fold error (`.map_err(|e| e.to_string())?`) instead of
+  swallowing it into a default - so whichever future spec closes it has a proven pattern to
+  follow, not a new one to invent.
 
 ## Global constraints
 
