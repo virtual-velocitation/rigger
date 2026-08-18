@@ -6,7 +6,9 @@ the same dependency graph N times. A consuming project measured both: 10+ concur
 machine into memory exhaustion, and the fix that worked there - a rustc compilation-cache
 wrapper with a shared cache, plus bounded build concurrency - was hand-instituted per project.
 Per the ship-to-consumers rule, rigger institutes it directly: config-driven, detected rather
-than bundled, applied uniformly to every build the loop runs.
+than bundled, applied by one resolver to the two build paths wired today - inline/deferred gate
+builds and the blocking CLI agent driver's agent spawn; the turn-key workflow driver and the
+thin replay driver do not yet carry it (see Design and Notes).
 
 ## Design
 
