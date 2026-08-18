@@ -180,6 +180,7 @@ fn a_real_fenced_courier_actually_succeeds_and_lands_in_an_isolated_persistent_s
         &emit_gate("fence-emit-1", "fence-probe-1"),
         &dir,
         &target_dir,
+        "",
         &BuildEnv::default(),
         &BuildBudget::default(),
     );
@@ -200,6 +201,7 @@ fn a_real_fenced_courier_actually_succeeds_and_lands_in_an_isolated_persistent_s
         &emit_gate("fence-emit-2", "fence-probe-2"),
         &dir,
         &target_dir,
+        "",
         &BuildEnv::default(),
         &BuildBudget::default(),
     );
@@ -249,6 +251,7 @@ fn an_unfenced_integrated_tree_gate_still_walks_up_to_the_live_store() {
     let result = ExecRunner.run(
         &emit_gate("unfenced-emit", "unfenced-probe"),
         &dir,
+        "",
         "",
         &BuildEnv::default(),
         &BuildBudget::default(),
@@ -401,6 +404,7 @@ fn a_real_fenced_couriers_scratch_store_is_reclaimed_when_the_worktree_is_remove
         &emit_gate("reclaim-emit", "reclaim-probe"),
         &worktree.dir,
         &target_dir,
+        "",
         &BuildEnv::default(),
         &BuildBudget::default(),
     );
@@ -478,8 +482,16 @@ fn a_real_fenced_couriers_scratch_store_is_reclaimed_for_a_review_worktree_too()
     // (`adv-u3c70-reclaim-shares-the-same-exclusion-fix-fence-alone-leaks`) named as the
     // failure mode - a fence and a reclaim that quietly stop sharing one derivation. A
     // hand-rolled format string here would keep passing even if `review_fence_sibling`'s
-    // formula ever drifted from what `ExecRunner::run` and `reclaim_cache_sibling` actually
+    // formula ever drifted from what `conductor::run_gates`/`reclaim_cache_sibling` actually
     // use, silently losing the exact regression this test exists to catch.
+    //
+    // u4 round 3 (arch-u4c70r2-fence-signal-not-injected-into-runner-review-case):
+    // `ExecRunner::run` no longer derives this fence itself from `dir` - the CALLER
+    // (`conductor::run_gates`, in production) computes it and injects it as `store_fence`,
+    // so this test - which drives `ExecRunner` directly rather than through a full
+    // conductor run - now passes the identically-derived value production would inject,
+    // exercising the real courier + reclaim integration `ExecRunner` alone can no longer
+    // wire up on its own.
     let fence_dir = review_fence_sibling(&review.dir)
         .expect("a review worktree dir must derive a fence sibling");
 
@@ -487,6 +499,7 @@ fn a_real_fenced_couriers_scratch_store_is_reclaimed_for_a_review_worktree_too()
         &emit_gate("review-reclaim-emit", "review-reclaim-probe"),
         &review.dir,
         "",
+        &fence_dir,
         &BuildEnv::default(),
         &BuildBudget::default(),
     );

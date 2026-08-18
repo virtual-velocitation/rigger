@@ -6045,6 +6045,25 @@ impl RunCtx<'_> {
         // `isolation: none` agent or a repo-less run) has no per-unit tree to isolate, so
         // `unit_cache_sibling` returns None and the gate inherits the ambient/shared target.
         let target = crate::worktree::unit_cache_sibling(dir).unwrap_or_default();
+        // The gate store fence's caller-injected signal (spec 70 criterion 3, u4 round 3
+        // fix for arch-u4c70r2-fence-signal-not-injected-into-runner-review-case /
+        // arch-u4c70r2-sharpens-round1-no-cycle-invariant-now-broken): a standalone review
+        // worktree (`rigger-review-*`) owns no per-unit build cache above (`target` is ""),
+        // yet its EXHAUSTIVE gate pass still runs real store-opening couriers inside a real
+        // scratch-root worktree that must never walk up into the repo's live run stream.
+        // `gate::ExecRunner::run` used to derive this itself by calling back into
+        // `worktree::review_fence_sibling(dir)` - a dependency from `gate.rs` into
+        // `worktree.rs` that broke the one-directional dependency shape (`conductor` ->
+        // `{gate, worktree}`, never `gate` -> `worktree`) round 1 certified. Deriving it
+        // HERE instead, alongside `target` (the analogous unit-worktree signal, same
+        // `dir`-sibling shape), and threading it through as a plain injected value restores
+        // that invariant: every module `gate::Runner::run` reaches (`dir`, `target_dir`,
+        // `store_fence`, `build_env`, `budget`) is now a value the CALLER computed, never
+        // one the adapter derives by reaching into a sibling domain module itself. A unit
+        // worktree (non-empty `target`) or the worktree-less path both yield None here and
+        // the empty default, matching `gate::ExecRunner::run`'s existing "target_dir always
+        // wins" precedence.
+        let store_fence = crate::worktree::review_fence_sibling(dir).unwrap_or_default();
         // The ONE build-environment authority (spec 65): resolved once per call and
         // threaded to every gate this attempt runs, so they all build under the same
         // wrapper/cache/incremental settings an agent-spawn build gets too.
@@ -6156,7 +6175,7 @@ impl RunCtx<'_> {
             // FlakyVerdict pass-with-warning); or a real failure (product/flaky demote,
             // infra hold).
             let (pass, flaky, ratchet, evidence) =
-                self.run_gate_with_taxonomy(&g, dir, &target, &build_env, &budget);
+                self.run_gate_with_taxonomy(&g, dir, &target, &store_fence, &build_env, &budget);
             // The compact gate evidence is threaded into the GateVerdict event payload
             // (item 3): a real run otherwise discarded it, so neither the ledger nor the
             // workflow driver ever saw WHY a gate passed or failed. `flaky` rides as the
@@ -6205,10 +6224,14 @@ impl RunCtx<'_> {
         g: &Gate,
         dir: &str,
         target: &str,
+        store_fence: &str,
         build_env: &gate::BuildEnv,
         budget: &BuildBudget,
     ) -> (bool, bool, GateRatchet, String) {
-        let res = self.deps.gates.run(g, dir, target, build_env, budget);
+        let res = self
+            .deps
+            .gates
+            .run(g, dir, target, store_fence, build_env, budget);
         if res.pass {
             return (true, false, GateRatchet::CleanPass, res.evidence);
         }
@@ -6249,7 +6272,10 @@ impl RunCtx<'_> {
                 // unit's gate, never the wider wave.
                 std::thread::sleep(delay);
             }
-            let retry = self.deps.gates.run(g, dir, target, build_env, budget);
+            let retry = self
+                .deps
+                .gates
+                .run(g, dir, target, store_fence, build_env, budget);
             if retry.pass {
                 // MIXED: the gate failed then passed - a FlakyVerdict pass-with-warning.
                 let evidence = format!(
@@ -6422,7 +6448,7 @@ impl RunCtx<'_> {
                     let res = self
                         .deps
                         .gates
-                        .run(&g, "", "", &build_env, &self.build_budget());
+                        .run(&g, "", "", "", &build_env, &self.build_budget());
                     // The deferred phase-boundary gate keeps its single-run semantics (no
                     // taxonomy RERUN): it measures the ONE integrated tree once, so its
                     // verdict carries no flaky annotation (a whole-tree deferred rerun is
@@ -23165,6 +23191,85 @@ mod tests {
     }
 
     #[test]
+    fn run_gates_derives_and_injects_the_review_worktrees_store_fence() {
+        // Spec 70 criterion 3, u4 round 3 fix for
+        // arch-u4c70r2-fence-signal-not-injected-into-runner-review-case /
+        // arch-u4c70r2-sharpens-round1-no-cycle-invariant-now-broken: `run_gates` is now the
+        // ONE place that derives the review-worktree store-fence signal (via
+        // `worktree::review_fence_sibling(dir)`, mirroring how it already derives `target`
+        // via `unit_cache_sibling(dir)` on the very next line) and threads it into
+        // `gate::Runner::run` as a plain injected value - `gate.rs` itself no longer calls
+        // into `worktree.rs` to compute it. Drives a REAL standalone review stage (a real
+        // repo, a real `rigger-review-*` worktree) through a full `run()`, so the recorded
+        // `store_fence` this test asserts on is exactly what the real gate-spawned process
+        // would see via `STORE_FENCE_ENV` - not a hand-typed stand-in that could silently
+        // drift from the real derivation.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "review".into(),
+            Stage {
+                name: "review".into(),
+                agents: vec!["lens".into()],
+                gates: vec!["ok".into()],
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            output: "reviewed the diff".into(),
+            ..Stub::new()
+        };
+        let runner = RecordingRunner::new(&[]);
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["review"].status, ledger::Status::Integrated);
+
+        let targets = runner.targets();
+        assert_eq!(
+            targets.len(),
+            1,
+            "the one review-stage gate ran exactly once"
+        );
+        assert_eq!(
+            targets[0], "",
+            "a review worktree owns no per-unit build cache: target_dir must stay empty"
+        );
+
+        // The exact fence path production would derive: the sibling of the ACTUAL review
+        // worktree `run_fan_out_stage` created, via the SAME single-source
+        // `review_worktree_dir` + `review_fence_sibling` derivation the production code
+        // path uses (conductor.rs's `review_only_worktree` / `gate::STORE_FENCE_SUFFIX`).
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let review_dir = review_worktree_dir(&scratch, "review", 0);
+        let want_fence = crate::worktree::review_fence_sibling(&review_dir)
+            .expect("a review worktree dir must derive a fence sibling");
+
+        let store_fences = runner.store_fences();
+        assert_eq!(
+            store_fences.len(),
+            1,
+            "the one review-stage gate ran exactly once"
+        );
+        assert_eq!(
+            store_fences[0], want_fence,
+            "run_gates must derive the review worktree's store-fence sibling itself and \
+             inject it into the runner, never leaving the runner to derive it: {store_fences:?}"
+        );
+    }
+
+    #[test]
     fn a_parked_lens_keeps_the_standalone_review_stages_worktree() {
         // Spec 64, criterion 1 (Design bullet 2 / decision
         // p64r4-u1-owns-review-worktree-park-gating): the SAME split that keeps a UNIT's
@@ -23800,6 +23905,7 @@ mod tests {
             _g: &Gate,
             _dir: &str,
             _target: &str,
+            _store_fence: &str,
             _build_env: &gate::BuildEnv,
             _budget: &BuildBudget,
         ) -> gate::GateResult {
@@ -24873,6 +24979,11 @@ mod tests {
         /// (spec 65) - lets a test assert the ONE build-environment authority reaches
         /// every gate build.
         build_envs: Mutex<Vec<Vec<(String, String)>>>,
+        /// The `store_fence` handed to each run, in invocation order (spec 70 criterion 3,
+        /// u4 round 3) - lets a test assert `run_gates` derives and injects the review-worktree
+        /// fence signal itself (via `worktree::review_fence_sibling`) rather than the runner
+        /// deriving it, restoring the one-directional `gate` -> nothing dependency shape.
+        store_fences: Mutex<Vec<String>>,
         /// When set, a run with a non-empty `target_dir` MATERIALIZES that dir on disk (as a
         /// real cargo build would), so a graceful-lifecycle test can prove the per-unit cache
         /// is reclaimed when the unit's worktree is later removed (Gap 19).
@@ -24894,6 +25005,7 @@ mod tests {
                 calls: Mutex::new(Vec::new()),
                 targets: Mutex::new(Vec::new()),
                 build_envs: Mutex::new(Vec::new()),
+                store_fences: Mutex::new(Vec::new()),
                 materialize_cache: false,
                 fail: fail.iter().map(|s| s.to_string()).collect(),
                 delete_worktree_dir: false,
@@ -24925,6 +25037,9 @@ mod tests {
         fn build_envs(&self) -> Vec<Vec<(String, String)>> {
             self.build_envs.lock().unwrap().clone()
         }
+        fn store_fences(&self) -> Vec<String> {
+            self.store_fences.lock().unwrap().clone()
+        }
     }
     impl gate::Runner for RecordingRunner {
         fn run(
@@ -24932,11 +25047,16 @@ mod tests {
             g: &Gate,
             dir: &str,
             target: &str,
+            store_fence: &str,
             build_env: &gate::BuildEnv,
             _budget: &BuildBudget,
         ) -> gate::GateResult {
             self.calls.lock().unwrap().push(g.id.clone());
             self.targets.lock().unwrap().push(target.to_string());
+            self.store_fences
+                .lock()
+                .unwrap()
+                .push(store_fence.to_string());
             self.build_envs
                 .lock()
                 .unwrap()
@@ -25070,6 +25190,7 @@ mod tests {
             g: &Gate,
             _dir: &str,
             _target: &str,
+            _store_fence: &str,
             _build_env: &gate::BuildEnv,
             _budget: &BuildBudget,
         ) -> gate::GateResult {
@@ -28073,6 +28194,7 @@ mod tests {
             g: &Gate,
             _dir: &str,
             _target: &str,
+            _store_fence: &str,
             _build_env: &gate::BuildEnv,
             _budget: &BuildBudget,
         ) -> gate::GateResult {
@@ -28974,6 +29096,7 @@ mod tests {
             _g: &Gate,
             dir: &str,
             _target: &str,
+            _store_fence: &str,
             _build_env: &gate::BuildEnv,
             _budget: &BuildBudget,
         ) -> gate::GateResult {

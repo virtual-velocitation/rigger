@@ -100,7 +100,7 @@ fn exec_runner_blocks_the_real_subprocess_on_an_externally_held_slot() {
     let (tx, rx) = mpsc::channel();
     let budget2 = budget.clone();
     let handle = std::thread::spawn(move || {
-        let res = ExecRunner.run(&gate, "", "", &BuildEnv::default(), &budget2);
+        let res = ExecRunner.run(&gate, "", "", "", &BuildEnv::default(), &budget2);
         tx.send(res).unwrap();
     });
 
@@ -167,7 +167,7 @@ fn an_exhausted_budget_gates_a_real_build_but_never_a_real_agent_spawn() {
     let gate_budget = budget.clone();
     let (gtx, grx) = mpsc::channel();
     std::thread::spawn(move || {
-        let res = ExecRunner.run(&gate, "", "", &BuildEnv::default(), &gate_budget);
+        let res = ExecRunner.run(&gate, "", "", "", &BuildEnv::default(), &gate_budget);
         gtx.send(res).unwrap();
     });
     assert!(
