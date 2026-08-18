@@ -57,6 +57,15 @@ than bundled, applied uniformly to every build the loop runs.
   repeat-attempt cost; the shared wrapper cache cuts cross-unit and cold-start cost; the
   budget bounds peak memory regardless.
 - No new event type is introduced anywhere in this spec.
+- The one build-environment authority reaches every gate build and the blocking CLI agent
+  driver (`driver/cli.rs`). Two other spawn paths do not yet carry it, named here so the gap
+  is not lost when this spec closes: the turn-key workflow driver (`driver/workflow.rs` plus
+  the Node shim) execs the Agent SDK as a child process, so the cheap fix is one `cmd_workflow`
+  env application the SDK inherits to every downstream spawn - no wire-format change needed.
+  The thin replay driver (`driver/replay.rs`, the one an external courier actually re-spawns
+  from `rigger step`'s printed wave JSON) is structurally different: `spawn::SpawnRequest` has
+  no `env` field, so nothing can reach an agent spawned this way until one is added to the
+  struct and its serialized wire shape. A future spec should close both.
 
 ## Global constraints
 
