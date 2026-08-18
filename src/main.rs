@@ -4636,6 +4636,7 @@ impl Runner for ReplayRunner {
         g: &Gate,
         _dir: &str,
         _target_dir: &str,
+        _store_fence: &str,
         _build_env: &BuildEnv,
         _budget: &BuildBudget,
     ) -> GateResult {

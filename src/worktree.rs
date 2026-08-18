@@ -316,6 +316,18 @@ impl Worktree {
     /// branch so the subsequent `create` mints a fresh checkout of the current HEAD. NEVER
     /// call this on a unit's durable `rigger/u/*` branch - that would throw away a
     /// checkpoint; it is only for the non-durable `rigger/review/*` branch.
+    ///
+    /// Also reclaims the dir's store-fence sibling (spec 70 criterion 3, u4 round 2 fix for
+    /// `adv-u4c70r2-discard-path-leaks-review-fence-sibling`), via the SAME
+    /// [`reclaim_cache_sibling`] authority [`Self::remove`]/[`sweep_terminal`]/
+    /// [`reclaim_worktree_on_branch`] already call - mirroring the exact clear-then-reclaim
+    /// sequence [`reclaim_worktree_on_branch`] uses. `discard` is the FOURTH teardown path
+    /// (this doc comment's own crash-resume case, driven by `review_only_worktree` on every
+    /// standalone-review-stage attempt): before this fix a fenced review worktree's
+    /// `-store-fence` sibling - a live sqlite `events.db` a gate-spawned courier opened -
+    /// survived every discard-then-recreate cycle, leaked forever on the operator's small
+    /// scratch partition. A unit's durable worktree owns no fence sibling here (`discard` is
+    /// never called on one), so this is a no-op on that path.
     pub fn discard(repo: &str, dir: &str, branch: &str) -> Result<(), Error> {
         if std::path::Path::new(dir).exists() {
             clear_worktree_dir(repo, dir)?;
@@ -323,6 +335,7 @@ impl Worktree {
             // No dir to clear, but a killed process may still leave a dangling admin entry.
             git(repo, &["worktree", "prune"])?;
         }
+        reclaim_cache_sibling(dir);
         Self::delete_branch(repo, branch)
     }
 
@@ -2222,6 +2235,41 @@ mod tests {
         );
         fresh.remove().unwrap();
         Worktree::delete_branch(&repo_path, branch).unwrap();
+    }
+
+    #[test]
+    fn discard_also_reclaims_the_review_worktrees_store_fence_sibling() {
+        // adv-u4c70r2-discard-path-leaks-review-fence-sibling (u4 round 2 fix): `discard`
+        // is the FOURTH teardown path a review worktree goes through -
+        // `review_only_worktree` calls it unconditionally before `create()` on every
+        // standalone-review-stage attempt, the crash-resume path this function's own doc
+        // comment describes ("a resumed review step recomputes the same path and reclaims
+        // it instead of leaking a fresh worktree each process"). `remove`, `sweep_terminal`,
+        // and `reclaim_worktree_on_branch` already reclaim a fence sibling via
+        // `reclaim_cache_sibling`; `discard` did not, so a process that crashed after a
+        // fenced gate wrote a real events.db into `<dir>-store-fence` left it orphaned with
+        // no teardown path guaranteed to ever reclaim it - populated here exactly as a real
+        // fenced courier would leave it (a live sqlite store with a WAL sibling).
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let root = scratch_root(&repo_path, "", None);
+        let branch = "rigger/review/discard-fence-0";
+        let dir = format!("{root}/rigger-review-discard-fence-0");
+
+        let stale = Worktree::create(&repo_path, &dir, branch).unwrap();
+        drop(stale); // the Rust struct is gone but the worktree registration + dir survive.
+
+        let fence_dir = format!("{dir}{}", crate::gate::STORE_FENCE_SUFFIX);
+        std::fs::create_dir_all(&fence_dir).unwrap();
+        std::fs::write(std::path::Path::new(&fence_dir).join("events.db"), "x").unwrap();
+        std::fs::write(std::path::Path::new(&fence_dir).join("events.db-wal"), "x").unwrap();
+
+        Worktree::discard(&repo_path, &dir, branch).unwrap();
+
+        assert!(
+            !std::path::Path::new(&fence_dir).exists(),
+            "discard must reclaim the review worktree's store-fence sibling too, leaked at {fence_dir}"
+        );
     }
 
     #[test]

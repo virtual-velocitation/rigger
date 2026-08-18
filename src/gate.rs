@@ -144,11 +144,23 @@ pub enum Action {
 /// courier the gate's spawned process runs (a test invoking `rigger emit`/`result`/`peers`/
 /// `reported`, say) can never walk up past the unit worktree into the repo's LIVE run
 /// stream - `main.rs::require_store_dir` honors that env var. A gate on the integrated
-/// tree ("" target_dir) is never fenced, exactly as it is never given a target_dir. The
-/// fenced-sibling scratch dir this creates is reclaimed by the SAME authority that
-/// reclaims `target_dir`'s own `cargo-target-<slug>` sibling (`worktree::
+/// tree ("" target_dir) is never fenced by that path, exactly as it is never given a
+/// target_dir. The fenced-sibling scratch dir this creates is reclaimed by the SAME
+/// authority that reclaims `target_dir`'s own `cargo-target-<slug>` sibling (`worktree::
 /// reclaim_cache_sibling`, sharing [`STORE_FENCE_SUFFIX`]'s naming), so a fenced gate
 /// leaves no more orphaned state on disk than the pre-existing cache sibling already did.
+///
+/// `store_fence` is a SECOND, caller-injected fence override for a gate that has no
+/// `target_dir` to derive one from yet still needs fencing: a standalone review worktree
+/// (`rigger-review-*`) owns no per-unit build cache (so `target_dir` is always ""), but its
+/// EXHAUSTIVE gate pass still runs real store-opening couriers inside a scratch-root
+/// worktree. `store_fence` is used ONLY when `target_dir` is empty (the `target_dir` branch
+/// always wins when both could apply); "" means no override, leaving the gate unfenced
+/// exactly as before this parameter existed. Deliberately a plain value, not derived here:
+/// the CALLER (`conductor::run_gates`) computes it via `worktree::review_fence_sibling(dir)`
+/// and threads it in, so this module never depends on `worktree` - the one-directional
+/// `gate` -> nothing / `conductor` -> `{gate, worktree}` dependency shape stays intact
+/// rather than growing a cycle back into `worktree`.
 ///
 /// This is a process-tree-wide fence, not a per-courier one: EVERY descendant of the
 /// gate's spawned process inherits [`STORE_FENCE_ENV`] via normal env-var inheritance,
@@ -164,6 +176,7 @@ pub trait Runner: Send + Sync {
         g: &Gate,
         dir: &str,
         target_dir: &str,
+        store_fence: &str,
         build_env: &BuildEnv,
         budget: &BuildBudget,
     ) -> GateResult;
@@ -544,8 +557,10 @@ pub fn resolve_build_layer(
     )
 }
 
-/// The env var [`ExecRunner::run`] pins to fence a unit-worktree gate's store resolution
-/// (spec 70 criterion 3). `main.rs`'s store-resolution authority
+/// The env var [`ExecRunner::run`] pins to fence a gate's store resolution (spec 70
+/// criterion 3) - a unit-worktree gate's `target_dir` signal, or a caller-injected
+/// `store_fence` override for a worktree (a standalone review worktree) with no
+/// `target_dir` to derive one from. `main.rs`'s store-resolution authority
 /// (`require_store_dir`/`walk_stores_from`) honors this when set, PINNING resolution to
 /// the named scratch directory instead of walking up - so a gate-spawned process (a test
 /// invoking a store-opening courier) can never reach the repo's live store. Additive and
@@ -581,6 +596,7 @@ impl Runner for ExecRunner {
         g: &Gate,
         dir: &str,
         target_dir: &str,
+        store_fence: &str,
         build_env: &BuildEnv,
         budget: &BuildBudget,
     ) -> GateResult {
@@ -600,19 +616,24 @@ impl Runner for ExecRunner {
             // courier the gate's spawned process runs must never walk up into the repo's
             // LIVE run stream. Pin a sibling scratch dir (never inside target_dir itself,
             // which cargo owns and may wipe) so main.rs's store-resolution authority
-            // resolves there instead of walking up.
+            // resolves there instead of walking up. This branch always wins over
+            // `store_fence` below - a unit worktree derives its own fence from target_dir.
             cmd.env(STORE_FENCE_ENV, format!("{target_dir}{STORE_FENCE_SUFFIX}"));
-        } else if let Some(fence) = crate::worktree::review_fence_sibling(dir) {
+        } else if !store_fence.is_empty() {
             // Widened (spec 70, u4 round 2 fix for
-            // adv-u3c70-store-fence-half-wired-review-worktree-call-site-unfenced): a
-            // standalone review stage's EXHAUSTIVE gate pass (`run_fan_out_stage` ->
+            // adv-u3c70-store-fence-half-wired-review-worktree-call-site-unfenced, then
+            // u4 round 3 fix for arch-u4c70r2-fence-signal-not-injected-into-runner-review-case):
+            // a standalone review stage's EXHAUSTIVE gate pass (`run_fan_out_stage` ->
             // `run_gates`) runs with `dir` set to the throwaway review worktree and an
             // EMPTY target_dir (a review worktree owns no per-unit build cache, so the
             // branch above never fires), yet it is a real, unconditional gate run inside a
             // scratch-root worktree whose spawned process must be fenced the same way.
-            // `review_fence_sibling` derives the sibling from `dir` directly rather than
-            // target_dir, since this kind has no build cache to key off.
-            cmd.env(STORE_FENCE_ENV, fence);
+            // `store_fence` is a plain, caller-injected value here rather than derived
+            // by THIS module from `dir` - the caller (`conductor::run_gates`) computes it
+            // via `worktree::review_fence_sibling(dir)`, so `gate.rs` never depends on
+            // `worktree` and the one-directional dependency (`conductor` -> `{gate,
+            // worktree}`) stays intact.
+            cmd.env(STORE_FENCE_ENV, store_fence);
         }
         // The ONE build-environment authority's first injection site (spec 65): the
         // resolved wrapper/cache-dir/incremental-off vars (empty when no wrapper is
@@ -804,6 +825,7 @@ mod tests {
                     &gate_cmd("true"),
                     "",
                     "",
+                    "",
                     &BuildEnv::default(),
                     &BuildBudget::default()
                 )
@@ -813,6 +835,7 @@ mod tests {
             !ExecRunner
                 .run(
                     &gate_cmd("false"),
+                    "",
                     "",
                     "",
                     &BuildEnv::default(),
@@ -878,6 +901,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             &gate_cmd(&cmd),
             "",
             "",
+            "",
             &BuildEnv::default(),
             &BuildBudget::default(),
         );
@@ -904,6 +928,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             &gate_cmd("test \"$CARGO_TARGET_DIR\" = /tmp/rigger-gap19-probe"),
             "",
             "/tmp/rigger-gap19-probe",
+            "",
             &BuildEnv::default(),
             &BuildBudget::default(),
         );
@@ -914,6 +939,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
 
         let without = ExecRunner.run(
             &gate_cmd("test \"$CARGO_TARGET_DIR\" != /tmp/rigger-gap19-probe"),
+            "",
             "",
             "",
             &BuildEnv::default(),
@@ -942,6 +968,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             )),
             "",
             "/tmp/rigger-gap19-probe",
+            "",
             &BuildEnv::default(),
             &BuildBudget::default(),
         );
@@ -954,6 +981,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             &gate_cmd(&format!("test -z \"${STORE_FENCE_ENV}\"")),
             "",
             "",
+            "",
             &BuildEnv::default(),
             &BuildBudget::default(),
         );
@@ -964,52 +992,70 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
     }
 
     #[test]
-    fn exec_runner_fences_a_standalone_review_worktrees_store_resolution_too() {
-        // Spec 70 criterion 3, widened (u4 round 2 fix for
-        // adv-u3c70-store-fence-half-wired-review-worktree-call-site-unfenced): a standalone
-        // review stage's EXHAUSTIVE gate pass (conductor.rs's `run_fan_out_stage` ->
-        // `run_gates`, conductor.rs:4922) runs gates with `dir` set to the throwaway
-        // `rigger-review-<stage>-<attempt>` worktree and an EMPTY target_dir - a review
-        // worktree owns no per-unit build cache (`unit_cache_sibling` correctly returns None
-        // for it, so Gap 19's CARGO_TARGET_DIR override never applies there), so the
-        // target_dir-driven branch above never fires for this call site even though it is a
-        // real, unconditional gate run inside a scratch-root worktree. This is a SECOND,
-        // dir-driven signal alongside the target_dir one: any `rigger-review-*` dir is fenced
-        // too, to its own sibling scratch location, even with an empty target_dir. `dir` must
-        // actually exist on disk here (unlike the target_dir-only tests above) - ExecRunner
-        // chdirs the spawned `sh` into it - so this test roots a real review-worktree-shaped
+    fn exec_runner_honors_an_injected_store_fence_override_when_target_dir_is_empty() {
+        // Spec 70 criterion 3, u4 round 3 fix for
+        // arch-u4c70r2-fence-signal-not-injected-into-runner-review-case /
+        // arch-u4c70r2-sharpens-round1-no-cycle-invariant-now-broken: a standalone review
+        // stage's EXHAUSTIVE gate pass (conductor.rs's `run_fan_out_stage` -> `run_gates`)
+        // runs gates with `dir` set to the throwaway `rigger-review-<stage>-<attempt>`
+        // worktree and an EMPTY target_dir (a review worktree owns no per-unit build cache),
+        // so the target_dir-driven branch above never fires for this call site even though
+        // it is a real, unconditional gate run inside a scratch-root worktree. Before this
+        // fix ExecRunner derived that fence ITSELF by calling `worktree::review_fence_sibling
+        // (dir)` - a dependency from `gate.rs` back into `worktree.rs` that broke the
+        // one-directional dependency shape round 1 certified. Now the CALLER
+        // (`conductor::run_gates`) derives it and injects it as a plain `store_fence`
+        // parameter; this test proves ExecRunner just forwards whatever it is handed,
+        // verbatim, when target_dir is empty - never deriving it, never forcing a
+        // CARGO_TARGET_DIR override alongside it (a review worktree has no build cache to
+        // key one off). `dir` must actually exist on disk (unlike the target_dir-only tests
+        // above) - ExecRunner chdirs the spawned `sh` into it - so this test roots a real
         // dir under a tempdir rather than a literal `/tmp/...` path.
         let parent = tempfile::tempdir().expect("tempdir");
         let review_dir = parent.path().join("rigger-review-fanout-probe-0");
         std::fs::create_dir_all(&review_dir).expect("create review dir");
         let review_dir = review_dir.to_str().unwrap();
+        let injected_fence = format!("{review_dir}-store-fence");
 
         let with = ExecRunner.run(
-            &gate_cmd(&format!(
-                "test \"${STORE_FENCE_ENV}\" = {review_dir}-store-fence"
-            )),
+            &gate_cmd(&format!("test \"${STORE_FENCE_ENV}\" = {injected_fence}")),
             review_dir,
             "",
+            &injected_fence,
             &BuildEnv::default(),
             &BuildBudget::default(),
         );
         assert!(
             with.pass,
-            "a review-worktree dir must fence the gate's store resolution via \
-             {STORE_FENCE_ENV} even with an empty target_dir: {with:?}"
+            "an injected store_fence must reach the gate via {STORE_FENCE_ENV} even with an \
+             empty target_dir: {with:?}"
         );
 
         let no_cargo_override = ExecRunner.run(
             &gate_cmd(&format!("test \"$CARGO_TARGET_DIR\" != {review_dir}")),
             review_dir,
             "",
+            &injected_fence,
             &BuildEnv::default(),
             &BuildBudget::default(),
         );
         assert!(
             no_cargo_override.pass,
-            "a review worktree still has no build cache to key off - the new dir-driven \
-             fence branch must never force a CARGO_TARGET_DIR override too: {no_cargo_override:?}"
+            "an injected store_fence must never force a CARGO_TARGET_DIR override too: \
+             {no_cargo_override:?}"
+        );
+
+        let unfenced = ExecRunner.run(
+            &gate_cmd(&format!("test -z \"${STORE_FENCE_ENV}\"")),
+            "",
+            "",
+            "",
+            &BuildEnv::default(),
+            &BuildBudget::default(),
+        );
+        assert!(
+            unfenced.pass,
+            "an empty store_fence (the un-widened default) must not force a fence: {unfenced:?}"
         );
     }
 
@@ -1100,6 +1146,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             ),
             "",
             "",
+            "",
             &env,
             &BuildBudget::default(),
         );
@@ -1110,6 +1157,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
 
         let without = ExecRunner.run(
             &gate_cmd("test -z \"$RUSTC_WRAPPER\" && test -z \"$SCCACHE_DIR\""),
+            "",
             "",
             "",
             &BuildEnv::default(),
@@ -1182,6 +1230,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         let env = BuildEnv::resolve("", "", 3);
         let res = ExecRunner.run(
             &gate_cmd("test \"$CARGO_BUILD_JOBS\" = 3"),
+            "",
             "",
             "",
             &env,
