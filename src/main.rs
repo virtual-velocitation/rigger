@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use rigger::blocker;
+use rigger::budget::BuildBudget;
 use rigger::canary;
 use rigger::community;
 use rigger::concepts;
@@ -4600,7 +4601,14 @@ fn format_stats_diff(run_id: &str, rev: &str, base: &Metrics, cand: &Metrics) ->
 struct ReplayRunner;
 
 impl Runner for ReplayRunner {
-    fn run(&self, g: &Gate, _dir: &str, _target_dir: &str, _build_env: &BuildEnv) -> GateResult {
+    fn run(
+        &self,
+        g: &Gate,
+        _dir: &str,
+        _target_dir: &str,
+        _build_env: &BuildEnv,
+        _budget: &BuildBudget,
+    ) -> GateResult {
         GateResult {
             pass: false,
             evidence: format!(
