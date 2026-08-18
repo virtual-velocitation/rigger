@@ -3317,6 +3317,7 @@ impl RunCtx<'_> {
                 st.name
             ))
         })?;
+        let build_env = self.build_env()?;
         Ok(SpawnOpts {
             system_prompt: self.build_system_prompt(agent_def),
             dir: dir.to_string(),
@@ -3345,7 +3346,7 @@ impl RunCtx<'_> {
             // the unit's worktree gets the same wrapper/cache/incremental vars a gate
             // build and the implementer got, so its own `cargo` invocations share the
             // cache too.
-            env: self.build_env().vars().to_vec(),
+            env: build_env.vars().to_vec(),
         })
     }
 
@@ -3838,6 +3839,7 @@ impl RunCtx<'_> {
                 // keeps the FULL context (adv-u36c1-planner-first-spawn-trimmed).
                 let prompt = self.build_prompt_with_failure(st, &prior, implement_slice(st));
                 let emit = |t: &str, v: Value| self.emit_with_actor(&st.agent, t, v);
+                let build_env = self.build_env()?;
                 // cwd-isolation invariant (the worktree-isolation fix): an implementer
                 // that is SUPPOSED to be isolated must never run in the live main
                 // checkout. When the agent declared isolation (the default) and a repo is
@@ -3876,7 +3878,7 @@ impl RunCtx<'_> {
                             // The ONE build-environment authority (spec 65): the implementer's
                             // own `cargo build`/`cargo test` invocations get the same
                             // wrapper/cache/incremental vars a gate build gets.
-                            env: self.build_env().vars().to_vec(),
+                            env: build_env.vars().to_vec(),
                         },
                         &emit,
                     )
@@ -4303,6 +4305,11 @@ impl RunCtx<'_> {
             })?
             .clone();
 
+        // The ONE build-environment authority (spec 65): resolved once for the whole
+        // fan-out, not once per lane - every speculation candidate shares the SAME
+        // resolved wrapper/cache/incremental vars, since none of them depend on `lane`.
+        let build_env = self.build_env()?;
+
         // PHASE A: park/spawn every candidate. Lane worktree dirs are kept ALIVE across a
         // park (removed only at a terminal outcome below), so the out-of-process worker
         // always finds the pre-created candidate worktree the conductor owns - a lane's
@@ -4351,7 +4358,7 @@ impl RunCtx<'_> {
                         run_id: self.run_id.clone(),
                         // The ONE build-environment authority (spec 65): every speculation
                         // candidate's own `cargo` invocations share the same wrapper cache.
-                        env: self.build_env().vars().to_vec(),
+                        env: build_env.vars().to_vec(),
                     },
                     &emit,
                 )
@@ -5696,6 +5703,7 @@ impl RunCtx<'_> {
             self.build_prompt(plan_st)
         );
         let emit = |t: &str, v: Value| self.emit_with_actor(&plan_st.agent, t, v);
+        let build_env = self.build_env()?;
         // The planner opts out of isolation (`isolation: none`), so - like its first-wave
         // spawn in `run_single_stage` - it runs in the project cwd; only an ISOLATED agent
         // must carry a worktree dir (asserted there, not here). An isolated planner would
@@ -5726,7 +5734,7 @@ impl RunCtx<'_> {
                     // guaranteed to build, but carries the same resolved env uniformly
                     // like every other spawn, so a planner that does explore via cargo
                     // shares the cache too.
-                    env: self.build_env().vars().to_vec(),
+                    env: build_env.vars().to_vec(),
                 },
                 &emit,
             )
@@ -5959,12 +5967,35 @@ impl RunCtx<'_> {
     /// (Self::run_gates), [`run_deferred_gates`](Self::run_deferred_gates)) and an
     /// agent-spawn build (every `SpawnOpts.env`) can never derive two disagreeing
     /// copies, including the jobs cap (spec 65 unit 4).
-    fn build_env(&self) -> gate::BuildEnv {
-        gate::BuildEnv::resolve(
+    ///
+    /// Extends that authority with spec 65 unit 2 (NO SILENT DEGRADE): `build.wrapper` /
+    /// `build.cache_dir` are resolved through [`gate::resolve_build_layer`] FIRST, so
+    /// `auto` (probe PATH for a known wrapper, then probe its cache dir), a named
+    /// wrapper, and a named wrapper's cache dir are all turned into an actual binary name
+    /// (or `None`) before ever reaching [`gate::BuildEnv::resolve`], which - true to unit
+    /// 1's foundational shape - still takes its `wrapper` argument VERBATIM and has no
+    /// notion of `auto` or of resolution failure.
+    ///
+    /// A CONFIGURED (named) wrapper's `Err` is caught by `Config::validate` at run start
+    /// for the ordinary CLI entry points (`config::load` calls it before `self.cfg` can
+    /// exist), but [`run`] is a `pub` library entry point too (§11: "library use ... imports
+    /// the same modules from the `rigger` crate directly") - a caller that builds/mutates a
+    /// `Config` by hand and passes it straight to [`run`] never goes through `config::load`
+    /// at all. This function therefore PROPAGATES the `Err` (never silently degrading to
+    /// `None`, the exact defect spec 65 unit 2 exists to close) rather than swallowing it,
+    /// so a library caller gets the identical loud failure a CLI caller already does -
+    /// whichever entry point resolves this first.
+    fn build_env(&self) -> Result<gate::BuildEnv, Error> {
+        let wrapper = gate::resolve_build_layer(
             &self.cfg.workflow.build.wrapper,
             &self.cfg.workflow.build.cache_dir,
-            self.cfg.workflow.build.jobs,
         )
+        .map_err(|e| Error(e.to_string()))?;
+        Ok(gate::BuildEnv::resolve(
+            wrapper.as_deref().unwrap_or(""),
+            &self.cfg.workflow.build.cache_dir,
+            self.cfg.workflow.build.jobs,
+        ))
     }
 
     /// The resolved machine-wide build budget for this run (spec 65): re-derived from the
@@ -6017,7 +6048,7 @@ impl RunCtx<'_> {
         // The ONE build-environment authority (spec 65): resolved once per call and
         // threaded to every gate this attempt runs, so they all build under the same
         // wrapper/cache/incremental settings an agent-spawn build gets too.
-        let build_env = self.build_env();
+        let build_env = self.build_env()?;
         // The machine-wide build budget (spec 65): resolved once per call, alongside
         // `build_env`, and threaded to every gate this attempt runs.
         let budget = self.build_budget();
@@ -6387,10 +6418,11 @@ impl RunCtx<'_> {
                     // (spec 65), same as every other gate this run's config resolves - and
                     // the same machine-wide build budget, so this phase-boundary gate waits
                     // for a slot exactly like every inline gate does.
-                    let res =
-                        self.deps
-                            .gates
-                            .run(&g, "", "", &self.build_env(), &self.build_budget());
+                    let build_env = self.build_env()?;
+                    let res = self
+                        .deps
+                        .gates
+                        .run(&g, "", "", &build_env, &self.build_budget());
                     // The deferred phase-boundary gate keeps its single-run semantics (no
                     // taxonomy RERUN): it measures the ONE integrated tree once, so its
                     // verdict carries no flaky annotation (a whole-tree deferred rerun is
@@ -21469,15 +21501,20 @@ mod tests {
             (runner.build_envs(), driver.envs())
         }
 
+        // A real, actually-creatable cache dir (spec 65 unit 2, NO SILENT DEGRADE:
+        // resolution now attempts to CREATE it) - never a filesystem-root literal a
+        // non-root test process could never create.
+        let cache_dir = tempfile::tempdir().unwrap();
+        let cache_dir_str = cache_dir.path().to_string_lossy().into_owned();
         let configured = config::BuildConfig {
             wrapper: "sccache".into(),
-            cache_dir: "/shared/build-cache".into(),
+            cache_dir: cache_dir_str.clone(),
             jobs: 0,
             ..Default::default()
         };
         let want: HashMap<String, String> = [
             ("RUSTC_WRAPPER".to_string(), "sccache".to_string()),
-            ("SCCACHE_DIR".to_string(), "/shared/build-cache".to_string()),
+            ("SCCACHE_DIR".to_string(), cache_dir_str),
             ("CARGO_INCREMENTAL".to_string(), "0".to_string()),
         ]
         .into_iter()

@@ -8801,6 +8801,316 @@ fn validate_flags_tracked_rigger_files_with_uncommitted_modifications() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// `rigger validate` build.wrapper resolution (spec 65 unit 2, NO SILENT DEGRADE)
+// ---------------------------------------------------------------------------
+
+/// Append a `build:` block to a scaffolded project's `.rigger/workflow.yml` (a top-level
+/// YAML key, valid at any position after the existing scaffold content).
+fn append_build_block(root: &Path, block: &str) {
+    use std::io::Write;
+    let mut wf = std::fs::OpenOptions::new()
+        .append(true)
+        .open(root.join(".rigger").join("workflow.yml"))
+        .unwrap();
+    writeln!(wf, "{block}").unwrap();
+}
+
+/// The single directory that provides `bin` on the REAL `PATH`, panicking if `bin` cannot
+/// be found anywhere on it (a precondition of the tests below, not something they mean to
+/// exercise).
+fn real_path_dir_of(bin: &str) -> String {
+    std::env::var("PATH")
+        .unwrap_or_default()
+        .split(':')
+        .find(|dir| !dir.is_empty() && Path::new(dir).join(bin).exists())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| panic!("{bin} must be resolvable on the real PATH for this test"))
+}
+
+/// A minimal synthetic `PATH` carrying only what `rigger validate` itself needs (`git`, for
+/// its drift/residue advisories) - an ALLOWLIST, not a denylist, so it can never
+/// accidentally strip a directory `rigger validate` needs while still guaranteeing NEITHER
+/// known build-cache wrapper (`sccache`/`ccache`) is reachable, regardless of what the real
+/// machine running this test happens to have installed (some systems co-locate `ccache`
+/// with `git` in the same `/usr/bin`, which a directory-denylist filter could not tell
+/// apart).
+fn path_with_no_known_wrapper() -> String {
+    real_path_dir_of("git")
+}
+
+/// [`path_with_no_known_wrapper`] with a fake `name` executable staged in a fresh bin dir
+/// under `root` and prepended, so `name` resolves unambiguously as the ONLY wrapper-shaped
+/// binary on this synthetic `PATH`.
+fn path_with_fake_wrapper(root: &Path, name: &str) -> String {
+    let bindir = root.join("fake-wrapper-bin");
+    std::fs::create_dir_all(&bindir).unwrap();
+    let bin = bindir.join(name);
+    std::fs::write(&bin, "#!/bin/sh\nexit 0\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    format!("{}:{}", bindir.display(), path_with_no_known_wrapper())
+}
+
+/// A CONFIGURED (non-auto, non-off) `build.wrapper` absent from PATH fails `rigger
+/// validate` at run start (`config::load`'s `Config::validate` call), naming both the
+/// missing binary and the `build.wrapper` config key - a configured-explicit failure,
+/// never a silent degrade. Uses the real ambient PATH (the fake name is virtually certain
+/// to be absent from it), so no synthetic PATH is needed for this direction.
+#[test]
+fn validate_fails_at_run_start_when_a_named_build_wrapper_is_absent_from_path() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    append_build_block(
+        root,
+        "build:\n  wrapper: definitely-not-a-real-wrapper-rigger-cli-test\n",
+    );
+
+    let (out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        !ok,
+        "a named-but-absent build.wrapper must fail validate (run start); \
+         stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        err.contains("definitely-not-a-real-wrapper-rigger-cli-test"),
+        "the failure must name the missing binary; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("build.wrapper"),
+        "the failure must name the config key; stderr:\n{err}"
+    );
+}
+
+/// `build.wrapper: auto` finding NO known wrapper on PATH must never fail validate (a
+/// discovered-implicit degrade, not a configured-explicit failure) and must report "none"
+/// through `rigger validate`'s output - so a silently-skipped cache layer is SEEN, not
+/// invisible.
+#[test]
+fn validate_reports_none_when_auto_finds_no_known_wrapper_on_path() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    append_build_block(root, "build:\n  wrapper: auto\n");
+
+    let path = path_with_no_known_wrapper();
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
+    assert!(
+        ok,
+        "auto finding nothing must never fail validate; stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        out.lines().any(|l| l == "build wrapper: none"),
+        "auto with no known wrapper on PATH must report none through validate; \
+         stdout:\n{out}"
+    );
+}
+
+/// `build.wrapper: auto` finding a known wrapper on PATH resolves and reports its name
+/// through `rigger validate`'s output.
+#[test]
+fn validate_reports_the_resolved_wrapper_when_auto_finds_a_known_wrapper_on_path() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    append_build_block(root, "build:\n  wrapper: auto\n");
+
+    let path = path_with_fake_wrapper(root, "sccache");
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
+    assert!(
+        ok,
+        "a found wrapper must not fail validate; stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        out.lines().any(|l| l == "build wrapper: sccache"),
+        "auto finding sccache on PATH must report it through validate; stdout:\n{out}"
+    );
+}
+
+/// A cache-dir path guaranteed to be uncreatable: `<root>/blocker` is a plain FILE, so
+/// `create_dir_all("<root>/blocker/nested/cache")` fails because a path COMPONENT already
+/// exists as a non-directory - deterministic on every OS/user (no root/permission tricks a
+/// privileged test runner could bypass).
+fn uncreatable_cache_dir(root: &Path) -> std::path::PathBuf {
+    let blocker = root.join("blocker");
+    std::fs::write(&blocker, "not a directory").unwrap();
+    blocker.join("nested").join("cache")
+}
+
+/// A NAMED (non-auto) `build.wrapper` present on PATH but whose `build.cache_dir` cannot be
+/// created is also a configured-explicit failure (specs/65:26-28 decides both failure
+/// directions in the SAME Design sentence as the absent-binary case above) - `rigger
+/// validate` must fail at run start naming the dir and the `build.cache_dir` config key,
+/// never silently proceed with a cache that never actually writes anything.
+#[test]
+fn validate_fails_at_run_start_when_a_named_wrappers_cache_dir_cannot_be_created() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    let cache_dir = uncreatable_cache_dir(root);
+    append_build_block(
+        root,
+        &format!(
+            "build:\n  wrapper: sccache\n  cache_dir: {}\n",
+            cache_dir.display()
+        ),
+    );
+
+    let path = path_with_fake_wrapper(root, "sccache");
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
+    assert!(
+        !ok,
+        "a named wrapper's uncreatable cache dir must fail validate (run start); \
+         stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        err.contains(&cache_dir.to_string_lossy().into_owned()),
+        "the failure must name the cache dir; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("build.cache_dir"),
+        "the failure must name the config key; stderr:\n{err}"
+    );
+}
+
+/// `build.wrapper: auto` finding a known wrapper on PATH but whose cache dir cannot be
+/// created must never fail validate - a DISCOVERED-IMPLICIT degrade, mirroring auto finding
+/// no wrapper binary at all - and must report "none" (the whole layer skipped), so an
+/// operator SEES the cache is not actually live rather than trusting a resolved name that
+/// silently never worked.
+#[test]
+fn validate_reports_none_when_autos_discovered_wrapper_has_an_uncreatable_cache_dir() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    let cache_dir = uncreatable_cache_dir(root);
+    append_build_block(
+        root,
+        &format!(
+            "build:\n  wrapper: auto\n  cache_dir: {}\n",
+            cache_dir.display()
+        ),
+    );
+
+    let path = path_with_fake_wrapper(root, "sccache");
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
+    assert!(
+        ok,
+        "auto's uncreatable cache dir must never fail validate; stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        out.lines().any(|l| l == "build wrapper: none"),
+        "auto with an uncreatable cache dir must report none (the whole layer skipped) \
+         through validate; stdout:\n{out}"
+    );
+}
+
+/// A cache-dir path guaranteed to EXIST but be UNWRITABLE: created first, then chmod'd
+/// read+execute-only (0o555) - `create_dir_all` against it succeeds (a no-op against an
+/// already-existing dir, regardless of write permission), but writing INTO it fails with
+/// `PermissionDenied`. This is the realistic steady state for a persisted, shared cache dir
+/// (the machine-wide `default_cache_dir` every project reuses after the first one creates
+/// it) - unlike `uncreatable_cache_dir` above (a blocked path component), this is the only
+/// way to make a directory that EXISTS yet cannot be written into. It is exactly the
+/// sub-case `gate::ensure_cache_dir_writable` added on top of `uncreatable_cache_dir`'s
+/// bare-`create_dir_all` check. Unix-only: the mode bits are a POSIX concept.
+#[cfg(unix)]
+fn preexisting_unwritable_cache_dir(root: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = root.join("preexisting-cache");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    dir
+}
+
+/// A NAMED (non-auto) `build.wrapper` present on PATH whose `build.cache_dir` ALREADY
+/// EXISTS but is not WRITABLE is also a configured-explicit failure (spec 65 unit 2, NO
+/// SILENT DEGRADE) - mirrors
+/// `validate_fails_at_run_start_when_a_named_wrappers_cache_dir_cannot_be_created` above for
+/// the writability rather than creatability failure mode: a pre-existing dir makes
+/// `create_dir_all` alone a no-op success regardless of permission, so only a real write
+/// probe catches this, and nothing before this test proved that probe's failure reaches the
+/// real compiled binary's exit code. `rigger validate` must fail at run start naming the
+/// dir and the `build.cache_dir` config key, never silently proceed with a cache that turns
+/// out to never actually write anything.
+#[cfg(unix)]
+#[test]
+fn validate_fails_at_run_start_when_a_named_wrappers_cache_dir_is_preexisting_but_unwritable() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    let cache_dir = preexisting_unwritable_cache_dir(root);
+    append_build_block(
+        root,
+        &format!(
+            "build:\n  wrapper: sccache\n  cache_dir: {}\n",
+            cache_dir.display()
+        ),
+    );
+
+    let path = path_with_fake_wrapper(root, "sccache");
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
+    assert!(
+        !ok,
+        "a named wrapper's pre-existing-but-unwritable cache dir must fail validate (run \
+         start); stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        err.contains(&cache_dir.to_string_lossy().into_owned()),
+        "the failure must name the cache dir; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("build.cache_dir"),
+        "the failure must name the config key; stderr:\n{err}"
+    );
+}
+
+/// `build.wrapper: auto` finding a known wrapper on PATH but whose cache dir ALREADY EXISTS
+/// yet is not WRITABLE must never fail validate - a DISCOVERED-IMPLICIT degrade, mirroring
+/// `validate_reports_none_when_autos_discovered_wrapper_has_an_uncreatable_cache_dir` above
+/// for the writability rather than creatability failure mode - and must report "none" (the
+/// whole layer skipped), so an operator SEES the cache is not actually live rather than
+/// trusting a resolved name that silently never worked.
+#[cfg(unix)]
+#[test]
+fn validate_reports_none_when_autos_discovered_wrapper_has_a_preexisting_unwritable_cache_dir() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    let cache_dir = preexisting_unwritable_cache_dir(root);
+    append_build_block(
+        root,
+        &format!(
+            "build:\n  wrapper: auto\n  cache_dir: {}\n",
+            cache_dir.display()
+        ),
+    );
+
+    let path = path_with_fake_wrapper(root, "sccache");
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
+    assert!(
+        ok,
+        "auto's pre-existing-but-unwritable cache dir must never fail validate; \
+         stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        out.lines().any(|l| l == "build wrapper: none"),
+        "auto with a pre-existing-but-unwritable cache dir must report none (the whole \
+         layer skipped) through validate; stdout:\n{out}"
+    );
+}
+
 /// Spec 19c Unit 3: `rigger validate` WARNS (on stderr, without failing) when
 /// `defaults.max_wall_clock` is unbounded and a gating role carries no per-agent bound - so
 /// a hung gating agent that the liveness sweep never times out is visible at author time -

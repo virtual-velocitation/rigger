@@ -246,11 +246,7 @@ impl BuildEnv {
         let wrapper = wrapper.trim();
         let mut vars = Vec::new();
         if !(wrapper.is_empty() || wrapper.eq_ignore_ascii_case("off")) {
-            let dir = if cache_dir.trim().is_empty() {
-                default_cache_dir()
-            } else {
-                cache_dir.trim().to_string()
-            };
+            let dir = resolved_cache_dir(cache_dir);
             let dir_var = format!("{}_DIR", wrapper.to_ascii_uppercase());
             vars.push(("RUSTC_WRAPPER".to_string(), wrapper.to_string()));
             vars.push((dir_var, dir));
@@ -297,6 +293,232 @@ fn default_cache_dir() -> String {
         .map(|h| h.join("rigger").join("build-cache"))
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|| "rigger-build-cache".to_string())
+}
+
+/// The cache-directory value both [`BuildEnv::resolve`] (what the `_DIR` env var carries)
+/// and the build-layer cache-dir probe (spec 65 unit 2, below) need: the configured
+/// `cache_dir` verbatim when set, or [`default_cache_dir`] when it is empty/whitespace-only.
+/// Extracted so both read the exact same resolved path from ONE place rather than two
+/// independent copies of this ternary that could silently drift apart.
+fn resolved_cache_dir(cache_dir: &str) -> String {
+    if cache_dir.trim().is_empty() {
+        default_cache_dir()
+    } else {
+        cache_dir.trim().to_string()
+    }
+}
+
+/// The compilation-cache wrapper binaries [`resolve_wrapper_name`] probes for under
+/// `build.wrapper: auto` (spec 65 unit 2, NO SILENT DEGRADE): a small, config-extensible
+/// pit-of-success default - `auto` exists so a machine that already has one of these
+/// installed benefits without demanding config. A NAMED wrapper (any other `build.wrapper`
+/// string) bypasses this list entirely and is checked directly against PATH instead -
+/// rigger hardcodes no tool as the only option, just this discovery default.
+const KNOWN_WRAPPERS: &[&str] = &["sccache", "ccache"];
+
+/// A CONFIGURED `build.wrapper` binary that is not on PATH (spec 65 unit 2, NO SILENT
+/// DEGRADE). The operator named it explicitly, so its absence is a configured-explicit
+/// failure - surfaced loudly at run start (via [`crate::config::Config::validate`]) -
+/// never silently skipped the way an `auto` probe finding nothing degrades.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("build.wrapper {binary:?} is not on PATH (config key: build.wrapper)")]
+pub struct WrapperUnavailable {
+    pub binary: String,
+}
+
+/// Pure: whether `bin` names an executable regular file inside any directory of `path_var`
+/// (a PATH-style, platform-separator-joined directory list from [`std::env::split_paths`]),
+/// checked in listed order.
+fn path_has_executable(path_var: &std::ffi::OsStr, bin: &str) -> bool {
+    std::env::split_paths(path_var).any(|dir| is_executable_file(&dir.join(bin)))
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable_file(path: &std::path::Path) -> bool {
+    path.is_file()
+}
+
+/// Resolve `build.wrapper` to the effective binary name the shared-cache layer will use, or
+/// `None` when the layer is disabled - the pure core, taking PATH as a value (`path_var`)
+/// rather than reading the environment itself, so it is unit-testable against a synthetic
+/// PATH without mutating (or racing on) the real process environment; see
+/// [`resolve_wrapper_name`] for the ambient-reading edge production callers use. Spec 65
+/// unit 2, NO SILENT DEGRADE, layered on top of [`BuildEnv::resolve`]'s own foundational
+/// (verbatim, wrapper-agnostic) shape:
+/// - empty / (case- and whitespace-insensitive) `off`: unchanged from `BuildEnv::resolve`'s
+///   own early return - `Ok(None)`, no injection, PATH never consulted.
+/// - `auto`: probes [`KNOWN_WRAPPERS`] against `path_var` in order and returns the first
+///   present, or `Ok(None)` when none is - a DISCOVERED-IMPLICIT degrade: the layer is
+///   silently SKIPPED, never silently miswired with a wrapper name nothing can run.
+/// - any other string (a NAMED wrapper, not restricted to [`KNOWN_WRAPPERS`]): present on
+///   `path_var` resolves `Ok(Some(name))`; absent is a CONFIGURED-EXPLICIT failure,
+///   `Err(WrapperUnavailable)` naming the binary - the operator asked for it by name, so
+///   silence here would fake a cache that never actually runs.
+pub fn resolve_wrapper_name_from(
+    wrapper: &str,
+    path_var: &std::ffi::OsStr,
+) -> Result<Option<String>, WrapperUnavailable> {
+    let w = wrapper.trim();
+    if w.is_empty() || w.eq_ignore_ascii_case("off") {
+        return Ok(None);
+    }
+    if w.eq_ignore_ascii_case("auto") {
+        return Ok(KNOWN_WRAPPERS
+            .iter()
+            .find(|b| path_has_executable(path_var, b))
+            .map(|b| (*b).to_string()));
+    }
+    if path_has_executable(path_var, w) {
+        Ok(Some(w.to_string()))
+    } else {
+        Err(WrapperUnavailable {
+            binary: w.to_string(),
+        })
+    }
+}
+
+/// The ambient-PATH-reading edge [`resolve_wrapper_name_from`]'s WRAPPER-BINARY-axis callers
+/// use: reads the real `PATH` once, right here (mirrors [`default_cache_dir`]'s own
+/// `XDG_STATE_HOME`/`HOME` read pattern), and hands it to the pure core. Folded into
+/// [`resolve_build_layer`] below (the production entry point, which also checks the
+/// cache-directory axis) rather than called directly by config/conductor/CLI production code -
+/// kept `pub` as the wrapper-only building block its own tests exercise and
+/// [`resolve_build_layer`] composes.
+pub fn resolve_wrapper_name(wrapper: &str) -> Result<Option<String>, WrapperUnavailable> {
+    resolve_wrapper_name_from(wrapper, &std::env::var_os("PATH").unwrap_or_default())
+}
+
+/// A `build.cache_dir` (or the DEFAULT [`default_cache_dir`]/[`resolved_cache_dir`] when
+/// unset) that cannot be created, OR that already exists but is not WRITABLE (see
+/// [`usable_with_cache_dir`]'s probe), for a CONFIGURED (non-`auto`, non-`off`)
+/// `build.wrapper` (spec 65 unit 2, NO SILENT DEGRADE): the SAME Design sentence
+/// (specs/65:26-28) that decides a named-but-absent wrapper BINARY is a configured-explicit
+/// failure decides this failure direction too - the operator asked for the wrapper (and, if
+/// set, this exact dir) by name, so proceeding would silently fake a cache that never
+/// actually writes anything. Mirrors [`WrapperUnavailable`]'s shape - a plain `(field,
+/// field)` struct naming what failed and the config key, not a raw `io::Error` (neither
+/// `Clone` nor `PartialEq`, so a caller could not compare/propagate it alongside
+/// `WrapperUnavailable` uniformly).
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("build.cache_dir {dir:?} is not usable: {reason} (config key: build.cache_dir)")]
+pub struct CacheDirUnusable {
+    pub dir: String,
+    pub reason: String,
+}
+
+/// Creates `dir` if needed and proves it is actually WRITABLE, not merely creatable (closing
+/// the "creatable but not writable" gap): for an ALREADY-EXISTING directory - the realistic
+/// steady state, since [`default_cache_dir`] is a machine-wide dir every project reuses
+/// after the first one creates it - `std::fs::create_dir_all` alone is a no-op `Ok(())`
+/// regardless of write permission, so it is not proof the cache is actually live. Writes,
+/// then best-effort removes, a small probe file inside `dir` (name salted with the PID so
+/// concurrent callers sharing one cache dir never collide on it); any failure -
+/// `create_dir_all` OR the probe write - is reported identically to the caller, which is
+/// exactly what [`usable_with_cache_dir`] needs: it does not care WHICH step failed, only
+/// that the dir turned out unusable.
+fn ensure_cache_dir_writable(dir: &str) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let probe =
+        std::path::Path::new(dir).join(format!(".rigger-cache-probe-{}", std::process::id()));
+    std::fs::write(&probe, b"")?;
+    // Best-effort cleanup: a probe file left behind by a failed remove (e.g. some exotic
+    // filesystem that permits writes but not deletes) is not itself proof the dir is
+    // unusable for the cache the wrapper actually needs to WRITE into.
+    let _ = std::fs::remove_file(&probe);
+    Ok(())
+}
+
+/// Either no-silent-degrade axis of the build-environment layer (spec 65 unit 2): a resolved
+/// wrapper NAME is only genuinely usable when BOTH its binary is on PATH
+/// ([`WrapperUnavailable`]) and its cache directory is actually writable ([`CacheDirUnusable`]) -
+/// the SAME Design sentence decides both failure directions, so [`resolve_build_layer`] /
+/// [`resolve_build_layer_from`] fold them into this ONE error every caller matches once
+/// rather than two independently-shaped results.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum BuildLayerUnavailable {
+    #[error(transparent)]
+    Wrapper(#[from] WrapperUnavailable),
+    #[error(transparent)]
+    CacheDir(#[from] CacheDirUnusable),
+}
+
+/// The wrapper name resolved by either axis is only USABLE once its cache directory is too
+/// (spec 65 unit 2): the cache-dir half of [`resolve_build_layer`] /
+/// [`resolve_build_layer_from`], shared so neither duplicates this branch. `named` is
+/// whether `build.wrapper` was a CONFIGURED string (not `auto`) - the same
+/// configured-explicit-vs-discovered-implicit distinction [`resolve_wrapper_name_from`]
+/// already draws for the PATH axis, mirrored here for the cache-dir axis: a named wrapper's
+/// unusable dir errors loudly; an auto-discovered wrapper's unusable dir silently skips the
+/// whole layer (`Ok(None)`), exactly like auto finding no wrapper binary at all. "Unusable"
+/// is [`ensure_cache_dir_writable`]'s call, not a bare `create_dir_all`: an already-EXISTING
+/// dir that cannot be WRITTEN into - the realistic steady state for a persisted, shared
+/// cache dir - must fail this exactly like one that cannot be created at all, never report
+/// the layer usable.
+fn usable_with_cache_dir(
+    name: Option<String>,
+    named: bool,
+    cache_dir: &str,
+) -> Result<Option<String>, BuildLayerUnavailable> {
+    let Some(name) = name else {
+        return Ok(None);
+    };
+    let dir = resolved_cache_dir(cache_dir);
+    match ensure_cache_dir_writable(&dir) {
+        Ok(()) => Ok(Some(name)),
+        Err(_) if !named => Ok(None),
+        Err(e) => Err(CacheDirUnusable {
+            dir,
+            reason: e.to_string(),
+        }
+        .into()),
+    }
+}
+
+/// Whether `wrapper` is a CONFIGURED name rather than the `auto` discovery keyword -
+/// `off`/empty never reach here (both axes resolve to `Ok(None)` before this matters), so
+/// this only ever discriminates a NAMED wrapper from `auto`.
+fn is_named_wrapper(wrapper: &str) -> bool {
+    !wrapper.trim().eq_ignore_ascii_case("auto")
+}
+
+/// The build-environment layer's resolved, USABLE wrapper name (spec 65 unit 2): the ONE
+/// production entry point that folds BOTH no-silent-degrade axes - the wrapper binary
+/// ([`resolve_wrapper_name_from`]) and the cache directory ([`usable_with_cache_dir`]) -
+/// into the single decision every caller needs, since the Design decides both in the SAME
+/// sentence (specs/65:26-28). [`crate::config::Config::validate`] (the run-start loud-failure
+/// check), the conductor's build-environment authority, and `rigger validate`'s reporting
+/// surface all call this - never re-deriving the wrapper-vs-cache-dir, named-vs-auto
+/// distinction independently. Pure core; see [`resolve_build_layer`] for the ambient-PATH
+/// edge production callers use.
+pub fn resolve_build_layer_from(
+    wrapper: &str,
+    cache_dir: &str,
+    path_var: &std::ffi::OsStr,
+) -> Result<Option<String>, BuildLayerUnavailable> {
+    let name = resolve_wrapper_name_from(wrapper, path_var)?;
+    usable_with_cache_dir(name, is_named_wrapper(wrapper), cache_dir)
+}
+
+/// The ambient-PATH-reading edge [`resolve_build_layer_from`]'s production callers use -
+/// mirrors [`resolve_wrapper_name`]'s own ambient-PATH read, composed with the cache-dir
+/// axis. See [`resolve_build_layer_from`] for the full contract.
+pub fn resolve_build_layer(
+    wrapper: &str,
+    cache_dir: &str,
+) -> Result<Option<String>, BuildLayerUnavailable> {
+    resolve_build_layer_from(
+        wrapper,
+        cache_dir,
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )
 }
 
 /// ExecRunner runs a gate as a shell command, reducing output to compact evidence.
@@ -738,6 +960,288 @@ mod tests {
         assert!(
             res.pass,
             "a configured jobs cap must reach the gate: {res:?}"
+        );
+    }
+
+    // --- resolve_wrapper_name (spec 65 unit 2, NO SILENT DEGRADE) -----------------------
+    //
+    // All of these drive the pure, injectable core (`resolve_wrapper_name_from`) against a
+    // synthetic PATH built from temp dirs, never the real ambient environment - so none of
+    // them touch (or race on) the process-global `PATH` var. `resolve_wrapper_name` itself
+    // (the ambient-reading edge) is exercised at the CLI level in tests/cli.rs, where a
+    // synthetic PATH is safely scoped to a child process instead.
+
+    fn write_executable(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, "#!/bin/sh\nexit 0\n").expect("write fixture binary");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod fixture binary");
+        }
+        path
+    }
+
+    fn path_var(dirs: &[&std::path::Path]) -> std::ffi::OsString {
+        std::env::join_paths(dirs.iter().copied()).expect("join synthetic PATH")
+    }
+
+    #[test]
+    fn resolve_wrapper_name_off_and_empty_resolve_to_none_without_touching_path() {
+        // An empty PATH proves these branches never even reach the probe: they must
+        // resolve `None` regardless of what (or how little) PATH contains.
+        let empty_path = path_var(&[]);
+        assert_eq!(resolve_wrapper_name_from("", &empty_path), Ok(None));
+        assert_eq!(resolve_wrapper_name_from("off", &empty_path), Ok(None));
+        // Matched case- and whitespace-insensitively, like BuildEnv::resolve's own off.
+        assert_eq!(resolve_wrapper_name_from("  OFF  ", &empty_path), Ok(None));
+    }
+
+    #[test]
+    fn resolve_wrapper_name_auto_probes_known_wrappers_and_finds_one_present() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_executable(dir.path(), "ccache");
+        let path = path_var(&[dir.path()]);
+        assert_eq!(
+            resolve_wrapper_name_from("auto", &path),
+            Ok(Some("ccache".to_string())),
+            "auto must find the known wrapper present on PATH"
+        );
+    }
+
+    #[test]
+    fn resolve_wrapper_name_auto_with_nothing_on_path_resolves_to_none() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // A directory that exists but holds no known wrapper binary at all.
+        let path = path_var(&[dir.path()]);
+        assert_eq!(
+            resolve_wrapper_name_from("auto", &path),
+            Ok(None),
+            "auto finding nothing must DEGRADE (inject nothing), never error"
+        );
+    }
+
+    #[test]
+    fn resolve_wrapper_name_named_wrapper_present_on_path_resolves_to_itself() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_executable(dir.path(), "my-custom-wrapper");
+        let path = path_var(&[dir.path()]);
+        assert_eq!(
+            resolve_wrapper_name_from("my-custom-wrapper", &path),
+            Ok(Some("my-custom-wrapper".to_string())),
+            "a NAMED wrapper is not restricted to the known-wrapper list - any binary name \
+             on PATH resolves"
+        );
+    }
+
+    #[test]
+    fn resolve_wrapper_name_named_wrapper_absent_from_path_errors_naming_the_binary() {
+        let empty_path = path_var(&[]);
+        let err = resolve_wrapper_name_from("ghost-wrapper-xyz", &empty_path)
+            .expect_err("a configured-explicit wrapper absent from PATH must error, not degrade");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("ghost-wrapper-xyz"),
+            "the error must name the missing binary: {msg:?}"
+        );
+        assert!(
+            msg.contains("build.wrapper"),
+            "the error must name the config key: {msg:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_wrapper_name_ignores_a_same_named_non_executable_file_on_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("sccache"), "not a binary").expect("write plain file");
+        let path = path_var(&[dir.path()]);
+        // Present as a FILE but not executable: must not count as "found" in either the
+        // auto-probe or the named-wrapper check - a stray non-executable file of the same
+        // name must never masquerade as a real wrapper.
+        assert_eq!(resolve_wrapper_name_from("auto", &path), Ok(None));
+        assert!(resolve_wrapper_name_from("sccache", &path).is_err());
+    }
+
+    // --- resolve_build_layer (spec 65 unit 2, NO SILENT DEGRADE, cache-dir axis) --------
+    //
+    // The SAME Design sentence (specs/65:26-28) that decides a named-but-absent wrapper
+    // BINARY errors loudly also decides an uncreatable cache DIR errors loudly for a named
+    // wrapper, and silently degrades (skips the whole layer) under `auto`. These drive the
+    // real filesystem (never a mock): a regular FILE placed where a directory component
+    // must go makes `create_dir_all` fail deterministically, on any machine, without
+    // needing root or permission tricks that a CI/root user could bypass.
+
+    /// A cache-dir path guaranteed to be uncreatable: `<tmpdir>/blocker` is a plain FILE, so
+    /// `create_dir_all("<tmpdir>/blocker/nested/cache")` fails because a path COMPONENT
+    /// already exists as a non-directory - deterministic on every OS/user, unlike a
+    /// permission-bit trick a root-run test would silently bypass.
+    fn uncreatable_dir(root: &std::path::Path) -> String {
+        let blocker = root.join("blocker");
+        std::fs::write(&blocker, "not a directory").expect("write blocker file");
+        blocker
+            .join("nested")
+            .join("cache")
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    #[test]
+    fn resolve_build_layer_off_and_empty_never_touch_the_cache_dir() {
+        let empty_path = path_var(&[]);
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let blocked = uncreatable_dir(tmp.path());
+        // An uncreatable cache_dir would error/degrade if ever probed; off/empty must
+        // resolve None WITHOUT reaching the cache-dir axis at all.
+        assert_eq!(
+            resolve_build_layer_from("off", &blocked, &empty_path),
+            Ok(None)
+        );
+        assert_eq!(
+            resolve_build_layer_from("", &blocked, &empty_path),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn resolve_build_layer_named_wrapper_with_a_creatable_dir_resolves_and_creates_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_executable(dir.path(), "my-custom-wrapper");
+        let path = path_var(&[dir.path()]);
+        let cache_dir = dir.path().join("cache-goes-here");
+        assert!(!cache_dir.exists(), "precondition: not created yet");
+        assert_eq!(
+            resolve_build_layer_from("my-custom-wrapper", &cache_dir.to_string_lossy(), &path),
+            Ok(Some("my-custom-wrapper".to_string()))
+        );
+        assert!(
+            cache_dir.is_dir(),
+            "a resolved layer must actually create its cache dir"
+        );
+    }
+
+    #[test]
+    fn resolve_build_layer_named_wrapper_with_an_uncreatable_dir_errors_naming_dir_and_key() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_executable(dir.path(), "my-custom-wrapper");
+        let path = path_var(&[dir.path()]);
+        let blocked = uncreatable_dir(dir.path());
+        let err = resolve_build_layer_from("my-custom-wrapper", &blocked, &path)
+            .expect_err("a NAMED wrapper's uncreatable cache dir must error, not degrade");
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&blocked),
+            "the error must name the cache dir: {msg:?}"
+        );
+        assert!(
+            msg.contains("build.cache_dir"),
+            "the error must name the config key: {msg:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_build_layer_auto_with_an_uncreatable_dir_skips_the_whole_layer() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // A KNOWN wrapper IS present on PATH, so the wrapper-binary axis alone would
+        // resolve `Some` - but its cache dir cannot be created, so under `auto` the whole
+        // layer must degrade to `None` (mirroring auto finding no wrapper at all), never
+        // error.
+        write_executable(dir.path(), "ccache");
+        let path = path_var(&[dir.path()]);
+        let blocked = uncreatable_dir(dir.path());
+        assert_eq!(
+            resolve_build_layer_from("auto", &blocked, &path),
+            Ok(None),
+            "auto must silently skip the whole layer when the cache dir is unusable"
+        );
+    }
+
+    #[test]
+    fn resolve_build_layer_auto_with_nothing_on_path_never_touches_the_cache_dir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = path_var(&[dir.path()]);
+        let blocked = uncreatable_dir(dir.path());
+        // Nothing on PATH: the wrapper-binary axis alone already resolves None, so the
+        // (also-broken) cache dir must never even be probed - a caller that inspects
+        // filesystem state after this call sees nothing created and no directory-creation
+        // side effect from a layer that was never going to be active.
+        assert_eq!(resolve_build_layer_from("auto", &blocked, &path), Ok(None));
+    }
+
+    #[test]
+    fn resolve_build_layer_named_wrapper_absent_from_path_still_errors_before_the_cache_dir() {
+        let empty_path = path_var(&[]);
+        // Both axes are broken (absent binary AND an uncreatable dir); the wrapper-binary
+        // axis must win (its error is the one surfaced), matching resolve_wrapper_name's
+        // own established precedence.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let blocked = uncreatable_dir(tmp.path());
+        let err = resolve_build_layer_from("ghost-wrapper-xyz", &blocked, &empty_path)
+            .expect_err("an absent named wrapper must still error");
+        assert!(matches!(err, BuildLayerUnavailable::Wrapper(_)));
+    }
+
+    // --- pre-existing-but-unwritable cache dir (spec 65 unit 2 round 2) ----------------
+    //
+    // The realistic steady state: the shared default_cache_dir every project reuses after
+    // first creation ALREADY EXISTS, so `create_dir_all` alone is a no-op success regardless
+    // of write permission - it is not proof the cache is actually live. These chmod an
+    // ALREADY-CREATED directory read+execute-only (0o555) AFTER creation - unlike
+    // `uncreatable_dir` above (a blocked path component), this is the only way to make a
+    // directory that exists yet cannot be written into.
+
+    /// A cache-dir path that exists but cannot be WRITTEN into: created first, then chmod'd
+    /// read+execute-only (0o555) - `create_dir_all` against it succeeds (no-op, already
+    /// exists), but writing a file inside it fails with `PermissionDenied`.
+    #[cfg(unix)]
+    fn preexisting_unwritable_dir(root: &std::path::Path) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = root.join("preexisting-cache");
+        std::fs::create_dir_all(&dir).expect("pre-create cache dir");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555))
+            .expect("chmod cache dir read+execute-only");
+        dir.to_string_lossy().into_owned()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_build_layer_named_wrapper_with_a_preexisting_unwritable_dir_errors_naming_dir_and_key(
+    ) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_executable(dir.path(), "my-custom-wrapper");
+        let path = path_var(&[dir.path()]);
+        let unwritable = preexisting_unwritable_dir(dir.path());
+        let err = resolve_build_layer_from("my-custom-wrapper", &unwritable, &path).expect_err(
+            "a NAMED wrapper's pre-existing-but-unwritable cache dir must error, not silently \
+             report the layer usable",
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&unwritable),
+            "the error must name the cache dir: {msg:?}"
+        );
+        assert!(
+            msg.contains("build.cache_dir"),
+            "the error must name the config key: {msg:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_build_layer_auto_with_a_preexisting_unwritable_dir_skips_the_whole_layer() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // A KNOWN wrapper IS present on PATH, so the wrapper-binary axis alone would
+        // resolve `Some` - but its cache dir, though it already EXISTS, cannot be written
+        // into, so under `auto` the whole layer must degrade to `None`, never error and
+        // never report the layer live.
+        write_executable(dir.path(), "ccache");
+        let path = path_var(&[dir.path()]);
+        let unwritable = preexisting_unwritable_dir(dir.path());
+        assert_eq!(
+            resolve_build_layer_from("auto", &unwritable, &path),
+            Ok(None),
+            "auto must silently skip the whole layer when the (pre-existing) cache dir is \
+             not writable"
         );
     }
 }
