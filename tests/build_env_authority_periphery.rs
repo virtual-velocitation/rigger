@@ -417,6 +417,7 @@ fn one_build_environment_authority_reaches_a_real_gate_subprocess_and_a_real_age
         wrapper: "sccache".into(),
         cache_dir: "/shared/build-cache".into(),
         jobs: 0,
+        ..Default::default()
     };
     let (gate_evidence, agent_outputs) = run_once(configured, &agent_bin);
     assert_lines_present(
@@ -480,6 +481,7 @@ fn jobs_cap_reaches_a_real_gate_subprocess_and_a_real_agent_subprocess_independe
         wrapper: "".into(),
         cache_dir: "".into(),
         jobs: 6,
+        ..Default::default()
     };
     let (gate_evidence, agent_outputs) = run_once(configured, &agent_bin);
     assert_lines_present(
@@ -546,6 +548,7 @@ fn jobs_cap_coexists_with_a_configured_wrapper_at_both_real_injection_sites() {
         wrapper: "sccache".into(),
         cache_dir: "/shared/build-cache".into(),
         jobs: 8,
+        ..Default::default()
     };
     let (gate_evidence, agent_outputs) = run_once(configured, &agent_bin);
     assert_lines_present(

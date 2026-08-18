@@ -632,6 +632,37 @@ pub struct BuildConfig {
     /// the machine.
     #[serde(default)]
     pub jobs: u32,
+    /// The machine-wide build concurrency budget (spec 65): how many actual compiler
+    /// invocations may run at once, across every rigger process on the machine, before
+    /// the next one blocks for a free slot ([`crate::budget::BuildBudget`] is the
+    /// resolver that reads this). Omitted resolves to 4 (a deliberately non-zero
+    /// default distinct from this field's plain `u32::default()`); an EXPLICIT `0`
+    /// means unlimited (the same `budget: 0` convention `defaults.budget` uses) -
+    /// every build is admitted immediately and no slot directory is ever touched.
+    #[serde(default = "default_max_concurrent")]
+    pub max_concurrent: u32,
+}
+
+/// The `Workflow.build` field's serde default (spec 65): called only when the WHOLE
+/// `build:` key is absent from a committed workflow.yml. Deliberately distinct from the
+/// derived [`BuildConfig::default`] (which a Rust-constructed `Config::default()` still
+/// gets, `max_concurrent: 0`/unlimited, in tests that build a config in memory) - a
+/// missing `build:` section in a REAL workflow.yml must resolve `max_concurrent` to the
+/// documented default of 4 exactly like a `build:` section present but missing the key
+/// specifically ([`default_max_concurrent`]), so both absent-shapes agree.
+fn default_build_config() -> BuildConfig {
+    BuildConfig {
+        max_concurrent: default_max_concurrent(),
+        ..Default::default()
+    }
+}
+
+/// The default `build.max_concurrent` (spec 65) when the key is absent from a committed
+/// workflow.yml: 4 concurrent builds machine-wide. A named `fn` (not a bare literal) so
+/// serde can call it only when the key is truly ABSENT - an explicit `max_concurrent: 0`
+/// still parses as 0 (unlimited), never silently promoted back to this default.
+fn default_max_concurrent() -> u32 {
+    4
 }
 
 /// Workflow is the declarative loop: a DAG of stages, a gate library, and defaults.
@@ -662,8 +693,11 @@ pub struct Workflow {
     /// applied to gate builds and the blocking `driver::cli` agent driver - the two
     /// sites wired so far, not yet every agent-spawn path in the crate (see
     /// [`crate::gate::BuildEnv`]). Absent (the common case) resolves to no wrapper -
-    /// today's ambient-environment behavior, unchanged.
-    #[serde(default)]
+    /// today's ambient-environment behavior, unchanged - but `max_concurrent` still
+    /// resolves to its documented default of 4 (`default_build_config`, not the plain
+    /// derived `BuildConfig::default()`, which a whole-section-absent `build:` would
+    /// otherwise silently fall back to).
+    #[serde(default = "default_build_config")]
     pub build: BuildConfig,
     #[serde(default)]
     pub gates: BTreeMap<String, Gate>,
@@ -2818,6 +2852,30 @@ class: product\n";
         let wf: Workflow = serde_yaml::from_str("build:\n  wrapper: sccache\n  jobs: 8\n").unwrap();
         assert_eq!(wf.build.wrapper, "sccache");
         assert_eq!(wf.build.jobs, 8);
+    }
+
+    /// Spec 65: `build.max_concurrent` is the machine-wide build budget's config plumbing
+    /// ([`crate::budget::BuildBudget`] is the resolver that reads it). Omitted resolves to
+    /// the documented default of 4 - NOT to a bare `u32::default()` of 0, which the `0`
+    /// value is separately reserved to mean (the `budget: 0` convention `defaults.budget`
+    /// already uses): an explicit `max_concurrent: 0` must parse distinctly from an absent
+    /// key.
+    #[test]
+    fn build_config_parses_max_concurrent_defaulting_to_four_when_omitted() {
+        let wf: Workflow = serde_yaml::from_str("name: x\n").unwrap();
+        assert_eq!(
+            wf.build.max_concurrent, 4,
+            "an omitted build: section defaults max_concurrent to 4"
+        );
+
+        let wf: Workflow = serde_yaml::from_str("build:\n  max_concurrent: 9\n").unwrap();
+        assert_eq!(wf.build.max_concurrent, 9);
+
+        let wf: Workflow = serde_yaml::from_str("build:\n  max_concurrent: 0\n").unwrap();
+        assert_eq!(
+            wf.build.max_concurrent, 0,
+            "an EXPLICIT 0 must parse as 0 (unlimited), distinct from the omitted default"
+        );
     }
 
     #[test]

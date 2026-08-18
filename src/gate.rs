@@ -5,6 +5,8 @@
 
 use std::process::Command;
 
+use crate::budget::BuildBudget;
+
 /// Kind classifies a gate's authority lifecycle - how far up the autonomy
 /// ratchet it is allowed to travel.
 ///
@@ -136,7 +138,14 @@ pub enum Action {
 /// gate on the single integrated tree (the deferred phase-boundary gate, and the courier's
 /// inline `rigger step` gates) is handed "" and keeps inheriting the shared cache.
 pub trait Runner: Send + Sync {
-    fn run(&self, g: &Gate, dir: &str, target_dir: &str, build_env: &BuildEnv) -> GateResult;
+    fn run(
+        &self,
+        g: &Gate,
+        dir: &str,
+        target_dir: &str,
+        build_env: &BuildEnv,
+        budget: &BuildBudget,
+    ) -> GateResult;
 }
 
 /// Decide maps a gate's autonomy to the conductor's action.
@@ -294,7 +303,14 @@ fn default_cache_dir() -> String {
 pub struct ExecRunner;
 
 impl Runner for ExecRunner {
-    fn run(&self, g: &Gate, dir: &str, target_dir: &str, build_env: &BuildEnv) -> GateResult {
+    fn run(
+        &self,
+        g: &Gate,
+        dir: &str,
+        target_dir: &str,
+        build_env: &BuildEnv,
+        budget: &BuildBudget,
+    ) -> GateResult {
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg(&g.run);
         if !dir.is_empty() {
@@ -312,6 +328,13 @@ impl Runner for ExecRunner {
         // configured, applying nothing) so this gate build and an agent's own
         // `cargo test` hit the same compilation cache under the same settings.
         build_env.apply(&mut cmd);
+        // The machine-wide build budget's ONE gating point (spec 65): held for exactly
+        // this command's duration, so a concurrent gate build elsewhere on the machine
+        // waits for a free slot rather than stacking another compiler fleet into
+        // memory. Never held across anything but this call - a hung command still
+        // frees its slot the instant it is killed, and no other code path in the crate
+        // acquires a slot, so non-build work is never gated.
+        let _slot = budget.acquire();
         match cmd.output() {
             Ok(out) => {
                 let mut evidence = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -453,12 +476,24 @@ mod tests {
     fn exec_runner_reports_pass_fail() {
         assert!(
             ExecRunner
-                .run(&gate_cmd("true"), "", "", &BuildEnv::default())
+                .run(
+                    &gate_cmd("true"),
+                    "",
+                    "",
+                    &BuildEnv::default(),
+                    &BuildBudget::default()
+                )
                 .pass
         );
         assert!(
             !ExecRunner
-                .run(&gate_cmd("false"), "", "", &BuildEnv::default())
+                .run(
+                    &gate_cmd("false"),
+                    "",
+                    "",
+                    &BuildEnv::default(),
+                    &BuildBudget::default()
+                )
                 .pass
         );
     }
@@ -475,7 +510,13 @@ mod tests {
             }
         }
         cmd.push_str("false");
-        let res = ExecRunner.run(&gate_cmd(&cmd), "", "", &BuildEnv::default());
+        let res = ExecRunner.run(
+            &gate_cmd(&cmd),
+            "",
+            "",
+            &BuildEnv::default(),
+            &BuildBudget::default(),
+        );
         assert!(!res.pass);
 
         let lines: Vec<&str> = res.evidence.lines().collect();
@@ -500,6 +541,7 @@ mod tests {
             "",
             "/tmp/rigger-gap19-probe",
             &BuildEnv::default(),
+            &BuildBudget::default(),
         );
         assert!(
             with.pass,
@@ -511,6 +553,7 @@ mod tests {
             "",
             "",
             &BuildEnv::default(),
+            &BuildBudget::default(),
         );
         assert!(
             without.pass,
@@ -606,6 +649,7 @@ mod tests {
             "",
             "",
             &env,
+            &BuildBudget::default(),
         );
         assert!(
             with.pass,
@@ -617,6 +661,7 @@ mod tests {
             "",
             "",
             &BuildEnv::default(),
+            &BuildBudget::default(),
         );
         assert!(
             without.pass,
@@ -683,7 +728,13 @@ mod tests {
         // The jobs cap reaches a real gate subprocess through the SAME injection site
         // (ExecRunner::run) the wrapper vars already use - no second call needed.
         let env = BuildEnv::resolve("", "", 3);
-        let res = ExecRunner.run(&gate_cmd("test \"$CARGO_BUILD_JOBS\" = 3"), "", "", &env);
+        let res = ExecRunner.run(
+            &gate_cmd("test \"$CARGO_BUILD_JOBS\" = 3"),
+            "",
+            "",
+            &env,
+            &BuildBudget::default(),
+        );
         assert!(
             res.pass,
             "a configured jobs cap must reach the gate: {res:?}"
