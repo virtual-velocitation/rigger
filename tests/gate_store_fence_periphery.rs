@@ -30,8 +30,10 @@
 //! directory before handing it back - the one store-resolution authority every courier
 //! funnels through, so the fix covers `emit`/`result`/`peers`/`reported`/`prompt` uniformly).
 //!
-//! Five tests, driving the REAL compiled `rigger` binary as a REAL OS subprocess through the
-//! REAL `gate::ExecRunner` - never a fake Runner, never an in-process function call:
+//! Seven tests, driving the REAL compiled `rigger` binary as a REAL OS subprocess through the
+//! REAL `gate::ExecRunner` - never a fake Runner (test 7 additionally drives the full
+//! `conductor::run` orchestration around that same real `ExecRunner`, rather than calling it
+//! directly, with only its one agent spawn faked - the gate side stays 100% real throughout):
 //!
 //! 1. `a_real_fenced_courier_actually_succeeds_and_lands_in_an_isolated_persistent_store`:
 //!    a non-empty `target_dir` (the unit-worktree gate signal) fences a real courier
@@ -80,6 +82,26 @@
 //!    `review_fence_sibling` directly rather than re-typing the suffix inline, so this test
 //!    cannot silently drift from the real derivation `gate.rs` and `worktree.rs` share -
 //!    exactly the failure mode the round-1 reject's addendum named.
+//! 6. `a_real_fenced_couriers_scratch_store_is_reclaimed_by_discard_too`: u4 round 3's fix for
+//!    `adv-u4c70r2-discard-path-leaks-review-fence-sibling` - `Worktree::discard` is the
+//!    FOURTH teardown path (distinct from `remove`, which test 5 above already covers), the
+//!    one `review_only_worktree` runs UNCONDITIONALLY on every standalone-review-stage
+//!    attempt before `create()`, modeling a crash-resume. `worktree.rs`'s own unit test
+//!    (`discard_also_reclaims_the_review_worktrees_store_fence_sibling`) only proves the
+//!    reclaim against two FABRICATED dummy files written by hand; it never proves the
+//!    directory a REAL fenced courier actually leaves behind is the one `discard` finds. This
+//!    test wires both real paths together, exactly mirroring test 4/5's own rationale.
+//! 7. `conductors_derived_store_fence_actually_reaches_a_real_exec_runner`: u4 round 3's
+//!    second fix (`d-u4c70r3-store-fence-injected-not-derived`) moved the store-fence
+//!    derivation from `gate::ExecRunner::run` itself into `conductor::run_gates`, which now
+//!    computes it and injects it as a plain value. The conductor.rs unit test
+//!    (`run_gates_derives_and_injects_the_review_worktrees_store_fence`) proves the VALUE is
+//!    derived and injected correctly - but only against a `RecordingRunner` test double, never
+//!    a real spawned process. This test drives the real `conductor::run` -> `run_gates` chain
+//!    with the REAL `gate::ExecRunner` as its `Runner` port (never a mock) through a real
+//!    standalone review stage, and proves the gate-spawned courier's write lands in the fenced
+//!    scratch location rather than the repo's live store - the one observation neither the
+//!    RecordingRunner-based unit test nor a hand-typed-fence unit test can make.
 //!
 //! Both cwd and target_dir are passed to `ExecRunner::run` explicitly for every call in this
 //! file - never left empty to "inherit the ambient cwd" - so the only variable that ever
@@ -90,7 +112,12 @@
 use std::path::Path;
 use std::process::Command;
 
+use serde_json::Value;
+
 use rigger::budget::BuildBudget;
+use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error as ConductorError, SpawnOpts};
+use rigger::config::{self, AgentDef, Config, Stage};
+use rigger::eventstore::sqlite::Store;
 use rigger::gate::{
     Autonomy, BuildEnv, ExecRunner, Gate, Kind, Runner, STORE_FENCE_ENV, STORE_FENCE_SUFFIX,
 };
@@ -526,5 +553,198 @@ fn a_real_fenced_couriers_scratch_store_is_reclaimed_for_a_review_worktree_too()
         live_before, live_after,
         "the repo's live store must stay byte-identical throughout a fenced review-worktree \
          courier that writes, then gets torn down and reclaimed"
+    );
+}
+
+#[test]
+fn a_real_fenced_couriers_scratch_store_is_reclaimed_by_discard_too() {
+    // u4 round 3 fix for adv-u4c70r2-discard-path-leaks-review-fence-sibling: the SAME real,
+    // end-to-end wiring as the two tests above, but exercising `Worktree::discard` - the
+    // FOURTH teardown path (distinct from `remove`, which the test above already covers).
+    // `review_only_worktree` calls `discard()` UNCONDITIONALLY before `create()` on every
+    // standalone-review-stage attempt - the crash-resume path this project builds every
+    // review stage around, not a rare edge case. `worktree.rs`'s own unit test
+    // (`discard_also_reclaims_the_review_worktrees_store_fence_sibling`) only proves
+    // `reclaim_cache_sibling` deletes a FABRICATED fence-sibling dir built from two dummy
+    // files written by hand; it never proves the directory a REAL fenced courier actually
+    // leaves behind (created by `require_store_dir`, not by the test) is the one `discard`
+    // finds, nor that the real production entry point reclaims it - exactly the gap tests 4
+    // and 5 above already close for the other three teardown paths.
+    let repo = init_repo_with_head();
+    let repo_path = repo.path().to_string_lossy().into_owned();
+    std::fs::create_dir_all(Path::new(&repo_path).join(".rigger")).unwrap();
+    let live_events = Path::new(&repo_path).join(".rigger").join("events.db");
+    std::fs::File::create(&live_events).unwrap();
+    let live_before = std::fs::read(&live_events).unwrap();
+
+    let root = rigger::worktree::scratch_root(&repo_path, "", None);
+    let review_dir = format!("{root}/rigger-review-discard-reclaim-probe-0");
+    let branch = "rigger/review/discard-reclaim-probe-0";
+    let review =
+        Worktree::create(&repo_path, &review_dir, branch).expect("create a real review worktree");
+    let dir = review.dir.clone();
+    std::fs::create_dir_all(Path::new(&dir).join(".rigger")).unwrap();
+    std::fs::write(
+        Path::new(&dir).join(".rigger").join("workflow.yml"),
+        "stages: []\n",
+    )
+    .unwrap();
+
+    // Derived via the real public function, matching test 5's own fidelity rationale: a
+    // hand-rolled format string here could keep passing even if `review_fence_sibling`'s
+    // formula ever drifted from what `conductor::run_gates`/`reclaim_cache_sibling` actually
+    // use.
+    let fence_dir =
+        review_fence_sibling(&dir).expect("a review worktree dir must derive a fence sibling");
+
+    let result = ExecRunner.run(
+        &emit_gate("discard-reclaim-emit", "discard-reclaim-probe"),
+        &dir,
+        "",
+        &fence_dir,
+        &BuildEnv::default(),
+        &BuildBudget::default(),
+    );
+    assert!(
+        result.pass,
+        "a real fenced courier for a review worktree (empty target_dir) must succeed: {result:?}"
+    );
+    assert!(
+        Path::new(&fence_dir).join("events.db").exists(),
+        "a real fenced review-worktree courier must leave a real, openable events.db at the \
+         derived fence sibling {fence_dir} - if this fails, the fence itself is broken, not \
+         the reclaim this test targets"
+    );
+
+    // The Rust struct is gone (modeling the crash this teardown path exists for) but the
+    // real git worktree registration + dir survive on disk, exactly as they would after a
+    // real process crash - `discard` operates on the SAME (repo, dir, branch) a resumed
+    // process would recompute, not on the dropped struct.
+    drop(review);
+
+    // `discard`, not `remove`: the crash-resume teardown path `review_only_worktree` runs
+    // unconditionally before every review-stage attempt's `create()`.
+    Worktree::discard(&repo_path, &dir, branch).expect("discard the real review worktree");
+
+    assert!(
+        !Path::new(&fence_dir).exists(),
+        "Worktree::discard must reclaim the real fence sibling a real fenced courier left \
+         behind too, leaked at {fence_dir}"
+    );
+    let live_after = std::fs::read(&live_events).unwrap();
+    assert_eq!(
+        live_before, live_after,
+        "the repo's live store must stay byte-identical throughout a fenced review-worktree \
+         courier that writes, then gets discarded and reclaimed"
+    );
+}
+
+/// An `AgentDriver` that always succeeds with a fixed, canned output - the minimal double a
+/// real `conductor::run` needs for its ONE "lens" spawn to complete a fan-out review stage.
+/// Unlike `ExecRunner` (the gate side, kept 100% real below), the agent side is not this
+/// test's boundary: spec 65's own precedent (`tests/build_env_authority_periphery.rs`'s
+/// `RealDriverSpy`) keeps the driver real too when the AGENT injection site is under test,
+/// but here the injection site under test is `conductor::run_gates` -> `gate::Runner::run`,
+/// so the agent only needs to complete convincingly, not be spawned as a real subprocess.
+struct FixedOutputDriver {
+    output: String,
+}
+
+impl AgentDriver for FixedOutputDriver {
+    fn spawn(
+        &self,
+        _agent: &AgentDef,
+        _prompt: &str,
+        _opts: &SpawnOpts,
+        _emit: &dyn Fn(&str, Value) -> Result<(), ConductorError>,
+    ) -> Result<AgentResult, ConductorError> {
+        Ok(AgentResult {
+            output: self.output.clone(),
+            resolved_model: String::new(),
+        })
+    }
+}
+
+#[test]
+fn conductors_derived_store_fence_actually_reaches_a_real_exec_runner() {
+    // u4 round 3 fix for d-u4c70r3-store-fence-injected-not-derived / the sharpened
+    // arch-u4c70r2-fence-signal-not-injected-into-runner-review-case: `gate::Runner::run`
+    // gained a caller-injected `store_fence` parameter; `conductor::run_gates` is now the ONE
+    // place that derives it (`worktree::review_fence_sibling(dir)`) and threads it down. The
+    // conductor.rs unit test (`run_gates_derives_and_injects_the_review_worktrees_store_fence`)
+    // proves the derivation and injection - but only against a `RecordingRunner` test double
+    // that never touches a real process or a real `STORE_FENCE_ENV`. This test drives the
+    // SAME real `conductor::run` -> `run_gates` chain with the REAL `gate::ExecRunner` as the
+    // `Runner` port (never a mock) through a real standalone review stage, and observes the
+    // only thing a periphery layer can: whether the gate-spawned courier's write actually
+    // lands in the fenced scratch location rather than the repo's live store, exactly
+    // mirroring test 2's live-store-diff proof for the pre-existing unit-worktree case. The
+    // run's own terminal disposition is not this test's concern (mirroring
+    // `tests/unified_traversal_grounding.rs`'s `run_and_capture_review_prompts`) - only the
+    // real subprocess side effect the wiring produced.
+    let repo = init_repo_with_head();
+    let repo_path = repo.path().to_string_lossy().into_owned();
+    std::fs::create_dir_all(Path::new(&repo_path).join(".rigger")).unwrap();
+    let live_events = Path::new(&repo_path).join(".rigger").join("events.db");
+    std::fs::File::create(&live_events).unwrap();
+    let live_before = std::fs::read(&live_events).unwrap();
+
+    let mut cfg = Config::default();
+    cfg.agents.insert(
+        "lens".into(),
+        AgentDef {
+            id: "lens".into(),
+            ..Default::default()
+        },
+    );
+    cfg.workflow.gates.insert(
+        "fence-wiring-gate".into(),
+        config::Gate {
+            run: format!(
+                "{} emit DecisionMade '{{\"id\":\"fence-wiring-probe\",\"summary\":\"gate \
+                 store fence wiring probe\"}}'",
+                rigger_bin().display()
+            ),
+            kind: "core".into(),
+            inputs: Vec::new(),
+        },
+    );
+    cfg.workflow.stages.insert(
+        "review".into(),
+        Stage {
+            name: "review".into(),
+            // An empty `agent` with a non-empty `agents` lens list marks this a fan-out
+            // REVIEW stage (mirroring tests/unified_traversal_grounding.rs), so
+            // `run_fan_out_stage` -> `review_only_worktree` mints a real `rigger-review-*`
+            // worktree - the exact call site whose `target_dir` is always empty and whose
+            // `store_fence` this test exists to prove reaches a real `ExecRunner`.
+            agents: vec!["lens".into()],
+            gates: vec!["fence-wiring-gate".into()],
+            ..Default::default()
+        },
+    );
+
+    let store = Store::open(":memory:").unwrap();
+    let driver = FixedOutputDriver {
+        output: "reviewed the diff".into(),
+    };
+    let deps = Deps {
+        store: &store,
+        driver: &driver,
+        gates: &ExecRunner,
+        repo: repo_path,
+        grounder: None,
+        graph: None,
+        criteria: Vec::new(),
+    };
+    let _ = run(&cfg, &deps);
+
+    let live_after = std::fs::read(&live_events).unwrap();
+    assert_eq!(
+        live_before, live_after,
+        "a real conductor::run driving the REAL ExecRunner through a standalone review stage \
+         must never let the gate-spawned courier reach the repo's live store - if this fails, \
+         conductor::run_gates's caller-injected store_fence is not actually reaching the real \
+         Runner it wires up in production"
     );
 }
