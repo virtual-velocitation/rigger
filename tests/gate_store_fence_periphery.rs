@@ -421,3 +421,75 @@ fn a_real_fenced_couriers_scratch_store_is_reclaimed_when_the_worktree_is_remove
          writes, then gets torn down and reclaimed"
     );
 }
+
+#[test]
+fn a_real_fenced_couriers_scratch_store_is_reclaimed_for_a_review_worktree_too() {
+    // Spec 70 criterion 3, widened (u4 round 2 fix for
+    // adv-u3c70-store-fence-half-wired-review-worktree-call-site-unfenced /
+    // adv-u3c70-reclaim-shares-the-same-exclusion-fix-fence-alone-leaks): the SAME real,
+    // end-to-end wiring as the unit-worktree test above
+    // (`a_real_fenced_couriers_scratch_store_is_reclaimed_when_the_worktree_is_removed`),
+    // but for the call site the u4 round-1 reject actually found unfenced -
+    // `run_fan_out_stage`'s standalone review worktree (conductor.rs:4922's
+    // `run_gates(st, dir, ..., GateSelection::Exhaustive)`, `dir` a `rigger-review-*`
+    // worktree, `target_dir` ALWAYS empty since a review worktree owns no per-unit build
+    // cache to key one off of). Proves the real courier succeeds fenced with an EMPTY
+    // target_dir (the new, dir-driven signal `worktree::review_fence_sibling` adds), and
+    // that the real `Worktree::remove` teardown path - the SAME one `run_fan_out_stage`
+    // calls on every terminal exit - reclaims it.
+    let repo = init_repo_with_head();
+    let repo_path = repo.path().to_string_lossy().into_owned();
+    std::fs::create_dir_all(Path::new(&repo_path).join(".rigger")).unwrap();
+    let live_events = Path::new(&repo_path).join(".rigger").join("events.db");
+    std::fs::File::create(&live_events).unwrap();
+    let live_before = std::fs::read(&live_events).unwrap();
+
+    // The real production derivation (conductor's `review_worktree_dir`, mirrored here): a
+    // standalone review worktree lives under
+    // `<repo>/.rigger/tmp/rigger-review-<stage>-<attempt>` - no per-unit cache sibling,
+    // unlike a unit worktree.
+    let root = rigger::worktree::scratch_root(&repo_path, "", None);
+    let review_dir = format!("{root}/rigger-review-reclaim-probe-0");
+    let review = Worktree::create(&repo_path, &review_dir, "rigger/review/reclaim-probe-0")
+        .expect("create a real review worktree");
+    std::fs::create_dir_all(Path::new(&review.dir).join(".rigger")).unwrap();
+    std::fs::write(
+        Path::new(&review.dir).join(".rigger").join("workflow.yml"),
+        "stages: []\n",
+    )
+    .unwrap();
+
+    let fence_dir = format!("{}{STORE_FENCE_SUFFIX}", review.dir);
+
+    let result = ExecRunner.run(
+        &emit_gate("review-reclaim-emit", "review-reclaim-probe"),
+        &review.dir,
+        "",
+        &BuildEnv::default(),
+        &BuildBudget::default(),
+    );
+    assert!(
+        result.pass,
+        "a real fenced courier for a review worktree (empty target_dir) must succeed: {result:?}"
+    );
+    assert!(
+        Path::new(&fence_dir).join("events.db").exists(),
+        "a real fenced review-worktree courier must leave a real, openable events.db at the \
+         derived fence sibling {fence_dir} - if this fails, the fence itself is broken, not \
+         the reclaim this test targets"
+    );
+
+    review.remove().expect("remove the real review worktree");
+
+    assert!(
+        !Path::new(&fence_dir).exists(),
+        "removing the review worktree via the real Worktree::remove path must reclaim the \
+         real fence sibling too, leaked at {fence_dir}"
+    );
+    let live_after = std::fs::read(&live_events).unwrap();
+    assert_eq!(
+        live_before, live_after,
+        "the repo's live store must stay byte-identical throughout a fenced review-worktree \
+         courier that writes, then gets torn down and reclaimed"
+    );
+}

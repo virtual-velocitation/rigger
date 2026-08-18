@@ -706,6 +706,27 @@ pub fn unit_cache_sibling(worktree_dir: &str) -> Option<String> {
     Some(format!("{parent}/{UNIT_CACHE_PREFIX}{slug}"))
 }
 
+/// The gate store fence's scratch sibling for a STANDALONE REVIEW worktree at
+/// `worktree_dir` (spec 70 criterion 3, widened - u4 round 2 fix for
+/// `adv-u3c70-store-fence-half-wired-review-worktree-call-site-unfenced`): a review
+/// worktree (`rigger-review-<stage>-<attempt>`) owns no per-unit build cache to key off
+/// (unlike [`unit_cache_sibling`]'s unit-worktree case, which `gate::ExecRunner::run`
+/// already fences via its non-empty `target_dir`), yet `run_fan_out_stage`'s EXHAUSTIVE
+/// gate pass (conductor.rs) still runs real store-opening couriers inside one. This is a
+/// direct sibling of the worktree itself - `{worktree_dir}{gate::STORE_FENCE_SUFFIX}` -
+/// the same naming shape as the unit-worktree fence sibling, just not routed through a
+/// build cache that does not exist for this kind. Returns None for anything that is not a
+/// review worktree (a unit worktree - already fenced above - or the empty worktree-less
+/// path), which owns no fence sibling here.
+pub fn review_fence_sibling(worktree_dir: &str) -> Option<String> {
+    let path = std::path::Path::new(worktree_dir);
+    let name = path.file_name()?.to_str()?;
+    if !name.starts_with("rigger-review-") {
+        return None;
+    }
+    Some(format!("{worktree_dir}{}", crate::gate::STORE_FENCE_SUFFIX))
+}
+
 /// Reclaim the per-unit build cache that is a SIBLING of the unit worktree at `worktree_dir`
 /// (Gap 19) - the ONE mutation authority for cache reclamation, called from every worktree
 /// removal path: [`Worktree::remove`] (the dominant graceful teardown), [`sweep_terminal`]
@@ -722,10 +743,22 @@ pub fn unit_cache_sibling(worktree_dir: &str) -> Option<String> {
 /// (plus WAL/SHM) orphaned forever on every such gate run. Reclaiming it HERE, in the one
 /// authority already reclaiming its `cargo-target-<slug>` sibling, means every current and
 /// future call site inherits the fix uniformly rather than needing its own copy.
+///
+/// Widened (spec 70, u4 round 2 fix for
+/// `adv-u3c70-reclaim-shares-the-same-exclusion-fix-fence-alone-leaks`): a standalone
+/// review worktree owns no `cargo-target-<slug>` cache above, but now that
+/// `gate::ExecRunner::run` fences its store resolution too (via [`review_fence_sibling`]),
+/// it owns THAT fence sibling and must be reclaimed here in lockstep - `Worktree::remove`
+/// runs for both worktree kinds (its own doc comment), so fixing only the fence half
+/// without widening this reclaim half in the SAME change would leave a newly-created,
+/// previously-nonexistent leak on every review-worktree gate run.
 fn reclaim_cache_sibling(worktree_dir: &str) {
     if let Some(cache) = unit_cache_sibling(worktree_dir) {
         let _ = std::fs::remove_dir_all(format!("{cache}{}", crate::gate::STORE_FENCE_SUFFIX));
         let _ = std::fs::remove_dir_all(cache);
+    }
+    if let Some(fence) = review_fence_sibling(worktree_dir) {
+        let _ = std::fs::remove_dir_all(fence);
     }
 }
 
@@ -1662,6 +1695,54 @@ mod tests {
         assert!(
             !std::path::Path::new(&fence_dir).exists(),
             "removing the unit worktree must reclaim its store-fence sibling too, leaked at {fence_dir}"
+        );
+    }
+
+    #[test]
+    fn review_fence_sibling_maps_a_review_worktree_to_its_fence_sibling_and_ignores_the_rest() {
+        // Spec 70 criterion 3, widened (u4 round 2 fix for
+        // adv-u3c70-store-fence-half-wired-review-worktree-call-site-unfenced): the
+        // dir-driven derivation authority for a review worktree's fence sibling, parallel
+        // to `unit_cache_sibling`'s cache derivation for a unit worktree. A `rigger-wt-*`
+        // unit worktree - already fenced via its non-empty target_dir above - and the empty
+        // worktree-less path own no fence sibling HERE (they map to None), so nothing
+        // double-fences or tries to reclaim a sibling this function never derived.
+        assert_eq!(
+            review_fence_sibling("/scratch/rigger-review-panel-0"),
+            Some("/scratch/rigger-review-panel-0-store-fence".to_string())
+        );
+        assert_eq!(review_fence_sibling("/scratch/rigger-wt-unit-7"), None);
+        assert_eq!(review_fence_sibling(""), None);
+    }
+
+    #[test]
+    fn worktree_remove_also_reclaims_a_review_worktrees_store_fence_sibling() {
+        // Spec 70 criterion 3, widened (u4 round 2 fix for
+        // adv-u3c70-reclaim-shares-the-same-exclusion-fix-fence-alone-leaks): fixing the
+        // fence half alone (gate.rs, above) without widening this reclaim half in
+        // LOCKSTEP would create a new, previously-nonexistent resource leak - every
+        // standalone review stage's EXHAUSTIVE gate pass now leaves a live sqlite
+        // events.db (plus WAL/SHM) sibling of the review worktree, and nothing would ever
+        // remove it. `Worktree::remove` is the SAME dominant graceful path that already
+        // reclaims a unit worktree's fence sibling (the test above) - it runs for a
+        // review worktree too (its own doc comment), so it must reclaim this kind's fence
+        // sibling too, populated here exactly as a real fenced courier would leave it.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let root = scratch_root(&repo_path, "", None);
+
+        let review_dir = format!("{root}/rigger-review-fanout-stage-0");
+        let review = Worktree::create(&repo_path, &review_dir, "rigger/review/fanout-0").unwrap();
+        let fence_dir = format!("{review_dir}{}", crate::gate::STORE_FENCE_SUFFIX);
+        std::fs::create_dir_all(&fence_dir).unwrap();
+        std::fs::write(std::path::Path::new(&fence_dir).join("events.db"), "x").unwrap();
+        std::fs::write(std::path::Path::new(&fence_dir).join("events.db-wal"), "x").unwrap();
+
+        review.remove().unwrap();
+
+        assert!(
+            !std::path::Path::new(&fence_dir).exists(),
+            "removing a review worktree must reclaim its store-fence sibling too, leaked at {fence_dir}"
         );
     }
 

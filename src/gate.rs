@@ -602,6 +602,17 @@ impl Runner for ExecRunner {
             // which cargo owns and may wipe) so main.rs's store-resolution authority
             // resolves there instead of walking up.
             cmd.env(STORE_FENCE_ENV, format!("{target_dir}{STORE_FENCE_SUFFIX}"));
+        } else if let Some(fence) = crate::worktree::review_fence_sibling(dir) {
+            // Widened (spec 70, u4 round 2 fix for
+            // adv-u3c70-store-fence-half-wired-review-worktree-call-site-unfenced): a
+            // standalone review stage's EXHAUSTIVE gate pass (`run_fan_out_stage` ->
+            // `run_gates`) runs with `dir` set to the throwaway review worktree and an
+            // EMPTY target_dir (a review worktree owns no per-unit build cache, so the
+            // branch above never fires), yet it is a real, unconditional gate run inside a
+            // scratch-root worktree whose spawned process must be fenced the same way.
+            // `review_fence_sibling` derives the sibling from `dir` directly rather than
+            // target_dir, since this kind has no build cache to key off.
+            cmd.env(STORE_FENCE_ENV, fence);
         }
         // The ONE build-environment authority's first injection site (spec 65): the
         // resolved wrapper/cache-dir/incremental-off vars (empty when no wrapper is
@@ -949,6 +960,56 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         assert!(
             without.pass,
             "an empty target_dir (the integrated-tree/deferred gate) must not force a store fence: {without:?}"
+        );
+    }
+
+    #[test]
+    fn exec_runner_fences_a_standalone_review_worktrees_store_resolution_too() {
+        // Spec 70 criterion 3, widened (u4 round 2 fix for
+        // adv-u3c70-store-fence-half-wired-review-worktree-call-site-unfenced): a standalone
+        // review stage's EXHAUSTIVE gate pass (conductor.rs's `run_fan_out_stage` ->
+        // `run_gates`, conductor.rs:4922) runs gates with `dir` set to the throwaway
+        // `rigger-review-<stage>-<attempt>` worktree and an EMPTY target_dir - a review
+        // worktree owns no per-unit build cache (`unit_cache_sibling` correctly returns None
+        // for it, so Gap 19's CARGO_TARGET_DIR override never applies there), so the
+        // target_dir-driven branch above never fires for this call site even though it is a
+        // real, unconditional gate run inside a scratch-root worktree. This is a SECOND,
+        // dir-driven signal alongside the target_dir one: any `rigger-review-*` dir is fenced
+        // too, to its own sibling scratch location, even with an empty target_dir. `dir` must
+        // actually exist on disk here (unlike the target_dir-only tests above) - ExecRunner
+        // chdirs the spawned `sh` into it - so this test roots a real review-worktree-shaped
+        // dir under a tempdir rather than a literal `/tmp/...` path.
+        let parent = tempfile::tempdir().expect("tempdir");
+        let review_dir = parent.path().join("rigger-review-fanout-probe-0");
+        std::fs::create_dir_all(&review_dir).expect("create review dir");
+        let review_dir = review_dir.to_str().unwrap();
+
+        let with = ExecRunner.run(
+            &gate_cmd(&format!(
+                "test \"${STORE_FENCE_ENV}\" = {review_dir}-store-fence"
+            )),
+            review_dir,
+            "",
+            &BuildEnv::default(),
+            &BuildBudget::default(),
+        );
+        assert!(
+            with.pass,
+            "a review-worktree dir must fence the gate's store resolution via \
+             {STORE_FENCE_ENV} even with an empty target_dir: {with:?}"
+        );
+
+        let no_cargo_override = ExecRunner.run(
+            &gate_cmd(&format!("test \"$CARGO_TARGET_DIR\" != {review_dir}")),
+            review_dir,
+            "",
+            &BuildEnv::default(),
+            &BuildBudget::default(),
+        );
+        assert!(
+            no_cargo_override.pass,
+            "a review worktree still has no build cache to key off - the new dir-driven \
+             fence branch must never force a CARGO_TARGET_DIR override too: {no_cargo_override:?}"
         );
     }
 
