@@ -912,6 +912,18 @@ impl Config {
     /// Validate checks that every reference resolves and the stage graph is acyclic.
     pub fn validate(&self) -> Result<(), Error> {
         let wf = &self.workflow;
+        // Build-environment resolution (spec 65 unit 2, NO SILENT DEGRADE): a CONFIGURED
+        // (non-auto, non-off) `build.wrapper` absent from PATH, OR whose cache dir cannot
+        // be created, is a run-start config error naming what failed and the relevant key -
+        // the operator asked for it explicitly, so proceeding would fake a cache that never
+        // actually runs. `auto` (either axis comes up empty -> injects nothing) and
+        // `off`/empty never fail here - a discovered-implicit degrade, not a
+        // configured-explicit one. This is the ONE resolution `crate::conductor`'s
+        // build-environment authority and `rigger validate`'s reporting surface both read
+        // too - never a second, independently re-derived check.
+        if let Err(e) = crate::gate::resolve_build_layer(&wf.build.wrapper, &wf.build.cache_dir) {
+            return Err(err(e.to_string()));
+        }
         // The default review panel (applied to every unit) must reference real agents,
         // including its light-tier roster, and its depth policy must be structurally
         // sound (a configured light tier names an adjudicator).
@@ -2875,6 +2887,165 @@ class: product\n";
         assert_eq!(
             wf.build.max_concurrent, 0,
             "an EXPLICIT 0 must parse as 0 (unlimited), distinct from the omitted default"
+        );
+    }
+
+    /// Spec 65 unit 2 (NO SILENT DEGRADE): a CONFIGURED (non-auto, non-off) `build.wrapper`
+    /// absent from PATH must fail `Config::validate` - a run-start loud error naming both
+    /// the missing binary and the `build.wrapper` config key - rather than silently letting
+    /// the run proceed with a cache that will never actually engage. Uses a definitely-fake
+    /// binary name against the REAL ambient PATH (a read, never a mutation, so this needs no
+    /// env-race guard - see `gate::resolve_wrapper_name_from`'s own tests for the
+    /// synthetic-PATH coverage of every branch).
+    #[test]
+    fn validate_rejects_a_named_build_wrapper_absent_from_path() {
+        let mut cfg = Config::default();
+        cfg.workflow.build.wrapper = "definitely-not-a-real-wrapper-rigger-u2-test".into();
+        let err = cfg
+            .validate()
+            .expect_err("a named-but-absent build.wrapper must fail validation");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("definitely-not-a-real-wrapper-rigger-u2-test"),
+            "the error must name the missing binary: {msg:?}"
+        );
+        assert!(
+            msg.contains("build.wrapper"),
+            "the error must name the config key: {msg:?}"
+        );
+    }
+
+    /// `auto` and `off` never fail validation regardless of PATH content: `auto` finding
+    /// nothing is a discovered-implicit DEGRADE (inject nothing), never a configured-explicit
+    /// failure, and `off`/empty never even probes PATH. Only a NAMED wrapper's absence
+    /// errors (`validate_rejects_a_named_build_wrapper_absent_from_path` above).
+    #[test]
+    fn validate_accepts_auto_and_off_wrapper_regardless_of_path() {
+        for wrapper in ["auto", "off", "", "  "] {
+            let mut cfg = Config::default();
+            cfg.workflow.build.wrapper = wrapper.into();
+            assert!(
+                cfg.validate().is_ok(),
+                "build.wrapper: {wrapper:?} must never fail validation"
+            );
+        }
+    }
+
+    /// Spec 65 unit 2 (NO SILENT DEGRADE) - the SAME Design sentence (specs/65:26-28) that
+    /// decides a named-but-absent wrapper BINARY must fail `Config::validate` also decides a
+    /// named wrapper's UNCREATABLE cache dir must fail it too, naming both the dir and the
+    /// `build.cache_dir` config key - mirroring `validate_rejects_a_named_build_wrapper_
+    /// absent_from_path` above for the cache-dir axis. `wrapper: "true"` names a binary
+    /// virtually guaranteed present on any real Unix PATH (this crate already assumes a Unix
+    /// PATH elsewhere - `gate::is_executable_file` is `#[cfg(unix)]`-gated), so this
+    /// deterministically reaches the cache-dir axis rather than failing on the binary axis
+    /// first. The uncreatable dir is a real FILE blocking a path component - deterministic on
+    /// every OS/user, unlike a permission-bit trick a root-run test could bypass.
+    #[test]
+    fn validate_rejects_a_named_wrapper_with_an_uncreatable_cache_dir() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let blocker = tmp.path().join("blocker");
+        std::fs::write(&blocker, "not a directory").expect("write blocker file");
+        let cache_dir = blocker.join("nested").join("cache");
+
+        let mut cfg = Config::default();
+        cfg.workflow.build.wrapper = "true".into();
+        cfg.workflow.build.cache_dir = cache_dir.to_string_lossy().into_owned();
+        let err = cfg
+            .validate()
+            .expect_err("a named wrapper's uncreatable cache dir must fail validation");
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&cache_dir.to_string_lossy().into_owned()),
+            "the error must name the cache dir: {msg:?}"
+        );
+        assert!(
+            msg.contains("build.cache_dir"),
+            "the error must name the config key: {msg:?}"
+        );
+    }
+
+    /// The auto-discovery counterpart: `build.wrapper: auto` with an uncreatable cache dir
+    /// must never fail validation (a discovered-implicit degrade skips the whole layer,
+    /// regardless of whether `auto`'s PATH probe would otherwise have found a known
+    /// wrapper), mirroring `validate_accepts_auto_and_off_wrapper_regardless_of_path` above
+    /// for the cache-dir axis - only the NAMED-wrapper case
+    /// (`validate_rejects_a_named_wrapper_with_an_uncreatable_cache_dir` above) is a
+    /// configured-explicit failure.
+    #[test]
+    fn validate_accepts_auto_wrapper_with_an_uncreatable_cache_dir() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let blocker = tmp.path().join("blocker");
+        std::fs::write(&blocker, "not a directory").expect("write blocker file");
+        let cache_dir = blocker.join("nested").join("cache");
+
+        let mut cfg = Config::default();
+        cfg.workflow.build.wrapper = "auto".into();
+        cfg.workflow.build.cache_dir = cache_dir.to_string_lossy().into_owned();
+        assert!(
+            cfg.validate().is_ok(),
+            "auto must never fail validation regardless of cache-dir usability"
+        );
+    }
+
+    /// Spec 65 unit 2 round 2 (cache-dir checks CREATABLE, not just WRITABLE): the
+    /// realistic steady state is a cache dir that ALREADY EXISTS (the shared
+    /// `default_cache_dir` every project reuses after the first one creates it) but is not
+    /// WRITABLE - `create_dir_all` alone is a no-op success against it, so only an actual
+    /// write probe catches this. Mirrors `validate_rejects_a_named_wrapper_with_an_
+    /// uncreatable_cache_dir` above, but chmod's an ALREADY-CREATED dir read+execute-only
+    /// (0o555) instead of blocking a path component - the only way to make a dir that
+    /// EXISTS yet cannot be written into. Unix-only: the mode bits are a POSIX concept.
+    #[cfg(unix)]
+    #[test]
+    fn validate_rejects_a_named_wrapper_with_a_preexisting_unwritable_cache_dir() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cache_dir = tmp.path().join("preexisting-cache");
+        std::fs::create_dir_all(&cache_dir).expect("pre-create cache dir");
+        std::fs::set_permissions(&cache_dir, std::fs::Permissions::from_mode(0o555))
+            .expect("chmod cache dir read+execute-only");
+
+        let mut cfg = Config::default();
+        cfg.workflow.build.wrapper = "true".into();
+        cfg.workflow.build.cache_dir = cache_dir.to_string_lossy().into_owned();
+        let err = cfg.validate().expect_err(
+            "a named wrapper's pre-existing-but-unwritable cache dir must fail validation, \
+             not silently report the layer usable",
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&cache_dir.to_string_lossy().into_owned()),
+            "the error must name the cache dir: {msg:?}"
+        );
+        assert!(
+            msg.contains("build.cache_dir"),
+            "the error must name the config key: {msg:?}"
+        );
+    }
+
+    /// The auto-discovery counterpart of the test directly above: `build.wrapper: auto`
+    /// against a pre-existing-but-unwritable cache dir must degrade silently, never fail
+    /// validation - mirroring `validate_accepts_auto_wrapper_with_an_uncreatable_cache_dir`
+    /// for the writability (rather than creatability) failure mode.
+    #[cfg(unix)]
+    #[test]
+    fn validate_accepts_auto_wrapper_with_a_preexisting_unwritable_cache_dir() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cache_dir = tmp.path().join("preexisting-cache");
+        std::fs::create_dir_all(&cache_dir).expect("pre-create cache dir");
+        std::fs::set_permissions(&cache_dir, std::fs::Permissions::from_mode(0o555))
+            .expect("chmod cache dir read+execute-only");
+
+        let mut cfg = Config::default();
+        cfg.workflow.build.wrapper = "auto".into();
+        cfg.workflow.build.cache_dir = cache_dir.to_string_lossy().into_owned();
+        assert!(
+            cfg.validate().is_ok(),
+            "auto must never fail validation regardless of cache-dir writability"
         );
     }
 

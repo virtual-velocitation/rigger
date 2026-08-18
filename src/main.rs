@@ -29,7 +29,7 @@ use rigger::eventstore::{
     sqlite::{PrunedDerived, Store},
     Direction, Event, EventStore, ExpectedRevision, Filter,
 };
-use rigger::gate::{BuildEnv, ExecRunner, Gate, GateResult, Runner};
+use rigger::gate::{resolve_build_layer, BuildEnv, ExecRunner, Gate, GateResult, Runner};
 use rigger::grounder::Grounder;
 use rigger::ledger::{self, RunState};
 use rigger::metrics::{self, Metrics};
@@ -6732,6 +6732,20 @@ fn cmd_validate(args: &[String]) -> Res {
         cfg.workflow.stages.len(),
         cfg.workflow.gates.len()
     );
+    // Build-environment wrapper report (spec 65 unit 2, NO SILENT DEGRADE): a
+    // named-but-absent `build.wrapper`, or a named wrapper whose cache dir cannot be
+    // created, already failed above (`config::load`'s `Config::validate` rejects both at
+    // run start, before `cfg` could exist), so by this point resolution can only succeed -
+    // this SURFACES what it resolved to, so an `auto` probe that quietly found nothing (or
+    // found a wrapper whose cache dir turned out unusable) is SEEN as "none" here rather
+    // than silently doing nothing invisibly. Reads through the SAME `resolve_build_layer`
+    // authority `Config::validate` and the conductor's build-environment authority use -
+    // never a second, independently re-derived report.
+    match resolve_build_layer(&cfg.workflow.build.wrapper, &cfg.workflow.build.cache_dir) {
+        Ok(Some(w)) => println!("build wrapper: {w}"),
+        Ok(None) => println!("build wrapper: none"),
+        Err(e) => return Err(e.to_string().into()),
+    }
     // Non-fatal advisories (spec 05:55): surface config/install drift so it is seen,
     // not discovered by accident. Each is a stderr warning that never changes the exit
     // status - `rigger validate` still succeeds so long as the config itself is valid.
