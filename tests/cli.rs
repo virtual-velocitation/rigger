@@ -11107,6 +11107,90 @@ fn validate_warns_when_a_tier_resolved_model_repointed_between_runs() {
     );
 }
 
+/// Seed `<root>/.rigger/events.db` with a stream whose position order and revision order
+/// DISAGREE (spec 71's signature `rigger validate` must detect) by inserting rows directly -
+/// bypassing the store's own revision assignment, the only way to reach this shape (a
+/// correctly functioning append always assigns `MAX(revision) + 1`, so it can never produce
+/// this on its own). Three rows land in stream `run`, in this insertion (position) order:
+/// revision 5, then revision 1, then revision 2 - each value is DISTINCT so
+/// `UNIQUE(stream, revision)` is satisfied (this is the actual on-disk shape a write that
+/// lands in a compaction-opened revision hole leaves: the row it targets is a hole, never a
+/// duplicate), but positions 2 and 3 both carry a revision at or below the stream's already-
+/// recorded maximum (5) - the two out-of-order rows the test asserts on.
+fn seed_order_signature(root: &Path, project: &str) {
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(&rigger).unwrap();
+    std::fs::write(rigger.join("project.id"), format!("{project}\n")).unwrap();
+    let db = rigger.join("events.db");
+    // Open through the real store first, so the schema is laid down exactly as the binary
+    // itself would lay it down.
+    rigger::eventstore::sqlite::Store::open(db.to_str().unwrap()).unwrap();
+    let stream = format!(
+        "{}run",
+        rigger::eventstore::namespace::Namespaced::prefix_for(project)
+    );
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    for revision in [5i64, 1, 2] {
+        conn.execute(
+            "INSERT INTO events (stream, type, id, data, meta, valid_from, recorded_at, revision)
+             VALUES (?1, 'Seed', ?2, X'7b7d', '{}', 0, 0, ?3)",
+            rusqlite::params![stream, format!("seed-{revision}"), revision],
+        )
+        .unwrap();
+    }
+}
+
+/// Spec 71 (`rigger validate` clause, VALIDATE DETECTS THE SIGNATURE): a stream whose
+/// position order and revision order disagree draws an advisory naming the stream, the
+/// out-of-order row count, and the repair doc, while the exit status stays unchanged
+/// (report-only - validate never repairs anything). A clean store draws nothing.
+#[test]
+fn validate_detects_a_stream_whose_position_order_and_revision_order_disagree() {
+    // The clean control first: an ordinary project draws no order-signature advisory.
+    let clean = temp_project();
+    let croot = clean.path();
+    let (_o, err, ok) = run_rigger(croot, &["init"]);
+    assert!(
+        ok,
+        "rigger init must scaffold a valid config; stderr:\n{err}"
+    );
+    let (out, err, ok) = run_rigger(croot, &["validate"]);
+    assert!(ok, "validate must succeed on a clean store; stderr:\n{err}");
+    assert!(
+        out.contains("config valid"),
+        "validate still prints its config summary; stdout:\n{out}"
+    );
+    assert!(
+        !err.to_lowercase()
+            .contains("position order and revision order"),
+        "a clean store must NOT draw the order-signature advisory; stderr:\n{err}"
+    );
+
+    // The seeded disagreement.
+    let dirty = temp_project();
+    let droot = dirty.path();
+    let (_o, err, ok) = run_rigger(droot, &["init"]);
+    assert!(
+        ok,
+        "rigger init must scaffold a valid config; stderr:\n{err}"
+    );
+    seed_order_signature(droot, "order-signature-project");
+    let (_out, err, ok) = run_rigger(droot, &["validate"]);
+    assert!(
+        ok,
+        "validate WARNS but still exits 0 on an order signature (report-only); stderr:\n{err}"
+    );
+    assert!(
+        err.contains("run")
+            && err.contains('2')
+            && err
+                .to_lowercase()
+                .contains("position order and revision order")
+            && err.contains("architecture.md"),
+        "the advisory names the stream, the row count, and the repair doc; stderr:\n{err}"
+    );
+}
+
 /// Spec 13b, unit 1 (`rigger canary --if-model-changed` clause), the no-change control: an
 /// unchanged resolved model runs NO canary. The gate precedes the corpus load, so the missing
 /// `--corpus` is never even consulted - the command exits 0 having deliberately done nothing.
