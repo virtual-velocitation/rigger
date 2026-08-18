@@ -9,6 +9,7 @@
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// The product binary that belongs to the target dir a test executable is running out of, or
 /// `None` when `test_exe` is not a cargo-run integration suite.
@@ -70,4 +71,33 @@ pub fn rigger_bin() -> PathBuf {
             )
         }
     }
+}
+
+/// A `Command` for the compiled `rigger` binary this suite drives, defensively UNFENCED
+/// (spec 70 criterion 3's gate store fence, ground (a) of the u3 reject:
+/// adv-u3-fence-breaks-existing-store-precedence-tests-measured) - the ONE shared authority
+/// every periphery/integration suite that spawns a store-opening courier
+/// (`emit`/`result`/`peers`/`reported`/`prompt`/`progress`/`status`/`reset`) should build
+/// its `Command` through, rather than `Command::new(rigger_bin())` directly.
+///
+/// WHY THIS EXISTS. `gate::ExecRunner::run` pins `RIGGER_STORE_FENCE_DIR` on the ENTIRE
+/// subprocess tree of a unit-worktree gate (every unit's `test` gate is literally
+/// `cargo test`, per `.rigger/workflow.yml`) so an INCIDENTAL courier that gate's own test
+/// suite spawns can never walk up into the repo's live run stream. That env var is
+/// inherited by every descendant process by default, including THIS test binary whenever
+/// it itself runs as a fenced gate - so a periphery suite whose entire purpose is driving
+/// the product binary through its OWN store-resolution/precedence logic against a fixture
+/// of its own choosing (never the gate runner's intended protection target) would silently
+/// observe the fenced scratch location instead, corrupting its own assertions. Clearing the
+/// var here, in the one place every such suite already gets the binary's path from, means
+/// every current and future courier-spawning call site is protected uniformly - no test
+/// file has to remember this individually, matching spec 70's own stated principle that
+/// "the fence is the gate runner's job, not each test's".
+///
+/// This has no effect on a NON-courier command (`graph`, `docs`, `init`, ...): those never
+/// read `RIGGER_STORE_FENCE_DIR` at all, so clearing it ahead of them is a harmless no-op.
+pub fn rigger_courier() -> Command {
+    let mut cmd = Command::new(rigger_bin());
+    cmd.env_remove(rigger::gate::STORE_FENCE_ENV);
+    cmd
 }

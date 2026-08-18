@@ -30,7 +30,7 @@
 //! directory before handing it back - the one store-resolution authority every courier
 //! funnels through, so the fix covers `emit`/`result`/`peers`/`reported`/`prompt` uniformly).
 //!
-//! Two tests, driving the REAL compiled `rigger` binary as a REAL OS subprocess through the
+//! Three tests, driving the REAL compiled `rigger` binary as a REAL OS subprocess through the
 //! REAL `gate::ExecRunner` - never a fake Runner, never an in-process function call:
 //!
 //! 1. `a_real_fenced_courier_actually_succeeds_and_lands_in_an_isolated_persistent_store`:
@@ -47,10 +47,19 @@
 //!    suite is itself liable to run AS a `cargo test` gate inside a unit worktree - which
 //!    would carry a real, inherited `STORE_FENCE_ENV` of its own onto every subprocess this
 //!    binary spawns, silently fencing a test whose entire point is proving the unfenced path.
+//! 3. `a_periphery_couriers_shared_command_ignores_an_inherited_ambient_fence`: the FAIL-SAFE
+//!    direction's other edge (the u3 reject's ground (a),
+//!    `adv-u3-fence-breaks-existing-store-precedence-tests-measured`) - a periphery test
+//!    whose ENTIRE purpose is driving the product binary through its own store-resolution
+//!    logic against a fixture of its own choosing must never observe the ambient fence this
+//!    very suite's own process may itself be running under. Proves `tests/common::
+//!    rigger_courier` (the fix) resolves exactly as the unfenced baseline would - refusing
+//!    over a never-initialized fixture - even with a real `RIGGER_STORE_FENCE_DIR` set on
+//!    this test binary's own process.
 //!
 //! Both cwd and target_dir are passed to `ExecRunner::run` explicitly for every call in this
 //! file - never left empty to "inherit the ambient cwd" - so the only variable that ever
-//! differs between the two tests is `target_dir`, the exact signal criterion 3 is about, and
+//! differs between tests 1 and 2 is `target_dir`, the exact signal criterion 3 is about, and
 //! neither test can accidentally walk up into (or write into) the real live store of the
 //! repository this suite itself runs inside.
 
@@ -233,5 +242,74 @@ fn an_unfenced_integrated_tree_gate_still_walks_up_to_the_live_store() {
         live_before, live_after,
         "an unfenced gate-spawned courier must actually write into the repo's real live \
          store - the baseline behavior this fence must never disturb for the integrated tree"
+    );
+}
+
+#[test]
+#[serial_test::serial(cwd)]
+fn a_periphery_couriers_shared_command_ignores_an_inherited_ambient_fence() {
+    // Ground (a) of the u3 reject (adv-u3-fence-breaks-existing-store-precedence-tests-
+    // measured): STORE_FENCE_ENV is a process-tree-wide override, inherited by EVERY
+    // descendant of a gate's spawned process - including THIS exact test binary, whenever
+    // it itself runs AS a `cargo test` gate inside a unit worktree (the everyday case, per
+    // `.rigger/workflow.yml`'s `test` gate). A periphery test that spawned its own courier
+    // via a bare `Command::new(rigger_bin())` used to silently inherit that ambient fence
+    // and observe the fenced scratch location instead of the fixture it built - exactly the
+    // regression the adversary measured against tests/store_precedence.rs (8/8 -> 0/8, with
+    // couriers from different test functions overwriting the same fenced store).
+    // `tests/common::rigger_courier` is the fix: the ONE shared authority every periphery
+    // suite now spawns the product through, defensively clearing the var before spawning so
+    // a courier resolves exactly as if no ambient fence existed, regardless of how THIS
+    // test binary itself was invoked. Shares the `cwd` serial key with this file's other
+    // STORE_FENCE_ENV-mutating test (test 2 above) so neither observes the other's
+    // in-flight env mutation.
+    std::env::remove_var(STORE_FENCE_ENV);
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            std::env::remove_var(STORE_FENCE_ENV);
+        }
+    }
+    let _restore = Restore;
+
+    // Simulate exactly what a real fenced `cargo test` gate does to this test binary's own
+    // process: an ambient RIGGER_STORE_FENCE_DIR pointing at some scratch dir this binary
+    // never built and never asked for.
+    let ambient_fence = tempfile::tempdir().unwrap();
+    std::env::set_var(STORE_FENCE_ENV, ambient_fence.path());
+
+    // A never-initialized project fixture - store_precedence.rs's own baseline shape - that
+    // this courier must resolve AGAINST, never against the ambient fence above.
+    let project = tempfile::tempdir().unwrap();
+    git_init_quiet(project.path());
+    std::fs::create_dir_all(project.path().join(".rigger")).unwrap();
+
+    let out = common::rigger_courier()
+        .args(["result", "u/impl#0", "--error", "a self-report"])
+        .current_dir(project.path())
+        .env("RIGGER_NO_DASH", "1")
+        .env_remove("KURRENTDB_CONN")
+        .output()
+        .expect("spawn rigger result via the shared courier helper");
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "a courier over a never-initialized project must refuse, not silently succeed \
+         against an inherited ambient fence: stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("no rigger store found"),
+        "the courier must reach the REAL walk-up/refuse path for its OWN fixture, proving \
+         it ignored the ambient RIGGER_STORE_FENCE_DIR this test process itself carries; \
+         stderr:\n{stderr}"
+    );
+    assert!(
+        !project.path().join(".rigger").join("events.db").exists(),
+        "a refused courier must not fabricate a local events.db in its own fixture either"
+    );
+    assert!(
+        !ambient_fence.path().join("events.db").exists(),
+        "a courier that correctly ignored the ambient fence must never write into it either"
     );
 }

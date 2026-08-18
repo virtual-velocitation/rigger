@@ -144,7 +144,7 @@ fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
 /// (stdout, stderr, success). Used by the `rigger validate` advisory tests to stub
 /// `RIGGER_NPM` (so `rigger setup` installs the workflow without a real npm).
 fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (String, String, bool) {
-    let mut cmd = Command::new(rigger_bin());
+    let mut cmd = common::rigger_courier();
     cmd.args(args).current_dir(cwd);
     // The step path auto-starts a persistent, detached run dashboard (spec 39, criterion 1);
     // opt out so these short-lived integration invocations never spawn a real dashboard
@@ -7443,7 +7443,7 @@ fn run_eventstore_kurrentdb_reaches_the_adapter_not_a_missing_feature_dead_end()
     // missing-connection guard - not an eager connect attempt against a leaked url - is the
     // path under test. RIGGER_NO_DASH keeps the step path from spawning a real dashboard
     // (spec 39); the failure fires before the dashboard would start anyway.
-    let out = Command::new(rigger_bin())
+    let out = common::rigger_courier()
         .args(["run", "--base", "HEAD", "--eventstore", "kurrentdb"])
         .current_dir(root)
         // Redirect the machine-global registry (spec 50, criterion 2) into the test's own temp
@@ -11678,7 +11678,7 @@ fn an_exhausted_probe_reserves_nothing_rather_than_re_handing_a_reserved_port() 
 fn a_dropped_guard_reaps_a_standalone_rigger_dash() {
     use rigger::dash::ReapedChild;
     use std::io::Read;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     use std::time::Duration;
 
     // A repo-less/empty-store dir is enough: `rigger dash` reads an ABSENT events.db as an
@@ -11686,7 +11686,7 @@ fn a_dropped_guard_reaps_a_standalone_rigger_dash() {
     let proj = temp_project();
     let port = free_loopback_port();
 
-    let mut child = Command::new(rigger_bin())
+    let mut child = common::rigger_courier()
         .args(["dash", "--port", &port.to_string()])
         .current_dir(proj.path())
         .stdout(Stdio::piped())
@@ -11817,7 +11817,7 @@ fn http_get_path(port: u16, path: &str) -> Option<String> {
 #[test]
 fn a_run_driver_auto_starts_a_reachable_dash_with_a_url_shown_in_status() {
     use std::io::Read;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     use std::time::{Duration, Instant};
 
     // A compliant git project a driver can start a run on: `grounder: nop` and a persona
@@ -11834,7 +11834,7 @@ fn a_run_driver_auto_starts_a_reachable_dash_with_a_url_shown_in_status() {
     // Start the workflow driver with its MCP stdin held OPEN, so the process stays a live run
     // in flight. NO opt-in flag is passed: the dash must come up regardless. `--base HEAD`
     // anchors the run branch off the repo's lone commit.
-    let mut child = Command::new(rigger_bin())
+    let mut child = common::rigger_courier()
         .args(["serve", "--base", "HEAD"])
         .current_dir(root)
         // Redirect the machine-global registry (spec 50, criterion 2) into the test's own temp
@@ -13352,7 +13352,7 @@ fn reap_pid(pid: u32) {
 /// an ephemeral port. Two calls with the SAME `dash_port` model the same run's successive steps
 /// (they must find the one dash the first step started); distinct ports model independent runs.
 fn run_step_dash_enabled(root: &Path, dash_port: u16) -> (String, String) {
-    let out = Command::new(rigger_bin())
+    let out = common::rigger_courier()
         .args(["step"])
         .current_dir(root)
         // Redirect the machine-global registry (spec 50, criterion 2) into the test's own temp
@@ -13569,7 +13569,7 @@ fn step_honors_the_config_dash_off_opt_out() {
     // RIGGER_NO_DASH REMOVED so ONLY `dash: off` can suppress the dash; the state dir is redirected
     // so the run's registration lands in the test's own tree, never the operator's real one; and the
     // ensure port is pinned to an ephemeral loopback port so a regression never binds the fixed 7420.
-    let out = Command::new(rigger_bin())
+    let out = common::rigger_courier()
         .args(["step"])
         .current_dir(root)
         .env("XDG_STATE_HOME", root)
@@ -13815,7 +13815,7 @@ fn write_live_instance(regdir: &std::path::Path, project: &str, root: &str) {
 fn a_reap_on_idle_singleton_serves_while_an_instance_heartbeats_then_reaps_when_the_registry_empties(
 ) {
     use std::io::Read;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{mpsc, Arc};
     use std::time::Duration;
@@ -13839,7 +13839,7 @@ fn a_reap_on_idle_singleton_serves_while_an_instance_heartbeats_then_reaps_when_
     });
 
     let port = free_loopback_port();
-    let mut child = Command::new(rigger_bin())
+    let mut child = common::rigger_courier()
         .args(["dash", "--port", &port.to_string(), "--reap-on-idle"])
         .env("XDG_STATE_HOME", &xdg)
         // Poll fast and treat an instance heartbeat older than 2s as idle, so the self-reap is
@@ -13912,7 +13912,7 @@ fn a_reap_on_idle_singleton_serves_while_an_instance_heartbeats_then_reaps_when_
 #[test]
 fn a_reap_on_idle_singleton_survives_one_run_ending_while_another_project_is_live() {
     use std::io::Read;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{mpsc, Arc};
     use std::time::Duration;
@@ -13939,7 +13939,7 @@ fn a_reap_on_idle_singleton_survives_one_run_ending_while_another_project_is_liv
     let hb_b = spawn_heartbeat("proj-b", "/home/dev/proj-b", stop_b.clone());
 
     let port = free_loopback_port();
-    let mut child = Command::new(rigger_bin())
+    let mut child = common::rigger_courier()
         .args(["dash", "--port", &port.to_string(), "--reap-on-idle"])
         .env("XDG_STATE_HOME", &xdg)
         .env("RIGGER_DASH_REAP_POLL_MS", "150")
@@ -14018,7 +14018,7 @@ fn a_reap_on_idle_singleton_survives_one_run_ending_while_another_project_is_liv
 #[test]
 fn a_reap_on_idle_singleton_does_not_reap_before_any_instance_has_registered() {
     use std::io::Read;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{mpsc, Arc};
     use std::time::Duration;
@@ -14029,7 +14029,7 @@ fn a_reap_on_idle_singleton_does_not_reap_before_any_instance_has_registered() {
     let regdir = rigger::registry::instances_dir(state.path());
 
     let port = free_loopback_port();
-    let mut child = Command::new(rigger_bin())
+    let mut child = common::rigger_courier()
         .args(["dash", "--port", &port.to_string(), "--reap-on-idle"])
         .env("XDG_STATE_HOME", &xdg)
         // A tiny window so that WITHOUT the guard the empty registry would reap almost immediately -
@@ -14109,7 +14109,7 @@ fn a_reap_on_idle_singleton_does_not_reap_before_any_instance_has_registered() {
 #[test]
 fn a_dash_without_reap_on_idle_never_self_reaps_on_a_quiet_machine() {
     use std::io::Read;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -14122,7 +14122,7 @@ fn a_dash_without_reap_on_idle_never_self_reaps_on_a_quiet_machine() {
     // NOTE: no `--reap-on-idle`. A fast poll and a tiny window are set so that IF a watcher ran at
     // all it would reap almost immediately - making the ABSENCE of a reap a strong signal the flag
     // genuinely gates the watcher off.
-    let mut child = Command::new(rigger_bin())
+    let mut child = common::rigger_courier()
         .args(["dash", "--port", &port.to_string()])
         .env("XDG_STATE_HOME", &xdg)
         .env("RIGGER_DASH_REAP_POLL_MS", "100")
@@ -14179,7 +14179,7 @@ fn a_dash_without_reap_on_idle_never_self_reaps_on_a_quiet_machine() {
 #[test]
 fn a_reap_on_idle_singleton_in_a_homeless_environment_serves_without_a_watcher() {
     use std::io::Read;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -14195,7 +14195,7 @@ fn a_reap_on_idle_singleton_in_a_homeless_environment_serves_without_a_watcher()
     // poll and 1s window mean that IF a watcher had started against ANY (necessarily empty) registry
     // it would self-reap within ~1s, so the ABSENCE of a reap is a strong signal the homeless seam
     // gated the watcher off, not that the window was simply too long.
-    let mut child = Command::new(rigger_bin())
+    let mut child = common::rigger_courier()
         .args(["dash", "--port", &port.to_string(), "--reap-on-idle"])
         .current_dir(root)
         .env_remove("XDG_STATE_HOME")
@@ -14343,7 +14343,7 @@ fn a_real_rigger_step_session_detaches_the_dash_from_the_step_command_process_gr
     // Run `rigger step` as its OWN process-group leader: `process_group(0)` makes the step a group
     // leader whose PGID equals its PID - the exact shape of a foreground command the courier's
     // harness later tears down by group. RIGGER_NO_DASH is removed so the always-on dash starts.
-    let mut step = Command::new(rigger_bin())
+    let mut step = common::rigger_courier()
         .args(["step"])
         .current_dir(root)
         // Redirect the machine-global registry (spec 50, criterion 2) into the test's own temp
@@ -14423,7 +14423,7 @@ fn dash_is_a_fixed_address_singleton_a_second_invocation_reports_and_exits_clean
     let url = format!("http://127.0.0.1:{port}/");
 
     // FIRST dash: bind the address and wait until it genuinely serves its page.
-    let mut first = Command::new(rigger_bin())
+    let mut first = common::rigger_courier()
         .args(["dash", "--port", &port.to_string()])
         .current_dir(root)
         .env_remove("RIGGER_NO_DASH")
@@ -14442,7 +14442,7 @@ fn dash_is_a_fixed_address_singleton_a_second_invocation_reports_and_exits_clean
     // own) and must NOT bind a second port. It reports the existing address and exits 0. Poll
     // `try_wait` on a bounded deadline so a regression that DID enter the serve loop fails LOUD
     // (a hang caught by the deadline) rather than hanging the whole suite.
-    let mut second = Command::new(rigger_bin())
+    let mut second = common::rigger_courier()
         .args(["dash", "--port", &port.to_string()])
         .current_dir(root)
         .env_remove("RIGGER_NO_DASH")
@@ -14585,7 +14585,7 @@ fn dash_landing_lists_instances_and_attach_serves_each_instance_store() {
     // proves attach reads the SELECTED store, not the dash's cwd.
     let neutral = temp_project();
     let port = free_loopback_port();
-    let mut dash = Command::new(rigger_bin())
+    let mut dash = common::rigger_courier()
         .args(["dash", "--port", &port.to_string()])
         .current_dir(neutral.path())
         .env("XDG_STATE_HOME", xdg)
@@ -14746,7 +14746,7 @@ fn dash_attach_unknown_or_since_gone_instance_serves_empty_not_the_local_run() {
 
     // The dash serves its OWN project (cwd = own_root); the registry it discovers is the sandbox.
     let port = free_loopback_port();
-    let mut dash = Command::new(rigger_bin())
+    let mut dash = common::rigger_courier()
         .args(["dash", "--port", &port.to_string()])
         .current_dir(own_root)
         .env("XDG_STATE_HOME", xdg)
@@ -14852,7 +14852,7 @@ fn dash_landing_prunes_stale_instances_and_pins_the_wire_contract() {
 
     let neutral = temp_project();
     let port = free_loopback_port();
-    let mut dash = Command::new(rigger_bin())
+    let mut dash = common::rigger_courier()
         .args(["dash", "--port", &port.to_string()])
         .current_dir(neutral.path())
         .env("XDG_STATE_HOME", xdg)
@@ -14965,7 +14965,7 @@ fn dash_attach_to_shared_instance_never_creates_a_store_under_its_root() {
 
     let neutral = temp_project();
     let port = free_loopback_port();
-    let mut dash = Command::new(rigger_bin())
+    let mut dash = common::rigger_courier()
         .args(["dash", "--port", &port.to_string()])
         .current_dir(neutral.path())
         .env("XDG_STATE_HOME", xdg)
@@ -15063,7 +15063,7 @@ fn dash_attach_to_shared_instance_reads_its_own_store_not_the_dash_process_kurre
 
     let neutral = temp_project();
     let port = free_loopback_port();
-    let mut dash = Command::new(rigger_bin())
+    let mut dash = common::rigger_courier()
         .args(["dash", "--port", &port.to_string()])
         .current_dir(neutral.path())
         .env("XDG_STATE_HOME", xdg)
@@ -15122,7 +15122,7 @@ fn dash_on_a_port_held_by_a_non_dash_process_fails_loud_and_never_drifts() {
     let holder = reserved_loopback_listener();
     let port = holder.local_addr().unwrap().port();
 
-    let mut dash = Command::new(rigger_bin())
+    let mut dash = common::rigger_courier()
         .args(["dash", "--port", &port.to_string()])
         .current_dir(root)
         .env_remove("RIGGER_NO_DASH")
@@ -15205,7 +15205,7 @@ fn many_claimants_racing_a_live_serving_singleton_all_defer_cleanly() {
     let url = format!("http://127.0.0.1:{port}/");
 
     // The WINNER: a real, serving `rigger dash` process holding the address.
-    let mut winner = Command::new(rigger_bin())
+    let mut winner = common::rigger_courier()
         .args(["dash", "--port", &port.to_string()])
         .current_dir(root)
         .env_remove("RIGGER_NO_DASH")
@@ -15328,7 +15328,7 @@ fn every_dash_response_carries_the_rigger_dash_recognition_header() {
     let port = free_loopback_port();
     let url = format!("http://127.0.0.1:{port}/");
 
-    let mut dash = Command::new(rigger_bin())
+    let mut dash = common::rigger_courier()
         .args(["dash", "--port", &port.to_string()])
         .current_dir(root)
         .env_remove("RIGGER_NO_DASH")
@@ -15458,7 +15458,7 @@ fn the_dash_singleton_probe_stays_bounded_against_a_dribbling_holder() {
         // `holder` drops here, releasing the port - only after the probe has already concluded.
     });
 
-    let mut dash = Command::new(rigger_bin())
+    let mut dash = common::rigger_courier()
         .args(["dash", "--port", &port.to_string()])
         .current_dir(root)
         .env_remove("RIGGER_NO_DASH")
@@ -15536,7 +15536,7 @@ fn dash_serving_on_recognizes_a_real_dash_and_rejects_a_non_dash_holder() {
     let root = proj.path();
     let dash_port = free_loopback_port();
     let url = format!("http://127.0.0.1:{dash_port}/");
-    let mut dash = Command::new(rigger_bin())
+    let mut dash = common::rigger_courier()
         .args(["dash", "--port", &dash_port.to_string()])
         .current_dir(root)
         .env_remove("RIGGER_NO_DASH")

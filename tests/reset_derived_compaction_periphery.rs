@@ -640,7 +640,7 @@ fn project_identity(root: &Path) -> String {
 /// Run `rigger <args...>` in `cwd`. The dashboard and the machine-global instance registry are
 /// stubbed out so a short-lived invocation leaves no live process or phantom registry entry.
 fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let mut cmd = Command::new(common::rigger_bin());
+    let mut cmd = common::rigger_courier();
     cmd.args(args).current_dir(cwd);
     cmd.env("RIGGER_NO_DASH", "1");
     let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
@@ -2326,7 +2326,7 @@ fn run_rigger_bounded(
     bound: Duration,
 ) -> Option<(String, String, bool)> {
     let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
-    let mut child = Command::new(common::rigger_bin())
+    let mut child = common::rigger_courier()
         .args(args)
         .current_dir(cwd)
         .env("RIGGER_NO_DASH", "1")
