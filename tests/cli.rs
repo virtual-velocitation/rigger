@@ -13059,6 +13059,184 @@ fn setup_precommit_hook_stays_inert_when_only_one_doc_is_tracked() {
     );
 }
 
+/// Spec 70, crit 1 (a REFUSAL aborts the WHOLE hook, including anything chained after it, end
+/// to end): rigger's block is inserted BEFORE a pre-existing hook's body (spec 24 chaining), and
+/// its `exit 1` on a detected drift is deliberately NOT cooperative - `precommit_block`'s own doc
+/// comment states it "must abort the whole hook (including anything chained after it), because a
+/// commit that is about to be refused should not go on to run further gates." No existing test
+/// drives this: the chaining test
+/// (`setup_precommit_hook_chains_after_a_terminal_exit_hook_and_still_runs`) deliberately swaps
+/// to a MATCHING-render fixture specifically to stay off the refusal path, so this exact safety
+/// claim has zero coverage until this test. Drives the refusal path with a pre-existing chained
+/// hook present and proves its body never runs.
+#[test]
+fn setup_precommit_hook_refusal_aborts_a_chained_hook_body() {
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+
+    // A pre-existing pre-commit hook that leaves a detectable side effect if it runs.
+    let hooks = root.join(".git/hooks");
+    std::fs::create_dir_all(&hooks).unwrap();
+    let user_hook = hooks.join("pre-commit");
+    std::fs::write(&user_hook, "#!/bin/sh\ntouch USER_HOOK_RAN\nexit 0\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&user_hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    // `rigger setup` chains its block BEFORE the existing hook body (spec 24); seed genuinely
+    // STALE tracked docs so the final commit's hook has real drift to refuse.
+    let (setup_out, setup_err, setup_ok) =
+        run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(setup_ok, "rigger setup must succeed; stderr:\n{setup_err}");
+    assert!(
+        setup_out.contains("pre-commit hook"),
+        "setup must install the pre-commit hook; got:\n{setup_out}"
+    );
+    seed_stale_tracked_docs(root);
+
+    let hook = std::fs::read_to_string(&user_hook).unwrap();
+    assert!(
+        hook.contains("touch USER_HOOK_RAN") && hook.contains("rigger docs"),
+        "the chained hook must preserve the user hook AND carry rigger's block; got:\n{hook}"
+    );
+
+    let commit_path = stage_rigger_shim(root);
+    std::fs::write(root.join("code.txt"), "a documented fact changed\n").unwrap();
+    git_ok(root, &["add", "code.txt"]);
+    let out = Command::new("git")
+        .args(["commit", "-q", "-m", "change a documented fact"])
+        .current_dir(root)
+        .env("PATH", &commit_path)
+        .output()
+        .expect("git must be runnable");
+
+    assert!(
+        !out.status.success(),
+        "a drifted render must refuse the commit even with a chained hook present"
+    );
+    assert!(
+        !root.join("USER_HOOK_RAN").exists(),
+        "a refusal must abort the WHOLE hook script before reaching the chained body that \
+         follows rigger's block - the pre-existing hook's side effect must never appear"
+    );
+}
+
+/// Spec 70, crit 1 (a refusal names ONLY the file that actually drifted, end to end): the hook
+/// judges each tracked doc independently (`git diff --quiet -- "$doc"` runs per file), and only a
+/// file that differs is added to the refusal's file list. Every existing refusal fixture drifts
+/// BOTH docs at once, so none can discriminate "names every tracked file" from "names only the
+/// drifted ones". This fixture drifts ONLY the handbook, leaving the skill genuinely fresh, and
+/// proves the refusal names the handbook alone.
+#[test]
+fn setup_precommit_hook_refusal_names_only_the_drifted_file() {
+    const HANDBOOK_REL: &str = "docs/handbook/using-rigger.md";
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    setup_selfhosting_repo_with_fresh_docs(root);
+    let fresh_skill =
+        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+
+    // Drift ONLY the handbook back to a stale committed copy; the skill stays the true fresh
+    // render committed by `setup_selfhosting_repo_with_fresh_docs`.
+    std::fs::write(root.join(HANDBOOK_REL), "STALE DOC - not a real render\n").unwrap();
+    git_ok(root, &["add", HANDBOOK_REL]);
+    git_ok(
+        root,
+        &[
+            "commit",
+            "-q",
+            "--no-verify",
+            "-m",
+            "drift only the handbook",
+        ],
+    );
+    let seeded_handbook =
+        git_out(root, &["show", &format!("HEAD:{HANDBOOK_REL}")]).unwrap_or_default();
+    assert!(
+        seeded_handbook.contains("STALE DOC") && !fresh_skill.contains("STALE DOC"),
+        "the fixture must leave exactly one doc stale and the other genuinely fresh"
+    );
+
+    let commit_path = stage_rigger_shim(root);
+    std::fs::write(root.join("code.txt"), "a documented fact changed\n").unwrap();
+    git_ok(root, &["add", "code.txt"]);
+    let out = Command::new("git")
+        .args(["commit", "-q", "-m", "change a documented fact"])
+        .current_dir(root)
+        .env("PATH", &commit_path)
+        .output()
+        .expect("git must be runnable");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        !out.status.success(),
+        "a single drifted doc must still refuse the commit; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(HANDBOOK_REL),
+        "the refusal must name the drifted handbook; stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("skills/using-rigger/SKILL.md"),
+        "the refusal must NOT name the still-fresh skill - only the actually drifted file; \
+         stderr:\n{stderr}"
+    );
+}
+
+/// Spec 70, crit 1 (the refused working tree already carries the fresh render, end to end): the
+/// hook runs `rigger docs` BEFORE it compares, so by the time it refuses, the fresh render is
+/// already sitting in the working tree as an unstaged edit - the printed remedy ("re-render with
+/// the tree-built binary ... then git add the result") only makes sense if that render is
+/// already there. No existing test reads the raw working-tree file after a refusal (only HEAD
+/// and the index are checked); this proves the operator does not need to re-run `rigger docs`
+/// themselves to recover.
+#[test]
+fn setup_precommit_hook_refusal_leaves_the_fresh_render_in_the_working_tree() {
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+    assert!(
+        out.contains("pre-commit hook"),
+        "setup must install the pre-commit hook; got:\n{out}"
+    );
+    seed_stale_tracked_docs(root);
+
+    let commit_path = stage_rigger_shim(root);
+    std::fs::write(root.join("code.txt"), "a documented fact changed\n").unwrap();
+    git_ok(root, &["add", "code.txt"]);
+    let commit_out = Command::new("git")
+        .args(["commit", "-q", "-m", "change a documented fact"])
+        .current_dir(root)
+        .env("PATH", &commit_path)
+        .output()
+        .expect("git must be runnable");
+    assert!(
+        !commit_out.status.success(),
+        "the drifted render must refuse the commit"
+    );
+
+    // The raw working-tree file (NOT `git show HEAD:...`, NOT the index) must already hold the
+    // fresh render the hook's own `rigger docs` call wrote before comparing - not the stale seed.
+    let working_tree_skill =
+        std::fs::read_to_string(root.join("skills/using-rigger/SKILL.md")).unwrap();
+    assert!(
+        working_tree_skill.contains("name: using-rigger")
+            && !working_tree_skill.contains("STALE DOC"),
+        "the working tree must already carry the fresh render after a refusal, so the printed \
+         remedy's `git add` step has real fresh content to stage; got:\n{working_tree_skill}"
+    );
+    // And it is genuinely UNSTAGED - the hook never ran `git add` on its own re-render.
+    let unstaged = git_out(root, &["diff", "--name-only"]).unwrap_or_default();
+    assert!(
+        unstaged.contains("skills/using-rigger/SKILL.md"),
+        "the fresh render in the working tree must be an unstaged edit, not already staged; \
+         diff --name-only:\n{unstaged}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Spec 38, criterion 3 - the ready-to-release handoff, PROVEN THROUGH THE BINARY.
 //
