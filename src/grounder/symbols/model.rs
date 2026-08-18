@@ -73,6 +73,18 @@ pub struct FileSymbols {
 pub struct SymbolIndex {
     /// rel-path -> that file's symbols.
     files: BTreeMap<String, FileSymbols>,
+    /// rel-path -> the content hash (`symbols::store::content_hash`) of that file's source AT
+    /// THE TIME it was last indexed. Populated by `index_one_file` alongside `files` (spec 68),
+    /// never computed here - the model stays hash-algorithm-agnostic and never depends on
+    /// `store` (dependency direction: `store` is a projection OF the model, never the reverse).
+    /// `rigger validate`'s index-staleness advisory rehashes a small deterministic sample of
+    /// the CURRENT tree and diffs it against these persisted values, so genuine content drift
+    /// is detected without a full-tree rehash. `#[serde(default)]` so an index persisted before
+    /// this field existed still loads - as empty, which [`SymbolIndex::hash_for`] reports as
+    /// "unknown" rather than "unchanged" or "changed", so a pre-upgrade index never manufactures
+    /// a false drift signal.
+    #[serde(default)]
+    hashes: BTreeMap<String, String>,
 }
 
 impl SymbolIndex {
@@ -86,9 +98,25 @@ impl SymbolIndex {
     /// (it was deleted or became unreadable), so the freshened index matches a fresh whole-tree
     /// `build_index`, which never visits the gone file: a stale definition or reference from a
     /// removed file must not keep grounding. Parser-free by construction, so it stays in the light
-    /// lane exactly like the rest of the model.
+    /// lane exactly like the rest of the model. Drops that file's recorded content hash too
+    /// (spec 68), so a removed file can never survive as a stale hash entry with no symbols
+    /// behind it.
     pub fn remove_file(&mut self, rel_path: &str) {
         self.files.remove(rel_path);
+        self.hashes.remove(rel_path);
+    }
+
+    /// Record `rel_path`'s content hash (spec 68) - the caller computes it (via
+    /// `symbols::store::content_hash`, the one hash primitive) and hands it in, so the model
+    /// itself never depends on `store`.
+    pub fn set_hash(&mut self, rel_path: String, hash: String) {
+        self.hashes.insert(rel_path, hash);
+    }
+
+    /// The content hash last recorded for `rel_path`, or `None` when never recorded (an index
+    /// persisted before this field existed, or a file this index never indexed).
+    pub fn hash_for(&self, rel_path: &str) -> Option<&str> {
+        self.hashes.get(rel_path).map(String::as_str)
     }
 
     /// Every definition whose name equals `name`, across languages. Grounding wants precision,
@@ -470,5 +498,48 @@ mod tests {
         let json = serde_json::to_string(&idx).expect("model serializes with plain serde");
         let back: SymbolIndex = serde_json::from_str(&json).expect("model round-trips");
         assert_eq!(back, idx);
+    }
+
+    #[test]
+    fn content_hash_is_recorded_and_dropped_with_its_file() {
+        // spec 68: a hash recorded via `set_hash` is readable via `hash_for`; a path never
+        // recorded is `None` (unknown - never misread as "unchanged").
+        let mut idx = SymbolIndex::default();
+        assert_eq!(idx.hash_for("a.rs"), None);
+        idx.set_hash("a.rs".into(), "deadbeef".into());
+        assert_eq!(idx.hash_for("a.rs"), Some("deadbeef"));
+        // `remove_file` drops the recorded hash along with the symbols, so a removed file can
+        // never survive as a stale hash entry with no symbols behind it.
+        idx.insert_file(
+            "a.rs".into(),
+            FileSymbols {
+                lang: Lang::Rust,
+                defs: vec![],
+                refs: vec![],
+            },
+        );
+        idx.remove_file("a.rs");
+        assert_eq!(idx.hash_for("a.rs"), None);
+    }
+
+    #[test]
+    fn a_pre_upgrade_index_with_no_hashes_field_loads_with_every_hash_unknown() {
+        // An index persisted before this field existed serializes with no `hashes` key at all;
+        // `#[serde(default)]` must still load it, with every `hash_for` answering `None` -
+        // never manufacturing a false "changed" or "unchanged" signal for pre-existing data.
+        let mut idx = SymbolIndex::default();
+        idx.insert_file(
+            "a.rs".into(),
+            FileSymbols {
+                lang: Lang::Rust,
+                defs: vec![],
+                refs: vec![],
+            },
+        );
+        let mut json: serde_json::Value = serde_json::to_value(&idx).unwrap();
+        json.as_object_mut().unwrap().remove("hashes");
+        let loaded: SymbolIndex = serde_json::from_value(json).unwrap();
+        assert_eq!(loaded.hash_for("a.rs"), None);
+        assert!(loaded.files().contains_key("a.rs"));
     }
 }
