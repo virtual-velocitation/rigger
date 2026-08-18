@@ -1614,12 +1614,19 @@ fn require_store_dir() -> Result<(StoreLocation, StoreSelection), Box<dyn std::e
     if let Ok(fenced) = std::env::var(STORE_FENCE_ENV) {
         let fenced = fenced.trim();
         if !fenced.is_empty() {
-            return Ok((
-                StoreLocation {
-                    dir: PathBuf::from(fenced),
-                },
-                StoreSelection::Sqlite,
-            ));
+            let dir = PathBuf::from(fenced);
+            // The fenced location is a scratch sibling ExecRunner names but never
+            // creates (it must not create it INSIDE target_dir, which cargo owns and
+            // may wipe - see ExecRunner::run). A store-opening courier that resolves
+            // here is about to `Store::open` a path inside it; sqlite/rusqlite refuses
+            // to create a database file in a directory that does not yet exist, so an
+            // uncreated fence would fail every fenced courier outright instead of
+            // landing it in an isolated EMPTY store - the opposite of "isolate more".
+            // Creating it here (the one store-resolution authority every courier
+            // funnels through) covers every current and future caller of this env var
+            // uniformly, not just ExecRunner's specific choice of path.
+            std::fs::create_dir_all(&dir)?;
+            return Ok((StoreLocation { dir }, StoreSelection::Sqlite));
         }
     }
     let sel = store_selection(None, None)?;
