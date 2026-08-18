@@ -36,8 +36,190 @@
 //! consumer of the port can exercise.
 
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Direction, Error, Event, EventStore, ExpectedRevision};
+use rigger::eventstore::{Direction, Error, Event, EventStore, ExpectedRevision, Filter};
 use std::sync::{Arc, Barrier};
+
+/// Opens a fresh file-backed store at `path`, seeds `stream` with five conforming
+/// events (revisions 0..4), then reproduces the recorded incident directly on the raw
+/// file: deletes revision 1 (the compaction's hole) and inserts a row AT revision 1 as
+/// the stream's newest row BY POSITION - the stale writer that computes its next
+/// revision by some means other than this store's own position-order tail read. This is
+/// the only way to reach the disordered state at all: every conforming backend computes
+/// the revision it writes itself, so no sequence of calls through `EventStore::append`
+/// alone can ever produce it.
+fn seed_disordered_stream(path: &str, stream: &str) {
+    let store = Store::open(path).expect("a file-backed store opens");
+    let seed: Vec<Event> = (0..5u8).map(|i| Event::new("S", vec![i])).collect();
+    store
+        .append(stream, ExpectedRevision::Any, &seed)
+        .expect("seeding the healthy prefix must succeed");
+    drop(store);
+
+    let raw = rusqlite::Connection::open(path).expect("an independent writer opens");
+    raw.execute(
+        "DELETE FROM events WHERE stream = ?1 AND revision = 1",
+        [stream],
+    )
+    .expect("the supported compaction deletes the hole");
+    raw.execute(
+        "INSERT INTO events \
+         (stream, type, id, data, meta, valid_from, recorded_at, revision) \
+         VALUES (?1, 'STALE', 'periphery-stale-writer', X'00', '{}', 0, 0, 1)",
+        [stream],
+    )
+    .expect("the stale writer reissues the revision the compaction freed");
+    // Position order for `stream` is now: rev 0, rev 2, rev 3, rev 4, rev 1 (newest).
+    // The revision-order tail is 4; the position-order tail is 1.
+}
+
+/// A corrupted stream stays refused on every subsequent attempt, not only the first -
+/// closing the class of regression where a guard fires once and then goes quiet because
+/// a future change let a failed attempt advance a cached cursor. Every attempt must
+/// land zero rows, so the on-disk row count never moves past what the corruption left.
+#[test]
+fn the_refusal_repeats_on_every_subsequent_attempt() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let path = dir.path().join("run.db");
+    let path = path.to_str().expect("a utf-8 path").to_string();
+    seed_disordered_stream(&path, "run");
+
+    let store = Store::open(&path).expect("reopen the store");
+    for attempt in 0..3u8 {
+        store
+            .append(
+                "run",
+                ExpectedRevision::Any,
+                &[Event::new("N", vec![attempt])],
+            )
+            .expect_err("a still-broken stream must refuse every attempt, not only the first");
+    }
+
+    let after = store
+        .read_stream("run", 0, Direction::Forward)
+        .expect("reads stay untouched by a refused write");
+    assert_eq!(
+        after.len(),
+        5,
+        "three refused attempts must land zero rows: the seeded 5, unmoved by the \
+         delete-and-reissue (still 5 rows total: 0,2,3,4 plus the reissued 1)"
+    );
+}
+
+/// "Fail-safe directions only: the assertion may only refuse a write ... no path gains
+/// repair-by-side-effect." Reads are a path: both `read_stream` (revision order) and
+/// `read_all` (position order) must keep answering a broken stream's rows verbatim,
+/// never erroring and never silently resorting them into agreement.
+#[test]
+fn a_broken_stream_still_reads_back_by_both_orders_without_erroring_or_repairing() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let path = dir.path().join("run.db");
+    let path = path.to_str().expect("a utf-8 path").to_string();
+    seed_disordered_stream(&path, "run");
+
+    let store = Store::open(&path).expect("reopen the store");
+
+    let by_revision = store
+        .read_stream("run", 0, Direction::Forward)
+        .expect("a broken stream's revision-order read must not error");
+    let revisions: Vec<i64> = by_revision.iter().map(|e| e.revision).collect();
+    assert_eq!(
+        revisions,
+        vec![0, 1, 2, 3, 4],
+        "revision order answers exactly what the revision column holds, sorted"
+    );
+
+    let by_position = store
+        .read_all(0, Direction::Forward, &Filter::default())
+        .expect("a broken stream's position-order read must not error");
+    let positions_revisions: Vec<i64> = by_position
+        .iter()
+        .filter(|e| e.stream == "run")
+        .map(|e| e.revision)
+        .collect();
+    assert_eq!(
+        positions_revisions,
+        vec![0, 2, 3, 4, 1],
+        "position order answers the true insertion order, unrepaired: the stale \
+         writer's row (revision 1) is the newest by POSITION even though it holds a \
+         lower revision than every row inserted before it"
+    );
+}
+
+/// The companion of the `exact_revision_race_across_real_connections...` test above,
+/// covering the OTHER half of the same risk: the new
+/// monotonicity assertion added by this criterion runs one extra indexed seek inside the
+/// same transaction as every append. Several real, separate connections racing the SAME
+/// stream under `ExpectedRevision::Any` (which never conflicts on the ExpectedRevision
+/// check itself) must still land gap-free, duplicate-free revisions in an order where
+/// position and revision fully agree - proving the new seek's own read never observes a
+/// transiently inconsistent snapshot under genuine cross-connection contention that would
+/// spuriously trip `Error::OutOfOrder` against a perfectly legitimate racing append.
+#[test]
+fn any_revision_race_across_real_connections_lands_gap_free_with_no_false_refusal() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("run.db");
+    let path = path.to_str().unwrap().to_string();
+
+    const CONNECTIONS: usize = 16;
+
+    let stores: Vec<Arc<Store>> = (0..CONNECTIONS)
+        .map(|_| Arc::new(Store::open(&path).unwrap()))
+        .collect();
+
+    let stream = "any-race";
+    let barrier = Arc::new(Barrier::new(CONNECTIONS));
+    let handles: Vec<_> = stores
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(i, store)| {
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                store.append(
+                    stream,
+                    ExpectedRevision::Any,
+                    &[Event::new("R", vec![i as u8])],
+                )
+            })
+        })
+        .collect();
+    let outcomes: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+    for outcome in &outcomes {
+        assert!(
+            outcome.is_ok(),
+            "an `Any`-expectation append can never conflict, so the new monotonicity \
+             seek must never spuriously refuse one under real contention: {outcome:?}"
+        );
+    }
+
+    let by_revision = stores[0]
+        .read_stream(stream, 0, Direction::Forward)
+        .unwrap();
+    let mut revisions: Vec<i64> = by_revision.iter().map(|e| e.revision).collect();
+    revisions.sort_unstable();
+    assert_eq!(
+        revisions,
+        (0..CONNECTIONS as i64).collect::<Vec<_>>(),
+        "no gap and no duplicate across {CONNECTIONS} real connections racing one stream"
+    );
+
+    let by_position: Vec<i64> = stores[0]
+        .read_all(0, Direction::Forward, &Filter::default())
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.stream == stream)
+        .map(|e| e.revision)
+        .collect();
+    assert_eq!(
+        by_position,
+        by_revision.iter().map(|e| e.revision).collect::<Vec<_>>(),
+        "position order and revision order fully agree for a stream built only through \
+         real concurrent Any appends - the new seek never disagrees with the tail it \
+         itself just wrote"
+    );
+}
 
 /// Several REAL, separate connections (distinct `Store::open` handles on one on-disk file - the
 /// multi-process shape production has, not several threads sharing one handle) race the SAME
