@@ -8095,45 +8095,63 @@ const PRECOMMIT_BEGIN: &str = "# >>> BEGIN rigger docs pre-commit (managed - do 
 /// The comment line that CLOSES rigger's managed block (see [`PRECOMMIT_BEGIN`]).
 const PRECOMMIT_END: &str = "# <<< END rigger docs pre-commit (managed) <<<";
 
-/// Render rigger's managed `pre-commit` block: the sentinel-bounded shell that regenerates
-/// the code-derived docs (`rigger docs`) and stages any change into the SAME commit, so a
-/// commit that changes a documented code fact carries its freshly rendered docs. Three hard
-/// safety invariants are baked into the SCRIPT (spec 24):
+/// Render rigger's managed `pre-commit` block: the sentinel-bounded shell that checks the
+/// code-derived docs (`rigger docs`) against what is ALREADY STAGED, so a commit that changes
+/// a documented code fact can only land carrying freshly rendered docs - never a silently
+/// rewritten stand-in for them. Four hard safety invariants are baked into the SCRIPT:
 ///
-/// - STAGING SCOPE: it stages ONLY the two rendered outputs by explicit path (built from
-///   [`USING_RIGGER_SKILL_REL`] / [`HANDBOOK_DISCIPLINE_REL`] so the staging scope can never
-///   drift from what [`write_docs`] writes), never a blanket `git add`.
-/// - SELF-HOSTING SCOPE: it regenerates and stages ONLY when the repo ALREADY TRACKS these
-///   docs (`git ls-files --error-unmatch`), i.e. rigger's own self-hosting repo. These are
-///   rigger's OWN committed docs and an operator project never carries them (see
-///   [`docs_drift`]: their absence is not drift), so in an operator repo the block is INERT -
-///   it does not even run `rigger docs`, creates nothing, and stages nothing, so an ordinary
-///   operator commit is never forced to carry rigger's internal discipline docs. The same
-///   hook is installed everywhere (it cannot know at install time whether the repo tracks the
-///   docs); this commit-time tracked check is what keeps it correct in both a self-hosting and
-///   an operator repo.
-/// - GRACEFUL DEGRADE: it ALWAYS succeeds - a missing or failing `rigger` warns to stderr and
-///   lets the commit proceed, and the block ends with `true` so it can never block a commit
-///   (the spec-20 `rigger validate` / CI drift check is the hard backstop).
+/// - COMPARISON SCOPE: it reads and compares ONLY the two rendered outputs by explicit path
+///   (built from [`USING_RIGGER_SKILL_REL`] / [`HANDBOOK_DISCIPLINE_REL`] so the scope can
+///   never drift from what [`write_docs`] writes), never any other working-tree file.
+/// - NEVER REWRITES SILENTLY (spec 70): it never runs `git add` on the docs - staging what a
+///   commit carries is the operator's job, always. When the fresh render DIFFERS from what is
+///   already staged, the block REFUSES the commit (`exit 1`), naming the drifted files, the
+///   rendering binary's path AND its build provenance (`command -v rigger` / `rigger
+///   version`), and the two remedies (re-render with the tree-built binary, or reinstall). A
+///   binary that is older than the tree - whatever happens to be first on PATH - can then
+///   never launder a stale re-render into a commit by staging it over the operator's correctly
+///   staged content; the worst it can do is block the commit and name itself as the suspect.
+///   A MATCHING render changes nothing and the block falls through to `true`, exactly as
+///   before this invariant existed.
+/// - SELF-HOSTING SCOPE: it checks ONLY when the repo ALREADY TRACKS these docs (`git
+///   ls-files --error-unmatch`), i.e. rigger's own self-hosting repo. These are rigger's OWN
+///   committed docs and an operator project never carries them (see [`docs_drift`]: their
+///   absence is not drift), so in an operator repo the block is INERT - it does not even run
+///   `rigger docs`, creates nothing, and refuses nothing, so an ordinary operator commit is
+///   never forced to carry rigger's internal discipline docs. The same hook is installed
+///   everywhere (it cannot know at install time whether the repo tracks the docs); this
+///   commit-time tracked check is what keeps it correct in both a self-hosting and an
+///   operator repo.
+/// - GRACEFUL DEGRADE ON UNAVAILABILITY: a missing or failing `rigger` (it cannot even attempt
+///   a render, so it has nothing to compare) warns to stderr and lets the commit proceed - the
+///   spec-20 `rigger validate` / CI drift check is the hard backstop for that case. This is
+///   the ONLY case the block lets a drifted commit through; once a render succeeds, a mismatch
+///   is a hard stop, not a warning.
 ///
-/// The trailing `true` (rather than `exit 0`) keeps the block cooperative: it contributes a
-/// zero exit when it is the last block, without hard-terminating any block a future tool might
-/// append after it. The hook invokes `rigger` BY NAME (relying on PATH), like the SessionStart
-/// hook runs `rigger prime`, so it stays portable across a team's clones (no absolute path to
-/// one developer's binary).
+/// The trailing `true` on the no-drift path (rather than `exit 0`) keeps the block cooperative:
+/// it contributes a zero exit when it is the last block, without hard-terminating any block a
+/// future tool might append after it. The `exit 1` on a detected drift is deliberately NOT
+/// cooperative - it must abort the whole hook (including anything chained after it), because a
+/// commit that is about to be refused should not go on to run further gates. The hook invokes
+/// `rigger` BY NAME (relying on PATH), like the SessionStart hook runs `rigger prime`, so it
+/// stays portable across a team's clones (no absolute path to one developer's binary).
 fn precommit_block() -> String {
     // A raw-string template so the shell indentation is exact and readable; the two doc
     // paths and the sentinels are injected from their single-source consts.
     const TEMPLATE: &str = r#"__BEGIN__
-# Regenerate rigger's code-derived docs and stage any change into THIS commit, so a commit
-# that changes a documented code fact carries its freshly rendered docs. SAFE to share: it
-# stages ONLY the two rendered outputs (never other working-tree files), acts ONLY where the
-# repo already tracks those docs (inert in an operator project that does not carry them), and
-# NEVER blocks a commit - a missing or failing `rigger` warns and lets the commit proceed,
-# with `rigger validate` / the CI drift check as the hard backstop.
+# Check rigger's code-derived docs against a fresh render before THIS commit lands, so a
+# commit that changes a documented code fact can only land carrying freshly rendered docs.
+# SAFE to share: it reads and compares ONLY the two rendered outputs (never other working-tree
+# files) and NEVER stages anything itself - staging is always the operator's own act. It acts
+# ONLY where the repo already tracks those docs (inert in an operator project that does not
+# carry them). A missing or failing `rigger` warns and lets the commit proceed (`rigger
+# validate` / the CI drift check is the hard backstop for that case) - but once a render
+# succeeds and DIFFERS from what is already staged, the commit is REFUSED rather than
+# silently rewritten: a stale binary on PATH must never launder its own re-render into a
+# commit over the operator's correctly staged content.
 if command -v rigger >/dev/null 2>&1; then
-    # Only regenerate+stage in a repo that ALREADY TRACKS these rendered docs (rigger's own
-    # self-hosting repo). An operator project never carries them, so leave it untouched.
+    # Only check in a repo that ALREADY TRACKS these rendered docs (rigger's own self-hosting
+    # repo). An operator project never carries them, so leave it untouched.
     tracked=
     untracked=
     for doc in "__SKILL__" "__HANDBOOK__"; do
@@ -8143,15 +8161,31 @@ if command -v rigger >/dev/null 2>&1; then
             untracked=1
         fi
     done
-    # Regenerate ONLY when EVERY rendered output is already tracked (rigger's own self-hosting
+    # Check ONLY when EVERY rendered output is already tracked (rigger's own self-hosting
     # repo). If any is untracked - an operator project, or a partial-tracking state - stay inert
     # so `rigger docs` never runs and never creates a stray untracked doc file the operator did
     # not ask for.
     if [ -z "$untracked" ] && [ -n "$tracked" ]; then
         if rigger docs >/dev/null 2>&1; then
+            # `rigger docs` just wrote a fresh render into the working tree. Compare it against
+            # what is ALREADY STAGED (the index) - never stage the fresh render itself. A doc
+            # that differs is drifted: either the staged content is genuinely stale, or this
+            # invocation's `rigger` is stale relative to the tree; the hook cannot tell which,
+            # so it refuses rather than guessing.
+            drifted=
             for doc in $tracked; do
-                [ -f "$doc" ] && git add -- "$doc" >/dev/null 2>&1
+                if [ -f "$doc" ] && ! git diff --quiet -- "$doc" 2>/dev/null; then
+                    drifted="${drifted:+$drifted }$doc"
+                fi
             done
+            if [ -n "$drifted" ]; then
+                rigger_bin_path=$(command -v rigger)
+                rigger_prov=$(rigger version 2>/dev/null)
+                echo "rigger: pre-commit: refusing to commit - the committed docs have drifted from a fresh render: $drifted" 1>&2
+                echo "rigger: pre-commit: rendering binary: $rigger_bin_path ($rigger_prov)" 1>&2
+                echo 'rigger: pre-commit: nothing was staged. Fix by either re-rendering with the tree-built binary (rigger docs, then git add the result), or reinstalling rigger so PATH points at a binary built from this tree' 1>&2
+                exit 1
+            fi
         else
             echo 'rigger: pre-commit: rigger docs failed; committing without regenerated docs (rigger validate is the backstop)' 1>&2
         fi
@@ -8159,8 +8193,9 @@ if command -v rigger >/dev/null 2>&1; then
 else
     echo 'rigger: pre-commit: rigger not on PATH; skipping docs regeneration (rigger validate is the backstop)' 1>&2
 fi
-# Best-effort by design (the drift check is the hard backstop): this managed block always
-# succeeds so it can never block a commit.
+# Best-effort on unavailability only (the drift check is the hard backstop for that case): a
+# matching render (or a `rigger` that could not even attempt one) falls through to here and
+# never blocks a commit. A DETECTED drift already `exit 1`'d above and never reaches this line.
 true
 __END__
 "#;
@@ -8296,7 +8331,7 @@ fn git_hooks_dir(root: &Path) -> std::path::PathBuf {
     }
 }
 
-/// Install (or refresh) rigger's docs-regenerating `pre-commit` hook under `root`,
+/// Install (or refresh) rigger's docs-checking `pre-commit` hook under `root`,
 /// returning [what it did](InstallOutcome). The FS-facing wrapper around the pure
 /// [`compose_precommit_bytes`]: it reads the current `pre-commit` (if any) AS BYTES, composes
 /// the merged hook, and writes it ONLY when the merge changes something - so a `rigger setup`
@@ -9357,13 +9392,13 @@ mod tests {
         }
     }
 
-    /// spec 24, crit 1: `compose_precommit` is the PURE, filesystem-free composer for the
+    /// spec 24/70, crit 1: `compose_precommit` is the PURE, filesystem-free composer for the
     /// docs pre-commit hook. A FRESH install (no existing hook) yields a runnable `/bin/sh`
-    /// script carrying rigger's sentinel-marked managed block: it regenerates the docs
-    /// (`rigger docs`), stages ONLY the two rendered outputs by path (never a blanket `git
-    /// add`), acts ONLY where those docs are already tracked (inert in an operator repo),
-    /// guards `rigger` presence for graceful degrade, and ends with `true` so the block can
-    /// never block a commit.
+    /// script carrying rigger's sentinel-marked managed block: it checks the docs (`rigger
+    /// docs`) against ONLY the two rendered outputs by path (never a blanket `git add` - it
+    /// never stages anything at all, spec 70), acts ONLY where those docs are already tracked
+    /// (inert in an operator repo), guards `rigger` presence for graceful degrade, and ends
+    /// with `true` on the no-drift path so a matching render can never block a commit.
     #[test]
     fn compose_precommit_fresh_install_carries_the_managed_block() {
         let hook = compose_precommit(None);
@@ -9375,27 +9410,64 @@ mod tests {
             hook.contains(PRECOMMIT_BEGIN) && hook.contains(PRECOMMIT_END),
             "carries the sentinel-marked managed block; got:\n{hook}"
         );
-        assert!(hook.contains("rigger docs"), "regenerates the docs");
+        assert!(hook.contains("rigger docs"), "checks the docs");
         assert!(
             hook.contains("command -v rigger"),
             "guards rigger presence (graceful degrade)"
         );
         assert!(
             hook.contains(USING_RIGGER_SKILL_REL) && hook.contains(HANDBOOK_DISCIPLINE_REL),
-            "stages exactly the two rendered outputs by path; got:\n{hook}"
+            "compares exactly the two rendered outputs by path; got:\n{hook}"
         );
         assert!(
-            !hook.contains("add -A") && !hook.contains("add ."),
-            "never a blanket git add - staging scope is the two outputs only"
+            !hook.contains("add -A") && !hook.contains("add .") && !hook.contains("git add --"),
+            "never stages anything - it may only ever REFUSE more, not stage more (spec 70)"
         );
         assert!(
             hook.contains("ls-files --error-unmatch"),
-            "regenerate+stage is gated on the docs already being TRACKED, so the hook stays \
-             inert in an operator repo that does not carry them; got:\n{hook}"
+            "the check is gated on the docs already being TRACKED, so the hook stays inert in \
+             an operator repo that does not carry them; got:\n{hook}"
         );
         assert!(
             hook.contains("\ntrue\n"),
             "the managed block ends with `true` so it never blocks a commit"
+        );
+    }
+
+    /// spec 70, crit 1 (the hook REFUSES instead of REWRITING, pure/structural): the managed
+    /// block must never silently launder a stale re-render into the commit by staging it. It
+    /// compares the fresh render against what is already staged (`git diff`, not `git add`) and
+    /// hard-fails (`exit 1`) naming the drifted files, the rendering binary's path AND its build
+    /// provenance (`rigger version`), and the two remedies - so a stale binary on PATH can never
+    /// silently overwrite correctly staged docs (the bug that cost three rejected attempts on
+    /// one unit). A matching render still ends in a bare `true` and never touches the index.
+    #[test]
+    fn precommit_block_refuses_on_drift_instead_of_staging() {
+        let hook = compose_precommit(None);
+        assert!(
+            !hook.contains("git add --"),
+            "the block must never invoke `git add` on the docs itself - it may only ever \
+             REFUSE more, not stage more (a human-facing remedy may still name `git add` as \
+             the operator's own next step); got:\n{hook}"
+        );
+        assert!(
+            hook.contains("git diff"),
+            "the block detects drift by comparing the fresh render against what is already \
+             staged, not by unconditionally rewriting it; got:\n{hook}"
+        );
+        assert!(
+            hook.contains("exit 1"),
+            "a detected drift must hard-fail the commit, not warn-and-proceed; got:\n{hook}"
+        );
+        assert!(
+            hook.contains("command -v rigger") && hook.contains("rigger version"),
+            "the refusal names the rendering binary's path AND its build provenance; got:\n{hook}"
+        );
+        assert!(
+            hook.to_lowercase().contains("reinstall")
+                && (hook.contains("tree-built") || hook.contains("tree built")),
+            "the refusal names the two remedies - re-render with the tree-built binary, or \
+             reinstall; got:\n{hook}"
         );
     }
 
