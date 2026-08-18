@@ -440,6 +440,52 @@ fn reset_derived_fails_the_cli_on_a_malformed_current_run_spawn_event_and_prunes
 }
 
 // ---------------------------------------------------------------------------------------
+// Fail-safe: a step-lock probe fault (not a genuinely held lock) must refuse, never proceed
+// ---------------------------------------------------------------------------------------
+
+/// `acquire_step_lock`'s probe can fail for a reason that is NOT another `rigger step` holding
+/// the lock (a permission fault, a read-only filesystem) - the guard's own docs say that fault
+/// must propagate as a command error rather than being misread either way: not as "a step is
+/// running" (a wrong diagnosis) and never swallowed into "quiet" (which would let compaction
+/// proceed past a signal it never actually verified). Standing `.rigger/step.lock` up as a
+/// DIRECTORY rather than a file faults the probe's own `open()` with an unrelated IO error (not a
+/// lock conflict), proving end to end that this SECOND fail-safe direction reaches the compiled
+/// binary's own exit code - exactly as the malformed-spawn-event case above proves for the first.
+#[test]
+fn reset_derived_fails_on_an_unreadable_step_lock_probe_and_prunes_nothing() {
+    let dir = temp_project();
+    let root = dir.path();
+    // `temp_project` seeds an empty `events.db` FILE with no schema yet (the schema is created on
+    // the first real `Store::open`, as every other `row_count` caller below arranges via
+    // `seed_run_events`) - an empty seed establishes it without recording any event.
+    seed_run_events(root, &[]);
+    std::fs::create_dir_all(root.join(".rigger").join("step.lock"))
+        .expect("stand up step.lock as a directory so the probe's open() faults");
+    let before = row_count(root);
+
+    let (out, err, ok) = run_rigger(root, &["reset", "--derived"], &[]);
+    assert!(
+        !ok,
+        "an unreadable step-lock probe must fail the CLI, never proceed to compact; \
+         stdout: {out:?}"
+    );
+    assert!(
+        !err.is_empty(),
+        "the CLI failure must carry a message an operator can act on"
+    );
+    assert!(
+        !err.contains("another `rigger step` is already running"),
+        "an unrelated probe fault must never be misdiagnosed as a genuinely held lock; \
+         stderr: {err:?}"
+    );
+    assert_eq!(
+        row_count(root),
+        before,
+        "a refusal on an unreadable probe must prune NOTHING"
+    );
+}
+
+// ---------------------------------------------------------------------------------------
 // Signal 4: a fresh driver registration
 // ---------------------------------------------------------------------------------------
 
