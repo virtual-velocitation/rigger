@@ -220,7 +220,13 @@ fn discipline_body(ctx: &DocsContext) -> String {
          COMPOSE \
          and each prunes its own accumulation: `rigger reset --runs --derived` sheds the dead-run \
          graph rows and the duplicated index in one pass. Both are one-shot maintenance you run \
-         BETWEEN runs, never against a live one.\n"
+         BETWEEN runs, never against a live one - and `--derived` ENFORCES that itself: a \
+         compaction leaves revision gaps by design, and a writer whose cursor was built before it \
+         ran could reissue a gap and reorder the log, so it refuses while a `rigger step` holds \
+         its lock, a unit in the current run is not yet terminal, a spawn is in flight, or a \
+         driver registration for this store is still live, naming what it found. `--force-live` \
+         overrides the refusal for an operator certain no writer is using the store; it checks \
+         nothing.\n"
     );
 
     let _ = writeln!(s, "## Spec shape\n");
