@@ -962,6 +962,19 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         // location instead of walking up into the repo's LIVE run stream - main.rs's
         // require_store_dir honors this env var (see the main.rs-side fence test). The
         // fence is the gate runner's job here, not each test's.
+        //
+        // Defensively clear any AMBIENT STORE_FENCE_ENV this test binary's own process may
+        // have inherited before asserting the unfenced branch below: this exact suite is
+        // itself liable to run AS a `cargo test` gate inside a unit worktree (a real,
+        // non-empty target_dir), which per the branch just above always pins
+        // STORE_FENCE_ENV onto the cargo test process itself - and that would leak onto
+        // every subprocess THIS test spawns, silently fencing the one assertion whose whole
+        // point is proving the no-override path. Mirrors the identical precedent in
+        // tests/gate_store_fence_periphery.rs::an_unfenced_integrated_tree_gate_still_walks_up_to_the_live_store
+        // and src/main.rs's own fence tests. Never a race with those: ExecRunner scopes
+        // every fence injection to the spawned Command only (never std::env::set_var), so
+        // clearing here cannot clobber a concurrent test's in-flight state.
+        std::env::remove_var(STORE_FENCE_ENV);
         let with = ExecRunner.run(
             &gate_cmd(&format!(
                 "test \"${STORE_FENCE_ENV}\" = /tmp/rigger-gap19-probe-store-fence"
@@ -1011,6 +1024,12 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         // key one off). `dir` must actually exist on disk (unlike the target_dir-only tests
         // above) - ExecRunner chdirs the spawned `sh` into it - so this test roots a real
         // dir under a tempdir rather than a literal `/tmp/...` path.
+        // Same defensive clear as the sibling test above, for the same reason: this test's
+        // final assertion (an empty store_fence must not force a fence) spawns a child with
+        // NO override at all, so it would otherwise silently inherit an ambient
+        // STORE_FENCE_ENV this test binary's own process carries whenever this exact suite
+        // itself runs as a fenced `cargo test` gate.
+        std::env::remove_var(STORE_FENCE_ENV);
         let parent = tempfile::tempdir().expect("tempdir");
         let review_dir = parent.path().join("rigger-review-fanout-probe-0");
         std::fs::create_dir_all(&review_dir).expect("create review dir");
