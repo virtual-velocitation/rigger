@@ -11,11 +11,15 @@
 //! stdout/stderr/exit code - is pinned exactly as an operator sees it.
 //!
 //! What this file OWNS (criterion 4): the two advisories' trigger conditions, their wording (the
-//! staleness kind, the measured bloat factor, the named fix each names), and that a clean store
-//! draws neither and the exit status is unaffected either way. NOT OWNED: the underlying
-//! measurement primitives themselves (`rigger::grounder::symbols::staleness`/`compare_to_tree`
-//! and `rigger::eventstore::sqlite::Store::measure_derived_duplication`), which carry their own
-//! unit tests beside their implementations.
+//! staleness kind, the measured bloat factor, the named fix each names), that a clean store
+//! draws neither and the exit status is unaffected either way, AND the LOG BLOAT advisory's
+//! sqlite-only boundary - a server-selected store must draw no warning from a local events.db
+//! sitting beside it, regardless of what that local file holds (§48, "one resolution authority":
+//! `bloat_advisory_for` gates on the resolved `StoreSelection`, exactly like `reset --derived`
+//! itself). NOT OWNED: the underlying measurement primitives themselves
+//! (`rigger::grounder::symbols::staleness`/`compare_to_tree` and
+//! `rigger::eventstore::sqlite::Store::measure_derived_duplication`), which carry their own unit
+//! tests beside their implementations.
 
 mod common;
 
@@ -228,6 +232,50 @@ fn validate_is_silent_on_log_bloat_when_every_key_is_recorded_once() {
     assert!(
         !err.contains("rigger reset --derived"),
         "a log with no duplication must draw no bloat warning; stderr:\n{err}"
+    );
+}
+
+#[test]
+fn validate_is_silent_on_log_bloat_when_the_store_is_server_selected() {
+    // The bloat advisory is a SQLITE-ONLY mechanic (`bloat_advisory_for`'s own doc: "None on a
+    // server-backed project ... a sqlite-only mechanic, exactly like `reset --derived` itself").
+    // A server-selected store must never fabricate this warning from a LOCAL events.db that
+    // happens to sit beside it - this proves the guard gates on the resolved `StoreSelection`
+    // itself, not merely on whether a local file with duplication happens to exist (the sibling
+    // tests above already cover THAT half with no `KURRENTDB_CONN` set at all).
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    // Seed the SAME heavy local duplication the sqlite-selected warn test above proves draws a
+    // warning - so any warning here would be unambiguous evidence the sqlite-only guard leaked.
+    seed_duplicated_key(root, 6);
+
+    let mut cmd = common::rigger_courier();
+    cmd.arg("validate")
+        .current_dir(root)
+        .env("RIGGER_NO_DASH", "1")
+        .env(
+            // A well-formed but unreachable address - nothing listens here. `bloat_advisory_for`
+            // must skip on the selection alone, BEFORE any connect attempt, so an unreachable
+            // server can never turn into a hang or a spurious failure (mirrors the unreachable-
+            // server convention `tests/store_resolution_cli.rs` establishes for this exact class
+            // of guard).
+            "KURRENTDB_CONN",
+            "kurrentdb://127.0.0.1:65533?tls=false",
+        );
+    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
+    cmd.env("XDG_STATE_HOME", state.path());
+    let out = cmd.output().expect("failed to spawn the rigger binary");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "an advisory must never fail validate's exit status, even server-selected; stderr:\n{err}"
+    );
+    assert!(
+        !err.contains("rigger reset --derived"),
+        "a server-selected store must draw no bloat warning from a local events.db sitting \
+         beside it, regardless of its duplication; stderr:\n{err}"
     );
 }
 
