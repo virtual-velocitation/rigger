@@ -21,27 +21,34 @@ duplicate instead of replacing the prior owner: an unwinnable reject loop.
 
 ## Design
 
-- THE STAMP, decided here so no unit has to: the ADD path stores the resolved
-  criterion stable id on the stage it inserts - the `(criterion_id, criterion)` pair
-  `resolve_served_criterion` already returns is threaded into the insert at
-  src/conductor.rs:7539-7547 as `criterion_id`. No other insert field changes.
+- THE STAMP, decided here so no unit has to: every stage the ADD path inserts for a
+  proposal that resolves to a criterion carries that criterion's stable id in its
+  `criterion_id` field. This is an OUTCOME requirement on the inserted stage, not a
+  prescription of where the value is computed - a pre-pass, a threaded local, or an
+  insert-site expression are all conforming so long as the stored stage carries the id.
 - Unmatched proposals (a proposal `resolve_served_criterion` maps to no criterion -
   the genuinely-new sub-unit path that records `unmatched-proposal`) keep an EMPTY
-  `criterion_id`, exactly as today: a genuinely-new unit owns no criterion and must
-  stay outside supersession.
+  `criterion_id`, exactly as today, and an empty id NEVER participates in supersession
+  on either side: an empty-id stage is never removed by any supersede, and no proposal's
+  supersede ever matches on emptiness. A genuinely-new unit owns no criterion and stays
+  outside supersession entirely.
 - The same-id fold path (a re-emit under an id that already exists) still folds
   needs only and never touches `criterion_id`; this spec changes the ADD path alone.
-- SAME-CALL ORDER INDEPENDENCE, decided here (round-3 disposition, closing the corner the
-  adversary probe adv2-c1-reversed-order-refine-still-cannibalized exposed): one
-  `harvest_proposed` call folds its proposals so the surviving stage set is a function of
-  the proposals themselves, with log order semantic ONLY among proposals serving the same
-  criterion. Concretely: the supersede filter removes a prior stage ONLY when that stage
-  serves the SAME resolved criterion; a stage added earlier in the SAME call serving a
-  DIFFERENT criterion - or none (a genuinely-new split, empty `criterion_id`) - is never
-  removed by a later proposal in that call, in either arrival order. Two same-call
-  proposals for ONE criterion resolve latest-in-log-order-wins (the planner's latest word),
-  which is deterministic under replay. A same-round refine plus a new split sibling in one
-  call must both survive regardless of which event comes first.
+- THE SUPERSEDE RULE, decided here (round-4 disposition; supersedes the round-3 same-call
+  bullet and settles the mechanism the panel upheld two defects against). Processing a
+  call's proposals in log order, a proposal that resolves to criterion X removes every
+  live stage - not integrated, not terminal - whose STORED `criterion_id` equals X,
+  whether that stage came from an earlier call OR earlier in THIS call (latest word wins),
+  then inserts its own stage stamped with X. A stage serving a DIFFERENT criterion, or
+  none (empty id), is never touched, in either arrival order. Consequences the panel
+  demanded and this rule delivers: a same-round refine plus a new split sibling in one
+  call both survive regardless of event order; two same-call proposals for one criterion
+  resolve to the later one, deterministically under replay.
+- NO ROUND COUNTER, decided here (adjudicator-proven in round 3): supersession must not
+  condition on plan-critique rounds, gate presence, or any advancing counter - a workflow
+  with NO critique gate wired keeps `round == 0` forever, and the rule above must behave
+  identically there. The stored `criterion_id` comparison is the ENTIRE supersede
+  predicate beyond the existing not-integrated/not-terminal guard.
 - State placement: the authoritative record is the event log's `UnitProposed`, which
   already carries `criterion_id` on the wire (src/conductor.rs:1310); `stages` is the
   per-step in-memory fold of those events, so stamping at the fold point applies
