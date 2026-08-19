@@ -73,3 +73,7 @@ escalates? Restart fresh: durable branches carry the work, the budget resets.
 | Plan baseline-match fails, paraphrased units | F6 copyability | One-sentence criteria, detail to Notes |
 | First run after a while churns everywhere | F7 environment | validate preflight + canary on drift |
 | High attempt counts, findings about worktrees/caches/quota | F8 infra noise | Audit findings; fix infra separately |
+
+## Operator binary boundary
+
+An agent never installs, replaces, or modifies the operator's installed `rigger` binary - that binary is operator-only. A tree checkout's own `rigger` build is invoked only by explicit path, and only to render (spec/docs output) - never to overwrite what is on PATH.
