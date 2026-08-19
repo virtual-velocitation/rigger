@@ -72,6 +72,12 @@ poorly), and guardrails so the wrong move meets a refusal or a menu, not a myste
   non-destructive on rerun.
 - One measurement authority per advisory: staleness reuses the symbols store's content
   hashes; bloat reuses the store's own aggregates - no shadow accounting.
+- Disposition for criteria 1-4 (registry, per-operation skills, reset menu, validate
+  advisories): each may be satisfied EITHER by fresh implementation OR by independently
+  re-verifying already-integrated code at the run's base commit - the evidence bar for the
+  re-verify path is rerunning that criterion's own pinned tests plus both feature lanes
+  (fmt, clippy, test on default and `--no-default-features`); a zero-diff confirm-only unit
+  is acceptable evidence for that path, mirroring criterion 5's audit-only precedent.
 
 ## Done when
 
