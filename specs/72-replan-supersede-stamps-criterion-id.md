@@ -31,6 +31,17 @@ duplicate instead of replacing the prior owner: an unwinnable reject loop.
   stay outside supersession.
 - The same-id fold path (a re-emit under an id that already exists) still folds
   needs only and never touches `criterion_id`; this spec changes the ADD path alone.
+- SAME-CALL ORDER INDEPENDENCE, decided here (round-3 disposition, closing the corner the
+  adversary probe adv2-c1-reversed-order-refine-still-cannibalized exposed): one
+  `harvest_proposed` call folds its proposals so the surviving stage set is a function of
+  the proposals themselves, with log order semantic ONLY among proposals serving the same
+  criterion. Concretely: the supersede filter removes a prior stage ONLY when that stage
+  serves the SAME resolved criterion; a stage added earlier in the SAME call serving a
+  DIFFERENT criterion - or none (a genuinely-new split, empty `criterion_id`) - is never
+  removed by a later proposal in that call, in either arrival order. Two same-call
+  proposals for ONE criterion resolve latest-in-log-order-wins (the planner's latest word),
+  which is deterministic under replay. A same-round refine plus a new split sibling in one
+  call must both survive regardless of which event comes first.
 - State placement: the authoritative record is the event log's `UnitProposed`, which
   already carries `criterion_id` on the wire (src/conductor.rs:1310); `stages` is the
   per-step in-memory fold of those events, so stamping at the fold point applies
