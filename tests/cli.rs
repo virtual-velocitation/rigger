@@ -12608,6 +12608,225 @@ fn setup_installs_every_registry_skill_into_the_consumer_project() {
     );
 }
 
+/// The five per-operation skill names spec 68, criterion 2 adds to the registry (rigger-docs,
+/// rigger-validate, and rigger-setup already loop over `skill_registry()` generically as of
+/// spec 68, criterion 1 - shared by the three tests below).
+const PER_OPERATION_SKILL_NAMES: [&str; 5] = [
+    "rigger-reset-store",
+    "rigger-build-graph",
+    "rigger-reindex",
+    "rigger-resume-a-run",
+    "rigger-handle-an-escalation",
+];
+
+/// Spec 68, criterion 2 (the render pipeline reaches all FIVE new registry entries, end to
+/// end): `rigger docs` renders every per-operation skill spec 68, criterion 2 adds - not just
+/// the pre-existing `using-rigger`/`planning-a-spec` pair the sibling tests above drive - each
+/// to its own committed `skills/<name>/SKILL.md` path, with its own loadable frontmatter and
+/// the structurally-stamped operator-binary prohibition. The sibling
+/// `docs_renders_every_registry_skill_including_planning_a_spec` test proved the render
+/// pipeline reaches a SECOND entry; it never drove the five entries THIS unit adds, so a
+/// path-wiring bug specific to one of them (skill_source_rel mapping a name to the wrong
+/// directory, or a registry entry silently dropped from the loop) would satisfy every existing
+/// binary-driving test and only show up here. The implementer's own in-process
+/// `write_docs_writes_every_registry_skill_plus_the_handbook` and
+/// `install_and_docs_each_cover_exactly_the_registry_no_more_no_less` tests (src/main.rs) call
+/// `write_docs`/`install_skills` directly in-process; this drives the actual COMPILED binary
+/// and reads back what it wrote to disk, which an in-process call cannot prove.
+#[test]
+fn docs_renders_every_per_operation_skill_through_the_compiled_binary() {
+    let proj = temp_project();
+    let root = proj.path();
+
+    let (stdout, stderr, ok) = run_rigger(root, &["docs"]);
+    assert!(ok, "rigger docs must succeed; stderr: {stderr}");
+
+    for name in PER_OPERATION_SKILL_NAMES {
+        let rel = format!("skills/{name}/SKILL.md");
+        assert!(
+            stdout.contains(&rel),
+            "rigger docs must report rendering {name} at {rel}; got: {stdout}"
+        );
+
+        let path = root.join(&rel);
+        let rendered = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("rigger docs must have written {rel}: {e}"));
+        assert!(
+            rendered.starts_with(&format!("---\nname: {name}\n")),
+            "{name}: must open with its own loadable frontmatter; got: {}",
+            &rendered[..rendered.len().min(60)]
+        );
+        assert!(
+            rendered.contains("## Procedure") && rendered.contains("## Anti-move"),
+            "{name}: rendered skill must carry its Procedure and Anti-move sections; \
+             got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("## Operator binary boundary")
+                && rendered.contains("never installs, replaces, or modifies the operator's"),
+            "{name}: rendered skill must carry the structurally-stamped operator-binary \
+             prohibition; got:\n{rendered}"
+        );
+
+        // Byte-stable across runs (the drift check the next test relies on depends on this).
+        let (_o2, _e2, ok2) = run_rigger(root, &["docs"]);
+        assert!(ok2, "a second `rigger docs` run must succeed");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            rendered,
+            "{name}: a second render must be byte-identical"
+        );
+    }
+}
+
+/// Spec 68, criterion 2 (the docs-drift GATE covers all FIVE new entries individually, end to
+/// end): `rigger validate` fails when exactly ONE per-operation skill has drifted, names that
+/// skill (and no other registry member), and passes again once it is re-rendered - proven for
+/// EACH of the five in turn, not just one representative. The sibling
+/// `validate_docs_drift_gate_covers_the_second_registry_entry` test proved the gate was
+/// genuinely wired (not just widened to accept a second file without checking it) for
+/// `planning-a-spec`; that same class of per-file wiring bug could affect any ONE of these
+/// five committed paths independently (`docs_drift` builds its check list by mapping each
+/// registry name through `skill_source_rel`, so a copy-paste mistake in that mapping for a
+/// single entry would only be caught by exercising that entry's own path, not by exercising
+/// any other).
+#[test]
+fn validate_docs_drift_gate_covers_each_per_operation_skill() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_o, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    let (_o, err, ok) = run_rigger(root, &["docs"]);
+    assert!(ok, "rigger docs must succeed; stderr:\n{err}");
+
+    // Baseline: every committed doc, including all five new entries, starts in sync.
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "validate must pass when every registry entry (including the five new ones) is in \
+         sync; stderr:\n{err}"
+    );
+
+    for name in PER_OPERATION_SKILL_NAMES {
+        let path = root.join(format!("skills/{name}/SKILL.md"));
+        assert!(
+            path.exists(),
+            "rigger docs must have written {name}'s skill"
+        );
+
+        append_line(&path, "hand-edited line the render never emits");
+        let (_out, err, ok) = run_rigger(root, &["validate"]);
+        assert!(!ok, "validate must FAIL when {name} drifts; stderr:\n{err}");
+        assert!(
+            err.contains(&format!("skills/{name}/SKILL.md")) && err.contains("rigger docs"),
+            "the drift failure must name the drifted {name} skill and the `rigger docs` fix; \
+             stderr:\n{err}"
+        );
+        for other in PER_OPERATION_SKILL_NAMES
+            .iter()
+            .filter(|other| **other != name)
+        {
+            assert!(
+                !err.contains(&format!("skills/{other}/SKILL.md")),
+                "{name} alone drifted, but the failure also names untouched {other}; \
+                 stderr:\n{err}"
+            );
+        }
+        assert!(
+            !err.contains("skills/using-rigger/SKILL.md")
+                && !err.contains("skills/planning-a-spec/SKILL.md"),
+            "{name} alone drifted, but the failure also names an untouched pre-existing \
+             registry entry; stderr:\n{err}"
+        );
+
+        // Re-render restores sync for every entry -> validate passes again before the next
+        // iteration drifts a different one.
+        let (_o, _e, ok) = run_rigger(root, &["docs"]);
+        assert!(ok, "re-rendering the docs must succeed");
+        let (_out, err, ok) = run_rigger(root, &["validate"]);
+        assert!(
+            ok,
+            "validate must pass again once {name}'s drift is re-rendered; stderr:\n{err}"
+        );
+    }
+}
+
+/// Spec 68, criterion 2 (the INSTALL seam reaches all FIVE new entries, end to end): `rigger
+/// setup` installs every per-operation skill into the consumer project at its own
+/// `.claude/skills/<name>/SKILL.md` path, carrying the operator-binary prohibition, and
+/// reports installing it; a no-op rerun leaves every one of them untouched (no report line, no
+/// moved mtime). The sibling `setup_installs_every_registry_skill_into_the_consumer_project`
+/// test proved the install seam (`install_skills` looping over `skill_registry()`) reaches a
+/// second entry; install is its own function with its own loop, independent from the
+/// docs/render and validate/drift seams the two tests above cover, so a bug specific to that
+/// loop (skipping an entry, or reusing one `InstallOutcome`/one rendered body across several
+/// entries) would pass every other test in this file and only show up by checking each
+/// installed file's own name and content here.
+#[test]
+fn setup_installs_every_per_operation_skill_into_the_consumer_project() {
+    let proj = temp_project();
+    let root = proj.path();
+
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+
+    let mut installed_before = Vec::new();
+    for name in PER_OPERATION_SKILL_NAMES {
+        let installed_path = root.join(format!(".claude/skills/{name}/SKILL.md"));
+        assert!(
+            installed_path.exists(),
+            "setup must install {name} at .claude/skills/{name}/SKILL.md"
+        );
+        assert!(
+            out.contains(&format!("installed the {name} skill"))
+                && out.contains(&format!(".claude/skills/{name}/SKILL.md")),
+            "setup must report installing {name}; got:\n{out}"
+        );
+
+        let installed = std::fs::read_to_string(&installed_path)
+            .unwrap_or_else(|e| panic!("{name} was installed: {e}"));
+        assert!(
+            installed.starts_with(&format!("---\nname: {name}\n")),
+            "the installed {name} skill must be loadable; got: {}",
+            &installed[..installed.len().min(60)]
+        );
+        assert!(
+            installed.contains("## Operator binary boundary"),
+            "the installed {name} skill must carry the operator-binary prohibition too; \
+             got:\n{installed}"
+        );
+
+        let mtime = std::fs::metadata(&installed_path)
+            .unwrap()
+            .modified()
+            .unwrap();
+        installed_before.push((name, installed_path, mtime));
+    }
+
+    // A no-op rerun leaves every one of the five untouched: no install/refresh report line,
+    // and not even a moved mtime.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let (out2, err2, ok2) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok2, "a no-op setup rerun must succeed; stderr:\n{err2}");
+    for (name, installed_path, before) in installed_before {
+        assert!(
+            !out2.contains(&format!("installed the {name} skill"))
+                && !out2.contains(&format!("refreshed the drifted {name} skill")),
+            "an already-current {name} must not be reported as installed/refreshed; \
+             got:\n{out2}"
+        );
+        let after = std::fs::metadata(&installed_path)
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert_eq!(
+            before, after,
+            "an up-to-date {name} must not even move its mtime"
+        );
+    }
+}
+
 /// Spec 46, criterion 2 (the pre-run graph-hygiene guidance ships to CONSUMERS through the
 /// INSTALL seam): a consumer never edits rigger's own repo copies - they run `rigger setup`,
 /// which renders and INSTALLS the `using-rigger` skill into THEIR project at
