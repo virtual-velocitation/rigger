@@ -399,6 +399,41 @@ mod staleness_tests {
         persist(root, &refs);
         assert_eq!(staleness(root), None);
     }
+
+    #[test]
+    fn the_sample_cap_limits_how_many_actually_changed_files_are_rehashed_and_reported() {
+        // Persist more files than STALENESS_SAMPLE_SIZE, then change EVERY one of them on disk
+        // (unlike `the_sample_is_capped_and_deterministic` above, where every file stays
+        // unchanged and so proves nothing about whether the cap is applied at all - a version
+        // with `.take(STALENESS_SAMPLE_SIZE)` deleted would pass that test identically). Here a
+        // full-tree rehash would flag every file as changed; only the capped SAMPLE may be
+        // rehashed and reported, so this test fails if the cap is removed.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        let mut entries: Vec<(String, String)> = Vec::new();
+        for i in 0..(STALENESS_SAMPLE_SIZE * 2) {
+            let name = format!("f{i:02}.rs");
+            let original = format!("fn f{i}() {{}}\n");
+            entries.push((name, store::content_hash(&original)));
+        }
+        let refs: Vec<(&str, &str)> = entries
+            .iter()
+            .map(|(p, h)| (p.as_str(), h.as_str()))
+            .collect();
+        persist(root, &refs);
+        // Every persisted file now has DIFFERENT content on disk than what was indexed.
+        for (name, _) in &entries {
+            std::fs::write(dir.path().join(name), format!("fn {name}_changed() {{}}\n")).unwrap();
+        }
+        let drift = staleness(root).expect("every file actually changed; must be flagged stale");
+        assert_eq!(
+            drift.changed.len(),
+            STALENESS_SAMPLE_SIZE,
+            "only the capped sample may be rehashed and reported as changed, even though every \
+             file in the tree actually drifted - a full rehash would report all {} of them",
+            STALENESS_SAMPLE_SIZE * 2
+        );
+    }
 }
 
 #[cfg(test)]
