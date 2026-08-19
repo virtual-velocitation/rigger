@@ -62,3 +62,7 @@ The discipline explains its own constraints:
 - One source of truth: every drift-prone fact in this document is read from the code the binary runs on, so the document cannot silently disagree with behavior. A drift check re-renders and diffs it, so it stays accurate rather than merely starting accurate.
 - Blast-radius isolation: each unit does its work in its own worktree, so concurrent units never clobber one another and every unit's change is reviewed on its own diff.
 - Fail-closed review: only an explicit approve verdict integrates a unit; a missing, unparseable, or rejecting verdict routes the unit back to remediation rather than passing it silently.
+
+## Operator binary boundary
+
+An agent never installs, replaces, or modifies the operator's installed `rigger` binary - that binary is operator-only. A tree checkout's own `rigger` build is invoked only by explicit path, and only to render (spec/docs output) - never to overwrite what is on PATH.
