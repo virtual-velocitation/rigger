@@ -409,6 +409,305 @@ fn render_planning_a_spec_skill(_ctx: &DocsContext) -> String {
     PLANNING_A_SPEC_BODY.to_string()
 }
 
+/// Render the `rigger-reset-store` skill (spec 68, criterion 2): store hygiene for the
+/// three files under `.rigger/`. `ctx` is accepted only to match the registry's uniform
+/// signature; nothing here is drift-prone enough to interpolate from it.
+fn render_reset_store_skill(_ctx: &DocsContext) -> String {
+    let mut s = String::new();
+    s.push_str("---\n");
+    s.push_str("name: rigger-reset-store\n");
+    s.push_str(
+        "description: Store hygiene for rigger's own state - growing .rigger/ disk usage, \
+         the bloat advisory from `rigger validate`, or `rigger step`/replay running slow. \
+         Read this before running `rigger reset` or touching any store file by hand.\n",
+    );
+    s.push_str("---\n\n");
+    s.push_str("# rigger-reset-store\n\n");
+    let _ = writeln!(
+        s,
+        "rigger keeps three stores under `.rigger/`, and only one of them holds anything \
+         durable:\n"
+    );
+    let _ = writeln!(
+        s,
+        "- `events.db` - the event log. This IS the truth: every decision, finding, gate \
+         verdict, and run milestone rigger has ever recorded, in the order it happened. \
+         Nothing else derives it; it derives everything else."
+    );
+    let _ = writeln!(
+        s,
+        "- `graph.db` - the context graph. A REBUILDABLE projection folded from the event \
+         log: rigger-build-graph regenerates it from `events.db` alone, so losing it loses \
+         time, never truth."
+    );
+    let _ = writeln!(
+        s,
+        "- `progress.db` - live per-agent progress telemetry. Never replayed into a run's \
+         state; it is a side channel `rigger status` and the dashboard read to show what an \
+         agent is doing right now, not a record anything else depends on.\n"
+    );
+    let _ = writeln!(s, "## Procedure\n");
+    let _ = writeln!(
+        s,
+        "`rigger reset` with no flags is the MENU, not an error: it exits 0 and prints one \
+         line per prunable accumulation, each with a measured count and the flag that acts \
+         on it. It is read-only - safe to run any time just to look.\n"
+    );
+    let _ = writeln!(
+        s,
+        "- `rigger reset --runs` prunes dead-run rows and superseded edges out of \
+         `graph.db`. It works over ANY event-store backend (the graph is always a local \
+         file); rerun it any time, especially before a large run."
+    );
+    let _ = writeln!(
+        s,
+        "- `rigger reset --derived` compacts `events.db`: it keeps the LATEST event per \
+         replay key of each derived project-ingest type, deletes the superseded \
+         duplicates, and vacuums so the file shrinks on disk. Every other event - every \
+         decision, finding, lesson, gate verdict, the whole run history - survives \
+         byte-for-byte. Only the embedded sqlite backend can compact this way, and it \
+         refuses (unless overridden with `--force-live`) while a run is live against the \
+         store."
+    );
+    let _ = writeln!(
+        s,
+        "- The two flags compose: `rigger reset --runs --derived` sheds both \
+         accumulations in one pass.\n"
+    );
+    let _ = writeln!(s, "## Anti-move\n");
+    let _ = writeln!(
+        s,
+        "Never touch `events.db`, `graph.db`, or `progress.db` with raw SQL, `rm`, or any \
+         tool outside `rigger reset`. The event log is append-only truth: a hand-edit or a \
+         hand-deleted row can desync the graph from the log in ways `rigger reset \
+         --derived`'s own key-preserving compaction is specifically built to avoid. A store \
+         file that is genuinely corrupt is an incident to fix at its root, never a reason \
+         to reach for a database client.\n"
+    );
+    let _ = writeln!(s, "## See also\n");
+    let _ = writeln!(
+        s,
+        "rigger-build-graph if `graph.db` needs regenerating rather than pruning; \
+         rigger-reindex if only the symbols index is stale.\n"
+    );
+    s
+}
+
+/// Render the `rigger-build-graph` skill (spec 68, criterion 2): the cold-build entry
+/// point for the context graph. `ctx` is accepted only to match the registry's uniform
+/// signature; nothing here is drift-prone enough to interpolate from it.
+fn render_build_graph_skill(_ctx: &DocsContext) -> String {
+    let mut s = String::new();
+    s.push_str("---\n");
+    s.push_str("name: rigger-build-graph\n");
+    s.push_str(
+        "description: Cold-build the context graph - empty `rigger graph --around`/`--show` \
+         lookups on a repo that already has source, or a first setup before any run exists. \
+         Read this before deleting a store file to force a re-ingest.\n",
+    );
+    s.push_str("---\n\n");
+    s.push_str("# rigger-build-graph\n\n");
+    let _ = writeln!(s, "## Procedure\n");
+    let _ = writeln!(
+        s,
+        "`rigger graph build` folds the project's source straight into `.rigger/graph.db` - \
+         no run, no `RunStarted`, nothing but the code-ingest events the fold already emits. \
+         It CREATES the store when the checkout is cold (`.rigger/` does not exist yet) and \
+         REFRESHES an existing store incrementally: an unchanged file re-ingests nothing, and \
+         it reuses the exact same walk-and-content-key ingest authority a live run uses, so a \
+         standalone build and a run can never fold the same file under two different keys.\n"
+    );
+    let _ = writeln!(
+        s,
+        "Rerun it any time it is convenient - on a schedule, after pulling a large set of \
+         changes, or simply because a lookup came back empty and you want to check. It is \
+         always safe: nothing is deleted, only appended and incrementally refreshed.\n"
+    );
+    let _ = writeln!(s, "## Anti-move\n");
+    let _ = writeln!(
+        s,
+        "Never force a rebuild by deleting `.rigger/graph.db` (or `events.db`) and \
+         re-running `rigger graph build` on the empty result. Deleting the log throws away \
+         truth that no rebuild can get back, and deleting only the graph is unnecessary work \
+         `rigger graph build` already does FOR you, incrementally, without erasing anything \
+         first. If lookups are empty, just run `rigger graph build`; only reach for \
+         rigger-reset-store if you specifically mean to prune, not rebuild.\n"
+    );
+    let _ = writeln!(s, "## See also\n");
+    let _ = writeln!(
+        s,
+        "rigger-reindex for a narrower staleness problem - one that is really about the \
+         symbols grounding index, not the whole structural graph; rigger-reset-store for \
+         pruning `graph.db`'s dead-run accumulation rather than rebuilding it.\n"
+    );
+    s
+}
+
+/// Render the `rigger-reindex` skill (spec 68, criterion 2): the targeted refresh for the
+/// symbols grounding index. `ctx` is accepted only to match the registry's uniform
+/// signature; nothing here is drift-prone enough to interpolate from it.
+fn render_reindex_skill(_ctx: &DocsContext) -> String {
+    let mut s = String::new();
+    s.push_str("---\n");
+    s.push_str("name: rigger-reindex\n");
+    s.push_str(
+        "description: Refresh the symbols grounding index - a `rigger graph`/`rigger ground` \
+         lookup that names an entity the current tree no longer holds, or the \
+         index-staleness advisory from `rigger validate`. Read this before rebuilding the \
+         whole graph over an index-freshness problem.\n",
+    );
+    s.push_str("---\n\n");
+    s.push_str("# rigger-reindex\n\n");
+    let _ = writeln!(s, "## Procedure\n");
+    let _ = writeln!(
+        s,
+        "`rigger reindex <file>...` re-parses ONLY the named files and persists the delta to \
+         the project's symbols grounding index at `.rigger/symbols/` - the fast, targeted fix \
+         for an index that has drifted from files you just changed (a unit's own commit, a \
+         rebase, a branch switch). It is scoped strictly to the symbols index, a DIFFERENT \
+         store from the structural context graph, so it costs only the named files, never a \
+         walk of the whole tree.\n"
+    );
+    let _ = writeln!(
+        s,
+        "Name every file whose content changed since the index was last built; an unnamed \
+         file's stale entry is left exactly as it was.\n"
+    );
+    let _ = writeln!(s, "## Anti-move\n");
+    let _ = writeln!(
+        s,
+        "Do not reach for a whole-graph rebuild (see rigger-build-graph) or a store wipe to \
+         fix a lookup that is really an index-freshness problem: naming the stale files and \
+         reindexing exactly them is both cheaper and more targeted than rebuilding the whole \
+         structural graph over a handful of drifted entries. Reserve a whole-graph rebuild \
+         for when the graph itself is missing or empty, not for a symbols lookup that just \
+         needs the files it names re-parsed.\n"
+    );
+    let _ = writeln!(s, "## See also\n");
+    let _ = writeln!(
+        s,
+        "rigger-build-graph for the whole-project structural graph; rigger-reset-store for \
+         the stores' own hygiene.\n"
+    );
+    s
+}
+
+/// Render the `rigger-resume-a-run` skill (spec 68, criterion 2): continuing a run after
+/// its driver died mid-flight. `ctx` is accepted only to match the registry's uniform
+/// signature; nothing here is drift-prone enough to interpolate from it.
+fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
+    let mut s = String::new();
+    s.push_str("---\n");
+    s.push_str("name: rigger-resume-a-run\n");
+    s.push_str(
+        "description: Continue interrupted work after a dead driver (spent quota, a crash, a \
+         laptop that slept mid-run) or `rigger status` showing an agent 'in flight' with a \
+         stale heartbeat. Read this before relaunching a run or reaching for `--fresh`.\n",
+    );
+    s.push_str("---\n\n");
+    s.push_str("# rigger-resume-a-run\n\n");
+    let _ = writeln!(s, "## Procedure\n");
+    let _ = writeln!(
+        s,
+        "Diagnose first: `rigger status` (or the dashboard) shows each in-flight agent's \
+         last progress report and heartbeat age. A stale heartbeat with no recent store \
+         event means the DRIVER died mid-run (quota ran out, the process crashed, the \
+         machine slept) - it does not mean the run itself is broken; the event log already \
+         holds every decision and gate verdict the run made before the driver stopped.\n"
+    );
+    let _ = writeln!(
+        s,
+        "Relaunch the same blessed driver on the same spec WITHOUT `--fresh` - `rigger run \
+         <spec>`, `rigger serve <spec>` / `rigger workflow <spec>`, or the native `/rigger \
+         <spec>` workflow with its `fresh` argument left unset. Because the run lives in the \
+         event log, not in the dead process, the conductor's own run-starting step adopts \
+         the existing run instead of minting a new one: it replays the log, rebuilds its \
+         in-memory state, and continues exactly where the dead driver left off. No unit \
+         restarts from zero and no work already recorded is lost.\n"
+    );
+    let _ = writeln!(
+        s,
+        "`--fresh` is for a DIFFERENT situation, not this one: a run wedged in a terminal \
+         state (for example a plan-critique escalation) on a spec that is otherwise \
+         UNCHANGED. It is a one-shot new-run boundary, never the default way to continue \
+         interrupted work.\n"
+    );
+    let _ = writeln!(s, "## Anti-move\n");
+    let _ = writeln!(
+        s,
+        "Never hand-drive `rigger step` yourself in a shell to \"help it along\" - the \
+         driver owns stepping, and a hand step races it, which can double-spawn a unit or \
+         wedge the frontier (see using-rigger). And do not reach for `--fresh` reflexively \
+         just because a run looks stuck: on a merely-interrupted run it abandons the \
+         adoptable state your relaunch would otherwise have continued from, in exchange for \
+         nothing - reserve it for the genuinely wedged-terminal case above.\n"
+    );
+    let _ = writeln!(s, "## See also\n");
+    let _ = writeln!(
+        s,
+        "rigger-handle-an-escalation for the run-level and unit-level terminal states \
+         `--fresh` genuinely exists for.\n"
+    );
+    s
+}
+
+/// Render the `rigger-handle-an-escalation` skill (spec 68, criterion 2): acting on a
+/// unit the loop handed back to a human. Unlike its four siblings, this one DOES
+/// interpolate from `ctx`: the remediation bound it names is [`DocsContext::max_retries`],
+/// the same code-derived fact `using-rigger` interpolates, so the two can never disagree
+/// on what the bound actually is.
+fn render_handle_an_escalation_skill(ctx: &DocsContext) -> String {
+    let mut s = String::new();
+    s.push_str("---\n");
+    s.push_str("name: rigger-handle-an-escalation\n");
+    s.push_str(
+        "description: Act on a unit the loop handed back - `rigger status` (or the \
+         dashboard) names it `escalated (awaiting a human)` after it exhausted its \
+         remediation attempts. Read this before touching the unit's branch or relaunching \
+         the run.\n",
+    );
+    s.push_str("---\n\n");
+    s.push_str("# rigger-handle-an-escalation\n\n");
+    let _ = writeln!(s, "## Procedure\n");
+    let _ = writeln!(
+        s,
+        "An escalated unit gave up at the remediation bound (`defaults.max_retries`, {max} \
+         by default) - the loop will not retry it on its own; it is waiting on a human \
+         decision. Read the recorded lesson for the CONCRETE final failure - via `rigger \
+         peers` scoped to the unit's files, or the dashboard - rather than guessing: the \
+         escalation lesson carries the actual failing gate or review reason, not a \
+         placeholder, and that reason is the bounded remedy you are about to apply.\n",
+        max = ctx.max_retries
+    );
+    let _ = writeln!(
+        s,
+        "Apply EXACTLY that remedy on the unit's durable branch (`rigger/u/<unit-id>`, the \
+         branch rigger itself created and kept for this unit's committed work across every \
+         attempt) - nothing more, nothing less. Then relaunch the run fresh - `rigger run \
+         --fresh <spec>` (or `rigger serve --fresh <spec>` / the native `/rigger <spec>` \
+         workflow with `fresh` set) - against the same, otherwise-unchanged spec: the \
+         conductor mints a new run boundary, and the loop picks the escalated unit back up \
+         with a clean remediation budget.\n"
+    );
+    let _ = writeln!(s, "## Anti-move\n");
+    let _ = writeln!(
+        s,
+        "Never hand-merge the unit's durable branch onto the run branch yourself - that \
+         bypasses review and integration and forks the merged code away from what the event \
+         log says happened. And never re-implement more than the remedy names: scope creep \
+         here is work the next review has no record of and did not ask for. If the remedy \
+         genuinely needs more than a bounded fix, that is a reason to amend the spec (see \
+         planning-a-spec), not to freelance on the branch.\n"
+    );
+    let _ = writeln!(s, "## See also\n");
+    let _ = writeln!(
+        s,
+        "rigger-resume-a-run for the DIFFERENT case of a merely-interrupted run, where \
+         `--fresh` is the wrong move.\n"
+    );
+    s
+}
+
 /// The line stamped onto EVERY registry skill's rendered content (spec 68, Design): an
 /// agent must never install, replace, or modify the operator's own installed `rigger`
 /// binary. [`SkillEntry::render`] appends this ONCE, structurally, for every entry - it is
@@ -446,10 +745,10 @@ impl SkillEntry {
     }
 }
 
-/// The skill registry (spec 68, criterion 1): `using-rigger` (the driving discipline) and
-/// `planning-a-spec` (the authoring discipline) today; a per-operation family joins this
-/// same list by appending entries (spec 68, criterion 2), never by adding a second,
-/// independently-walked enumeration.
+/// The skill registry (spec 68, criterion 1): `using-rigger` (the driving discipline),
+/// `planning-a-spec` (the authoring discipline), and the five-member per-operation family
+/// (spec 68, criterion 2) - one skill per operation, joining this same list by appending
+/// entries, never by adding a second, independently-walked enumeration.
 pub fn skill_registry() -> Vec<SkillEntry> {
     vec![
         SkillEntry {
@@ -459,6 +758,26 @@ pub fn skill_registry() -> Vec<SkillEntry> {
         SkillEntry {
             name: "planning-a-spec",
             render_body: render_planning_a_spec_skill,
+        },
+        SkillEntry {
+            name: "rigger-reset-store",
+            render_body: render_reset_store_skill,
+        },
+        SkillEntry {
+            name: "rigger-build-graph",
+            render_body: render_build_graph_skill,
+        },
+        SkillEntry {
+            name: "rigger-reindex",
+            render_body: render_reindex_skill,
+        },
+        SkillEntry {
+            name: "rigger-resume-a-run",
+            render_body: render_resume_a_run_skill,
+        },
+        SkillEntry {
+            name: "rigger-handle-an-escalation",
+            render_body: render_handle_an_escalation_skill,
         },
     ]
 }
@@ -838,5 +1157,223 @@ mod tests {
         ] {
             assert!(out.contains(step), "recipe must carry {step:?}");
         }
+    }
+
+    /// Spec 68, criterion 2: the five-member per-operation family is IN the registry,
+    /// each name present exactly once, alongside (not instead of) `using-rigger` and
+    /// `planning-a-spec`.
+    #[test]
+    fn registry_names_all_five_per_operation_skills_exactly_once_each() {
+        let names: Vec<&str> = skill_registry().iter().map(|e| e.name).collect();
+        for expected in [
+            "using-rigger",
+            "planning-a-spec",
+            "rigger-reset-store",
+            "rigger-build-graph",
+            "rigger-reindex",
+            "rigger-resume-a-run",
+            "rigger-handle-an-escalation",
+        ] {
+            assert_eq!(
+                names.iter().filter(|n| **n == expected).count(),
+                1,
+                "{expected:?} must appear exactly once in the registry; got {names:?}"
+            );
+        }
+        assert_eq!(
+            names.len(),
+            7,
+            "the registry must have exactly 7 entries; got {names:?}"
+        );
+    }
+
+    /// Spec 68, criterion 2: every per-operation skill's frontmatter carries the
+    /// operation's own symptom-bearing "tells" from the spec Design table, so an agent
+    /// routes to the right skill from the description alone (this file IS the routing
+    /// layer - see the registry doc comment).
+    #[test]
+    fn per_operation_descriptions_carry_their_symptoms() {
+        let ctx = sentinel_ctx();
+        let cases: &[(&str, &[&str])] = &[
+            (
+                "rigger-reset-store",
+                &["disk usage", "bloat advisory", "rigger validate"],
+            ),
+            ("rigger-build-graph", &["empty", "first setup"]),
+            (
+                "rigger-reindex",
+                &["no longer holds", "index-staleness advisory"],
+            ),
+            (
+                "rigger-resume-a-run",
+                &["dead driver", "in flight", "stale heartbeat"],
+            ),
+            (
+                "rigger-handle-an-escalation",
+                &["escalated (awaiting a human)"],
+            ),
+        ];
+        let registry = skill_registry();
+        for (name, tells) in cases {
+            let entry = registry
+                .iter()
+                .find(|e| e.name == *name)
+                .unwrap_or_else(|| panic!("{name} must be in the registry"));
+            let out = (entry.render_body)(&ctx);
+            let frontmatter_end = out.find("\n---\n\n").map(|i| i + 6).unwrap_or(out.len());
+            let frontmatter = &out[..frontmatter_end];
+            assert!(
+                frontmatter.starts_with(&format!("---\nname: {name}\n")),
+                "{name}: frontmatter must open naming itself; got: {}",
+                &frontmatter[..frontmatter.len().min(80)]
+            );
+            for tell in *tells {
+                assert!(
+                    frontmatter.contains(tell),
+                    "{name}: description must carry the symptom {tell:?}; got: {frontmatter}"
+                );
+            }
+        }
+    }
+
+    /// Spec 68, criterion 2 (the escalation "tell" is genuinely pinned, not hand-copied):
+    /// the exact phrase `rigger-handle-an-escalation` names in its description is the
+    /// SAME string [`crate::blocker::Blocker::line`] renders for
+    /// [`crate::blocker::Kind::Escalated`] - the literal text `rigger status`/the
+    /// dashboard show an operator. A rename of that blocker line would break this test,
+    /// not just silently stop matching what an operator actually sees.
+    #[test]
+    fn escalation_skill_names_the_real_blocker_line() {
+        let blocker = crate::blocker::Blocker {
+            subject: "some-unit".to_string(),
+            kind: crate::blocker::Kind::Escalated,
+        };
+        let real_line = blocker.line();
+        let out = render_handle_an_escalation_skill(&sentinel_ctx());
+        assert!(
+            out.contains(&real_line),
+            "the skill must name the REAL blocker line {real_line:?} an operator actually \
+             sees, not a hand-copied approximation"
+        );
+    }
+
+    /// Spec 68, criterion 2: every per-operation skill's body carries exactly one
+    /// "## Procedure" section and exactly one "## Anti-move" section (one operation, one
+    /// named anti-move - never a second procedure bundled in, never a missing anti-move).
+    #[test]
+    fn per_operation_skills_carry_one_procedure_and_one_named_anti_move() {
+        let ctx = sentinel_ctx();
+        for name in [
+            "rigger-reset-store",
+            "rigger-build-graph",
+            "rigger-reindex",
+            "rigger-resume-a-run",
+            "rigger-handle-an-escalation",
+        ] {
+            let registry = skill_registry();
+            let entry = registry.iter().find(|e| e.name == name).unwrap();
+            let out = (entry.render_body)(&ctx);
+            assert_eq!(
+                out.matches("## Procedure").count(),
+                1,
+                "{name}: must carry exactly one Procedure section"
+            );
+            assert_eq!(
+                out.matches("## Anti-move").count(),
+                1,
+                "{name}: must carry exactly one named Anti-move section"
+            );
+            // The anti-move must actually follow the procedure (one operation described,
+            // then the move that would defeat it) - not precede it.
+            assert!(
+                out.find("## Procedure").unwrap() < out.find("## Anti-move").unwrap(),
+                "{name}: Procedure must come before Anti-move"
+            );
+        }
+    }
+
+    /// Spec 68, criterion 2 (the neighbor-linking half): every per-operation skill's body
+    /// names at least one OTHER family member by name, so the family cross-links rather
+    /// than each entry standing in isolation (spec Design: "cross-linking neighbors by
+    /// name").
+    #[test]
+    fn per_operation_skills_cross_link_a_sibling_by_name() {
+        let ctx = sentinel_ctx();
+        let family = [
+            "rigger-reset-store",
+            "rigger-build-graph",
+            "rigger-reindex",
+            "rigger-resume-a-run",
+            "rigger-handle-an-escalation",
+        ];
+        let registry = skill_registry();
+        for name in family {
+            let entry = registry.iter().find(|e| e.name == name).unwrap();
+            let out = (entry.render_body)(&ctx);
+            let mentions_a_sibling = family
+                .iter()
+                .filter(|other| **other != name)
+                .any(|other| out.contains(other));
+            assert!(
+                mentions_a_sibling,
+                "{name}: must cross-link at least one sibling skill by name"
+            );
+        }
+    }
+
+    /// Spec 68, criterion 2 (the scope boundary): "no registry skill's body exceeds one
+    /// operation's scope" - each per-operation skill's own primary command anchor appears
+    /// ONLY in its own render, never reproduced as another skill's procedure. A neighbor
+    /// may be named (the cross-link test above), but never re-documented as if it were
+    /// this skill's own operation.
+    #[test]
+    fn per_operation_skills_stay_within_their_own_operations_scope() {
+        let ctx = sentinel_ctx();
+        let anchors: &[(&str, &str)] = &[
+            ("rigger-reset-store", "rigger reset --derived"),
+            ("rigger-build-graph", "rigger graph build"),
+            ("rigger-reindex", "rigger reindex <file>"),
+            ("rigger-resume-a-run", "adopts the existing run"),
+            ("rigger-handle-an-escalation", "the unit's durable branch"),
+        ];
+        let registry = skill_registry();
+        let rendered: Vec<(&str, String)> = anchors
+            .iter()
+            .map(|(name, _)| {
+                let entry = registry.iter().find(|e| e.name == *name).unwrap();
+                (*name, (entry.render_body)(&ctx))
+            })
+            .collect();
+        for (name, out) in &rendered {
+            let own_anchor = anchors.iter().find(|(n, _)| n == name).unwrap().1;
+            assert!(
+                out.contains(own_anchor),
+                "{name}: must carry its own operation's anchor {own_anchor:?}"
+            );
+            for (other_name, other_anchor) in anchors {
+                if other_name == name {
+                    continue;
+                }
+                assert!(
+                    !out.contains(other_anchor),
+                    "{name}: must NOT reproduce {other_name}'s own anchor {other_anchor:?} - \
+                     that would exceed this skill's one-operation scope"
+                );
+            }
+        }
+    }
+
+    /// Spec 68, criterion 2: the escalation skill's remediation-bound sentence is
+    /// PARAMETERIZED by `ctx.max_retries` (the same code-derived fact `using-rigger`
+    /// interpolates), not a hand-copied number - proven with a sentinel value distinct
+    /// from the real `MAX_RETRIES` default.
+    #[test]
+    fn escalation_skill_is_parameterized_by_max_retries() {
+        let ctx = sentinel_ctx();
+        let out = render_handle_an_escalation_skill(&ctx);
+        assert!(
+            out.contains(&ctx.max_retries.to_string()),
+            "the escalation skill must interpolate ctx.max_retries, not hard-code a bound"
+        );
     }
 }
