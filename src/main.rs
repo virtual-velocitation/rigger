@@ -10745,6 +10745,54 @@ mod tests {
         );
     }
 
+    /// Spec 68, criterion 2 (the accuracy pin): every bare `rigger <cmd>` a per-operation
+    /// skill teaches names a REAL entry in [`SUBCOMMANDS`] - the one dispatch registry the
+    /// runtime and `rigger docs` both read. `rigger::docs` cannot see `SUBCOMMANDS` (it
+    /// lives in the binary crate), so this pin lives here: if a command a skill teaches
+    /// were ever dropped from dispatch, this test - not just an operator hitting a dead
+    /// command - would catch it.
+    #[test]
+    fn per_operation_skills_reference_only_real_subcommands() {
+        let ctx = docs_context();
+        let cases: &[(&str, &[&str])] = &[
+            ("rigger-reset-store", &["reset", "validate", "status"]),
+            ("rigger-build-graph", &["graph"]),
+            (
+                "rigger-reindex",
+                &["reindex", "graph", "ground", "validate"],
+            ),
+            (
+                "rigger-resume-a-run",
+                &["status", "run", "serve", "workflow", "step"],
+            ),
+            (
+                "rigger-handle-an-escalation",
+                &["status", "peers", "run", "serve"],
+            ),
+        ];
+        let registry = rigger::docs::skill_registry();
+        for (name, commands) in cases {
+            let entry = registry
+                .iter()
+                .find(|e| e.name == *name)
+                .unwrap_or_else(|| panic!("{name} must be in the registry"));
+            let rendered = entry.render(&ctx);
+            for cmd in *commands {
+                assert!(
+                    SUBCOMMANDS.contains(cmd),
+                    "{name} references `rigger {cmd}`, but {cmd:?} is not in SUBCOMMANDS - \
+                     the binary has no such command"
+                );
+                let literal = format!("rigger {cmd}");
+                assert!(
+                    rendered.contains(&literal),
+                    "{name} must actually reference `{literal}` somewhere in its rendered \
+                     content, not just claim to via this test's own table"
+                );
+            }
+        }
+    }
+
     /// Spec 20, unit 2 (the drift seam, at the unit level); spec 68, criterion 1 (the gate
     /// covers EVERY registry entry): `docs_drift` flags a committed output whose bytes
     /// differ from a fresh render, is SILENT when the committed copies are in sync, and
