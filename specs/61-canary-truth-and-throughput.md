@@ -14,6 +14,11 @@ takes (issues #24 and #22). Three defects:
 3. **Everything runs serially.** One child at a time - even the four tier-1 lenses declared
    parallel - and independent corpus items queue. Measured: ~22 min/item, 2.5+ hours for 6
    items, nothing on stdout until the end.
+4. **The model-drift gate over-triggers.** `--if-model-changed` treats ANY resolved-id change
+   as the full-alarm event: a snapshot bump within one tier
+   (claude-sonnet-5-20260101 -> claude-sonnet-5-20260601, 2026-08-19) mandated the same
+   multi-hour panel re-measure a genuine tier re-point (opus -> sonnet) would, and blocked a
+   run launch on it (operator decision d-canary-snapshot-vs-tier).
 
 ## Design
 
@@ -42,6 +47,14 @@ takes (issues #24 and #22). Three defects:
   authority), so an A/B arm is auditable from its scorecard alone (the instrument
   `docs/experiments/2026-08-11-lens-model-ab-protocol.md` pre-registers). Per-item records
   also carry each tier's finding count (the over-flagging measure).
+- **Drift severity, decided here** (`src/canary.rs`, and the validate warning text): the
+  resolved-id comparison splits an id at its trailing date suffix (`-YYYYMMDD`). Same base
+  with a differing date is SNAPSHOT drift: `--if-model-changed` reports it on stdout and
+  exits successfully WITHOUT running the panel, and `rigger validate` words its warning as
+  an advisory (run the panel when convenient), not a mandate. A differing base - a tier or
+  family re-point such as opus -> sonnet - is MODEL change and keeps today's behavior: the
+  panel runs. An explicit `rigger canary` with no `--if-model-changed` flag always runs
+  regardless of drift class, so an operator who wants the measurement anyway just asks.
 - **Per-spawn timing in stats** (`src/metrics.rs` / `src/main.rs::cmd_stats`): `rigger stats`
   pairs each recorded spawn request with its result by spawn id and reports duration
   aggregates (per tier/agent: count, total, mean). An unpaired request (dead worker) is
@@ -99,4 +112,8 @@ takes (issues #24 and #22). Three defects:
 - [ ] a test proves SPAWN TIMING: `rigger stats` reports per-agent duration aggregates derived
   by pairing recorded spawn requests with their results by spawn id, excludes unpaired
   requests from every aggregate while reporting their count, with no new event type.
+- [ ] a test proves DRIFT SEVERITY: a resolved-id change differing only in the trailing date
+  suffix is classified as snapshot drift - `--if-model-changed` reports it and exits
+  successfully without running the panel - while a change in the id's base still runs the
+  panel. This criterion OWNS the drift-severity classifier and the `--if-model-changed` gate.
 - [ ] both feature lanes green (fmt, clippy, test on default and `--no-default-features`).
