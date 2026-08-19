@@ -34,21 +34,26 @@ duplicate instead of replacing the prior owner: an unwinnable reject loop.
   outside supersession entirely.
 - The same-id fold path (a re-emit under an id that already exists) still folds
   needs only and never touches `criterion_id`; this spec changes the ADD path alone.
-- THE SUPERSEDE RULE, decided here (round-4 disposition; supersedes the round-3 same-call
-  bullet and settles the mechanism the panel upheld two defects against). Processing a
-  call's proposals in log order, a proposal that resolves to criterion X removes every
-  live stage - not integrated, not terminal - whose STORED `criterion_id` equals X,
-  whether that stage came from an earlier call OR earlier in THIS call (latest word wins),
-  then inserts its own stage stamped with X. A stage serving a DIFFERENT criterion, or
-  none (empty id), is never touched, in either arrival order. Consequences the panel
-  demanded and this rule delivers: a same-round refine plus a new split sibling in one
-  call both survive regardless of event order; two same-call proposals for one criterion
-  resolve to the later one, deterministically under replay.
-- NO ROUND COUNTER, decided here (adjudicator-proven in round 3): supersession must not
-  condition on plan-critique rounds, gate presence, or any advancing counter - a workflow
-  with NO critique gate wired keeps `round == 0` forever, and the rule above must behave
-  identically there. The stored `criterion_id` comparison is the ENTIRE supersede
-  predicate beyond the existing not-integrated/not-terminal guard.
+- THE SUPERSEDE RULE, decided here (round-5 disposition; supersedes the round-4 rule,
+  which the sdet proved internally contradictory against the spec-31 real-split
+  guarantee). A call's proposals form ONE WAVE. A proposal resolving to criterion X
+  removes every live (not-integrated, not-terminal) stage serving X that EXISTED BEFORE
+  THIS CALL - the conductor-synthesized baseline and any prior-call planner unit - and
+  NEVER a stage this same call inserted, in any order. ALL of one call's inserted stages
+  survive together: a deliberate same-call split of one criterion into sibling units is
+  preserved (spec 31 criterion 2 - `planner_refinement_split_is_still_harvested` and the
+  same-call refine-plus-split tests stay green as written). Empty ids never participate
+  in supersession on either side. The surviving set is therefore a pure function of
+  (pre-call stages, the call's proposal set) - order-independent within the call by
+  construction, and deterministic under replay.
+- MECHANISM BOUNDARY, decided here (splitting what round 3 proved from what round 4
+  over-generalized): per-call tracking of which stages THIS call inserted (an
+  added-this-call set or equivalent) is REQUIRED by the rule above and is a conforming
+  mechanism, not a violation. What stays FORBIDDEN is conditioning supersession on
+  plan-critique rounds, gate presence, or any advancing counter - the adjudicator's
+  round-3 probe stands: a workflow with no critique gate keeps `round == 0` forever, and
+  the rule must behave identically there. No `gate.is_none()` branch, no round
+  comparison; the same one rule runs in every workflow.
 - State placement: the authoritative record is the event log's `UnitProposed`, which
   already carries `criterion_id` on the wire (src/conductor.rs:1310); `stages` is the
   per-step in-memory fold of those events, so stamping at the fold point applies
