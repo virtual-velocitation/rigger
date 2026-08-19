@@ -1029,6 +1029,84 @@ impl Store {
             }),
         }
     }
+
+    /// Measure the derived-index DUPLICATION already sitting in the log, WITHOUT deleting
+    /// anything: across every type `identity` covers, within streams under `stream_prefix`, how
+    /// many rows carry a covered key versus how many DISTINCT `(type, stream, key)` triples
+    /// those rows name.
+    ///
+    /// The READ-ONLY twin of [`Store::prune_derived_index`]'s own count: it is built from the
+    /// SAME `key_expr`/`type_list` the compaction's own DELETE renders from, and the SAME
+    /// `stream_prefix` filter (`substr(stream, 1, length(?1)) = ?1`), so `rigger validate`'s
+    /// bloat advisory (spec 68) can never drift from a second, independently re-derived
+    /// definition of "duplicated" (Design: "one measurement authority per advisory ... no
+    /// shadow accounting"). ONE aggregate query - `COUNT(*)` and `COUNT(DISTINCT ...)` over a
+    /// single scan of the covered rows - bounded by the log's own row count, never a second
+    /// store read or a full-tree walk.
+    ///
+    /// `type || char(30) || stream || char(30) || {key}` triples a row's TYPE with its stream
+    /// and key before counting distinct values, deliberately mirroring what the compaction's own
+    /// DELETE actually scopes: `prune_derived_index_compacting_with` runs its
+    /// `PARTITION BY stream, {key}` window inside a PER-TYPE loop (`WHERE type = ?1`), so a key
+    /// is only ever compared against OTHER ROWS OF THE SAME TYPE - the same key recorded once
+    /// under two different covered types is two independent single-row groups to the real
+    /// DELETE, never a duplicate pair. Counting distinct `(stream, key)` alone (dropping the
+    /// type) would merge those two groups into one duplicated subject, reporting bloat a real
+    /// prune can never reclaim - the type discriminator is what keeps this measurement unable to
+    /// drift from what `prune_derived_index` actually deletes, exactly as the stream
+    /// discriminator already does for two different streams sharing a key. `char(30)` (ASCII
+    /// record separator) is the join glue throughout: a byte no legal type name, stream name or
+    /// JSON-extracted key contains, so two different triples can never collide onto the same
+    /// joined string.
+    pub fn measure_derived_duplication(
+        &self,
+        stream_prefix: &str,
+        identity: &ContentIdentity,
+    ) -> Result<DerivedDuplication, Error> {
+        let key = key_expr(identity.meta_key());
+        let types = type_list(identity.types());
+        let sql = format!(
+            "SELECT COUNT(*), COUNT(DISTINCT type || char(30) || stream || char(30) || {key})
+               FROM events
+              WHERE type IN ({types})
+                AND substr(stream, 1, length(?1)) = ?1
+                AND {key} IS NOT NULL"
+        );
+        let guard = self.conn.lock().unwrap();
+        let (rows, distinct_keys): (i64, i64) = guard
+            .query_row(&sql, params![stream_prefix], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(be)?;
+        Ok(DerivedDuplication {
+            // Never negative (COUNT cannot return one), but the column reads as i64; clamp
+            // rather than trust a cast the type system does not itself guarantee.
+            rows: rows.max(0) as usize,
+            distinct_keys: distinct_keys.max(0) as usize,
+        })
+    }
+}
+
+/// What [`Store::measure_derived_duplication`] found: how many rows carry a covered derived-
+/// index key, and how many DISTINCT keys those rows name - the read-only measurement `rigger
+/// validate`'s bloat advisory (spec 68) warns from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DerivedDuplication {
+    /// Rows in scope carrying a covered, non-null key.
+    pub rows: usize,
+    /// Distinct `(stream, key)` pairs those rows name.
+    pub distinct_keys: usize,
+}
+
+impl DerivedDuplication {
+    /// Rows per distinct key: `1.0` when there is no duplication (every key recorded once, or
+    /// no covered rows at all - `distinct_keys == 0` is guarded rather than divided by, since
+    /// "nothing to measure" is not evidence of bloat), rising with the log's redundancy.
+    pub fn factor(&self) -> f64 {
+        if self.distinct_keys == 0 {
+            1.0
+        } else {
+            self.rows as f64 / self.distinct_keys as f64
+        }
+    }
 }
 
 /// Total bytes the database at `db` occupies on disk: the main file plus its write-ahead log,
@@ -3499,6 +3577,187 @@ mod tests {
             .unwrap()
             .query_row(&sql, params!["gc/src/a.rs@h1#0"], |r| r.get(0))
             .unwrap()
+    }
+
+    // --- Spec 68, VALIDATE ADVISORIES: measure_derived_duplication, the prune's read-only twin ---
+
+    #[test]
+    fn measure_derived_duplication_reports_rows_vs_distinct_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path = path.to_str().unwrap();
+        let s = seeded_with_duplicated_key(path, 4);
+        let measured = s
+            .measure_derived_duplication("", &crate::ingest::derived_index_identity())
+            .unwrap();
+        assert_eq!(measured.rows, 4, "four recordings of the one covered key");
+        assert_eq!(
+            measured.distinct_keys, 1,
+            "all four share the same replay key"
+        );
+        assert_eq!(measured.factor(), 4.0);
+    }
+
+    #[test]
+    fn measure_derived_duplication_is_read_only_and_never_deletes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path = path.to_str().unwrap();
+        let s = seeded_with_duplicated_key(path, 3);
+        let _ = s
+            .measure_derived_duplication("", &crate::ingest::derived_index_identity())
+            .unwrap();
+        assert_eq!(
+            recordings_of_the_key(path),
+            3,
+            "measuring must never delete anything - that is the prune's job, not this read"
+        );
+    }
+
+    #[test]
+    fn measure_derived_duplication_scopes_to_the_stream_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path = path.to_str().unwrap();
+        let s = Store::open(path).unwrap();
+        s.append(
+            "proj-a/run",
+            ExpectedRevision::Any,
+            &[
+                Event::new(
+                    crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                    b"{}".to_vec(),
+                )
+                .with_meta(crate::ingest::META_REPLAY_KEY, "gc/src/a.rs@h1#0"),
+                Event::new(
+                    crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                    b"{}".to_vec(),
+                )
+                .with_meta(crate::ingest::META_REPLAY_KEY, "gc/src/a.rs@h1#0"),
+            ],
+        )
+        .unwrap();
+        s.append(
+            "proj-b/run",
+            ExpectedRevision::Any,
+            &[Event::new(
+                crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                b"{}".to_vec(),
+            )
+            .with_meta(crate::ingest::META_REPLAY_KEY, "gc/src/a.rs@h1#0")],
+        )
+        .unwrap();
+        let measured = s
+            .measure_derived_duplication("proj-a/", &crate::ingest::derived_index_identity())
+            .unwrap();
+        assert_eq!(measured.rows, 2, "only proj-a's rows are in scope");
+        assert_eq!(measured.distinct_keys, 1);
+    }
+
+    #[test]
+    fn measure_derived_duplication_on_a_clean_log_reports_no_duplication() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path = path.to_str().unwrap();
+        let s = Store::open(path).unwrap();
+        s.append(
+            "run",
+            ExpectedRevision::Any,
+            &[
+                Event::new(
+                    crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                    b"{}".to_vec(),
+                )
+                .with_meta(crate::ingest::META_REPLAY_KEY, "gc/src/a.rs@h1#0"),
+                Event::new(
+                    crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                    b"{}".to_vec(),
+                )
+                .with_meta(crate::ingest::META_REPLAY_KEY, "gc/src/b.rs@h1#0"),
+            ],
+        )
+        .unwrap();
+        let measured = s
+            .measure_derived_duplication("", &crate::ingest::derived_index_identity())
+            .unwrap();
+        assert_eq!(measured.rows, 2);
+        assert_eq!(measured.distinct_keys, 2);
+        assert_eq!(measured.factor(), 1.0);
+    }
+
+    #[test]
+    fn measure_derived_duplication_treats_the_same_key_under_two_covered_types_as_two_distinct_subjects(
+    ) {
+        // A prune deletes duplicates PER TYPE (`prune_derived_index_compacting_with`'s own
+        // per-type loop, `WHERE type = ?1` scoping its own `PARTITION BY stream, key`): each
+        // covered type is its own duplicate-key space, so the same replay key recorded once
+        // under TWO different types is never a duplicate to the real DELETE - each type's pass
+        // only ever sees ITS OWN one row for it. The measurement must report the same zero
+        // reclaimable count the prune actually reclaims here, never a cross-type merged
+        // overcount (spec 68 Global constraints: one measurement authority, no shadow
+        // accounting).
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path = path.to_str().unwrap();
+        let s = Store::open(path).unwrap();
+        s.append(
+            "run",
+            ExpectedRevision::Any,
+            &[
+                Event::new(
+                    crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                    b"{}".to_vec(),
+                )
+                .with_meta(crate::ingest::META_REPLAY_KEY, "gc/src/a.rs@h1#0"),
+                Event::new(crate::contextgraph::TYPE_EDGE_INFERRED, b"{}".to_vec())
+                    .with_meta(crate::ingest::META_REPLAY_KEY, "gc/src/a.rs@h1#0"),
+            ],
+        )
+        .unwrap();
+        let measured = s
+            .measure_derived_duplication("", &crate::ingest::derived_index_identity())
+            .unwrap();
+        assert_eq!(measured.rows, 2, "one row of each of the two covered types");
+        assert_eq!(
+            measured.distinct_keys, 2,
+            "the same key under two DIFFERENT types is two distinct subjects to the per-type \
+             prune, not one - each type's own DELETE never sees the other type's row"
+        );
+        assert_eq!(
+            measured.factor(),
+            1.0,
+            "no row here is actually reclaimable by a real prune, so the factor must not warn"
+        );
+
+        // Cross-check against the real compaction: it must reclaim zero rows for this key,
+        // proving the measurement's factor of 1.0 matches what actually happens rather than
+        // merely being asserted.
+        let pruned = s
+            .prune_derived_index("", &crate::ingest::derived_index_identity())
+            .unwrap();
+        assert_eq!(
+            pruned.total_removed(),
+            0,
+            "the real per-type prune reclaims nothing for a key that appears once per type"
+        );
+    }
+
+    #[test]
+    fn measure_derived_duplication_on_an_empty_log_reports_a_factor_of_one_not_a_division_by_zero()
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let s = Store::open(path.to_str().unwrap()).unwrap();
+        let measured = s
+            .measure_derived_duplication("", &crate::ingest::derived_index_identity())
+            .unwrap();
+        assert_eq!(measured.rows, 0);
+        assert_eq!(measured.distinct_keys, 0);
+        assert_eq!(
+            measured.factor(),
+            1.0,
+            "no covered rows at all is not duplication - never a NaN/inf from dividing by zero"
+        );
     }
 
     /// Spec 60, criterion 5: everything after the commit is a REPORT, never an error return.
