@@ -12,12 +12,18 @@
 //!
 //! What this file OWNS (criterion 4): the two advisories' trigger conditions, their wording (the
 //! staleness kind, the measured bloat factor, the named fix each names), that a clean store
-//! draws neither and the exit status is unaffected either way, AND the LOG BLOAT advisory's
+//! draws neither and the exit status is unaffected either way, AND two boundary-only properties
+//! neither advisory's own unit tests can see from inside their module: the LOG BLOAT advisory's
 //! sqlite-only boundary - a server-selected store must draw no warning from a local events.db
 //! sitting beside it, regardless of what that local file holds (§48, "one resolution authority":
 //! `bloat_advisory_for` gates on the resolved `StoreSelection`, exactly like `reset --derived`
-//! itself). NOT OWNED: the underlying measurement primitives themselves
-//! (`rigger::grounder::symbols::staleness`/`compare_to_tree` and
+//! itself) - and its CROSS-TYPE trigger condition - the same replay key recorded once under two
+//! different covered derived-index types must draw no warning, since the real
+//! `rigger reset --derived` reclaims nothing for it (its own compaction partitions duplicates
+//! PER TYPE); plus the INDEX STALENESS advisory's real on-disk BACK-COMPAT boundary - a genuine
+//! pre-spec-68 `index.json` (missing the `hashes` key entirely, not merely an in-memory struct
+//! built via the current API) must load and stay silent. NOT OWNED: the underlying measurement
+//! primitives themselves (`rigger::grounder::symbols::staleness`/`compare_to_tree` and
 //! `rigger::eventstore::sqlite::Store::measure_derived_duplication`), which carry their own unit
 //! tests beside their implementations.
 
@@ -137,6 +143,29 @@ fn seed_duplicated_key(root: &Path, rounds: usize) {
         .unwrap();
 }
 
+/// Seed `root`'s event log with ONE recording of `key` under EACH of two DIFFERENT covered
+/// derived-index types (`TYPE_CODE_ENTITY_EXTRACTED` and `TYPE_EDGE_INFERRED`) - the cross-type
+/// scenario `rigger reset --derived`'s real per-type compaction reclaims NOTHING for (each
+/// type's own delete only ever sees its own one row), so the bloat measurement's per-type
+/// scoping must never merge these into a false duplicate pair.
+fn seed_key_under_two_covered_types(root: &Path, key: &str) {
+    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    let events = vec![
+        Event::new("RunStarted", b"{}".to_vec()),
+        Event::new(
+            rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+            b"{}".to_vec(),
+        )
+        .with_meta(rigger::ingest::META_REPLAY_KEY, key),
+        Event::new(rigger::contextgraph::TYPE_EDGE_INFERRED, b"{}".to_vec())
+            .with_meta(rigger::ingest::META_REPLAY_KEY, key),
+    ];
+    store
+        .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
+        .unwrap();
+}
+
 // ---------------------------------------------------------------------------------------
 // (a) INDEX STALENESS
 // ---------------------------------------------------------------------------------------
@@ -187,6 +216,49 @@ fn validate_is_silent_on_index_staleness_when_the_index_matches_the_tree() {
     );
 }
 
+#[test]
+fn validate_tolerates_a_real_pre_spec68_index_file_with_no_hashes_field() {
+    // `SymbolIndex` gained a persisted `hashes` field (spec 68) alongside its pre-existing
+    // `files` field. An index written by a binary from BEFORE this field existed has no
+    // "hashes" key at all on disk. This drives the REAL persisted file (not an in-memory
+    // struct built via the current `set_hash`) through the compiled binary, proving an
+    // operator's pre-upgrade index still loads without crashing and never manufactures a
+    // false staleness warning from the field's mere absence - `#[serde(default)]` must let it
+    // load, and every path's hash reads as "unknown", which is nothing to compare against.
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let content = "fn one() {}\n";
+    std::fs::write(root.join("a.rs"), content).unwrap();
+    persist_index(root, &[("a.rs", content)]);
+
+    // Strip the "hashes" key from the REAL persisted file, simulating exactly what a
+    // pre-spec-68 binary would have written - every other field of `SymbolIndex` predates
+    // this spec, so the rest of the file is unchanged.
+    let index_path = root.join(".rigger").join("symbols").join("index.json");
+    let raw = std::fs::read_to_string(&index_path).expect("read the persisted index");
+    let mut value: serde_json::Value = serde_json::from_str(&raw).expect("index is valid JSON");
+    value
+        .as_object_mut()
+        .expect("a symbols index serializes as a JSON object")
+        .remove("hashes");
+    std::fs::write(&index_path, serde_json::to_string(&value).unwrap())
+        .expect("rewrite the index without its hashes field");
+
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "validate must succeed against a pre-upgrade index; stderr:\n{err}"
+    );
+    assert!(
+        !err.contains("rigger reindex"),
+        "a pre-upgrade index missing the hashes field must never manufacture a false \
+         staleness warning from the absence alone; stderr:\n{err}"
+    );
+}
+
 // ---------------------------------------------------------------------------------------
 // (b) LOG BLOAT
 // ---------------------------------------------------------------------------------------
@@ -232,6 +304,37 @@ fn validate_is_silent_on_log_bloat_when_every_key_is_recorded_once() {
     assert!(
         !err.contains("rigger reset --derived"),
         "a log with no duplication must draw no bloat warning; stderr:\n{err}"
+    );
+}
+
+#[test]
+fn validate_is_silent_on_log_bloat_when_the_same_key_recurs_only_across_different_covered_types() {
+    // spec 68 Global constraints: "one measurement authority per advisory ... no shadow
+    // accounting". The real compaction (`rigger reset --derived` / `prune_derived_index`)
+    // deletes duplicates PER COVERED TYPE - its own per-type loop only ever compares a key
+    // against OTHER ROWS OF THE SAME TYPE. The SAME replay key recorded once under two
+    // DIFFERENT covered types (here, a code-entity extraction and an inferred edge) is
+    // therefore two independent single-row groups to the real prune, which reclaims NOTHING
+    // for it - so the bloat advisory must draw no warning either. A measurement that merges
+    // duplicate-detection ACROSS types would read this as one key recorded twice (a false
+    // factor of 2.0) and warn of bloat a real `rigger reset --derived` could never reclaim -
+    // exactly the shadow, independently-re-derived definition of "duplicated" the design
+    // forbids.
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    seed_key_under_two_covered_types(root, "gc/src/a.rs@h1#0");
+
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "an advisory must never fail validate's exit status; stderr:\n{err}"
+    );
+    assert!(
+        !err.contains("rigger reset --derived"),
+        "the same key recorded once under two different covered types is not duplication a \
+         real prune can reclaim, and must draw no bloat warning; stderr:\n{err}"
     );
 }
 
