@@ -11564,6 +11564,138 @@ mod tests {
     }
 
     #[test]
+    fn a_same_id_refine_survives_its_own_episodes_genuinely_new_empty_id_sibling() {
+        // spec 72 criterion 2 (same-episode siblings survive together): the done-when
+        // text names "a refine beside a new empty-id split sibling" as one of the shapes
+        // this criterion owns. Every fixture above pairs a same-episode refine with a
+        // sibling that ALSO resolves to the SAME criterion (a real split, non-empty
+        // criterion_id). This fixture pairs a refine with a sibling that resolves to NO
+        // criterion at all - the genuinely-new sub-unit path (spec 18 Sec3.3 fixture c) -
+        // so its `criterion_id` stays the ALWAYS-empty sentinel ("THE STAMP": unmatched
+        // proposals keep an empty id). THE SUPERSEDE RULE's prior-owners scan runs only
+        // inside the `served` branch (`resolve_served_criterion` returning `Some`), so an
+        // unmatched proposal never scans for prior owners and can never sweep, or be
+        // swept as, a prior owner - proven here alongside a same-episode refine so both
+        // code paths (the fold-branch restamp, and the unmatched-add branch) run together
+        // in one harvest, exactly as a live replan can produce them.
+        let criterion = "the widget-two module is implemented";
+        let cfg = supersede_cfg();
+        let st = Store::open(":memory:").unwrap();
+        let cid = criterion_stable_id(1, criterion);
+
+        // episode1: the initial proposal for u-orig.
+        st.append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[Event::new(
+                TYPE_UNIT_PROPOSED,
+                serde_json::to_vec(&json!({
+                    "id": "u-orig",
+                    "agent": "worker",
+                    "criterion": criterion,
+                    "criterion_id": cid,
+                    "gates": ["ok"],
+                }))
+                .unwrap(),
+            )
+            .with_meta(META_SPAWN, "plan/implementer#0")],
+        )
+        .unwrap();
+        // episode2: re-emits u-orig under its EXACT id (a refine - only `needs` changes)
+        // AND, in the SAME episode, proposes a genuinely-new sibling u-extra whose
+        // coverage maps to NO acceptance criterion - the empty-id split sibling this
+        // criterion's done-when names.
+        st.append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[
+                Event::new(
+                    TYPE_UNIT_PROPOSED,
+                    serde_json::to_vec(&json!({
+                        "id": "u-orig",
+                        "agent": "worker",
+                        "needs": ["plan"],
+                    }))
+                    .unwrap(),
+                )
+                .with_meta(META_SPAWN, "plan/replan#1"),
+                Event::new(
+                    TYPE_UNIT_PROPOSED,
+                    serde_json::to_vec(&json!({
+                        "id": "u-extra",
+                        "agent": "worker",
+                        "criterion": "an entirely separate concern the spec never lists",
+                        "gates": ["ok"],
+                    }))
+                    .unwrap(),
+                )
+                .with_meta(META_SPAWN, "plan/replan#1"),
+            ],
+        )
+        .unwrap();
+
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: vec![criterion.to_string()],
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        let mut stages = seed_refine_dag(&deps.criteria);
+        let mut proposed: HashSet<String> = HashSet::new();
+        let integrated: HashSet<String> = HashSet::new();
+        let terminal: HashSet<String> = HashSet::new();
+        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+            .unwrap();
+
+        assert!(
+            stages.contains_key("u-orig"),
+            "the refined unit must survive its own episode's genuinely-new empty-id \
+             sibling; stages: {:?}",
+            stages.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            stages.contains_key("u-extra"),
+            "the genuinely-new empty-id sibling must also survive (spec 31's real-split \
+             guarantee, spec 72 criterion 2); stages: {:?}",
+            stages.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            stages["u-orig"].needs,
+            vec!["plan".to_string(), "plan-critique".to_string()],
+            "the refine must still fold needs (with the gate-hold re-applied), unchanged \
+             behavior"
+        );
+        assert_eq!(
+            stages["u-extra"].criterion_id, "",
+            "an unmatched proposal must keep the empty criterion_id sentinel - it never \
+             becomes a future supersede target"
+        );
+        assert!(
+            has_unmatched_signal(&st, "u-extra"),
+            "the genuinely-new sibling must record the visible unmatched-proposal signal"
+        );
+        // The criterion is still served by exactly u-orig - the empty-id sibling never
+        // participates in criterion ownership.
+        let serving: Vec<&str> = stages
+            .values()
+            .filter(|s| s.criterion_id == cid)
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(
+            serving,
+            vec!["u-orig"],
+            "the empty-id sibling must never be counted as serving the criterion; got \
+             {serving:?}"
+        );
+    }
+
+    #[test]
     fn a_late_re_emit_never_mutates_a_started_or_terminal_unit() {
         // spec 31 crit 3 (started-unit immutability). crit 1 loosens the blanket
         // proposed-not-started skip so a PROPOSED, not-yet-started unit FOLDS a same-id
