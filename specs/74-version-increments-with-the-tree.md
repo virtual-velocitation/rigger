@@ -5,24 +5,34 @@
 The crate version is `0.1.0` and has never moved across 70+ landed specs, so every
 operator install reports "Replacing rigger v0.1.0 with rigger v0.1.0" and nothing but the
 embedded build hash - identity without order - tells two binaries apart. The operator's
-direction (2026-08-20, verbatim intent): follow the standing GitVersion / git-semver
-convention and auto-increment at least the patch level. The anchor exists: tag `v0.1.0`
-sits on the root commit, and `git describe --tags --match 'v*'` already yields
-`v0.1.0-338-g6ac5776` for today's tree.
+direction (2026-08-20, verbatim intent): LITERALLY use a GitVersion-class tool -
+go-gitsemver was picked for its GitVersion compatibility without the dotnet ancestry -
+with bumps handled by the tool from commit history, tags as artifacts rather than
+definitions, and effectively zero human input.
 
 ## Design
 
-- GIT-DERIVED SEMVER, the GitVersion mainline convention, decided here: the version is
-  anchored on the highest reachable `vX.Y.Z` tag and the PATCH auto-increments per commit
-  since it - `X.Y.(Z+N)` where N is the commit distance `git describe` reports, with the
-  short hash as build metadata: `0.1.338+g6ac5776` today. Exactly at a tag the version is
-  the tag's own `X.Y.Z`. Minor and major bumps happen by TAGGING (`v0.2.0` resets the
-  patch count from that anchor), which is the convention's release act and stays a human
-  decision - no commit-message bump hints in this cut.
-- COMPUTED AT COMPILE TIME in `build.rs` from `git describe --tags --match 'v*'`; the
-  binary embeds the finished string and never invokes git at runtime. A build outside a
-  git checkout, or in a checkout with no reachable `v*` tag, reports the bare crate semver
-  with an explicit `+unversioned` marker - never a fabricated distance.
+- LITERALLY THE TOOL, decided here (operator direction: "when I'm saying use GitVersion I
+  mean literally use GitVersion", tooling pick go-gitsemver -
+  github.com/MyCarrier-DevOps/go-gitsemver, GitVersion-compatible, no dotnet ancestry):
+  version derivation is DELEGATED to the `go-gitsemver` binary - rigger never reimplements
+  the algorithm. Bumps are fully automatic from commit history: conventional-commit types
+  (`feat:` minor, `fix:` patch, `feat!:`/BREAKING CHANGE major) and `+semver:` directives
+  in commit messages; a tag is an ARTIFACT the process may emit, never the definition and
+  never a required human act. Zero human input in the steady state.
+- CONFIG COMMITTED, decided here so no unit has to: a `go-gitsemver.yml` at the repo root
+  pins `mode: Mainline` (highest increment since the last version source, applied once,
+  commit count in metadata - monotonic per commit on the run/main line), `tag-prefix: v`,
+  and the default commit-message conventions. The committed config is the single
+  authority; `--show-config` must reflect it.
+- COMPUTED AT COMPILE TIME in `build.rs` by invoking
+  `go-gitsemver --show-variable FullSemVer` (plus `ShortSha` for build metadata); the
+  binary embeds the finished string and never invokes the tool or git at runtime. A build
+  where `go-gitsemver` is absent or the tree is not a git checkout reports the bare crate
+  semver with an explicit `+unversioned` marker - never a fabricated version and never a
+  broken build; `rigger validate` names the missing binary in an advisory (the spec-65
+  wrapper-precedent tone, adapted: version derivation degrades loudly, builds never
+  fail on it).
 - WHERE IT SURFACES: `rigger version` is the authority and prints the derived semver
   (with the existing build id retained); `rigger validate`'s version line uses the same
   string. The crate version in Cargo.toml stays the static base cargo requires; stored
@@ -36,12 +46,13 @@ sits on the root commit, and `git describe --tags --match 'v*'` already yields
 
 ## Done when
 
-- [ ] `rigger version` reports the tag-anchored auto-incrementing semver: with a reachable
-  `vX.Y.Z` tag it reports `X.Y.(Z+N)` for N commits since the tag plus the short hash as
-  build metadata, exactly at the tag it reports `X.Y.Z`, and a build with no reachable
-  tag or outside a checkout reports the crate semver with an explicit unversioned marker -
-  proven by tests at the derivation seam using fixture git repositories. This criterion
-  OWNS the version derivation and format.
+- [ ] `rigger version` reports the semver `go-gitsemver` computes for the built commit
+  under the committed config: in a fixture repository the patch increments per plain
+  commit, a `feat:` (or `+semver: feature`) commit increments the minor, and a build with
+  the tool absent or outside a checkout reports the crate semver with an explicit
+  unversioned marker - proven by tests at the derivation seam using fixture git
+  repositories and the real `go-gitsemver` binary. This criterion OWNS the build-time
+  delegation and its fallback.
 - [ ] `rigger validate` inside a checkout whose derived version orders above the installed
   binary's emits an advisory naming both versions and the commit distance, stays silent
   when they match, and skips the comparison when either side is unversioned - proven at
@@ -58,16 +69,17 @@ sits on the root commit, and `git describe --tags --match 'v*'` already yields
 
 ## Notes
 
-- Constraints walk record: outside-a-checkout or tagless build - explicit `+unversioned`,
-  never fabricated; shallow clone - `git describe` reports what the checkout can reach,
-  and the advisory compares only when both sides carry a derived version; repeated builds
-  of one commit - identical string; crash-resume/concurrency - compile-time constants,
-  n/a; future `v0.2.0` tag - patch count resets from the new anchor, by convention.
-- The operator seeded `v0.1.0` on the root commit and then declared the current release
-  level by tagging `v0.3.0` on the version-bump commit (Cargo.toml 0.1.0 -> 0.3.0,
-  2026-08-20) - the operator's judgment that the accumulated feature work warrants 0.3 -
-  so the live anchor is `v0.3.0` and derived versions read `0.3.N`. Pushing tags to any
-  remote rides the normal push flow, out of scope here.
-- Semantic bump hints in commit messages (`+semver: minor` etc., GitVersion's richer
-  mode) are OUT of scope, deferred deliberately - tagging is the bump mechanism in this
-  cut.
+- Constraints walk record: outside-a-checkout, tool-absent, or shallow-history build -
+  explicit `+unversioned`, never fabricated, build never fails; repeated builds of one
+  commit - identical string (the tool is deterministic for a fixed history and config);
+  crash-resume/concurrency - compile-time constants, n/a; a future release tag - a
+  version SOURCE the tool folds in per its own semantics, requiring nothing of rigger.
+- Environment as of authoring: `go-gitsemver` installed via
+  `go install github.com/MyCarrier-DevOps/go-gitsemver@latest` (on PATH through the mise
+  Go toolchain); against this repo it reports `FullSemVer: 0.3.0` at the `v0.3.0` version
+  source (Cargo.toml bump commit). The historical tags `v0.1.0` (root) and `v0.3.0` are
+  version sources the tool discovers - artifacts, not the mechanism.
+- The repo's existing commit style (`fix(72): ...`, `spec: ...`, `sdet(68) ...`) maps
+  onto the conventional-commit reader as patch-level by default with `fix:` recognized
+  explicitly; agents' commit-message discipline gains `feat:`/`+semver:` vocabulary only
+  when a change genuinely warrants a minor/major bump - nothing retroactive.
