@@ -16575,3 +16575,101 @@ fn dash_serving_on_recognizes_a_real_dash_and_rejects_a_non_dash_holder() {
          header - only a genuine dash earns the singleton defer"
     );
 }
+
+/// Spec 73, criterion 2 - the implementer persona's seeded MUTATION ACCOUNTING CONTRACT.
+///
+/// Spec 73 resolved a nine-round plan-critique deadlock (rule 7: no unit can ever own a
+/// Markdown blast radius, since the symbols grounder never indexes `.md` content and
+/// `UnitProposed` carries no explicit blast-radius field - see the decision chain ending
+/// in `d73-escalation-config-vs-code`) by SEEDING the mutation-step and accounting-
+/// contract prose directly into `.rigger/agents/rust-engineer.md` as operator
+/// configuration. Spec 73's units therefore own DRIFT-GUARD TESTS that READ that seeded
+/// text and PIN it - never edit it. This criterion (2) OWNS the ACCOUNTING half of the
+/// contract: a deterministically ordered `DecisionMade`, one entry per mutant, all five
+/// status vocabularies (caught, missed-killed naming the killing test, missed-justified
+/// with a reason, unviable, timeout), the diff base, the mutant total, and the provably-
+/// empty case for a diff touching no Rust file. Criterion 1 (u73c1) owns the STEP-
+/// PLACEMENT half (when the step runs, the diff-vs-merge-base `cargo mutants` invocation,
+/// the kill-or-justify disposition on a missed mutant) - this test deliberately asserts
+/// none of those substrings, so each criterion's drift-guard fails for its own reason
+/// only and neither can mask the other's regression.
+///
+/// Reads the committed file via `CARGO_MANIFEST_DIR` (the same CWD-independent pattern
+/// `architecture_current_surface.rs` and `ci_lanes.rs` already use for their own
+/// committed-file pins) and compares against WHITESPACE-NORMALIZED text, so the pin
+/// survives an incidental rewrap of the persona's prose and fails only on a real content
+/// change. It is deliberately NOT feature-gated: it parses a text file and touches no
+/// backend symbol, so it runs identically in both feature lanes.
+fn rust_engineer_persona_text() -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(".rigger")
+        .join("agents")
+        .join("rust-engineer.md");
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
+}
+
+/// Collapse all whitespace runs (including newlines) to a single space, so a phrase that
+/// wraps across physical lines in the committed Markdown still matches a one-line needle.
+fn normalize_ws(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Every fragment the accounting contract (spec 73 criterion 2) requires, each a literal
+/// (whitespace-normalized) substring of the seeded persona text today. The pin fails
+/// loudly, naming exactly which fragment went missing, the moment any one of them is
+/// reworded away or dropped.
+const ACCOUNTING_CONTRACT_FRAGMENTS: &[(&str, &str)] = &[
+    (
+        "the event type (no new event type; rides DecisionMade)",
+        "one DecisionMade (no new event type)",
+    ),
+    (
+        "the deterministic-ordering guarantee",
+        "deterministically ordered",
+    ),
+    (
+        "the one-entry-per-mutant cardinality",
+        "one entry per mutant",
+    ),
+    ("the caught status", "caught"),
+    ("the missed-killed status", "missed-killed"),
+    (
+        "missed-killed names the killing test",
+        "naming the killing test",
+    ),
+    ("the missed-justified status", "missed-justified"),
+    ("missed-justified carries a reason", "with reason"),
+    ("the unviable status", "unviable"),
+    ("the timeout status", "unviable | timeout,"),
+    ("the diff-base field", "the diff base"),
+    ("the mutant-total field", "the mutant total"),
+    (
+        "the no-Rust-file provably-empty case",
+        "A diff touching no Rust file records a provably-empty accounting",
+    ),
+    (
+        "the empty accounting is never a skipped step",
+        "never a skipped step",
+    ),
+];
+
+#[test]
+fn rust_engineer_persona_pins_the_mutation_accounting_contract() {
+    let text = normalize_ws(&rust_engineer_persona_text());
+
+    let missing: Vec<String> = ACCOUNTING_CONTRACT_FRAGMENTS
+        .iter()
+        .filter(|(_, fragment)| !text.contains(fragment))
+        .map(|(what, fragment)| format!("{what}  (missing: {fragment:?})"))
+        .collect();
+
+    assert!(
+        missing.is_empty(),
+        ".rigger/agents/rust-engineer.md must pin the mutation ACCOUNTING contract spec 73 \
+         criterion 2 owns - a deterministically ordered DecisionMade, one entry per mutant, \
+         all five statuses (caught, missed-killed naming the test, missed-justified with a \
+         reason, unviable, timeout), the diff base, the mutant total, and the provably-empty \
+         no-Rust-file case - so drift in the operator-seeded persona fails this suite instead \
+         of silently diverging from the spec it satisfies. Missing fragments: {missing:#?}"
+    );
+}
