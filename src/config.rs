@@ -494,17 +494,36 @@ pub struct Stage {
     /// and every planner-proposed unit.
     #[serde(skip)]
     pub baseline: bool,
-    /// The STABLE id of the acceptance criterion this baseline serves (spec 18 §3.3):
-    /// its 1-based position plus a content hash of the normalized criterion text,
-    /// computed by `conductor::criterion_stable_id`. Set by the conductor (never
-    /// authored, hence `serde(skip)`) on the per-criterion baseline units only. The
-    /// planner is shown this id next to each criterion and echoes it on every
-    /// proposal, so `harvest_proposed` matches a proposal to its baseline by this id
-    /// rather than by re-normalized prose - a paraphrase or truncation of a long
-    /// criterion the planner was told to copy verbatim no longer silently spawns a
-    /// duplicate. Empty for every non-baseline stage.
+    /// The STABLE id of the acceptance criterion this stage serves (spec 18 §3.3): its
+    /// 1-based position plus a content hash of the normalized criterion text, computed
+    /// by `conductor::criterion_stable_id`. Set by the conductor (never authored, hence
+    /// `serde(skip)`) on the per-criterion baseline units AND (spec 72, THE STAMP) on
+    /// every planner-proposed stage `harvest_proposed`'s ADD path resolves to a
+    /// criterion - without this second stamp a planner-added stage could never be found
+    /// by a LATER proposal's supersede match, so only a baseline could ever be
+    /// superseded and a planner unit superseding a planner unit silently duplicated
+    /// instead (spec 72's Problem). The planner is shown this id next to each criterion
+    /// and echoes it on every proposal, so `harvest_proposed` matches a proposal to
+    /// whatever currently serves that criterion by this id rather than by
+    /// re-normalized prose - a paraphrase or truncation of a long criterion the planner
+    /// was told to copy verbatim no longer silently spawns a duplicate. Empty for every
+    /// stage that serves no criterion (the plan/plan-critique infrastructure stages, and
+    /// a genuinely-new unmatched-proposal sub-unit).
     #[serde(skip)]
     pub criterion_id: String,
+    /// The identity of the PLANNING EPISODE that proposed this stage (spec 72,
+    /// PLAN-EPISODE IDENTITY): one planner pass (the initial plan or a plan-critique
+    /// reject's re-plan) is one episode, and `harvest_proposed` copies the winning
+    /// proposal's own `UnitProposed::episode` here at insert time so a LATER episode's
+    /// proposal for the same criterion can tell this stage's episode is EARLIER and
+    /// supersede it - and so a SAME-episode sibling (a real split) can tell it must
+    /// never supersede this stage. Never set on a conductor-synthesized baseline (`
+    /// baseline` is the always-earliest sentinel instead - a baseline predates every
+    /// episode by construction, so it needs no episode identity of its own); empty on a
+    /// stage whose proposal carried no episode (the pre-spec-72 legacy shape, or a
+    /// hand-authored proposal), which a later unit's supersede handling resolves.
+    #[serde(skip)]
+    pub episode: String,
 }
 
 impl AgentDef {
