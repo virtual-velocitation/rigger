@@ -28,6 +28,17 @@
 //! seam, which hand-appends store events with `.with_meta(META_SPAWN, ...)` directly, bypassing
 //! the real `re_plan` emit closure the fix itself changed - the identical class of blind spot
 //! that got criterion 1's first round-2 write-side defect through periphery testing undetected.
+//!
+//! Criterion 2 (same-episode siblings survive one harvest together, in any event order,
+//! THIS file's FOURTH test): its done-when text names two shapes - "two serving the same
+//! criterion (a real split)" and "a refine beside a new empty-id split sibling". The first is
+//! already proven by criterion 1's third test above (a real split IS a same-episode-survival
+//! proof; THE SUPERSEDE RULE's own-episode exclusion is exactly what lets it through). The
+//! second - a same-episode refine paired with a sibling that resolves to NO criterion at all,
+//! rather than a real split of the same one - is this file's uncovered corner: every
+//! `RefineWithSiblingDriver` fixture above gives the sibling the SAME criterion text. The
+//! fourth test drives that shape through the identical real write path via
+//! `RefineWithSiblingDriver::new_unmatched_sibling`.
 
 use rigger::conductor::{
     run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, TYPE_UNIT_PROPOSED,
@@ -519,6 +530,14 @@ struct RefineWithSiblingDriver {
     /// dropped) - the reverse of the default order, which only the round-2 fix's own
     /// tests ever drove.
     sibling_first: bool,
+    /// When `Some`, episode 2's sibling proposal carries THIS criterion text instead of
+    /// `self.criterion` - text that matches none of the run's acceptance criteria, so it
+    /// resolves to NO criterion (the genuinely-new / empty-criterion-id sub-unit path,
+    /// spec 18 §3.3) rather than a real split serving the identical criterion. Spec 72
+    /// criterion 2's done-when names this as the OTHER same-episode shape ("a refine
+    /// beside a new empty-id split sibling") distinct from the real-split shape every
+    /// other constructor below exercises.
+    unmatched_sibling_criterion: Option<String>,
 }
 
 impl RefineWithSiblingDriver {
@@ -532,6 +551,15 @@ impl RefineWithSiblingDriver {
         Self::with_order(criterion, true)
     }
 
+    /// Same shape as `new`, but episode 2's sibling proposes `sibling_criterion` - text
+    /// that resolves to NO acceptance criterion - instead of a real split of `criterion`
+    /// (spec 72 criterion 2's empty-id-sibling shape; see `unmatched_sibling_criterion`).
+    fn new_unmatched_sibling(criterion: &str, sibling_criterion: &str) -> Self {
+        let mut d = Self::with_order(criterion, false);
+        d.unmatched_sibling_criterion = Some(sibling_criterion.to_string());
+        d
+    }
+
     fn with_order(criterion: &str, sibling_first: bool) -> Self {
         RefineWithSiblingDriver {
             planner: "planner".into(),
@@ -543,6 +571,7 @@ impl RefineWithSiblingDriver {
             orig_id: Mutex::new(None),
             sibling_id: Mutex::new(None),
             sibling_first,
+            unmatched_sibling_criterion: None,
         }
     }
 }
@@ -588,6 +617,10 @@ impl AgentDriver for RefineWithSiblingDriver {
                     .expect("episode 1 must have proposed first");
                 let sibling_id = unit_id_for_spawn(&opts.id);
                 *self.sibling_id.lock().unwrap() = Some(sibling_id.clone());
+                let sibling_criterion = self
+                    .unmatched_sibling_criterion
+                    .clone()
+                    .unwrap_or_else(|| self.criterion.clone());
                 let emit_refine = |emit: &dyn Fn(&str, Value) -> Result<(), Error>| {
                     emit(
                         TYPE_UNIT_PROPOSED,
@@ -603,7 +636,7 @@ impl AgentDriver for RefineWithSiblingDriver {
                         json!({
                             "id": sibling_id,
                             "agent": self.worker,
-                            "criterion": self.criterion,
+                            "criterion": sibling_criterion,
                         }),
                     )
                 };
@@ -843,5 +876,110 @@ fn a_same_id_refine_survives_its_own_episodes_new_sibling_walked_first_through_t
         serving, expected,
         "both the refine and its new sibling must serve the criterion after the fold, \
          regardless of event order; got {serving:?}"
+    );
+}
+
+/// Spec 72 criterion 2 (same-episode siblings survive one harvest together, in any event
+/// order): the done-when text's SECOND named shape - "a refine beside a new empty-id split
+/// sibling" - proven here through the real write path. Every `RefineWithSiblingDriver`
+/// fixture above gives episode 2's sibling the SAME criterion text as the refine (a real
+/// split of one criterion into two units); this test instead gives the sibling criterion
+/// text that matches NONE of the run's acceptance criteria, so it resolves to no criterion
+/// at all - the genuinely-new / empty-criterion-id sub-unit path (spec 18 §3.3). THE
+/// SUPERSEDE RULE's prior-owners scan (`conductor.rs`'s `harvest_proposed`) runs only
+/// inside the resolved-criterion branch, so an unmatched proposal can neither sweep, nor be
+/// swept as, a prior owner - proven here alongside a same-episode refine so both code paths
+/// (the same-id fold branch's episode restamp, and the unmatched-add branch) run together in
+/// one harvest, exactly as a live replan can produce them.
+#[test]
+fn a_same_id_refine_survives_its_own_episodes_genuinely_new_unmatched_sibling_through_the_real_write_path(
+) {
+    let criterion = "the widget module is implemented";
+    let cfg = two_episode_cfg();
+    let store = Store::open(":memory:").unwrap();
+    let driver = RefineWithSiblingDriver::new_unmatched_sibling(
+        criterion,
+        "an entirely separate concern the spec never lists",
+    );
+    let deps = Deps {
+        store: &store,
+        driver: &driver,
+        gates: &ExecRunner,
+        repo: String::new(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion.to_string()],
+    };
+    let rs = run(&cfg, &deps).unwrap();
+
+    let spawns = driver.planner_spawns.lock().unwrap().clone();
+    assert_eq!(
+        spawns.len(),
+        2,
+        "one reject must trigger exactly one re-plan; planner spawns: {spawns:?}"
+    );
+
+    let orig_id = driver.orig_id.lock().unwrap().clone().unwrap();
+    let sibling_id = driver.sibling_id.lock().unwrap().clone().unwrap();
+    assert_ne!(
+        orig_id, sibling_id,
+        "the refine and its sibling must be distinct ids"
+    );
+
+    assert_eq!(
+        rs.units["plan-critique"].status,
+        ledger::Status::Integrated,
+        "the gate must approve the revision and release the fan-out"
+    );
+
+    // The REFINED unit must still appear and integrate, still serving the real criterion -
+    // it must never be silently reaped by its own episode's unmatched sibling.
+    assert!(
+        rs.units.contains_key(&orig_id),
+        "the refined unit {orig_id:?} must survive its own episode's genuinely-new \
+         unmatched sibling, not vanish from the run state; units: {:?}",
+        rs.units.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        rs.units[&orig_id].status,
+        ledger::Status::Integrated,
+        "the refined unit {orig_id:?} must run and integrate; units: {:?}",
+        rs.units.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(rs.units[&orig_id].spec_criterion, criterion);
+
+    // The genuinely-new unmatched sibling must ALSO survive (spec 31's real-split
+    // guarantee, extended by spec 72 criterion 2 to the empty-id shape) - proving the
+    // supersede mechanism does not treat "resolves to no criterion" as "gets swept".
+    assert!(
+        rs.units.contains_key(&sibling_id),
+        "the genuinely-new unmatched sibling {sibling_id:?} must also survive; units: {:?}",
+        rs.units.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        rs.units[&sibling_id].status,
+        ledger::Status::Integrated,
+        "the unmatched sibling {sibling_id:?} must run and integrate; units: {:?}",
+        rs.units.keys().collect::<Vec<_>>()
+    );
+    assert_ne!(
+        rs.units[&sibling_id].spec_criterion, criterion,
+        "an unmatched proposal must never be coerced onto the criterion it did not resolve \
+         to - it keeps its own authored text, not the refine's criterion"
+    );
+
+    // Only the refine serves the criterion in the final projected state - the unmatched
+    // sibling never becomes, and is never treated as, a criterion owner.
+    let serving: Vec<&str> = rs
+        .units
+        .values()
+        .filter(|u| u.spec_criterion == criterion)
+        .map(|u| u.id.as_str())
+        .collect();
+    assert_eq!(
+        serving,
+        vec![orig_id.as_str()],
+        "the unmatched sibling must never be counted as serving the criterion; got \
+         {serving:?}"
     );
 }
