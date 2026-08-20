@@ -17639,4 +17639,91 @@ mod tests {
             "must name the backend the project is actually configured for; got {line:?}"
         );
     }
+
+    /// Spec 73, criterion 1. The implementer persona (`.rigger/agents/rust-engineer.md`) is
+    /// OPERATOR CONFIGURATION seeded by the operator, not authored by any unit (spec 73
+    /// Design: "the grounder cannot ground non-code files, so no unit can own a Markdown
+    /// blast radius"). So this is a DRIFT GUARD, not a feature test: it pins the seeded
+    /// mutation-STEP contract - WHEN the instrument runs and HOW a missed mutant is resolved -
+    /// against the committed file, so an edit that drops or weakens that contract fails the
+    /// suite instead of silently drifting. The ACCOUNTING shape (the `DecisionMade` entry
+    /// format, the diff base, the total, the empty-diff case) is criterion 2's drift guard,
+    /// NOT this one's, and is deliberately not asserted here.
+    #[test]
+    fn implementer_persona_pins_the_seeded_mutation_step_contract() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(RIGGER_DIR)
+            .join("agents")
+            .join("rust-engineer.md");
+        let persona = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read committed {}: {e}", path.display()));
+        // Whitespace-normalize before matching (collapse newlines/indentation to single
+        // spaces), matching criterion 2's established drift-guard pattern (d-u73c2-accounting-
+        // drift-guard-approach): the committed persona wraps this paragraph across markdown
+        // list-continuation lines, so a raw substring match is fragile to a pure reflow
+        // (identical words, different line wrap) and would false-fail or false-pass around a
+        // line break.
+        let normalized = persona.split_whitespace().collect::<Vec<_>>().join(" ");
+
+        // One contiguous-phrase check, not two independently-satisfiable fragments: a
+        // decomposed persona that keeps "Mutation efficacy" and "build.mutation" as bare
+        // substrings in unrelated sentences (destroying the gating relation - the step
+        // runs only WHEN the config key is on) must fail this test, not pass it.
+        assert!(
+            normalized.contains("Mutation efficacy (when `build.mutation` is on)"),
+            "the step must be gated on the build.mutation config key, as one contiguous \
+             gating clause, not two independently-satisfiable fragments; got:\n{normalized}"
+        );
+        // One contiguous-phrase check, not two independently-satisfiable fragments: a
+        // decomposed persona that keeps both bare substrings in unrelated sentences
+        // (destroying the after-tests-green-before-pre-gate-commit placement relation
+        // criterion 1's own Done-when bullet names) must fail this test, not pass it.
+        assert!(
+            normalized.contains("After your unit tests are green and BEFORE the pre-gate commit"),
+            "the step must run after unit-green and before the pre-gate commit, as one \
+             contiguous relational clause, not two independently-satisfiable fragments; \
+             got:\n{normalized}"
+        );
+        assert!(
+            normalized.contains("diff against the unit's merge-base with the run branch"),
+            "the mutants run must be scoped to a diff against the unit's merge-base with the \
+             run branch; got:\n{normalized}"
+        );
+        // One contiguous-phrase check, not two independently-satisfiable fragments: a
+        // decomposed persona that keeps "cargo mutants --in-diff" and "DEFAULT feature
+        // lane" as bare substrings while running the invocation on some OTHER lane (or
+        // every lane) would still satisfy two independent `contains` calls, so the
+        // invocation and the lane it runs on must be pinned as one relation.
+        assert!(
+            normalized.contains(
+                "cargo mutants --in-diff /tmp/unit.diff --timeout-multiplier 1.5` on the \
+                 DEFAULT feature lane"
+            ),
+            "the step must name the diff-scoped cargo-mutants invocation tied to running on \
+             the default feature lane, as one contiguous clause, not two independently- \
+             satisfiable fragments; got:\n{normalized}"
+        );
+        // One contiguous-phrase check naming the either-or relation itself, not two bare
+        // keywords: a decomposed persona that keeps "KILLED" and "JUSTIFIED" as unrelated
+        // words (e.g. "always JUSTIFIED ... and never KILLED") would still satisfy two
+        // independent `contains` calls despite inverting the disjunction.
+        assert!(
+            normalized.contains(
+                "is either KILLED by a strengthened test or JUSTIFIED with a concrete \
+                 equivalence reason"
+            ),
+            "a missed mutant must be resolved by an explicit kill-or-justify disjunction, as \
+             one contiguous either-or clause, not two independent bare keywords; \
+             got:\n{normalized}"
+        );
+        // The consequence itself, not just the "unjustified miss" keyword: an inversion that
+        // keeps the words "unjustified miss" but reverses the outcome (e.g. "is merely noted
+        // in the log, and the unit may still be marked done") must fail this test.
+        assert!(
+            normalized.contains("an unjustified miss means the unit is not done"),
+            "an unjustified missed mutant must leave the unit not done - the consequence \
+             clause itself, not merely the presence of the words \"unjustified miss\"; \
+             got:\n{normalized}"
+        );
+    }
 }
