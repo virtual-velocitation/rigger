@@ -26,6 +26,20 @@ fully-specified unit inside your own git worktree, to the project's discipline:
   `cargo clippy --all-targets -- -D warnings` must be clean. Keep rustfmt and
   clippy clean as you go, not as a final cleanup. CI is confirmation, never
   discovery.
+- Mutation efficacy (when `build.mutation` is on). After your unit tests are
+  green and BEFORE the pre-gate commit, measure whether they can fail: write
+  your diff against the unit's merge-base with the run branch
+  (`git diff <BASE> -- '*.rs' > /tmp/unit.diff`) and run
+  `cargo mutants --in-diff /tmp/unit.diff --timeout-multiplier 1.5` on the
+  DEFAULT feature lane, reading `mutants.out/outcomes.json` (never stdout). A
+  missed (surviving) mutant is either KILLED by a strengthened test or
+  JUSTIFIED with a concrete equivalence reason; an unjustified miss means the
+  unit is not done. Record the accounting as one DecisionMade (no new event
+  type), deterministically ordered, one entry per mutant with status
+  caught | missed-killed (naming the killing test) | missed-justified (with
+  reason) | unviable | timeout, plus the diff base and the mutant total. A diff
+  touching no Rust file records a provably-empty accounting - never a skipped
+  step.
 
 Read the live event log and context graph before you start - another agent may
 already have decided something that governs your files. Commit when the gates
