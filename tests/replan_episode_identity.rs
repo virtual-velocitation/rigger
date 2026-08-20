@@ -514,10 +514,25 @@ struct RefineWithSiblingDriver {
     orig_id: Mutex<Option<String>>,
     /// The genuinely-new sibling id episode 2 proposes alongside the refine.
     sibling_id: Mutex<Option<String>>,
+    /// When true, episode 2 emits the genuinely-new sibling's ADD BEFORE the refine
+    /// (spec 72 round-3 REJECT fix: adv-u72c1r2-restamp-order-dependent-refine-still-
+    /// dropped) - the reverse of the default order, which only the round-2 fix's own
+    /// tests ever drove.
+    sibling_first: bool,
 }
 
 impl RefineWithSiblingDriver {
     fn new(criterion: &str) -> Self {
+        Self::with_order(criterion, false)
+    }
+
+    /// Same shape as `new`, but episode 2 emits the sibling's ADD before the refine
+    /// (spec 72 round-3 REJECT fix - see `sibling_first`).
+    fn new_sibling_first(criterion: &str) -> Self {
+        Self::with_order(criterion, true)
+    }
+
+    fn with_order(criterion: &str, sibling_first: bool) -> Self {
         RefineWithSiblingDriver {
             planner: "planner".into(),
             adjudicator: "judge".into(),
@@ -527,6 +542,7 @@ impl RefineWithSiblingDriver {
             planner_spawns: Mutex::new(Vec::new()),
             orig_id: Mutex::new(None),
             sibling_id: Mutex::new(None),
+            sibling_first,
         }
     }
 }
@@ -572,21 +588,32 @@ impl AgentDriver for RefineWithSiblingDriver {
                     .expect("episode 1 must have proposed first");
                 let sibling_id = unit_id_for_spawn(&opts.id);
                 *self.sibling_id.lock().unwrap() = Some(sibling_id.clone());
-                emit(
-                    TYPE_UNIT_PROPOSED,
-                    json!({
-                        "id": orig_id,
-                        "agent": self.worker,
-                    }),
-                )?;
-                emit(
-                    TYPE_UNIT_PROPOSED,
-                    json!({
-                        "id": sibling_id,
-                        "agent": self.worker,
-                        "criterion": self.criterion,
-                    }),
-                )?;
+                let emit_refine = |emit: &dyn Fn(&str, Value) -> Result<(), Error>| {
+                    emit(
+                        TYPE_UNIT_PROPOSED,
+                        json!({
+                            "id": orig_id,
+                            "agent": self.worker,
+                        }),
+                    )
+                };
+                let emit_sibling = |emit: &dyn Fn(&str, Value) -> Result<(), Error>| {
+                    emit(
+                        TYPE_UNIT_PROPOSED,
+                        json!({
+                            "id": sibling_id,
+                            "agent": self.worker,
+                            "criterion": self.criterion,
+                        }),
+                    )
+                };
+                if self.sibling_first {
+                    emit_sibling(emit)?;
+                    emit_refine(emit)?;
+                } else {
+                    emit_refine(emit)?;
+                    emit_sibling(emit)?;
+                }
             }
             return Ok(AgentResult {
                 output: "proposed the DAG".into(),
@@ -715,5 +742,106 @@ fn a_same_id_refine_survives_its_own_episodes_new_sibling_through_the_real_write
         serving, expected,
         "both the refine and its new sibling must serve the criterion after the fold; \
          got {serving:?}"
+    );
+}
+
+/// Spec 72 criterion 1, round-3 REJECT fix (adv-u72c1r2-restamp-order-dependent-refine-
+/// still-dropped): the round-2 fix above (`a_same_id_refine_survives_its_own_episodes_
+/// new_sibling_through_the_real_write_path`) only ever drove ONE of the two possible
+/// within-spawn emit orders - the refine before the sibling's ADD. This test drives the
+/// SAME shape through `RefineWithSiblingDriver::new_sibling_first`, which reverses it:
+/// episode 2's spawn emits the genuinely-new sibling's ADD FIRST, then the refine. Before
+/// the round-3 fix, the sibling's ADD-path `prior_owners` scan ran while `u-orig` still
+/// carried its stale episode-1 stamp (the fold branch that restamps it had not run yet),
+/// so it was wrongly reaped as an earlier-episode owner - and the LATER refine event then
+/// found no stage to fold onto and silently dropped, PERMANENTLY losing the unit with no
+/// recovery signal. THE SUPERSEDE RULE is unconditional on event order ("never a stage
+/// from its OWN episode, in any event order"), so this order must deliver the identical
+/// outcome as the round-2 test above: both units survive and integrate.
+#[test]
+fn a_same_id_refine_survives_its_own_episodes_new_sibling_walked_first_through_the_real_write_path()
+{
+    let criterion = "the sprocket assembly is implemented, reversed order";
+    let cfg = two_episode_cfg();
+    let store = Store::open(":memory:").unwrap();
+    let driver = RefineWithSiblingDriver::new_sibling_first(criterion);
+    let deps = Deps {
+        store: &store,
+        driver: &driver,
+        gates: &ExecRunner,
+        repo: String::new(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion.to_string()],
+    };
+    let rs = run(&cfg, &deps).unwrap();
+
+    let spawns = driver.planner_spawns.lock().unwrap().clone();
+    assert_eq!(
+        spawns.len(),
+        2,
+        "one reject must trigger exactly one re-plan; planner spawns: {spawns:?}"
+    );
+
+    let orig_id = driver.orig_id.lock().unwrap().clone().unwrap();
+    let sibling_id = driver.sibling_id.lock().unwrap().clone().unwrap();
+    assert_ne!(
+        orig_id, sibling_id,
+        "the refine and its sibling must be distinct ids"
+    );
+
+    assert_eq!(
+        rs.units["plan-critique"].status,
+        ledger::Status::Integrated,
+        "the gate must approve the revision and release the fan-out"
+    );
+
+    // The REFINED unit must still appear and integrate even though its own episode's
+    // sibling ADD was walked first - it must never be silently, permanently dropped.
+    assert!(
+        rs.units.contains_key(&orig_id),
+        "the refined unit {orig_id:?} must survive its own episode's new sibling even when \
+         the sibling's ADD is walked BEFORE the refine, not vanish from the run state; \
+         units: {:?}",
+        rs.units.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        rs.units[&orig_id].status,
+        ledger::Status::Integrated,
+        "the refined unit {orig_id:?} must run and integrate; units: {:?}",
+        rs.units.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(rs.units[&orig_id].spec_criterion, criterion);
+
+    // The genuinely-new sibling must ALSO survive (spec 31's real-split guarantee).
+    assert!(
+        rs.units.contains_key(&sibling_id),
+        "the genuinely-new same-episode sibling {sibling_id:?} must also survive; \
+         units: {:?}",
+        rs.units.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        rs.units[&sibling_id].status,
+        ledger::Status::Integrated,
+        "the sibling {sibling_id:?} must run and integrate; units: {:?}",
+        rs.units.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(rs.units[&sibling_id].spec_criterion, criterion);
+
+    // Both of episode 2's proposals serve the criterion in the final projected state,
+    // regardless of the emit order within that one spawn.
+    let mut serving: Vec<&str> = rs
+        .units
+        .values()
+        .filter(|u| u.spec_criterion == criterion)
+        .map(|u| u.id.as_str())
+        .collect();
+    serving.sort_unstable();
+    let mut expected = vec![orig_id.as_str(), sibling_id.as_str()];
+    expected.sort_unstable();
+    assert_eq!(
+        serving, expected,
+        "both the refine and its new sibling must serve the criterion after the fold, \
+         regardless of event order; got {serving:?}"
     );
 }

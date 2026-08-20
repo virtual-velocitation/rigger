@@ -7417,6 +7417,40 @@ impl RunCtx<'_> {
         // run history through one call, so re-deriving the order from that one pass,
         // every time, is what makes a live incremental fold and a cold resume agree).
         let mut episode_order: HashMap<String, usize> = HashMap::new();
+        // FINAL episode identity per unit id (spec 72 round-3 REJECT fix:
+        // adv-u72c1r2-restamp-order-dependent-refine-still-dropped). A pre-pass over the
+        // SAME events, mirroring the `episode_order` pre-registration above: for every id
+        // that ever names a `UnitProposed`, resolve the episode of its LAST occurrence in
+        // log order - i.e. exactly what `Stage.episode` reads once the whole forward pass
+        // has finished folding every same-id refine. Without this, the ADD path's
+        // `prior_owners` scan (below) read the STAGE's `episode` field, which the fold
+        // branch mutates only at the moment ITS OWN same-id event is walked - so whether a
+        // same-episode sibling's ADD correctly saw a refined unit's NEW episode depended on
+        // which of the two same-episode events (the refine, or the sibling's ADD) the log
+        // happened to order first. PLAN_PROTOCOL never constrains a planner's emit order
+        // within one re_plan spawn, so both orders are production-reachable; THE SUPERSEDE
+        // RULE is unconditional on event order ("never a stage from its OWN episode, in
+        // any event order"). Resolving every id's FINAL episode BEFORE any prior_owners
+        // scan runs removes the dependency entirely: the scan below now always compares
+        // against the same value regardless of walk order, so the ADD-before-refine order
+        // reads the refined unit's episode exactly as correctly as refine-before-ADD does.
+        let mut final_episode: HashMap<String, String> = HashMap::new();
+        for e in crate::run::current_run(&events) {
+            if e.type_ != TYPE_UNIT_PROPOSED {
+                continue;
+            }
+            let mut u: UnitProposed = match serde_json::from_slice(&e.data) {
+                Ok(u) => u,
+                Err(_) => continue,
+            };
+            if u.id.is_empty() {
+                continue;
+            }
+            if let Some(spawn) = e.meta.get(META_SPAWN).filter(|s| !s.is_empty()) {
+                u.episode = spawn.clone();
+            }
+            final_episode.insert(u.id, u.episode);
+        }
         // Run-scoped (Gap 11, completing spec-06 unit-1): only THIS run's proposals
         // fold. A prior run's UnitProposed must never resurrect as live work - its
         // terminal states are (correctly) scoped OUT of `terminal`, so an unscoped
@@ -7618,7 +7652,16 @@ impl RunCtx<'_> {
                             if st.baseline {
                                 return true;
                             }
-                            let st_rank = *episode_order.get(&st.episode).unwrap_or(&usize::MAX);
+                            // Consult the pre-pass FINAL episode for this id (never the
+                            // mid-walk-mutated `st.episode`) so the answer is stable
+                            // regardless of whether this id's own same-id refine has been
+                            // walked yet in THIS pass (round-3 REJECT fix, see the
+                            // `final_episode` pre-pass above). `st.episode` stays the
+                            // fallback for defense in depth - unreachable for any real
+                            // non-baseline stage, which is always seeded from a
+                            // `UnitProposed` this same pre-pass also walked.
+                            let owner_episode = final_episode.get(*name).unwrap_or(&st.episode);
+                            let st_rank = *episode_order.get(owner_episode).unwrap_or(&usize::MAX);
                             st_rank < u_episode_rank
                         })
                         .map(|(name, _)| name.clone())
@@ -11392,6 +11435,131 @@ mod tests {
             serving.len(),
             2,
             "both episode2 siblings must serve the criterion after the fold; got {serving:?}"
+        );
+    }
+
+    #[test]
+    fn a_same_id_refine_survives_its_own_episodes_sibling_add_walked_first() {
+        // spec 72 criterion 1, round-3 REJECT fix (adv-u72c1r2-restamp-order-dependent-
+        // refine-still-dropped): the round-2 restamp
+        // (`a_same_id_refine_restamps_its_episode_so_its_own_episodes_sibling_does_not_
+        // reap_it` above) only covers ONE of the two within-call event orders - refine
+        // walked BEFORE its same-episode sibling's ADD. This test is that test with the
+        // event order REVERSED: the genuinely-new sibling u-new's ADD is walked FIRST,
+        // then u-orig's same-id refine. Before this fix, u-new's prior_owners scan read
+        // `existing.episode` (mutated ONLY by the fold branch, which had not run yet) -
+        // still u-orig's ORIGINAL, stale episode1 - so it wrongly reaped u-orig as an
+        // earlier-episode owner. The later refine event then found
+        // `stages.contains_key("u-orig")` false (never re-inserts) while
+        // `proposed.contains("u-orig")` true (never cleared by the removal), so it just
+        // `continue`d - u-orig was PERMANENTLY DROPPED, worse than the duplication defect
+        // spec 72 exists to fix. THE SUPERSEDE RULE is unconditional on event order
+        // ("never a stage from its OWN episode, in any event order"), so both orderings
+        // must hold.
+        let criterion = "the gearbox module is implemented";
+        let cfg = supersede_cfg();
+        let st = Store::open(":memory:").unwrap();
+        let cid = criterion_stable_id(1, criterion);
+
+        // episode1: the initial proposal for u-orig.
+        st.append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[Event::new(
+                TYPE_UNIT_PROPOSED,
+                serde_json::to_vec(&json!({
+                    "id": "u-orig",
+                    "agent": "worker",
+                    "criterion": criterion,
+                    "criterion_id": cid,
+                    "gates": ["ok"],
+                }))
+                .unwrap(),
+            )
+            .with_meta(META_SPAWN, "plan/implementer#0")],
+        )
+        .unwrap();
+        // episode2: the genuinely-new sibling u-new's ADD walked FIRST, THEN u-orig's
+        // same-id refine (only `needs` changes) - the reverse of the shipped seam test's
+        // order.
+        st.append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[
+                Event::new(
+                    TYPE_UNIT_PROPOSED,
+                    serde_json::to_vec(&json!({
+                        "id": "u-new",
+                        "agent": "worker",
+                        "criterion": criterion,
+                        "criterion_id": cid,
+                        "gates": ["ok"],
+                    }))
+                    .unwrap(),
+                )
+                .with_meta(META_SPAWN, "plan/replan#1"),
+                Event::new(
+                    TYPE_UNIT_PROPOSED,
+                    serde_json::to_vec(&json!({
+                        "id": "u-orig",
+                        "agent": "worker",
+                        "needs": ["plan"],
+                    }))
+                    .unwrap(),
+                )
+                .with_meta(META_SPAWN, "plan/replan#1"),
+            ],
+        )
+        .unwrap();
+
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: vec![criterion.to_string()],
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        let mut stages = seed_refine_dag(&deps.criteria);
+        let mut proposed: HashSet<String> = HashSet::new();
+        let integrated: HashSet<String> = HashSet::new();
+        let terminal: HashSet<String> = HashSet::new();
+        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+            .unwrap();
+
+        assert!(
+            stages.contains_key("u-orig"),
+            "the refined unit must survive its own episode's genuinely-new sibling even \
+             when the sibling's ADD is walked BEFORE the refine, not be permanently \
+             dropped; stages: {:?}",
+            stages.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            stages.contains_key("u-new"),
+            "the genuinely-new same-episode sibling must also survive (spec 31's real- \
+             split guarantee); stages: {:?}",
+            stages.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            stages["u-orig"].needs,
+            vec!["plan".to_string(), "plan-critique".to_string()],
+            "the refine must still fold needs (with the gate-hold re-applied), unchanged \
+             behavior"
+        );
+        let serving: Vec<&str> = stages
+            .values()
+            .filter(|s| s.criterion_id == cid)
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(
+            serving.len(),
+            2,
+            "both episode2 siblings must serve the criterion after the fold, regardless \
+             of event order; got {serving:?}"
         );
     }
 
