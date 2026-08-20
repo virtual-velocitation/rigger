@@ -37,6 +37,12 @@ unit's small diff to tens of mutants.
 - Budget: the mutation run stays inside the unit's existing build-budget slot;
   `--jobs` never exceeds the build budget's per-unit allowance.
 
+- DRIFT-GUARD ASSERTION DISCIPLINE, decided here: a pinned clause is asserted as ONE
+  contiguous whitespace-normalized phrase that carries the clause's actual relation
+  (placement, gating, lane scoping, the kill-or-justify disjunction). A conjunction of
+  independently-satisfiable bare substrings is NOT an implementation of a drift guard: it
+  survives an edit that inverts the relation while keeping every word present.
+
 ## Done when
 
 - [ ] A test pins the implementer persona's seeded mutation step - after unit-green, a
