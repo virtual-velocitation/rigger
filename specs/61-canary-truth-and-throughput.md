@@ -55,6 +55,16 @@ takes (issues #24 and #22). Three defects:
   family re-point such as opus -> sonnet - is MODEL change and keeps today's behavior: the
   panel runs. An explicit `rigger canary` with no `--if-model-changed` flag always runs
   regardless of drift class, so an operator who wants the measurement anyway just asks.
+- **Authoritative model identity, decided here** (`src/canary.rs`, and the spawn-result
+  path that records worker metadata): the resolved model id recorded for any spawn -
+  canary tiers and run workers alike - is read from the runner's STRUCTURED metadata (the
+  CLI's machine-readable result output), never from agent prose self-report. A spawn whose
+  runner metadata carries no model id records none and is reported unmeasured - no fake or
+  defaulted value. The model-drift warning (`rigger validate` and `--if-model-changed`)
+  keys on these authoritative per-tier ids. Evidence this is load-bearing (2026-08-20):
+  inside one all-Sonnet-5 run, three workers self-reported `claude-sonnet-4-5-20250929`
+  and the last-writer drift check forged a cross-generation downgrade alarm that blocked
+  an operator at launch time.
 - **Per-spawn timing in stats** (`src/metrics.rs` / `src/main.rs::cmd_stats`): `rigger stats`
   pairs each recorded spawn request with its result by spawn id and reports duration
   aggregates (per tier/agent: count, total, mean). An unpaired request (dead worker) is
@@ -112,6 +122,11 @@ takes (issues #24 and #22). Three defects:
 - [ ] a test proves SPAWN TIMING: `rigger stats` reports per-agent duration aggregates derived
   by pairing recorded spawn requests with their results by spawn id, excludes unpaired
   requests from every aggregate while reporting their count, with no new event type.
+- [ ] a test proves AUTHORITATIVE MODEL IDENTITY: the resolved model id recorded for a
+  spawn comes from the runner's structured metadata, a conflicting agent-prose claim never
+  enters the record, and a spawn with no metadata id records none and reports as
+  unmeasured rather than defaulted. This criterion OWNS resolved-model recording; the
+  `--if-model-changed` gate is the DRIFT SEVERITY criterion's, NOT this one's.
 - [ ] a test proves DRIFT SEVERITY: a resolved-id change differing only in the trailing date
   suffix is classified as snapshot drift - `--if-model-changed` reports it and exits
   successfully without running the panel - while a change in the id's base still runs the
