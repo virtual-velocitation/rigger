@@ -1308,6 +1308,21 @@ struct UnitProposed {
     /// `unmatched-proposal` signal).
     #[serde(default)]
     criterion_id: String,
+    /// The identity of the PLANNING EPISODE that emitted this proposal (spec 72,
+    /// PLAN-EPISODE IDENTITY - the load-bearing decision): one planner pass (an initial
+    /// plan or a plan-critique reject's re-plan) is one episode, and this is additive
+    /// and `serde(default)` so every pre-existing logged `UnitProposed` (which never
+    /// carried it) deserializes to the empty string - the LEGACY episode a later unit
+    /// gives back-compat meaning to. Two proposals sharing one non-empty value are
+    /// SIBLINGS (from the same planning pass, e.g. a real split across two criteria, or
+    /// two units both citing the same criterion); a proposal whose episode is LATER (by
+    /// the log order of the episodes' first events - `harvest_proposed` derives the
+    /// order, this field carries only the raw identity) supersedes an EARLIER episode's
+    /// owner of the same criterion. A conforming value is anything log-unique per
+    /// planner pass; where it is computed is free (the planner spawn's own deterministic
+    /// id is the natural choice) - that it is PERSISTED ON THE EVENT is not.
+    #[serde(default)]
+    episode: String,
 }
 
 /// The replayable TRAJECTORY of a completed run (spec 13, unit 2 - trajectory replay/eval):
@@ -7359,6 +7374,14 @@ impl RunCtx<'_> {
         // (always present) so it is stable as the loop mutates `stages`; None when no
         // gate is wired (the historical no-gate shape, untouched).
         let gate = critique_gate_name(stages);
+        // PLAN-EPISODE ordering (spec 72, STATE PLACEMENT): the ONLY authority for
+        // which episode is "later" is the log itself - the order each DISTINCT episode
+        // identity is FIRST seen while folding THIS SAME forward pass. Built fresh on
+        // every call (never a per-process/`RunCtx` field - round 5 proved any such
+        // stand-in wrong on resume: a fresh process's pre-wave catch-up folds the WHOLE
+        // run history through one call, so re-deriving the order from that one pass,
+        // every time, is what makes a live incremental fold and a cold resume agree).
+        let mut episode_order: HashMap<String, usize> = HashMap::new();
         // Run-scoped (Gap 11, completing spec-06 unit-1): only THIS run's proposals
         // fold. A prior run's UnitProposed must never resurrect as live work - its
         // terminal states are (correctly) scoped OUT of `terminal`, so an unscoped
@@ -7372,6 +7395,16 @@ impl RunCtx<'_> {
             let mut u: UnitProposed = match serde_json::from_slice(&e.data) {
                 Ok(u) => u,
                 Err(_) => continue,
+            };
+            // Register this proposal's episode's rank the moment its FIRST event is
+            // seen (spec 72: "a proposal whose episode is LATER, by log order of the
+            // episodes' first events, supersedes"). Every `UnitProposed` this episode
+            // ever emits marks its arrival, whether it goes on to the same-id fold path,
+            // the ADD path, or is skipped outright - so the rank reflects the episode's
+            // true first appearance, not just its surviving proposals'.
+            let u_episode_rank = {
+                let next = episode_order.len();
+                *episode_order.entry(u.episode.clone()).or_insert(next)
             };
             if u.id.is_empty() {
                 continue;
@@ -7456,6 +7489,13 @@ impl RunCtx<'_> {
             // against the run's CRITERIA (not the surviving baselines), so a real split
             // whose sibling already removed the shared baseline still resolves and is
             // never mis-flagged as genuinely-new.
+            //
+            // THE STAMP (spec 72): the resolved criterion's stable id, carried onto the
+            // Stage this proposal becomes below. Stays empty (never participates in a
+            // future supersede match, per the global constraint) unless `served`
+            // resolves just below - an empty coverage or a genuinely-new unmatched
+            // proposal never gets one, exactly like a non-baseline stage always has.
+            let mut resolved_criterion_id = String::new();
             if !u.coverage.trim().is_empty() {
                 // Resolve the served criterion through `resolve_served_criterion`: the
                 // echoed stable id FIRST, then a whitespace-normalized prose fallback
@@ -7466,28 +7506,43 @@ impl RunCtx<'_> {
                 let served = self.resolve_served_criterion(&u.coverage, &u.criterion_id);
                 if let Some((criterion_id, criterion)) = served {
                     // Enforce ONE LIVE UNIT PER CRITERION (the dual-chain fix): remove
-                    // EVERY not-yet-started, non-terminal stage already serving this
-                    // criterion - the conductor-synthesized baseline AND any prior planner
-                    // unit for it - so this unit REPLACES whatever currently owns the
-                    // criterion. Removing only the baseline (the earlier fix) let a SECOND
-                    // planner unit, re-emitted with a new id after the baseline was already
-                    // consumed by the first, be ADDED as a duplicate: an unwinnable
-                    // dual-chain (two units per criterion) the plan-critique rejects on
-                    // rule 7 and no later emission can undo. The planner is told never to
-                    // split a criterion (one unit each; a legitimate split is only across
-                    // DISTINCT criteria), so a stage already serving THIS criterion is
-                    // always a stale owner to replace, never a real sibling. We GUARD on
-                    // not-started/non-terminal so a unit already underway or merged in a
-                    // prior wave/window is never yanked out from under its own work; matched
-                    // by the stored criterion id. Removing ALL prior owners (not just one)
-                    // collapses even a pre-existing dual-chain to a single owner in one
-                    // harvest.
+                    // every not-yet-started, non-terminal stage already serving this
+                    // criterion FROM AN EARLIER EPISODE (spec 72, THE SUPERSEDE RULE) -
+                    // the conductor-synthesized baseline AND any EARLIER planner unit for
+                    // it - so this unit REPLACES whatever an earlier episode left owning
+                    // the criterion. Removing only the baseline (the pre-spec-72 fix) let
+                    // a SECOND planner unit, re-emitted with a new id after the baseline
+                    // was already consumed by the first, be ADDED as a duplicate: an
+                    // unwinnable dual-chain (two units per criterion) the plan-critique
+                    // rejects on rule 7 and no later emission can undo.
+                    //
+                    // EARLIER, never merely "present": a baseline always counts as earlier
+                    // than every episode (it predates the planner entirely, hence no
+                    // episode rank of its own - `st.baseline` is the sentinel). A
+                    // planner-added stage's owning episode is compared by RANK - the log
+                    // order its first event was seen in THIS pass - against `u`'s own
+                    // episode, so a SAME-episode stage (a real split, or this exact
+                    // proposal seen again) is NEVER removed, in any event order (round 2's
+                    // probe): `u_episode_rank`, not `<=`, keeps a stage's own rank from
+                    // ever comparing less than itself. We GUARD on not-started/non-terminal
+                    // so a unit already underway or merged in a prior wave/window is never
+                    // yanked out from under its own work; matched by the stored criterion
+                    // id. Removing ALL earlier owners (not just one) collapses even a
+                    // pre-existing dual-chain to a single owner in one harvest.
                     let prior_owners: Vec<String> = stages
                         .iter()
                         .filter(|(name, st)| {
-                            !integrated.contains(*name)
-                                && !terminal.contains(*name)
-                                && st.criterion_id == criterion_id
+                            if integrated.contains(*name)
+                                || terminal.contains(*name)
+                                || st.criterion_id != criterion_id
+                            {
+                                return false;
+                            }
+                            if st.baseline {
+                                return true;
+                            }
+                            let st_rank = *episode_order.get(&st.episode).unwrap_or(&usize::MAX);
+                            st_rank < u_episode_rank
                         })
                         .map(|(name, _)| name.clone())
                         .collect();
@@ -7498,6 +7553,14 @@ impl RunCtx<'_> {
                     // coverage, so it grounds on and records the real criterion and the
                     // coverage gate stays exact even when the planner paraphrased.
                     u.coverage = criterion;
+                    // THE STAMP (spec 72, outcome-level): carry the criterion's own
+                    // stable id onto the stage this proposal becomes - not only a
+                    // conductor-synthesized baseline gets one from here on. Without this
+                    // a LATER episode's supersede scan above could only ever find a
+                    // baseline (long superseded by the time a second episode replans),
+                    // never a planner-added stage - exactly the defect spec 72's Problem
+                    // describes and this unit's test pins.
+                    resolved_criterion_id = criterion_id;
                 } else if !self.deps.criteria.is_empty() {
                     // A proposal that maps to NO acceptance criterion is a genuinely-new
                     // sub-unit (a real split the planner intends). It STILL runs - the
@@ -7542,6 +7605,11 @@ impl RunCtx<'_> {
                     needs,
                     coverage: u.coverage,
                     gates: u.gates,
+                    criterion_id: resolved_criterion_id,
+                    // Record the episode that proposed this stage (spec 72), so a LATER
+                    // episode's own supersede scan can compare against it - the read half
+                    // of the same rank this proposal was just ranked by above.
+                    episode: u.episode,
                     ..Default::default()
                 },
             );
@@ -10877,6 +10945,165 @@ mod tests {
             2,
             "the criterion must be served by exactly the two split units; got {serving:?}"
         );
+    }
+
+    #[test]
+    fn a_later_episodes_proposal_supersedes_an_earlier_episodes_planner_unit() {
+        // spec 72 criterion 1 (cross-episode supersede is grounded in the log, not the
+        // call). This is the DEFECT that spec 72's Problem statement describes and this
+        // unit fixes: `episode1` proposes `u-ep1` for `criterion`, then `episode2` (a
+        // LATER planning pass - a replan after a plan-critique reject, so its event is
+        // later in the log) proposes a DIFFERENT unit `u-ep2` for the SAME criterion.
+        // These are DISTINCT ids under DISTINCT episodes - never a same-id refine (crit
+        // 1's OTHER fold path, spec 31) and never a same-episode split (criterion 2's
+        // job, NOT this one's) - so exactly one live owner must remain: the LATER
+        // episode's unit, and it alone, stamped with the criterion's own stable id.
+        //
+        // Before this unit, `harvest_proposed`'s ADD path never stamped `criterion_id`
+        // on the stage it inserted (only a conductor-synthesized baseline carried one),
+        // so `u-ep2`'s prior_owners scan could find u-ep1's baseline (already gone) but
+        // never u-ep1's OWN stage - both would survive, the exact rule-7 duplicate
+        // ownership spec 72 exists to close. RED against that: `u-ep1` would still be
+        // in `stages` and `serving.len()` would be 2, not 1.
+        let criterion = "the widget module is implemented";
+        let cfg = supersede_cfg();
+        let st = Store::open(":memory:").unwrap();
+
+        let cid = criterion_stable_id(1, criterion);
+        for (id, episode) in [("u-ep1", "episode1"), ("u-ep2", "episode2")] {
+            st.append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[Event::new(
+                    TYPE_UNIT_PROPOSED,
+                    serde_json::to_vec(&json!({
+                        "id": id,
+                        "agent": "worker",
+                        "criterion": criterion,
+                        "criterion_id": cid,
+                        "episode": episode,
+                        "gates": ["ok"],
+                    }))
+                    .unwrap(),
+                )],
+            )
+            .unwrap();
+        }
+
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: vec![criterion.to_string()],
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        let mut stages = seed_refine_dag(&deps.criteria);
+        let mut proposed: HashSet<String> = HashSet::new();
+        let integrated: HashSet<String> = HashSet::new();
+        let terminal: HashSet<String> = HashSet::new();
+        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+            .unwrap();
+
+        assert!(
+            !stages.contains_key(&baseline_id(1, criterion)),
+            "the baseline must be superseded by episode1's proposal"
+        );
+        assert!(
+            !stages.contains_key("u-ep1"),
+            "the EARLIER episode's unit must be superseded by the later episode's \
+             proposal for the same criterion, not survive alongside it; stages: {:?}",
+            stages.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            stages.contains_key("u-ep2"),
+            "the LATER episode's unit must survive; stages: {:?}",
+            stages.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(stages["u-ep2"].coverage, criterion);
+        // THE STAMP: the surviving planner-added stage carries the criterion's stable
+        // id, not the default empty string - proving a planner-added stage (not only a
+        // baseline) is now a valid supersede target for a future proposal.
+        assert_eq!(
+            stages["u-ep2"].criterion_id, cid,
+            "the ADD path must stamp criterion_id on a planner-added stage, exactly as \
+             it already does for a conductor-synthesized baseline"
+        );
+        let serving: Vec<&str> = stages
+            .values()
+            .filter(|s| s.coverage == criterion)
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(
+            serving,
+            vec!["u-ep2"],
+            "exactly one live owner must serve the criterion after both episodes fold; \
+             got {serving:?}"
+        );
+    }
+
+    #[test]
+    fn a_same_episode_re_seen_on_a_later_fold_still_never_self_supersedes() {
+        // Guards the comparison direction itself (not criterion 2's same-CALL split
+        // proof): a proposal must never treat its OWN episode as "earlier than itself"
+        // on a re-fold. Two proposals sharing one episode id, both citing the SAME
+        // criterion (the PLAN_PROTOCOL "several units echoing the SAME id" real-split
+        // shape), must both survive - a `<` comparison that degenerated to `<=` would
+        // wrongly let the second same-episode proposal supersede the first.
+        let criterion = "the gadget module is implemented";
+        let cfg = supersede_cfg();
+        let st = Store::open(":memory:").unwrap();
+        let cid = criterion_stable_id(1, criterion);
+        for id in ["u-sib-1", "u-sib-2"] {
+            st.append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[Event::new(
+                    TYPE_UNIT_PROPOSED,
+                    serde_json::to_vec(&json!({
+                        "id": id,
+                        "agent": "worker",
+                        "criterion": criterion,
+                        "criterion_id": cid,
+                        "episode": "shared-episode",
+                        "gates": ["ok"],
+                    }))
+                    .unwrap(),
+                )],
+            )
+            .unwrap();
+        }
+
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: vec![criterion.to_string()],
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let mut stages = seed_refine_dag(&deps.criteria);
+        let mut proposed: HashSet<String> = HashSet::new();
+        let integrated: HashSet<String> = HashSet::new();
+        let terminal: HashSet<String> = HashSet::new();
+        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+            .unwrap();
+
+        for id in ["u-sib-1", "u-sib-2"] {
+            assert!(
+                stages.contains_key(id),
+                "same-episode sibling {id:?} must never be superseded by its own \
+                 episode; stages: {:?}",
+                stages.keys().collect::<Vec<_>>()
+            );
+        }
     }
 
     #[test]
