@@ -660,6 +660,16 @@ pub struct BuildConfig {
     /// every build is admitted immediately and no slot directory is ever touched.
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent: u32,
+    /// Whether the implementer's diff-scoped mutation-efficacy step (spec 73) runs:
+    /// `on` (trimmed, case-insensitive) enables it and requires the `cargo-mutants` binary
+    /// to be resolvable on PATH (checked at run start by [`Config::validate`], via
+    /// [`crate::gate::resolve_mutation_layer`] - ENABLED-BUT-ABSENT FAILS LOUD, never a
+    /// silent skip). Empty (the default, back-compat with every workflow committed before
+    /// this key existed) / `off` / anything else disables it - PATH is never probed. Modeled
+    /// as a `String`, like `wrapper`/`dash`/`grounder`/`autonomy`, so the documented `on`/
+    /// `off` scalars parse without a bespoke bool deserializer.
+    #[serde(default)]
+    pub mutation: String,
 }
 
 /// The `Workflow.build` field's serde default (spec 65): called only when the WHOLE
@@ -941,6 +951,15 @@ impl Config {
         // build-environment authority and `rigger validate`'s reporting surface both read
         // too - never a second, independently re-derived check.
         if let Err(e) = crate::gate::resolve_build_layer(&wf.build.wrapper, &wf.build.cache_dir) {
+            return Err(err(e.to_string()));
+        }
+        // Mutation-efficacy step gating (spec 73, ENABLED-BUT-ABSENT FAILS AT RUN START): a
+        // CONFIGURED `build.mutation: on` whose required `cargo-mutants` binary is absent
+        // from PATH is a run-start config error naming the binary and the key - the operator
+        // asked for the step explicitly, so proceeding would silently skip a check they
+        // turned on. `off`/empty never probe PATH. The SAME resolution `rigger validate`'s
+        // reporting surface reads too - never a second, independently re-derived check.
+        if let Err(e) = crate::gate::resolve_mutation_layer(&wf.build.mutation) {
             return Err(err(e.to_string()));
         }
         // The default review panel (applied to every unit) must reference real agents,
@@ -2948,6 +2967,63 @@ class: product\n";
                 "build.wrapper: {wrapper:?} must never fail validation"
             );
         }
+    }
+
+    /// Spec 73: `build.mutation` is the config plumbing
+    /// [`crate::gate::resolve_mutation_layer`] reads. An omitted `build:` section (the
+    /// common case, and every workflow committed before this key existed) resolves to empty
+    /// - off - so `Config::validate` never probes PATH for pre-existing projects.
+    #[test]
+    fn build_config_parses_mutation_and_defaults_to_off_when_omitted() {
+        let wf: Workflow = serde_yaml::from_str("name: x\n").unwrap();
+        assert_eq!(
+            wf.build.mutation, "",
+            "an omitted build: section defaults mutation empty (off)"
+        );
+
+        let wf: Workflow = serde_yaml::from_str("build:\n  mutation: on\n").unwrap();
+        assert_eq!(wf.build.mutation, "on");
+    }
+
+    /// `off`/empty never fail validation and never probe PATH (spec 73) - mirrors
+    /// `validate_accepts_auto_and_off_wrapper_regardless_of_path`'s own off-never-fails shape
+    /// for the mutation axis. The synthetic-PATH proof that `off` never even REACHES the
+    /// probe lives in `gate::tests::resolve_mutation_layer_off_and_empty_resolve_to_false_
+    /// without_touching_path`; this proves the SAME resolution wired through
+    /// `Config::validate` behaves identically against the real ambient PATH.
+    #[test]
+    fn validate_accepts_off_mutation_regardless_of_path() {
+        for mutation in ["off", "", "  ", "  OFF  "] {
+            let mut cfg = Config::default();
+            cfg.workflow.build.mutation = mutation.into();
+            assert!(
+                cfg.validate().is_ok(),
+                "build.mutation: {mutation:?} must never fail validation"
+            );
+        }
+    }
+
+    /// Spec 73 (ENABLED-BUT-ABSENT FAILS AT RUN START): a CONFIGURED `build.mutation: on`
+    /// with the `cargo-mutants` binary genuinely present on this test's real ambient PATH
+    /// (a setup precondition this repo's own build.mutation step requires, per spec 73's
+    /// notes) must validate successfully - the positive-resolution half of the contract,
+    /// mirroring `validate_rejects_a_named_build_wrapper_absent_from_path`'s own real-PATH
+    /// approach. The ABSENT-binary failure direction cannot be proven against this repo's
+    /// real ambient PATH the way a nonsense wrapper NAME can (the binary name here is fixed,
+    /// not operator-chosen, and is genuinely installed) - that direction is proven with a
+    /// synthetic PATH at the pure-resolver level
+    /// (`gate::tests::resolve_mutation_layer_on_with_the_binary_absent_errors_naming_the_
+    /// binary_and_key`) and end to end through the real CLI with a controlled PATH in
+    /// `tests/cli.rs`.
+    #[test]
+    fn validate_accepts_mutation_on_when_cargo_mutants_is_on_the_real_path() {
+        let mut cfg = Config::default();
+        cfg.workflow.build.mutation = "on".into();
+        assert!(
+            cfg.validate().is_ok(),
+            "build.mutation: on with cargo-mutants resolvable must validate; this test's own \
+             environment must have cargo-mutants installed"
+        );
     }
 
     /// Spec 65 unit 2 (NO SILENT DEGRADE) - the SAME Design sentence (specs/65:26-28) that
