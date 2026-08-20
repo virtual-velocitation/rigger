@@ -17613,9 +17613,14 @@ mod tests {
         // line break.
         let normalized = persona.split_whitespace().collect::<Vec<_>>().join(" ");
 
+        // One contiguous-phrase check, not two independently-satisfiable fragments: a
+        // decomposed persona that keeps "Mutation efficacy" and "build.mutation" as bare
+        // substrings in unrelated sentences (destroying the gating relation - the step
+        // runs only WHEN the config key is on) must fail this test, not pass it.
         assert!(
-            normalized.contains("Mutation efficacy") && normalized.contains("build.mutation"),
-            "the step must be gated on the build.mutation config key; got:\n{normalized}"
+            normalized.contains("Mutation efficacy (when `build.mutation` is on)"),
+            "the step must be gated on the build.mutation config key, as one contiguous \
+             gating clause, not two independently-satisfiable fragments; got:\n{normalized}"
         );
         // One contiguous-phrase check, not two independently-satisfiable fragments: a
         // decomposed persona that keeps both bare substrings in unrelated sentences
@@ -17632,15 +17637,32 @@ mod tests {
             "the mutants run must be scoped to a diff against the unit's merge-base with the \
              run branch; got:\n{normalized}"
         );
+        // One contiguous-phrase check, not two independently-satisfiable fragments: a
+        // decomposed persona that keeps "cargo mutants --in-diff" and "DEFAULT feature
+        // lane" as bare substrings while running the invocation on some OTHER lane (or
+        // every lane) would still satisfy two independent `contains` calls, so the
+        // invocation and the lane it runs on must be pinned as one relation.
         assert!(
-            normalized.contains("cargo mutants --in-diff")
-                && normalized.contains("DEFAULT feature lane"),
-            "the step must name the diff-scoped cargo-mutants invocation on the default \
-             feature lane; got:\n{normalized}"
+            normalized.contains(
+                "cargo mutants --in-diff /tmp/unit.diff --timeout-multiplier 1.5` on the \
+                 DEFAULT feature lane"
+            ),
+            "the step must name the diff-scoped cargo-mutants invocation tied to running on \
+             the default feature lane, as one contiguous clause, not two independently- \
+             satisfiable fragments; got:\n{normalized}"
         );
+        // One contiguous-phrase check naming the either-or relation itself, not two bare
+        // keywords: a decomposed persona that keeps "KILLED" and "JUSTIFIED" as unrelated
+        // words (e.g. "always JUSTIFIED ... and never KILLED") would still satisfy two
+        // independent `contains` calls despite inverting the disjunction.
         assert!(
-            normalized.contains("KILLED") && normalized.contains("JUSTIFIED"),
-            "a missed mutant must be resolved by kill-or-justify; got:\n{normalized}"
+            normalized.contains(
+                "is either KILLED by a strengthened test or JUSTIFIED with a concrete \
+                 equivalence reason"
+            ),
+            "a missed mutant must be resolved by an explicit kill-or-justify disjunction, as \
+             one contiguous either-or clause, not two independent bare keywords; \
+             got:\n{normalized}"
         );
         // The consequence itself, not just the "unjustified miss" keyword: an inversion that
         // keeps the words "unjustified miss" but reverses the outcome (e.g. "is merely noted
