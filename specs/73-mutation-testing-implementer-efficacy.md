@@ -82,3 +82,21 @@ unit's small diff to tens of mutants.
   installs tooling into the operator's toolchain.
 - Periphery author and review personas untouched; reviewers meet the accounting through
   the graph as ordinary evidence.
+- u73c4 (this criterion) verified at rigger-run tip 3ed33e0, where c1/c2/c3 are all merged:
+  `cargo fmt --check` clean, `cargo clippy --all-targets -- -D warnings` clean, `cargo test`
+  2011 passed/2 ignored (default features), 1893 passed/2 ignored (`--no-default-features`) -
+  zero code changes needed to close this criterion. `build.mutation` is off in this run's own
+  `.rigger/workflow.yml` (no `build:` section), so the persona's own mutation-efficacy step
+  does not apply to this diff (which touches no `.rs` file regardless).
+- Two non-blocking fast-follow threads on the SEEDED PERSONA TEXT, carried forward from the
+  c1 review rounds so they are not lost now that c1-c4 close: the seeded invocation's literal
+  `/tmp` scratch path for `<tmp>.diff` is a latent collision risk across concurrent workers
+  sharing a host, and the seeded invocation omits a `-j <share>` budget flag example even
+  though the Design section above requires the run's build-budget cap. Both are persona
+  CONTENT, which spec 73's own config-vs-code disposition places outside every unit's blast
+  radius here (no unit can own a Markdown blast radius; the grounder cannot ground non-code
+  files). Whichever future unit next edits `.rigger/agents/rust-engineer.md` for an unrelated
+  reason should also fix these two, and must then update
+  `implementer_persona_pins_the_seeded_mutation_step_contract`'s default-lane assertion (its
+  round-4 contiguous-phrase literal incidentally pins the current `/tmp` path and the missing
+  `-j` flag as required text, per adv-u73c1-r4-default-lane-pin-locks-in-missing-jobs-budget-flag).
