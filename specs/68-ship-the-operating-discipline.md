@@ -61,6 +61,27 @@ poorly), and guardrails so the wrong move meets a refusal or a menu, not a myste
   operation around them; no skill is a manual.
 - Guardrails are advisory-or-menu, never new failure modes.
 - No new event type is introduced anywhere in this spec.
+- Both feature lanes audited fresh at this spec's integrated tip (criteria 1-4 already merged,
+  zero code change needed by this criterion): fmt --check clean; clippy --all-targets -D
+  warnings clean on default features AND `--no-default-features`; cargo test exits 0 on both -
+  default 1994 passed, 0 failed, 2 ignored, 104 suites; `--no-default-features` 1876 passed,
+  0 failed, 2 ignored, 104 suites.
+- One pre-existing gap surfaced by review during criterion 4, out of this criterion's scope to
+  fix (a follow-up for a future hardening unit, not a defect of any landed diff):
+  `grounder::symbols::mod.rs`'s staleness sample selects changed-content candidates via
+  `indexed.intersection(&tree_paths).take(STALENESS_SAMPLE_SIZE)` over two `BTreeSet`s, which
+  `BTreeSet::intersection` returns in ascending order - so the sample is permanently the
+  lexicographically-first `STALENESS_SAMPLE_SIZE` (8) paths, every run, forever, on a stable
+  file list. On any tree bigger than 8 files (this repo included), a content-only edit outside
+  the alphabetic head is invisible to the staleness advisory no matter how many times
+  `rigger validate` runs. This satisfies the Design text and this spec's own Done-when clause
+  as literally written (a small deterministic sample, never a full-tree rehash; a drifted
+  single-file fixture does draw the warning), so it is not a defect of criterion 4's diff - but
+  it undermines the advisory's real-world usefulness and is named here so it is not lost once
+  this spec closes. Suggested remedy: key sample selection off something that varies run-to-run
+  while staying reproducible within one run (a rotating window seeded by index generation, or a
+  stable hash of path plus a slowly-changing salt) so successive `validate` invocations
+  eventually cover the whole tree instead of the same head forever.
 
 ## Global constraints
 
