@@ -557,6 +557,57 @@ pub fn resolve_build_layer(
     )
 }
 
+/// The fixed binary [`resolve_mutation_layer_from`] probes PATH for when `build.mutation` is
+/// `on` (spec 73). Unlike `build.wrapper`, this name is not configurable - the mutation
+/// efficacy step always shells out to `cargo mutants`, so there is exactly one binary to
+/// resolve, never a list or an operator-named override.
+const MUTATION_BINARY: &str = "cargo-mutants";
+
+/// A `build.mutation: on` whose required [`MUTATION_BINARY`] is not resolvable on PATH
+/// (spec 73, ENABLED-BUT-ABSENT FAILS AT RUN START): mirrors [`WrapperUnavailable`]'s
+/// configured-explicit-failure shape (spec 65 unit 2) - the operator turned the mutation
+/// efficacy step on explicitly, so proceeding would silently skip a check they asked for.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("build.mutation is on but {binary:?} is not on PATH (config key: build.mutation)")]
+pub struct MutationBinaryUnavailable {
+    pub binary: String,
+}
+
+/// Resolve `build.mutation` (spec 73) against `path_var` (pure core, PATH as a value -
+/// mirrors [`resolve_wrapper_name_from`]'s own testability shape): a strict two-value gate,
+/// unlike `build.wrapper`'s three-way (`off`/named/`auto`) - there is no discovery state
+/// here, so this never silently degrades.
+/// - empty / (case- and whitespace-insensitive) `off` / anything other than `on`: resolves
+///   `Ok(false)` WITHOUT ever consulting `path_var` - the disabled step costs nothing and
+///   probes nothing.
+/// - `on` (case- and whitespace-insensitive): probes for [`MUTATION_BINARY`] on `path_var`;
+///   present resolves `Ok(true)`, absent is a CONFIGURED-EXPLICIT failure -
+///   `Err(MutationBinaryUnavailable)` naming the binary - the operator asked for the step by
+///   turning it on, so silence here would fake a check that never actually runs.
+pub fn resolve_mutation_layer_from(
+    mutation: &str,
+    path_var: &std::ffi::OsStr,
+) -> Result<bool, MutationBinaryUnavailable> {
+    if !mutation.trim().eq_ignore_ascii_case("on") {
+        return Ok(false);
+    }
+    if path_has_executable(path_var, MUTATION_BINARY) {
+        Ok(true)
+    } else {
+        Err(MutationBinaryUnavailable {
+            binary: MUTATION_BINARY.to_string(),
+        })
+    }
+}
+
+/// The ambient-PATH-reading edge [`resolve_mutation_layer_from`]'s production callers use -
+/// mirrors [`resolve_build_layer`]'s own ambient-PATH read. [`crate::config::Config::validate`]
+/// (the run-start loud-failure check) and `rigger validate`'s reporting surface both call
+/// this - never re-deriving the on/off, binary-probe distinction independently.
+pub fn resolve_mutation_layer(mutation: &str) -> Result<bool, MutationBinaryUnavailable> {
+    resolve_mutation_layer_from(mutation, &std::env::var_os("PATH").unwrap_or_default())
+}
+
 /// The env var [`ExecRunner::run`] pins to fence a gate's store resolution (spec 70
 /// criterion 3) - a unit-worktree gate's `target_dir` signal, or a caller-injected
 /// `store_fence` override for a worktree (a standalone review worktree) with no
@@ -1359,6 +1410,77 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         // name must never masquerade as a real wrapper.
         assert_eq!(resolve_wrapper_name_from("auto", &path), Ok(None));
         assert!(resolve_wrapper_name_from("sccache", &path).is_err());
+    }
+
+    // --- resolve_mutation_layer (spec 73, ENABLED-BUT-ABSENT FAILS LOUD) ----------------
+    //
+    // Same injectable-PATH shape as `resolve_wrapper_name_from`'s own tests above: the pure
+    // core takes PATH as a value so these never touch (or race on) the process-global PATH.
+    // Unlike `build.wrapper`, `build.mutation` is a strict two-value gate (`on`/`off`), not a
+    // three-way with an `auto` discovery state - so there is no discovered-implicit degrade
+    // direction here, only the configured-explicit one.
+
+    #[test]
+    fn resolve_mutation_layer_off_and_empty_resolve_to_false_without_touching_path() {
+        // An empty PATH proves these branches never even reach the probe: they must
+        // resolve `Ok(false)` regardless of what (or how little) PATH contains.
+        let empty_path = path_var(&[]);
+        assert_eq!(resolve_mutation_layer_from("", &empty_path), Ok(false));
+        assert_eq!(resolve_mutation_layer_from("off", &empty_path), Ok(false));
+        // Matched case- and whitespace-insensitively, like the wrapper's own off/auto.
+        assert_eq!(
+            resolve_mutation_layer_from("  OFF  ", &empty_path),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn resolve_mutation_layer_off_ignores_a_path_that_actually_has_the_binary() {
+        // `off` must never activate even when cargo-mutants IS reachable - the config key
+        // is the sole authority, not PATH content.
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_executable(dir.path(), "cargo-mutants");
+        let path = path_var(&[dir.path()]);
+        assert_eq!(resolve_mutation_layer_from("off", &path), Ok(false));
+        assert_eq!(resolve_mutation_layer_from("", &path), Ok(false));
+    }
+
+    #[test]
+    fn resolve_mutation_layer_on_with_the_binary_present_resolves_true() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_executable(dir.path(), "cargo-mutants");
+        let path = path_var(&[dir.path()]);
+        assert_eq!(resolve_mutation_layer_from("on", &path), Ok(true));
+        // Matched case- and whitespace-insensitively, like the wrapper's own off/auto.
+        assert_eq!(resolve_mutation_layer_from("  ON  ", &path), Ok(true));
+    }
+
+    #[test]
+    fn resolve_mutation_layer_on_with_the_binary_absent_errors_naming_the_binary_and_key() {
+        let empty_path = path_var(&[]);
+        let err = resolve_mutation_layer_from("on", &empty_path).expect_err(
+            "a configured-explicit build.mutation: on with no cargo-mutants on PATH must \
+             error, not degrade",
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("cargo-mutants"),
+            "the error must name the missing binary: {msg:?}"
+        );
+        assert!(
+            msg.contains("build.mutation"),
+            "the error must name the config key: {msg:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_mutation_layer_ignores_a_same_named_non_executable_file_on_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("cargo-mutants"), "not a binary").expect("write plain file");
+        let path = path_var(&[dir.path()]);
+        // Present as a FILE but not executable: must not count as "found" - a stray
+        // non-executable file of the same name must never masquerade as the real tool.
+        assert!(resolve_mutation_layer_from("on", &path).is_err());
     }
 
     // --- resolve_build_layer (spec 65 unit 2, NO SILENT DEGRADE, cache-dir axis) --------

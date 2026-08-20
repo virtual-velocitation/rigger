@@ -9259,6 +9259,125 @@ fn validate_reports_none_when_autos_discovered_wrapper_has_a_preexisting_unwrita
     );
 }
 
+// ---------------------------------------------------------------------------
+// `rigger validate` build.mutation resolution (spec 73, ENABLED-BUT-ABSENT FAILS LOUD)
+// ---------------------------------------------------------------------------
+
+/// [`path_with_no_known_wrapper`] additionally VERIFIED to lack the mutation-efficacy
+/// binary too: unlike the wrapper case (an operator-chosen name, so a nonsense string is
+/// used against the real ambient PATH instead), `cargo-mutants`'s name is fixed and this
+/// repo's own development environment genuinely has it installed - so the git-only
+/// directory is the only way to exercise the absent-binary direction, and this asserts
+/// (rather than merely reasons in a doc comment) that it really is absent, so a
+/// coincidental co-location could never silently turn this into a false pass.
+fn path_with_no_cargo_mutants() -> String {
+    let dir = path_with_no_known_wrapper();
+    assert!(
+        !Path::new(&dir).join("cargo-mutants").exists(),
+        "the git-only directory {dir:?} unexpectedly also carries a cargo-mutants binary; \
+         this test needs a PATH that genuinely lacks the tool"
+    );
+    dir
+}
+
+/// A CONFIGURED `build.mutation: on` with no `cargo-mutants` resolvable on PATH fails
+/// `rigger validate` at run start (`config::load`'s `Config::validate` call), naming both
+/// the missing binary and the `build.mutation` config key - a configured-explicit failure,
+/// never a silent skip (spec 73). Mirrors
+/// `validate_fails_at_run_start_when_a_named_build_wrapper_is_absent_from_path` above.
+#[test]
+fn validate_fails_at_run_start_when_mutation_is_on_and_cargo_mutants_is_absent_from_path() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    append_build_block(root, "build:\n  mutation: on\n");
+
+    let path = path_with_no_cargo_mutants();
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
+    assert!(
+        !ok,
+        "build.mutation: on with no cargo-mutants on PATH must fail validate (run start); \
+         stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        err.contains("cargo-mutants"),
+        "the failure must name the missing binary; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("build.mutation"),
+        "the failure must name the config key; stderr:\n{err}"
+    );
+}
+
+/// `build.mutation: on` with `cargo-mutants` resolvable on PATH must not fail validate, and
+/// `rigger validate` must report the resolved setting through its output.
+#[test]
+fn validate_reports_mutation_on_when_cargo_mutants_is_resolvable() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    append_build_block(root, "build:\n  mutation: on\n");
+
+    let path = path_with_fake_wrapper(root, "cargo-mutants");
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
+    assert!(
+        ok,
+        "a resolvable cargo-mutants must not fail validate; stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        out.lines().any(|l| l == "build mutation: on"),
+        "a resolved-enabled mutation step must report on through validate; stdout:\n{out}"
+    );
+}
+
+/// An EXPLICIT `build.mutation: off` must validate successfully and report "off" even with
+/// `cargo-mutants` entirely absent from PATH - off never even probes PATH, so its absence
+/// can never surface as a failure (spec 73).
+#[test]
+fn validate_reports_mutation_off_without_probing_path_when_configured_off() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    append_build_block(root, "build:\n  mutation: off\n");
+
+    let path = path_with_no_cargo_mutants();
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
+    assert!(
+        ok,
+        "build.mutation: off must never fail validate regardless of PATH; \
+         stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        out.lines().any(|l| l == "build mutation: off"),
+        "an explicitly-off mutation step must report off through validate; stdout:\n{out}"
+    );
+}
+
+/// A fresh `rigger init` scaffold sets no `build.mutation` key at all, so it defaults to
+/// off - back-compat with every workflow committed before this key existed - and `rigger
+/// validate` reports that default through its output.
+#[test]
+fn validate_reports_mutation_off_by_default_on_a_fresh_scaffold() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let (out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "a fresh scaffold must validate; stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        out.lines().any(|l| l == "build mutation: off"),
+        "an unconfigured mutation step must default to off, reported through validate; \
+         stdout:\n{out}"
+    );
+}
+
 /// Spec 19c Unit 3: `rigger validate` WARNS (on stderr, without failing) when
 /// `defaults.max_wall_clock` is unbounded and a gating role carries no per-agent bound - so
 /// a hung gating agent that the liveness sweep never times out is visible at author time -

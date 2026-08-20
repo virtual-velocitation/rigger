@@ -30,8 +30,8 @@ use rigger::eventstore::{
     Direction, Event, EventStore, ExpectedRevision, Filter,
 };
 use rigger::gate::{
-    resolve_build_layer, resolved_cache_dir, BuildEnv, ExecRunner, Gate, GateResult, Runner,
-    STORE_FENCE_ENV,
+    resolve_build_layer, resolve_mutation_layer, resolved_cache_dir, BuildEnv, ExecRunner, Gate,
+    GateResult, Runner, STORE_FENCE_ENV,
 };
 use rigger::grounder::Grounder;
 use rigger::ledger::{self, RunState};
@@ -7203,7 +7203,17 @@ fn cmd_validate(args: &[String]) -> Res {
             Ok(w) => w,
             Err(e) => return Err(e.to_string().into()),
         };
-    for line in build_environment_report(wrapper.as_deref(), &cfg.workflow.build) {
+    // Mutation-efficacy step SURFACE (spec 73): a `build.mutation: on` with no `cargo-mutants`
+    // resolvable already failed above (`config::load`'s `Config::validate` rejects it at run
+    // start, before `cfg` could exist), so by this point resolution can only succeed - reads
+    // through the SAME `resolve_mutation_layer` authority `Config::validate` uses, never a
+    // second, independently re-derived check.
+    let mutation_enabled = match resolve_mutation_layer(&cfg.workflow.build.mutation) {
+        Ok(m) => m,
+        Err(e) => return Err(e.to_string().into()),
+    };
+    for line in build_environment_report(wrapper.as_deref(), &cfg.workflow.build, mutation_enabled)
+    {
         println!("{line}");
     }
     // Non-fatal advisories (spec 05:55): surface config/install drift so it is seen,
@@ -7299,11 +7309,20 @@ fn cmd_validate(args: &[String]) -> Res {
 ///   configured, so an operator sees it even with the wrapper off. `0` is the documented
 ///   unlimited convention (mirrors `defaults.budget`), reported in words rather than a
 ///   bare, easily-misread `0`.
+/// - the mutation-efficacy step setting, ALWAYS (spec 73): `on` or `off`, given the ALREADY-
+///   RESOLVED `mutation_enabled` (through the SAME `resolve_mutation_layer` authority
+///   `Config::validate`'s run-start check uses - a `build.mutation: on` with no
+///   `cargo-mutants` on PATH already failed before this could be reached, so by the time
+///   this prints, `on` in config and `mutation_enabled: true` always agree).
 ///
 /// Pure formatting over already-resolved values, so it is unit-tested without touching
-/// PATH or the filesystem; the effectful wrapper resolution stays at the `cmd_validate`
-/// edge that calls this.
-fn build_environment_report(wrapper: Option<&str>, build: &config::BuildConfig) -> Vec<String> {
+/// PATH or the filesystem; the effectful wrapper/mutation resolution stays at the
+/// `cmd_validate` edge that calls this.
+fn build_environment_report(
+    wrapper: Option<&str>,
+    build: &config::BuildConfig,
+    mutation_enabled: bool,
+) -> Vec<String> {
     let mut lines = Vec::new();
     match wrapper {
         Some(w) => {
@@ -7322,6 +7341,10 @@ fn build_environment_report(wrapper: Option<&str>, build: &config::BuildConfig) 
         } else {
             build.max_concurrent.to_string()
         }
+    ));
+    lines.push(format!(
+        "build mutation: {}",
+        if mutation_enabled { "on" } else { "off" }
     ));
     lines
 }
@@ -16386,14 +16409,16 @@ mod tests {
             cache_dir: "/tmp/example-cache".to_string(),
             jobs: 0,
             max_concurrent: 4,
+            mutation: String::new(),
         };
-        let lines = build_environment_report(Some("sccache"), &build);
+        let lines = build_environment_report(Some("sccache"), &build, false);
         assert_eq!(
             lines,
             vec![
                 "build wrapper: sccache".to_string(),
                 "build cache dir: /tmp/example-cache".to_string(),
                 "build budget: 4".to_string(),
+                "build mutation: off".to_string(),
             ]
         );
     }
@@ -16409,13 +16434,15 @@ mod tests {
             cache_dir: String::new(),
             jobs: 0,
             max_concurrent: 8,
+            mutation: String::new(),
         };
-        let lines = build_environment_report(None, &build);
+        let lines = build_environment_report(None, &build, false);
         assert_eq!(
             lines,
             vec![
                 "build wrapper: none".to_string(),
                 "build budget: 8".to_string(),
+                "build mutation: off".to_string(),
             ]
         );
     }
@@ -16429,10 +16456,35 @@ mod tests {
             max_concurrent: 0,
             ..Default::default()
         };
-        let lines = build_environment_report(None, &build);
+        let lines = build_environment_report(None, &build, false);
         assert!(
             lines.iter().any(|l| l == "build budget: unlimited"),
             "a zero max_concurrent must report as unlimited, got: {lines:?}"
+        );
+    }
+
+    /// Spec 73: `rigger validate` reports `build mutation: on` when the step is enabled -
+    /// given the ALREADY-RESOLVED bool, mirroring the wrapper report's own already-resolved
+    /// convention.
+    #[test]
+    fn build_environment_report_reports_mutation_on() {
+        let build = config::BuildConfig::default();
+        let lines = build_environment_report(None, &build, true);
+        assert!(
+            lines.iter().any(|l| l == "build mutation: on"),
+            "a resolved-enabled mutation step must report on, got: {lines:?}"
+        );
+    }
+
+    /// The `off` counterpart of `build_environment_report_reports_mutation_on` - the default,
+    /// back-compat case for every workflow committed before this key existed.
+    #[test]
+    fn build_environment_report_reports_mutation_off() {
+        let build = config::BuildConfig::default();
+        let lines = build_environment_report(None, &build, false);
+        assert!(
+            lines.iter().any(|l| l == "build mutation: off"),
+            "a resolved-disabled mutation step must report off, got: {lines:?}"
         );
     }
 
