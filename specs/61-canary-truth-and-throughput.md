@@ -14,11 +14,10 @@ takes (issues #24 and #22). Three defects:
 3. **Everything runs serially.** One child at a time - even the four tier-1 lenses declared
    parallel - and independent corpus items queue. Measured: ~22 min/item, 2.5+ hours for 6
    items, nothing on stdout until the end.
-4. **The model-drift gate over-triggers.** `--if-model-changed` treats ANY resolved-id change
-   as the full-alarm event: a snapshot bump within one tier
-   (claude-sonnet-5-20260101 -> claude-sonnet-5-20260601, 2026-08-19) mandated the same
-   multi-hour panel re-measure a genuine tier re-point (opus -> sonnet) would, and blocked a
-   run launch on it (operator decision d-canary-snapshot-vs-tier).
+4. **The model-drift gate over-triggers, on unreliable data.** `--if-model-changed` treats
+   any resolved-id change as the full-alarm event, so a same-tier snapshot bump mandates the
+   multi-hour panel re-measure only a genuine tier re-point warrants - and the resolved ids
+   it compares are agent-prose self-reports, which models get wrong.
 
 ## Design
 
@@ -61,10 +60,8 @@ takes (issues #24 and #22). Three defects:
   CLI's machine-readable result output), never from agent prose self-report. A spawn whose
   runner metadata carries no model id records none and is reported unmeasured - no fake or
   defaulted value. The model-drift warning (`rigger validate` and `--if-model-changed`)
-  keys on these authoritative per-tier ids. Evidence this is load-bearing (2026-08-20):
-  inside one all-Sonnet-5 run, three workers self-reported `claude-sonnet-4-5-20250929`
-  and the last-writer drift check forged a cross-generation downgrade alarm that blocked
-  an operator at launch time.
+  keys on these authoritative per-tier ids, so a worker's mistaken claim can neither
+  forge nor mask drift.
 - **Per-spawn timing in stats** (`src/metrics.rs` / `src/main.rs::cmd_stats`): `rigger stats`
   pairs each recorded spawn request with its result by spawn id and reports duration
   aggregates (per tier/agent: count, total, mean). An unpaired request (dead worker) is
