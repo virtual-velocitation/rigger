@@ -7661,8 +7661,35 @@ impl RunCtx<'_> {
                             // non-baseline stage, which is always seeded from a
                             // `UnitProposed` this same pre-pass also walked.
                             let owner_episode = final_episode.get(*name).unwrap_or(&st.episode);
-                            let st_rank = *episode_order.get(owner_episode).unwrap_or(&usize::MAX);
-                            st_rank < u_episode_rank
+                            // THE LEGACY TIER (spec 72 BACK-COMPAT, u72-resume-catchup-
+                            // legacy): a stage whose owning proposal carried NO logged
+                            // episode (the empty-string identity every pre-spec-72
+                            // `UnitProposed` deserializes to) belongs to one implicit
+                            // LEGACY episode, FIXED between the baseline and every
+                            // identified episode - never ranked by first-occurrence like
+                            // a real episode's `episode_order` rank. Two legacy owners
+                            // are mutual siblings (neither supersedes the other); an
+                            // identified (non-empty-episode) proposal supersedes ANY
+                            // legacy owner unconditionally; and a legacy proposal never
+                            // supersedes an identified owner. Comparing legacy by
+                            // first-seen rank instead (the pre-spec-72-shape default,
+                            // before this unit) reads correctly ONLY because production
+                            // legacy events happen to predate every identified one in the
+                            // log - a coincidence of chronology, not a guarantee - and
+                            // gets a hand-authored or out-of-order history backwards (see
+                            // `a_legacy_proposal_never_supersedes_an_identified_episodes_
+                            // owner_even_when_logged_later`). Only once BOTH sides are
+                            // identified does the rank comparison (unchanged from c1)
+                            // decide who is earlier.
+                            if owner_episode.is_empty() {
+                                !u.episode.is_empty()
+                            } else if u.episode.is_empty() {
+                                false
+                            } else {
+                                let st_rank =
+                                    *episode_order.get(owner_episode).unwrap_or(&usize::MAX);
+                                st_rank < u_episode_rank
+                            }
                         })
                         .map(|(name, _)| name.clone())
                         .collect();
@@ -11560,6 +11587,435 @@ mod tests {
             2,
             "both episode2 siblings must serve the criterion after the fold, regardless \
              of event order; got {serving:?}"
+        );
+    }
+
+    #[test]
+    fn a_resume_catch_up_over_two_episode_supersession_and_a_split_matches_a_live_incremental_fold()
+    {
+        // spec 72 criterion 3 (resume/catch-up): "A fresh conductor process whose
+        // pre-wave catch-up folds a pre-populated run history in ONE
+        // `harvest_proposed` call yields the same surviving stage set as the live
+        // incremental fold of that history." Round 5's own probe is the acceptance
+        // intuition (spec 72 Design, Notes): every `rigger step` is a fresh process
+        // whose pre-wave catch-up folds the WHOLE run history through ONE
+        // `harvest_proposed` call - so nothing about the CALL STRUCTURE (one shot
+        // over a fully pre-populated history, versus a live run's one call per
+        // event as it arrives, threading `stages`/`proposed` across calls exactly
+        // as the main loop does between waves) may change the answer.
+        //
+        // The history holds both shapes criteria 1/2 pin individually: a
+        // two-episode supersession over `crit_x` (episode1 proposes `u-ep1`, then
+        // episode2 - a later replan - proposes `u-ep2` for the SAME criterion) and
+        // a one-episode split over `crit_y` (episode1 proposes both `u-split-1` and
+        // `u-split-2`, siblings citing the same criterion).
+        let crit_x = "criterion X: the widget module is implemented";
+        let crit_y = "criterion Y: the gizmo module is implemented";
+        let cfg = supersede_cfg();
+        let cid_x = criterion_stable_id(1, crit_x);
+        let cid_y = criterion_stable_id(2, crit_y);
+        let criteria = vec![crit_x.to_string(), crit_y.to_string()];
+
+        // (id, criterion, criterion_id, spawn), in LOG ORDER - both the resume
+        // store and the live store replay this identical sequence.
+        let history: Vec<(&str, &str, String, &str)> = vec![
+            ("u-ep1", crit_x, cid_x.clone(), "plan/implementer#0"),
+            ("u-split-1", crit_y, cid_y.clone(), "plan/implementer#0"),
+            ("u-split-2", crit_y, cid_y.clone(), "plan/implementer#0"),
+            ("u-ep2", crit_x, cid_x.clone(), "plan/replan#1"),
+        ];
+
+        fn append_one(st: &Store, id: &str, criterion: &str, cid: &str, spawn: &str) {
+            st.append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[Event::new(
+                    TYPE_UNIT_PROPOSED,
+                    serde_json::to_vec(&json!({
+                        "id": id,
+                        "agent": "worker",
+                        "criterion": criterion,
+                        "criterion_id": cid,
+                        "gates": ["ok"],
+                    }))
+                    .unwrap(),
+                )
+                .with_meta(META_SPAWN, spawn)],
+            )
+            .unwrap();
+        }
+
+        fn shape(stages: &BTreeMap<String, Stage>) -> Vec<(String, Vec<String>, String, String)> {
+            stages
+                .iter()
+                .map(|(k, s)| {
+                    (
+                        k.clone(),
+                        s.needs.clone(),
+                        s.coverage.clone(),
+                        s.criterion_id.clone(),
+                    )
+                })
+                .collect()
+        }
+
+        let integrated: HashSet<String> = HashSet::new();
+        let terminal: HashSet<String> = HashSet::new();
+
+        // RESUME: the whole history is already in the store (a crash-then-restart
+        // shape) before the fresh process's ONE pre-wave catch-up call.
+        let st_resume = Store::open(":memory:").unwrap();
+        for (id, crit, cid, spawn) in &history {
+            append_one(&st_resume, id, crit, cid, spawn);
+        }
+        let driver_resume = Stub::new();
+        let deps_resume = Deps {
+            store: &st_resume,
+            driver: &driver_resume,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: criteria.clone(),
+        };
+        let ctx_resume = RunCtx::for_test(&cfg, &deps_resume);
+        let mut stages_resume = seed_refine_dag(&deps_resume.criteria);
+        let mut proposed_resume: HashSet<String> = HashSet::new();
+        ctx_resume
+            .harvest_proposed(
+                &mut stages_resume,
+                &mut proposed_resume,
+                &integrated,
+                &terminal,
+            )
+            .unwrap();
+
+        // LIVE: the identical history, folded one event at a time - a
+        // `harvest_proposed` call after EVERY event as it arrives, threading the
+        // SAME `stages`/`proposed` across calls.
+        let st_live = Store::open(":memory:").unwrap();
+        let driver_live = Stub::new();
+        let deps_live = Deps {
+            store: &st_live,
+            driver: &driver_live,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: criteria.clone(),
+        };
+        let ctx_live = RunCtx::for_test(&cfg, &deps_live);
+        let mut stages_live = seed_refine_dag(&deps_live.criteria);
+        let mut proposed_live: HashSet<String> = HashSet::new();
+        for (id, crit, cid, spawn) in &history {
+            append_one(&st_live, id, crit, cid, spawn);
+            ctx_live
+                .harvest_proposed(&mut stages_live, &mut proposed_live, &integrated, &terminal)
+                .unwrap();
+        }
+
+        assert_eq!(
+            shape(&stages_live),
+            shape(&stages_resume),
+            "a live incremental fold (one harvest_proposed call per event) must yield \
+             the SAME surviving stage set as a resume's single pre-wave catch-up call \
+             over the identical, fully pre-populated history"
+        );
+
+        // The comparison above is not vacuously equal (e.g. both empty): pin the
+        // expected surviving set on both.
+        for stages in [&stages_resume, &stages_live] {
+            assert!(
+                !stages.contains_key("u-ep1"),
+                "episode1's crit_x unit must be superseded by episode2's; stages: {:?}",
+                stages.keys().collect::<Vec<_>>()
+            );
+            assert!(
+                stages.contains_key("u-ep2"),
+                "episode2's crit_x unit must survive; stages: {:?}",
+                stages.keys().collect::<Vec<_>>()
+            );
+            assert_eq!(stages["u-ep2"].criterion_id, cid_x);
+            for id in ["u-split-1", "u-split-2"] {
+                assert!(
+                    stages.contains_key(id),
+                    "the one-episode split's sibling {id:?} must survive; stages: {:?}",
+                    stages.keys().collect::<Vec<_>>()
+                );
+            }
+            assert!(!stages.contains_key(&baseline_id(1, crit_x)));
+            assert!(!stages.contains_key(&baseline_id(2, crit_y)));
+        }
+    }
+
+    #[test]
+    fn a_legacy_history_resume_catch_up_matches_a_live_incremental_fold_mutual_siblings_then_superseded(
+    ) {
+        // spec 72 criterion 3, companion case (BACK-COMPAT): a history whose
+        // proposals carry NO episode field at all (the pre-spec-72 shape every
+        // event logged before this spec shipped has) belongs to one implicit
+        // LEGACY episode. Two such proposals for the SAME criterion are mutual
+        // siblings (neither cannibalizes the other retroactively), and a LATER,
+        // genuinely-identified episode's proposal for that criterion supersedes
+        // BOTH - the exact recovery a wedged historical run needs. Proven at the
+        // resume seam (one call over the fully pre-populated history) and shown to
+        // match a live incremental fold of the identical history one event at a
+        // time - the live fold's own intermediate state (after only the two legacy
+        // proposals) is what directly proves the mutual-sibling half.
+        let criterion = "the legacy sprocket module is implemented";
+        let cfg = supersede_cfg();
+        let cid = criterion_stable_id(1, criterion);
+        let criteria = vec![criterion.to_string()];
+
+        // NOTE: no `.with_meta(META_SPAWN, ...)` and no `episode` key in the JSON
+        // `data` - exactly the pre-spec-72 shape every historical `UnitProposed`
+        // has.
+        fn append_legacy(st: &Store, id: &str, criterion: &str, cid: &str) {
+            st.append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[Event::new(
+                    TYPE_UNIT_PROPOSED,
+                    serde_json::to_vec(&json!({
+                        "id": id,
+                        "agent": "worker",
+                        "criterion": criterion,
+                        "criterion_id": cid,
+                        "gates": ["ok"],
+                    }))
+                    .unwrap(),
+                )],
+            )
+            .unwrap();
+        }
+
+        fn append_identified(st: &Store, id: &str, criterion: &str, cid: &str, spawn: &str) {
+            st.append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[Event::new(
+                    TYPE_UNIT_PROPOSED,
+                    serde_json::to_vec(&json!({
+                        "id": id,
+                        "agent": "worker",
+                        "criterion": criterion,
+                        "criterion_id": cid,
+                        "gates": ["ok"],
+                    }))
+                    .unwrap(),
+                )
+                .with_meta(META_SPAWN, spawn)],
+            )
+            .unwrap();
+        }
+
+        fn shape(stages: &BTreeMap<String, Stage>) -> Vec<(String, Vec<String>, String, String)> {
+            stages
+                .iter()
+                .map(|(k, s)| {
+                    (
+                        k.clone(),
+                        s.needs.clone(),
+                        s.coverage.clone(),
+                        s.criterion_id.clone(),
+                    )
+                })
+                .collect()
+        }
+
+        let integrated: HashSet<String> = HashSet::new();
+        let terminal: HashSet<String> = HashSet::new();
+
+        // RESUME: the entire legacy-then-identified history is already in the
+        // store before the fresh process's ONE catch-up call.
+        let st_resume = Store::open(":memory:").unwrap();
+        append_legacy(&st_resume, "u-legacy-1", criterion, &cid);
+        append_legacy(&st_resume, "u-legacy-2", criterion, &cid);
+        append_identified(&st_resume, "u-new", criterion, &cid, "plan/replan#1");
+
+        let driver_resume = Stub::new();
+        let deps_resume = Deps {
+            store: &st_resume,
+            driver: &driver_resume,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: criteria.clone(),
+        };
+        let ctx_resume = RunCtx::for_test(&cfg, &deps_resume);
+        let mut stages_resume = seed_refine_dag(&deps_resume.criteria);
+        let mut proposed_resume: HashSet<String> = HashSet::new();
+        ctx_resume
+            .harvest_proposed(
+                &mut stages_resume,
+                &mut proposed_resume,
+                &integrated,
+                &terminal,
+            )
+            .unwrap();
+
+        assert!(
+            !stages_resume.contains_key("u-legacy-1") && !stages_resume.contains_key("u-legacy-2"),
+            "both legacy owners must be superseded by the later identified episode; \
+             stages: {:?}",
+            stages_resume.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            stages_resume.contains_key("u-new"),
+            "the identified episode's unit must survive; stages: {:?}",
+            stages_resume.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(stages_resume["u-new"].criterion_id, cid);
+
+        // LIVE: the identical history, folded one event at a time.
+        let st_live = Store::open(":memory:").unwrap();
+        let driver_live = Stub::new();
+        let deps_live = Deps {
+            store: &st_live,
+            driver: &driver_live,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: criteria.clone(),
+        };
+        let ctx_live = RunCtx::for_test(&cfg, &deps_live);
+        let mut stages_live = seed_refine_dag(&deps_live.criteria);
+        let mut proposed_live: HashSet<String> = HashSet::new();
+
+        append_legacy(&st_live, "u-legacy-1", criterion, &cid);
+        ctx_live
+            .harvest_proposed(&mut stages_live, &mut proposed_live, &integrated, &terminal)
+            .unwrap();
+        append_legacy(&st_live, "u-legacy-2", criterion, &cid);
+        ctx_live
+            .harvest_proposed(&mut stages_live, &mut proposed_live, &integrated, &terminal)
+            .unwrap();
+        // MUTUAL SIBLINGS: with only the two legacy proposals folded so far and no
+        // later identified episode yet, BOTH survive - neither cannibalizes the
+        // other.
+        assert!(
+            stages_live.contains_key("u-legacy-1") && stages_live.contains_key("u-legacy-2"),
+            "two legacy proposals for the same criterion must be mutual siblings and \
+             both survive until a later identified episode supersedes them; stages: {:?}",
+            stages_live.keys().collect::<Vec<_>>()
+        );
+
+        append_identified(&st_live, "u-new", criterion, &cid, "plan/replan#1");
+        ctx_live
+            .harvest_proposed(&mut stages_live, &mut proposed_live, &integrated, &terminal)
+            .unwrap();
+
+        assert!(
+            !stages_live.contains_key("u-legacy-1") && !stages_live.contains_key("u-legacy-2"),
+            "the new identified episode must supersede BOTH legacy siblings; stages: {:?}",
+            stages_live.keys().collect::<Vec<_>>()
+        );
+        assert!(stages_live.contains_key("u-new"));
+
+        assert_eq!(
+            shape(&stages_live),
+            shape(&stages_resume),
+            "the live incremental fold and the resume's one-shot catch-up over the \
+             identical legacy-then-identified history must agree exactly"
+        );
+    }
+
+    #[test]
+    fn a_legacy_proposal_never_supersedes_an_identified_episodes_owner_even_when_logged_later() {
+        // spec 72 BACK-COMPAT bullet: the legacy tier is FIXED between the baseline
+        // and every identified episode - it is NOT ranked by first-occurrence like
+        // a real episode's rank, so a legacy proposal can never supersede an
+        // identified episode's owner, REGARDLESS OF LOG POSITION, not merely
+        // because legacy proposals happen to be logged before real ones in ordinary
+        // production use (every event logged before spec 72 shipped predates every
+        // event logged after, but the rule must not depend on that coincidence).
+        //
+        // This event order is the pathological case a plain first-occurrence rank
+        // gets backwards: an identified episode (`episodeA`) proposes `u-early` for
+        // the criterion FIRST; a LEGACY proposal (no episode field at all) for the
+        // SAME criterion is logged SECOND. Ranking purely by first-seen-in-this-
+        // pass order would register `episodeA` at rank 0 and the legacy tier at
+        // rank 1, reading the legacy proposal as "later" and wrongly letting it
+        // supersede `u-early`. THE SUPERSEDE RULE never grants that: legacy orders
+        // BEFORE every identified episode unconditionally, so `u-early` must
+        // survive and the legacy proposal is simply added alongside it (it found no
+        // EARLIER owner to remove), never replacing it. RED before the fix: a
+        // first-occurrence-only rank comparison removes `u-early`.
+        let criterion = "the legacy-vs-identified module is implemented";
+        let cfg = supersede_cfg();
+        let st = Store::open(":memory:").unwrap();
+        let cid = criterion_stable_id(1, criterion);
+
+        // episodeA (identified), FIRST in log order.
+        st.append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[Event::new(
+                TYPE_UNIT_PROPOSED,
+                serde_json::to_vec(&json!({
+                    "id": "u-early",
+                    "agent": "worker",
+                    "criterion": criterion,
+                    "criterion_id": cid,
+                    "gates": ["ok"],
+                }))
+                .unwrap(),
+            )
+            .with_meta(META_SPAWN, "plan/implementer#0")],
+        )
+        .unwrap();
+        // A LEGACY proposal (no episode field, no meta.spawn) for the SAME
+        // criterion, logged SECOND.
+        st.append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[Event::new(
+                TYPE_UNIT_PROPOSED,
+                serde_json::to_vec(&json!({
+                    "id": "u-legacy-late",
+                    "agent": "worker",
+                    "criterion": criterion,
+                    "criterion_id": cid,
+                    "gates": ["ok"],
+                }))
+                .unwrap(),
+            )],
+        )
+        .unwrap();
+
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: vec![criterion.to_string()],
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        let mut stages = seed_refine_dag(&deps.criteria);
+        let mut proposed: HashSet<String> = HashSet::new();
+        let integrated: HashSet<String> = HashSet::new();
+        let terminal: HashSet<String> = HashSet::new();
+        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+            .unwrap();
+
+        assert!(
+            stages.contains_key("u-early"),
+            "the identified episode's unit must survive a LATER-LOGGED legacy \
+             proposal for the same criterion - legacy is fixed BEFORE every \
+             identified episode regardless of log position; stages: {:?}",
+            stages.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            stages.contains_key("u-legacy-late"),
+            "the legacy proposal itself is still added (it found no EARLIER owner to \
+             supersede); stages: {:?}",
+            stages.keys().collect::<Vec<_>>()
         );
     }
 
