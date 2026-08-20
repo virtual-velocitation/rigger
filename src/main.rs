@@ -17605,32 +17605,46 @@ mod tests {
             .join("rust-engineer.md");
         let persona = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("read committed {}: {e}", path.display()));
+        // Whitespace-normalize before matching (collapse newlines/indentation to single
+        // spaces), matching criterion 2's established drift-guard pattern (d-u73c2-accounting-
+        // drift-guard-approach): the committed persona wraps this paragraph across markdown
+        // list-continuation lines, so a raw substring match is fragile to a pure reflow
+        // (identical words, different line wrap) and would false-fail or false-pass around a
+        // line break.
+        let normalized = persona.split_whitespace().collect::<Vec<_>>().join(" ");
 
         assert!(
-            persona.contains("Mutation efficacy") && persona.contains("build.mutation"),
-            "the step must be gated on the build.mutation config key; got:\n{persona}"
+            normalized.contains("Mutation efficacy") && normalized.contains("build.mutation"),
+            "the step must be gated on the build.mutation config key; got:\n{normalized}"
         );
         assert!(
-            persona.contains("your unit tests are")
-                && persona.contains("green and BEFORE the pre-gate commit"),
-            "the step must run after unit-green and before the pre-gate commit; got:\n{persona}"
+            normalized.contains("your unit tests are")
+                && normalized.contains("green and BEFORE the pre-gate commit"),
+            "the step must run after unit-green and before the pre-gate commit; got:\n{normalized}"
         );
         assert!(
-            persona.contains("diff against the unit's merge-base with the run branch"),
+            normalized.contains("diff against the unit's merge-base with the run branch"),
             "the mutants run must be scoped to a diff against the unit's merge-base with the \
-             run branch; got:\n{persona}"
+             run branch; got:\n{normalized}"
         );
         assert!(
-            persona.contains("cargo mutants --in-diff") && persona.contains("DEFAULT feature lane"),
+            normalized.contains("cargo mutants --in-diff")
+                && normalized.contains("DEFAULT feature lane"),
             "the step must name the diff-scoped cargo-mutants invocation on the default \
-             feature lane; got:\n{persona}"
+             feature lane; got:\n{normalized}"
         );
         assert!(
-            persona.contains("KILLED")
-                && persona.contains("JUSTIFIED")
-                && persona.contains("unjustified miss"),
-            "a missed mutant must be resolved by kill-or-justify, with an unjustified miss \
-             leaving the unit not done; got:\n{persona}"
+            normalized.contains("KILLED") && normalized.contains("JUSTIFIED"),
+            "a missed mutant must be resolved by kill-or-justify; got:\n{normalized}"
+        );
+        // The consequence itself, not just the "unjustified miss" keyword: an inversion that
+        // keeps the words "unjustified miss" but reverses the outcome (e.g. "is merely noted
+        // in the log, and the unit may still be marked done") must fail this test.
+        assert!(
+            normalized.contains("an unjustified miss means the unit is not done"),
+            "an unjustified missed mutant must leave the unit not done - the consequence \
+             clause itself, not merely the presence of the words \"unjustified miss\"; \
+             got:\n{normalized}"
         );
     }
 }
