@@ -9310,6 +9310,43 @@ fn validate_fails_at_run_start_when_mutation_is_on_and_cargo_mutants_is_absent_f
     );
 }
 
+/// The cross-module seam (spec 73): `Config::validate` (`config.rs`) and `cmd_validate`'s
+/// own reporting call (`main.rs`) both read `gate::resolve_mutation_layer` - by design,
+/// "never a second, independently re-derived check" (per the doc comments at both call
+/// sites). A black-box exit-code-and-stderr check alone cannot tell WHICH of the two calls
+/// actually produced the failure: `cmd_validate` prints the version line and a "config
+/// valid: ..." line to stdout BEFORE it ever reaches its own `resolve_mutation_layer` call,
+/// so if `Config::validate` ever stopped gating this (leaving only `cmd_validate`'s local
+/// call as a redundant backstop), this same scenario would still exit non-zero and still
+/// name the binary and the key - but only AFTER that partial stdout had already printed.
+/// Asserting stdout is EMPTY here proves the failure truly originates in `config::load`'s
+/// `Config::validate` call, before `cmd_validate`'s body runs at all - the single-authority
+/// guarantee that also makes every OTHER `config::load` caller (not just `validate`) fail
+/// at run start, not merely this one command's own report.
+#[test]
+fn validate_fails_before_any_output_when_mutation_is_on_and_cargo_mutants_is_absent() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    append_build_block(root, "build:\n  mutation: on\n");
+
+    let path = path_with_no_cargo_mutants();
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
+    assert!(
+        !ok,
+        "build.mutation: on with no cargo-mutants on PATH must fail validate; \
+         stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        out.is_empty(),
+        "the failure must originate in Config::validate (config::load), before cmd_validate \
+         prints anything - a non-empty stdout means some OTHER, later check caught this \
+         instead, which would leave every non-validate config::load caller unprotected; \
+         stdout:\n{out}"
+    );
+}
+
 /// `build.mutation: on` with `cargo-mutants` resolvable on PATH must not fail validate, and
 /// `rigger validate` must report the resolved setting through its output.
 #[test]
