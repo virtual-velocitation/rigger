@@ -292,3 +292,179 @@ fn a_replan_after_a_critique_reject_supersedes_the_initial_episodes_unit() {
         "exactly one unit must serve the criterion after both episodes fold; got {serving:?}"
     );
 }
+
+/// Drives a plan-critique REJECT twice (not once) before approving, so ONE run mints
+/// THREE distinct planning episodes over the same criterion instead of the minimal two
+/// `TwoEpisodeDriver` above exercises. Otherwise identical shape (same-id sanitizing,
+/// same worker/config conventions) - only the reject count differs.
+struct ThreeEpisodeDriver {
+    planner: String,
+    adjudicator: String,
+    worker: String,
+    criterion: String,
+    calls: Mutex<Vec<String>>,
+    /// The planner's deterministic spawn id on each of its spawns, in spawn order: the
+    /// initial wave spawn, then each critique-driven re-plan.
+    planner_spawns: Mutex<Vec<String>>,
+    /// The unit id proposed on each spawn, index-for-index with `planner_spawns`.
+    proposed_ids: Mutex<Vec<String>>,
+}
+
+impl ThreeEpisodeDriver {
+    fn new(criterion: &str) -> Self {
+        ThreeEpisodeDriver {
+            planner: "planner".into(),
+            adjudicator: "judge".into(),
+            worker: "worker".into(),
+            criterion: criterion.to_string(),
+            calls: Mutex::new(Vec::new()),
+            planner_spawns: Mutex::new(Vec::new()),
+            proposed_ids: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl AgentDriver for ThreeEpisodeDriver {
+    fn spawn(
+        &self,
+        a: &AgentDef,
+        _prompt: &str,
+        opts: &SpawnOpts,
+        emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+    ) -> Result<AgentResult, Error> {
+        self.calls.lock().unwrap().push(a.id.clone());
+        if a.id == self.planner {
+            self.planner_spawns.lock().unwrap().push(opts.id.clone());
+            let unit_id = unit_id_for_spawn(&opts.id);
+            self.proposed_ids.lock().unwrap().push(unit_id.clone());
+            emit(
+                TYPE_UNIT_PROPOSED,
+                json!({
+                    "id": unit_id,
+                    "agent": self.worker,
+                    "criterion": self.criterion,
+                    "episode": opts.id,
+                }),
+            )?;
+            return Ok(AgentResult {
+                output: "proposed the DAG".into(),
+                resolved_model: String::new(),
+            });
+        }
+        if a.id == self.adjudicator {
+            // Reject the first TWO DAGs (minting a second AND a third episode), then
+            // approve the third revision. `self.calls` already includes THIS call.
+            let adjudicator_calls = self
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|c| c.as_str() == self.adjudicator)
+                .count();
+            let verdict = if adjudicator_calls > 2 {
+                "approve"
+            } else {
+                "reject"
+            };
+            return Ok(AgentResult {
+                output: format!("{{\"verdict\":\"{verdict}\"}}"),
+                resolved_model: String::new(),
+            });
+        }
+        Ok(AgentResult {
+            output: format!("{} ok", a.id),
+            resolved_model: String::new(),
+        })
+    }
+}
+
+/// Spec 72 criterion 1 (cross-episode supersede), the CHAINED case: the single-reject
+/// test above proves the minimal two-episode shape; this proves the SUPERSEDE RULE
+/// holds transitively across a chain longer than the minimum - two rejects mint THREE
+/// distinct planning episodes over one criterion (the initial wave plus two re-plans),
+/// and only the LAST episode's unit may survive. A rank comparison that only ever
+/// compared a proposal against the immediately-preceding episode (an off-by-one on the
+/// "EARLIER", plural, wording in spec 72's Design) would leave the SECOND episode's
+/// unit alive alongside the third; this catches that shape specifically, which neither
+/// the two-episode periphery test above nor either inside-out seam test (both of which
+/// also stop at two episodes) can reach.
+#[test]
+fn a_second_replan_supersedes_both_earlier_episodes_units() {
+    let criterion = "the trinket module is implemented";
+    let cfg = two_episode_cfg();
+    let store = Store::open(":memory:").unwrap();
+    let driver = ThreeEpisodeDriver::new(criterion);
+    let deps = Deps {
+        store: &store,
+        driver: &driver,
+        gates: &ExecRunner,
+        repo: String::new(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion.to_string()],
+    };
+    let rs = run(&cfg, &deps).unwrap();
+
+    let spawns = driver.planner_spawns.lock().unwrap().clone();
+    assert_eq!(
+        spawns.len(),
+        3,
+        "two rejects must trigger exactly two re-plans (three total episodes); planner \
+         spawns: {spawns:?}"
+    );
+
+    let ids = driver.proposed_ids.lock().unwrap().clone();
+    assert_eq!(ids.len(), 3, "one proposal per episode; got {ids:?}");
+    let (episode_1_unit, episode_2_unit, episode_3_unit) =
+        (ids[0].clone(), ids[1].clone(), ids[2].clone());
+    assert!(
+        episode_1_unit != episode_2_unit
+            && episode_2_unit != episode_3_unit
+            && episode_1_unit != episode_3_unit,
+        "all three episodes must propose distinct unit ids; got {ids:?}"
+    );
+
+    assert_eq!(
+        rs.units["plan-critique"].status,
+        ledger::Status::Integrated,
+        "the gate must approve the third revision and release the fan-out"
+    );
+    // Neither earlier episode's unit appears in the final run state at all - each was
+    // superseded before it was ever scheduled. The SECOND episode's unit is the case
+    // this test adds over the two-episode periphery test above: it must be gone too,
+    // not merely "superseded by the third but still visible as started".
+    assert!(
+        !rs.units.contains_key(&episode_1_unit),
+        "the FIRST episode's unit {episode_1_unit:?} must never appear in the run \
+         state; units: {:?}",
+        rs.units.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        !rs.units.contains_key(&episode_2_unit),
+        "the SECOND episode's unit {episode_2_unit:?} must also never appear in the \
+         run state - superseded in turn by the third episode, exactly like the first \
+         was; units: {:?}",
+        rs.units.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        rs.units[&episode_3_unit].status,
+        ledger::Status::Integrated,
+        "the THIRD (latest) episode's unit {episode_3_unit:?} must be the one that ran \
+         and integrated; units: {:?}",
+        rs.units.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(rs.units[&episode_3_unit].spec_criterion, criterion);
+
+    let serving: Vec<&str> = rs
+        .units
+        .values()
+        .filter(|u| u.spec_criterion == criterion)
+        .map(|u| u.id.as_str())
+        .collect();
+    assert_eq!(
+        serving,
+        vec![episode_3_unit.as_str()],
+        "exactly one unit must serve the criterion after all three episodes fold; got \
+         {serving:?}"
+    );
+}
