@@ -81,18 +81,9 @@ poorly), and guardrails so the wrong move meets a refusal or a menu, not a myste
 
 ## Done when
 
-- [ ] a test proves the REGISTRY: `rigger setup` installs every registry skill (drift-aware,
-  overlay-honoring, non-destructive on rerun), `rigger docs` renders the same set, and the
-  registry is the single enumeration both consume - pinned so adding an entry cannot bypass
-  either surface. This criterion OWNS the registry structure.
-- [ ] a test proves the PER-OPERATION SKILLS RENDER TRUE: every skill in the family renders
-  with a symptom-carrying description, exactly one operation's procedure, its named
-  anti-move, and command references accuracy-pinned against the binary's real surface - and
-  no registry skill's body exceeds one operation's scope. This criterion OWNS the skill
-  content; the install path is criterion 1's, NOT this one's.
-- [ ] a test proves the RESET MENU: flagless `rigger reset` exits 0 and prints each prunable
-  accumulation with a measured size and its flag, on both an empty and a populated store;
-  flagged behavior is byte-for-byte unchanged. This criterion OWNS the reset surface.
+- [ ] a test proves the REGISTRY: `rigger setup` installs every registry skill (drift-aware, overlay-honoring, non-destructive on rerun), `rigger docs` renders the same set, and the registry is the single enumeration both consume - pinned so adding an entry cannot bypass either surface; a test also proves the ONE PROHIBITION (an agent never installs, replaces, or modifies the operator's rigger binary) renders verbatim into all seven registry entries - the five-member per-operation family plus the two pre-existing `using-rigger` and `planning-a-spec` skills. This criterion OWNS the registry structure AND the prohibition's presence in every entry.
+- [ ] a test proves the PER-OPERATION SKILLS RENDER TRUE: every skill in the family renders with a symptom-carrying description, exactly one operation's procedure, its named anti-move, and command references accuracy-pinned against the binary's real surface - and no registry skill's body exceeds one operation's scope. This criterion OWNS the skill content; the install path is criterion 1's, NOT this one's, and the operator-binary prohibition text is criterion 1's, NOT this one's.
+- [ ] a test proves the RESET MENU: flagless `rigger reset` (`src/main.rs::cmd_reset`) exits 0 and prints each prunable accumulation with a measured size and its flag, on both an empty and a populated store, proven in `tests/cli.rs` and `tests/reset_menu.rs`; flagged behavior is byte-for-byte unchanged. This criterion OWNS the reset surface.
 - [ ] a test proves the VALIDATE ADVISORIES: a drifted index draws the staleness warning
   naming `rigger reindex`, a log seeded with duplicated derived events draws the bloat
   warning with the measured factor naming `rigger reset --derived`, a clean store draws
