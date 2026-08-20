@@ -17617,10 +17617,15 @@ mod tests {
             normalized.contains("Mutation efficacy") && normalized.contains("build.mutation"),
             "the step must be gated on the build.mutation config key; got:\n{normalized}"
         );
+        // One contiguous-phrase check, not two independently-satisfiable fragments: a
+        // decomposed persona that keeps both bare substrings in unrelated sentences
+        // (destroying the after-tests-green-before-pre-gate-commit placement relation
+        // criterion 1's own Done-when bullet names) must fail this test, not pass it.
         assert!(
-            normalized.contains("your unit tests are")
-                && normalized.contains("green and BEFORE the pre-gate commit"),
-            "the step must run after unit-green and before the pre-gate commit; got:\n{normalized}"
+            normalized.contains("After your unit tests are green and BEFORE the pre-gate commit"),
+            "the step must run after unit-green and before the pre-gate commit, as one \
+             contiguous relational clause, not two independently-satisfiable fragments; \
+             got:\n{normalized}"
         );
         assert!(
             normalized.contains("diff against the unit's merge-base with the run branch"),
