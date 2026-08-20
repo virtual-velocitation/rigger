@@ -17696,7 +17696,7 @@ mod tests {
         // invocation and the lane it runs on must be pinned as one relation.
         assert!(
             normalized.contains(
-                "cargo mutants --in-diff /tmp/unit.diff --timeout-multiplier 1.5` on the \
+                "cargo mutants --in-diff unit.diff --timeout-multiplier 1.5 -j 2` on the \
                  DEFAULT feature lane"
             ),
             "the step must name the diff-scoped cargo-mutants invocation tied to running on \

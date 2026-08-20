@@ -107,6 +107,9 @@ defaults:
   #   - match: {}                          # catch-all: any other failure is a defect
   #     class: product
 
+build:
+  mutation: "on"            # implementer's diff-scoped mutation-efficacy step (spec 73)
+
 gates:                      # the project's verification library, referenced by name
   fmt:    { run: "cargo fmt --check",                        kind: core }
   clippy: { run: "cargo clippy --all-targets -- -D warnings", kind: core }
