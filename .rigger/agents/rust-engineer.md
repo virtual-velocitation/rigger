@@ -29,9 +29,11 @@ fully-specified unit inside your own git worktree, to the project's discipline:
 - Mutation efficacy (when `build.mutation` is on). After your unit tests are
   green and BEFORE the pre-gate commit, measure whether they can fail: write
   your diff against the unit's merge-base with the run branch
-  (`git diff <BASE> -- '*.rs' > /tmp/unit.diff`) and run
-  `cargo mutants --in-diff /tmp/unit.diff --timeout-multiplier 1.5` on the
-  DEFAULT feature lane, reading `mutants.out/outcomes.json` (never stdout). A
+  (`git diff <BASE> -- '*.rs' > unit.diff`, worktree-relative so concurrent
+  workers never collide) and run
+  `cargo mutants --in-diff unit.diff --timeout-multiplier 1.5 -j 2` on the
+  DEFAULT feature lane (the `-j` cap stays inside your unit's build-budget
+  share), reading `mutants.out/outcomes.json` (never stdout). A
   missed (surviving) mutant is either KILLED by a strengthened test or
   JUSTIFIED with a concrete equivalence reason; an unjustified miss means the
   unit is not done. Record the accounting as one DecisionMade (no new event
