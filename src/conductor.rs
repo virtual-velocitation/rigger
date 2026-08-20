@@ -3853,7 +3853,28 @@ impl RunCtx<'_> {
                 // via `implement_slice`: a true implement stage gets the trimmed slice, a producer
                 // keeps the FULL context (adv-u36c1-planner-first-spawn-trimmed).
                 let prompt = self.build_prompt_with_failure(st, &prior, implement_slice(st));
-                let emit = |t: &str, v: Value| self.emit_with_actor(&st.agent, t, v);
+                // spec 72 round-2 REJECT fix (adv-u72c1-metaspawn-remedy-viable-but-
+                // undercosted): stamp META_SPAWN alongside the actor, not only the actor,
+                // so a producer/planner spawn's UnitProposed events carry THIS spawn's own
+                // deterministic id - the PLAN-EPISODE IDENTITY `harvest_proposed` derives
+                // its supersede order from (see the matching comment there). The live
+                // MCP/workflow driver path already gets this for free (`stamp_current_spawn`
+                // stamps every emit while a spawn is being served); this `emit` callback is
+                // the ONLY channel the cli subprocess driver (`src/driver/cli.rs`, wired at
+                // main.rs:2770/4323) has to bridge a bridged UnitProposed's attribution, so
+                // it must stamp it itself here. Harmless (and consistent with
+                // `run_reviewer`'s identical pattern) for a plain implementer's own
+                // DecisionMade emits, which carry no episode significance.
+                let emit = |t: &str, v: Value| {
+                    self.emit_meta(
+                        t,
+                        v,
+                        &[
+                            (contextgraph::META_ACTOR, st.agent.as_str()),
+                            (META_SPAWN, implementer_id.as_str()),
+                        ],
+                    )
+                };
                 let build_env = self.build_env()?;
                 // cwd-isolation invariant (the worktree-isolation fix): an implementer
                 // that is SUPPOSED to be isolated must never run in the live main
@@ -5717,7 +5738,21 @@ impl RunCtx<'_> {
             feedback.trim(),
             self.build_prompt(plan_st)
         );
-        let emit = |t: &str, v: Value| self.emit_with_actor(&plan_st.agent, t, v);
+        // spec 72 round-2 REJECT fix (adv-u72c1-metaspawn-remedy-viable-but-undercosted):
+        // stamp META_SPAWN with THIS re-plan spawn's own deterministic id, mirroring the
+        // matching fix at the initial planner spawn site (`run_single_stage`) - see its
+        // comment for why. A re-plan is a distinct PLAN-EPISODE from the initial wave
+        // (and from any earlier re-plan), so it needs its own stamp here too.
+        let emit = |t: &str, v: Value| {
+            self.emit_meta(
+                t,
+                v,
+                &[
+                    (contextgraph::META_ACTOR, plan_st.agent.as_str()),
+                    (META_SPAWN, id.as_str()),
+                ],
+            )
+        };
         let build_env = self.build_env()?;
         // The planner opts out of isolation (`isolation: none`), so - like its first-wave
         // spawn in `run_single_stage` - it runs in the project cwd; only an ISOLATED agent
@@ -7396,6 +7431,28 @@ impl RunCtx<'_> {
                 Ok(u) => u,
                 Err(_) => continue,
             };
+            // PLAN-EPISODE IDENTITY, the authoritative source (spec 72 round-2 REJECT
+            // fix: f-c1-episode-writeside-unwired / sdet-c1-episode-writeside-unwired-
+            // test-blindspot / adv-u72c1-writeside-unwired-independently-confirmed).
+            // PLAN_PROTOCOL (below) never asks the planner to echo an `episode` value in
+            // its UnitProposed JSON, so trusting `u.episode` from the DATA payload alone
+            // left every REAL planner proposal's episode permanently empty - every real
+            // proposal shared rank 0 and THE SUPERSEDE RULE could never fire in
+            // production. META_SPAWN is already the authoritative, server-stamped
+            // per-spawn identity (`Server::stamp_current_spawn` on the live MCP/workflow
+            // path, and the cli courier's `rigger emit --spawn`) - and one planner PASS
+            // is exactly one spawn (`plan/implementer#0` for the initial wave,
+            // `plan/replan#N` per critique-reject re-plan; see `re_plan`), so it is
+            // already the conforming value PLAN-EPISODE IDENTITY calls for ("the planner
+            // spawn's id is the natural choice") without asking the planner to author
+            // anything. Prefer it when present; `u.episode` (the data field) stays the
+            // FALLBACK - never removed, since the constraint requires the additive field
+            // to keep working - so a hand-authored/seam-tested event, or a future
+            // producer with its own reason to author an identity, with no META_SPAWN
+            // stamp still resolves exactly as before.
+            if let Some(spawn) = e.meta.get(META_SPAWN).filter(|s| !s.is_empty()) {
+                u.episode = spawn.clone();
+            }
             // Register this proposal's episode's rank the moment its FIRST event is
             // seen (spec 72: "a proposal whose episode is LATER, by log order of the
             // episodes' first events, supersedes"). Every `UnitProposed` this episode
@@ -7450,6 +7507,26 @@ impl RunCtx<'_> {
                     let refined_needs = with_gate_hold(u.needs, &u.id, gate.as_ref());
                     if let Some(existing) = stages.get_mut(&u.id) {
                         existing.needs = refined_needs;
+                        // spec 72 round-2 REJECT fix (sdet-c1-refine-branch-never-
+                        // restamps-episode / adv-u72c1-refine-staleness-order-
+                        // independent-confirmed): without this, a stage refined in a
+                        // LATER episode than the one that first added it kept its
+                        // ORIGINAL, stale episode rank forever - so that SAME later
+                        // episode's own genuinely-new sibling for the same criterion
+                        // read it as "from an earlier episode" and wrongly reaped it,
+                        // in either event order (episode_order is a pure function of
+                        // first-seen log order, so no ordering within the call can
+                        // rescue a stale stamp). THE SUPERSEDE RULE is unconditional on
+                        // this point ("never a stage from its OWN episode, in any event
+                        // order"), so the refining event's own episode must ride along
+                        // with its needs. Guarded off a baseline (which carries no
+                        // episode identity of its own - `st.baseline` is the always-
+                        // earliest sentinel instead) for defense in depth; structurally
+                        // unreachable today since a baseline's id is never in
+                        // `proposed`, so this branch can never be entered for one.
+                        if !existing.baseline {
+                            existing.episode = u.episode.clone();
+                        }
                     }
                 }
                 continue;
@@ -11104,6 +11181,218 @@ mod tests {
                 stages.keys().collect::<Vec<_>>()
             );
         }
+    }
+
+    #[test]
+    fn a_planner_proposal_with_no_data_episode_field_still_supersedes_via_meta_spawn() {
+        // spec 72 criterion 1, round-2 REJECT fix (f-c1-episode-writeside-unwired /
+        // sdet-c1-episode-writeside-unwired-test-blindspot / adv-u72c1-writeside-unwired-
+        // independently-confirmed): PLAN_PROTOCOL's JSON template
+        // (`{"id","agent","criterion","criterion_id","needs"}`) never asks the planner to
+        // echo an `episode` value, so every REAL proposal's `data.episode` deserializes to
+        // the serde-default empty string. Unlike
+        // `a_later_episodes_proposal_supersedes_an_earlier_episodes_planner_unit` above
+        // (which hand-supplies `data.episode` and so cannot catch this), these two events
+        // carry NO `episode` key in their JSON `data` at all - exactly the PLAN_PROTOCOL
+        // shape - and are distinguished ONLY by `meta.spawn`, exactly what
+        // `Server::stamp_current_spawn` (mcpserver.rs) and the cli courier's
+        // `rigger emit --spawn` both stamp authoritatively on the real write path. RED
+        // before the fix: both proposals fold to episode `""` (shared rank 0), so the later
+        // one's supersede scan never removes the earlier one and both survive.
+        let criterion = "the sprocket module is implemented";
+        let cfg = supersede_cfg();
+        let st = Store::open(":memory:").unwrap();
+        let cid = criterion_stable_id(1, criterion);
+        for (id, spawn) in [("u-ep1", "plan/implementer#0"), ("u-ep2", "plan/replan#1")] {
+            st.append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[Event::new(
+                    TYPE_UNIT_PROPOSED,
+                    serde_json::to_vec(&json!({
+                        "id": id,
+                        "agent": "worker",
+                        "criterion": criterion,
+                        "criterion_id": cid,
+                        "gates": ["ok"],
+                    }))
+                    .unwrap(),
+                )
+                .with_meta(META_SPAWN, spawn)],
+            )
+            .unwrap();
+        }
+
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: vec![criterion.to_string()],
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        let mut stages = seed_refine_dag(&deps.criteria);
+        let mut proposed: HashSet<String> = HashSet::new();
+        let integrated: HashSet<String> = HashSet::new();
+        let terminal: HashSet<String> = HashSet::new();
+        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+            .unwrap();
+
+        assert!(
+            !stages.contains_key("u-ep1"),
+            "the earlier spawn's unit must be superseded via meta.spawn-derived episode \
+             identity alone, with no data.episode field at all; stages: {:?}",
+            stages.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            stages.contains_key("u-ep2"),
+            "the later spawn's unit must survive; stages: {:?}",
+            stages.keys().collect::<Vec<_>>()
+        );
+        let serving: Vec<&str> = stages
+            .values()
+            .filter(|s| s.coverage == criterion)
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(
+            serving,
+            vec!["u-ep2"],
+            "exactly one live owner must serve the criterion; got {serving:?}"
+        );
+    }
+
+    #[test]
+    fn a_same_id_refine_restamps_its_episode_so_its_own_episodes_sibling_does_not_reap_it() {
+        // spec 72 criterion 1, round-2 REJECT fix (sdet-c1-refine-branch-never-restamps-
+        // episode / adv-u72c1-refine-staleness-order-independent-confirmed): the same-id
+        // fold branch (a REFINE, spec 31 crit 1) used to fold `needs` only, leaving
+        // `existing.episode` at whatever episode FIRST proposed that id - forever. So a
+        // unit refined in a LATER episode than the one that first added it still read as
+        // "from an earlier episode" to that SAME later episode's own supersede scan, and
+        // was wrongly reaped by its own episode's genuinely-new sibling for the same
+        // criterion - violating THE SUPERSEDE RULE's own unconditional text ("never a
+        // stage from its OWN episode, in any event order").
+        //
+        // Shape: episode1 proposes u-orig for `criterion`. episode2 (a later planning
+        // pass) re-emits u-orig under its EXACT id (a refine - tweaked needs) AND, in that
+        // SAME episode2, proposes a genuinely-new sibling u-new for the IDENTICAL
+        // criterion (a real split introduced mid-replan, spec 31's guarantee). All three
+        // events fold in ONE `harvest_proposed` call, in log order. RED before the fix:
+        // u-orig is wrongly removed by u-new's supersede scan (existing.episode stayed
+        // "episode1", rank 0, which reads as strictly earlier than episode2's rank 1) even
+        // though both are episode2 siblings by the time the fold completes.
+        let criterion = "the flywheel module is implemented";
+        let cfg = supersede_cfg();
+        let st = Store::open(":memory:").unwrap();
+        let cid = criterion_stable_id(1, criterion);
+
+        // episode1: the initial proposal for u-orig.
+        st.append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[Event::new(
+                TYPE_UNIT_PROPOSED,
+                serde_json::to_vec(&json!({
+                    "id": "u-orig",
+                    "agent": "worker",
+                    "criterion": criterion,
+                    "criterion_id": cid,
+                    "gates": ["ok"],
+                }))
+                .unwrap(),
+            )
+            .with_meta(META_SPAWN, "plan/implementer#0")],
+        )
+        .unwrap();
+        // episode2: re-emits u-orig under its EXACT id (a refine - only `needs` changes;
+        // `criterion`/`criterion_id` are the fold-needs-only path's and stay unresolved
+        // here, matching what a real refine re-emit carries) AND proposes a genuinely-new
+        // sibling u-new for the SAME criterion.
+        st.append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[
+                Event::new(
+                    TYPE_UNIT_PROPOSED,
+                    serde_json::to_vec(&json!({
+                        "id": "u-orig",
+                        "agent": "worker",
+                        "needs": ["plan"],
+                    }))
+                    .unwrap(),
+                )
+                .with_meta(META_SPAWN, "plan/replan#1"),
+                Event::new(
+                    TYPE_UNIT_PROPOSED,
+                    serde_json::to_vec(&json!({
+                        "id": "u-new",
+                        "agent": "worker",
+                        "criterion": criterion,
+                        "criterion_id": cid,
+                        "gates": ["ok"],
+                    }))
+                    .unwrap(),
+                )
+                .with_meta(META_SPAWN, "plan/replan#1"),
+            ],
+        )
+        .unwrap();
+
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: vec![criterion.to_string()],
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        // All three events fold in ONE call, exactly like a live run's every harvest
+        // (which always re-reads the whole stream from position 0): episode1's ADD first
+        // creates u-orig (superseding the baseline) and marks it PROPOSED, so episode2's
+        // same-id re-emit - later in this SAME pass - takes the fold branch naturally.
+        let mut stages = seed_refine_dag(&deps.criteria);
+        let mut proposed: HashSet<String> = HashSet::new();
+        let integrated: HashSet<String> = HashSet::new();
+        let terminal: HashSet<String> = HashSet::new();
+        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+            .unwrap();
+
+        assert!(
+            stages.contains_key("u-orig"),
+            "the refined unit must survive its own episode's genuinely-new sibling, not \
+             be reaped as a stale prior owner; stages: {:?}",
+            stages.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            stages.contains_key("u-new"),
+            "the genuinely-new same-episode sibling must also survive (spec 31's real- \
+             split guarantee); stages: {:?}",
+            stages.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            stages["u-orig"].needs,
+            vec!["plan".to_string(), "plan-critique".to_string()],
+            "the refine must still fold needs (with the gate-hold re-applied), unchanged \
+             behavior"
+        );
+        let serving: Vec<&str> = stages
+            .values()
+            .filter(|s| s.criterion_id == cid)
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(
+            serving.len(),
+            2,
+            "both episode2 siblings must serve the criterion after the fold; got {serving:?}"
+        );
     }
 
     #[test]

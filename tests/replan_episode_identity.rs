@@ -30,10 +30,16 @@ use std::sync::Mutex;
 /// Drives the plan-critique reject-then-replan cycle with a planner that proposes a
 /// DIFFERENT unit id for the SAME criterion on each of its two spawns: the initial wave
 /// spawn is one planning EPISODE, the critique-driven re-plan is a SECOND, LATER episode
-/// over the exact same criterion. Each proposal's `episode` field IS the spawning spawn's
-/// own deterministic id (`opts.id`) - "the planner spawn's id is the natural choice" (spec
-/// 72, PLAN-EPISODE IDENTITY) - so this exercises the REALISTIC production shape, not a
-/// hand-picked episode label.
+/// over the exact same criterion. The emitted `UnitProposed` JSON carries NO `episode`
+/// field at all - exactly the PLAN_PROTOCOL shape a real planner emits, which never
+/// asks for one - so the episode identity can ONLY reach `harvest_proposed` through the
+/// `emit` callback THIS test receives (the real `RunCtx`-owned closure `run_single_stage`
+/// / `re_plan` builds, unchanged from what a live run wires), never through a
+/// hand-authored data field. This is what makes these tests prove the REAL write path
+/// (round-2 REJECT fix for f-c1-episode-writeside-unwired /
+/// sdet-c1-episode-writeside-unwired-test-blindspot): before that fix, both spawns'
+/// proposals deserialize `episode` as the empty string and the supersede rule can never
+/// fire, exactly the production defect.
 struct TwoEpisodeDriver {
     planner: String,
     adjudicator: String,
@@ -97,13 +103,15 @@ impl AgentDriver for TwoEpisodeDriver {
             self.planner_spawns.lock().unwrap().push(opts.id.clone());
             let unit_id = unit_id_for_spawn(&opts.id);
             self.proposed_ids.lock().unwrap().push(unit_id.clone());
+            // No `episode` key here - PLAN_PROTOCOL never asks the planner to emit one
+            // (see the module doc). The episode identity must reach `harvest_proposed`
+            // through `emit`'s own META_SPAWN stamp, or not at all.
             emit(
                 TYPE_UNIT_PROPOSED,
                 json!({
                     "id": unit_id,
                     "agent": self.worker,
                     "criterion": self.criterion,
-                    "episode": opts.id,
                 }),
             )?;
             return Ok(AgentResult {
@@ -337,13 +345,14 @@ impl AgentDriver for ThreeEpisodeDriver {
             self.planner_spawns.lock().unwrap().push(opts.id.clone());
             let unit_id = unit_id_for_spawn(&opts.id);
             self.proposed_ids.lock().unwrap().push(unit_id.clone());
+            // No `episode` key here either - see `TwoEpisodeDriver::spawn`'s matching
+            // comment: the identity must come from `emit`'s own META_SPAWN stamp.
             emit(
                 TYPE_UNIT_PROPOSED,
                 json!({
                     "id": unit_id,
                     "agent": self.worker,
                     "criterion": self.criterion,
-                    "episode": opts.id,
                 }),
             )?;
             return Ok(AgentResult {
