@@ -4,47 +4,49 @@
 
 The crate version is `0.1.0` and has never moved across 70+ landed specs, so every
 operator install reports "Replacing rigger v0.1.0 with rigger v0.1.0" and nothing but the
-embedded build hash distinguishes two binaries. A hash identifies a build but does not
-ORDER two builds: an operator cannot see at a glance whether the installed binary is older
-or newer than the tree, and the docs-drift advisory can only say "drifted", not "behind by
-N commits". The operator noticed at install time (2026-08-20): version output must
-increment as the tree advances.
+embedded build hash - identity without order - tells two binaries apart. The operator's
+direction (2026-08-20, verbatim intent): follow the standing GitVersion / git-semver
+convention and auto-increment at least the patch level. The anchor exists: tag `v0.1.0`
+sits on the root commit, and `git describe --tags --match 'v*'` already yields
+`v0.1.0-338-g6ac5776` for today's tree.
 
 ## Design
 
-- MONOTONIC BUILD VERSION, decided here: the build embeds, at compile time, the repo's
-  commit count and short hash for the commit the build was made from, and `rigger version`
-  reports `rigger <crate-semver>+<commit-count>.<short-hash> (build <build-id>)`. The
-  commit count gives ORDER (newer tree = strictly larger), the hash gives identity, and
-  the crate semver stays the hand-managed base. Computed in `build.rs` from git at compile
-  time; a build outside a git checkout (e.g. a plain `cargo install` from a tarball) falls
-  back to the bare crate semver with an explicit `+unversioned` marker - never a fabricated
-  count.
-- WHERE IT SURFACES: `rigger version` (the authority), and the version line `rigger
-  validate` prints, so an operator comparing installed-vs-tree sees ordered versions in
-  both places. The stored scorecard/build provenance fields that today carry the build
-  hash gain nothing new - the hash stays their identity key; no event shape changes.
-- BEHIND-THE-TREE ADVISORY, decided here: `rigger validate`, when run inside a git
-  checkout whose HEAD commit count exceeds the installed binary's embedded count, adds an
-  advisory naming both versions and the commit distance ("installed binary is N commits
-  behind the tree - rebuild and reinstall"). Same advisory tone as the existing docs-drift
-  warning; never a hard failure.
-- OUT OF SCOPE, decided here: semver semantics (when 0.1 becomes 0.2 or 1.0) stay a human
-  decision in Cargo.toml; this spec makes the automatic component monotonic, it does not
-  invent meaning for the hand-managed part.
+- GIT-DERIVED SEMVER, the GitVersion mainline convention, decided here: the version is
+  anchored on the highest reachable `vX.Y.Z` tag and the PATCH auto-increments per commit
+  since it - `X.Y.(Z+N)` where N is the commit distance `git describe` reports, with the
+  short hash as build metadata: `0.1.338+g6ac5776` today. Exactly at a tag the version is
+  the tag's own `X.Y.Z`. Minor and major bumps happen by TAGGING (`v0.2.0` resets the
+  patch count from that anchor), which is the convention's release act and stays a human
+  decision - no commit-message bump hints in this cut.
+- COMPUTED AT COMPILE TIME in `build.rs` from `git describe --tags --match 'v*'`; the
+  binary embeds the finished string and never invokes git at runtime. A build outside a
+  git checkout, or in a checkout with no reachable `v*` tag, reports the bare crate semver
+  with an explicit `+unversioned` marker - never a fabricated distance.
+- WHERE IT SURFACES: `rigger version` is the authority and prints the derived semver
+  (with the existing build id retained); `rigger validate`'s version line uses the same
+  string. The crate version in Cargo.toml stays the static base cargo requires; stored
+  provenance keeps the build hash as its identity key unchanged.
+- BEHIND-THE-TREE ADVISORY, decided here: `rigger validate`, run inside a checkout whose
+  derived version orders above the installed binary's, adds an advisory naming both
+  versions and the patch distance ("installed 0.1.331, tree 0.1.338 - 7 commits behind;
+  rebuild and reinstall"). Advisory tone like the docs-drift warning; never a hard
+  failure; silent when equal, and silent on the comparison when either side is
+  `+unversioned`.
 
 ## Done when
 
-- [ ] `rigger version` reports the crate semver plus a build-time-embedded monotonic
-  component (commit count and short hash of the built commit), a build from a newer tree
-  strictly orders above one from an older tree, and a build outside a git checkout reports
-  the bare semver with an explicit unversioned marker - proven by a test pinned at the
-  version-rendering seam. This criterion OWNS the version format and its derivation.
-- [ ] `rigger validate` inside a checkout ahead of the installed binary emits an advisory
-  naming the installed version, the tree's version, and the commit distance, and stays
-  silent on this when the binary matches the tree - proven at the validate seam. This
-  criterion OWNS the behind-the-tree advisory; the version format is criterion 1's, NOT
-  this one's.
+- [ ] `rigger version` reports the tag-anchored auto-incrementing semver: with a reachable
+  `vX.Y.Z` tag it reports `X.Y.(Z+N)` for N commits since the tag plus the short hash as
+  build metadata, exactly at the tag it reports `X.Y.Z`, and a build with no reachable
+  tag or outside a checkout reports the crate semver with an explicit unversioned marker -
+  proven by tests at the derivation seam using fixture git repositories. This criterion
+  OWNS the version derivation and format.
+- [ ] `rigger validate` inside a checkout whose derived version orders above the installed
+  binary's emits an advisory naming both versions and the commit distance, stays silent
+  when they match, and skips the comparison when either side is unversioned - proven at
+  the validate seam. This criterion OWNS the behind-the-tree advisory; the derivation is
+  criterion 1's, NOT this one's.
 - [ ] Both feature lanes green: `cargo fmt --check`; `cargo clippy --all-targets -D
   warnings`; `cargo test` on default features AND `--no-default-features`.
 
@@ -52,15 +54,17 @@ increment as the tree advances.
 
 - Hyphens, not em dashes, anywhere the diff touches.
 - No new event type; stored provenance keeps the build hash as its identity key.
-- The embedded values are computed at COMPILE time only - no runtime git invocation in
-  `rigger version` (it must answer correctly outside any checkout).
+- The embedded values are computed at COMPILE time only - no runtime git invocation.
 
 ## Notes
 
-- Constraints walk record: outside-a-checkout build - explicit `+unversioned`, never a
-  fabricated count; shallow clone (commit count truncated) - the count is whatever git
-  reports for the built checkout, and the advisory compares counts only when both sides
-  carry one; crash-resume/concurrency - compile-time constants, n/a; repeated installs of
-  the same commit - identical version string, correct.
-- The operator-build worktree flow gains nothing new: checkout tip, build, `cargo install
-  --path` - the version now shows the increment that flow was already producing invisibly.
+- Constraints walk record: outside-a-checkout or tagless build - explicit `+unversioned`,
+  never fabricated; shallow clone - `git describe` reports what the checkout can reach,
+  and the advisory compares only when both sides carry a derived version; repeated builds
+  of one commit - identical string; crash-resume/concurrency - compile-time constants,
+  n/a; future `v0.2.0` tag - patch count resets from the new anchor, by convention.
+- The operator seeded `v0.1.0` on the root commit (2026-08-20) so the anchor pre-exists
+  this spec; pushing tags to any remote rides the normal push flow, out of scope here.
+- Semantic bump hints in commit messages (`+semver: minor` etc., GitVersion's richer
+  mode) are OUT of scope, deferred deliberately - tagging is the bump mechanism in this
+  cut.
