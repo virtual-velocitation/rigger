@@ -39,14 +39,48 @@
 //! `RefineWithSiblingDriver` fixture above gives the sibling the SAME criterion text. The
 //! fourth test drives that shape through the identical real write path via
 //! `RefineWithSiblingDriver::new_unmatched_sibling`.
+//!
+//! Criterion 3 (resume/catch-up and BACK-COMPAT, THIS file's FIFTH and SIXTH tests) is
+//! named differently in spec 72's own done-when text: criteria 1 and 2 both say "proven at
+//! the `harvest_proposed` seam", but criterion 3 says "proven by a test at the resume
+//! seam" - deliberately distinct wording for a deliberately distinct boundary. u72c3's own
+//! three new tests (in `src/conductor.rs`'s test module) prove the fold's
+//! resume-equals-live equivalence and the legacy-tier back-compat fix by hand-calling
+//! `harvest_proposed` directly and hand-supplying `data.episode` / `meta.spawn` - exactly
+//! the seam criteria 1/2's OWN inside-out tests use, and exactly the class of proof this
+//! file exists because that seam is structurally blind to (see the criterion-1 paragraph
+//! above: the write-side-unwired defect that same blind spot let through once already).
+//!
+//! The fifth test proves the plain recovery shape - a wedged legacy history, then a REAL
+//! planner spawn (a genuine identified episode, through the real emit/write path) - through
+//! the resume seam itself: a store pre-populated with `UnitProposed` events that carry no
+//! `episode` field and no `meta.spawn` at all (the one shape the CURRENT write path can
+//! never produce, since every real spawn stamps `META_SPAWN` - the only way to simulate a
+//! run a pre-spec-72 binary already wrote to) BEFORE `run` is ever called, so the fresh
+//! process's own pre-wave catch-up is the first thing to fold them.
+//!
+//! The sixth test closes the gap the fifth cannot: with legacy always logged BEFORE the
+//! identified proposal (the fifth test's own order, and every ordinary production
+//! chronology), the pre-u72c3 first-occurrence rank comparison already read the fold
+//! correctly BY COINCIDENCE (u72c3's own fix comment names this exactly), so the fifth test
+//! alone cannot discriminate the fix from the bug it replaces. Only the PATHOLOGICAL order
+//! actually distinguishes them: an identified proposal logged FIRST, then a legacy proposal
+//! for the same criterion logged SECOND (mirroring u72c3's own discriminating unit test,
+//! `a_legacy_proposal_never_supersedes_an_identified_episodes_owner_even_when_logged_later`).
+//! The sixth test pins that same order through the resume seam too: both events
+//! pre-populated directly into the store (the identified one carrying a hand-stamped
+//! `meta.spawn`, simulating a PRIOR WINDOW's already-completed proposal - exactly what a
+//! fresh `run`'s resume-safe dedup catch-up is FOR) before `run` is ever called.
 
 use rigger::conductor::{
-    run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, TYPE_UNIT_PROPOSED,
+    run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, META_SPAWN, STREAM, TYPE_UNIT_PROPOSED,
 };
 use rigger::config::{AgentDef, Config, Gate, Stage};
 use rigger::eventstore::sqlite::Store;
+use rigger::eventstore::{Event, EventStore, ExpectedRevision};
 use rigger::gate::ExecRunner;
 use rigger::ledger;
+use rigger::run::start_fresh;
 use serde_json::{json, Value};
 use std::sync::Mutex;
 
@@ -981,5 +1015,333 @@ fn a_same_id_refine_survives_its_own_episodes_genuinely_new_unmatched_sibling_th
         vec![orig_id.as_str()],
         "the unmatched sibling must never be counted as serving the criterion; got \
          {serving:?}"
+    );
+}
+
+/// A minimal single-planner, no-critique-gate workflow: `plan` proposes; `implement` (the
+/// fan-out template) runs whatever `plan` proposed. No `judge`/adjudicator at all - unlike
+/// `two_episode_cfg`, criterion 3's resume seam needs only ONE real planning episode, never
+/// a reject/re-plan cycle.
+fn resume_seam_cfg() -> Config {
+    let mut cfg = Config::default();
+    cfg.agents.insert(
+        "planner".into(),
+        AgentDef {
+            id: "planner".into(),
+            ..Default::default()
+        },
+    );
+    cfg.agents.insert(
+        "worker".into(),
+        AgentDef {
+            id: "worker".into(),
+            ..Default::default()
+        },
+    );
+    cfg.workflow.stages.insert(
+        "plan".into(),
+        Stage {
+            name: "plan".into(),
+            agent: "planner".into(),
+            produces: "dag".into(),
+            ..Default::default()
+        },
+    );
+    cfg.workflow.stages.insert(
+        "implement".into(),
+        Stage {
+            name: "implement".into(),
+            agent: "worker".into(),
+            strategy: "fan-out".into(),
+            needs: vec!["plan".into()],
+            on_pass: "merge".into(),
+            ..Default::default()
+        },
+    );
+    cfg
+}
+
+/// A single planning episode's driver: the planner's ONE spawn proposes ONE new unit for
+/// the given criterion, exactly like `TwoEpisodeDriver`'s spawn (no `episode` key in the
+/// JSON `data` at all - PLAN_PROTOCOL never asks for one; the identity must come from
+/// `emit`'s own `META_SPAWN` stamp, which only a REAL spawn through `run` provides).
+struct SinglePlannerDriver {
+    planner: String,
+    worker: String,
+    criterion: String,
+    unit_id: String,
+}
+
+impl SinglePlannerDriver {
+    fn new(criterion: &str, unit_id: &str) -> Self {
+        SinglePlannerDriver {
+            planner: "planner".into(),
+            worker: "worker".into(),
+            criterion: criterion.to_string(),
+            unit_id: unit_id.to_string(),
+        }
+    }
+}
+
+impl AgentDriver for SinglePlannerDriver {
+    fn spawn(
+        &self,
+        a: &AgentDef,
+        _prompt: &str,
+        _opts: &SpawnOpts,
+        emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+    ) -> Result<AgentResult, Error> {
+        if a.id == self.planner {
+            emit(
+                TYPE_UNIT_PROPOSED,
+                json!({
+                    "id": self.unit_id,
+                    "agent": self.worker,
+                    "criterion": self.criterion,
+                }),
+            )?;
+            return Ok(AgentResult {
+                output: "proposed the DAG".into(),
+                resolved_model: String::new(),
+            });
+        }
+        Ok(AgentResult {
+            output: format!("{} ok", a.id),
+            resolved_model: String::new(),
+        })
+    }
+}
+
+/// Spec 72 criterion 3 (resume/catch-up, BACK-COMPAT): the RESUME seam, named distinctly
+/// from criteria 1/2's `harvest_proposed` seam in the spec's own done-when text (see the
+/// module doc). u72c3's own two new tests prove the legacy-tier fix by hand-calling
+/// `harvest_proposed` directly with hand-supplied `data.episode`/`meta.spawn` - the exact
+/// class of proof this file exists because that seam cannot reach (the criterion-1
+/// write-side-unwired defect, above, is the precedent: the same shortcut once made a real
+/// production wiring gap invisible). This test seeds the store with two LEGACY
+/// `UnitProposed` events - no `episode` field, no `meta.spawn` at all, the one shape the
+/// CURRENT write path can never produce (every real spawn stamps `META_SPAWN`) - BEFORE
+/// `run` is ever called, so a fresh conductor process's OWN pre-wave catch-up is the first
+/// thing to fold them, exactly matching a resume of a run a pre-spec-72 binary already
+/// wrote to. A REAL planner spawn then proposes ONE new, genuinely-identified unit for the
+/// identical criterion, through the real emit/write path - proving, through the crate's
+/// public `run` entry and its projected `RunResult.units`, that a real fresh process
+/// actually delivers spec 72's BACK-COMPAT promise: "any new identified episode supersedes
+/// [the legacy owners'] - the exact recovery a wedged historical run needs."
+#[test]
+fn a_wedged_legacy_history_is_recovered_by_a_real_planning_episode_through_run() {
+    let criterion = "the wedged legacy conveyor module is implemented";
+    let criteria = vec![criterion.to_string()];
+    let cfg = resume_seam_cfg();
+    let store = Store::open(":memory:").unwrap();
+
+    // Mint the run's `RunStarted` FIRST, over the SAME criteria the `run` call below
+    // uses, so `ensure_started` ADOPTS this run rather than minting a fresh one - the
+    // events appended next land inside `current_run`'s window instead of being scoped
+    // out as a prior run's residue (Gap 11). This is exactly what a real prior `run`
+    // call's own first action already does; calling it directly, without running an
+    // entire workflow to completion first, is the minimal way to seed "a prior window
+    // already happened" without begging the very question this test proves.
+    start_fresh(&store, &criteria, "", "").unwrap();
+
+    // Pre-populate the store BEFORE `run` is ever called: two pre-existing LEGACY
+    // proposals for the SAME criterion (no `episode` field, no `meta.spawn`), simulating a
+    // run a pre-spec-72 binary already wrote. Coverage resolves by prose match alone -
+    // exactly like a genuinely historical event, which predates `criterion_id` too. Each
+    // needs `plan` (like a real fan-out unit whose planner has not yet re-run) so it stays
+    // held out of wave 1 - the SAME wave the fresh process's real planner spawns in -
+    // rather than racing straight to Integrated before the post-wave harvest_proposed
+    // call can even evaluate supersession against it: THE SUPERSEDE RULE (spec 72) never
+    // yanks a unit already integrated, by design, so an unheld "wedged" unit that races to
+    // completion in the very same wave as its own recovery would trivially, vacuously
+    // "survive" for a reason that has nothing to do with the legacy tier at all.
+    for id in ["u-legacy-1", "u-legacy-2"] {
+        store
+            .append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[Event::new(
+                    TYPE_UNIT_PROPOSED,
+                    serde_json::to_vec(&json!({
+                        "id": id,
+                        "agent": "worker",
+                        "criterion": criterion,
+                        "needs": ["plan"],
+                    }))
+                    .unwrap(),
+                )],
+            )
+            .unwrap();
+    }
+
+    let driver = SinglePlannerDriver::new(criterion, "u-identified");
+    let deps = Deps {
+        store: &store,
+        driver: &driver,
+        gates: &ExecRunner,
+        repo: String::new(),
+        grounder: None,
+        graph: None,
+        criteria: criteria.clone(),
+    };
+    let rs = run(&cfg, &deps).unwrap();
+
+    assert!(
+        !rs.units.contains_key("u-legacy-1") && !rs.units.contains_key("u-legacy-2"),
+        "both pre-existing legacy proposals must be superseded by the real planner's \
+         identified episode, recovered through the fresh process's own resume catch-up; \
+         units: {:?}",
+        rs.units.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        rs.units["u-identified"].status,
+        ledger::Status::Integrated,
+        "the identified episode's unit must be the one that ran and integrated; units: {:?}",
+        rs.units.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(rs.units["u-identified"].spec_criterion, criterion);
+
+    // Exactly one unit serves the criterion once the fresh process's real planning
+    // episode recovers the wedged legacy history - the recovery a wedged historical run
+    // needs, proven at the public boundary a real resume actually uses.
+    let serving: Vec<&str> = rs
+        .units
+        .values()
+        .filter(|u| u.spec_criterion == criterion)
+        .map(|u| u.id.as_str())
+        .collect();
+    assert_eq!(
+        serving,
+        vec!["u-identified"],
+        "exactly one unit must serve the criterion after the wedged legacy history is \
+         recovered; got {serving:?}"
+    );
+}
+
+/// A driver that does no real work at all - every spawn succeeds trivially, with no
+/// `emit` call. Pairs with a store the test pre-populates directly: every `UnitProposed`
+/// the test needs is ALREADY in the log before `run` is ever called, so nothing further
+/// needs proposing - only the fresh process's own resume catch-up (and the ordinary wave
+/// loop, running each already-proposed unit's `implement` fan-out to completion) matters.
+struct TrivialDriver;
+
+impl AgentDriver for TrivialDriver {
+    fn spawn(
+        &self,
+        a: &AgentDef,
+        _prompt: &str,
+        _opts: &SpawnOpts,
+        _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+    ) -> Result<AgentResult, Error> {
+        Ok(AgentResult {
+            output: format!("{} ok", a.id),
+            resolved_model: String::new(),
+        })
+    }
+}
+
+/// Spec 72 criterion 3 / BACK-COMPAT, the DISCRIMINATING order, at the resume seam (see
+/// the module doc's sixth-test paragraph for why the fifth test alone cannot pin this).
+/// The pathological event order u72c3's own third `harvest_proposed`-seam test pins
+/// (`a_legacy_proposal_never_supersedes_an_identified_episodes_owner_even_when_logged_later`)
+/// puts an identified episode's proposal logged FIRST, then a legacy proposal for the SAME
+/// criterion logged SECOND; that is the ONLY order that actually distinguishes u72c3's
+/// fixed three-way branch from the pre-fix first-occurrence rank comparison it replaced.
+/// This proves the SAME discriminating order holds at the resume seam, not only the
+/// `harvest_proposed` seam: both events are pre-populated directly into the store (the
+/// identified one carrying a hand-stamped `meta.spawn`, simulating a PRIOR WINDOW's
+/// already-completed proposal - exactly the "fold any ALREADY-EMITTED UnitProposed events
+/// from a PRIOR window" resume-safe dedup a fresh `run` performs before its first wave;
+/// the legacy one carrying none at all) BEFORE `run` is ever called, so the fresh
+/// process's own pre-wave catch-up is what must get the order right. RED before u72c3's
+/// fix (a first-occurrence-only rank comparison reads the legacy proposal as "later" and
+/// removes the identified owner, through this exact real `run` path - reverting the fix
+/// locally and re-running this test reproduces it); GREEN after.
+#[test]
+fn a_legacy_proposal_logged_after_a_resumed_identified_owner_never_supersedes_it_through_run() {
+    let criterion = "the resumed pathological order module is implemented";
+    let criteria = vec![criterion.to_string()];
+    let cfg = resume_seam_cfg();
+    let store = Store::open(":memory:").unwrap();
+
+    // Mint the run's `RunStarted` FIRST, over the SAME criteria the `run` call below
+    // uses, so `ensure_started` ADOPTS this run and the events appended next land inside
+    // `current_run`'s window (see the matching comment on the fifth test above).
+    start_fresh(&store, &criteria, "", "").unwrap();
+
+    // Pre-populate the store BEFORE `run` is ever called: a PRIOR WINDOW's already-
+    // completed identified proposal (hand-stamped `meta.spawn`, simulating a real spawn a
+    // now-dead process already made), then a genuinely legacy proposal (no `meta.spawn`
+    // at all) for the SAME criterion, logged SECOND.
+    store
+        .append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[Event::new(
+                TYPE_UNIT_PROPOSED,
+                serde_json::to_vec(&json!({
+                    "id": "u-early",
+                    "agent": "worker",
+                    "criterion": criterion,
+                }))
+                .unwrap(),
+            )
+            .with_meta(META_SPAWN, "plan/implementer#0")],
+        )
+        .unwrap();
+    store
+        .append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[Event::new(
+                TYPE_UNIT_PROPOSED,
+                serde_json::to_vec(&json!({
+                    "id": "u-legacy-late",
+                    "agent": "worker",
+                    "criterion": criterion,
+                }))
+                .unwrap(),
+            )],
+        )
+        .unwrap();
+
+    let driver = TrivialDriver;
+    let deps = Deps {
+        store: &store,
+        driver: &driver,
+        gates: &ExecRunner,
+        repo: String::new(),
+        grounder: None,
+        graph: None,
+        criteria: criteria.clone(),
+    };
+    let rs = run(&cfg, &deps).unwrap();
+
+    assert!(
+        rs.units.contains_key("u-early"),
+        "the identified episode's unit, already resumed from a prior window, must \
+         survive a LATER-LOGGED legacy proposal for the same criterion - legacy is fixed \
+         BEFORE every identified episode regardless of log position; units: {:?}",
+        rs.units.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        rs.units.contains_key("u-legacy-late"),
+        "the legacy proposal is still added alongside it (it found no EARLIER owner to \
+         supersede); units: {:?}",
+        rs.units.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        rs.units["u-early"].status,
+        ledger::Status::Integrated,
+        "the resumed identified unit must run and integrate normally, undisturbed by the \
+         later-logged legacy proposal; units: {:?}",
+        rs.units.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        rs.units["u-legacy-late"].status,
+        ledger::Status::Integrated,
+        "the legacy proposal, added alongside rather than removed, must also run and \
+         integrate normally; units: {:?}",
+        rs.units.keys().collect::<Vec<_>>()
     );
 }
