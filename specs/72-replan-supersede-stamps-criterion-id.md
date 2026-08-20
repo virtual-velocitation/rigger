@@ -1,90 +1,116 @@
-# Spec 72: replan supersede stamps the criterion id
+# Spec 72: replan supersede is grounded in the log, not the call
 
 ## Problem
 
-Run 57373714-b52 (spec 68) escalated at plan-critique after exhausting all six rounds
-on a defect no replan could fix: every round's re-proposed units were ADDED alongside
-the units they were meant to replace, so the DAG accumulated duplicate owners per
-criterion (u68c1 and u68c1r3 both live for criterion 1; three live owners of
-criterion 2; u68c3/u68c3r3; u68c4/u68c4r3) and the critique gate correctly rejected
-each round on rule 7 (one-live-unit-per-criterion).
+Run 57373714-b52 (spec 68) escalated at plan-critique on an unwinnable defect: every replan
+round's re-proposed units were ADDED alongside the units they should replace, because
+`harvest_proposed`'s ADD path inserts stages without the resolved `criterion_id` the
+supersede filter matches on (the baselines are stamped at synthesis; planner-added stages
+were not). The DAG accumulated duplicate owners per criterion and the critique gate
+correctly rejected every round on rule 7.
 
-Root cause, verified by direct read: `harvest_proposed`'s supersede filter
-(src/conductor.rs:7487-7495) finds prior owners by `st.criterion_id == criterion_id`,
-but the ADD-path `Stage` insert (src/conductor.rs:7539-7547) fills only
-name/agent/needs/coverage/gates and leaves `criterion_id` at `..Default::default()`
-(empty). The conductor-synthesized baselines DO stamp it
-(src/conductor.rs:9078), so the FIRST harvest supersedes the baseline correctly -
-but the planner-added replacement is inserted without the id, making it invisible
-to every later round's supersede filter. Each replan round therefore adds a
-duplicate instead of replacing the prior owner: an unwinnable reject loop.
+A first repair run (10c69e11-3f9) exhausted its full remediation budget and escalated, and
+its five review rounds are the evidence this rewrite is built on. Each round's panel
+empirically disproved one mechanism family:
+
+- Round 2 (adversary probe): supersession that removes broadly is order-dependent within
+  one call - a refine plus a new split sibling must both survive in either event order.
+- Round 3 (adjudicator probe): supersession conditioned on plan-critique rounds or gate
+  presence never fires in a workflow with no critique gate wired (`round == 0` forever).
+- Round 4 (sdet probe): latest-wins-within-a-call contradicts the spec-31 real-split
+  guarantee - a planner may legitimately split one criterion into sibling units in one
+  planning pass, and `planner_refinement_split_is_still_harvested` plus both same-call
+  refine-plus-split tests encode that.
+- Round 5 (sdet + adjudicator, independently reproduced): ANY per-call or per-process
+  tracking (`added_this_call`, `no_gate_harvest_seen` on `RunCtx`) breaks on resume:
+  every `rigger step` is a fresh process whose pre-wave catch-up folds the ENTIRE run
+  history through ONE `harvest_proposed` call, so call structure cannot distinguish
+  same-wave siblings from cross-wave replans - two historical proposals for one criterion
+  read as siblings on every resume and both survive.
+
+The conclusion those five rounds force: the sibling-vs-supersede distinction must be
+carried by THE LOG, not reconstructed from call or process structure.
 
 ## Design
 
-- THE STAMP, decided here so no unit has to: every stage the ADD path inserts for a
-  proposal that resolves to a criterion carries that criterion's stable id in its
-  `criterion_id` field. This is an OUTCOME requirement on the inserted stage, not a
-  prescription of where the value is computed - a pre-pass, a threaded local, or an
-  insert-site expression are all conforming so long as the stored stage carries the id.
-- Unmatched proposals (a proposal `resolve_served_criterion` maps to no criterion -
-  the genuinely-new sub-unit path that records `unmatched-proposal`) keep an EMPTY
-  `criterion_id`, exactly as today, and an empty id NEVER participates in supersession
-  on either side: an empty-id stage is never removed by any supersede, and no proposal's
-  supersede ever matches on emptiness. A genuinely-new unit owns no criterion and stays
-  outside supersession entirely.
-- The same-id fold path (a re-emit under an id that already exists) still folds
-  needs only and never touches `criterion_id`; this spec changes the ADD path alone.
-- THE SUPERSEDE RULE, decided here (round-5 disposition; supersedes the round-4 rule,
-  which the sdet proved internally contradictory against the spec-31 real-split
-  guarantee). A call's proposals form ONE WAVE. A proposal resolving to criterion X
-  removes every live (not-integrated, not-terminal) stage serving X that EXISTED BEFORE
-  THIS CALL - the conductor-synthesized baseline and any prior-call planner unit - and
-  NEVER a stage this same call inserted, in any order. ALL of one call's inserted stages
-  survive together: a deliberate same-call split of one criterion into sibling units is
-  preserved (spec 31 criterion 2 - `planner_refinement_split_is_still_harvested` and the
-  same-call refine-plus-split tests stay green as written). Empty ids never participate
-  in supersession on either side. The surviving set is therefore a pure function of
-  (pre-call stages, the call's proposal set) - order-independent within the call by
-  construction, and deterministic under replay.
-- MECHANISM BOUNDARY, decided here (splitting what round 3 proved from what round 4
-  over-generalized): per-call tracking of which stages THIS call inserted (an
-  added-this-call set or equivalent) is REQUIRED by the rule above and is a conforming
-  mechanism, not a violation. What stays FORBIDDEN is conditioning supersession on
-  plan-critique rounds, gate presence, or any advancing counter - the adjudicator's
-  round-3 probe stands: a workflow with no critique gate keeps `round == 0` forever, and
-  the rule must behave identically there. No `gate.is_none()` branch, no round
-  comparison; the same one rule runs in every workflow.
-- State placement: the authoritative record is the event log's `UnitProposed`, which
-  already carries `criterion_id` on the wire (src/conductor.rs:1310); `stages` is the
-  per-step in-memory fold of those events, so stamping at the fold point applies
-  identically on replay and resume. No migration, no new persistence, no wire change.
+- PLAN-EPISODE IDENTITY, the load-bearing decision: every `UnitProposed` carries the
+  identity of the PLANNING EPISODE that emitted it - one planner pass (an initial plan or
+  a replan after a critique reject) is one episode. Two proposals with the SAME episode
+  identity are siblings; a proposal whose episode is LATER (by log order of the episodes'
+  first events) supersedes earlier episodes' owners of the same criterion. The identity is
+  an additive, serde-defaulted field on `UnitProposed` (permitted by the constraints
+  below); a conforming value is anything log-unique per planner pass - the planner spawn's
+  id is the natural choice. Where it is computed is free; that it is PERSISTED ON THE
+  EVENT is not.
+- STATE PLACEMENT, and the banned stand-in: the authoritative sibling-vs-replan state
+  lives in the event log (the episode field on each `UnitProposed`). A per-process
+  `RunCtx` field, an added-this-call set, a harvest-call counter, or any assumption about
+  how many events one `harvest_proposed` call folds is NOT an implementation of this
+  requirement - round 5 proved every such stand-in wrong on resume.
+- THE SUPERSEDE RULE: a proposal resolving to criterion X removes every live
+  (not-integrated, not-terminal) stage serving X from an EARLIER episode - the
+  conductor-synthesized baseline counts as earlier than every episode - and never a stage
+  from its OWN episode, in any event order. All of one episode's stages survive together
+  (the spec-31 real-split guarantee stays green as written). Empty `criterion_id` never
+  participates in supersession on either side: an empty-id stage is never removed by any
+  supersede and no supersede matches on emptiness. The surviving set is a pure function of
+  the logged events - identical under live incremental folding, crash-resume catch-up
+  (whole history in one call), and cold-start replay.
+- NO ROUND OR GATE CONDITIONING (round-3 probe stands): no `gate.is_none()` branch, no
+  round comparison; the same rule runs in every workflow, critique gate wired or not.
+- BACK-COMPAT, decided here so no unit has to: a logged `UnitProposed` WITHOUT the episode
+  field (every pre-existing event) belongs to one implicit LEGACY episode that orders
+  after the baseline and before every identified episode. Legacy events are therefore
+  mutual siblings (never cannibalize each other retroactively), and any new identified
+  episode supersedes their owners - the exact recovery a wedged historical run needs.
+- THE STAMP (unchanged from the first authoring, outcome-level): every stage the ADD path
+  inserts for a proposal that resolves to a criterion carries that criterion's stable id
+  in its `criterion_id` field, however the value is computed. Unmatched proposals (the
+  genuinely-new sub-unit path recording `unmatched-proposal`) keep an empty id. The
+  same-id fold path still folds needs only.
 
 ## Done when
 
-- [ ] A planner re-proposal serving a criterion already owned by a prior
-  planner-added unit leaves exactly one live owner: a test pinned at the
-  `harvest_proposed` seam drives two harvest rounds for the same criterion (round 1
-  adds a planner unit superseding the baseline, round 2 re-proposes under a fresh id)
-  and proves the sole surviving stage is the round-2 unit whose stored
-  `criterion_id` equals that criterion's stable id.
+- [ ] A proposal from a later planning episode serving a criterion owned by an earlier
+  episode's planner unit leaves exactly one live owner - the later unit, stamped with the
+  criterion's stable id - proven by a test at the `harvest_proposed` seam driving two
+  episodes over one criterion. This criterion OWNS cross-episode supersession; same-episode
+  behavior is criterion 2's, NOT this one's.
+- [ ] All proposals carrying one episode identity survive one harvest together in any event
+  order - including two serving the same criterion (a real split) and a refine beside a
+  new empty-id split sibling - proven at the `harvest_proposed` seam, with the existing
+  spec-31 tests (`planner_refinement_split_is_still_harvested` and both same-call
+  refine-plus-split tests) green unmodified. This criterion OWNS same-episode behavior;
+  cross-episode supersession is criterion 1's, NOT this one's.
+- [ ] A fresh conductor process whose pre-wave catch-up folds a pre-populated run history in
+  ONE `harvest_proposed` call yields the same surviving stage set as the live incremental
+  fold of that history - proven by a test at the resume seam whose history holds both a
+  two-episode supersession and a one-episode split, and by a companion case where the
+  history's proposals carry NO episode field (the legacy episode: mutual siblings, then
+  superseded by a new identified episode). This criterion OWNS the resume/catch-up and
+  back-compat surface.
+- [ ] Both feature lanes green: `cargo fmt --check`; `cargo clippy --all-targets -D
+  warnings`; `cargo test` on default features AND `--no-default-features`.
 
 ## Global constraints
 
 - Hyphens, not em dashes, anywhere the diff touches.
-- Both feature lanes stay green: `cargo test` with default features AND with
-  `--no-default-features`.
-- No new event type; `UnitProposed`'s serialized shape is unchanged.
+- No new event type. One additive, `#[serde(default)]` field on `UnitProposed` is
+  permitted and expected; every existing field's serialization is unchanged, and every
+  pre-existing logged event must deserialize and fold under the back-compat rule above.
+- No new gate, no new conductor stage; the change lives in the fold and the emit path.
 
 ## Notes
 
-- OUT of scope, deferred deliberately (recorded so they are not silently dropped):
-  - Critique-prompt visibility: `build_dag_critique_prompt`
-    (src/conductor.rs:5589) surfaces neither the spec path nor its non-criteria
-    sections to the gate. The gate holds Read/Grep and demonstrably reads the spec
-    file today (round-5 adversary cited exact spec line numbers), so this is an
-    ergonomics gap, not a correctness gap.
-  - `ready_stages` criterion-level dedup as defense in depth against an
-    already-polluted DAG: with the stamp in place a new run cannot pollute, and the
-    one polluted run (57373714-b52) is abandoned in place; its log survives.
-- The guard on the supersede filter (never remove an integrated or terminal stage)
-  is existing behavior this spec relies on and does not modify.
+- Constraints walk record (why each corner is closed): empty proposal set - no fold
+  change; repeated same-id re-emit - fold-needs-only path untouched; same-episode repeat
+  for one criterion - siblings by rule (criterion 2); crash-resume and cold start -
+  criterion 3 pins both; concurrent actors - single conductor writer, n/a; revert - the
+  log is append-only, a superseded stage is removed from the fold, never from history.
+- The five prior review rounds' probes are the acceptance intuition: every one of them
+  (round-2 order reversal, round-3 no-gate workflow, round-4 spec-31 split, round-5 fresh
+  RunCtx catch-up) must pass under this design; criteria 1-3 encode them.
+- Critique-prompt visibility and `ready_stages` dedup remain OUT of scope, deferred
+  deliberately (unchanged from the first authoring). The prior unit branch
+  `rigger/u/u-c1-stamp-criterion-id` holds five attempts of exploratory work; the fresh
+  run re-plans from this rewritten spec and owes it nothing.
