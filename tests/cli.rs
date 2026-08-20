@@ -16465,7 +16465,7 @@ fn normalize_ws(s: &str) -> String {
 const ACCOUNTING_CONTRACT_FRAGMENTS: &[(&str, &str)] = &[
     (
         "the event type (no new event type; rides DecisionMade)",
-        "DecisionMade",
+        "one DecisionMade (no new event type)",
     ),
     (
         "the deterministic-ordering guarantee",
@@ -16484,7 +16484,7 @@ const ACCOUNTING_CONTRACT_FRAGMENTS: &[(&str, &str)] = &[
     ("the missed-justified status", "missed-justified"),
     ("missed-justified carries a reason", "with reason"),
     ("the unviable status", "unviable"),
-    ("the timeout status", "timeout"),
+    ("the timeout status", "unviable | timeout,"),
     ("the diff-base field", "the diff base"),
     ("the mutant-total field", "the mutant total"),
     (
