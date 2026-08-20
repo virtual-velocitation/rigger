@@ -17587,4 +17587,50 @@ mod tests {
             "must name the backend the project is actually configured for; got {line:?}"
         );
     }
+
+    /// Spec 73, criterion 1. The implementer persona (`.rigger/agents/rust-engineer.md`) is
+    /// OPERATOR CONFIGURATION seeded by the operator, not authored by any unit (spec 73
+    /// Design: "the grounder cannot ground non-code files, so no unit can own a Markdown
+    /// blast radius"). So this is a DRIFT GUARD, not a feature test: it pins the seeded
+    /// mutation-STEP contract - WHEN the instrument runs and HOW a missed mutant is resolved -
+    /// against the committed file, so an edit that drops or weakens that contract fails the
+    /// suite instead of silently drifting. The ACCOUNTING shape (the `DecisionMade` entry
+    /// format, the diff base, the total, the empty-diff case) is criterion 2's drift guard,
+    /// NOT this one's, and is deliberately not asserted here.
+    #[test]
+    fn implementer_persona_pins_the_seeded_mutation_step_contract() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(RIGGER_DIR)
+            .join("agents")
+            .join("rust-engineer.md");
+        let persona = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read committed {}: {e}", path.display()));
+
+        assert!(
+            persona.contains("Mutation efficacy") && persona.contains("build.mutation"),
+            "the step must be gated on the build.mutation config key; got:\n{persona}"
+        );
+        assert!(
+            persona.contains("your unit tests are")
+                && persona.contains("green and BEFORE the pre-gate commit"),
+            "the step must run after unit-green and before the pre-gate commit; got:\n{persona}"
+        );
+        assert!(
+            persona.contains("diff against the unit's merge-base with the run branch"),
+            "the mutants run must be scoped to a diff against the unit's merge-base with the \
+             run branch; got:\n{persona}"
+        );
+        assert!(
+            persona.contains("cargo mutants --in-diff") && persona.contains("DEFAULT feature lane"),
+            "the step must name the diff-scoped cargo-mutants invocation on the default \
+             feature lane; got:\n{persona}"
+        );
+        assert!(
+            persona.contains("KILLED")
+                && persona.contains("JUSTIFIED")
+                && persona.contains("unjustified miss"),
+            "a missed mutant must be resolved by kill-or-justify, with an unjustified miss \
+             leaving the unit not done; got:\n{persona}"
+        );
+    }
 }
