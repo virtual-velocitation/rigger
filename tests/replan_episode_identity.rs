@@ -40,16 +40,25 @@
 //! fourth test drives that shape through the identical real write path via
 //! `RefineWithSiblingDriver::new_unmatched_sibling`.
 //!
-//! Criterion 3 (resume/catch-up and BACK-COMPAT, THIS file's FIFTH and SIXTH tests) is
-//! named differently in spec 72's own done-when text: criteria 1 and 2 both say "proven at
-//! the `harvest_proposed` seam", but criterion 3 says "proven by a test at the resume
-//! seam" - deliberately distinct wording for a deliberately distinct boundary. u72c3's own
-//! three new tests (in `src/conductor.rs`'s test module) prove the fold's
+//! Criterion 3 (resume/catch-up and BACK-COMPAT, THIS file's FIFTH, SIXTH, and SEVENTH
+//! tests) is named differently in spec 72's own done-when text: criteria 1 and 2 both say
+//! "proven at the `harvest_proposed` seam", but criterion 3 says "proven by a test at the
+//! resume seam" - deliberately distinct wording for a deliberately distinct boundary.
+//! u72c3's own three new tests (in `src/conductor.rs`'s test module) prove the fold's
 //! resume-equals-live equivalence and the legacy-tier back-compat fix by hand-calling
 //! `harvest_proposed` directly and hand-supplying `data.episode` / `meta.spawn` - exactly
 //! the seam criteria 1/2's OWN inside-out tests use, and exactly the class of proof this
 //! file exists because that seam is structurally blind to (see the criterion-1 paragraph
 //! above: the write-side-unwired defect that same blind spot let through once already).
+//! Criterion 3's own done-when text names TWO required shapes at the resume seam: (a) a
+//! history holding BOTH a two-episode supersession AND a one-episode split, and (b) a
+//! legacy/no-episode-field companion case. The fifth and sixth tests below prove (b); the
+//! seventh proves (a) - round 3's own adjudicator reject
+//! (sdet-u72c3-resume-seam-covers-legacy-not-two-episode-split-shape,
+//! adv-u72c3-two-episode-split-resume-seam-empirically-verified) found (a) proven only at
+//! the internal `harvest_proposed` seam (`src/conductor.rs`'s
+//! `a_resume_catch_up_over_two_episode_supersession_and_a_split_matches_a_live_incremental_fold`),
+//! never through this file's real `run()` entry.
 //!
 //! The fifth test proves the plain recovery shape - a wedged legacy history, then a REAL
 //! planner spawn (a genuine identified episode, through the real emit/write path) - through
@@ -71,6 +80,22 @@
 //! pre-populated directly into the store (the identified one carrying a hand-stamped
 //! `meta.spawn`, simulating a PRIOR WINDOW's already-completed proposal - exactly what a
 //! fresh `run`'s resume-safe dedup catch-up is FOR) before `run` is ever called.
+//!
+//! The seventh test proves shape (a): a single history combining a two-episode
+//! supersession over one criterion with a one-episode split over a second, distinct
+//! criterion - the exact history the internal `harvest_proposed`-seam test
+//! (`src/conductor.rs`'s
+//! `a_resume_catch_up_over_two_episode_supersession_and_a_split_matches_a_live_incremental_fold`)
+//! already proves, folded by ONE `harvest_proposed` call over the fully pre-populated
+//! history. All four `UnitProposed` events (episode1: the first `crit_x` proposal plus
+//! both `crit_y` split siblings; episode2: the superseding `crit_x` proposal) are
+//! pre-populated directly into the store, each carrying a hand-stamped `meta.spawn`
+//! simulating a PRIOR WINDOW already fully planned and re-planned, BEFORE `run` is ever
+//! called - so the fresh process's own single pre-wave catch-up call, not a live
+//! incremental fold thread across waves, is what must get both the supersession and the
+//! split right at once. Asserts the identical surviving set the internal seam test
+//! asserts: the two-episode criterion's earlier unit gone, its later unit alone serving
+//! that criterion, and both split siblings surviving together.
 
 use rigger::conductor::{
     run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, META_SPAWN, STREAM, TYPE_UNIT_PROPOSED,
@@ -1343,5 +1368,142 @@ fn a_legacy_proposal_logged_after_a_resumed_identified_owner_never_supersedes_it
         "the legacy proposal, added alongside rather than removed, must also run and \
          integrate normally; units: {:?}",
         rs.units.keys().collect::<Vec<_>>()
+    );
+}
+
+/// Spec 72 criterion 3, shape (a) at the resume seam (see the module doc's seventh-test
+/// paragraph). Round 3's adjudicator reject (upholding
+/// sdet-u72c3-resume-seam-covers-legacy-not-two-episode-split-shape) found this shape -
+/// a two-episode supersession over one criterion COMBINED with a one-episode split over a
+/// second criterion, in a single fold - proven only at the internal `harvest_proposed`
+/// seam, never through this file's real `run()` entry; the reject's REQUIRED FIX names
+/// folding the adversary's already-verified probe into this file as a permanent test. The
+/// whole history (episode1: `u-ep1` for `crit_x`, plus the same-episode split siblings
+/// `u-split-1`/`u-split-2` for `crit_y`; episode2: `u-ep2`, superseding `u-ep1` for
+/// `crit_x`) is pre-populated directly into the store BEFORE `run` is ever called, each
+/// event carrying a hand-stamped `meta.spawn` simulating a PRIOR WINDOW's already-complete
+/// planning and re-planning - exactly the shape a fresh process resuming a crashed run
+/// would find waiting for its own single pre-wave catch-up call, mirroring the internal
+/// seam test's identical history and identical surviving-set assertions.
+#[test]
+fn a_two_episode_supersession_beside_a_same_episode_split_is_recovered_by_resume_catch_up_through_run(
+) {
+    let crit_x = "criterion X: the widget module is implemented";
+    let crit_y = "criterion Y: the gizmo module is implemented";
+    let criteria = vec![crit_x.to_string(), crit_y.to_string()];
+    let cfg = resume_seam_cfg();
+    let store = Store::open(":memory:").unwrap();
+
+    // Mint the run's `RunStarted` FIRST, over the SAME criteria the `run` call below
+    // uses, so `ensure_started` ADOPTS this run rather than minting a fresh one (see the
+    // matching comment on the fifth test above).
+    start_fresh(&store, &criteria, "", "").unwrap();
+
+    // (id, criterion, spawn), in LOG ORDER - the identical history the internal
+    // `harvest_proposed`-seam test (src/conductor.rs,
+    // a_resume_catch_up_over_two_episode_supersession_and_a_split_matches_a_live_incremental_fold)
+    // folds, now pre-populated directly into the store BEFORE `run` is ever called so the
+    // fresh process's own single pre-wave catch-up call is what must fold it. Each event
+    // carries `needs: ["plan"]` (mirroring the fifth test's own held-out-of-wave-1 pattern
+    // above) so nothing races to Integrated before the pre-wave catch-up evaluates
+    // supersession against it.
+    let history: [(&str, &str, &str); 4] = [
+        ("u-ep1", crit_x, "plan/implementer#0"),
+        ("u-split-1", crit_y, "plan/implementer#0"),
+        ("u-split-2", crit_y, "plan/implementer#0"),
+        ("u-ep2", crit_x, "plan/replan#1"),
+    ];
+    for (id, criterion, spawn) in history {
+        store
+            .append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[Event::new(
+                    TYPE_UNIT_PROPOSED,
+                    serde_json::to_vec(&json!({
+                        "id": id,
+                        "agent": "worker",
+                        "criterion": criterion,
+                        "needs": ["plan"],
+                    }))
+                    .unwrap(),
+                )
+                .with_meta(META_SPAWN, spawn)],
+            )
+            .unwrap();
+    }
+
+    let driver = TrivialDriver;
+    let deps = Deps {
+        store: &store,
+        driver: &driver,
+        gates: &ExecRunner,
+        repo: String::new(),
+        grounder: None,
+        graph: None,
+        criteria: criteria.clone(),
+    };
+    let rs = run(&cfg, &deps).unwrap();
+
+    assert!(
+        !rs.units.contains_key("u-ep1"),
+        "episode1's crit_x unit must be superseded by episode2's, recovered through the \
+         fresh process's own single pre-wave catch-up call; units: {:?}",
+        rs.units.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        rs.units.contains_key("u-ep2"),
+        "episode2's crit_x unit must survive; units: {:?}",
+        rs.units.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        rs.units["u-ep2"].status,
+        ledger::Status::Integrated,
+        "the surviving crit_x unit must run and integrate normally; units: {:?}",
+        rs.units.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(rs.units["u-ep2"].spec_criterion, crit_x);
+    for id in ["u-split-1", "u-split-2"] {
+        assert!(
+            rs.units.contains_key(id),
+            "the one-episode split's sibling {id:?} must survive alongside the crit_x \
+             supersession, in the same fold; units: {:?}",
+            rs.units.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            rs.units[id].status,
+            ledger::Status::Integrated,
+            "split sibling {id:?} must run and integrate normally; units: {:?}",
+            rs.units.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(rs.units[id].spec_criterion, crit_y);
+    }
+
+    // Exactly one unit serves crit_x (the later episode's), and both siblings serve
+    // crit_y - the identical surviving set the internal harvest_proposed-seam test
+    // asserts, now proven through the real run() entry over a genuinely pre-populated
+    // resume history.
+    let serving_x: Vec<&str> = rs
+        .units
+        .values()
+        .filter(|u| u.spec_criterion == crit_x)
+        .map(|u| u.id.as_str())
+        .collect();
+    assert_eq!(
+        serving_x,
+        vec!["u-ep2"],
+        "exactly one unit must serve crit_x after the resume fold; got {serving_x:?}"
+    );
+    let mut serving_y: Vec<&str> = rs
+        .units
+        .values()
+        .filter(|u| u.spec_criterion == crit_y)
+        .map(|u| u.id.as_str())
+        .collect();
+    serving_y.sort_unstable();
+    assert_eq!(
+        serving_y,
+        vec!["u-split-1", "u-split-2"],
+        "both split siblings must serve crit_y after the resume fold; got {serving_y:?}"
     );
 }
