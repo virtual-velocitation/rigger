@@ -63,8 +63,11 @@ sits on the root commit, and `git describe --tags --match 'v*'` already yields
   and the advisory compares only when both sides carry a derived version; repeated builds
   of one commit - identical string; crash-resume/concurrency - compile-time constants,
   n/a; future `v0.2.0` tag - patch count resets from the new anchor, by convention.
-- The operator seeded `v0.1.0` on the root commit (2026-08-20) so the anchor pre-exists
-  this spec; pushing tags to any remote rides the normal push flow, out of scope here.
+- The operator seeded `v0.1.0` on the root commit and then declared the current release
+  level by tagging `v0.3.0` on the version-bump commit (Cargo.toml 0.1.0 -> 0.3.0,
+  2026-08-20) - the operator's judgment that the accumulated feature work warrants 0.3 -
+  so the live anchor is `v0.3.0` and derived versions read `0.3.N`. Pushing tags to any
+  remote rides the normal push flow, out of scope here.
 - Semantic bump hints in commit messages (`+semver: minor` etc., GitVersion's richer
   mode) are OUT of scope, deferred deliberately - tagging is the bump mechanism in this
   cut.
