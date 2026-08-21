@@ -6204,7 +6204,11 @@ fn step_surfaces_a_hung_spawn_with_a_stale_marker_as_a_liveness_halt() {
 
     // Step 3: re-step WITHOUT recording a result. The hung spawn is already answered by the
     // liveness fault, so it is NOT re-parked/re-run (no dup-exec) - its id must NOT reappear as
-    // a fresh wave item - and the halt RE-SURFACES so the stall stays visible every step.
+    // a fresh wave item. The LEVEL-triggered `halted` field re-surfaces (it reflects current
+    // truth every call, by design), but the EDGE-triggered `attention` entry does NOT re-stamp
+    // with nothing new crossed since step 2 already surfaced it - "once per threshold crossing"
+    // (spec 69, criterion 5's own text; review u69c5 round 2, finding
+    // adv-u69c5r2-halted-signal-restamps-every-poll-violates-once-per-crossing).
     let (out, err, ok) = run_rigger(root, &["step"]);
     assert!(ok, "the re-step must succeed; stderr: {err}");
     let line = out.trim();
@@ -6217,8 +6221,9 @@ fn step_surfaces_a_hung_spawn_with_a_stale_marker_as_a_liveness_halt() {
         "the answered hung spawn is not re-run (no fresh wave item / dup-exec); got: {line:?}"
     );
     assert!(
-        line.contains(r#""attention":[{"kind":"halted","detail":"#),
-        "the attention entry must re-surface alongside the halt on a later step too; got: {line:?}"
+        !line.contains(r#""attention":"#),
+        "the attention entry must NOT re-stamp on a later step with nothing new crossed - only \
+         the level-triggered `halted` field re-surfaces; got: {line:?}"
     );
 
     // Step 4: the operator re-drives the now-healthy agent and records a REAL result. Being
