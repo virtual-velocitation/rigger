@@ -55,6 +55,28 @@ pub struct DocsContext {
     /// Where this repo keeps its specs. A project-overlay override point (unit 3);
     /// defaults to the shared convention.
     pub specs_location: String,
+    /// The five `rigger watch` signals (spec 69), in Design order (escalated,
+    /// dead-driver, dash-not-serving, reject-recurrence, frontier-stall) - each
+    /// carrying its canonical name and response, read from `crate::watch::Signal`
+    /// (`name()`/`response()`) by the composition root so `rigger-watch-a-run`'s
+    /// render never imports `crate::watch` directly.
+    pub watch_signals: [WatchSignalFact; 5],
+    /// The default `rigger watch` poll interval in seconds
+    /// (`crate::watch::DEFAULT_INTERVAL_SECS`).
+    pub watch_poll_interval_secs: u64,
+    /// The reject-recurrence diagnose threshold `rigger-diagnose-churn` pins its own
+    /// procedure text against (`crate::watch::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD`).
+    pub reject_recurrence_diagnose_threshold: u32,
+}
+
+/// One `rigger watch` signal's canonical name and response (spec 69), carried on
+/// [`DocsContext`] so a render function reads it through the one injected channel
+/// like every other drift-prone fact in this file, instead of reaching into
+/// `crate::watch` directly from production code.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WatchSignalFact {
+    pub name: String,
+    pub response: String,
 }
 
 /// Render the `using-rigger` skill: a self-contained front-door that tells an agent
@@ -710,16 +732,20 @@ fn render_handle_an_escalation_skill(ctx: &DocsContext) -> String {
 
 /// Render the `rigger-watch-a-run` skill (spec 69, criterion 1): the manual-look monitoring
 /// protocol for a launched run. The FIVE SIGNAL NAMES and each one's RESPONSE text are
-/// interpolated straight from `crate::watch::Signal` (`name()`/`response()`) and the poll
-/// interval from `crate::watch::DEFAULT_INTERVAL_SECS` - the exact values `rigger watch`
-/// itself prints on an anomaly line (`src/watch.rs`) - so this skill's own headline claim
-/// ("names the five signals each mapped to its response skill") is pinned against the
-/// runtime, never hand-copied: a renamed signal or a changed response breaks this render at
-/// the same moment it would break `rigger watch`'s own output. `ctx` is accepted only to
-/// match the registry's uniform signature; every fact this body needs is already owned by
-/// `watch.rs`, not the composition root.
-fn render_watch_a_run_skill(_ctx: &DocsContext) -> String {
-    use crate::watch::Signal;
+/// interpolated from `ctx.watch_signals`, and the poll interval from
+/// `ctx.watch_poll_interval_secs` - both populated by the composition root straight from
+/// `crate::watch::Signal` (`name()`/`response()`) and `crate::watch::DEFAULT_INTERVAL_SECS`,
+/// the exact values `rigger watch` itself prints on an anomaly line (`src/watch.rs`) - so
+/// this skill's own headline claim ("names the five signals each mapped to its response
+/// skill") is pinned against the runtime, never hand-copied: a renamed signal or a changed
+/// response breaks the render the same moment it would break `rigger watch`'s own output.
+/// Reading these facts through `ctx`, like every other drift-prone value in this file,
+/// rather than importing `crate::watch` directly keeps this render a pure function of its
+/// one injected context - the same DI-provable shape `docs_context_reads_every_fact_from_code`
+/// and the sentinel-context tests already hold every other fact in this file to.
+fn render_watch_a_run_skill(ctx: &DocsContext) -> String {
+    let [escalated, dead_driver, dash_not_serving, reject_recurrence, frontier_stall] =
+        &ctx.watch_signals;
     let mut s = String::new();
     s.push_str("---\n");
     s.push_str("name: rigger-watch-a-run\n");
@@ -742,30 +768,26 @@ fn render_watch_a_run_skill(_ctx: &DocsContext) -> String {
         s,
         "1. **{}** - a unit `rigger status` (or the dashboard) marks `escalated (awaiting a \
          human)`. Respond with `{}`.",
-        Signal::Escalated.name(),
-        Signal::Escalated.response()
+        escalated.name, escalated.response
     );
     let _ = writeln!(
         s,
         "2. **{}** VS LIVE AGENT PROCESSES - an in-flight agent's last heartbeat is stale but \
          its worker process is actually gone, not merely slow (the driver quit, crashed, or \
          the machine slept). Respond with `{}`.",
-        Signal::DeadDriver.name(),
-        Signal::DeadDriver.response()
+        dead_driver.name, dead_driver.response
     );
     let _ = writeln!(
         s,
         "3. **{}** - the dashboard URL does not answer, `rigger watch` reports it not \
          serving, or a browser just spins. Respond with `{}`.",
-        Signal::DashNotServing.name(),
-        Signal::DashNotServing.response()
+        dash_not_serving.name, dash_not_serving.response
     );
     let _ = writeln!(
         s,
         "4. **{}** - a unit keeps failing the SAME finding rather than converging \
          (reject-recurrence at or past the diagnose threshold). Respond with `{}`.",
-        Signal::RejectRecurrence.name(),
-        Signal::RejectRecurrence.response()
+        reject_recurrence.name, reject_recurrence.response
     );
     let _ = writeln!(
         s,
@@ -773,8 +795,7 @@ fn render_watch_a_run_skill(_ctx: &DocsContext) -> String {
          consecutive looks, an hours-old last run event under \"working\" agents, or a \
          repeating wave is a STALL even though every signal above reads clean - this is why \
          progress is its own signal, not a restatement of liveness. Respond: {}.\n",
-        Signal::FrontierStall.name(),
-        Signal::FrontierStall.response()
+        frontier_stall.name, frontier_stall.response
     );
     let _ = writeln!(
         s,
@@ -784,7 +805,7 @@ fn render_watch_a_run_skill(_ctx: &DocsContext) -> String {
          store-integrity check of its own, into one printed line per anomaly. The manual look \
          above is the FALLBACK for when nothing is armed, exercised at least once per \
          remediation cycle even while `rigger watch` is running.\n",
-        crate::watch::DEFAULT_INTERVAL_SECS
+        ctx.watch_poll_interval_secs
     );
     let _ = writeln!(s, "## Anti-move\n");
     let _ = writeln!(
@@ -801,10 +822,10 @@ fn render_watch_a_run_skill(_ctx: &DocsContext) -> String {
         s,
         "{}, {}, {}, and {} - the four response skills this protocol routes to by name; never \
          invent a response beyond them.\n",
-        Signal::Escalated.response(),
-        Signal::DeadDriver.response(),
-        Signal::DashNotServing.response(),
-        Signal::RejectRecurrence.response()
+        escalated.response,
+        dead_driver.response,
+        dash_not_serving.response,
+        reject_recurrence.response
     );
     s
 }
@@ -880,11 +901,13 @@ fn render_restore_the_dash_skill(_ctx: &DocsContext) -> String {
 }
 
 /// Render the `rigger-diagnose-churn` skill (spec 69, criterion 1): acting on a unit stuck
-/// in reject-recurrence. The diagnose threshold is interpolated straight from
-/// `crate::watch::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD` - the same bound `rigger watch`
-/// alerts on - so this skill can never quote a stale number. `ctx` is accepted only to match
-/// the registry's uniform signature.
-fn render_diagnose_churn_skill(_ctx: &DocsContext) -> String {
+/// in reject-recurrence. The diagnose threshold is interpolated from
+/// `ctx.reject_recurrence_diagnose_threshold`, populated by the composition root straight
+/// from `crate::watch::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD` - the same bound `rigger watch`
+/// alerts on - so this skill can never quote a stale number, and reads it through the same
+/// injected channel every other drift-prone fact in this file uses rather than importing
+/// `crate::watch` directly.
+fn render_diagnose_churn_skill(ctx: &DocsContext) -> String {
     let mut s = String::new();
     s.push_str("---\n");
     s.push_str("name: rigger-diagnose-churn\n");
@@ -905,7 +928,7 @@ fn render_diagnose_churn_skill(_ctx: &DocsContext) -> String {
          the diffs it cites - each finding names a checkable fact, and the audit is comparing \
          that fact against what the diff actually does, not trusting the finding's prose. A \
          high attempt count on its own proves nothing about what actually went wrong.\n",
-        threshold = crate::watch::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD
+        threshold = ctx.reject_recurrence_diagnose_threshold
     );
     let _ = writeln!(
         s,
@@ -1059,6 +1082,55 @@ mod tests {
             spec_shape_recommendation: "sentinel recommendation text".to_string(),
             subcommands: vec!["sentinelcmd-a".to_string(), "sentinelcmd-b".to_string()],
             specs_location: "sentinel-specs/".to_string(),
+            watch_signals: [
+                WatchSignalFact {
+                    name: "sentinel-signal-escalated".to_string(),
+                    response: "sentinel-response-escalated".to_string(),
+                },
+                WatchSignalFact {
+                    name: "sentinel-signal-dead-driver".to_string(),
+                    response: "sentinel-response-dead-driver".to_string(),
+                },
+                WatchSignalFact {
+                    name: "sentinel-signal-dash-not-serving".to_string(),
+                    response: "sentinel-response-dash-not-serving".to_string(),
+                },
+                WatchSignalFact {
+                    name: "sentinel-signal-reject-recurrence".to_string(),
+                    response: "sentinel-response-reject-recurrence".to_string(),
+                },
+                WatchSignalFact {
+                    name: "sentinel-signal-frontier-stall".to_string(),
+                    response: "sentinel-response-frontier-stall".to_string(),
+                },
+            ],
+            watch_poll_interval_secs: 424_242,
+            reject_recurrence_diagnose_threshold: 909_090,
+        }
+    }
+
+    /// A [`DocsContext`] carrying `sentinel_ctx`'s values for every unrelated field, but the
+    /// REAL `crate::watch` facts for the three watch fields - so a test built on it can prove
+    /// `render_watch_a_run_skill`/`render_diagnose_churn_skill` show the runtime's actual
+    /// signal names/responses/thresholds, the accuracy-pin `sentinel_ctx` alone cannot make
+    /// (its watch fields are deliberately fake).
+    fn real_watch_facts_ctx() -> DocsContext {
+        DocsContext {
+            watch_signals: [
+                crate::watch::Signal::Escalated,
+                crate::watch::Signal::DeadDriver,
+                crate::watch::Signal::DashNotServing,
+                crate::watch::Signal::RejectRecurrence,
+                crate::watch::Signal::FrontierStall,
+            ]
+            .map(|signal| WatchSignalFact {
+                name: signal.name().to_string(),
+                response: signal.response().to_string(),
+            }),
+            watch_poll_interval_secs: crate::watch::DEFAULT_INTERVAL_SECS,
+            reject_recurrence_diagnose_threshold:
+                crate::watch::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD,
+            ..sentinel_ctx()
         }
     }
 
@@ -1647,10 +1719,14 @@ mod tests {
     /// STRING to its real response - pinned against the runtime (`Signal::name()`/`response()`
     /// and `watch::SKILL_SIGNAL_NAMES`), the exact authority `src/watch.rs`'s own module doc
     /// names both the command and this skill as pinned against, so the two can never silently
-    /// drift apart on what a signal is called or where it routes.
+    /// drift apart on what a signal is called or where it routes. Uses `real_watch_facts_ctx`
+    /// (not `sentinel_ctx`) because the render now reads these facts from `ctx` - the
+    /// composition root (`docs_context_reads_every_fact_from_code`, in the binary) is what
+    /// proves `ctx` itself carries the real values; this test proves the render is faithful
+    /// to whatever `ctx` says.
     #[test]
     fn watch_a_run_names_all_five_signals_each_mapped_to_its_response() {
-        let out = render_watch_a_run_skill(&sentinel_ctx());
+        let out = render_watch_a_run_skill(&real_watch_facts_ctx());
         for signal in [
             crate::watch::Signal::Escalated,
             crate::watch::Signal::DeadDriver,
@@ -1686,6 +1762,44 @@ mod tests {
         );
     }
 
+    /// Spec 69, criterion 1 (the DI-provable property every other fact in this file already
+    /// has): `render_watch_a_run_skill` and `render_diagnose_churn_skill` are pure functions
+    /// of `ctx` for the watch facts - SENTINEL signal names/responses/threshold/interval
+    /// (values `crate::watch` never produces) reach the rendered output, which a hardcoded
+    /// `crate::watch::Signal::X.name()` call in the render body could never do. Mirrors
+    /// `escalation_skill_is_parameterized_by_max_retries`'s shape for this file's newest facts.
+    #[test]
+    fn watch_and_diagnose_churn_skills_are_parameterized_by_watch_facts() {
+        let ctx = sentinel_ctx();
+        let watch_out = render_watch_a_run_skill(&ctx);
+        for signal in &ctx.watch_signals {
+            assert!(
+                watch_out.contains(&signal.name),
+                "rigger-watch-a-run must interpolate ctx.watch_signals, not hard-code a name; \
+                 missing {:?}",
+                signal.name
+            );
+            assert!(
+                watch_out.contains(&signal.response),
+                "rigger-watch-a-run must interpolate ctx.watch_signals, not hard-code a \
+                 response; missing {:?}",
+                signal.response
+            );
+        }
+        assert!(
+            watch_out.contains(&ctx.watch_poll_interval_secs.to_string()),
+            "rigger-watch-a-run must interpolate ctx.watch_poll_interval_secs, not hard-code \
+             the poll interval"
+        );
+
+        let churn_out = render_diagnose_churn_skill(&ctx);
+        assert!(
+            churn_out.contains(&ctx.reject_recurrence_diagnose_threshold.to_string()),
+            "rigger-diagnose-churn must interpolate ctx.reject_recurrence_diagnose_threshold, \
+             not hard-code the diagnose threshold"
+        );
+    }
+
     /// Spec 69, criterion 1: `rigger-restore-the-dash` carries the HUNG-HOLDER diagnosis - a
     /// stopped-but-still-bound process makes clients hang rather than fail cleanly, and the
     /// marker's own recorded PID (not a fresh bind attempt) is what names the culprit to
@@ -1717,7 +1831,7 @@ mod tests {
     /// amendment protocol rather than duplicating either (one authority per concern).
     #[test]
     fn diagnose_churn_carries_the_finding_audit_and_infra_separation() {
-        let out = render_diagnose_churn_skill(&sentinel_ctx());
+        let out = render_diagnose_churn_skill(&real_watch_facts_ctx());
         assert!(
             out.contains(&crate::watch::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD.to_string()),
             "must pin the real diagnose threshold, not a hand-typed number"
@@ -1777,7 +1891,12 @@ mod tests {
             &'static [&'static str],
         );
 
-        let ctx = sentinel_ctx();
+        // `real_watch_facts_ctx`, not `sentinel_ctx`: rigger-watch-a-run's own cross-link
+        // sentence is now built entirely from `ctx.watch_signals[..].response` (the DI fix
+        // for arch-u69c1-docscontext-bypass), so it needs the REAL sibling-skill-name
+        // responses to actually name a sibling; the other two skills' cross-links are
+        // hardcoded prose, unaffected either way.
+        let ctx = real_watch_facts_ctx();
         let cases: &[WatchSkillCase] = &[
             (
                 "rigger-watch-a-run",
