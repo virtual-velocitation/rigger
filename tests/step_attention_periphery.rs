@@ -19,6 +19,19 @@
 //! process could accidentally look correct from in-process memory that a fresh process never
 //! has; only a fresh `rigger step` invocation per round closes that gap.
 //!
+//! ROUND-2 ADDITIONS (review u69c5 rounds 2-3, cause genuine-defect): the fix rounds added
+//! TWO new pieces of surface this file's original scenario predates. First, a new PUBLIC
+//! function, `ledger::attention_kind_rank` - the canonical-order authority `rigger step`
+//! (main.rs) trusts to re-sort `attention` after merging in the hung-liveness half of
+//! signal 2, which `conductor::compute_attention` deliberately does not compute (see both
+//! functions' own doc comments) - proven directly as a contract, not merely indirectly
+//! through one caller. Second, that merge's canonical-position guarantee driven at the REAL
+//! binary boundary with OTHER signals co-occurring in the same step, which the existing
+//! single-signal hung-liveness end-to-end test (`tests/cli.rs`'s
+//! `step_surfaces_a_hung_spawn_with_a_stale_marker_as_a_liveness_halt`) cannot exercise: a
+//! one-entry `attention` array looks identical whether the merge appends or correctly
+//! re-sorts.
+//!
 //! Scenario: one unit, `max_retries: 5` (so it is still retrying, never escalated, once its
 //! attempt count passes the stalled-frontier threshold of two - the exact situation the
 //! signal exists to catch, per the spec's own recorded incident: "a spawn answered more than
@@ -251,5 +264,282 @@ fn recurrence_and_stalled_frontier_survive_real_process_boundaries() {
         !line.contains("attention"),
         "a fresh process reading back a store with no new result folded must not re-stamp a \
          crossing an earlier process already surfaced; got: {line:?}"
+    );
+}
+
+/// Spec 69, criterion 5's ordering CONTRACT (review u69c5 round 3, cause genuine-defect):
+/// `ledger::attention_kind_rank` is a NEW public function the round-3 fix added - the
+/// single authority `rigger step` (main.rs) trusts to re-sort `attention` after merging in
+/// the hung-liveness half of signal 2 (see its own doc comment). Nothing anywhere calls it
+/// directly today: every existing assertion on `attention`'s order exercises either
+/// `conductor::compute_attention`'s OWN construction order (which never calls this
+/// function - its own doc comment says so) or, in `tests/cli.rs`'s hung-liveness scenario,
+/// a single-entry array for which any rank function looks identical to a no-op. This is the
+/// crate's public ordering contract, proven directly against the function itself: the five
+/// known kinds rank strictly increasing in the canonical spec order, an unknown kind sorts
+/// past every known one (never panics), and - the actual use this contract serves -
+/// sorting a scrambled list by this exact key reproduces the canonical order.
+#[test]
+fn attention_kind_rank_orders_the_five_known_kinds_and_sorts_an_unknown_kind_last() {
+    use rigger::ledger::{
+        attention_kind_rank, ATTENTION_BUDGET_FINAL_TENTH, ATTENTION_ESCALATED, ATTENTION_HALTED,
+        ATTENTION_STALLED_FRONTIER, ATTENTION_WORKER_DEATH_RECURRED,
+    };
+
+    let escalated = attention_kind_rank(ATTENTION_ESCALATED);
+    let halted = attention_kind_rank(ATTENTION_HALTED);
+    let recurred = attention_kind_rank(ATTENTION_WORKER_DEATH_RECURRED);
+    let final_tenth = attention_kind_rank(ATTENTION_BUDGET_FINAL_TENTH);
+    let stalled = attention_kind_rank(ATTENTION_STALLED_FRONTIER);
+    assert!(
+        escalated < halted && halted < recurred && recurred < final_tenth && final_tenth < stalled,
+        "the five known kinds must rank in the canonical spec order (escalated, halted, \
+         worker-death-recurred, budget-final-tenth, stalled-frontier); got {escalated} \
+         {halted} {recurred} {final_tenth} {stalled}"
+    );
+
+    let unknown = attention_kind_rank("some-future-kind-nobody-emits-yet");
+    assert!(
+        unknown > stalled,
+        "an unknown kind must sort AFTER every known kind (last), never panic and never \
+         interleave; got rank {unknown} vs stalled-frontier's {stalled}"
+    );
+
+    let mut kinds = vec![
+        ATTENTION_STALLED_FRONTIER,
+        ATTENTION_HALTED,
+        ATTENTION_BUDGET_FINAL_TENTH,
+        ATTENTION_ESCALATED,
+        ATTENTION_WORKER_DEATH_RECURRED,
+    ];
+    kinds.sort_by_key(|k| attention_kind_rank(k));
+    assert_eq!(
+        kinds,
+        vec![
+            ATTENTION_ESCALATED,
+            ATTENTION_HALTED,
+            ATTENTION_WORKER_DEATH_RECURRED,
+            ATTENTION_BUDGET_FINAL_TENTH,
+            ATTENTION_STALLED_FRONTIER,
+        ],
+        "sorting a scrambled kind list by attention_kind_rank must reproduce the canonical \
+         order - the exact use main.rs::merge_hung_attention makes of it"
+    );
+}
+
+/// Plant a SYNTHETIC STALE MARKER at exactly `marker`, touched an hour ago - mirrors
+/// `tests/cli.rs`'s identical `plant_stale_marker` helper (this crate's own established
+/// per-file duplication convention - see this file's other helpers' doc comments above).
+fn plant_stale_marker(marker: &Path) {
+    std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    std::fs::write(marker, b"heartbeat").unwrap();
+    let stale = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    std::fs::File::options()
+        .write(true)
+        .open(marker)
+        .unwrap()
+        .set_modified(stale)
+        .unwrap();
+}
+
+/// Extract the `marker_path` field carried by the wave item whose `id` is exactly `id` -
+/// like `tests/cli.rs`'s `json_string_field`, but scoped to ONE item's own JSON object,
+/// since this file's ordering scenario below carries TWO wave items (`u` and `h`) in the
+/// SAME line, each with its own `marker_path`; a whole-line first-match search (as a single-
+/// item scenario can get away with) would risk reading the wrong item's path.
+fn marker_path_for_wave_item(line: &str, id: &str) -> String {
+    let id_needle = format!("\"id\":\"{id}\"");
+    let start = line
+        .find(&id_needle)
+        .unwrap_or_else(|| panic!("wave item {id:?} not found in step output; got: {line:?}"));
+    let rest = &line[start..];
+    // Scope the search to THIS item's own object: up to the next `"id":"` (the following
+    // wave item), or the rest of the line if this is the last item.
+    let end = rest[1..]
+        .find("\"id\":\"")
+        .map(|p| p + 1)
+        .unwrap_or(rest.len());
+    let item = &rest[..end];
+    let needle = "\"marker_path\":\"";
+    let mstart = item
+        .find(needle)
+        .unwrap_or_else(|| panic!("wave item {id:?} must carry a marker_path; got: {item:?}"))
+        + needle.len();
+    let mrest = &item[mstart..];
+    let mend = mrest
+        .find('"')
+        .unwrap_or_else(|| panic!("marker_path must be terminated; got: {mrest:?}"));
+    mrest[..mend].to_string()
+}
+
+/// A real, minimally-committed git repo - mirrors `tests/cli.rs`'s identical
+/// `temp_git_project_with_commit` helper. Unlike [`temp_repoless_project`] above, this file's
+/// own ordering scenario NEEDS one: `rigger step`'s `scratch_root` (main.rs) resolves to
+/// `None` - disabling the liveness sweep and the wave's `marker_path` stamp entirely -
+/// whenever `repo` is empty, which only a git-less project produces. A marker-driven hung
+/// spawn is therefore structurally impossible to test against a repo-less project.
+fn temp_git_project_with_commit() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let _ = Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(dir.path())
+        .status();
+    for args in [
+        &["config", "user.email", "t@example.com"][..],
+        &["config", "user.name", "t"],
+        &["commit", "--allow-empty", "-q", "-m", "init"],
+    ] {
+        let ok = Command::new("git")
+            .args(args)
+            .current_dir(dir.path())
+            .status()
+            .expect("git must be runnable")
+            .success();
+        assert!(ok, "git {args:?} must succeed while seeding the repo");
+    }
+    dir
+}
+
+/// Two independent stages that never answer normally: `u` keeps failing (the exact
+/// worker-death-recurred/stalled-frontier scenario above), `h` parks and is later driven
+/// hung via a planted stale marker. Both share `max_wall_clock` (so BOTH carry a
+/// `marker_path` in the wave - proving the ordering test below reads the RIGHT item's path)
+/// and `max_retries: 5` (so `u` is never escalated across the whole scenario, matching
+/// `write_attention_progression_workflow` above).
+fn write_attention_ordering_workflow(root: &Path) {
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: attentionordertest
+defaults:
+  grounder: nop
+  budget: 60
+  max_retries: 5
+  max_wall_clock: 60
+stages:
+  u:
+    agent: worker
+    on_pass: none
+  h:
+    agent: worker
+    on_pass: none
+"#,
+    )
+    .unwrap();
+}
+
+/// Spec 69, criterion 5's ordering CONTRACT, proven at the REAL binary boundary (review
+/// u69c5 round 3, cause genuine-defect): `rigger step` (main.rs) computes the hung-liveness
+/// half of signal 2 SEPARATELY from `conductor::compute_attention` and merges it in via
+/// `ledger::attention_kind_rank` (see both functions' own doc comments). The only existing
+/// end-to-end proof of that merge (`tests/cli.rs`'s
+/// `step_surfaces_a_hung_spawn_with_a_stale_marker_as_a_liveness_halt`) drives a hung spawn
+/// ALONE - a single-entry `attention` array, for which even a naive "always append at the
+/// end" bug would look identical to a correct canonical-order merge. This test drives a
+/// hung spawn (`h`) CO-OCCURRING, in the SAME real `rigger step` process, with two OTHER
+/// signals `compute_attention` already produced for a DIFFERENT unit (`u`):
+/// worker-death-recurred (canonical rank 2) and stalled-frontier (rank 4) - both AFTER
+/// `halted`'s rank 1. A naive append-at-the-end bug would print `worker-death-recurred,
+/// stalled-frontier, halted` (wrong order); only a genuine stable re-sort produces `halted,
+/// worker-death-recurred, stalled-frontier` (`halted` moved to the FRONT of an
+/// already-built two-entry array).
+#[test]
+fn hung_liveness_halt_lands_ahead_of_real_worker_death_and_stalled_frontier_signals() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_attention_ordering_workflow(root);
+
+    // Round 1: both independent units are ready, so both park together in one wave.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "round 1 step must succeed; stderr: {err}");
+    let line = out.trim().to_string();
+    assert!(
+        line.contains(r#""id":"u/implementer#0""#) && line.contains(r#""id":"h/implementer#0""#),
+        "round 1 must park BOTH units' implementer spawns in one wave; got: {line:?}"
+    );
+    assert!(
+        !line.contains("attention"),
+        "round 1 crosses no threshold for either unit; got: {line:?}"
+    );
+    let h_marker = marker_path_for_wave_item(&line, "h/implementer#0");
+
+    // u's first failure - not a recurrence. h is untouched (healthy, no marker planted yet).
+    seed_run_events(
+        root,
+        &[("SpawnResult", r#"{"id":"u/implementer#0","error":"boom"}"#)],
+    );
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "round 2 step must succeed; stderr: {err}");
+    assert!(
+        !out.trim().contains("attention"),
+        "u's first recorded failure crosses no threshold; got: {out:?}"
+    );
+
+    // u's second failure - a recurrence, the ONLY signal this round.
+    seed_run_events(
+        root,
+        &[("SpawnResult", r#"{"id":"u/implementer#1","error":"boom"}"#)],
+    );
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "round 3 step must succeed; stderr: {err}");
+    assert!(
+        out.trim().contains(
+            r#""attention":[{"kind":"worker-death-recurred","unit":"u","detail":"2 attempts"}]"#
+        ),
+        "round 3 must stamp exactly the recurrence signal, h still healthy; got: {out:?}"
+    );
+
+    // NOW plant h's stale marker - the sweep will find it stale on the NEXT step, the exact
+    // same round u's third failure crosses BOTH worker-death-recurred and stalled-frontier.
+    plant_stale_marker(std::path::Path::new(&h_marker));
+
+    // u's third failure crosses worker-death-recurred AND stalled-frontier in the SAME call
+    // `compute_attention` produces (ranks 2 and 4, already correctly ordered between
+    // themselves); the same real step's sweep independently finds h newly hung, and main.rs
+    // must merge its `halted` entry (rank 1) in FRONT of both.
+    seed_run_events(
+        root,
+        &[("SpawnResult", r#"{"id":"u/implementer#2","error":"boom"}"#)],
+    );
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "round 4 step must succeed; stderr: {err}");
+    let line = out.trim();
+    assert_eq!(
+        line.matches(r#"{"kind":"#).count(),
+        3,
+        "round 4 must stamp exactly three attention entries (halted, worker-death-recurred, \
+         stalled-frontier), no fewer and no more; got: {line:?}"
+    );
+    let halted_pos = line
+        .find(r#"{"kind":"halted","detail":"#)
+        .unwrap_or_else(|| {
+            panic!("the hung halt must stamp a run-scoped halted entry; got: {line:?}")
+        });
+    assert!(
+        line[halted_pos..].contains("h/implementer#0") && line[halted_pos..].contains("infra"),
+        "the halted entry's detail must name the hung spawn and its infra classification; \
+         got: {line:?}"
+    );
+    let recurred_pos = line
+        .find(r#"{"kind":"worker-death-recurred","unit":"u","detail":"3 attempts"}"#)
+        .unwrap_or_else(|| panic!("round 4's recurrence entry must still stamp; got: {line:?}"));
+    let stalled_pos = line
+        .find(
+            r#"{"kind":"stalled-frontier","unit":"u","detail":"3 recorded results, still parked"}"#,
+        )
+        .unwrap_or_else(|| {
+            panic!("round 4's stalled-frontier entry must still stamp; got: {line:?}")
+        });
+    assert!(
+        halted_pos < recurred_pos && recurred_pos < stalled_pos,
+        "the hung halt must be merged into CANONICAL position - ahead of BOTH signals \
+         `compute_attention` already produced this call, not appended after them; \
+         got: {line:?}"
     );
 }
