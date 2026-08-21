@@ -4146,92 +4146,14 @@ fn model_drift_advisory(drift: &metrics::ModelDrift) -> Option<String> {
     Some(msg)
 }
 
-/// The doc location [`order_signature_advisories`] names for the documented repair (spec
-/// 71, Notes: "repair stays a documented operator procedure, not a command"). Read here from
-/// ONE constant so the advisory text and the doc section can never drift apart in wording.
-const ORDER_SIGNATURE_REPAIR_DOC_REF: &str =
-    "docs/architecture.md, section 5.1.3: The store defends its own order";
-
-/// A stream whose position order and revision order DISAGREE (spec 71): the signature a
-/// write leaves when it lands at a revision the stream's own cursor would never reissue on
-/// its own - typically a build predating the `MAX(revision)` append cursor landing in a
-/// revision hole the derived-index compaction opened by deleting rows. On a stream that has
-/// only ever been appended to by a correct writer, position order and revision order always
-/// agree; this struct names the rows where they do not.
-#[derive(Debug)]
-struct OrderSignature {
-    stream: String,
-    /// Out-of-order rows found in this stream: a row whose revision does not exceed the
-    /// highest revision already seen (in position order) for the same stream.
-    rows: usize,
-    /// The inclusive global-position range spanning the first and last out-of-order row.
-    first_position: rigger::eventstore::Position,
-    last_position: rigger::eventstore::Position,
-}
-
-/// Find every [`OrderSignature`] in `events`, which callers hand in already in POSITION
-/// order (exactly what [`EventStore::read_all`] returns). Pure over already-read events, so
-/// it is unit-tested without touching a store, mirroring [`build_environment_report`]'s
-/// split between reading and detecting.
-///
-/// Walks the events once, tracking each stream's running maximum revision. A row whose
-/// revision does not exceed that maximum is OUT OF ORDER and is counted against its stream;
-/// a row that only extends the maximum raises it but is never itself flagged. One signature
-/// per affected stream is returned, in first-affected-row order; a clean log returns an
-/// empty vec.
-fn order_signatures(events: &[Event]) -> Vec<OrderSignature> {
-    struct Acc {
-        max_revision: rigger::eventstore::Revision,
-        rows: usize,
-        first_position: rigger::eventstore::Position,
-        last_position: rigger::eventstore::Position,
-    }
-    let mut by_stream: Vec<(String, Acc)> = Vec::new();
-    let mut index: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
-    for e in events {
-        let idx = *index.entry(e.stream.as_str()).or_insert_with(|| {
-            by_stream.push((
-                e.stream.clone(),
-                Acc {
-                    max_revision: rigger::eventstore::NO_STREAM,
-                    rows: 0,
-                    first_position: 0,
-                    last_position: 0,
-                },
-            ));
-            by_stream.len() - 1
-        });
-        let (_, acc) = &mut by_stream[idx];
-        if e.revision <= acc.max_revision {
-            if acc.rows == 0 {
-                acc.first_position = e.position;
-            }
-            acc.last_position = e.position;
-            acc.rows += 1;
-        } else {
-            acc.max_revision = e.revision;
-        }
-    }
-    by_stream
-        .into_iter()
-        .filter(|(_, acc)| acc.rows > 0)
-        .map(|(stream, acc)| OrderSignature {
-            stream,
-            rows: acc.rows,
-            first_position: acc.first_position,
-            last_position: acc.last_position,
-        })
-        .collect()
-}
-
 /// The `rigger validate` order-signature advisories (spec 71, VALIDATE DETECTS THE
 /// SIGNATURE): one warning per affected stream naming the row count, the affected position
-/// range, and [`ORDER_SIGNATURE_REPAIR_DOC_REF`] - or an empty vec on a clean log. Pure over
-/// already-detected signatures, mirroring [`model_drift_advisory`]'s split between reading
-/// and formatting. Report-only like every validate advisory: printed to stderr, never
+/// range, and [`watch::ORDER_SIGNATURE_REPAIR_DOC_REF`] - or an empty vec on a clean log. Pure
+/// over already-detected signatures, mirroring [`model_drift_advisory`]'s split between
+/// reading and formatting. Report-only like every validate advisory: printed to stderr, never
 /// changing the exit status - repair stays a documented operator procedure, never a command
 /// this binary performs (spec 71 Notes: fail-safe directions only).
-fn order_signature_advisories(signatures: &[OrderSignature]) -> Vec<String> {
+fn order_signature_advisories(signatures: &[watch::OrderSignature]) -> Vec<String> {
     signatures
         .iter()
         .map(|s| {
@@ -4240,21 +4162,27 @@ fn order_signature_advisories(signatures: &[OrderSignature]) -> Vec<String> {
                  disagree (positions {}..={}): a write likely landed in a revision hole a \
                  compaction opened. This is report-only - `rigger validate` never repairs it; \
                  see {} for the repair procedure.",
-                s.stream, s.rows, s.first_position, s.last_position, ORDER_SIGNATURE_REPAIR_DOC_REF
+                s.stream,
+                s.rows,
+                s.first_position,
+                s.last_position,
+                watch::ORDER_SIGNATURE_REPAIR_DOC_REF
             )
         })
         .collect()
 }
 
-/// Read [`OrderSignature`]s (spec 71) from the embedded `events.db` at `path`, namespaced by
-/// `project`, scanning the FULL log in position order (mirrors [`cmd_prime`]'s full-log
-/// read - the store defends its own order for every stream, not one distinguished stream, so
-/// there is no narrower slice to scan). Returns an empty vec when there is no store yet, like
-/// [`read_model_drift`].
+/// Read [`watch::OrderSignature`]s (spec 71) from the embedded `events.db` at `path`,
+/// namespaced by `project`, scanning the FULL log in position order (mirrors
+/// [`cmd_prime`]'s full-log read - the store defends its own order for every stream, not one
+/// distinguished stream, so there is no narrower slice to scan). Returns an empty vec when
+/// there is no store yet, like [`read_model_drift`]. Detection itself
+/// ([`watch::order_signatures`]) is the SAME shared algorithm `rigger watch`'s own store-
+/// integrity signal calls - one implementation, not two kept in sync by hand.
 fn read_order_signatures(
     path: &str,
     project: &str,
-) -> Result<Vec<OrderSignature>, Box<dyn std::error::Error>> {
+) -> Result<Vec<watch::OrderSignature>, Box<dyn std::error::Error>> {
     let sel = store_selection(None, None)?;
     if sel.is_sqlite() && !Path::new(path).exists() {
         return Ok(Vec::new());
@@ -4262,7 +4190,7 @@ fn read_order_signatures(
     let backend = resolve_store(&sel, path)?;
     let store = Namespaced::new(backend.as_ref(), project);
     let events = store.read_all(0, Direction::Forward, &Filter::default())?;
-    Ok(order_signatures(&events))
+    Ok(watch::order_signatures(&events))
 }
 
 /// `rigger canary [--corpus <dir>] [--if-model-changed]` (spec 13, unit 5; drift trigger spec
@@ -6165,12 +6093,24 @@ fn parse_watch_args(args: &[String]) -> Result<WatchArgs, Box<dyn std::error::Er
 /// and response - so an orchestrator armed on this command sees exactly what a
 /// manual `rigger-watch-a-run` look would, without polling anything by hand.
 ///
-/// `--once` prints the CURRENT standing anomalies and exits (the cron/CI shape).
-/// Without it, this streams: poll, print only what is new or has worsened since the
-/// last poll (in-process [`watch::Dedup`] - spec 69 Design: "dedup state lives in
-/// process memory only"), sleep `--interval` seconds (default
-/// [`watch::DEFAULT_INTERVAL_SECS`]), and repeat forever - the harness's background
-/// monitor is the intended host for this loop.
+/// `--once` prints the CURRENT standing anomalies and exits (the cron/CI shape): a poll
+/// failure here (no store, a genuinely unreadable one, a bad flag upstream) propagates and
+/// exits non-zero, exactly like every other one-shot courier command.
+///
+/// Without it, this STREAMS: poll, print only what is new or has worsened since the last poll
+/// (in-process [`watch::Dedup`] - spec 69 Design: "dedup state lives in process memory
+/// only"), sleep `--interval` seconds (default [`watch::DEFAULT_INTERVAL_SECS`]), and repeat
+/// forever - the harness's background monitor is the intended host for this loop. A poll
+/// failure while streaming is FAIL-SOFT, not fatal: reported on stderr and retried on the
+/// next tick, never propagated out of the process. This is the whole point named by this
+/// command's own Design text ("it must work with the driver dead" - the watchdog reads only
+/// store, process table, and status, never the driver, exactly the process that may be dead)
+/// carried one step further: a watchdog armed unattended must also outlive a TRANSIENT fault
+/// in the very store it reads (a torn read racing a concurrent writer, a momentarily locked
+/// file) rather than itself becoming the thing that silently stops monitoring. Matches every
+/// other fallible read [`watch_poll`] already performs beyond the store (`config::load`, the
+/// step-lock probe, the liveness-marker stat, the dash-marker read) - all deliberately
+/// fail-soft; only the store reads used to be the exception.
 fn cmd_watch(args: &[String]) -> Res {
     let WatchArgs {
         once,
@@ -6179,8 +6119,16 @@ fn cmd_watch(args: &[String]) -> Res {
 
     let mut dedup = watch::Dedup::new();
     loop {
-        let (loc, selection) = require_store_dir()?;
-        let anomalies = watch_poll(&loc, &selection)?;
+        let anomalies =
+            match require_store_dir().and_then(|(loc, selection)| watch_poll(&loc, &selection)) {
+                Ok(anomalies) => anomalies,
+                Err(e) if once => return Err(e),
+                Err(e) => {
+                    eprintln!("rigger: watch: poll failed, will retry: {e}");
+                    std::thread::sleep(std::time::Duration::from_secs(interval_secs.max(1)));
+                    continue;
+                }
+            };
         let to_print = if once {
             anomalies
         } else {
@@ -17046,63 +16994,12 @@ mod tests {
     // revision order disagree (the signature left by a write that lands in a compaction-
     // opened revision hole). ---
 
-    fn order_sig_ev(stream: &str, position: u64, revision: i64) -> Event {
-        let mut e = Event::new("Seed", Vec::new());
-        e.stream = stream.to_string();
-        e.position = position;
-        e.revision = revision;
-        e
-    }
-
-    /// Two orders coexist per event: position (global, store-assigned, never itself
-    /// disordered) and revision (per-stream, also store-assigned). On a healthy stream the
-    /// two agree - later position always means higher revision. `order_signatures` walks
-    /// `events` (which callers hand it already in POSITION order, exactly as
-    /// `EventStore::read_all` returns them) tracking each stream's running maximum revision;
-    /// a row whose revision does not exceed that maximum is OUT OF ORDER. Only the rows that
-    /// broke the maximum are flagged - a row that only extends it is untouched - and an
-    /// unrelated, cleanly-ordered stream interleaved by position draws nothing at all.
-    #[test]
-    fn order_signatures_flags_rows_whose_revision_does_not_exceed_the_streams_running_maximum() {
-        let events = vec![
-            order_sig_ev("run", 1, 0),
-            order_sig_ev("run", 2, 1),
-            order_sig_ev("other", 3, 0), // unrelated, clean stream, interleaved by position
-            order_sig_ev("run", 4, 2),
-            order_sig_ev("run", 5, 1), // OUT OF ORDER: 1 <= running max 2
-            order_sig_ev("run", 6, 2), // OUT OF ORDER: 2 <= running max 2 (still)
-            order_sig_ev("run", 7, 5), // back in order: 5 > 2
-            order_sig_ev("other", 8, 1),
-        ];
-        let signatures = order_signatures(&events);
-        assert_eq!(
-            signatures.len(),
-            1,
-            "only the disordered stream is flagged: {signatures:?}"
-        );
-        let s = &signatures[0];
-        assert_eq!(s.stream, "run");
-        assert_eq!(s.rows, 2, "two rows broke the running maximum: {s:?}");
-        assert_eq!(s.first_position, 5);
-        assert_eq!(s.last_position, 6);
-    }
-
-    /// A log where every stream's revisions strictly increase with position - the shape a
-    /// correctly functioning append always produces on its own - draws no signature.
-    #[test]
-    fn order_signatures_is_empty_on_a_cleanly_ordered_log() {
-        let events = vec![
-            order_sig_ev("run", 1, 0),
-            order_sig_ev("other", 2, 0),
-            order_sig_ev("run", 3, 1),
-            order_sig_ev("other", 4, 1),
-            order_sig_ev("run", 5, 2),
-        ];
-        assert!(
-            order_signatures(&events).is_empty(),
-            "a cleanly ordered log must draw no signature"
-        );
-    }
+    // NOTE: `order_signatures` itself (the pure running-max-revision detector) and its own
+    // boundary tests - including the duplicate-revision case - now live in
+    // `src/watch.rs`'s own test module: it moved there (spec 69 u69c2 consolidation) to be the
+    // ONE shared implementation `rigger watch`'s store-integrity signal also calls, rather
+    // than a second parallel reimplementation. Only the advisory FORMATTING below (unique to
+    // `rigger validate`) still belongs to this file.
 
     /// The advisory names the stream, the out-of-order row count, the affected position
     /// range, and the doc location the repair procedure lives at - an operator reading
@@ -17110,7 +17007,7 @@ mod tests {
     /// performing any repair itself (report-only, like every other validate advisory).
     #[test]
     fn order_signature_advisories_names_the_stream_count_range_and_repair_doc() {
-        let signatures = vec![OrderSignature {
+        let signatures = vec![watch::OrderSignature {
             stream: "run".to_string(),
             rows: 2,
             first_position: 5,
@@ -17125,7 +17022,7 @@ mod tests {
             "advisory names the stream, count, and position range: {a}"
         );
         assert!(
-            a.contains(ORDER_SIGNATURE_REPAIR_DOC_REF),
+            a.contains(watch::ORDER_SIGNATURE_REPAIR_DOC_REF),
             "advisory names the repair doc location: {a}"
         );
     }
