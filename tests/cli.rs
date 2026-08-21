@@ -13282,27 +13282,34 @@ fn setup_installs_every_watching_discipline_skill_into_the_consumer_project() {
 }
 
 /// Spec 69, criterion 1 (WATCH SKILLS RENDER TRUE, proven against the ACTUAL compiled
-/// `rigger status`, not merely trusted from the render function's own prose): whenever the
-/// COMMITTED `rigger-restore-the-dash` skill claims (verbatim) that "`rigger status` ...
-/// verifies the recorded marker actually serves before printing a URL" and "a dead marker
-/// prints a not-serving line naming the dead PID ... it never prints a URL nothing answers
-/// on", that claim must be TRUE of the real binary, not merely asserted in prose - so this
-/// drives real `rigger status` through the exact "dead marker" scenario the skill describes
-/// (a `.rigger/dash.marker` naming a definitely-dead pid on a definitely-unbound loopback
-/// port, alongside the `.rigger/dash.url` breadcrumb `cmd_status` actually reads) and checks
-/// the output against the skill's own literal promise. The check is GATED on the skill still
-/// making that specific claim (read fresh from the compiled binary's own `rigger docs`
-/// output) rather than fixed here as a hardcoded expectation: this test's job is proving the
-/// shipped PROSE never outruns the shipped CODE, not prescribing which of the two a future
-/// round corrects to close the gap - so a round that instead rewrites the claim to describe
-/// today's real (unverified) behavior leaves this test nothing to check, and it passes
-/// cleanly, exactly as it should. `docs_renders_every_watching_discipline_skill_through_the_
-/// compiled_binary` above only proves the skill's rendered TEXT is stable and structurally
-/// complete; it cannot catch text describing a command behavior the command does not
-/// actually have, which is a boundary bug this criterion's own Done-when text ("command
-/// references accuracy-pinned") exists to catch one level deeper than a bare subcommand name.
+/// `rigger watch --once`, not merely trusted from the render function's own prose): whenever
+/// the COMMITTED `rigger-restore-the-dash` skill claims (verbatim) that "`rigger watch
+/// --once` ... verifies the recorded marker by actually probing its port, and prints a
+/// `dash liveness` line naming the dead PID when nothing answers there", that claim must be TRUE
+/// of the real binary, not merely asserted in prose - so this drives the real `rigger watch
+/// --once` through the exact "dead marker" scenario the skill describes (a
+/// `.rigger/dash.marker` naming a definitely-dead pid on a definitely-unbound loopback port,
+/// the same file `cmd_watch` actually reads) and checks the output against the skill's own
+/// literal promise. The check is GATED on the skill still making that specific claim (read
+/// fresh from the compiled binary's own `rigger docs` output) rather than fixed here as a
+/// hardcoded expectation: this test's job is proving the shipped PROSE never outruns the
+/// shipped CODE, not prescribing which of the two a future round corrects to close the gap -
+/// so a round that instead rewrites the claim to describe different real behavior leaves this
+/// test nothing to check, and it passes cleanly, exactly as it should. This is the corrected
+/// successor of an earlier version of this same test that pinned the identical promise
+/// against `rigger status` instead: `cmd_status` (src/main.rs) has no liveness check at all
+/// (that is sibling criterion u69c4's territory, not yet integrated here), so the skill text
+/// was rewritten to point operators at the check that is ALREADY true today - `rigger watch
+/// --once`, confirmed live above `cmd_watch`'s own marker-read-and-probe (src/main.rs, near
+/// `dash::DashMarker::read`/`dash::dash_serving_on`) - and this test now pins THAT claim
+/// instead of the one that no longer ships.
+/// `docs_renders_every_watching_discipline_skill_through_the_compiled_binary` above only
+/// proves the skill's rendered TEXT is stable and structurally complete; it cannot catch text
+/// describing a command behavior the command does not actually have, which is a boundary bug
+/// this criterion's own Done-when text ("command references accuracy-pinned") exists to catch
+/// one level deeper than a bare subcommand name.
 #[test]
-fn status_output_matches_what_restore_the_dash_promises_about_a_dead_marker() {
+fn watch_once_output_matches_what_restore_the_dash_promises_about_a_dead_marker() {
     use rigger::dash::DashMarker;
 
     let proj = temp_project();
@@ -13314,9 +13321,11 @@ fn status_output_matches_what_restore_the_dash_promises_about_a_dead_marker() {
     let restore_the_dash =
         std::fs::read_to_string(root.join("skills/rigger-restore-the-dash/SKILL.md"))
             .expect("rigger docs wrote rigger-restore-the-dash");
-    let claims_status_verifies_the_marker = restore_the_dash
-        .contains("it verifies the recorded marker actually serves before printing a URL");
-    if !claims_status_verifies_the_marker {
+    let claims_watch_once_verifies_the_marker = restore_the_dash.contains(
+        "verifies the recorded marker by actually probing its port, and prints a `dash \
+         liveness` line naming the dead PID when nothing answers there",
+    );
+    if !claims_watch_once_verifies_the_marker {
         // The shipped skill no longer makes this specific claim - nothing left to enforce.
         return;
     }
@@ -13325,11 +13334,11 @@ fn status_output_matches_what_restore_the_dash_promises_about_a_dead_marker() {
     // `free_loopback_port` convention) and an impossible pid (`u32::MAX`, the same
     // "impossible pid" value `pid_is_alive_reports_self_and_rejects_an_impossible_pid`,
     // src/dash.rs, already pins) - so nothing on this machine answers on the port and no
-    // process holds the pid.
+    // process holds the pid. `cmd_watch` reads ONLY `.rigger/dash.marker` for this signal
+    // (no `.rigger/dash.url` breadcrumb involved), so seeding just the marker exactly
+    // matches what the compiled binary actually consumes.
     let dead_port = free_loopback_port();
     let dead_pid = u32::MAX;
-    let dead_url = format!("http://127.0.0.1:{dead_port}/");
-    std::fs::write(root.join(".rigger/dash.url"), &dead_url).expect("seed the dash-url breadcrumb");
     DashMarker {
         port: dead_port,
         pid: dead_pid,
@@ -13337,24 +13346,19 @@ fn status_output_matches_what_restore_the_dash_promises_about_a_dead_marker() {
     .write(&root.join(".rigger/dash.marker"))
     .expect("seed the dash marker");
 
-    let (out, err, ok) = run_rigger(root, &["status"]);
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
     assert!(
         ok,
-        "rigger status must succeed even with a dead dash marker; stderr:\n{err}"
+        "rigger watch --once must exit 0 even with a dead dash marker; stderr:\n{err}"
     );
 
-    // The skill's literal promise: a not-serving line naming the dead pid, and NO URL that
-    // nothing answers on.
+    // The skill's literal promise: a `dash liveness` line naming the dead pid.
     assert!(
-        out.contains("not serving") && out.contains(&dead_pid.to_string()),
-        "rigger-restore-the-dash promises status prints a not-serving line naming the dead \
-         pid {dead_pid} for a marker like this one - either the skill overclaims what the \
-         compiled binary does, or status's own dash line has regressed; got:\n{out}"
-    );
-    assert!(
-        !out.contains(&dead_url),
-        "rigger-restore-the-dash promises status never prints a URL nothing answers on; got \
-         the dead URL {dead_url:?} printed anyway:\n{out}"
+        out.contains("dash liveness") && out.contains(&dead_pid.to_string()),
+        "rigger-restore-the-dash promises `rigger watch --once` prints a `dash liveness` \
+         line naming the dead pid {dead_pid} for a marker like this one - either the skill \
+         overclaims what the compiled binary does, or `rigger watch`'s own dash-liveness \
+         signal has regressed; got:\n{out}"
     );
 }
 

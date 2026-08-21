@@ -755,7 +755,7 @@ fn render_watch_a_run_skill(_ctx: &DocsContext) -> String {
     );
     let _ = writeln!(
         s,
-        "3. **{}** - the dashboard URL does not answer, `rigger status` says it is not \
+        "3. **{}** - the dashboard URL does not answer, `rigger watch` reports it not \
          serving, or a browser just spins. Respond with `{}`.",
         Signal::DashNotServing.name(),
         Signal::DashNotServing.response()
@@ -818,7 +818,7 @@ fn render_restore_the_dash_skill(_ctx: &DocsContext) -> String {
     s.push_str("name: rigger-restore-the-dash\n");
     s.push_str(
         "description: Get the run dashboard serving again when its URL does not answer, \
-         `rigger status` says it is not serving, or a browser just spins. Read this before \
+         `rigger watch` reports it not serving, or a browser just spins. Read this before \
          restarting the dash or touching its marker file by hand.\n",
     );
     s.push_str("---\n\n");
@@ -834,10 +834,12 @@ fn render_restore_the_dash_skill(_ctx: &DocsContext) -> String {
     );
     let _ = writeln!(
         s,
-        "`rigger status` names the truth, not just the hope: it verifies the recorded marker \
-         actually serves before printing a URL. A dead marker prints a not-serving line \
-         naming the dead PID and pointing at the restart - it never prints a URL nothing \
-         answers on.\n"
+        "`rigger status`'s dashboard line is NOT yet a liveness check - it always prints \
+         whatever URL was last recorded, even when nothing answers there, so do not trust \
+         that line alone. `rigger watch --once` IS the accurate check: it verifies the \
+         recorded marker by actually probing its port, and prints a `dash liveness` line \
+         naming the dead PID when nothing answers there - trust that over a bare status \
+         line.\n"
     );
     let _ = writeln!(
         s,
@@ -852,11 +854,11 @@ fn render_restore_the_dash_skill(_ctx: &DocsContext) -> String {
          cleanly: the marker records a port whose process died, froze, or was suspended \
          without releasing it, so a fresh probe against that port neither serves nor cleanly \
          refuses - it just hangs, and so does anything waiting on it. The marker's own PID, \
-         not a fresh diagnosis, is what names the culprit: `rigger status` and `rigger watch` \
-         both read it and print that exact PID on their dash-liveness lines. RESUME that \
+         not a fresh diagnosis, is what names the culprit: `rigger watch` reads it and \
+         prints that exact PID on its dash-liveness line. RESUME that \
          process if it is merely stopped (a suspended terminal, a paused container), or KILL \
-         it if it is dead weight - THAT pid, the one the marker and the not-serving line \
-         actually name - then restart with `rigger dash`.\n"
+         it if it is dead weight - THAT pid, the one the marker and `rigger watch`'s own \
+         line actually name - then restart with `rigger dash`.\n"
     );
     let _ = writeln!(s, "## Anti-move\n");
     let _ = writeln!(
@@ -865,7 +867,7 @@ fn render_restore_the_dash_skill(_ctx: &DocsContext) -> String {
          path itself writes and overwrites, and a hand-edited value only makes the next real \
          dash's own self-heal harder to trust. And never kill a process by PORT-ADJACENT \
          GUESSWORK (\"kill whatever's near the dash port\") - resume or kill the EXACT pid \
-         the marker and the not-serving line name, never a guess.\n"
+         the marker and `rigger watch`'s own line name, never a guess.\n"
     );
     let _ = writeln!(s, "## See also\n");
     let _ = writeln!(
