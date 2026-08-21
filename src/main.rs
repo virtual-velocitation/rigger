@@ -162,14 +162,20 @@ type Res = Result<(), Box<dyn std::error::Error>>;
 /// which side is stale, rather than re-deriving provenance a second way.
 const BUILD_PROVENANCE: &str = env!("RIGGER_BUILD_PROVENANCE");
 
-/// The one-line version identity: the crate version plus the embedded build provenance. Sole
-/// source of the version string, so `rigger version` and `rigger --version` cannot drift.
+/// The version `go-gitsemver` derives for the built commit under the committed
+/// `go-gitsemver.yml` (spec 74): `FullSemVer` with `ShortSha` folded into its build
+/// metadata, embedded by `build.rs` at COMPILE time (the binary never invokes the tool,
+/// or git, again at runtime - see `build/gitsemver.rs`, the single derivation seam
+/// shared with its test). Falls back to the bare crate semver plus an explicit
+/// `+unversioned` marker whenever `go-gitsemver` could not run: never fabricated, never
+/// a failed build.
+const GITSEMVER_VERSION: &str = env!("RIGGER_GITSEMVER_VERSION");
+
+/// The one-line version identity: the derived semver plus the embedded build provenance.
+/// Sole source of the version string, so `rigger version` and `rigger --version` cannot
+/// drift.
 fn version_line() -> String {
-    format!(
-        "rigger {} (build {})",
-        env!("CARGO_PKG_VERSION"),
-        BUILD_PROVENANCE
-    )
+    format!("rigger {} (build {})", GITSEMVER_VERSION, BUILD_PROVENANCE)
 }
 
 /// `rigger version` (and `rigger --version` / `-V`): print the crate version and the build
@@ -10681,19 +10687,27 @@ mod tests {
         );
     }
 
-    /// The single-source version line must carry BOTH the crate version and the
-    /// (non-empty) embedded build provenance, so `rigger version` / `--version` can
-    /// identify the exact binary. Pins the format helper both invocation arms print.
+    /// The single-source version line must carry BOTH the go-gitsemver-derived version
+    /// (spec 74) and the (non-empty) embedded build provenance, so `rigger version` /
+    /// `--version` can identify the exact binary. Pins the format helper both invocation
+    /// arms print. The derived-version VALUE (successful derivation vs. the
+    /// `+unversioned` fallback) is proven at the derivation seam by
+    /// `tests/gitsemver_derivation.rs` against fixture repositories and the real
+    /// binary; this test pins only that `version_line` routes through it.
     #[test]
-    fn version_line_carries_the_crate_version_and_a_non_empty_build_provenance() {
+    fn version_line_carries_the_derived_version_and_a_non_empty_build_provenance() {
+        assert!(
+            !GITSEMVER_VERSION.is_empty(),
+            "build.rs must embed a non-empty go-gitsemver-derived version"
+        );
         assert!(
             !BUILD_PROVENANCE.is_empty(),
             "build.rs must embed a non-empty build-provenance id"
         );
         let line = version_line();
         assert!(
-            line.contains(env!("CARGO_PKG_VERSION")),
-            "version line must report the crate version; got: {line}"
+            line.contains(GITSEMVER_VERSION),
+            "version line must report the derived version; got: {line}"
         );
         assert!(
             line.contains(BUILD_PROVENANCE),
