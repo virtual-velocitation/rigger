@@ -8,23 +8,40 @@
 //! non-empty: outside a git checkout (e.g. a build from a published tarball with no `.git`) it
 //! falls back to a sentinel rather than failing the build.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+
+// Spec 74: the go-gitsemver derivation logic has no `fn main` of its own and is shared,
+// unchanged, with `tests/gitsemver_derivation.rs` via the same `#[path]` inclusion - see
+// `build/gitsemver.rs` for why (build scripts cannot be exercised by `cargo test`
+// directly, so the derivation seam is proven from a test binary that includes the exact
+// same source instead of a reimplementation of it).
+#[path = "build/gitsemver.rs"]
+mod gitsemver;
 
 fn main() {
     // Re-run when the build script itself changes.
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=build/gitsemver.rs");
+    // The committed go-gitsemver config: an edit changes what FullSemVer derives to.
+    println!("cargo:rerun-if-changed=go-gitsemver.yml");
 
     // Re-embed the id whenever the checked-out commit moves, so a rebuilt binary carries the
     // provenance of the source it was actually built from. Watching git HEAD and the ref it
     // resolves to is resolved THROUGH git, so it works both in a plain clone and in a linked
-    // worktree (where `.git` is a file, not a directory).
+    // worktree (where `.git` is a file, not a directory). The SAME watch covers the
+    // go-gitsemver derivation below, which depends on the identical HEAD/ref state.
     for path in git_watch_paths() {
         println!("cargo:rerun-if-changed={}", path.display());
     }
 
     let provenance = git_provenance().unwrap_or_else(|| "unknown".to_string());
     println!("cargo:rustc-env=RIGGER_BUILD_PROVENANCE={provenance}");
+
+    // Version derivation is delegated entirely to go-gitsemver at COMPILE time only;
+    // the binary never invokes the tool (or git) again at runtime.
+    let version = gitsemver::derive_version("go-gitsemver", Path::new("."));
+    println!("cargo:rustc-env=RIGGER_GITSEMVER_VERSION={version}");
 }
 
 /// `git describe --always --abbrev=12`, trimmed: a stable, commit-determined identifier that
