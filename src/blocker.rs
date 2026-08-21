@@ -50,8 +50,11 @@ pub enum Kind {
     /// Gates are green and the unit is under review (adjudication pending).
     Reviewing,
     /// The unit failed and is remediating: this is failure `n` of the `max` bound
-    /// before escalation (`defaults.max_retries`).
-    RejectRecurrence { n: u32, max: u32 },
+    /// before escalation (`defaults.max_retries`). `cause` is the conductor's own
+    /// closed-vocabulary tag for WHY (spec 69, criterion 3: the cause wire) - `reject`,
+    /// `gate:<name>`, `integrate-conflict`, or `infra:<kind>` - defaulted to `"unknown"`
+    /// when the folded [`ledger::Unit::cause`] is empty (a cause-less prior event).
+    RejectRecurrence { n: u32, max: u32, cause: String },
     /// The review approved (on the result channel) but the unit is not yet integrated.
     ApprovedNotIntegrated,
     /// The unit gave up at the remediation bound and is awaiting a human.
@@ -88,8 +91,8 @@ impl Blocker {
         match &self.kind {
             Kind::Building { attempt } => format!("building (attempt {attempt})"),
             Kind::Reviewing => "reviewing (gates green, awaiting adjudication)".to_string(),
-            Kind::RejectRecurrence { n, max } => {
-                format!("reject-recurrence #{n}/{max} (remediating)")
+            Kind::RejectRecurrence { n, max, cause } => {
+                format!("reject-recurrence #{n}/{max} ({cause})")
             }
             Kind::ApprovedNotIntegrated => {
                 "approved, not yet integrated (review passed; integration pending)".to_string()
@@ -212,6 +215,11 @@ pub fn classify(run: &RunState, budget: Option<Budget>, max_retries: u32) -> Vec
             Status::Failed => Kind::RejectRecurrence {
                 n: u.attempts,
                 max: max_retries,
+                cause: if u.cause.is_empty() {
+                    ledger::CAUSE_UNKNOWN.to_string()
+                } else {
+                    u.cause.clone()
+                },
             },
             Status::Reviewed => Kind::ApprovedNotIntegrated,
             Status::Verified => Kind::Reviewing,
@@ -322,7 +330,11 @@ mod tests {
                 ("u-esc".to_string(), Kind::Escalated),
                 (
                     "u-fail".to_string(),
-                    Kind::RejectRecurrence { n: 2, max: 5 }
+                    Kind::RejectRecurrence {
+                        n: 2,
+                        max: 5,
+                        cause: "unknown".to_string()
+                    }
                 ),
                 ("u-review".to_string(), Kind::Reviewing),
             ]
@@ -351,11 +363,55 @@ mod tests {
             ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
             ev(ledger::TYPE_UNIT_FAILED, r#"{"id":"u","attempts":1}"#),
         ]);
-        // configured 0 -> resolves to MAX_RETRIES (3).
+        // configured 0 -> resolves to MAX_RETRIES (3). No cause on the event (a
+        // cause-less prior event, spec 69 criterion 3) reads as "unknown", never the
+        // old generic "remediating" wording.
         let blockers = from_events(&events, 0).unwrap();
         assert_eq!(
             blockers[0].full_line(),
-            "u: reject-recurrence #1/3 (remediating)"
+            "u: reject-recurrence #1/3 (unknown)"
+        );
+    }
+
+    #[test]
+    fn reject_recurrence_line_carries_the_recorded_cause() {
+        // spec 69, criterion 3 (the cause wire): "status blocker lines carry it" - the
+        // line names the conductor's own recorded cause instead of the generic
+        // "remediating" wording.
+        let events = positioned(vec![
+            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
+            ev(
+                ledger::TYPE_UNIT_FAILED,
+                r#"{"id":"u","attempts":4,"cause":"integrate-conflict"}"#,
+            ),
+        ]);
+        let blockers = from_events(&events, 6).unwrap();
+        assert_eq!(
+            blockers[0].full_line(),
+            "u: reject-recurrence #4/6 (integrate-conflict)"
+        );
+    }
+
+    #[test]
+    fn reject_recurrence_line_carries_the_latest_of_several_causes() {
+        // A changed cause is progress (spec 69 Design): the line names the MOST
+        // RECENT failure's cause, not the first.
+        let events = positioned(vec![
+            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
+            ev(
+                ledger::TYPE_UNIT_FAILED,
+                r#"{"id":"u","attempts":1,"cause":"gate:fmt"}"#,
+            ),
+            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
+            ev(
+                ledger::TYPE_UNIT_FAILED,
+                r#"{"id":"u","attempts":2,"cause":"reject"}"#,
+            ),
+        ]);
+        let blockers = from_events(&events, 6).unwrap();
+        assert_eq!(
+            blockers[0].full_line(),
+            "u: reject-recurrence #2/6 (reject)"
         );
     }
 

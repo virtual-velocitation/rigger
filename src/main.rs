@@ -11831,7 +11831,7 @@ mod tests {
                     .to_string(),
                 "u-build: building (attempt 1)".to_string(),
                 "u-esc: escalated (awaiting a human)".to_string(),
-                "u-fail: reject-recurrence #2/6 (remediating)".to_string(),
+                "u-fail: reject-recurrence #2/6 (unknown)".to_string(),
             ]
         );
     }

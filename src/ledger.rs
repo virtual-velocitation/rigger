@@ -71,6 +71,15 @@ pub struct Unit {
     pub evidence: BTreeMap<String, String>,
     pub attempts: u32,
     pub commit: String,
+    /// The most recent `UnitFailed`'s `cause` (spec 69, criterion 3: the cause wire) -
+    /// the conductor's own closed-vocabulary tag (`reject`, `gate:<name>`,
+    /// `integrate-conflict`, `infra:<kind>`) for WHY this attempt failed, stamped at the
+    /// branch that failed it, never inferred downstream. Raw passthrough (mirrors
+    /// `attempts`: each `UnitFailed` unconditionally overwrites it), so it always
+    /// reflects the LATEST failure. Empty on a unit that has never failed, or on a
+    /// cause-less prior event (additive, serde-defaulted) - readers default an empty
+    /// cause to `"unknown"`, never this projection.
+    pub cause: String,
 }
 
 /// RunState is the projected run state.
@@ -238,6 +247,14 @@ pub const TYPE_DEFERRED_GATE_FAILED: &str = "DeferredGateFailed";
 /// re-derived by any adapter that only reads it.
 pub const TYPE_MANUAL_REVIEW: &str = "ManualReview";
 
+/// The cause wire's (spec 69, criterion 3) shared default: how every reader of
+/// [`Unit::cause`] renders an empty (cause-less) value - a prior event that predates
+/// this criterion, or a unit that has never failed. THE single spelling both
+/// [`crate::blocker`] (`rigger status` / the dashboard) and [`crate::watch`] (`rigger
+/// watch`'s reject-recurrence streak) default to, so the two surfaces can never spell
+/// "unknown" two different ways.
+pub const CAUSE_UNKNOWN: &str = "unknown";
+
 #[derive(Deserialize)]
 struct UnitStarted {
     id: String,
@@ -262,6 +279,11 @@ struct UnitFailed {
     id: String,
     #[serde(default)]
     attempts: u32,
+    /// spec 69, criterion 3 (the cause wire): additive and serde-defaulted, so a prior
+    /// event that predates this criterion decodes with an empty cause rather than
+    /// erroring.
+    #[serde(default)]
+    cause: String,
 }
 #[derive(Deserialize)]
 struct UnitEscalated {
@@ -300,6 +322,7 @@ impl RunState {
             evidence: BTreeMap::new(),
             attempts: 0,
             commit: String::new(),
+            cause: String::new(),
         })
     }
 
@@ -328,6 +351,7 @@ impl RunState {
                 let u = self.unit(&p.id);
                 u.status = Status::Failed;
                 u.attempts = p.attempts;
+                u.cause = p.cause;
             }
             TYPE_UNIT_ESCALATED => {
                 let p: UnitEscalated = serde_json::from_slice(&e.data)?;
@@ -583,6 +607,44 @@ mod tests {
             "a Failed unit is not Integrated, so the run is not done"
         );
         assert!(!r.is_integrated("u"));
+    }
+
+    #[test]
+    fn a_unit_failed_cause_is_folded_and_a_causeless_event_reads_as_empty() {
+        // spec 69, criterion 3 (the cause wire): `cause` is additive and
+        // serde-defaulted, so a `UnitFailed` that carries one folds it onto the unit
+        // (raw passthrough, mirroring how `attempts` already folds), and a prior event
+        // that carries none decodes as empty rather than erroring - the empty string is
+        // the "cause-less" signal a reader (e.g. `blocker`) defaults to "unknown".
+        let r = project(&[ev(
+            TYPE_UNIT_FAILED,
+            r#"{"id":"u","attempts":1,"cause":"gate:fmt"}"#,
+        )])
+        .unwrap();
+        assert_eq!(r.units["u"].cause, "gate:fmt");
+
+        let causeless = project(&[ev(TYPE_UNIT_FAILED, r#"{"id":"u","attempts":1}"#)]).unwrap();
+        assert_eq!(causeless.units["u"].cause, "");
+    }
+
+    #[test]
+    fn a_later_unit_failed_overwrites_the_folded_cause() {
+        // The fold reflects the LATEST failure's cause (mirrors `attempts`, which the
+        // existing fold already overwrites unconditionally each `UnitFailed`): a unit
+        // that failed on a gate and then, on its next attempt, was rejected by review
+        // reads the review's cause, not the stale gate one.
+        let r = project(&[
+            ev(
+                TYPE_UNIT_FAILED,
+                r#"{"id":"u","attempts":1,"cause":"gate:fmt"}"#,
+            ),
+            ev(
+                TYPE_UNIT_FAILED,
+                r#"{"id":"u","attempts":2,"cause":"reject"}"#,
+            ),
+        ])
+        .unwrap();
+        assert_eq!(r.units["u"].cause, "reject");
     }
 
     #[test]
