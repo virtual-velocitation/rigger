@@ -59,16 +59,11 @@ fn resolve_repo(dir: &Path) -> Option<(PathBuf, String)> {
     Some((repo_root, commit))
 }
 
-/// Run `git -C <dir> rev-parse <args...>`, trimmed. `None` on any failure: git
-/// unavailable, `dir` not inside a git checkout, a non-zero exit, or empty output.
-fn git_rev_parse(dir: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .arg("rev-parse")
-        .args(args)
-        .output()
-        .ok()?;
+/// Run `cmd`, returning trimmed stdout on success. `None` on ANY failure: the binary
+/// unreachable (`Command::output` errors), a non-zero exit, or empty output - the one
+/// run/trim/empty-to-None shape both [`git_rev_parse`] and [`show_variable`] need.
+fn run_trimmed(cmd: &mut Command) -> Option<String> {
+    let out = cmd.output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -78,6 +73,14 @@ fn git_rev_parse(dir: &Path, args: &[&str]) -> Option<String> {
     } else {
         Some(s)
     }
+}
+
+/// Run `git -C <dir> rev-parse <args...>`, trimmed. `None` on any failure: git
+/// unavailable, `dir` not inside a git checkout, a non-zero exit, or empty output.
+fn git_rev_parse(dir: &Path, args: &[&str]) -> Option<String> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(dir).arg("rev-parse").args(args);
+    run_trimmed(&mut cmd)
 }
 
 /// Run `<bin> --no-repair-worktree-config -p <path> [-c <commit>] --show-variable
@@ -95,16 +98,7 @@ fn show_variable(bin: &str, path: &Path, commit: Option<&str>, variable: &str) -
         cmd.arg("-c").arg(commit);
     }
     cmd.arg("--show-variable").arg(variable);
-    let out = cmd.output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let value = String::from_utf8(out.stdout).ok()?.trim().to_string();
-    if value.is_empty() {
-        None
-    } else {
-        Some(value)
-    }
+    run_trimmed(&mut cmd)
 }
 
 /// Folds `short_sha` into `full_semver`'s build-metadata segment: a new dot-separated
