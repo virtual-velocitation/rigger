@@ -30,6 +30,7 @@ use serde_json::Value;
 
 use crate::conductor::STREAM;
 use crate::eventstore::{Direction, Error, Event, EventStore, ExpectedRevision, Position};
+use crate::ledger::AttentionEntry;
 
 /// The event type a parked spawn request is persisted as - the "spawn-request" half
 /// of the spawn-request/result pair the spec permits as the only new vocabulary the
@@ -853,6 +854,18 @@ pub struct Step {
     /// unit lifecycle). Lexically ordered for a deterministic wire.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub escalated: Vec<String>,
+    /// The push-side anomalies THIS step surfaced (spec 69: the watching discipline's step
+    /// wire) - unit ESCALATED, run HALTED, a worker's death RECURRED, the budget crossed
+    /// into its final tenth, and STALLED FRONTIER. Empty on a clean step, and OMITTED from
+    /// the wire then, so a converged run still prints `{"wave":[],"done":true}` unchanged;
+    /// when non-empty a later criterion's driver renders one narrator line per entry naming
+    /// its event, unit, and response skill. Like [`escalated`](Step::escalated) this is
+    /// stamped by `rigger step` (`cmd_step`) from the conductor's live
+    /// [`ledger::RunState::attention`](crate::ledger::RunState::attention) - a fact of THIS
+    /// call's own before/after transition, not derivable from the log alone - so the pure
+    /// [`step_result`] log seam leaves it empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub attention: Vec<AttentionEntry>,
 }
 
 /// Compute the [`Step`] a step process prints, from the run stream `events`.
@@ -899,6 +912,11 @@ pub fn step_result(events: &[Event]) -> Result<Step, serde_json::Error> {
         // request/result stream this pure seam folds; `rigger step` stamps it from the
         // conductor's `RunState::escalated_units`, so this leaves it empty (like `halted`).
         escalated: Vec::new(),
+        // `attention` is a fact of THIS call's own before/after transition (spec 69,
+        // criterion 5), not of the recorded spawn stream this pure seam folds; `rigger
+        // step` stamps it from the conductor's live `RunState::attention`, so this leaves
+        // it empty too (like `halted` and `escalated`).
+        attention: Vec::new(),
     })
 }
 
@@ -1937,6 +1955,7 @@ mod tests {
             done: true,
             halted: Some("budget exhausted: 2/2 spawns".into()),
             escalated: Vec::new(),
+            attention: Vec::new(),
         };
         let obj = serde_json::to_value(&halted).unwrap();
         assert_eq!(obj["done"], serde_json::json!(true));
@@ -1950,6 +1969,7 @@ mod tests {
             done: true,
             halted: None,
             escalated: Vec::new(),
+            attention: Vec::new(),
         };
         let wire = serde_json::to_string(&converged).unwrap();
         assert_eq!(
@@ -1969,6 +1989,7 @@ mod tests {
             done: true,
             halted: None,
             escalated: vec!["u-a".into(), "u-b".into()],
+            attention: Vec::new(),
         };
         let obj = serde_json::to_value(&wedged).unwrap();
         assert_eq!(obj["done"], serde_json::json!(true));
@@ -1979,11 +2000,53 @@ mod tests {
             done: true,
             halted: None,
             escalated: Vec::new(),
+            attention: Vec::new(),
         };
         let wire = serde_json::to_string(&clean).unwrap();
         assert_eq!(
             wire, r#"{"wave":[],"done":true}"#,
             "a clean fixpoint omits `escalated`, preserving the historical wire shape"
+        );
+    }
+
+    #[test]
+    fn an_attention_bearing_step_serializes_the_array_and_a_clean_one_omits_it() {
+        // Spec 69, criterion 5: the `done`/`attention` split, mirroring `halted` and
+        // `escalated`. A step during which a signal crossed carries the array on the wire;
+        // a clean step omits the field entirely, leaving the historical `{"wave":[],
+        // "done":true}` shape byte-for-byte unchanged.
+        let flagged = Step {
+            wave: Vec::new(),
+            done: true,
+            halted: None,
+            escalated: Vec::new(),
+            attention: vec![AttentionEntry::unit_scoped(
+                crate::ledger::ATTENTION_ESCALATED,
+                "u-a",
+                "escalated after exhausting remediation",
+            )],
+        };
+        let obj = serde_json::to_value(&flagged).unwrap();
+        assert_eq!(
+            obj["attention"],
+            serde_json::json!([{
+                "kind": "escalated",
+                "unit": "u-a",
+                "detail": "escalated after exhausting remediation",
+            }])
+        );
+
+        let clean = Step {
+            wave: Vec::new(),
+            done: true,
+            halted: None,
+            escalated: Vec::new(),
+            attention: Vec::new(),
+        };
+        let wire = serde_json::to_string(&clean).unwrap();
+        assert_eq!(
+            wire, r#"{"wave":[],"done":true}"#,
+            "a clean step omits `attention`, preserving the historical wire shape"
         );
     }
 

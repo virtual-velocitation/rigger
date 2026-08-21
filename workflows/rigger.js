@@ -154,6 +154,28 @@ const STEP = {
     // the top level (additionalProperties:false) would reject a wedged step's JSON and the
     // wedge would be lost.
     escalated: { type: 'array', items: { type: 'string' } },
+    // The push-side ATTENTION array (spec 69, criterion 5): `rigger step` stamps one entry
+    // per anomaly its call surfaced - a unit ESCALATED, the run HALTED, a worker's death
+    // RECURRED, the budget crossed into its final tenth, or a STALLED FRONTIER - naming the
+    // signal `kind`, the subject `unit` (empty for a run-scoped kind), and a human-readable
+    // `detail`. Omitted on a clean step, preserving the historical `{wave,done}` shape. The
+    // top level rejects unknown properties, so this MUST be declared or a flagged step's
+    // JSON would fail validation and the signal would be lost. Rendering each entry as a
+    // narrator log line is a LATER criterion's job (spec 69, "the driver relays it"); this
+    // schema only admits the field so an unattended run's attention is never dropped.
+    attention: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: true,
+        required: ['kind', 'detail'],
+        properties: {
+          kind: { type: 'string' },
+          unit: { type: 'string' },
+          detail: { type: 'string' },
+        },
+      },
+    },
     error: { type: 'string' },
   },
 }
