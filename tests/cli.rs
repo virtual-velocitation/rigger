@@ -12998,6 +12998,366 @@ fn setup_installs_every_per_operation_skill_into_the_consumer_project() {
     }
 }
 
+/// The three watch-discipline skill names spec 69, criterion 1 adds to the registry
+/// (`rigger docs`, `rigger validate`, and `rigger setup` already loop over `skill_registry()`
+/// generically, as `PER_OPERATION_SKILL_NAMES`'s own comment above notes - shared by the
+/// three tests below, mirroring that const's own trio one family later).
+const WATCHING_DISCIPLINE_SKILL_NAMES: [&str; 3] = [
+    "rigger-watch-a-run",
+    "rigger-restore-the-dash",
+    "rigger-diagnose-churn",
+];
+
+/// Spec 69, criterion 1 (the render pipeline reaches all THREE new registry entries, end to
+/// end, through the COMPILED binary): `rigger docs` renders every watch-discipline skill to
+/// its own committed `skills/<name>/SKILL.md`, with its own loadable frontmatter, its
+/// Procedure/Anti-move sections, and the structurally-stamped operator-binary prohibition.
+/// The implementer's own in-process `write_docs_writes_every_registry_skill_plus_the_handbook`
+/// and `install_and_docs_each_cover_exactly_the_registry_no_more_no_less` tests (src/main.rs)
+/// call `write_docs`/`install_skills` directly in-process against `skill_registry()` itself,
+/// which proves the pipeline is registry-generic but can never prove what the COMPILED binary
+/// actually writes to disk for THESE three names specifically - the sibling
+/// `docs_renders_every_per_operation_skill_through_the_compiled_binary` test proved the
+/// binary-driven render pipeline for the five-member family added by spec 68; it never drove
+/// this family, so a path-wiring bug specific to one of these three (`skill_source_rel`
+/// mapping a name to the wrong directory, or a registry entry silently dropped from the
+/// loop) would satisfy every existing binary-driving test and only show up here. This test
+/// also pins each skill's own runtime-interpolated content (the five signal names and the
+/// poll interval `rigger-watch-a-run` reads from `crate::watch`, the hung-holder/singleton
+/// language `rigger-restore-the-dash` carries, and the finding-audit/infra-separation
+/// language `rigger-diagnose-churn` carries) all the way through the render-to-disk seam, not
+/// just the render function's own return value the unit tests already check in-process.
+#[test]
+fn docs_renders_every_watching_discipline_skill_through_the_compiled_binary() {
+    let proj = temp_project();
+    let root = proj.path();
+
+    let (stdout, stderr, ok) = run_rigger(root, &["docs"]);
+    assert!(ok, "rigger docs must succeed; stderr: {stderr}");
+
+    for name in WATCHING_DISCIPLINE_SKILL_NAMES {
+        let rel = format!("skills/{name}/SKILL.md");
+        assert!(
+            stdout.contains(&rel),
+            "rigger docs must report rendering {name} at {rel}; got: {stdout}"
+        );
+
+        let path = root.join(&rel);
+        let rendered = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("rigger docs must have written {rel}: {e}"));
+        assert!(
+            rendered.starts_with(&format!("---\nname: {name}\n")),
+            "{name}: must open with its own loadable frontmatter; got: {}",
+            &rendered[..rendered.len().min(60)]
+        );
+        assert!(
+            rendered.contains("## Procedure") && rendered.contains("## Anti-move"),
+            "{name}: rendered skill must carry its Procedure and Anti-move sections; \
+             got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("## Operator binary boundary")
+                && rendered.contains("never installs, replaces, or modifies the operator's"),
+            "{name}: rendered skill must carry the structurally-stamped operator-binary \
+             prohibition; got:\n{rendered}"
+        );
+
+        // Byte-stable across runs (the drift check the next test relies on depends on this).
+        let (_o2, _e2, ok2) = run_rigger(root, &["docs"]);
+        assert!(ok2, "a second `rigger docs` run must succeed");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            rendered,
+            "{name}: a second render must be byte-identical"
+        );
+    }
+
+    // Each skill's own runtime-pinned content reaches the file the compiled binary actually
+    // wrote - not just the render function's in-process return value.
+    let watch_a_run = std::fs::read_to_string(root.join("skills/rigger-watch-a-run/SKILL.md"))
+        .expect("rigger docs wrote rigger-watch-a-run");
+    for signal_name in [
+        "escalated blockers",
+        "heartbeat staleness",
+        "dash liveness",
+        "reject-recurrence trend",
+        "frontier progress",
+    ] {
+        assert!(
+            watch_a_run.contains(signal_name),
+            "rigger-watch-a-run on disk must name signal {signal_name:?}; got:\n{watch_a_run}"
+        );
+    }
+    assert!(
+        watch_a_run.contains("ARM") && watch_a_run.contains("rigger watch"),
+        "rigger-watch-a-run on disk must tell the reader to ARM `rigger watch`; \
+         got:\n{watch_a_run}"
+    );
+
+    let restore_the_dash =
+        std::fs::read_to_string(root.join("skills/rigger-restore-the-dash/SKILL.md"))
+            .expect("rigger docs wrote rigger-restore-the-dash");
+    assert!(
+        restore_the_dash.contains("HUNG-HOLDER") && restore_the_dash.contains("SINGLETON"),
+        "rigger-restore-the-dash on disk must carry the hung-holder and singleton diagnosis; \
+         got:\n{restore_the_dash}"
+    );
+    assert!(
+        restore_the_dash.contains("rigger dash"),
+        "rigger-restore-the-dash on disk must name the real restart command; \
+         got:\n{restore_the_dash}"
+    );
+
+    let diagnose_churn =
+        std::fs::read_to_string(root.join("skills/rigger-diagnose-churn/SKILL.md"))
+            .expect("rigger docs wrote rigger-diagnose-churn");
+    assert!(
+        diagnose_churn.contains("FINDING AUDIT")
+            && diagnose_churn.contains("SEPARATE")
+            && diagnose_churn.contains("INFRA"),
+        "rigger-diagnose-churn on disk must carry the finding-audit and infra-separation \
+         steps; got:\n{diagnose_churn}"
+    );
+    assert!(
+        diagnose_churn.contains("planning-a-spec") && diagnose_churn.contains("churn signature"),
+        "rigger-diagnose-churn on disk must cross-link the churn-signature table rather than \
+         duplicate it; got:\n{diagnose_churn}"
+    );
+}
+
+/// Spec 69, criterion 1 (the docs-drift GATE covers all THREE new entries individually, end
+/// to end, through the compiled binary): `rigger validate` fails when exactly ONE
+/// watch-discipline skill has drifted, names that skill (and no other registry member -
+/// neither a sibling watch-discipline skill nor a pre-existing entry from an earlier family),
+/// and passes again once it is re-rendered - proven for EACH of the three in turn. Mirrors
+/// the sibling `validate_docs_drift_gate_covers_each_per_operation_skill` test's rationale:
+/// `docs_drift` builds its check list by mapping each registry name through
+/// `skill_source_rel`, so a copy-paste mistake in that mapping for any ONE of these three
+/// entries would only be caught by exercising that entry's own path, not by exercising any
+/// other - and only a real subprocess run proves the compiled binary's exit status and
+/// stderr wording, which the implementer's in-process tests never invoke.
+#[test]
+fn validate_docs_drift_gate_covers_each_watching_discipline_skill() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_o, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    let (_o, err, ok) = run_rigger(root, &["docs"]);
+    assert!(ok, "rigger docs must succeed; stderr:\n{err}");
+
+    // Baseline: every committed doc, including all three watch-discipline entries, starts in
+    // sync.
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "validate must pass when every registry entry (including the three watch-discipline \
+         ones) is in sync; stderr:\n{err}"
+    );
+
+    for name in WATCHING_DISCIPLINE_SKILL_NAMES {
+        let path = root.join(format!("skills/{name}/SKILL.md"));
+        assert!(
+            path.exists(),
+            "rigger docs must have written {name}'s skill"
+        );
+
+        append_line(&path, "hand-edited line the render never emits");
+        let (_out, err, ok) = run_rigger(root, &["validate"]);
+        assert!(!ok, "validate must FAIL when {name} drifts; stderr:\n{err}");
+        assert!(
+            err.contains(&format!("skills/{name}/SKILL.md")) && err.contains("rigger docs"),
+            "the drift failure must name the drifted {name} skill and the `rigger docs` fix; \
+             stderr:\n{err}"
+        );
+        for other in WATCHING_DISCIPLINE_SKILL_NAMES
+            .iter()
+            .filter(|other| **other != name)
+        {
+            assert!(
+                !err.contains(&format!("skills/{other}/SKILL.md")),
+                "{name} alone drifted, but the failure also names untouched sibling {other}; \
+                 stderr:\n{err}"
+            );
+        }
+        for other in PER_OPERATION_SKILL_NAMES {
+            assert!(
+                !err.contains(&format!("skills/{other}/SKILL.md")),
+                "{name} alone drifted, but the failure also names an untouched \
+                 per-operation-family entry {other}; stderr:\n{err}"
+            );
+        }
+        assert!(
+            !err.contains("skills/using-rigger/SKILL.md")
+                && !err.contains("skills/planning-a-spec/SKILL.md"),
+            "{name} alone drifted, but the failure also names an untouched pre-existing \
+             registry entry; stderr:\n{err}"
+        );
+
+        // Re-render restores sync for every entry -> validate passes again before the next
+        // iteration drifts a different one.
+        let (_o, _e, ok) = run_rigger(root, &["docs"]);
+        assert!(ok, "re-rendering the docs must succeed");
+        let (_out, err, ok) = run_rigger(root, &["validate"]);
+        assert!(
+            ok,
+            "validate must pass again once {name}'s drift is re-rendered; stderr:\n{err}"
+        );
+    }
+}
+
+/// Spec 69, criterion 1 (the INSTALL seam reaches all THREE new entries, end to end, through
+/// the compiled binary): `rigger setup` installs every watch-discipline skill into the
+/// consumer project at its own `.claude/skills/<name>/SKILL.md` path, carrying the
+/// operator-binary prohibition, and reports installing it; a no-op rerun leaves every one of
+/// them untouched (no report line, no moved mtime). Mirrors the sibling
+/// `setup_installs_every_per_operation_skill_into_the_consumer_project` test's rationale:
+/// install is its own function with its own loop (`install_skills`), independent from the
+/// docs/render and validate/drift seams the two tests above cover, so a bug specific to that
+/// loop (skipping an entry, or reusing one `InstallOutcome`/one rendered body across several
+/// entries) would pass every other test in this file and only show up by checking each
+/// installed file's own name and content here.
+#[test]
+fn setup_installs_every_watching_discipline_skill_into_the_consumer_project() {
+    let proj = temp_project();
+    let root = proj.path();
+
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+
+    let mut installed_before = Vec::new();
+    for name in WATCHING_DISCIPLINE_SKILL_NAMES {
+        let installed_path = root.join(format!(".claude/skills/{name}/SKILL.md"));
+        assert!(
+            installed_path.exists(),
+            "setup must install {name} at .claude/skills/{name}/SKILL.md"
+        );
+        assert!(
+            out.contains(&format!("installed the {name} skill"))
+                && out.contains(&format!(".claude/skills/{name}/SKILL.md")),
+            "setup must report installing {name}; got:\n{out}"
+        );
+
+        let installed = std::fs::read_to_string(&installed_path)
+            .unwrap_or_else(|e| panic!("{name} was installed: {e}"));
+        assert!(
+            installed.starts_with(&format!("---\nname: {name}\n")),
+            "the installed {name} skill must be loadable; got: {}",
+            &installed[..installed.len().min(60)]
+        );
+        assert!(
+            installed.contains("## Operator binary boundary"),
+            "the installed {name} skill must carry the operator-binary prohibition too; \
+             got:\n{installed}"
+        );
+
+        let mtime = std::fs::metadata(&installed_path)
+            .unwrap()
+            .modified()
+            .unwrap();
+        installed_before.push((name, installed_path, mtime));
+    }
+
+    // A no-op rerun leaves every one of the three untouched: no install/refresh report line,
+    // and not even a moved mtime.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let (out2, err2, ok2) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok2, "a no-op setup rerun must succeed; stderr:\n{err2}");
+    for (name, installed_path, before) in installed_before {
+        assert!(
+            !out2.contains(&format!("installed the {name} skill"))
+                && !out2.contains(&format!("refreshed the drifted {name} skill")),
+            "an already-current {name} must not be reported as installed/refreshed; \
+             got:\n{out2}"
+        );
+        let after = std::fs::metadata(&installed_path)
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert_eq!(
+            before, after,
+            "an up-to-date {name} must not even move its mtime"
+        );
+    }
+}
+
+/// Spec 69, criterion 1 (WATCH SKILLS RENDER TRUE, proven against the ACTUAL compiled
+/// `rigger status`, not merely trusted from the render function's own prose): whenever the
+/// COMMITTED `rigger-restore-the-dash` skill claims (verbatim) that "`rigger status` ...
+/// verifies the recorded marker actually serves before printing a URL" and "a dead marker
+/// prints a not-serving line naming the dead PID ... it never prints a URL nothing answers
+/// on", that claim must be TRUE of the real binary, not merely asserted in prose - so this
+/// drives real `rigger status` through the exact "dead marker" scenario the skill describes
+/// (a `.rigger/dash.marker` naming a definitely-dead pid on a definitely-unbound loopback
+/// port, alongside the `.rigger/dash.url` breadcrumb `cmd_status` actually reads) and checks
+/// the output against the skill's own literal promise. The check is GATED on the skill still
+/// making that specific claim (read fresh from the compiled binary's own `rigger docs`
+/// output) rather than fixed here as a hardcoded expectation: this test's job is proving the
+/// shipped PROSE never outruns the shipped CODE, not prescribing which of the two a future
+/// round corrects to close the gap - so a round that instead rewrites the claim to describe
+/// today's real (unverified) behavior leaves this test nothing to check, and it passes
+/// cleanly, exactly as it should. `docs_renders_every_watching_discipline_skill_through_the_
+/// compiled_binary` above only proves the skill's rendered TEXT is stable and structurally
+/// complete; it cannot catch text describing a command behavior the command does not
+/// actually have, which is a boundary bug this criterion's own Done-when text ("command
+/// references accuracy-pinned") exists to catch one level deeper than a bare subcommand name.
+#[test]
+fn status_output_matches_what_restore_the_dash_promises_about_a_dead_marker() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    let (_o, err, ok) = run_rigger(root, &["docs"]);
+    assert!(ok, "rigger docs must succeed; stderr:\n{err}");
+    let restore_the_dash =
+        std::fs::read_to_string(root.join("skills/rigger-restore-the-dash/SKILL.md"))
+            .expect("rigger docs wrote rigger-restore-the-dash");
+    let claims_status_verifies_the_marker = restore_the_dash
+        .contains("it verifies the recorded marker actually serves before printing a URL");
+    if !claims_status_verifies_the_marker {
+        // The shipped skill no longer makes this specific claim - nothing left to enforce.
+        return;
+    }
+
+    // A definitely-unbound loopback port (reserved-then-released, per this file's own
+    // `free_loopback_port` convention) and an impossible pid (`u32::MAX`, the same
+    // "impossible pid" value `pid_is_alive_reports_self_and_rejects_an_impossible_pid`,
+    // src/dash.rs, already pins) - so nothing on this machine answers on the port and no
+    // process holds the pid.
+    let dead_port = free_loopback_port();
+    let dead_pid = u32::MAX;
+    let dead_url = format!("http://127.0.0.1:{dead_port}/");
+    std::fs::write(root.join(".rigger/dash.url"), &dead_url).expect("seed the dash-url breadcrumb");
+    DashMarker {
+        port: dead_port,
+        pid: dead_pid,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the dash marker");
+
+    let (out, err, ok) = run_rigger(root, &["status"]);
+    assert!(
+        ok,
+        "rigger status must succeed even with a dead dash marker; stderr:\n{err}"
+    );
+
+    // The skill's literal promise: a not-serving line naming the dead pid, and NO URL that
+    // nothing answers on.
+    assert!(
+        out.contains("not serving") && out.contains(&dead_pid.to_string()),
+        "rigger-restore-the-dash promises status prints a not-serving line naming the dead \
+         pid {dead_pid} for a marker like this one - either the skill overclaims what the \
+         compiled binary does, or status's own dash line has regressed; got:\n{out}"
+    );
+    assert!(
+        !out.contains(&dead_url),
+        "rigger-restore-the-dash promises status never prints a URL nothing answers on; got \
+         the dead URL {dead_url:?} printed anyway:\n{out}"
+    );
+}
+
 /// Spec 46, criterion 2 (the pre-run graph-hygiene guidance ships to CONSUMERS through the
 /// INSTALL seam): a consumer never edits rigger's own repo copies - they run `rigger setup`,
 /// which renders and INSTALLS the `using-rigger` skill into THEIR project at
