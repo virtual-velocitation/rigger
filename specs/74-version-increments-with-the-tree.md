@@ -31,12 +31,15 @@ see whether the installed binary is behind the tree.
   commit, a `feat:` commit increments the minor, and a build with the tool absent or
   outside a checkout reports the crate semver with an explicit unversioned marker -
   proven at the derivation seam with fixture git repositories and the real binary. This
-  criterion OWNS the build-time delegation and its fallback.
+  criterion OWNS the build-time delegation and its fallback; the missing-go-gitsemver-
+  binary advisory that `rigger validate` emits is criterion 2's, NOT this one's.
 - [ ] `rigger validate` inside a checkout whose derived version orders above the installed
   binary's emits an advisory naming both versions and the commit distance, stays silent
-  when they match, and skips the comparison when either side is unversioned - proven at
-  the validate seam. This criterion OWNS the behind-the-tree advisory; derivation is
-  criterion 1's, NOT this one's.
+  on that comparison when they match or when either side is unversioned, and separately
+  emits an advisory naming the missing `go-gitsemver` binary whenever the built binary
+  carries the `+unversioned` marker because the tool was absent at build time - proven at
+  the validate seam. This criterion OWNS both the behind-the-tree advisory and the
+  missing-binary advisory; derivation is criterion 1's, NOT this one's.
 - [ ] Both feature lanes green: `cargo fmt --check`; `cargo clippy --all-targets -D
   warnings`; `cargo test` on default features AND `--no-default-features`.
 
