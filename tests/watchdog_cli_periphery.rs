@@ -33,7 +33,7 @@ mod common;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
@@ -196,6 +196,96 @@ fn watch_once_on_a_freshly_initialized_store_reports_nothing_and_exits_cleanly()
     assert!(
         out.trim().is_empty(),
         "a clean store must print nothing: {out:?}"
+    );
+}
+
+/// Nanosecond wall-clock `recorded_at`/`valid_from`, matching exactly what a real
+/// [`rigger::eventstore::sqlite::Store::append`] stamps - unlike `tests/cli.rs`'s own
+/// `seed_order_signature` (which stamps `0`, harmless for `rigger validate`'s report), a
+/// STALE `recorded_at` here would spuriously also satisfy `watch_poll`'s dead-driver "store
+/// quiet an hour" clause, contaminating the store-integrity assertion below with a SECOND,
+/// unrelated anomaly line.
+fn now_nanos() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as i64
+}
+
+/// Seed `<root>/.rigger/events.db`'s run stream with rows whose position order and revision
+/// order DISAGREE (spec 71's corruption signature `watch::order_signatures` detects) by
+/// inserting directly - bypassing the store's own always-increasing revision assignment, the
+/// only way to reach this shape (mirrors `tests/cli.rs`'s own `seed_order_signature`, which
+/// proves the SAME shared detector reachable from `rigger validate`'s DIFFERENT composition
+/// root). Three rows land in the run stream, in this insertion (position) order: revision 5,
+/// then revision 1, then revision 2 - distinct values (satisfying `UNIQUE(stream, revision)`,
+/// the actual on-disk shape a write into a compaction-opened revision hole leaves) where
+/// positions 2 and 3 both carry a revision at or below the running maximum (5).
+fn seed_order_signature(root: &Path) {
+    let rigger_dir = root.join(".rigger");
+    std::fs::create_dir_all(&rigger_dir).unwrap();
+    let db = rigger_dir.join("events.db");
+    // Open through the real store first, so the schema is laid down exactly as the binary
+    // itself would lay it down (mirrors `seed_run_events`'s own precondition).
+    rigger::eventstore::sqlite::Store::open(db.to_str().unwrap()).unwrap();
+    let stream = format!(
+        "{}{}",
+        rigger::eventstore::namespace::Namespaced::prefix_for(&run_stream_identity(root)),
+        rigger::conductor::STREAM
+    );
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let ts = now_nanos();
+    for revision in [5i64, 1, 2] {
+        conn.execute(
+            "INSERT INTO events (stream, type, id, data, meta, valid_from, recorded_at, revision)
+             VALUES (?1, 'Seed', ?2, X'7b7d', '{}', ?3, ?3, ?4)",
+            rusqlite::params![stream, format!("seed-{revision}"), ts, revision],
+        )
+        .unwrap();
+    }
+}
+
+/// The shared consolidation's own periphery proof (spec 69 c2 round 2,
+/// `d-u69c2r2-consolidate-order-signatures`): `watch::order_signatures` is now the ONE
+/// detector both `rigger validate`
+/// (`tests/cli.rs::validate_detects_a_stream_whose_position_order_and_revision_order_disagree`)
+/// and this command's own store-integrity signal call - reachable from TWO DIFFERENT
+/// composition roots. Proving the algorithm through `rigger validate` says nothing about
+/// whether `main.rs::watch_poll`'s OWN wiring (the whole-log `full_events` read, `detect`'s
+/// signal-6 fold, `out_of_order_streams`' delegation) still reaches it correctly through THIS
+/// command - a regression here (e.g. the consolidation quietly narrowing `watch_poll`'s read
+/// to the run-scoped stream instead of the whole log, or `detect` dropping the signal-6 arm)
+/// would leave every pure `watch::` unit test green while `rigger watch` itself silently
+/// stopped reporting store corruption. Drives the REAL compiled binary against a REAL sqlite
+/// store carrying a genuine out-of-order revision (not an injected `WatchInputs`), pinned to
+/// the exact reported values like the validate counterpart, not a loose digit match.
+#[test]
+fn watch_once_reports_a_store_integrity_anomaly_through_the_real_compiled_binary() {
+    let proj = temp_project();
+    let root = proj.path();
+    seed_order_signature(root);
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "watch --once must exit 0 even on a store-integrity anomaly (report-only, like every \
+         other signal): {err}"
+    );
+    let lines: Vec<&str> = out.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "a store with exactly one disordered stream must report exactly one anomaly, no \
+         spurious extras from an unrealistic recorded_at: {out}"
+    );
+    assert!(
+        lines[0].contains("store integrity")
+            && lines[0].contains("run")
+            && lines[0].contains("2 row(s) where position order and revision order disagree")
+            && lines[0].contains("docs/architecture.md, section 5.1.3"),
+        "the store-integrity line must name signal, subject, exact row count, and the repair \
+         doc together: {}",
+        lines[0]
     );
 }
 
