@@ -2715,7 +2715,9 @@ impl RunCtx<'_> {
                 .insert(comp.target.clone(), attempts);
             self.emit_meta(
                 ledger::TYPE_UNIT_FAILED,
-                json!({"id": comp.target, "attempts": attempts}),
+                // spec 69, criterion 3 (the cause wire): a compensation revert is a
+                // LATER unit's review proving this one wrong - a deferred reject.
+                json!({"id": comp.target, "attempts": attempts, "cause": CAUSE_REJECT}),
                 &[
                     (META_COMPENSATED, &compensated),
                     (META_CONTRADICTION, contradiction),
@@ -3932,7 +3934,13 @@ impl RunCtx<'_> {
                 let failed_sha = worktree::head_sha_of(dir);
                 self.emit_meta(
                     ledger::TYPE_UNIT_FAILED,
-                    json!({"id": st.name, "attempts": attempts + 1}),
+                    // spec 69, criterion 3: the resumed exhaustive re-assert failing is a
+                    // plain gate failure - name the gate.
+                    json!({
+                        "id": st.name,
+                        "attempts": attempts + 1,
+                        "cause": gate_failure_cause(&full.evidence),
+                    }),
                     &[(META_WORKTREE_SHA, &failed_sha)],
                 )?;
                 return Ok(false);
@@ -3962,7 +3970,13 @@ impl RunCtx<'_> {
                 let failed_sha = worktree::head_sha_of(dir);
                 self.emit_meta(
                     ledger::TYPE_UNIT_FAILED,
-                    json!({"id": st.name, "attempts": attempts + 1}),
+                    // spec 69, criterion 3: a resumed merge whose post-merge re-gate
+                    // went red is a merge conflict, not a plain gate failure.
+                    json!({
+                        "id": st.name,
+                        "attempts": attempts + 1,
+                        "cause": CAUSE_INTEGRATE_CONFLICT,
+                    }),
                     &[(META_WORKTREE_SHA, &failed_sha)],
                 )?;
                 return Ok(false);
@@ -4038,6 +4052,13 @@ impl RunCtx<'_> {
             let radius = self.grounded_blast_radius(st);
             self.record_blast_radius(st, attempts, &blast_radius, &radius)?;
             let mut spawn_err: Option<String> = None;
+            // The cause wire (spec 69, criterion 3): set at whichever branch below
+            // actually fails this attempt, so the single convergent `UnitFailed` emit
+            // near the bottom of this loop stamps the REAL cause rather than inferring
+            // one post hoc from the shared `next`/`spawn_err` accumulators (which two
+            // distinct causes - a plain gate failure and a post-merge conflict - both
+            // populate identically for the retry-prompt evidence).
+            let mut cause = String::new();
             // The RESOLVED model id the implementer reported for THIS attempt, surfaced by
             // the replay driver from the worker's `--meta` report. Empty until the spawn's
             // result is consumed (and on the resume-skip path, which re-uses a prior
@@ -4185,7 +4206,10 @@ impl RunCtx<'_> {
                     Err(e) if is_parked(&e) => return Err(e),
                     // A mid-spawn crash (usage limit, non-zero exit) is remediated,
                     // not propagated: it must not abort the whole run (§8).
-                    Err(e) => spawn_err = Some(format!("agent {:?}: {}", st.agent, e.0)),
+                    Err(e) => {
+                        spawn_err = Some(format!("agent {:?}: {}", st.agent, e.0));
+                        cause = CAUSE_INFRA_SPAWN.to_string();
+                    }
                 }
             }
 
@@ -4405,6 +4429,11 @@ impl RunCtx<'_> {
                                 // to remediation, exactly like the exhaustive pre-merge red
                                 // below - never integrate a broken merged tree.
                                 Some(evidence) => {
+                                    // spec 69, criterion 3: a post-merge break is a merge
+                                    // conflict, never a plain gate cause - set it HERE, at
+                                    // the branch that detected it, not inferred later from
+                                    // the evidence this shares with a plain gate failure.
+                                    cause = CAUSE_INTEGRATE_CONFLICT.to_string();
                                     next.gate_evidence = evidence;
                                 }
                             }
@@ -4413,17 +4442,20 @@ impl RunCtx<'_> {
                             // inner loop had skipped fails against the merged-to-be tree): treat
                             // it like any gate failure - capture the evidence and fall through
                             // to remediation, do NOT integrate a tree that fails the full suite.
+                            cause = gate_failure_cause(&full.evidence);
                             next.gate_evidence = full.evidence;
                         }
                     } else {
                         // A rejecting adjudicator is treated exactly like a gate failure:
                         // capture its reasoning for the next attempt's prompt (item 5) and
                         // fall through to remediation, do NOT integrate.
+                        cause = CAUSE_REJECT.to_string();
                         next.review_reason = review.reason;
                     }
                 } else {
                     // Capture the failing gates' evidence for the next attempt's
                     // prompt (item 3 / spec 02).
+                    cause = gate_failure_cause(&gate_outcome.evidence);
                     next.gate_evidence = gate_outcome.evidence;
                 }
             }
@@ -4447,7 +4479,10 @@ impl RunCtx<'_> {
             let failed_sha = worktree::head_sha_of(dir);
             self.emit_meta(
                 ledger::TYPE_UNIT_FAILED,
-                json!({"id": st.name, "attempts": attempts}),
+                // spec 69, criterion 3: `cause` was set above, at the branch that
+                // actually failed this attempt (spawn crash / gate / merge-block /
+                // review reject) - never inferred here from the shared evidence.
+                json!({"id": st.name, "attempts": attempts, "cause": cause}),
                 &[(META_WORKTREE_SHA, &failed_sha)],
             )?;
             if rem.decision == safety::Decision::Escalate {
@@ -4825,7 +4860,10 @@ impl RunCtx<'_> {
                 let failed_sha = worktree::head_sha_of(&dir);
                 self.emit_meta(
                     ledger::TYPE_UNIT_FAILED,
-                    json!({"id": st.name, "attempts": lane + 1}),
+                    // spec 69, criterion 3: this site fires ONLY on a post-merge block
+                    // (a pre-merge gate/review loss is a silent `continue` two lines
+                    // above, never a UnitFailed) - always a merge conflict.
+                    json!({"id": st.name, "attempts": lane + 1, "cause": CAUSE_INTEGRATE_CONFLICT}),
                     &[(META_WORKTREE_SHA, &failed_sha)],
                 )?;
                 continue;
@@ -5185,11 +5223,16 @@ impl RunCtx<'_> {
 
             // A standalone review stage integrates no code of its own, so there is nothing to
             // narrow by blast radius: it runs the EXHAUSTIVE gate library (spec 12, unit 3),
-            // exactly as before.
-            let gates_pass = approved
-                && self
-                    .run_gates(st, dir, attempts, GateSelection::Exhaustive)?
-                    .pass;
+            // exactly as before. Gates run ONLY when approved (short-circuit, unchanged) -
+            // `gate_result` is `None` on a reject, so the cause wire (spec 69, criterion 3)
+            // below can tell "the gates never ran" (reject) from "the gates ran and failed"
+            // (gate:<name>) without re-deriving `approved`.
+            let gate_result = if approved {
+                Some(self.run_gates(st, dir, attempts, GateSelection::Exhaustive)?)
+            } else {
+                None
+            };
+            let gates_pass = gate_result.as_ref().is_some_and(|g| g.pass);
             if gates_pass {
                 // Gap 16 invariant (spec 06 unit 3): the adjudicator's verdict is folded
                 // and acted on HERE - an approve (with green gates) integrates and returns
@@ -5252,10 +5295,16 @@ impl RunCtx<'_> {
             let failed_attempt = attempts;
             let rem = safety::remediate(attempts, self.max_retries());
             attempts = rem.attempts;
+            // spec 69, criterion 3 (the cause wire): `approved` means the gates ran and
+            // failed (`gate_result` is `Some`); otherwise the adjudicator itself rejected.
+            let cause = match &gate_result {
+                Some(g) => gate_failure_cause(&g.evidence),
+                None => CAUSE_REJECT.to_string(),
+            };
             self.emit_keyed_meta(
                 &format!("{}/failed#{failed_attempt}", st.name),
                 ledger::TYPE_UNIT_FAILED,
-                json!({"id": st.name, "attempts": attempts}),
+                json!({"id": st.name, "attempts": attempts, "cause": cause}),
                 // The reviewed base-HEAD sha (spec 11, unit 1): a standalone-review reject
                 // pairs with a later approve on the SAME sha for the flip-flop fold.
                 &[(META_WORKTREE_SHA, &worktree::head_sha_of(dir))],
@@ -6213,7 +6262,9 @@ impl RunCtx<'_> {
             self.emit_keyed(
                 &format!("{gate_name}/failed#{failed_attempt}"),
                 ledger::TYPE_UNIT_FAILED,
-                json!({"id": gate_name, "attempts": attempts}),
+                // spec 69, criterion 3: the plan-critique gate runs no gates of its
+                // own - every reject here is the adjudicator's.
+                json!({"id": gate_name, "attempts": attempts, "cause": CAUSE_REJECT}),
             )?;
             if rem.decision == safety::Decision::Escalate {
                 let why = if reason.trim().is_empty() {
@@ -8150,6 +8201,43 @@ fn review_evidence(reason: &str) -> BTreeMap<String, String> {
         m.insert("review".to_string(), r.to_string());
     }
     m
+}
+
+/// The cause wire's (spec 69, criterion 3) closed vocabulary: every `UnitFailed` this
+/// conductor emits carries exactly one of these, stamped from the branch that actually
+/// failed it - never inferred downstream (status/watch just read it). `gate:<name>` (via
+/// [`gate_failure_cause`]) and `infra:<kind>` carry a dynamic suffix; the other two are
+/// the fixed tags below.
+///
+/// - [`CAUSE_REJECT`]: an adjudicator/review verdict rejected the unit - the direct
+///   per-unit reject, a standalone/fan-out review reject, a plan-critique DAG-critique
+///   reject (which runs no gates at all), and a compensation revert (a LATER unit's
+///   review proved this one wrong - a deferred reject, since the disqualifying signal is
+///   itself a review verdict).
+/// - [`CAUSE_INTEGRATE_CONFLICT`]: the merge landed cleanly but the POST-MERGE re-gate
+///   went red - a batch-mate's already-integrated change combined into a broken tree.
+///   Distinguished from a plain gate failure at the BRANCH POINT where it is detected
+///   (`integration.blocked`), never inferred from the shared evidence accumulator both
+///   cases populate for the retry prompt.
+/// - [`CAUSE_INFRA_SPAWN`]: a mid-spawn driver crash (a non-zero exit, a non-usage-limit
+///   error) - the usage-limit case never reaches `UnitFailed` at all (spec 06 unit 6:
+///   wait-until-reset + re-spawn, no attempt charged).
+const CAUSE_REJECT: &str = "reject";
+const CAUSE_INTEGRATE_CONFLICT: &str = "integrate-conflict";
+const CAUSE_INFRA_SPAWN: &str = "infra:spawn";
+
+/// The `gate:<name>` cause (spec 69, criterion 3) for a plain gate-suite failure: the
+/// FIRST failing gate's id, parsed off the `"{gate}: {evidence}"` convention
+/// [`RunCtx::run_gates`] already formats every evidence string with. Falls back to
+/// `gate:unknown` on empty evidence - defensive; `run_gates` never returns a failing
+/// [`GateOutcome`] with none.
+fn gate_failure_cause(evidence: &[String]) -> String {
+    let name = evidence
+        .first()
+        .and_then(|e| e.split_once(": "))
+        .map(|(name, _)| name)
+        .unwrap_or("unknown");
+    format!("gate:{name}")
 }
 
 /// An adjudicator's verdict gates the stage, FAIL-CLOSED: ONLY an explicit
@@ -17012,6 +17100,61 @@ mod tests {
             reject_with_sha.is_some(),
             "a review-reject UnitFailed must carry the reviewed worktree sha"
         );
+        // spec 69, criterion 3 (the cause wire): an adjudicator reject's UnitFailed
+        // carries the closed-vocabulary "reject" cause.
+        let v: Value = serde_json::from_slice(&reject_with_sha.unwrap().data).unwrap();
+        assert_eq!(
+            v["cause"],
+            json!("reject"),
+            "a review reject must be stamped 'reject': {v:?}"
+        );
+    }
+
+    #[test]
+    fn an_exhaustive_gate_failure_on_an_approved_unit_records_a_gate_cause() {
+        // spec 69, criterion 3 (the cause wire): the exhaustive integrate-door gate
+        // (spec 12 unit 3) that fails AFTER approval - a gate the narrowed inner loop
+        // SKIPPED because it misses the blast radius - is a plain gate failure, never a
+        // merge conflict (nothing was ever merged) and never a review reject (the
+        // adjudicator approved). The UnitFailed it records must name the actual gate.
+        let repo = init_repo();
+        let mut cfg = sha_stamp_cfg();
+        // "door" is scoped to a file the implementer never touches, so the narrowed
+        // inner loop SKIPS it inline - but it is RED at the exhaustive integrate door.
+        cfg.workflow
+            .gates
+            .insert("door".into(), gate_def_inputs("exit 1", &["docs/door.md"]));
+        cfg.workflow.stages.get_mut("s").unwrap().gates = vec!["ok".into(), "door".into()];
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            output_by_agent: HashMap::from([
+                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
+                ("lens".to_string(), "reviewed: no blocker".to_string()),
+            ]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo.path().to_str().unwrap().to_string(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_ne!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "a tree that fails the exhaustive door never lands"
+        );
+        assert_eq!(
+            rs.units["s"].cause, "gate:door",
+            "an exhaustive-door gate failure on an approved unit must name the failing \
+             gate, not a generic or merge-conflict cause"
+        );
     }
 
     #[test]
@@ -20775,6 +20918,21 @@ mod tests {
         };
         // (D) the blocked lane-0 candidate recorded a UnitFailed - the merge-break signal
         // single-lane emits, no longer dropped by the bare `continue` arm.
+        // spec 69, criterion 3 (the cause wire): the speculation candidate's merge-break
+        // UnitFailed is stamped "integrate-conflict".
+        let speculation_failed = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_FAILED
+                    && String::from_utf8_lossy(&e.data).contains("\"id\":\"s\"")
+            })
+            .expect("the blocked candidate emits a UnitFailed");
+        let speculation_failed_v: Value = serde_json::from_slice(&speculation_failed.data).unwrap();
+        assert_eq!(
+            speculation_failed_v["cause"],
+            json!("integrate-conflict"),
+            "a speculation candidate's post-merge block must be 'integrate-conflict': {speculation_failed_v:?}"
+        );
         assert!(
             events.iter().any(|e| {
                 e.type_ == ledger::TYPE_UNIT_FAILED
@@ -21904,6 +22062,12 @@ mod tests {
         // The run completes (Ok), not aborted; the crashing unit escalates.
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(rs.units["s"].status, ledger::Status::Escalated);
+        // spec 69, criterion 3 (the cause wire): a mid-spawn crash's UnitFailed carries
+        // the closed-vocabulary "infra:spawn" cause, never a gate or review label.
+        assert_eq!(
+            rs.units["s"].cause, "infra:spawn",
+            "a mid-spawn crash must be stamped as an infra cause, not inferred downstream"
+        );
     }
 
     #[test]
@@ -24710,6 +24874,235 @@ mod tests {
     }
 
     #[test]
+    fn a_resumed_reviewed_unit_whose_exhaustive_gate_fails_records_a_gate_cause() {
+        // spec 69, criterion 3 (the cause wire): the SAME `ResumePhase::Reviewed`
+        // exhaustive re-assert this file's sibling test exercises (a prior window
+        // recorded an approved `reviewed` but the merge was interrupted), except the
+        // gate genuinely fails on resume. The UnitFailed this records must name the
+        // failing gate - it is a plain gate failure, not a merge conflict.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        commit_on_unit_branch(&repo_path, "s", "feature.rs", "fn feature() {}\n");
+
+        let st = Store::open(":memory:").unwrap();
+        seed_events_in_run(
+            &st,
+            &[],
+            &[
+                Event::new(
+                    ledger::TYPE_UNIT_STARTED,
+                    serde_json::to_vec(
+                        &json!({"id": "s", "agent": "worker", "branch": unit_branch("s")}),
+                    )
+                    .unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_STATUS,
+                    serde_json::to_vec(&json!({"id": "s", "status": "verified"})).unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_STATUS,
+                    serde_json::to_vec(&json!({"id": "s", "status": "reviewed"})).unwrap(),
+                ),
+            ],
+        );
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("adversary".into(), agent("adversary"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("bad".into(), gate_def("exit 1"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["bad".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lens".into()],
+                    adversary: "adversary".into(),
+                    adjudicator: "judge".into(),
+                    tiers: None,
+                },
+                ..Default::default()
+            },
+        );
+
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+
+        // The FIRST UnitFailed for "s" is the resumed exhaustive re-assert failing on
+        // this exact gate - read the raw event rather than the folded final cause, since
+        // a later (normal) remediation attempt in the same run() may re-fail differently.
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let first_failed = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_FAILED
+                    && String::from_utf8_lossy(&e.data).contains("\"id\":\"s\"")
+            })
+            .expect("the resumed exhaustive gate failure records a UnitFailed");
+        let v: Value = serde_json::from_slice(&first_failed.data).unwrap();
+        assert_eq!(
+            v["cause"],
+            json!("gate:bad"),
+            "a resumed-reviewed exhaustive gate failure must name the failing gate: {v:?}"
+        );
+    }
+
+    #[test]
+    fn a_resumed_reviewed_units_merge_break_records_an_integrate_conflict_cause() {
+        // spec 69, criterion 3 (the cause wire): the RESUMED counterpart of
+        // `integrate_re_gates_the_merged_tree_and_a_merge_break_blocks_the_second_unit`
+        // - a prior window recorded an approved `reviewed` (ResumePhase::Reviewed), but
+        // by the time this resume merges it, the base already carries a batch-mate's
+        // (here: seeded directly, deterministically) change that combines into a broken
+        // tree. The post-merge block is a MERGE conflict, not a plain gate failure -
+        // its UnitFailed must be stamped "integrate-conflict".
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        // The shared base both the unit's branch and the checked-out repo diverge from.
+        std::fs::write(Path::new(&repo_path).join("m.rs"), MERGE_BREAK_BASE).unwrap();
+        for args in [
+            &["add", "m.rs"][..],
+            &["commit", "-q", "-m", "base m.rs"][..],
+        ] {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo_path)
+                .args(args)
+                .output()
+                .unwrap();
+        }
+
+        // The unit's OWN branch (a prior window's approved diff): appends one MARK.
+        commit_on_unit_branch(
+            &repo_path,
+            "s",
+            "m.rs",
+            &format!("{MERGE_BREAK_BASE}MARK\n"),
+        );
+
+        // The checked-out repo (what `integrate_and_emit` merges onto) independently
+        // gained a PREPENDED MARK since - exactly what an already-integrated batch-mate
+        // would have landed. Auto-merges cleanly with the unit's append (different
+        // regions of the file), so the merge itself SUCCEEDS - but the merged tree now
+        // carries TWO marks, which the post-merge re-gate rejects.
+        std::fs::write(
+            Path::new(&repo_path).join("m.rs"),
+            format!("MARK\n{MERGE_BREAK_BASE}"),
+        )
+        .unwrap();
+        for args in [
+            &["add", "m.rs"][..],
+            &["commit", "-q", "-m", "poison m.rs"][..],
+        ] {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo_path)
+                .args(args)
+                .output()
+                .unwrap();
+        }
+
+        let st = Store::open(":memory:").unwrap();
+        seed_events_in_run(
+            &st,
+            &[],
+            &[
+                Event::new(
+                    ledger::TYPE_UNIT_STARTED,
+                    serde_json::to_vec(
+                        &json!({"id": "s", "agent": "worker", "branch": unit_branch("s")}),
+                    )
+                    .unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_STATUS,
+                    serde_json::to_vec(&json!({"id": "s", "status": "verified"})).unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_STATUS,
+                    serde_json::to_vec(&json!({"id": "s", "status": "reviewed"})).unwrap(),
+                ),
+            ],
+        );
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert(
+            "g".into(),
+            gate_def(
+                "c=$(grep -c MARK m.rs 2>/dev/null); c=${c:-0}; \
+                 if [ \"$c\" -le 1 ]; then exit 0; else \
+                 echo 'gate g failed: merge introduced duplicate MARK'; exit 1; fi",
+            ),
+        );
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["g".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lens".into()],
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+
+        assert!(
+            !driver.spawned("worker") && !driver.spawned("lens") && !driver.spawned("judge"),
+            "premise: an already-approved unit must resume straight to integrate with no \
+             lifecycle spawns, or this test is not exercising the Reviewed resume branch"
+        );
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let first_failed = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_FAILED
+                    && String::from_utf8_lossy(&e.data).contains("\"id\":\"s\"")
+            })
+            .expect("the resumed merge-break records a UnitFailed");
+        let v: Value = serde_json::from_slice(&first_failed.data).unwrap();
+        assert_eq!(
+            v["cause"],
+            json!("integrate-conflict"),
+            "a resumed-reviewed merge break must be stamped 'integrate-conflict', not a \
+             plain gate cause: {v:?}"
+        );
+    }
+
+    #[test]
     fn a_live_approved_unit_restores_a_worktree_the_integrate_door_exhaustive_gate_deleted() {
         // Spec 64 criterion 3, adjudication round 2 (adv-u3c3-ensure-present-covers-only-one-
         // of-three-same-function-windows, UPHELD, window 2 of 2). The main loop's
@@ -26486,6 +26879,12 @@ mod tests {
             always_fail.runs.load(Ordering::SeqCst),
             3,
             "a product gate failure is never rerun: one run per attempt, no flaky retries"
+        );
+        // spec 69, criterion 3 (the cause wire): a plain gate failure's UnitFailed names
+        // the failing gate, "gate:<name>" - never a bare/generic cause.
+        assert_eq!(
+            rs.units["s"].cause, "gate:g",
+            "an inner-loop gate failure must name the failing gate"
         );
         let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
         // The graduated gate demoted on its first failure, exactly as before.
@@ -29306,6 +29705,15 @@ mod tests {
                 .is_some_and(|r| r.contains("compensate")),
             "the compensation carries the contradiction reason for provenance and feedback"
         );
+        // spec 69, criterion 3 (the cause wire): a compensation revert is a LATER unit's
+        // review proving this one wrong - a deferred reject, stamped "reject" like any
+        // other review-driven failure.
+        let compensated_v: Value = serde_json::from_slice(&compensated.data).unwrap();
+        assert_eq!(
+            compensated_v["cause"],
+            json!("reject"),
+            "a compensation-driven revert must be stamped 'reject': {compensated_v:?}"
+        );
 
         // (2) REVERTED ON THE RUN BRANCH, in an EVENTED (not history-rewriting) rollback: the
         // run branch carries a compensation revert commit for unit-a.
@@ -30140,6 +30548,15 @@ mod tests {
         assert!(
             postmerge_red,
             "the loser's merged tree records a RED post-merge re-gate verdict carrying the merge-break evidence"
+        );
+
+        // spec 69, criterion 3 (the cause wire): the merge-break UnitFailed is stamped
+        // "integrate-conflict" - a DISTINCT cause from a plain gate failure, even though
+        // both flow through the same remediation fall-through, because the merged tree
+        // (not the candidate's own worktree) is what went red.
+        assert_eq!(
+            rs.units[loser].cause, "integrate-conflict",
+            "a post-merge re-gate block must be stamped 'integrate-conflict', not a plain gate cause"
         );
 
         // (3) The winner's post-merge re-gate was NEAR-FREE: a content-addressed cache-hit of
@@ -31188,6 +31605,63 @@ mod tests {
             rs.units["rev"].status,
             ledger::Status::Failed,
             "a rejected review stage stays Failed (non-terminal), resuming on the next step"
+        );
+        // spec 69, criterion 3 (the cause wire): a standalone review reject is stamped
+        // "reject", the same closed-vocabulary tag any adjudicator reject carries.
+        assert_eq!(
+            rs.units["rev"].cause, "reject",
+            "a standalone fan-out review reject must be stamped 'reject'"
+        );
+    }
+
+    #[test]
+    fn a_fan_out_review_stage_whose_gates_fail_after_approval_records_a_gate_cause() {
+        // spec 69, criterion 3 (the cause wire): a standalone fan-out review stage
+        // whose adjudicator APPROVES but whose (exhaustive) gates then fail is a gate
+        // failure, not a review reject - `run_fan_out_review_loop`'s single UnitFailed
+        // site must distinguish the two, exactly like the per-unit path.
+        let repo = init_repo();
+        let mut cfg = Config::default();
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("g".into(), gate_def("exit 1"));
+        cfg.workflow.stages.insert(
+            "rev".into(),
+            Stage {
+                name: "rev".into(),
+                strategy: "fan-out".into(),
+                adjudicator: "judge".into(),
+                gates: vec!["g".into()],
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            output_by_agent: HashMap::from([(
+                "judge".to_string(),
+                r#"{"verdict":"approve"}"#.to_string(),
+            )]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo.path().to_str().unwrap().to_string(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_ne!(
+            rs.units["rev"].status,
+            ledger::Status::Integrated,
+            "a standalone review stage whose gates fail never integrates"
+        );
+        assert_eq!(
+            rs.units["rev"].cause, "gate:g",
+            "an approved-but-gate-failing standalone review stage must name the failing \
+             gate, not the generic 'reject' a review verdict rejection carries"
         );
     }
 
@@ -32801,6 +33275,13 @@ mod tests {
             rs1.units["plan-critique"].status,
             ledger::Status::Escalated,
             "run 1: an unresolvable rule 7/8 defect must escalate the gate"
+        );
+        // spec 69, criterion 3 (the cause wire): the plan-critique gate runs no gates of
+        // its own - a reject is always the adjudicator's, so its UnitFailed is stamped
+        // "reject".
+        assert_eq!(
+            rs1.units["plan-critique"].cause, "reject",
+            "a plan-critique gate reject must be stamped 'reject'"
         );
         assert_eq!(
             d1.count("worker"),
