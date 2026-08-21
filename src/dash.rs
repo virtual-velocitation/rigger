@@ -267,13 +267,112 @@ pub fn pid_is_alive(pid: u32) -> bool {
     Path::new("/proc").join(pid.to_string()).is_dir()
 }
 
+/// The loopback port embedded in a recorded dash URL (`http://127.0.0.1:<port>/`, the only
+/// shape any dash-starting path writes - [`crate`]'s `spawn_run_dashboard` and
+/// `spawn_run_dashboard_detached` both format it this way). `None` for anything that does not
+/// parse as `scheme://host:port...` with a valid `u16` port, so a malformed or foreign URL is
+/// treated as unparseable rather than guessed at - the safe direction [`dash_status`] takes for
+/// every other ambiguous input.
+fn url_port(url: &str) -> Option<u16> {
+    let after_scheme = url.split("://").nth(1)?;
+    let host_port = after_scheme.split('/').next().unwrap_or(after_scheme);
+    host_port.rsplit_once(':')?.1.parse().ok()
+}
+
+/// The truthful presentation of the dash breadcrumb `rigger status` shows (spec 69, criterion
+/// 4: "`rigger status` never lies about the dash"). A recorded URL alone is not proof the dash
+/// is still up - a crashed or killed process leaves the breadcrumb behind on disk - so this
+/// weighs it against the per-project [`DashMarker`] and a serving predicate before deciding
+/// what a caller may trust.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DashStatus {
+    /// No dash URL has ever been recorded for this project - nothing to show.
+    Absent,
+    /// A URL is recorded and TRUSTED: either a probe PROVES it is still serving, or no marker
+    /// exists to check against and it is left unverified. An absent marker reads as
+    /// "unverifiable", never "dead" - the marker LIFECYCLE is a separate concern (spec 62), and
+    /// more than one dash-starting path (the guard-bound `rigger run` / `rigger serve` dash)
+    /// records a URL but no marker at all, so treating "no marker" as "dead" would falsely
+    /// report a genuinely live dash as down.
+    Serving(String),
+    /// A probe PROVED the recorded URL's own port is not serving - the lie this criterion
+    /// closes: the recorded URL is withheld, so an operator is never sent chasing it.
+    NotServing {
+        /// The pid a MATCHING marker names, when one is recorded (`Some`). A marker whose port
+        /// names some OTHER dash never supplies this: its pid belongs to an unrelated process,
+        /// not the one that used to serve this URL, so printing it would be a second lie in the
+        /// other direction (round 3, adv-u69c4r2-mismatched-marker-still-trusts-a-dead-url).
+        pid: Option<u32>,
+    },
+}
+
+/// Decide [`DashStatus`] from the two on-disk breadcrumbs and an injected port-serving probe
+/// (spec 69, criterion 4). Pure, so both the trusted-URL and the caught-lie outcomes are
+/// provable without a real dashboard process; the production caller (`rigger status`) injects
+/// [`dash_serving_on`] directly - the SAME underlying probe the step path's own idempotent-start
+/// decision ([`dash_start_needed`]) verifies through, so `rigger status` and the step path can
+/// never disagree about whether a recorded dash is alive.
+///
+/// Round 2 (adv-u69c4-dash-status-verifies-wrong-port): a marker only PROVES `recorded_url`'s
+/// liveness when its port MATCHES the port embedded in that URL - two independent
+/// dash-starting paths write `dash.url` and `dash.marker` separately (one writes a URL alone
+/// on a free-searched port, the other writes both together on a fixed port) and neither is
+/// ever cleared, so a project that has used both can be left with breadcrumbs naming two
+/// different dashes.
+///
+/// Round 3 (adv-u69c4r2-mismatched-marker-still-trusts-a-dead-url): the round-2 fix stopped a
+/// mismatched marker's OWN liveness standing in as proof about `recorded_url`, but then fell
+/// back to filtering the marker to `None` and taking the SAME unconditional-trust branch a
+/// genuinely absent marker uses - which is not "nothing to check": a marker that exists but
+/// names a different dash is a positive signal something IS being tracked, it just cannot prove
+/// THIS url. So a genuinely dead `recorded_url` paired with a mismatched-but-otherwise-live
+/// marker sailed straight through as trusted, unverified. The fix: probe `url_port(&url)`
+/// itself directly whenever no MATCHING marker exists to prove it. A marker that is truly
+/// ABSENT still skips the probe and stays trusted unconditionally (the guard-bound `rigger run`
+/// / `rigger serve` dash never writes one at all, so treating its absence as suspicious would
+/// falsely distrust the one path that is documented to have none - spec 62 owns making that
+/// path write one, not this criterion). A mismatched marker no longer gets that free pass: its
+/// port differs from `port`, so the branch below probes `port` (the URL's own) regardless, and
+/// only a genuinely matching marker's pid is ever named in the [`DashStatus::NotServing`] this
+/// returns - a mismatched marker's pid is never printed as though it belonged to this URL.
+pub fn dash_status(
+    recorded_url: Option<String>,
+    marker: Option<DashMarker>,
+    port_serving: impl Fn(u16) -> bool,
+) -> DashStatus {
+    let Some(url) = recorded_url else {
+        return DashStatus::Absent;
+    };
+    let Some(marker) = marker else {
+        // Nothing recorded to check against at all - unverifiable but trusted, unchanged.
+        return DashStatus::Serving(url);
+    };
+    let Some(port) = url_port(&url) else {
+        // A recorded URL this crate never wrote (foreign or malformed) - unparseable, so
+        // unverifiable, the same safe direction taken for every other ambiguous input here.
+        return DashStatus::Serving(url);
+    };
+    // A pid is only ever named when the marker's port MATCHES this url's - a mismatched
+    // marker's pid belongs to some other, unrelated dash and must never be printed as though it
+    // were this url's.
+    let pid = (marker.port == port).then_some(marker.pid);
+    if port_serving(port) {
+        DashStatus::Serving(url)
+    } else {
+        DashStatus::NotServing { pid }
+    }
+}
+
 /// The idempotency decision for the step drive path (spec 39, criterion 1): given the
 /// per-project [`DashMarker`] recorded on disk (if any) and a predicate reporting whether a
 /// recorded dash is STILL serving, returns `true` iff the step must START a run dashboard -
 /// i.e. NONE is already serving. A marker naming a still-serving dash short-circuits to
 /// `false`, so the second and every later `step` of a run is a no-op, never a second dash
 /// or a port fight. `still_serving` is injected so the decision is provable without a real
-/// dash process; production passes [`pid_is_alive`] over the marker's pid.
+/// dash process; production passes a probe over [`dash_serving_on`] (a marker left by a
+/// self-reaped or pid-recycled dash must never masquerade as still serving on a bare pid
+/// check) - the SAME underlying probe [`dash_status`]'s truthful presentation verifies
+/// through, so the two decisions can never disagree about whether a recorded dash is alive.
 pub fn dash_start_needed(
     marker: Option<DashMarker>,
     still_serving: impl Fn(DashMarker) -> bool,
@@ -7768,6 +7867,137 @@ mod tests {
         assert!(
             !dash_start_needed(Some(m), |_| true),
             "a live recorded dash -> start NO second one"
+        );
+    }
+
+    #[test]
+    fn dash_status_trusts_a_url_with_no_marker_and_catches_a_marker_that_lies() {
+        let m = DashMarker {
+            port: 7442,
+            pid: 4242,
+        };
+        let url = "http://127.0.0.1:7442/".to_string();
+
+        // No URL ever recorded -> Absent, and the probe is never even consulted (nothing to
+        // verify).
+        assert_eq!(
+            dash_status(None, Some(m), |_| panic!(
+                "must not probe when there is no recorded URL"
+            )),
+            DashStatus::Absent,
+            "no recorded dash -> Absent"
+        );
+
+        // A recorded URL with NO marker to check against is TRUSTED as-is, with NO probe - the
+        // guard-bound `rigger run` / `rigger serve` dash records a URL but no marker at all
+        // (spec 62 owns the marker lifecycle), so an absent marker must never read as "dead".
+        assert_eq!(
+            dash_status(Some(url.clone()), None, |_| panic!(
+                "must not probe when there is no marker to verify"
+            )),
+            DashStatus::Serving(url.clone()),
+            "a recorded URL with no marker to verify is trusted unchanged"
+        );
+
+        // A MATCHING marker whose port the probe PROVES is serving -> the URL is trusted.
+        assert_eq!(
+            dash_status(Some(url.clone()), Some(m), |p| {
+                assert_eq!(p, 7442, "must probe the matching marker's own port");
+                true
+            }),
+            DashStatus::Serving(url.clone()),
+            "a marker proven serving -> the recorded URL is trusted"
+        );
+
+        // A MATCHING marker whose port the probe PROVES is NOT serving -> the lie this
+        // criterion closes: no URL, just the pid the matching marker names.
+        assert_eq!(
+            dash_status(Some(url), Some(m), |p| {
+                assert_eq!(p, 7442, "must probe the matching marker's own port");
+                false
+            }),
+            DashStatus::NotServing { pid: Some(4242) },
+            "a marker proven dead -> not serving, naming its pid"
+        );
+    }
+
+    #[test]
+    fn url_port_parses_the_recorded_shape_and_rejects_anything_else() {
+        assert_eq!(url_port("http://127.0.0.1:7420/"), Some(7420));
+        assert_eq!(url_port("http://127.0.0.1:7420"), Some(7420));
+        assert_eq!(url_port("http://127.0.0.1:7420/api/state"), Some(7420));
+        assert_eq!(url_port(""), None, "empty is not a URL");
+        assert_eq!(url_port("not-a-url"), None, "no scheme -> unparseable");
+        assert_eq!(
+            url_port("http://127.0.0.1/"),
+            None,
+            "no port at all -> unparseable"
+        );
+        assert_eq!(
+            url_port("http://127.0.0.1:not-a-port/"),
+            None,
+            "a non-numeric port -> unparseable"
+        );
+        assert_eq!(
+            url_port("http://127.0.0.1:99999/"),
+            None,
+            "a port past u16::MAX -> unparseable"
+        );
+    }
+
+    /// Round 2 (adv-u69c4-dash-status-verifies-wrong-port): a marker naming a DIFFERENT port
+    /// than the recorded url describes some OTHER dash, not this one - its OWN liveness must
+    /// never stand in as proof about the url either direction (that would wrongly vouch for a
+    /// dead url, or wrongly hide a genuinely live one).
+    ///
+    /// Round 3 (adv-u69c4r2-mismatched-marker-still-trusts-a-dead-url): the round-2 fix filtered
+    /// a mismatched marker to `None` and fell into the SAME unconditional-trust branch a
+    /// genuinely absent marker uses - "nothing to check" - which let a genuinely DEAD url sail
+    /// through as trusted whenever a mismatched marker happened to be recorded (empirically
+    /// reproduced against the built binary; see the finding). A mismatched marker is a positive
+    /// "something is tracked" signal, not "nothing to check": it must trigger a REAL probe of
+    /// the url's own port, and never let the marker's own (unrelated) port or pid substitute for
+    /// one.
+    #[test]
+    fn dash_status_probes_the_urls_own_port_when_the_marker_names_a_different_dash() {
+        let url = "http://127.0.0.1:7442/".to_string();
+        // Names a completely different port (9999) than the url (7442) - and a pid that
+        // belongs to that OTHER, unrelated dash, not this url's.
+        let mismatched = DashMarker {
+            port: 9999,
+            pid: 5555,
+        };
+
+        // The url's OWN port genuinely answers -> trusted. The probe must be asked about the
+        // url's port (7442), never the mismatched marker's unrelated port (9999) - proving the
+        // marker's own liveness plays no part in the decision either direction.
+        assert_eq!(
+            dash_status(Some(url.clone()), Some(mismatched), |p| {
+                assert_eq!(
+                    p, 7442,
+                    "must probe the url's own port, never the mismatched marker's"
+                );
+                true
+            }),
+            DashStatus::Serving(url.clone()),
+            "a mismatched marker must never suppress a genuinely-alive url"
+        );
+
+        // The url's OWN port genuinely does NOT answer -> not serving, with NO pid: the
+        // mismatched marker's pid names an unrelated (possibly still-alive) dash and must
+        // never be printed as though it belonged to this dead url - the exact lie round 3
+        // closes (round 2 left this direction open: a genuinely dead url paired with a
+        // mismatched marker sailed through as trusted).
+        assert_eq!(
+            dash_status(Some(url.clone()), Some(mismatched), |p| {
+                assert_eq!(
+                    p, 7442,
+                    "must probe the url's own port, never the mismatched marker's"
+                );
+                false
+            }),
+            DashStatus::NotServing { pid: None },
+            "a mismatched marker must not let a genuinely dead url sail through as trusted"
         );
     }
 
