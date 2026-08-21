@@ -56,3 +56,40 @@ in the template `install_precommit_hook` composes (src/main.rs:9209).
 - Related recorded debts this closes: the hook-reversion-by-setup recurrence and the
   step-killing refusal's immediate trigger. The separate blast-radius question of a
   refusal parking the unit rather than failing the step stays open, deliberately.
+- u75c3 (this criterion) verified at HEAD a962510, where c1/c2 are already merged:
+  `cargo fmt --check` clean; `cargo clippy --all-targets -- -D warnings` clean on BOTH
+  feature lanes; `cargo test` 2078 passed/0 failed/2 ignored (109 suites, default
+  features), 1960 passed/0 failed/2 ignored (109 suites, `--no-default-features`);
+  `cargo build` clean on both lanes - zero code changes needed to close this criterion.
+  `build.mutation` is "on" in this run's `.rigger/workflow.yml`; the diff against the
+  rigger-run merge-base (a962510, identical to this unit's own starting HEAD) touches
+  zero `.rs` files, so the mutation-efficacy accounting is provably empty by
+  construction - not a skipped step, recorded as DecisionMade
+  d-u75c3-both-lanes-verified-green.
+- Four non-blocking fast-follow threads on `src/main.rs`, carried forward from the
+  c1/c2 review rounds so they are not lost now that c1-c3 close:
+  - The candidate-order template hardcodes the literals `rigger-wt-` and
+    `cargo-target-` as bash text instead of interpolating
+    `worktree::UNIT_WORKTREE_PREFIX`/`UNIT_CACHE_PREFIX` through the same `.replace()`
+    single-source mechanism `compose_precommit_bytes` already uses for its other
+    placeholders (arch-u75c1-prefix-hardcoded-not-shared-const).
+  - The unit-derived and shared-step-cache candidates hardcode
+    `<git-common-dir>/../.rigger/tmp` instead of consulting the one resolved
+    scratch-root authority (`worktree::scratch_root_path`/`scratch_root_from_env`,
+    the `RIGGER_TMPDIR` / `defaults.workdir` override), so those candidates go
+    silently inert - falling through to bare PATH - for any project using that
+    override, defeating this spec's purpose for exactly the case the conductor
+    itself uses when the override is set (adv-p75-u75c1-scratch-root-hardcoded-ignores-rigger-tmpdir).
+  - `precommit_block`'s own doc comment still asserts the hook invokes `rigger` by
+    name relying on PATH alone; both claims are now false since PATH is tried last,
+    after six tree-built candidates (adv-p75-u75c1-doc-comment-stale-path-claim).
+  - Three of the seven candidate tiers still have zero executed runtime regression
+    coverage, only textual/order proof: both `CARGO_TARGET_DIR`-env tiers (every
+    git-commit test fixture explicitly `env_remove`s it) and the shared step-cache
+    tier (no test ever stages a binary at `cargo-target/debug/rigger`); the
+    Notes disposition "concurrent worktrees -> each resolves its own unit candidate"
+    is also proven for one worktree only, never two worktrees with distinct
+    candidates checked for cross-isolation. Safe-closed per the spec's own design (a
+    wrong/missing candidate can only ever convert a false refusal into a pass when
+    the render genuinely matches, never the reverse), so non-blocking
+    (adv-u75c2-notes-dispositions-half-unproven).
