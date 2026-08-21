@@ -122,6 +122,24 @@ pub const ATTENTION_WORKER_DEATH_RECURRED: &str = "worker-death-recurred";
 pub const ATTENTION_BUDGET_FINAL_TENTH: &str = "budget-final-tenth";
 pub const ATTENTION_STALLED_FRONTIER: &str = "stalled-frontier";
 
+/// The canonical kind order (spec 69, criterion 5): escalated, halted, worker-death-recurred,
+/// budget-final-tenth, stalled-frontier. `conductor::compute_attention` constructs its own
+/// entries in this order already (so it never needs this function); `rigger step` (main.rs)
+/// calls it to re-sort `attention` (via a STABLE sort, so entries of the SAME kind keep their
+/// relative order) after appending the hung-liveness half of signal 2, which `main.rs` computes
+/// separately and merges in - see `compute_attention`'s own doc comment for why. An unknown
+/// kind (never produced today) sorts last rather than panicking.
+pub fn attention_kind_rank(kind: &str) -> usize {
+    const ORDER: [&str; 5] = [
+        ATTENTION_ESCALATED,
+        ATTENTION_HALTED,
+        ATTENTION_WORKER_DEATH_RECURRED,
+        ATTENTION_BUDGET_FINAL_TENTH,
+        ATTENTION_STALLED_FRONTIER,
+    ];
+    ORDER.iter().position(|k| *k == kind).unwrap_or(usize::MAX)
+}
+
 /// One push-side anomaly a step surfaced (spec 69): the wire carries what an unattended
 /// run needs read, so an orchestrator never has to poll the log for it. `kind` is one of
 /// the five `ATTENTION_*` constants above; `unit` names the subject for a unit-scoped kind
