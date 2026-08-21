@@ -102,6 +102,62 @@ pub struct RunState {
     /// terminal exclusion needs the FINAL folded state: a unit that is manual-reviewed and
     /// then integrated must leave the inbox.
     pub manual_review: Vec<String>,
+    /// The push-side anomalies THIS run process's step surfaced (spec 69: the watching
+    /// discipline's step wire). Like [`budget_halt`](RunState::budget_halt) this is NOT
+    /// folded from the durable log by [`project`] - it is a fact of the transition this
+    /// process's `conductor::run` just drove (a before/after comparison over its own
+    /// in-process run), so `project` leaves it empty and only the live run stamps it.
+    /// `rigger step` copies it onto its printed `Step` (spec 69, criterion 5's OWN wire
+    /// stamp; the driver's narration of it is a later criterion).
+    pub attention: Vec<AttentionEntry>,
+}
+
+/// One of the five spec-69 watching-discipline signals `AttentionEntry::kind` carries.
+/// Closed vocabulary (never inferred downstream) - kept as `&str` constants rather than an
+/// enum so the wire value and the Rust match arm are the same literal, with no separate
+/// `as_str`/`parse` translation to drift out of sync.
+pub const ATTENTION_ESCALATED: &str = "escalated";
+pub const ATTENTION_HALTED: &str = "halted";
+pub const ATTENTION_WORKER_DEATH_RECURRED: &str = "worker-death-recurred";
+pub const ATTENTION_BUDGET_FINAL_TENTH: &str = "budget-final-tenth";
+pub const ATTENTION_STALLED_FRONTIER: &str = "stalled-frontier";
+
+/// One push-side anomaly a step surfaced (spec 69): the wire carries what an unattended
+/// run needs read, so an orchestrator never has to poll the log for it. `kind` is one of
+/// the five `ATTENTION_*` constants above; `unit` names the subject for a unit-scoped kind
+/// and is empty (omitted from the wire) for a run-scoped one (`halted`,
+/// `budget-final-tenth`); `detail` is the human-readable why, so a later criterion's
+/// narrator line needs no further log lookup to render one line naming event + unit.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct AttentionEntry {
+    pub kind: &'static str,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub unit: String,
+    pub detail: String,
+}
+
+impl AttentionEntry {
+    /// A unit-scoped entry (escalated / worker-death-recurred / stalled-frontier).
+    pub fn unit_scoped(
+        kind: &'static str,
+        unit: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Self {
+        AttentionEntry {
+            kind,
+            unit: unit.into(),
+            detail: detail.into(),
+        }
+    }
+
+    /// A run-scoped entry (halted / budget-final-tenth) - no single unit is the subject.
+    pub fn run_scoped(kind: &'static str, detail: impl Into<String>) -> Self {
+        AttentionEntry {
+            kind,
+            unit: String::new(),
+            detail: detail.into(),
+        }
+    }
 }
 
 /// The ready-to-release handoff (spec 38, criterion 3): the human-facing summary the loop

@@ -2177,6 +2177,14 @@ fn cmd_step(args: &[String]) -> Res {
     // Stamped BEFORE the `halted` move below (which consumes `rs.budget_halt`), as it borrows
     // `rs`.
     step.escalated = rs.escalated_units();
+    // Surface the push-side ATTENTION array (spec 69, criterion 5): the conductor already
+    // computed it as a before/after diff of this call's own transition (see
+    // `conductor::compute_attention`), so this is a plain move of the live state onto the
+    // wire - exactly like `escalated` and `halted`, and like them omitted when empty so a
+    // clean step's `{"wave":[],"done":true}` shape stays byte-for-byte unchanged. Rendering
+    // each entry as a narrator log line is a later criterion's job (spec 69, "the driver
+    // relays it"); this step only stamps the wire.
+    step.attention = rs.attention;
     step.halted = rs.budget_halt;
     // Hung agents (spec 10, unit 3): any spawn whose LATEST result is a liveness fault is a
     // hung, unrecovered agent whose worker may STILL be alive and writing under the shared
@@ -16239,6 +16247,26 @@ mod tests {
                 "node --check failed for a reason other than node being absent: {e}"
             ),
         }
+    }
+
+    /// Spec 69, criterion 5 (this unit OWNS the wire stamp): the STEP schema must ADMIT the
+    /// `attention` array - the top level rejects unknown properties (`additionalProperties:
+    /// false`), so a step carrying a non-empty `attention` would otherwise fail validation
+    /// and the signal would be lost, exactly the `halted`/`escalated` precedent this
+    /// mirrors. This unit stamps the wire ONLY; rendering an entry as a narrator log line
+    /// is a later criterion's job, so this test asserts schema admission alone.
+    #[test]
+    fn the_step_schema_admits_the_attention_array() {
+        assert!(
+            RIGGER_WORKFLOW.contains("attention: {"),
+            "the STEP schema must declare the optional `attention` array (top-level \
+             additionalProperties is false, so an undeclared `attention` would be rejected \
+             and a flagged step's signal would be lost)"
+        );
+        assert!(
+            RIGGER_WORKFLOW.contains("kind: { type: 'string' }"),
+            "the `attention` item schema must admit `kind` (the signal name)"
+        );
     }
 
     /// Spec 44, criterion 1 (this unit OWNS the courier-prompt guarantee): the step
