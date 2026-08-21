@@ -11418,24 +11418,39 @@ fn canary_if_model_changed_runs_when_a_tier_resolved_model_repointed() {
     );
 }
 
-/// Spec 18, criterion 8 (build provenance): `rigger version` and `rigger --version` must
-/// each report the crate version AND a build-provenance identifier - a git commit/describe
-/// id embedded at build time by `build.rs`. Without a self-serve version an agent cannot tell
-/// whether the installed binary matches the source, which is what makes the workflow-drift
-/// warning ambiguous.
+/// Spec 18, criterion 8 (build provenance), updated for spec 74: `rigger version` and
+/// `rigger --version` must each report the go-gitsemver-derived version AND a
+/// build-provenance identifier - a git commit/describe id embedded at build time by
+/// `build.rs`. Without a self-serve version an agent cannot tell whether the installed
+/// binary matches the source, which is what makes the workflow-drift warning ambiguous.
+///
+/// Spec 74 delegates the reported version to `go-gitsemver` at compile time (falling back
+/// to the bare crate semver plus an explicit `+unversioned` marker whenever that tool
+/// cannot run) - see `build/gitsemver.rs`. The derived value need NOT contain
+/// `CARGO_PKG_VERSION` as a substring once a real derivation succeeds (e.g. several
+/// commits past the last tag bump the minor or major), so this test pins the CLI output
+/// against `RIGGER_GITSEMVER_VERSION` - the exact embedded value, whichever arm produced
+/// it - never against the bare crate version. The derived-version VALUE itself (successful
+/// derivation vs. the `+unversioned` fallback) is proven at the derivation seam by
+/// `tests/gitsemver_derivation.rs` against fixture repositories and the real binary; this
+/// test only pins that the CLI's `version_line()` routes through it end to end.
 ///
 /// The build script's `cargo:rustc-env` applies to this integration-test crate too, so the
-/// test can pin the exact embedded values: the crate version (`CARGO_PKG_VERSION`, identical
-/// across the binary and this crate in one build) and the provenance token
+/// test can pin the exact embedded values: the derived version (`RIGGER_GITSEMVER_VERSION`,
+/// identical across the binary and this crate in one build) and the provenance token
 /// (`RIGGER_BUILD_PROVENANCE`, which `build.rs` guarantees non-empty). Both invocations must
 /// print BOTH, and must agree byte-for-byte so the two entry points cannot drift.
 #[test]
-fn version_and_dash_dash_version_report_crate_version_and_build_provenance() {
+fn version_and_dash_dash_version_report_the_derived_version_and_build_provenance() {
     let dir = temp_project();
     let root = dir.path();
 
-    let crate_version = env!("CARGO_PKG_VERSION");
+    let gitsemver_version = env!("RIGGER_GITSEMVER_VERSION");
     let provenance = env!("RIGGER_BUILD_PROVENANCE");
+    assert!(
+        !gitsemver_version.is_empty(),
+        "build.rs must embed a non-empty go-gitsemver-derived version"
+    );
     assert!(
         !provenance.is_empty(),
         "build.rs must embed a non-empty build-provenance id"
@@ -11445,8 +11460,8 @@ fn version_and_dash_dash_version_report_crate_version_and_build_provenance() {
         let (out, err, ok) = run_rigger(root, &invocation);
         assert!(ok, "`rigger {invocation:?}` must exit 0; stderr:\n{err}");
         assert!(
-            out.contains(crate_version),
-            "`rigger {invocation:?}` must report the crate version {crate_version}; stdout:\n{out}"
+            out.contains(gitsemver_version),
+            "`rigger {invocation:?}` must report the derived version {gitsemver_version}; stdout:\n{out}"
         );
         assert!(
             out.contains(provenance),
