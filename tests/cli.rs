@@ -13211,6 +13211,7 @@ fn setup_precommit_hook_refuses_when_the_staged_render_has_drifted() {
         .args(["commit", "-q", "-m", "change a documented fact"])
         .current_dir(root)
         .env("PATH", &commit_path)
+        .env_remove("CARGO_TARGET_DIR")
         .output()
         .expect("git must be runnable");
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -13279,6 +13280,7 @@ fn setup_precommit_hook_passes_untouched_when_the_render_matches() {
         .args(["commit", "-q", "-m", "unrelated change"])
         .current_dir(root)
         .env("PATH", &commit_path)
+        .env_remove("CARGO_TARGET_DIR")
         .output()
         .expect("git must be runnable");
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -13351,6 +13353,7 @@ fn setup_precommit_hook_never_drift_checks_or_stages_a_registry_entry_outside_it
         .args(["commit", "-q", "-m", "unrelated change"])
         .current_dir(root)
         .env("PATH", &commit_path)
+        .env_remove("CARGO_TARGET_DIR")
         .output()
         .expect("git must be runnable");
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -13431,6 +13434,7 @@ fn setup_precommit_hook_stays_inert_in_an_operator_repo() {
         .args(["commit", "-q", "-m", "operator changes their own code"])
         .current_dir(root)
         .env("PATH", &commit_path)
+        .env_remove("CARGO_TARGET_DIR")
         .status()
         .expect("git must be runnable")
         .success();
@@ -13600,6 +13604,7 @@ fn setup_precommit_hook_chains_after_a_terminal_exit_hook_and_still_runs() {
         .args(["commit", "-q", "-m", "change a documented fact"])
         .current_dir(root)
         .env("PATH", &commit_path)
+        .env_remove("CARGO_TARGET_DIR")
         .status()
         .expect("git must be runnable")
         .success();
@@ -13659,6 +13664,7 @@ fn setup_precommit_hook_never_touches_unrelated_files() {
         .args(["commit", "-q", "-m", "trigger"])
         .current_dir(root)
         .env("PATH", &commit_path)
+        .env_remove("CARGO_TARGET_DIR")
         .status()
         .expect("git must be runnable")
         .success();
@@ -13707,6 +13713,7 @@ fn setup_precommit_hook_warns_and_proceeds_when_rigger_is_unavailable() {
         .args(["commit", "-q", "-m", "change with rigger off PATH"])
         .current_dir(root)
         .env("PATH", &path)
+        .env_remove("CARGO_TARGET_DIR")
         .output()
         .expect("git must be runnable");
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -13715,8 +13722,9 @@ fn setup_precommit_hook_warns_and_proceeds_when_rigger_is_unavailable() {
         "the commit must succeed - the hook must never block it; stderr:\n{stderr}"
     );
     assert!(
-        stderr.contains("rigger not on PATH"),
-        "the hook must WARN that rigger is unavailable; stderr:\n{stderr}"
+        stderr.contains("no rigger binary found"),
+        "the hook must WARN that rigger is unavailable (checked every tree-built candidate \
+         AND PATH, spec 75); stderr:\n{stderr}"
     );
     let committed =
         git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
@@ -13743,6 +13751,7 @@ fn setup_precommit_hook_warns_and_proceeds_when_rigger_docs_errors() {
         .args(["commit", "-q", "-m", "change while rigger docs errors"])
         .current_dir(root)
         .env("PATH", &path)
+        .env_remove("CARGO_TARGET_DIR")
         .output()
         .expect("git must be runnable");
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -13804,6 +13813,7 @@ fn setup_precommit_hook_stays_inert_when_only_one_doc_is_tracked() {
         .args(["commit", "-q", "-m", "change with only the skill tracked"])
         .current_dir(root)
         .env("PATH", &commit_path)
+        .env_remove("CARGO_TARGET_DIR")
         .status()
         .expect("git must be runnable")
         .success();
@@ -13882,6 +13892,7 @@ fn setup_precommit_hook_refusal_aborts_a_chained_hook_body() {
         .args(["commit", "-q", "-m", "change a documented fact"])
         .current_dir(root)
         .env("PATH", &commit_path)
+        .env_remove("CARGO_TARGET_DIR")
         .output()
         .expect("git must be runnable");
 
@@ -13939,6 +13950,7 @@ fn setup_precommit_hook_refusal_names_only_the_drifted_file() {
         .args(["commit", "-q", "-m", "change a documented fact"])
         .current_dir(root)
         .env("PATH", &commit_path)
+        .env_remove("CARGO_TARGET_DIR")
         .output()
         .expect("git must be runnable");
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -13984,6 +13996,7 @@ fn setup_precommit_hook_refusal_leaves_the_fresh_render_in_the_working_tree() {
         .args(["commit", "-q", "-m", "change a documented fact"])
         .current_dir(root)
         .env("PATH", &commit_path)
+        .env_remove("CARGO_TARGET_DIR")
         .output()
         .expect("git must be runnable");
     assert!(
