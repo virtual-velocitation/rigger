@@ -1,0 +1,1028 @@
+//! The driver-independent watchdog (spec 69, criterion 2): `rigger watch` folds the
+//! FIVE SIGNALS `rigger-watch-a-run` names for a manual look - escalated blockers,
+//! heartbeat staleness vs live agent processes, dash liveness, reject-recurrence
+//! trend, and frontier progress - into one line per anomaly, naming signal, subject,
+//! and response, PLUS a sixth safety check (store integrity) the automated command
+//! runs beyond the skill's five-point human skim. "Covers every signal the watch
+//! skill names" (spec 69, Done-when) is a superset relation, not equality - store
+//! integrity is the automation's own addition, not a look-signal a human is asked to
+//! check by hand.
+//!
+//! Everything here is PURE over already-gathered inputs ([`detect`] takes a
+//! [`WatchInputs`] built from data the caller already read) so it is unit-testable
+//! without a store, a clock, or a process table, and so it can never reach for the
+//! driver - exactly the process that may be dead (spec 69: "it must work with the
+//! driver dead"). The composition root (`src/main.rs::cmd_watch`) does the I/O: reads
+//! the run's event stream and the whole log (for store integrity), tries the step
+//! lock, gathers liveness-marker ages, and probes the dash - then hands the resolved
+//! facts in here.
+//!
+//! The five signal NAMES below are pinned verbatim against `rigger-watch-a-run`
+//! (spec 69, criterion 1's own headline test, `watch_a_run_names_all_five_signals_
+//! each_mapped_to_its_response` in `src/docs.rs`) - the exact strings that skill's
+//! rendered body contains, so the command and the skill can never silently drift
+//! apart on what a signal is called.
+
+use std::collections::BTreeMap;
+use std::time::{Duration, SystemTime};
+
+use serde::Deserialize;
+
+use crate::eventstore::{Event, Revision, NO_STREAM};
+use crate::{ledger, spawn};
+
+/// The doc location a STORE INTEGRITY anomaly names for the documented repair
+/// procedure (spec 71: "repair stays a documented operator procedure, not a
+/// command"). There is no response SKILL for this signal - it is not one of the
+/// five `rigger-watch-a-run` enumerates - so the anomaly line names this reference
+/// instead, exactly as `rigger validate`'s own order-signature advisory does.
+pub const ORDER_SIGNATURE_REPAIR_DOC_REF: &str =
+    "docs/architecture.md, section 5.1.3: The store defends its own order";
+
+/// The diagnose-churn threshold (spec 69 Design: "reject-recurrence at the diagnose
+/// threshold (>= 3 ...")). Fixed by the spec text, independent of the run's
+/// configured `defaults.max_retries` (a different bound, for a different purpose -
+/// when the conductor escalates, not when an operator should look).
+pub const REJECT_RECURRENCE_DIAGNOSE_THRESHOLD: u32 = 3;
+
+/// The frontier-stall threshold (spec 69 Design: "a spawn id with >= 3 unconsumed
+/// results").
+pub const FRONTIER_STALL_THRESHOLD: u32 = 3;
+
+/// The dead-driver conjunction's STORE-QUIET bound (spec 69 Design: "store quiet a
+/// full hour").
+pub const DEAD_DRIVER_QUIET_BOUND: Duration = Duration::from_secs(3600);
+
+/// The dead-driver conjunction's HEARTBEAT-STALE bound (spec 69 Design: "every
+/// heartbeat stale >30 min").
+pub const DEAD_DRIVER_HEARTBEAT_BOUND: Duration = Duration::from_secs(30 * 60);
+
+/// The default poll interval `rigger watch`'s streaming mode uses absent
+/// `--interval <s>` (spec 69 Design: "default 180s").
+pub const DEFAULT_INTERVAL_SECS: u64 = 180;
+
+/// The closed set of anomaly signals the watchdog reports. The first five are named
+/// BY THE SAME STRING `rigger-watch-a-run` uses (see [`Signal::name`]); the sixth,
+/// [`Signal::StoreIntegrity`], is the automation's own addition beyond the skill's
+/// five-signal human skim (module doc). Declared in the spec's own listed order so a
+/// derived [`Ord`] sorts anomalies in that order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Signal {
+    Escalated,
+    DeadDriver,
+    DashNotServing,
+    RejectRecurrence,
+    FrontierStall,
+    StoreIntegrity,
+}
+
+/// The five signal names, in Design order, verbatim against `rigger-watch-a-run`'s
+/// rendered body - the single canonical list both this command and that skill's own
+/// pin test check against (module doc: pinned so command and skill cannot drift).
+pub const SKILL_SIGNAL_NAMES: [&str; 5] = [
+    "escalated blockers",
+    "heartbeat staleness",
+    "dash liveness",
+    "reject-recurrence trend",
+    "frontier progress",
+];
+
+impl Signal {
+    /// The canonical name printed on the anomaly line. The first five are the EXACT
+    /// strings `rigger-watch-a-run` names (see [`SKILL_SIGNAL_NAMES`]); the response
+    /// text is what "signal, subject, and response" (spec 69 Design) means.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Signal::Escalated => SKILL_SIGNAL_NAMES[0],
+            Signal::DeadDriver => SKILL_SIGNAL_NAMES[1],
+            Signal::DashNotServing => SKILL_SIGNAL_NAMES[2],
+            Signal::RejectRecurrence => SKILL_SIGNAL_NAMES[3],
+            Signal::FrontierStall => SKILL_SIGNAL_NAMES[4],
+            Signal::StoreIntegrity => "store integrity",
+        }
+    }
+
+    /// The response named for this signal (spec 69 Design: "each signal maps BY NAME
+    /// to its response skill ... stall: stop the driver and diagnose before another
+    /// round spends"). Four of the five name a response SKILL; the frontier-progress
+    /// stall names the spec's own directive text instead (never a fifth invented
+    /// skill - `rigger-watch-a-run`'s own pin test forbids that); store integrity
+    /// names the documented repair reference (spec 71), since it has no skill of its
+    /// own.
+    pub fn response(&self) -> &'static str {
+        match self {
+            Signal::Escalated => "rigger-handle-an-escalation",
+            Signal::DeadDriver => "rigger-resume-a-run",
+            Signal::DashNotServing => "rigger-restore-the-dash",
+            Signal::RejectRecurrence => "rigger-diagnose-churn",
+            Signal::FrontierStall => "stop the driver and diagnose before another round spends",
+            Signal::StoreIntegrity => ORDER_SIGNATURE_REPAIR_DOC_REF,
+        }
+    }
+}
+
+/// One printed anomaly line's content: the [`Signal`], the SUBJECT it is about (a
+/// unit id, a spawn id, a stream name, or a fixed label for a run-level condition),
+/// a numeric MAGNITUDE driving re-alert-on-increment dedup (a streak or result
+/// count; `0` for a signal with no natural magnitude), and human DETAIL folded into
+/// the line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Anomaly {
+    pub signal: Signal,
+    pub subject: String,
+    pub magnitude: u32,
+    pub detail: String,
+}
+
+impl Anomaly {
+    /// The dedup identity: signal + subject, WITHOUT the magnitude - [`Dedup::step`]
+    /// compares magnitude separately so an increment re-alerts under the SAME key
+    /// rather than being read as a brand-new anomaly.
+    fn key(&self) -> (Signal, String) {
+        (self.signal, self.subject.clone())
+    }
+
+    /// The one line `rigger watch` prints: `<signal>: <subject> - <detail> (respond:
+    /// <response>)` - names signal, subject, and response exactly as spec 69 Design
+    /// requires. Hyphens only (a gate rejects em dashes).
+    pub fn line(&self) -> String {
+        format!(
+            "{}: {} - {} (respond: {})",
+            self.signal.name(),
+            self.subject,
+            self.detail,
+            self.signal.response()
+        )
+    }
+}
+
+/// The dash liveness probe's outcome (spec 69 Design signal 3), resolved by the
+/// caller's I/O (a marker read plus a real serve probe) and handed in already
+/// classified - `detect` never touches a socket or a file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DashProbe {
+    /// No dash marker was ever recorded for this project - a headless run by
+    /// choice, not an anomaly.
+    NotRecorded,
+    /// A marker is recorded and something answers on its port.
+    Serving,
+    /// A marker is recorded but nothing verifiably serves its port - the "hung
+    /// holder" or dead-process case `rigger-restore-the-dash` diagnoses.
+    NotServing { pid: u32, port: u16 },
+}
+
+/// Everything [`detect`] needs, already gathered by the caller (store, process
+/// table, and status - never the driver). Two DIFFERENT event slices, because the
+/// signals are scoped differently: the five run signals read this project's
+/// CURRENT RUN stream (mirroring `rigger status`'s own scope), while store
+/// integrity reads the WHOLE log across every stream (mirroring `rigger validate`'s
+/// order-signature detector, spec 71) - a disordered stream is a store-wide fault,
+/// not a per-run one.
+pub struct WatchInputs<'a> {
+    /// This project's current run's event slice (`conductor::STREAM`, run-scoped).
+    pub run_events: &'a [Event],
+    /// The full log across every stream, position-ordered (for store integrity).
+    pub full_events: &'a [Event],
+    /// The moment the caller gathered these inputs.
+    pub now: SystemTime,
+    /// When the run's last event was recorded, or `None` for an empty run.
+    pub last_event_at: Option<SystemTime>,
+    /// Whether NO `rigger step` currently holds the step lock (true = free = no
+    /// step process is running right now).
+    pub step_lock_free: bool,
+    /// Heartbeat-marker AGE in seconds, keyed by spawn id, for the run's CURRENTLY
+    /// PARKED frontier (mirrors `rigger status`'s own liveness-age fold). Empty when
+    /// nothing is parked, which reads as "every heartbeat stale" vacuously.
+    pub wave_liveness_ages: &'a BTreeMap<String, u64>,
+    /// The dash liveness probe's already-classified outcome.
+    pub dash: DashProbe,
+}
+
+#[derive(Deserialize)]
+struct UnitFailedCause {
+    id: String,
+    #[serde(default)]
+    cause: String,
+}
+
+/// The unit's per-cause CONSECUTIVE failure streak (spec 69 Design: reject-recurrence
+/// "counted and re-alerted PER FAILURE CAUSE - see the cause wire"): the trailing run
+/// of `UnitFailed` events, in log order, that share the CURRENT (most recent) cause.
+/// A cause change resets the streak to `1` - "a changed cause is progress" (spec 69
+/// Design), never counted as continued churn. `cause` defaults to `"unknown"` on a
+/// pre-criterion-3 event that carries none (additive, serde-defaulted; spec 69 c3's
+/// own contract). Pure over the already-scoped run events.
+fn reject_recurrence_streak(run_events: &[Event], unit_id: &str) -> (String, u32) {
+    let mut cause = String::new();
+    let mut streak = 0u32;
+    for e in run_events {
+        if e.type_ != ledger::TYPE_UNIT_FAILED {
+            continue;
+        }
+        let Ok(p) = serde_json::from_slice::<UnitFailedCause>(&e.data) else {
+            continue;
+        };
+        if p.id != unit_id {
+            continue;
+        }
+        let this_cause = if p.cause.is_empty() {
+            "unknown".to_string()
+        } else {
+            p.cause
+        };
+        if streak > 0 && this_cause == cause {
+            streak += 1;
+        } else {
+            cause = this_cause;
+            streak = 1;
+        }
+    }
+    (cause, streak)
+}
+
+/// How many [`spawn::TYPE_SPAWN_RESULT`] events each spawn id has recorded, keyed by
+/// id - NOT deduped to the latest (unlike [`spawn::result_of`]): a spawn answered
+/// more than once is exactly the STALLED-FRONTIER signature (spec 69 Design: "a
+/// spawn answered more than twice without the run advancing burns full agent cost
+/// per round"). Malformed result bodies are skipped (never panicked on), matching
+/// every other read-model in this codebase's fail-soft-on-decode convention.
+fn spawn_result_counts(run_events: &[Event]) -> BTreeMap<String, u32> {
+    let mut counts = BTreeMap::new();
+    for e in run_events {
+        if e.type_ == spawn::TYPE_SPAWN_RESULT {
+            if let Ok(r) = spawn::SpawnResult::from_event(e) {
+                *counts.entry(r.id).or_insert(0u32) += 1;
+            }
+        }
+    }
+    counts
+}
+
+/// Streams where POSITION order and REVISION order disagree (spec 71's own
+/// corruption signature: a row whose revision does not exceed the highest revision
+/// already seen, in position order, for its stream), returned as `(stream, count)`
+/// pairs. Walks `events` once, tracking each stream's running maximum revision - the
+/// same algorithm `rigger validate`'s own detector uses (spec 71,
+/// `order_signatures`), reimplemented here at the granularity this command's
+/// anomaly line needs (a count, not the full position-range detail `validate`
+/// prints) so the watchdog never depends on the driver-facing CLI's internals.
+fn out_of_order_streams(events: &[Event]) -> Vec<(String, usize)> {
+    struct Acc {
+        max_revision: Revision,
+        rows: usize,
+    }
+    let mut by_stream: Vec<(String, Acc)> = Vec::new();
+    let mut index: BTreeMap<String, usize> = BTreeMap::new();
+    for e in events {
+        let idx = *index.entry(e.stream.clone()).or_insert_with(|| {
+            by_stream.push((
+                e.stream.clone(),
+                Acc {
+                    max_revision: NO_STREAM,
+                    rows: 0,
+                },
+            ));
+            by_stream.len() - 1
+        });
+        let (_, acc) = &mut by_stream[idx];
+        if e.revision <= acc.max_revision {
+            acc.rows += 1;
+        } else {
+            acc.max_revision = e.revision;
+        }
+    }
+    by_stream
+        .into_iter()
+        .filter(|(_, acc)| acc.rows > 0)
+        .map(|(stream, acc)| (stream, acc.rows))
+        .collect()
+}
+
+/// Fold [`WatchInputs`] into the anomalies to report - `rigger watch`'s whole domain
+/// core, PURE and store/process/status-only (never the driver). One [`Anomaly`] per
+/// condition found; an empty vec on a clean run. Deterministically sorted by
+/// [`Signal`] (Design order) then subject.
+pub fn detect(inputs: &WatchInputs) -> Vec<Anomaly> {
+    let run = ledger::project(inputs.run_events).unwrap_or_default();
+    let mut out = Vec::new();
+
+    // Signal 1: escalated blockers.
+    for (id, u) in &run.units {
+        if u.status == ledger::Status::Escalated {
+            out.push(Anomaly {
+                signal: Signal::Escalated,
+                subject: id.clone(),
+                magnitude: 0,
+                detail: "escalated - awaiting a human".to_string(),
+            });
+        }
+    }
+
+    // Signal 4: reject-recurrence trend, counted per cause.
+    for (id, u) in &run.units {
+        if u.status != ledger::Status::Failed {
+            continue;
+        }
+        let (cause, streak) = reject_recurrence_streak(inputs.run_events, id);
+        if streak >= REJECT_RECURRENCE_DIAGNOSE_THRESHOLD {
+            out.push(Anomaly {
+                signal: Signal::RejectRecurrence,
+                subject: id.clone(),
+                magnitude: streak,
+                detail: format!("reject-recurrence #{streak} (cause: {cause})"),
+            });
+        }
+    }
+
+    // Signal 5: frontier progress (a spawn stalled at the frontier).
+    for (id, count) in spawn_result_counts(inputs.run_events) {
+        if count >= FRONTIER_STALL_THRESHOLD {
+            out.push(Anomaly {
+                signal: Signal::FrontierStall,
+                subject: id,
+                magnitude: count,
+                detail: format!("{count} recorded results without the run advancing"),
+            });
+        }
+    }
+
+    // Signal 2: heartbeat staleness vs live agent processes (the dead-driver
+    // conjunction). Never fires on a DONE run - a finished run's quiet store is
+    // success, not a dead driver.
+    if !run.done() {
+        let quiet = inputs
+            .last_event_at
+            .and_then(|t| inputs.now.duration_since(t).ok())
+            .is_some_and(|age| age >= DEAD_DRIVER_QUIET_BOUND);
+        let every_heartbeat_stale = inputs
+            .wave_liveness_ages
+            .values()
+            .all(|age| Duration::from_secs(*age) > DEAD_DRIVER_HEARTBEAT_BOUND);
+        if quiet && inputs.step_lock_free && every_heartbeat_stale {
+            out.push(Anomaly {
+                signal: Signal::DeadDriver,
+                subject: "run".to_string(),
+                magnitude: 0,
+                detail: "store quiet an hour, no step process, every heartbeat stale past 30m"
+                    .to_string(),
+            });
+        }
+    }
+
+    // Signal 3: dash liveness.
+    if let DashProbe::NotServing { pid, port } = &inputs.dash {
+        out.push(Anomaly {
+            signal: Signal::DashNotServing,
+            subject: "dash".to_string(),
+            magnitude: 0,
+            detail: format!("marker names dead pid {pid} on port {port}"),
+        });
+    }
+
+    // Signal 6 (beyond the skill's five): store integrity.
+    for (stream, rows) in out_of_order_streams(inputs.full_events) {
+        out.push(Anomaly {
+            signal: Signal::StoreIntegrity,
+            subject: stream,
+            magnitude: rows as u32,
+            detail: format!("{rows} row(s) where position order and revision order disagree"),
+        });
+    }
+
+    out.sort_by_key(|a| (a.signal, a.subject.clone()));
+    out
+}
+
+/// Streaming-mode dedup (spec 69 Design: "Alerts dedupe until cleared, DEDUP STATE
+/// LIVES IN PROCESS MEMORY ONLY"). Kept in the caller's process, never persisted -
+/// a restarted watch re-alerts standing anomalies once, which is the accepted,
+/// spec-named consequence for a fresh observer.
+#[derive(Default)]
+pub struct Dedup {
+    seen: BTreeMap<(Signal, String), u32>,
+}
+
+impl Dedup {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Given this poll's CURRENT anomalies, return only the ones to PRINT: one not
+    /// seen on the prior poll, or one whose MAGNITUDE increased since - a climbing
+    /// churn count is itself new information, so it re-alerts under the same
+    /// signal+subject key rather than being suppressed as a repeat (spec 69
+    /// Done-when: "re-alerts a churn count on each increment"). An anomaly no longer
+    /// present is dropped from memory, so if it recurs LATER it re-alerts fresh
+    /// ("dedupes a persisting anomaly UNTIL IT CLEARS").
+    pub fn step(&mut self, current: Vec<Anomaly>) -> Vec<Anomaly> {
+        let mut still_present: BTreeMap<(Signal, String), u32> = BTreeMap::new();
+        let mut to_print = Vec::new();
+        for a in current {
+            let key = a.key();
+            if self.seen.get(&key) != Some(&a.magnitude) {
+                to_print.push(a.clone());
+            }
+            still_present.insert(key, a.magnitude);
+        }
+        self.seen = still_present;
+        to_print
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ev(type_: &str, json: &str) -> Event {
+        Event::new(type_, json.as_bytes().to_vec())
+    }
+
+    fn positioned(mut events: Vec<Event>) -> Vec<Event> {
+        for (i, e) in events.iter_mut().enumerate() {
+            e.position = (i + 1) as u64;
+            e.revision = i as Revision;
+            if e.stream.is_empty() {
+                e.stream = "run".to_string();
+            }
+        }
+        events
+    }
+
+    fn empty_inputs<'a>(events: &'a [Event], ages: &'a BTreeMap<String, u64>) -> WatchInputs<'a> {
+        WatchInputs {
+            run_events: events,
+            full_events: events,
+            now: SystemTime::now(),
+            last_event_at: None,
+            step_lock_free: true,
+            wave_liveness_ages: ages,
+            dash: DashProbe::NotRecorded,
+        }
+    }
+
+    // --- Signal::name() is pinned verbatim against rigger-watch-a-run ---
+
+    #[test]
+    fn the_five_signal_names_match_skill_signal_names_in_design_order() {
+        assert_eq!(
+            [
+                Signal::Escalated.name(),
+                Signal::DeadDriver.name(),
+                Signal::DashNotServing.name(),
+                Signal::RejectRecurrence.name(),
+                Signal::FrontierStall.name(),
+            ],
+            SKILL_SIGNAL_NAMES
+        );
+    }
+
+    #[test]
+    fn the_four_named_responses_and_the_stall_directive_match_the_skills_own_pin_table() {
+        // The exact five (signal, response) pairs `rigger-watch-a-run`'s own headline
+        // test pins (spec 69 c1: watch_a_run_names_all_five_signals_each_mapped_to_
+        // its_response, src/docs.rs) - so this command and that skill cannot silently
+        // drift on what each signal is called or what it routes to.
+        assert_eq!(Signal::Escalated.response(), "rigger-handle-an-escalation");
+        assert_eq!(Signal::DeadDriver.response(), "rigger-resume-a-run");
+        assert_eq!(Signal::DashNotServing.response(), "rigger-restore-the-dash");
+        assert_eq!(Signal::RejectRecurrence.response(), "rigger-diagnose-churn");
+        assert!(Signal::FrontierStall
+            .response()
+            .contains("stop the driver and diagnose"));
+        // Never a fifth invented skill name for the stall signal.
+        assert!(!Signal::FrontierStall.response().starts_with("rigger-"));
+    }
+
+    // --- detect(): a clean run prints nothing ---
+
+    #[test]
+    fn a_clean_store_detects_no_anomalies() {
+        let events = positioned(vec![
+            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
+            ev(ledger::TYPE_UNIT_INTEGRATED, r#"{"id":"u","commit":"c"}"#),
+        ]);
+        assert!(detect(&empty_inputs(&events, &BTreeMap::new())).is_empty());
+    }
+
+    #[test]
+    fn an_empty_run_detects_no_anomalies() {
+        assert!(detect(&empty_inputs(&[], &BTreeMap::new())).is_empty());
+    }
+
+    // --- Signal 1: escalated blockers ---
+
+    #[test]
+    fn an_escalated_unit_is_reported_naming_the_unit_and_the_escalation_response() {
+        let events = positioned(vec![
+            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u-esc"}"#),
+            ev(ledger::TYPE_UNIT_ESCALATED, r#"{"id":"u-esc"}"#),
+        ]);
+        let anomalies = detect(&empty_inputs(&events, &BTreeMap::new()));
+        assert_eq!(anomalies.len(), 1);
+        let a = &anomalies[0];
+        assert_eq!(a.signal, Signal::Escalated);
+        assert_eq!(a.subject, "u-esc");
+        let line = a.line();
+        assert!(line.contains("escalated blockers"));
+        assert!(line.contains("u-esc"));
+        assert!(line.contains("rigger-handle-an-escalation"));
+    }
+
+    // --- Signal 4: reject-recurrence, per cause ---
+
+    #[test]
+    fn a_unit_at_reject_recurrence_three_same_cause_is_reported() {
+        let events = positioned(vec![
+            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
+            ev(
+                ledger::TYPE_UNIT_FAILED,
+                r#"{"id":"u","attempts":1,"cause":"gate:fmt"}"#,
+            ),
+            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
+            ev(
+                ledger::TYPE_UNIT_FAILED,
+                r#"{"id":"u","attempts":2,"cause":"gate:fmt"}"#,
+            ),
+            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
+            ev(
+                ledger::TYPE_UNIT_FAILED,
+                r#"{"id":"u","attempts":3,"cause":"gate:fmt"}"#,
+            ),
+        ]);
+        let anomalies = detect(&empty_inputs(&events, &BTreeMap::new()));
+        assert_eq!(anomalies.len(), 1);
+        let a = &anomalies[0];
+        assert_eq!(a.signal, Signal::RejectRecurrence);
+        assert_eq!(a.subject, "u");
+        assert_eq!(a.magnitude, 3);
+        assert!(a.detail.contains("gate:fmt"));
+        assert!(a.line().contains("rigger-diagnose-churn"));
+    }
+
+    #[test]
+    fn two_failures_below_threshold_is_not_reported() {
+        let events = positioned(vec![
+            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
+            ev(
+                ledger::TYPE_UNIT_FAILED,
+                r#"{"id":"u","attempts":1,"cause":"gate:fmt"}"#,
+            ),
+            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
+            ev(
+                ledger::TYPE_UNIT_FAILED,
+                r#"{"id":"u","attempts":2,"cause":"gate:fmt"}"#,
+            ),
+        ]);
+        assert!(detect(&empty_inputs(&events, &BTreeMap::new())).is_empty());
+    }
+
+    #[test]
+    fn a_cause_change_resets_the_streak_so_three_failures_split_across_two_causes_do_not_alert() {
+        let events = positioned(vec![
+            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
+            ev(
+                ledger::TYPE_UNIT_FAILED,
+                r#"{"id":"u","attempts":1,"cause":"gate:fmt"}"#,
+            ),
+            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
+            ev(
+                ledger::TYPE_UNIT_FAILED,
+                r#"{"id":"u","attempts":2,"cause":"gate:fmt"}"#,
+            ),
+            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
+            // A changed cause is progress, not continued churn (spec 69 Design):
+            // the streak restarts at 1, so this is only #1 of the new cause.
+            ev(
+                ledger::TYPE_UNIT_FAILED,
+                r#"{"id":"u","attempts":3,"cause":"integrate-conflict"}"#,
+            ),
+        ]);
+        assert!(detect(&empty_inputs(&events, &BTreeMap::new())).is_empty());
+    }
+
+    #[test]
+    fn a_cause_less_failure_reads_as_unknown_and_still_counts_toward_the_streak() {
+        // Additive, serde-defaulted: a prior event with no `cause` at all (predating
+        // spec 69 c3's cause wire) reads as "unknown", not a decode failure.
+        let events = positioned(vec![
+            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
+            ev(ledger::TYPE_UNIT_FAILED, r#"{"id":"u","attempts":1}"#),
+            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
+            ev(ledger::TYPE_UNIT_FAILED, r#"{"id":"u","attempts":2}"#),
+            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
+            ev(ledger::TYPE_UNIT_FAILED, r#"{"id":"u","attempts":3}"#),
+        ]);
+        let anomalies = detect(&empty_inputs(&events, &BTreeMap::new()));
+        assert_eq!(anomalies.len(), 1);
+        assert!(anomalies[0].detail.contains("unknown"));
+    }
+
+    // --- Signal 5: frontier progress (stalled) ---
+
+    #[test]
+    fn a_spawn_answered_three_times_is_reported_as_a_frontier_stall() {
+        let events = positioned(vec![
+            ev(
+                spawn::TYPE_SPAWN_RESULT,
+                r#"{"id":"u/implementer#0","output":"a"}"#,
+            ),
+            ev(
+                spawn::TYPE_SPAWN_RESULT,
+                r#"{"id":"u/implementer#0","output":"b"}"#,
+            ),
+            ev(
+                spawn::TYPE_SPAWN_RESULT,
+                r#"{"id":"u/implementer#0","output":"c"}"#,
+            ),
+        ]);
+        let anomalies = detect(&empty_inputs(&events, &BTreeMap::new()));
+        assert_eq!(anomalies.len(), 1);
+        let a = &anomalies[0];
+        assert_eq!(a.signal, Signal::FrontierStall);
+        assert_eq!(a.subject, "u/implementer#0");
+        assert_eq!(a.magnitude, 3);
+        assert!(a.line().contains("frontier progress"));
+        assert!(a
+            .line()
+            .contains("stop the driver and diagnose before another round spends"));
+    }
+
+    #[test]
+    fn a_spawn_answered_twice_is_below_the_frontier_stall_threshold() {
+        let events = positioned(vec![
+            ev(spawn::TYPE_SPAWN_RESULT, r#"{"id":"u/implementer#0"}"#),
+            ev(spawn::TYPE_SPAWN_RESULT, r#"{"id":"u/implementer#0"}"#),
+        ]);
+        assert!(detect(&empty_inputs(&events, &BTreeMap::new())).is_empty());
+    }
+
+    // --- Signal 2: dead driver (the conjunction) ---
+
+    #[test]
+    fn a_quiet_store_with_no_step_process_and_every_heartbeat_stale_is_a_dead_driver() {
+        let events = positioned(vec![ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#)]);
+        let now = SystemTime::now();
+        let ages: BTreeMap<String, u64> = [("u/implementer#0".to_string(), 3600u64)]
+            .into_iter()
+            .collect();
+        let inputs = WatchInputs {
+            run_events: &events,
+            full_events: &events,
+            now,
+            last_event_at: Some(now - Duration::from_secs(4000)),
+            step_lock_free: true,
+            wave_liveness_ages: &ages,
+            dash: DashProbe::NotRecorded,
+        };
+        let anomalies = detect(&inputs);
+        assert_eq!(anomalies.len(), 1);
+        assert_eq!(anomalies[0].signal, Signal::DeadDriver);
+        assert_eq!(anomalies[0].subject, "run");
+    }
+
+    #[test]
+    fn a_running_step_process_suppresses_the_dead_driver_alert() {
+        let events = positioned(vec![ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#)]);
+        let now = SystemTime::now();
+        let inputs = WatchInputs {
+            run_events: &events,
+            full_events: &events,
+            now,
+            last_event_at: Some(now - Duration::from_secs(4000)),
+            // A step IS running - not dead, just slow.
+            step_lock_free: false,
+            wave_liveness_ages: &BTreeMap::new(),
+            dash: DashProbe::NotRecorded,
+        };
+        assert!(detect(&inputs).is_empty());
+    }
+
+    #[test]
+    fn a_fresh_heartbeat_suppresses_the_dead_driver_alert_even_with_a_quiet_store() {
+        // The tuned false positive spec 69 names: "an alert firing on quiet-but-
+        // heartbeating work teaches operators to ignore the watchdog." A long-running
+        // test/build can leave the store quiet an hour while an agent is genuinely
+        // still working - one fresh heartbeat must suppress the whole conjunction.
+        let events = positioned(vec![ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#)]);
+        let now = SystemTime::now();
+        let ages: BTreeMap<String, u64> = [("u/implementer#0".to_string(), 60u64)]
+            .into_iter()
+            .collect();
+        let inputs = WatchInputs {
+            run_events: &events,
+            full_events: &events,
+            now,
+            last_event_at: Some(now - Duration::from_secs(4000)),
+            step_lock_free: true,
+            wave_liveness_ages: &ages,
+            dash: DashProbe::NotRecorded,
+        };
+        assert!(detect(&inputs).is_empty());
+    }
+
+    #[test]
+    fn a_heartbeat_ten_minutes_stale_does_not_cross_the_thirty_minute_bound() {
+        // Boundary-straddling: 10 minutes (600s) sits well BELOW the real 30-minute
+        // (1800s) bound but well ABOVE a degenerate 90s bound (`30 + 60`, a plausible
+        // `*` -> `+` mutant of the `30 * 60` that builds
+        // [`DEAD_DRIVER_HEARTBEAT_BOUND`]) - so this pins the bound is actually 30
+        // MINUTES, not just "some threshold a big number clears and a small one
+        // doesn't."
+        let events = positioned(vec![ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#)]);
+        let now = SystemTime::now();
+        let ages: BTreeMap<String, u64> = [("u/implementer#0".to_string(), 600u64)]
+            .into_iter()
+            .collect();
+        let inputs = WatchInputs {
+            run_events: &events,
+            full_events: &events,
+            now,
+            last_event_at: Some(now - Duration::from_secs(4000)),
+            step_lock_free: true,
+            wave_liveness_ages: &ages,
+            dash: DashProbe::NotRecorded,
+        };
+        assert!(
+            detect(&inputs).is_empty(),
+            "a heartbeat only 10 minutes stale must not cross the 30-minute dead-driver bound"
+        );
+    }
+
+    #[test]
+    fn a_heartbeat_exactly_thirty_minutes_stale_does_not_yet_cross_the_bound() {
+        // The bound is STRICTLY greater than 30 minutes (spec 69 Design: "every
+        // heartbeat stale >30 min") - a heartbeat at EXACTLY the bound has not yet
+        // crossed it. Pins `>` against a `>=` mutant of the comparison itself, and
+        // (since it sits exactly on `DEAD_DRIVER_HEARTBEAT_BOUND`) against a mutant
+        // that shrinks the bound's derivation too.
+        let events = positioned(vec![ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#)]);
+        let now = SystemTime::now();
+        let ages: BTreeMap<String, u64> = [(
+            "u/implementer#0".to_string(),
+            DEAD_DRIVER_HEARTBEAT_BOUND.as_secs(),
+        )]
+        .into_iter()
+        .collect();
+        let inputs = WatchInputs {
+            run_events: &events,
+            full_events: &events,
+            now,
+            last_event_at: Some(now - Duration::from_secs(4000)),
+            step_lock_free: true,
+            wave_liveness_ages: &ages,
+            dash: DashProbe::NotRecorded,
+        };
+        assert!(
+            detect(&inputs).is_empty(),
+            "a heartbeat AT exactly the 30-minute bound has not yet crossed it (the bound is a \
+             strict >, not >=)"
+        );
+    }
+
+    #[test]
+    fn a_done_run_never_reports_a_dead_driver_however_quiet_the_store() {
+        let events = positioned(vec![
+            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
+            ev(ledger::TYPE_UNIT_INTEGRATED, r#"{"id":"u","commit":"c"}"#),
+        ]);
+        let now = SystemTime::now();
+        let inputs = WatchInputs {
+            run_events: &events,
+            full_events: &events,
+            now,
+            last_event_at: Some(now - Duration::from_secs(999_999)),
+            step_lock_free: true,
+            wave_liveness_ages: &BTreeMap::new(),
+            dash: DashProbe::NotRecorded,
+        };
+        assert!(detect(&inputs).is_empty());
+    }
+
+    // --- Signal 3: dash liveness ---
+
+    #[test]
+    fn a_dash_marker_naming_a_dead_pid_is_reported() {
+        let inputs = WatchInputs {
+            run_events: &[],
+            full_events: &[],
+            now: SystemTime::now(),
+            last_event_at: None,
+            step_lock_free: true,
+            wave_liveness_ages: &BTreeMap::new(),
+            dash: DashProbe::NotServing {
+                pid: 424_242,
+                port: 7420,
+            },
+        };
+        let anomalies = detect(&inputs);
+        assert_eq!(anomalies.len(), 1);
+        assert_eq!(anomalies[0].signal, Signal::DashNotServing);
+        assert!(anomalies[0].detail.contains("424242"));
+        assert!(anomalies[0].line().contains("rigger-restore-the-dash"));
+    }
+
+    #[test]
+    fn no_dash_ever_recorded_is_not_an_anomaly() {
+        let inputs = WatchInputs {
+            run_events: &[],
+            full_events: &[],
+            now: SystemTime::now(),
+            last_event_at: None,
+            step_lock_free: true,
+            wave_liveness_ages: &BTreeMap::new(),
+            dash: DashProbe::NotRecorded,
+        };
+        assert!(detect(&inputs).is_empty());
+    }
+
+    #[test]
+    fn a_serving_dash_is_not_an_anomaly() {
+        let inputs = WatchInputs {
+            run_events: &[],
+            full_events: &[],
+            now: SystemTime::now(),
+            last_event_at: None,
+            step_lock_free: true,
+            wave_liveness_ages: &BTreeMap::new(),
+            dash: DashProbe::Serving,
+        };
+        assert!(detect(&inputs).is_empty());
+    }
+
+    // --- Signal 6: store integrity (out-of-order tail) ---
+
+    #[test]
+    fn an_out_of_order_tail_is_reported_naming_the_stream_and_row_count() {
+        let mut events = vec![ev("E", "{}"), ev("E", "{}"), ev("E", "{}")];
+        for (i, e) in events.iter_mut().enumerate() {
+            e.stream = "s".to_string();
+            e.position = (i + 1) as u64;
+        }
+        // Position order 1,2,3 with revisions 0,3,1: row 3 (revision 1) does not
+        // exceed the running max (3) - an out-of-order tail.
+        events[0].revision = 0;
+        events[1].revision = 3;
+        events[2].revision = 1;
+        let inputs = WatchInputs {
+            run_events: &[],
+            full_events: &events,
+            now: SystemTime::now(),
+            last_event_at: None,
+            step_lock_free: true,
+            wave_liveness_ages: &BTreeMap::new(),
+            dash: DashProbe::NotRecorded,
+        };
+        let anomalies = detect(&inputs);
+        assert_eq!(anomalies.len(), 1);
+        let a = &anomalies[0];
+        assert_eq!(a.signal, Signal::StoreIntegrity);
+        assert_eq!(a.subject, "s");
+        assert_eq!(a.magnitude, 1);
+        assert!(a
+            .line()
+            .contains("position order and revision order disagree"));
+        assert!(a.line().contains(ORDER_SIGNATURE_REPAIR_DOC_REF));
+    }
+
+    #[test]
+    fn a_cleanly_ordered_log_reports_no_store_integrity_anomaly() {
+        let mut events = vec![ev("E", "{}"), ev("E", "{}"), ev("E", "{}")];
+        for (i, e) in events.iter_mut().enumerate() {
+            e.stream = "s".to_string();
+            e.position = (i + 1) as u64;
+            e.revision = i as Revision;
+        }
+        let inputs = WatchInputs {
+            run_events: &[],
+            full_events: &events,
+            now: SystemTime::now(),
+            last_event_at: None,
+            step_lock_free: true,
+            wave_liveness_ages: &BTreeMap::new(),
+            dash: DashProbe::NotRecorded,
+        };
+        assert!(detect(&inputs).is_empty());
+    }
+
+    // --- The seeded multi-anomaly scenario (spec 69 Done-when's own combination) ---
+
+    #[test]
+    fn a_store_seeded_with_a_multi_result_spawn_an_escalated_unit_reject_recurrence_three_and_an_out_of_order_tail_prints_one_line_each(
+    ) {
+        let mut run_events = positioned(vec![
+            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u-esc"}"#),
+            ev(ledger::TYPE_UNIT_ESCALATED, r#"{"id":"u-esc"}"#),
+            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u-fail"}"#),
+            ev(
+                ledger::TYPE_UNIT_FAILED,
+                r#"{"id":"u-fail","attempts":1,"cause":"gate:fmt"}"#,
+            ),
+            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u-fail"}"#),
+            ev(
+                ledger::TYPE_UNIT_FAILED,
+                r#"{"id":"u-fail","attempts":2,"cause":"gate:fmt"}"#,
+            ),
+            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u-fail"}"#),
+            ev(
+                ledger::TYPE_UNIT_FAILED,
+                r#"{"id":"u-fail","attempts":3,"cause":"gate:fmt"}"#,
+            ),
+            ev(
+                spawn::TYPE_SPAWN_RESULT,
+                r#"{"id":"u-stall/implementer#0"}"#,
+            ),
+            ev(
+                spawn::TYPE_SPAWN_RESULT,
+                r#"{"id":"u-stall/implementer#0"}"#,
+            ),
+            ev(
+                spawn::TYPE_SPAWN_RESULT,
+                r#"{"id":"u-stall/implementer#0"}"#,
+            ),
+        ]);
+        // An out-of-order tail on a DIFFERENT stream in the full log.
+        let mut ooo = vec![ev("E", "{}"), ev("E", "{}"), ev("E", "{}")];
+        for (i, e) in ooo.iter_mut().enumerate() {
+            e.stream = "other".to_string();
+            e.position = (100 + i) as u64;
+        }
+        ooo[0].revision = 0;
+        ooo[1].revision = 5;
+        ooo[2].revision = 2;
+        let mut full_events = run_events.clone();
+        full_events.extend(ooo);
+
+        let inputs = WatchInputs {
+            run_events: &run_events,
+            full_events: &full_events,
+            now: SystemTime::now(),
+            last_event_at: run_events.last().map(|e| e.recorded_at),
+            step_lock_free: true,
+            wave_liveness_ages: &BTreeMap::new(),
+            dash: DashProbe::NotRecorded,
+        };
+        let anomalies = detect(&inputs);
+        let signals: Vec<Signal> = anomalies.iter().map(|a| a.signal).collect();
+        assert_eq!(
+            signals,
+            vec![
+                Signal::Escalated,
+                Signal::RejectRecurrence,
+                Signal::FrontierStall,
+                Signal::StoreIntegrity,
+            ]
+        );
+        assert!(anomalies.iter().all(|a| !a.line().is_empty()));
+        run_events.clear(); // silence an unused-mut warning on some toolchains
+        let _ = run_events;
+    }
+
+    // --- Dedup ---
+
+    #[test]
+    fn dedup_suppresses_a_persisting_anomaly_at_the_same_magnitude() {
+        let mut d = Dedup::new();
+        let a = Anomaly {
+            signal: Signal::Escalated,
+            subject: "u".to_string(),
+            magnitude: 0,
+            detail: "escalated".to_string(),
+        };
+        assert_eq!(d.step(vec![a.clone()]), vec![a.clone()]);
+        // Same anomaly, same poll again: suppressed.
+        assert!(d.step(vec![a.clone()]).is_empty());
+        assert!(d.step(vec![a]).is_empty());
+    }
+
+    #[test]
+    fn dedup_re_alerts_when_the_magnitude_increments() {
+        let mut d = Dedup::new();
+        let at = |n: u32| Anomaly {
+            signal: Signal::RejectRecurrence,
+            subject: "u".to_string(),
+            magnitude: n,
+            detail: format!("#{n}"),
+        };
+        assert_eq!(d.step(vec![at(3)]), vec![at(3)]);
+        assert!(d.step(vec![at(3)]).is_empty());
+        // The churn count climbed: re-alert.
+        assert_eq!(d.step(vec![at(4)]), vec![at(4)]);
+        assert!(d.step(vec![at(4)]).is_empty());
+    }
+
+    #[test]
+    fn dedup_re_alerts_a_cleared_and_later_recurring_anomaly() {
+        let mut d = Dedup::new();
+        let a = Anomaly {
+            signal: Signal::DashNotServing,
+            subject: "dash".to_string(),
+            magnitude: 0,
+            detail: "dead".to_string(),
+        };
+        assert_eq!(d.step(vec![a.clone()]), vec![a.clone()]);
+        // It clears: an empty poll.
+        assert!(d.step(vec![]).is_empty());
+        // It recurs: re-alerts fresh, not suppressed as a stale repeat.
+        assert_eq!(d.step(vec![a.clone()]), vec![a]);
+    }
+}

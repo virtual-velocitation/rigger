@@ -39,7 +39,7 @@ use rigger::metrics::{self, Metrics};
 use rigger::run as runscope;
 use rigger::sidecar::{PeerDecision, Sidecar};
 use rigger::worktree::{RunBranchSetup, Worktree};
-use rigger::{hooks, mcpserver, playbooks, progress, spawn, spec};
+use rigger::{hooks, mcpserver, playbooks, progress, spawn, spec, watch};
 
 // Spec 74, criterion 2: the SAME derivation seam `build.rs` embeds at compile time
 // (`build/gitsemver.rs`, already `#[path]`-included into `build.rs` and the two
@@ -1245,6 +1245,7 @@ const SUBCOMMANDS: &[&str] = &[
     "replay",
     "status",
     "dash",
+    "watch",
     "ground",
     "reindex",
     "symbols-index",
@@ -1282,6 +1283,7 @@ fn main() {
         "replay" => cmd_replay(&args[2..]),
         "status" => cmd_status(&args[2..]),
         "dash" => cmd_dash(&args[2..]),
+        "watch" => cmd_watch(&args[2..]),
         "ground" => cmd_ground(&args[2..]),
         "reindex" => cmd_reindex(&args[2..]),
         "symbols-index" => cmd_symbols_index(&args[2..]),
@@ -1381,6 +1383,15 @@ its heartbeat age, and how long since its last store event\n                    
 rigger dash [--port <n>]    serve the read-only observability page on 127.0.0.1\n                              \
 (default port 7420) with live past/present/future views;\n                              \
 --export <path> writes the equivalent static snapshot\n  \
+rigger watch [--interval <s>] the driver-independent watchdog: polls the store,\n            \
+[--once]                  process table, and status for the five rigger-watch-a-run\n                              \
+signals (escalated blockers, heartbeat staleness, dash\n                              \
+liveness, reject-recurrence trend, frontier progress) plus\n                              \
+store integrity, printing one line per anomaly naming\n                              \
+signal, subject, and response skill. --once prints standing\n                              \
+anomalies and exits (cron/CI); default streams (poll every\n                              \
+180s, dedup'd) and never talks to the driver - it works\n                              \
+with the driver dead\n  \
 rigger ground <query> [k]   print up to k (default 8) repo references the project's\n                              \
 configured grounder finds for <query>, as `file:line: text`\n  \
 rigger reindex <file>...    incrementally re-index the named files in the project's\n                              \
@@ -6101,6 +6112,171 @@ fn release_ready_lines(run_events: &[Event], run_branch: &str, base: &str) -> Ve
         .and_then(|rs| rs.release_ready(run_branch, base))
         .map(|rr| rr.lines())
         .unwrap_or_default()
+}
+
+/// Parsed `rigger watch` arguments (see [`parse_watch_args`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WatchArgs {
+    /// `--once`: print standing anomalies and exit, rather than streaming.
+    once: bool,
+    /// `--interval <s>`: the streaming poll period, in seconds.
+    interval_secs: u64,
+}
+
+/// Parse `rigger watch`'s two flags, extracted from [`cmd_watch`] so the loop and every
+/// arm is directly testable with plain string-slice inputs - no store, no cwd, no clock.
+/// `--once` is a bare flag; `--interval <s>` takes the next argument, parsed as an
+/// integer number of seconds; an unrecognized argument refuses naming the usage.
+fn parse_watch_args(args: &[String]) -> Result<WatchArgs, Box<dyn std::error::Error>> {
+    let mut once = false;
+    let mut interval_secs = watch::DEFAULT_INTERVAL_SECS;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--once" => {
+                once = true;
+                i += 1;
+            }
+            "--interval" => {
+                let v = args.get(i + 1).ok_or("watch: --interval expects seconds")?;
+                interval_secs = v.parse::<u64>().map_err(|_| {
+                    format!("watch: --interval expects an integer number of seconds, got {v:?}")
+                })?;
+                i += 2;
+            }
+            other => {
+                return Err(format!(
+                    "watch: unknown argument {other:?} (usage: rigger watch [--interval <s>] \
+                     [--once])"
+                )
+                .into())
+            }
+        }
+    }
+    Ok(WatchArgs {
+        once,
+        interval_secs,
+    })
+}
+
+/// `rigger watch [--interval <s>] [--once]` (spec 69, criterion 2): the
+/// driver-independent watchdog. Gathers the store, process-table, and status truth
+/// [`watch::detect`] needs and prints one line per anomaly - naming signal, subject,
+/// and response - so an orchestrator armed on this command sees exactly what a
+/// manual `rigger-watch-a-run` look would, without polling anything by hand.
+///
+/// `--once` prints the CURRENT standing anomalies and exits (the cron/CI shape).
+/// Without it, this streams: poll, print only what is new or has worsened since the
+/// last poll (in-process [`watch::Dedup`] - spec 69 Design: "dedup state lives in
+/// process memory only"), sleep `--interval` seconds (default
+/// [`watch::DEFAULT_INTERVAL_SECS`]), and repeat forever - the harness's background
+/// monitor is the intended host for this loop.
+fn cmd_watch(args: &[String]) -> Res {
+    let WatchArgs {
+        once,
+        interval_secs,
+    } = parse_watch_args(args)?;
+
+    let mut dedup = watch::Dedup::new();
+    loop {
+        let (loc, selection) = require_store_dir()?;
+        let anomalies = watch_poll(&loc, &selection)?;
+        let to_print = if once {
+            anomalies
+        } else {
+            dedup.step(anomalies)
+        };
+        for a in &to_print {
+            println!("{}", a.line());
+        }
+        if once {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_secs(interval_secs.max(1)));
+    }
+}
+
+/// One poll's worth of I/O for [`cmd_watch`]: reads the run's event slice (scoped
+/// exactly as `rigger status` scopes it) AND the whole log across every stream (the
+/// scope store-integrity needs, mirroring `rigger validate`'s own order-signature
+/// detector, spec 71), tries the step lock non-blocking (free = no `rigger step` is
+/// running right now), gathers each currently-parked spawn's heartbeat-marker age
+/// exactly as `cmd_status` does, and probes the recorded dash marker with a real
+/// serve check - then hands all of it to [`watch::detect`], the pure core. Never
+/// talks to the driver: every input here is store, process-table, or status truth.
+///
+/// `loc`/`selection` are INJECTED rather than read ambiently in here (mirrors
+/// [`refuse_derived_reset_if_live`]'s same shape): the composition root
+/// (`cmd_watch`) resolves them via [`require_store_dir`], so this function - and the
+/// test that seeds a [`StoreLocation`] pointing at a tempdir - never depends on the
+/// process's actual cwd.
+fn watch_poll(
+    loc: &StoreLocation,
+    selection: &StoreSelection,
+) -> Result<Vec<watch::Anomaly>, Box<dyn std::error::Error>> {
+    let now = std::time::SystemTime::now();
+
+    let run_backend = resolve_store(selection, &loc.file("events.db"))?;
+    let run_store = Namespaced::new(run_backend.as_ref(), &loc.identity());
+    let all_in_project = run_store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    let run_events = runscope::current_run(&all_in_project).to_vec();
+    let run_id = runscope::current_run_id(&all_in_project).unwrap_or_default();
+    let last_event_at = run_events.last().map(|e| e.recorded_at);
+
+    // Store integrity reads the WHOLE log across every stream (spec 71's own scope: a
+    // disordered stream is a store-wide fault, not a per-run one), reusing the same
+    // open connection rather than a second backend handle.
+    let full_events = run_store.read_all(0, Direction::Forward, &Filter::default())?;
+
+    // No step process running right now: a non-blocking try-lock that succeeds means
+    // free. Dropped immediately either way, so this probe never holds the lock.
+    let step_lock_free = acquire_step_lock(&loc.dir).is_ok();
+
+    // Each currently-parked spawn's heartbeat-marker age, exactly as `cmd_status`
+    // computes `liveness_ages` (spec 19a) - the SAME "live agent processes" reading
+    // both surfaces show, so they can never disagree on who is still working.
+    let (workdir, _max_retries) = config::load(".")
+        .map(|c| (c.workflow.defaults.workdir, c.workflow.defaults.max_retries))
+        .unwrap_or_default();
+    let repo = git_repo();
+    let mut wave_liveness_ages: std::collections::BTreeMap<String, u64> =
+        std::collections::BTreeMap::new();
+    if !repo.is_empty() {
+        let root = rigger::worktree::scratch_root_from_env(&repo, &workdir);
+        for w in &spawn::step_result(&run_events)?.wave {
+            let path = rigger::liveness::marker_path(&root, &run_id, &w.id);
+            if let Ok(age) = std::fs::metadata(&path)
+                .and_then(|md| md.modified())
+                .map(|mtime| now.duration_since(mtime).map(|d| d.as_secs()).unwrap_or(0))
+            {
+                wave_liveness_ages.insert(w.id.clone(), age);
+            }
+        }
+    }
+
+    // Dash liveness: read the per-project marker (port + pid) and VERIFY with the
+    // same real serve probe `dash_serving_on` uses - a marker naming a dead or
+    // hung-holder pid never reads as serving, exactly like c4's status truth.
+    let marker_path = std::path::PathBuf::from(loc.file(DASH_MARKER_FILE));
+    let dash = match dash::DashMarker::read(&marker_path) {
+        None => watch::DashProbe::NotRecorded,
+        Some(m) if dash::dash_serving_on(m.port) => watch::DashProbe::Serving,
+        Some(m) => watch::DashProbe::NotServing {
+            pid: m.pid,
+            port: m.port,
+        },
+    };
+
+    let inputs = watch::WatchInputs {
+        run_events: &run_events,
+        full_events: &full_events,
+        now,
+        last_event_at,
+        step_lock_free,
+        wave_liveness_ages: &wave_liveness_ages,
+        dash,
+    };
+    Ok(watch::detect(&inputs))
 }
 
 /// `rigger reset` - the supported prunes, one flag per accumulation.
@@ -17933,6 +18109,321 @@ mod tests {
             err.to_string().contains("at least one mode"),
             "a bare --force-live must fall through the same 'at least one mode' refusal as a \
              bare reset; got {err}"
+        );
+    }
+
+    // --- Spec 69, criterion 2: THE WATCHDOG (`rigger watch --once`, wired end to end) ---
+
+    /// Open a fresh sqlite store at a tempdir'd [`StoreLocation`], returning it alongside the
+    /// project identity `watch_poll` will scope to. Mirrors
+    /// `refuse_derived_reset_if_live_fails_safe_on_a_malformed_spawn_event`'s own setup, so
+    /// `watch_poll` is exercised with an INJECTED location - never the process cwd.
+    fn watch_test_store() -> (tempfile::TempDir, StoreLocation, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let rigger_dir = dir.path().join(RIGGER_DIR);
+        std::fs::create_dir_all(&rigger_dir).unwrap();
+        let loc = StoreLocation {
+            dir: rigger_dir.clone(),
+        };
+        let identity = loc.identity();
+        (dir, loc, identity)
+    }
+
+    #[test]
+    fn watch_once_on_a_clean_store_reports_no_anomalies() {
+        let (_dir, loc, identity) = watch_test_store();
+        let db = loc.file("events.db");
+        {
+            let backend = Store::open(&db).unwrap();
+            let store = Namespaced::new(&backend, &identity);
+            store
+                .append(
+                    conductor::STREAM,
+                    ExpectedRevision::Any,
+                    &[
+                        Event::new(ledger::TYPE_UNIT_STARTED, br#"{"id":"u"}"#.to_vec()),
+                        Event::new(
+                            ledger::TYPE_UNIT_INTEGRATED,
+                            br#"{"id":"u","commit":"c"}"#.to_vec(),
+                        ),
+                    ],
+                )
+                .unwrap();
+        }
+        let anomalies = watch_poll(&loc, &StoreSelection::Sqlite).unwrap();
+        assert!(
+            anomalies.is_empty(),
+            "a clean store must report no anomalies: {anomalies:?}"
+        );
+    }
+
+    #[test]
+    fn parse_watch_args_defaults_to_streaming_with_the_default_interval() {
+        let a = parse_watch_args(&[]).unwrap();
+        assert!(!a.once);
+        assert_eq!(a.interval_secs, watch::DEFAULT_INTERVAL_SECS);
+    }
+
+    /// The loop must run to completion over MULTIPLE arguments, in either flag order,
+    /// consuming each flag's own width (`--once` is 1, `--interval <s>` is 2) - a
+    /// mutated loop-continuation comparison either stops after the first flag or
+    /// walks past the slice, so a single-flag input cannot tell the arms apart.
+    #[test]
+    fn parse_watch_args_accepts_once_and_interval_together_in_either_order() {
+        let a = parse_watch_args(&["--interval".to_string(), "5".to_string()]).unwrap();
+        assert!(!a.once);
+        assert_eq!(a.interval_secs, 5);
+
+        let a = parse_watch_args(&[
+            "--interval".to_string(),
+            "5".to_string(),
+            "--once".to_string(),
+        ])
+        .unwrap();
+        assert!(a.once, "--interval then --once must still set once");
+        assert_eq!(a.interval_secs, 5);
+
+        let a = parse_watch_args(&[
+            "--once".to_string(),
+            "--interval".to_string(),
+            "7".to_string(),
+        ])
+        .unwrap();
+        assert!(a.once, "--once then --interval must still set once");
+        assert_eq!(a.interval_secs, 7);
+    }
+
+    #[test]
+    fn parse_watch_args_rejects_a_non_integer_interval_a_missing_value_and_an_unknown_flag() {
+        assert!(parse_watch_args(&["--interval".to_string(), "soon".to_string()]).is_err());
+        assert!(parse_watch_args(&["--interval".to_string()]).is_err());
+        assert!(parse_watch_args(&["--bogus".to_string()]).is_err());
+    }
+
+    /// The headline scenario (spec 69, Done-when "a test proves THE WATCHDOG"): a store
+    /// seeded with a multi-result spawn, an escalated unit, a unit at reject-recurrence
+    /// three, and an out-of-order tail. `rigger watch --once` (here, `watch_poll` - the
+    /// function `cmd_watch` calls with no further logic between it and stdout) must print
+    /// one line per anomaly naming signal, subject, and response.
+    #[test]
+    fn watch_once_on_the_seeded_store_reports_one_line_per_anomaly() {
+        let (_dir, loc, identity) = watch_test_store();
+        let db = loc.file("events.db");
+        {
+            let backend = Store::open(&db).unwrap();
+            let store = Namespaced::new(&backend, &identity);
+            // An escalated unit.
+            store
+                .append(
+                    conductor::STREAM,
+                    ExpectedRevision::Any,
+                    &[
+                        Event::new(ledger::TYPE_UNIT_STARTED, br#"{"id":"u-esc"}"#.to_vec()),
+                        Event::new(ledger::TYPE_UNIT_ESCALATED, br#"{"id":"u-esc"}"#.to_vec()),
+                    ],
+                )
+                .unwrap();
+            // A unit at reject-recurrence three, same cause each time.
+            for attempt in 1..=3u32 {
+                store
+                    .append(
+                        conductor::STREAM,
+                        ExpectedRevision::Any,
+                        &[Event::new(
+                            ledger::TYPE_UNIT_STARTED,
+                            br#"{"id":"u-fail"}"#.to_vec(),
+                        )],
+                    )
+                    .unwrap();
+                store
+                    .append(
+                        conductor::STREAM,
+                        ExpectedRevision::Any,
+                        &[Event::new(
+                            ledger::TYPE_UNIT_FAILED,
+                            format!(r#"{{"id":"u-fail","attempts":{attempt},"cause":"gate:fmt"}}"#)
+                                .into_bytes(),
+                        )],
+                    )
+                    .unwrap();
+            }
+            // A spawn answered three times without the run advancing.
+            for _ in 0..3 {
+                store
+                    .append(
+                        conductor::STREAM,
+                        ExpectedRevision::Any,
+                        &[Event::new(
+                            spawn::TYPE_SPAWN_RESULT,
+                            br#"{"id":"u-stall/implementer#0"}"#.to_vec(),
+                        )],
+                    )
+                    .unwrap();
+            }
+            // A healthy, unrelated stream that will be corrupted below.
+            store
+                .append(
+                    "watch-test-ooo",
+                    ExpectedRevision::Any,
+                    &[
+                        Event::new("E", vec![0]),
+                        Event::new("E", vec![1]),
+                        Event::new("E", vec![2]),
+                    ],
+                )
+                .unwrap();
+        }
+
+        // An out-of-order tail (spec 71's own corruption signature): delete the
+        // namespaced stream's revision-0 row and reissue it at the newest position -
+        // exactly what a stale (pre-append-guard) writer would do, and exactly the
+        // shape `Store::append` itself refuses, so it can only be reproduced by going
+        // around it with a raw connection - mirrors
+        // `append_refuses_a_stream_whose_position_order_and_revision_order_already_
+        // disagree` (src/eventstore/sqlite.rs).
+        let scoped_ooo_stream = format!(
+            "{}watch-test-ooo",
+            rigger::eventstore::namespace::Namespaced::prefix_for(&identity)
+        );
+        {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.execute(
+                "DELETE FROM events WHERE stream = ?1 AND revision = 0",
+                [&scoped_ooo_stream],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO events (stream, type, id, data, meta, valid_from, recorded_at, \
+                 revision) VALUES (?1, 'E', 'reissued', X'00', '{}', 0, 0, 0)",
+                [&scoped_ooo_stream],
+            )
+            .unwrap();
+        }
+
+        let anomalies = watch_poll(&loc, &StoreSelection::Sqlite).unwrap();
+        let signals: Vec<watch::Signal> = anomalies.iter().map(|a| a.signal).collect();
+        assert_eq!(
+            signals,
+            vec![
+                watch::Signal::Escalated,
+                watch::Signal::RejectRecurrence,
+                watch::Signal::FrontierStall,
+                watch::Signal::StoreIntegrity,
+            ],
+            "one line per anomaly, in Design order: {anomalies:?}"
+        );
+        // Each line names its signal, subject, and response - never a bare fact.
+        let by_signal = |s: watch::Signal| anomalies.iter().find(|a| a.signal == s).unwrap();
+        let esc = by_signal(watch::Signal::Escalated).line();
+        assert!(esc.contains("escalated blockers") && esc.contains("u-esc"));
+        assert!(esc.contains("rigger-handle-an-escalation"));
+        let rr = by_signal(watch::Signal::RejectRecurrence).line();
+        assert!(rr.contains("reject-recurrence trend") && rr.contains("u-fail"));
+        assert!(rr.contains("rigger-diagnose-churn"));
+        let fs = by_signal(watch::Signal::FrontierStall).line();
+        assert!(fs.contains("frontier progress") && fs.contains("u-stall/implementer#0"));
+        assert!(fs.contains("stop the driver and diagnose"));
+        let si = by_signal(watch::Signal::StoreIntegrity).line();
+        assert!(si.contains("store integrity") && si.contains("watch-test-ooo"));
+        assert!(si.contains(watch::ORDER_SIGNATURE_REPAIR_DOC_REF));
+    }
+
+    /// `rigger watch`'s signal set covers every signal `rigger-watch-a-run` names (spec 69
+    /// Done-when), pinned against the same [`watch::SKILL_SIGNAL_NAMES`] the pure `detect`
+    /// tests pin against - a superset relation (store integrity is the automation's own
+    /// sixth check), never equality.
+    #[test]
+    fn the_watchdog_command_signal_set_covers_every_signal_the_watch_skill_names() {
+        let command_signals: std::collections::BTreeSet<&str> = [
+            watch::Signal::Escalated,
+            watch::Signal::DeadDriver,
+            watch::Signal::DashNotServing,
+            watch::Signal::RejectRecurrence,
+            watch::Signal::FrontierStall,
+            watch::Signal::StoreIntegrity,
+        ]
+        .iter()
+        .map(|s| s.name())
+        .collect();
+        for skill_signal in watch::SKILL_SIGNAL_NAMES {
+            assert!(
+                command_signals.contains(skill_signal),
+                "the watchdog command must cover skill signal {skill_signal:?}; got \
+                 {command_signals:?}"
+            );
+        }
+    }
+
+    /// `watch_poll` must ACTUALLY PROBE a recorded dash marker's port over a real socket
+    /// (`dash::dash_serving_on`), not merely thread the marker through unexamined: a marker
+    /// naming a port nothing answers on (the process is gone / the port was never bound) is
+    /// reported as [`watch::Signal::DashNotServing`], naming the dead pid and port, exactly
+    /// as `rigger-restore-the-dash` diagnoses.
+    #[test]
+    fn watch_once_reports_dash_not_serving_when_the_marker_names_a_dead_holder() {
+        let (_dir, loc, _identity) = watch_test_store();
+        // A port nothing listens on: bind an ephemeral port, then drop the listener,
+        // freeing it - a probe against it afterward gets connection-refused, exactly
+        // the "hung holder is gone" case the marker/probe split exists to catch.
+        let dead_port = {
+            let l = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let marker_path = std::path::PathBuf::from(loc.file(DASH_MARKER_FILE));
+        dash::DashMarker {
+            port: dead_port,
+            pid: 999_999,
+        }
+        .write(&marker_path)
+        .unwrap();
+
+        let anomalies = watch_poll(&loc, &StoreSelection::Sqlite).unwrap();
+        assert_eq!(anomalies.len(), 1, "got: {anomalies:?}");
+        let a = &anomalies[0];
+        assert_eq!(a.signal, watch::Signal::DashNotServing);
+        assert!(a.detail.contains("999999"), "detail: {}", a.detail);
+        assert!(
+            a.detail.contains(&dead_port.to_string()),
+            "detail: {}",
+            a.detail
+        );
+        assert!(a.line().contains("rigger-restore-the-dash"));
+    }
+
+    /// The [`watch::DashProbe::Serving`] counterpart: a marker naming a port a REAL
+    /// rigger-dash-shaped listener answers on (carrying [`dash::DASH_HEADER`], the exact
+    /// marker `dash_serving_on` itself checks for) reports NO anomaly - the probe's actual
+    /// result gates the branch, not just whether a marker is present.
+    #[test]
+    fn watch_once_reports_no_anomaly_when_the_dash_marker_names_a_real_serving_holder() {
+        use std::io::Write as _;
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for mut s in listener.incoming().flatten() {
+                let _ = s.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\n{}: probe\r\nConnection: close\r\n\r\n",
+                        dash::DASH_HEADER
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+
+        let (_dir, loc, _identity) = watch_test_store();
+        let marker_path = std::path::PathBuf::from(loc.file(DASH_MARKER_FILE));
+        dash::DashMarker {
+            port,
+            pid: std::process::id(),
+        }
+        .write(&marker_path)
+        .unwrap();
+
+        let anomalies = watch_poll(&loc, &StoreSelection::Sqlite).unwrap();
+        assert!(
+            anomalies.is_empty(),
+            "a marker naming a real serving dash must report no anomaly: {anomalies:?}"
         );
     }
 

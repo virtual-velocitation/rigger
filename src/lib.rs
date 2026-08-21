@@ -57,6 +57,11 @@ pub mod safety;
 pub mod sidecar;
 pub mod spawn;
 pub mod spec;
+/// The driver-independent watchdog (spec 69, criterion 2): `rigger watch`'s pure
+/// domain core - the five `rigger-watch-a-run` signals plus a store-integrity check,
+/// folded from already-gathered inputs into one line per anomaly, with in-process
+/// streaming dedup. Never touches the driver.
+pub mod watch;
 pub mod worktree;
 
 /// Spec 16 unit 2 - the partitioning + routing SAFETY EVAL (architecture 5.5.8). A GATE, not a
