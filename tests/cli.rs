@@ -13521,6 +13521,184 @@ fn stage_failing_docs_rigger_shim(root: &Path) -> String {
     format!("{}:{}", bindir.display(), orig_path)
 }
 
+/// Place a copy of the REAL compiled `rigger` binary (the one this very test suite runs) at
+/// `root`'s own local target dir (`./target/debug/rigger`) - spec 75's "this working tree's
+/// own local target" candidate, the highest-priority tree-built candidate that needs no env
+/// var. Simulates a worktree that has `cargo build`'d ITS OWN current code, so the hook has a
+/// tree-built binary to prefer over whatever sits on PATH.
+fn stage_tree_built_binary(root: &Path) {
+    let dir = root.join("target").join("debug");
+    std::fs::create_dir_all(&dir).unwrap();
+    let dest = dir.join("rigger");
+    std::fs::copy(rigger_bin(), &dest)
+        .unwrap_or_else(|e| panic!("copy the tree-built binary to {}: {e}", dest.display()));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+/// Stage a `rigger` on `PATH` that is a STALE binary standing in for an old build from before
+/// this worktree's own code changed a rendered fact: `command -v rigger` succeeds, but its
+/// `docs` subcommand writes fixed OLD text (never the real renderer) and its `version`
+/// subcommand names itself as a stale build - never delegating to the real compiled binary, so
+/// it genuinely cannot produce the tree's current render no matter what invokes it. Pairs with
+/// [`stage_tree_built_binary`] to prove candidate PREFERENCE (spec 75): present alongside a
+/// tree-built candidate it must lose to; present ALONE it is the only binary reachable at all,
+/// so a fresh-vs-staged mismatch is unavoidable. Returns a `PATH` with the shim dir prepended.
+fn stage_stale_rigger_shim(root: &Path) -> String {
+    let bindir = root.join("shim-bin");
+    std::fs::create_dir_all(&bindir).unwrap();
+    let shim = bindir.join("rigger");
+    std::fs::write(
+        &shim,
+        "#!/bin/sh\n\
+case \"$1\" in\n\
+  docs)\n\
+    printf 'STALE DOC - not a real render\\n' > skills/using-rigger/SKILL.md\n\
+    printf 'STALE DOC - not a real render\\n' > docs/handbook/using-rigger.md\n\
+    exit 0\n\
+    ;;\n\
+  version)\n\
+    echo 'rigger 0.0.0-stale-test-shim'\n\
+    exit 0\n\
+    ;;\n\
+esac\n\
+exit 1\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let orig_path = std::env::var("PATH").unwrap_or_default();
+    format!("{}:{}", bindir.display(), orig_path)
+}
+
+/// Spec 75, crit 2 (a MATCHING render passes via the tree-built binary, end to end): OWNS the
+/// end-to-end hook behavior (crit 1 owns the candidate order and its rendering in the
+/// template - `precommit_block_resolves_a_tree_built_binary_before_path` proves that
+/// textually). A commit in a worktree whose code adds a rendered fact - here, the tree's own
+/// local target build - PASSES when that build is present and its render matches the staged
+/// docs, even though `PATH` carries only a STALE `rigger` that would render a MISMATCH. A pass
+/// can only happen by the hook genuinely PREFERRING the tree-built candidate over PATH: if it
+/// fell back to PATH instead, the stale shim's render would drift against the staged fresh
+/// docs and this same commit would be refused (proven by the sibling refusal test below).
+#[test]
+fn setup_precommit_hook_prefers_the_trees_own_built_binary_over_a_stale_path_rigger() {
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    setup_selfhosting_repo_with_fresh_docs(root);
+    let fresh_skill_before =
+        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+    assert!(
+        fresh_skill_before.contains("name: using-rigger"),
+        "the seed must be a real fresh render, not a stub; got:\n{fresh_skill_before}"
+    );
+
+    stage_tree_built_binary(root);
+    let commit_path = stage_stale_rigger_shim(root);
+    std::fs::write(
+        root.join("code.txt"),
+        "a rendered fact this worktree's code added\n",
+    )
+    .unwrap();
+    git_ok(root, &["add", "code.txt"]);
+    let out = Command::new("git")
+        .args(["commit", "-q", "-m", "add a rendered fact"])
+        .current_dir(root)
+        .env("PATH", &commit_path)
+        .env_remove("CARGO_TARGET_DIR")
+        .output()
+        .expect("git must be runnable");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "a tree-built binary present must PASS the commit even though PATH is stale; \
+         stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("refusing"),
+        "a tree-built binary whose render matches the staged docs must never refuse; \
+         stderr:\n{stderr}"
+    );
+
+    let tree = git_out(root, &["ls-tree", "-r", "--name-only", "HEAD"]).unwrap_or_default();
+    assert!(
+        tree.contains("code.txt"),
+        "the worktree's own change must ride the commit; tree:\n{tree}"
+    );
+    let committed_after =
+        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+    assert_eq!(
+        committed_after, fresh_skill_before,
+        "the already-fresh doc must land byte-identical - the tree-built binary's render \
+         matched what was staged"
+    );
+}
+
+/// Spec 75, crit 2 (the SAME commit shape REFUSES with only a stale PATH rigger, end to end):
+/// the flip side of the preference test above, proving the safe-closed direction. With no
+/// tree-built candidate anywhere (no local target build this time) and PATH carrying only the
+/// same stale shim, the hook has nothing to invoke but a binary that cannot reproduce the
+/// tree's current render - so the fresh docs already staged now drift against ITS render, and
+/// the commit is refused exactly as an ordinary drift would be, never silently let through for
+/// lack of a better binary.
+#[test]
+fn setup_precommit_hook_refuses_the_same_commit_shape_with_only_a_stale_path_rigger() {
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    setup_selfhosting_repo_with_fresh_docs(root);
+    let fresh_skill_before =
+        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+    assert!(
+        fresh_skill_before.contains("name: using-rigger"),
+        "the seed must be a real fresh render, not a stub; got:\n{fresh_skill_before}"
+    );
+
+    // No tree-built candidate staged anywhere this time - only the stale PATH rigger.
+    let commit_path = stage_stale_rigger_shim(root);
+    std::fs::write(
+        root.join("code.txt"),
+        "a rendered fact this worktree's code added\n",
+    )
+    .unwrap();
+    git_ok(root, &["add", "code.txt"]);
+    let out = Command::new("git")
+        .args(["commit", "-q", "-m", "add a rendered fact"])
+        .current_dir(root)
+        .env("PATH", &commit_path)
+        .env_remove("CARGO_TARGET_DIR")
+        .output()
+        .expect("git must be runnable");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "with only a stale PATH rigger the same commit shape must still be REFUSED; \
+         stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("skills/using-rigger/SKILL.md")
+            && stderr.contains("docs/handbook/using-rigger.md"),
+        "the refusal must name both docs the stale render drifted from; stderr:\n{stderr}"
+    );
+
+    let committed =
+        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+    assert_eq!(
+        committed, fresh_skill_before,
+        "a refused commit must not land - HEAD must still carry the fresh seed, not the stale \
+         render"
+    );
+    let staged = git_out(root, &["diff", "--cached", "--name-only"]).unwrap_or_default();
+    assert!(
+        !staged.contains("SKILL.md") && !staged.contains("using-rigger.md"),
+        "the hook must never stage its own stale re-render; staged files:\n{staged}"
+    );
+}
+
 /// Spec 24, crit 2 (idempotency, end to end): the hook is SAFE to live in everyone's
 /// `.git/hooks` - re-running `rigger setup` does NOT duplicate it. The installed hook is
 /// byte-identical after a second setup, still carries exactly one managed block, and the rerun
