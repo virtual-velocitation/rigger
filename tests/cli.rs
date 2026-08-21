@@ -6066,6 +6066,31 @@ fn step_carries_the_escalated_set_when_a_fixpoint_is_reached_with_a_wedged_unit(
         "an escalated fixpoint must stamp an attention entry naming the escalated unit, on \
          the real binary's own stdout; got: {line:?}"
     );
+
+    // Step 3 (review u69c5, finding sdet-u69c5-escalated-resume-restamp-untested-but-
+    // verified-correct: no test drove a THIRD real `rigger step` after an escalation to
+    // prove the `escalated` signal does not re-stamp on a RESUMED process - only
+    // worker-death-recurred/stalled-frontier and budget-final-tenth had that real-process-
+    // boundary re-stamp guard coverage; this closes the gap). A FRESH process, nothing new
+    // recorded - the run is already at its fixpoint, unchanged. The LEVEL-triggered
+    // `escalated` set field must still re-surface (it reflects current truth every call,
+    // exactly like `halted`), but the EDGE-triggered `attention` array must be absent: the
+    // crossing already happened, once, in step 2 - "once per threshold crossing" (spec 69)
+    // is a property of the PERSISTED log a brand-new process re-derives, not Rust state the
+    // second process happened to carry forward.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "step 3 must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(r#""escalated":["solo"]"#),
+        "the LEVEL-triggered escalated set must still re-surface on a fresh process reading \
+         back the same store; got: {line:?}"
+    );
+    assert!(
+        !line.contains(r#""attention":"#),
+        "a fresh process reading a store where the escalation already happened must NOT \
+         re-stamp the EDGE-triggered attention entry; got: {line:?}"
+    );
 }
 
 /// Gap 13: a spawn-budget HALT must be LOUD, not indistinguishable from convergence.
@@ -6106,6 +6131,151 @@ fn step_prints_a_budget_halt_reason_when_the_breaker_trips() {
         ),
         "a budget halt that is also the budget's final tenth must stamp both run-scoped \
          attention entries, in order, on the real binary's own stdout; got: {line:?}"
+    );
+}
+
+/// Spec 69, criterion 5, signal 2 (BUDGET half), "once per threshold crossing" - PROVEN
+/// ACROSS A REAL PROCESS BOUNDARY (review u69c5 round 2, cause genuine-defect). The
+/// implementer's own in-process unit test
+/// (`a_budget_halt_does_not_restamp_on_a_later_poll_with_nothing_new`, `src/conductor.rs`)
+/// proves the SIGNAL COMPUTATION against an in-memory `:memory:` store across two `run()`
+/// calls in ONE test process. It cannot prove what `step_prints_a_budget_halt_reason_when_
+/// the_breaker_trips` above proves for a SINGLE crossing: that a SECOND, fresh `rigger
+/// step` process - re-deriving `budget_exhausted_before` from a REAL SQLite file it just
+/// opened, not Rust state the first process happened to carry forward - agrees the
+/// crossing already happened and does not re-stamp.
+#[test]
+fn a_budget_halt_does_not_restamp_on_a_later_real_step_with_nothing_new() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_budget_one_two_stage_workflow(root);
+
+    // Step 1: `a` is admitted and parks, `b` is refused - the breaker trips, crossing both
+    // the budget halt and its own final-tenth threshold in the same call.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "step 1 must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(
+            r#""attention":[{"kind":"halted","detail":"budget exhausted: 1/1 spawns"},{"kind":"budget-final-tenth","detail":"1/1 spawns"}]"#
+        ),
+        "step 1 crosses the budget threshold and must stamp both entries; got: {line:?}"
+    );
+
+    // Step 2: a FRESH `rigger step` process, nothing new recorded. `a`'s spawn replays its
+    // still-unanswered park for free and `b` is refused again - the SAME spawn count on
+    // both sides of THIS call's own window, so the crossing gate does not re-fire. The
+    // LEVEL-triggered `halted` field correctly re-derives `Some(..)` (the breaker genuinely
+    // re-trips every call it is asked), but the EDGE-triggered `attention` array must be
+    // absent - proven here against a store this SECOND process opened fresh, not Rust
+    // state the first process happened to carry forward.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "step 2 must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(r#""halted":"budget exhausted: 1/1 spawns""#),
+        "the LEVEL-triggered halted field must still re-surface on a fresh process reading \
+         back the same store; got: {line:?}"
+    );
+    assert!(
+        !line.contains(r#""attention":"#),
+        "a fresh process reading a store where the crossing already happened must NOT \
+         re-stamp the EDGE-triggered attention entries; got: {line:?}"
+    );
+}
+
+/// Like [`write_budget_one_two_stage_workflow`] but a DEPENDENCY chain instead of two
+/// independent stages: `s2 needs s1`, so `s2` is not ready until `s1` INTEGRATES - the
+/// scenario where the budget count itself does not change on the call that genuinely
+/// halts (review u69c5 round 3, cause genuine-defect). `on_pass` is deliberately left
+/// unset (empty resolves to `merge` - §3.2) - `s2`'s readiness needs a real
+/// `UnitIntegrated`, which an `on_pass: none` unit (verified-but-never-merged) never
+/// emits, so `s2` would stay blocked forever and the run would falsely converge
+/// (`done: true`, nothing pending) rather than reach the genuine halt this test drives at.
+fn write_budget_one_dependency_workflow(root: &Path) {
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: steptest
+defaults:
+  grounder: nop
+  budget: 1
+stages:
+  s1:
+    agent: worker
+  s2:
+    agent: worker
+    needs: [s1]
+"#,
+    )
+    .unwrap();
+}
+
+/// Spec 69, criterion 5, signal 2 (BUDGET half), "once per threshold crossing" - a SECOND
+/// gap in the same signal (review u69c5 round 3, cause genuine-defect), proven ACROSS A
+/// REAL PROCESS BOUNDARY. The implementer's own in-process unit test
+/// (`a_delayed_budget_halt_after_a_dependency_unlocks_still_stamps`, `src/conductor.rs`)
+/// proves the fix's SIGNAL COMPUTATION against an in-memory store; this drives the exact
+/// same scenario through the compiled binary, a REAL on-disk SQLite store, and a REAL
+/// `rigger result` recorded by a SEPARATE process between the two steps - the round-3 fix
+/// gates the budget half on the durable `BudgetExhausted` event's presence in
+/// `prior_events`, and only a fresh process re-reading that event off disk (not Rust state
+/// a single long-lived process carried forward) proves the gate survives the process
+/// boundary the fix's whole rationale depends on.
+#[test]
+fn a_delayed_budget_halt_after_a_dependency_unlocks_still_stamps_on_a_real_process_boundary() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_budget_one_dependency_workflow(root);
+
+    // Step 1: only `s1` is ready (`s2` needs it). `s1`'s implementer parks; nothing else is
+    // ready to refuse, so the budget is reached (0 -> 1) WITHOUT tripping the breaker.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "step 1 must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(r#""id":"s1/implementer#0""#),
+        "step 1 must park s1's implementer; got: {line:?}"
+    );
+    assert!(
+        !line.contains(r#""halted":"#),
+        "reaching the budget count with nothing left to refuse must not halt yet; got: {line:?}"
+    );
+    assert!(
+        line.contains(r#""attention":[{"kind":"budget-final-tenth","detail":"1/1 spawns"}]"#),
+        "step 1 crosses the final-tenth spawn-count threshold (signal 4, unaffected by this \
+         fix) but must NOT stamp `halted` (signal 2): nothing was refused this call; \
+         got: {line:?}"
+    );
+
+    // A SEPARATE process records s1's real result - exactly a courier's `rigger result`
+    // call - so s1 integrates (no gates, `on_pass: none`) and unlocks s2.
+    let (_out, err, ok) = run_rigger(root, &["result", "s1/implementer#0", "done"]);
+    assert!(ok, "recording s1's result must succeed; stderr: {err}");
+
+    // Step 2: a FRESH `rigger step` process. s1 integrated, s2 becomes ready, and is
+    // REFUSED (budget already spent) - the call that GENUINELY halts, even though the
+    // spawn count itself does not change this call (`before_spawns == after_spawns == 1`).
+    // Must stamp `halted` exactly once, proving `budget_exhausted_before` correctly
+    // re-derives `false` (nothing tripped the breaker as of `prior_events`) from a store
+    // this brand-new process just opened off disk.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "step 2 must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(r#""halted":"budget exhausted: 1/1 spawns""#),
+        "step 2 must genuinely halt: s2 is refused; got: {line:?}"
+    );
+    assert!(
+        line.contains(r#""attention":[{"kind":"halted","detail":"budget exhausted: 1/1 spawns"}]"#),
+        "step 2 is the call that GENUINELY halts (s2 refused) and must stamp the entry, even \
+         though the spawn count itself is unchanged this call; got: {line:?}"
     );
 }
 
