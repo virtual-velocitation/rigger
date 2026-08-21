@@ -9,3 +9,12 @@
 # and `+semver:` directives) are left at their defaults.
 mode: Mainline
 tag-prefix: v
+# The default fallback base (1.0.0) outranks any real 0.x tag because base selection
+# takes the maximum across strategies; 0.0.0 makes a discovered tag always win.
+base-version: 0.0.0
+# rigger-run is this project's mainline: no pre-release branch label on it.
+branches:
+  main:
+    regex: ^(main|master|rigger-run)$
+    is-mainline: true
+    tag: ""
