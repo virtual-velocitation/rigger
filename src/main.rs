@@ -41,6 +41,23 @@ use rigger::sidecar::{PeerDecision, Sidecar};
 use rigger::worktree::{RunBranchSetup, Worktree};
 use rigger::{hooks, mcpserver, playbooks, progress, spawn, spec};
 
+// Spec 74, criterion 2: the SAME derivation seam `build.rs` embeds at compile time
+// (`build/gitsemver.rs`, already `#[path]`-included into `build.rs` and the two
+// derivation-seam test binaries - see that file's own module doc comment: "that is the
+// ONE derivation seam ... never a parallel reimplementation of it") is included here a
+// third time so `cmd_validate` can re-derive the CHECKOUT's current version for the
+// behind-the-tree comparison. This is a live, runtime invocation of `go-gitsemver` (and
+// git) - but only from `validate`'s comparison path, never from `rigger version`'s own
+// self-report, which stays the compile-time-only `GITSEMVER_VERSION` const below. The
+// Global constraint ("version values are computed at COMPILE time only - no runtime git
+// or tool invocation") reads narrowly, scoped to that self-report: `git_is_ancestor`
+// (below) already shells to git live inside this exact command for the analogous
+// spec-18-criterion-9 workflow-drift ordering diagnostic, an established precedent for a
+// runtime tool/git call from `validate` for comparison purposes.
+#[path = "../build/gitsemver.rs"]
+#[allow(dead_code)]
+mod gitsemver;
+
 const RIGGER_DIR: &str = ".rigger";
 
 /// The breadcrumb file, under [`RIGGER_DIR`], where a run driver records the URL of the
@@ -7386,6 +7403,19 @@ fn validate_advisories(root: &Path) -> Vec<String> {
     if let Some(dirty) = uncommitted_rigger_advisory(root) {
         advisories.push(dirty);
     }
+    // Spec 74, criterion 2: the missing-go-gitsemver-binary advisory (fires whenever
+    // THIS binary's own embedded version carries the `+unversioned` marker, regardless
+    // of cause) and the behind-the-tree advisory (fires when the checkout's freshly
+    // re-derived version is genuinely ahead of it) are independent - both wired here,
+    // never mutually exclusive in code even though in practice at most one condition
+    // tends to hold at a time (an unversioned installed side already silences the
+    // behind-the-tree comparison on its own, inside `behind_the_tree_message`).
+    if let Some(advisory) = missing_gitsemver_binary_advisory(GITSEMVER_VERSION) {
+        advisories.push(advisory);
+    }
+    if let Some(advisory) = behind_the_tree_advisory(root, GITSEMVER_VERSION, BUILD_PROVENANCE) {
+        advisories.push(advisory);
+    }
     advisories
 }
 
@@ -7523,6 +7553,109 @@ fn git_is_ancestor(root: &Path, ancestor: &str, descendant: &str) -> Option<bool
         Some(1) => Some(false),
         _ => None,
     }
+}
+
+/// Number of commits `descendant` carries beyond `ancestor` (`git rev-list --count
+/// ancestor..descendant`), or `None` when git cannot decide (unavailable, not a repo, or
+/// either id unresolvable - the same undecidable cases [`git_is_ancestor`] reports).
+/// Meaningful only once the caller already knows `ancestor` truly is a (proper) ancestor
+/// of `descendant`: this just counts, it never itself verifies order (spec 74, criterion
+/// 2's commit-distance figure for the behind-the-tree advisory).
+fn git_commit_distance(root: &Path, ancestor: &str, descendant: &str) -> Option<u64> {
+    let out = Command::new("git")
+        .args(["rev-list", "--count", &format!("{ancestor}..{descendant}")])
+        .current_dir(root)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8(out.stdout).ok()?.trim().parse().ok()
+}
+
+/// The missing-`go-gitsemver`-binary advisory (spec 74, criterion 2): whenever THIS
+/// installed binary's own embedded version ([`GITSEMVER_VERSION`]) carries the
+/// [`gitsemver::UNVERSIONED_SUFFIX`] marker - REGARDLESS OF CAUSE (the tool missing from
+/// PATH at build time, the build not run inside a git checkout, or any other reason
+/// [`gitsemver::derive_version`] fell back). One uniform advisory for every cause,
+/// mirroring `derive_version`'s own one-uniform-fallback contract (see
+/// `build/gitsemver.rs`'s module doc: the embedded marker itself cannot distinguish its
+/// cause, so every cause folds into one signal - here too, into one advisory). `None`
+/// when the version was genuinely derived.
+fn missing_gitsemver_binary_advisory(installed_version: &str) -> Option<String> {
+    if !installed_version.ends_with(gitsemver::UNVERSIONED_SUFFIX) {
+        return None;
+    }
+    Some(format!(
+        "warning: this rigger binary's version ({installed_version}) could not be derived by \
+         go-gitsemver at build time (the tool may be missing from PATH, or the build did not \
+         run inside a git checkout - the embedded marker cannot distinguish which). Install \
+         go-gitsemver (github.com/MyCarrier-DevOps/go-gitsemver) and rebuild so future builds \
+         report a real, comparable version instead of the crate's bare semver."
+    ))
+}
+
+/// The pure "behind-the-tree" decision (spec 74, criterion 2): given the installed
+/// binary's version, the checkout's freshly re-derived version, and how many commits (if
+/// decidable) the checkout is ahead of the installed build, decide the advisory text.
+/// `None` whenever there is nothing actionable: the two version strings already agree
+/// (nothing that would change the derived order actually changed), either side carries
+/// the `+unversioned` marker (derivation unavailable is a DIFFERENT condition, reported
+/// separately by [`missing_gitsemver_binary_advisory`] - a string comparison against a
+/// fallback marker would be meaningless noise here), the git order was undecidable, or
+/// the checkout is not (or no longer) ahead. `commit_distance` is injected so this stays
+/// pure and testable without a live repo - mirrors [`drift_side`]'s injected-oracle shape.
+fn behind_the_tree_message(
+    installed_version: &str,
+    checkout_version: &str,
+    commit_distance: Option<u64>,
+) -> Option<String> {
+    if installed_version == checkout_version
+        || installed_version.ends_with(gitsemver::UNVERSIONED_SUFFIX)
+        || checkout_version.ends_with(gitsemver::UNVERSIONED_SUFFIX)
+    {
+        return None;
+    }
+    let distance = commit_distance?;
+    if distance == 0 {
+        return None;
+    }
+    Some(format!(
+        "warning: this checkout's derived version ({checkout_version}) is {distance} commit(s) \
+         ahead of the installed rigger binary's version ({installed_version}); rebuild rigger \
+         so the binary matches the tree."
+    ))
+}
+
+/// Gather the behind-the-tree advisory (spec 74, criterion 2) at `root`, given
+/// `installed_version` and `installed_commit` (the composition root wires
+/// [`GITSEMVER_VERSION`] and [`BUILD_PROVENANCE`] - the SAME commit-determined identity
+/// [`workflow_drift_advisory`] already uses, per the spec's global constraint that
+/// stored provenance keeps the build hash as its identity key). Re-derives the
+/// CHECKOUT's current version through the SAME derivation seam criterion 1 embeds at
+/// compile time ([`gitsemver::derive_version`], reused here rather than reimplemented -
+/// a live, runtime invocation of `go-gitsemver`/git for VALIDATE's comparison
+/// specifically, never for `rigger version`'s own compile-time-only self-report; see the
+/// `mod gitsemver` doc comment above for why this is in-bounds). "Ahead" is decided by
+/// real git ANCESTRY of `installed_commit` in `HEAD` (mirrors [`git_is_ancestor`]'s
+/// existing role in [`drift_side`]) rather than a hand-rolled semver comparison: under
+/// this project's Mainline config the derived order is monotonic with commit order along
+/// one line of history, and ancestry is the more literal reading of the Problem
+/// statement's own "behind the tree" framing, with no new dependency. Only when
+/// `installed_commit` truly is a proper ancestor of `HEAD` is a distance even computed;
+/// the actual decision is the pure [`behind_the_tree_message`].
+fn behind_the_tree_advisory(
+    root: &Path,
+    installed_version: &str,
+    installed_commit: &str,
+) -> Option<String> {
+    let checkout_version = gitsemver::derive_version("go-gitsemver", root);
+    let distance = if git_is_ancestor(root, installed_commit, "HEAD") == Some(true) {
+        git_commit_distance(root, installed_commit, "HEAD")
+    } else {
+        None
+    };
+    behind_the_tree_message(installed_version, &checkout_version, distance)
 }
 
 /// Which side of an installed-vs-embedded workflow drift is stale (spec 18, criterion 9).
@@ -11425,6 +11558,227 @@ mod tests {
             git_is_ancestor(root, &"0".repeat(40), &second),
             None,
             "an unresolvable id makes the order undecidable"
+        );
+    }
+
+    #[test]
+    fn git_commit_distance_counts_commits_ahead_in_a_real_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@e")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@e")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        git(&["init", "-q"]);
+        std::fs::write(root.join("a"), "1").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "one"]);
+        let first = git(&["rev-parse", "HEAD"]);
+        std::fs::write(root.join("a"), "2").unwrap();
+        git(&["commit", "-q", "-am", "two"]);
+        std::fs::write(root.join("a"), "3").unwrap();
+        git(&["commit", "-q", "-am", "three"]);
+        let third = git(&["rev-parse", "HEAD"]);
+
+        assert_eq!(
+            git_commit_distance(root, &first, &third),
+            Some(2),
+            "two commits separate first and third"
+        );
+        assert_eq!(
+            git_commit_distance(root, &first, &first),
+            Some(0),
+            "a commit is zero commits ahead of itself"
+        );
+        assert_eq!(
+            git_commit_distance(root, &"0".repeat(40), &third),
+            None,
+            "an unresolvable id makes the distance undecidable"
+        );
+    }
+
+    #[test]
+    fn missing_gitsemver_binary_advisory_fires_only_on_the_unversioned_marker() {
+        assert!(
+            missing_gitsemver_binary_advisory("1.2.3+abcdef").is_none(),
+            "a genuinely derived version names no missing-binary advisory"
+        );
+        for installed in ["0.3.0+unversioned", "9.9.9+unversioned"] {
+            let advisory = missing_gitsemver_binary_advisory(installed).unwrap_or_else(|| {
+                panic!("every +unversioned-marked version must yield an advisory (cause is irrelevant); got None for {installed}")
+            });
+            assert!(
+                advisory.contains("go-gitsemver") && advisory.contains(installed),
+                "the advisory must name go-gitsemver and the installed version; got: {advisory}"
+            );
+        }
+    }
+
+    #[test]
+    fn behind_the_tree_message_is_silent_when_versions_already_match() {
+        assert!(
+            behind_the_tree_message("1.2.3+abc", "1.2.3+abc", Some(5)).is_none(),
+            "identical versions carry nothing actionable, regardless of a nonzero distance"
+        );
+    }
+
+    #[test]
+    fn behind_the_tree_message_is_silent_when_either_side_is_unversioned() {
+        assert!(
+            behind_the_tree_message("0.3.0+unversioned", "1.0.0+abc", Some(3)).is_none(),
+            "an unversioned installed side is reported by the missing-binary advisory, not \
+             this one"
+        );
+        assert!(
+            behind_the_tree_message("1.0.0+abc", "0.3.0+unversioned", Some(3)).is_none(),
+            "an unversioned checkout side has nothing comparable to report"
+        );
+    }
+
+    #[test]
+    fn behind_the_tree_message_is_silent_on_an_undecidable_or_zero_distance() {
+        assert!(
+            behind_the_tree_message("1.0.0+abc", "1.1.0+def", None).is_none(),
+            "an undecidable git order (diverged history, an unresolvable id) reports nothing"
+        );
+        assert!(
+            behind_the_tree_message("1.0.0+abc", "1.1.0+def", Some(0)).is_none(),
+            "zero commits ahead is not behind the tree"
+        );
+    }
+
+    #[test]
+    fn behind_the_tree_message_names_both_versions_and_the_commit_distance() {
+        let msg = behind_the_tree_message("1.0.0+abc123", "1.1.0+def456", Some(4))
+            .expect("a genuine ahead-by-N case must yield an advisory");
+        assert!(
+            msg.contains("1.0.0+abc123") && msg.contains("1.1.0+def456") && msg.contains('4'),
+            "the advisory must name both versions and the commit distance; got: {msg}"
+        );
+    }
+
+    /// Skip (rather than fail) when `go-gitsemver` is not on PATH in this environment -
+    /// mirrors `tests/gitsemver_derivation.rs`'s own `gitsemver_available` guard: these
+    /// tests prove `behind_the_tree_advisory`'s WIRING to the real derivation seam given
+    /// the tool, which the pure `behind_the_tree_message` tests above already prove
+    /// independently of it.
+    fn gitsemver_available() -> bool {
+        Command::new("go-gitsemver")
+            .arg("version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    /// `git <args>` in `root` with a fixed committer identity, panicking with stderr on
+    /// failure - mirrors `tests/gitsemver_derivation.rs`'s own `git` fixture helper.
+    fn behind_the_tree_git(root: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@e")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@e")
+            .output()
+            .unwrap_or_else(|e| panic!("spawning git {args:?} failed: {e}"));
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    fn behind_the_tree_git_output(root: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .unwrap_or_else(|e| panic!("spawning git {args:?} failed: {e}"));
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    }
+
+    #[test]
+    fn behind_the_tree_advisory_names_the_real_derived_version_ahead_of_the_installed_commit() {
+        if !gitsemver_available() {
+            eprintln!("skipping: go-gitsemver not on PATH");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        behind_the_tree_git(root, &["init", "-q"]);
+        std::fs::write(
+            root.join("go-gitsemver.yml"),
+            "mode: Mainline\ntag-prefix: v\n",
+        )
+        .unwrap();
+        behind_the_tree_git(root, &["add", "."]);
+        behind_the_tree_git(root, &["commit", "-q", "-m", "chore: initial"]);
+        behind_the_tree_git(root, &["tag", "v1.0.0"]);
+        let installed_commit = behind_the_tree_git_output(root, &["rev-parse", "HEAD"]);
+        let installed_version = gitsemver::derive_version("go-gitsemver", root);
+
+        std::fs::write(root.join("file.txt"), "second\n").unwrap();
+        behind_the_tree_git(root, &["add", "."]);
+        behind_the_tree_git(root, &["commit", "-q", "-m", "feat: add a thing"]);
+
+        let advisory = behind_the_tree_advisory(root, &installed_version, &installed_commit)
+            .expect("a checkout genuinely ahead of the installed commit must yield an advisory");
+        assert!(
+            advisory.contains(&installed_version),
+            "the advisory must name the installed version; got: {advisory}"
+        );
+        assert!(
+            advisory.contains('1'),
+            "the checkout is exactly one commit ahead; got: {advisory}"
+        );
+        assert!(
+            advisory.contains("1.1.0"),
+            "the feat: commit must bump the minor in the reported checkout version; got: \
+             {advisory}"
+        );
+    }
+
+    #[test]
+    fn behind_the_tree_advisory_is_silent_when_the_checkout_has_not_moved() {
+        if !gitsemver_available() {
+            eprintln!("skipping: go-gitsemver not on PATH");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        behind_the_tree_git(root, &["init", "-q"]);
+        std::fs::write(
+            root.join("go-gitsemver.yml"),
+            "mode: Mainline\ntag-prefix: v\n",
+        )
+        .unwrap();
+        behind_the_tree_git(root, &["add", "."]);
+        behind_the_tree_git(root, &["commit", "-q", "-m", "chore: initial"]);
+        let installed_commit = behind_the_tree_git_output(root, &["rev-parse", "HEAD"]);
+        let installed_version = gitsemver::derive_version("go-gitsemver", root);
+
+        assert!(
+            behind_the_tree_advisory(root, &installed_version, &installed_commit).is_none(),
+            "the installed commit equals HEAD, so there is nothing to report"
         );
     }
 
