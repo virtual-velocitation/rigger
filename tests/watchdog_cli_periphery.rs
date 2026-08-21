@@ -321,3 +321,99 @@ fn watch_without_once_streams_and_re_polls_a_live_mutating_store_until_killed() 
     let _ = child.kill();
     let _ = child.wait();
 }
+
+/// The fault-tolerance boundary streaming mode exists for (spec 69 Design: "it must work with
+/// the driver dead" - the watchdog reads only store, process table, and status, NEVER the
+/// driver, exactly the process that may be dead). A transient store-read failure - a torn or
+/// corrupted read racing a concurrent writer - must be reported and RETRIED on the next poll,
+/// never treated as fatal: a watchdog armed unattended under a background monitor that dies on
+/// the very first store hiccup recreates, one level up, the exact "a monitor that quietly
+/// stops monitoring" failure this whole command exists to catch. No synchronous single-call
+/// unit test can prove this (it needs a real process surviving a real fault over real time),
+/// mirroring `watch_without_once_streams_and_re_polls_a_live_mutating_store_until_killed`'s own
+/// live-process shape.
+#[test]
+fn watch_streaming_survives_a_transient_store_read_failure_and_recovers() {
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+    let db_path = root.join(".rigger").join("events.db");
+    let good_bytes = std::fs::read(&db_path).expect("read the seeded store");
+
+    let mut child = common::rigger_courier()
+        .args(["watch", "--interval", "1"])
+        .current_dir(root)
+        .env("RIGGER_NO_DASH", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn `rigger watch`");
+    let stdout = child.stdout.take().expect("watch stdout is piped");
+    let stderr = child.stderr.take().expect("watch stderr is piped");
+
+    let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines().map_while(Result::ok) {
+            if out_tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let (err_tx, err_rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        let reader = BufReader::new(stderr);
+        for line in reader.lines().map_while(Result::ok) {
+            if err_tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+
+    // Phase 1: a clean first poll prints nothing and the process stays alive.
+    assert!(
+        out_rx.recv_timeout(Duration::from_millis(700)).is_err(),
+        "a clean first poll must print nothing"
+    );
+    assert!(child.try_wait().expect("try_wait").is_none());
+
+    // Phase 2: corrupt the store mid-stream (the exact fault a torn or racing write can leave
+    // behind) - a store-read failure squarely inside `watch_poll`'s own fallible operations.
+    std::fs::write(&db_path, b"not a database, deliberately corrupted mid-poll")
+        .expect("corrupt the store");
+
+    // Phase 3: the process must survive the failing poll(s), reporting the failure on stderr
+    // rather than dying silently or propagating it out of the process.
+    let err_line = err_rx.recv_timeout(Duration::from_secs(5)).expect(
+        "a transient store-read failure must be reported on stderr, not silently swallowed",
+    );
+    assert!(
+        err_line.contains("watch") && err_line.contains("poll"),
+        "stderr must name the poll failure: {err_line}"
+    );
+    assert!(
+        child.try_wait().expect("try_wait").is_none(),
+        "a transient store-read failure must not kill the streaming watchdog"
+    );
+
+    // Phase 4: repair the store - the watchdog must resume reporting on its own, on a LATER
+    // poll, never requiring a restart.
+    std::fs::write(&db_path, &good_bytes).expect("restore the store");
+    seed_run_events(
+        root,
+        &[
+            ("UnitStarted", r#"{"id":"u-recovered"}"#),
+            ("UnitEscalated", r#"{"id":"u-recovered"}"#),
+        ],
+    );
+    let line = out_rx
+        .recv_timeout(Duration::from_secs(8))
+        .expect("streaming watch never recovered and resumed reporting after the store healed");
+    assert!(
+        line.contains("escalated blockers") && line.contains("u-recovered"),
+        "the recovered poll must report the new anomaly: {line}"
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+}

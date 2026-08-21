@@ -28,16 +28,96 @@ use std::time::{Duration, SystemTime};
 
 use serde::Deserialize;
 
-use crate::eventstore::{Event, Revision, NO_STREAM};
+use crate::eventstore::{Event, Position, Revision, NO_STREAM};
 use crate::{ledger, spawn};
 
 /// The doc location a STORE INTEGRITY anomaly names for the documented repair
 /// procedure (spec 71: "repair stays a documented operator procedure, not a
 /// command"). There is no response SKILL for this signal - it is not one of the
 /// five `rigger-watch-a-run` enumerates - so the anomaly line names this reference
-/// instead, exactly as `rigger validate`'s own order-signature advisory does.
+/// instead. THE canonical location for this constant: `rigger validate`'s own
+/// order-signature advisory (spec 71, `main.rs::order_signature_advisories`) reads
+/// it from here too, rather than declaring its own copy, so the two surfaces that
+/// both name this doc section can never drift apart in wording.
 pub const ORDER_SIGNATURE_REPAIR_DOC_REF: &str =
     "docs/architecture.md, section 5.1.3: The store defends its own order";
+
+/// A stream whose position order and revision order DISAGREE (spec 71): the signature a
+/// write leaves when it lands at a revision the stream's own cursor would never reissue on
+/// its own - typically a build predating the `MAX(revision)` append cursor landing in a
+/// revision hole the derived-index compaction opened by deleting rows. On a stream that has
+/// only ever been appended to by a correct writer, position order and revision order always
+/// agree; this struct names the rows where they do not.
+///
+/// THE single shared shape for this concern (spec 69 criterion 2 / spec 71 criterion 3): both
+/// `rigger validate`'s order-signature advisory and this module's own store-integrity signal
+/// (6th, beyond `rigger-watch-a-run`'s five) detect the SAME corruption over the SAME
+/// algorithm, so it lives here once rather than as two parallel reimplementations that would
+/// have to be kept in sync by hand on any future fix.
+#[derive(Debug)]
+pub struct OrderSignature {
+    pub stream: String,
+    /// Out-of-order rows found in this stream: a row whose revision does not exceed the
+    /// highest revision already seen (in position order) for the same stream.
+    pub rows: usize,
+    /// The inclusive global-position range spanning the first and last out-of-order row.
+    pub first_position: Position,
+    pub last_position: Position,
+}
+
+/// Find every [`OrderSignature`] in `events`, which callers hand in already in POSITION
+/// order (exactly what `EventStore::read_all` returns). Pure over already-read events, so it
+/// is unit-tested without touching a store.
+///
+/// Walks the events once, tracking each stream's running maximum revision. A row whose
+/// revision does not exceed that maximum is OUT OF ORDER and is counted against its stream;
+/// a row that only extends the maximum raises it but is never itself flagged. One signature
+/// per affected stream is returned, in first-affected-row order; a clean log returns an
+/// empty vec.
+pub fn order_signatures(events: &[Event]) -> Vec<OrderSignature> {
+    struct Acc {
+        max_revision: Revision,
+        rows: usize,
+        first_position: Position,
+        last_position: Position,
+    }
+    let mut by_stream: Vec<(String, Acc)> = Vec::new();
+    let mut index: BTreeMap<String, usize> = BTreeMap::new();
+    for e in events {
+        let idx = *index.entry(e.stream.clone()).or_insert_with(|| {
+            by_stream.push((
+                e.stream.clone(),
+                Acc {
+                    max_revision: NO_STREAM,
+                    rows: 0,
+                    first_position: 0,
+                    last_position: 0,
+                },
+            ));
+            by_stream.len() - 1
+        });
+        let (_, acc) = &mut by_stream[idx];
+        if e.revision <= acc.max_revision {
+            if acc.rows == 0 {
+                acc.first_position = e.position;
+            }
+            acc.last_position = e.position;
+            acc.rows += 1;
+        } else {
+            acc.max_revision = e.revision;
+        }
+    }
+    by_stream
+        .into_iter()
+        .filter(|(_, acc)| acc.rows > 0)
+        .map(|(stream, acc)| OrderSignature {
+            stream,
+            rows: acc.rows,
+            first_position: acc.first_position,
+            last_position: acc.last_position,
+        })
+        .collect()
+}
 
 /// The diagnose-churn threshold (spec 69 Design: "reject-recurrence at the diagnose
 /// threshold (>= 3 ...")). Fixed by the spec text, independent of the run's
@@ -261,40 +341,16 @@ fn spawn_result_counts(run_events: &[Event]) -> BTreeMap<String, u32> {
 /// Streams where POSITION order and REVISION order disagree (spec 71's own
 /// corruption signature: a row whose revision does not exceed the highest revision
 /// already seen, in position order, for its stream), returned as `(stream, count)`
-/// pairs. Walks `events` once, tracking each stream's running maximum revision - the
-/// same algorithm `rigger validate`'s own detector uses (spec 71,
-/// `order_signatures`), reimplemented here at the granularity this command's
-/// anomaly line needs (a count, not the full position-range detail `validate`
-/// prints) so the watchdog never depends on the driver-facing CLI's internals.
+/// pairs at the granularity this command's anomaly line needs (a count, not the
+/// full position-range detail `validate`'s advisory prints). Delegates to
+/// [`order_signatures`] - the SAME shared detector `rigger validate`'s own
+/// order-signature advisory (spec 71) calls - rather than a second parallel
+/// implementation of the running-max-revision algorithm; the two surfaces can
+/// never drift apart on what counts as out of order.
 fn out_of_order_streams(events: &[Event]) -> Vec<(String, usize)> {
-    struct Acc {
-        max_revision: Revision,
-        rows: usize,
-    }
-    let mut by_stream: Vec<(String, Acc)> = Vec::new();
-    let mut index: BTreeMap<String, usize> = BTreeMap::new();
-    for e in events {
-        let idx = *index.entry(e.stream.clone()).or_insert_with(|| {
-            by_stream.push((
-                e.stream.clone(),
-                Acc {
-                    max_revision: NO_STREAM,
-                    rows: 0,
-                },
-            ));
-            by_stream.len() - 1
-        });
-        let (_, acc) = &mut by_stream[idx];
-        if e.revision <= acc.max_revision {
-            acc.rows += 1;
-        } else {
-            acc.max_revision = e.revision;
-        }
-    }
-    by_stream
+    order_signatures(events)
         .into_iter()
-        .filter(|(_, acc)| acc.rows > 0)
-        .map(|(stream, acc)| (stream, acc.rows))
+        .map(|s| (s.stream, s.rows))
         .collect()
 }
 
@@ -847,6 +903,71 @@ mod tests {
             dash: DashProbe::Serving,
         };
         assert!(detect(&inputs).is_empty());
+    }
+
+    // --- order_signatures: the shared detector `rigger validate`'s own order-signature
+    // advisory (spec 71) also calls, so its own boundary coverage (including the duplicate-
+    // revision case below) protects BOTH callers at once, not just this module's. ---
+
+    fn order_sig_ev(stream: &str, position: u64, revision: Revision) -> Event {
+        let mut e = ev("Seed", "{}");
+        e.stream = stream.to_string();
+        e.position = position;
+        e.revision = revision;
+        e
+    }
+
+    /// Two orders coexist per event: position (global, store-assigned, never itself
+    /// disordered) and revision (per-stream, also store-assigned). On a healthy stream the
+    /// two agree - later position always means higher revision. `order_signatures` walks
+    /// `events` (which callers hand it already in POSITION order, exactly as
+    /// `EventStore::read_all` returns them) tracking each stream's running maximum revision;
+    /// a row whose revision does not exceed that maximum is OUT OF ORDER. Only the rows that
+    /// broke the maximum are flagged - a row that only extends it is untouched - and an
+    /// unrelated, cleanly-ordered stream interleaved by position draws nothing at all. Row 6
+    /// is a DUPLICATE revision (equal to, not less than, the running maximum) - a distinct
+    /// corruption shape from a strict decrease: two events can never legitimately share one
+    /// revision in the same stream, so `<=` (not `<`) must catch this too.
+    #[test]
+    fn order_signatures_flags_rows_whose_revision_does_not_exceed_the_streams_running_maximum() {
+        let events = vec![
+            order_sig_ev("run", 1, 0),
+            order_sig_ev("run", 2, 1),
+            order_sig_ev("other", 3, 0), // unrelated, clean stream, interleaved by position
+            order_sig_ev("run", 4, 2),
+            order_sig_ev("run", 5, 1), // OUT OF ORDER: 1 <= running max 2
+            order_sig_ev("run", 6, 2), // OUT OF ORDER (duplicate): 2 <= running max 2, still
+            order_sig_ev("run", 7, 5), // back in order: 5 > 2
+            order_sig_ev("other", 8, 1),
+        ];
+        let signatures = order_signatures(&events);
+        assert_eq!(
+            signatures.len(),
+            1,
+            "only the disordered stream is flagged: {signatures:?}"
+        );
+        let s = &signatures[0];
+        assert_eq!(s.stream, "run");
+        assert_eq!(s.rows, 2, "two rows broke the running maximum: {s:?}");
+        assert_eq!(s.first_position, 5);
+        assert_eq!(s.last_position, 6);
+    }
+
+    /// A log where every stream's revisions strictly increase with position - the shape a
+    /// correctly functioning append always produces on its own - draws no signature.
+    #[test]
+    fn order_signatures_is_empty_on_a_cleanly_ordered_log() {
+        let events = vec![
+            order_sig_ev("run", 1, 0),
+            order_sig_ev("other", 2, 0),
+            order_sig_ev("run", 3, 1),
+            order_sig_ev("other", 4, 1),
+            order_sig_ev("run", 5, 2),
+        ];
+        assert!(
+            order_signatures(&events).is_empty(),
+            "a cleanly ordered log must draw no signature"
+        );
     }
 
     // --- Signal 6: store integrity (out-of-order tail) ---
