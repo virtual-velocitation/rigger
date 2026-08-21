@@ -2916,6 +2916,16 @@ fn step_prints_a_disjoint_two_spawn_wave_then_reports_done() {
         !line.contains("escalated"),
         "a clean convergence (no escalated unit) must omit the escalated field; got: {line:?}"
     );
+    // Nor does a clean convergence carry the push-side `attention` array (spec 69, criterion
+    // 5): neither unit crossed any of the five watching-discipline thresholds, so the field
+    // is omitted entirely and the historical `{"wave":[],"done":true}` wire shape survives
+    // through the REAL compiled binary, not just the implementer's own direct-call
+    // `serde_json::to_string(&Step{..})` unit test.
+    assert!(
+        !line.contains("attention"),
+        "a clean convergence (nothing crossed a watching-discipline threshold) must omit \
+         the attention field; got: {line:?}"
+    );
 }
 
 /// Scaffold a project with ONE standalone review-only stage (`agents: [lens]`, no
@@ -6007,6 +6017,12 @@ fn step_carries_the_escalated_set_when_a_fixpoint_is_reached_with_a_wedged_unit(
         !line.contains("escalated"),
         "no unit has escalated yet, so the escalated field is omitted; got: {line:?}"
     );
+    // Spec 69, criterion 5: nothing has crossed a watching-discipline threshold on this
+    // first step either, so the push-side `attention` array is also omitted.
+    assert!(
+        !line.contains("attention"),
+        "no threshold has crossed yet, so the attention field is omitted; got: {line:?}"
+    );
 
     // Drain the implementer via a recorded SpawnResult (the `rigger result` channel).
     seed_run_events(
@@ -6036,6 +6052,20 @@ fn step_carries_the_escalated_set_when_a_fixpoint_is_reached_with_a_wedged_unit(
         line.contains(r#""escalated":["solo"]"#),
         "a fixpoint reached with an escalated unit must carry it in the escalated set; got: {line:?}"
     );
+    // Spec 69, criterion 5 (the step wire carries attention - THIS unit's own contract):
+    // the same real `rigger step` invocation that carries the escalated set must ALSO carry
+    // a push-side `attention` entry naming the escalation, through the compiled binary's
+    // actual stdout - not merely through `conductor::run` called directly in-process (the
+    // implementer's own `mod tests` in src/conductor.rs), which can never observe whether
+    // `cmd_step` truly wires `RunState::attention` onto the printed `Step`. `max_retries: 1`
+    // means this unit's first failure IS its escalation, so `worker-death-recurred` (which
+    // needs a SECOND failure) does not also fire here - this step isolates the `escalated`
+    // signal cleanly at the process boundary.
+    assert!(
+        line.contains(r#""attention":[{"kind":"escalated","unit":"solo","detail":"#),
+        "an escalated fixpoint must stamp an attention entry naming the escalated unit, on \
+         the real binary's own stdout; got: {line:?}"
+    );
 }
 
 /// Gap 13: a spawn-budget HALT must be LOUD, not indistinguishable from convergence.
@@ -6061,6 +6091,21 @@ fn step_prints_a_budget_halt_reason_when_the_breaker_trips() {
     assert!(
         line.contains(r#""halted":"budget exhausted: 1/1 spawns""#),
         "a tripped budget must print a halt reason distinct from convergence; got: {line:?}"
+    );
+    // Spec 69, criterion 5: a budget of 1 is ALSO its own final tenth (1 - 1/10 = 1,
+    // floored), so the SAME real step that halts must carry BOTH a run-scoped `halted`
+    // attention entry AND a `budget-final-tenth` one, in the fixed kind order (`halted`
+    // before `budget-final-tenth`) - a genuine co-occurrence on the compiled binary's own
+    // stdout, not two separate reports of one signal. This is what the implementer's own
+    // in-process `mod tests` (which call `conductor::run` directly) cannot show: whether
+    // `cmd_step` truly moves the live `RunState::attention` onto the printed `Step` rather
+    // than, say, only the `halted` field it was already carrying before this unit.
+    assert!(
+        line.contains(
+            r#""attention":[{"kind":"halted","detail":"budget exhausted: 1/1 spawns"},{"kind":"budget-final-tenth","detail":"1/1 spawns"}]"#
+        ),
+        "a budget halt that is also the budget's final tenth must stamp both run-scoped \
+         attention entries, in order, on the real binary's own stdout; got: {line:?}"
     );
 }
 
