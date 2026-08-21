@@ -11356,6 +11356,44 @@ mod tests {
         }
     }
 
+    /// Spec 69, criterion 1 (the accuracy pin, extending the spec-68 sibling
+    /// [`per_operation_skills_reference_only_real_subcommands`] to the three watch-discipline
+    /// skills): every bare `rigger <cmd>` `rigger-watch-a-run` / `rigger-restore-the-dash` /
+    /// `rigger-diagnose-churn` teach names a REAL entry in [`SUBCOMMANDS`], and is literally
+    /// present in the rendered output - so a dropped or renamed `rigger dash`, `rigger
+    /// status`, `rigger watch`, or `rigger emit` reference in this family fails here, not
+    /// just misleads an operator.
+    #[test]
+    fn watching_discipline_skills_reference_only_real_subcommands() {
+        let ctx = docs_context();
+        let cases: &[(&str, &[&str])] = &[
+            ("rigger-watch-a-run", &["status", "watch"]),
+            ("rigger-restore-the-dash", &["dash", "status", "watch"]),
+            ("rigger-diagnose-churn", &["emit", "watch"]),
+        ];
+        let registry = rigger::docs::skill_registry();
+        for (name, commands) in cases {
+            let entry = registry
+                .iter()
+                .find(|e| e.name == *name)
+                .unwrap_or_else(|| panic!("{name} must be in the registry"));
+            let rendered = entry.render(&ctx);
+            for cmd in *commands {
+                assert!(
+                    SUBCOMMANDS.contains(cmd),
+                    "{name} references `rigger {cmd}`, but {cmd:?} is not in SUBCOMMANDS - \
+                     the binary has no such command"
+                );
+                let literal = format!("rigger {cmd}");
+                assert!(
+                    rendered.contains(&literal),
+                    "{name} must actually reference `{literal}` somewhere in its rendered \
+                     content, not just claim to via this test's own table"
+                );
+            }
+        }
+    }
+
     /// Spec 20, unit 2 (the drift seam, at the unit level); spec 68, criterion 1 (the gate
     /// covers EVERY registry entry): `docs_drift` flags a committed output whose bytes
     /// differ from a fresh render, is SILENT when the committed copies are in sync, and
