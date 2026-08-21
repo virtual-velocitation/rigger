@@ -8,7 +8,7 @@
 //! non-empty: outside a git checkout (e.g. a build from a published tarball with no `.git`) it
 //! falls back to a sentinel rather than failing the build.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 // Spec 74: the go-gitsemver derivation logic has no `fn main` of its own and is shared,
@@ -19,19 +19,28 @@ use std::process::Command;
 #[path = "build/gitsemver.rs"]
 mod gitsemver;
 
+// Spec 74 round 4: the rerun-if-changed path list is its own module for the identical
+// reason `gitsemver` above is - see `build/watch.rs`'s module doc comment.
+#[path = "build/watch.rs"]
+mod watch;
+
 fn main() {
     // Re-run when the build script itself changes.
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=build/gitsemver.rs");
+    println!("cargo:rerun-if-changed=build/watch.rs");
     // The committed go-gitsemver config: an edit changes what FullSemVer derives to.
     println!("cargo:rerun-if-changed=go-gitsemver.yml");
 
     // Re-embed the id whenever the checked-out commit moves, so a rebuilt binary carries the
     // provenance of the source it was actually built from. Watching git HEAD and the ref it
     // resolves to is resolved THROUGH git, so it works both in a plain clone and in a linked
-    // worktree (where `.git` is a file, not a directory). The SAME watch covers the
-    // go-gitsemver derivation below, which depends on the identical HEAD/ref state.
-    for path in git_watch_paths() {
+    // worktree (where `.git` is a file, not a directory). This watch ALSO covers the
+    // go-gitsemver derivation below: besides HEAD/ref, it watches the loose tag-ref
+    // directory and packed-refs, since go-gitsemver's Mainline mode takes the nearest
+    // reachable tag as a PRIMARY input, a state the HEAD/ref watch alone cannot see - see
+    // `build/watch.rs` for the full rationale.
+    for path in watch::git_watch_paths(Path::new(".")) {
         println!("cargo:rerun-if-changed={}", path.display());
     }
 
@@ -62,40 +71,5 @@ fn git_provenance() -> Option<String> {
         None
     } else {
         Some(id)
-    }
-}
-
-/// The files whose change should re-run this script: git HEAD, plus - when HEAD is a symbolic
-/// ref (the normal on-a-branch case) - the branch ref it resolves to, so a new commit on the
-/// branch re-embeds the id. The ref lives in the COMMON git dir (shared across linked
-/// worktrees). Empty when git is unavailable, so a non-repo build still succeeds.
-fn git_watch_paths() -> Vec<PathBuf> {
-    let git_dir = match git_output(&["rev-parse", "--absolute-git-dir"]) {
-        Some(d) => PathBuf::from(d),
-        None => return Vec::new(),
-    };
-    let mut paths = vec![git_dir.join("HEAD")];
-    if let Ok(head) = std::fs::read_to_string(git_dir.join("HEAD")) {
-        if let Some(refname) = head.strip_prefix("ref:").map(str::trim) {
-            if let Some(common) = git_output(&["rev-parse", "--git-common-dir"]) {
-                paths.push(PathBuf::from(common).join(refname));
-            }
-        }
-    }
-    paths
-}
-
-/// Run `git <args...>` and return its trimmed stdout, or `None` when git is unavailable, the
-/// command fails, or the output is empty.
-fn git_output(args: &[&str]) -> Option<String> {
-    let out = Command::new("git").args(args).output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let s = String::from_utf8(out.stdout).ok()?.trim().to_string();
-    if s.is_empty() {
-        None
-    } else {
-        Some(s)
     }
 }
