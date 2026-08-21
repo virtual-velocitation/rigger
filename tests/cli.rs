@@ -13699,6 +13699,151 @@ fn setup_precommit_hook_refuses_the_same_commit_shape_with_only_a_stale_path_rig
     );
 }
 
+/// Place a copy of the REAL compiled `rigger` binary at the UNIT-DERIVED candidate path
+/// (spec 75's `<git-common-dir>/../.rigger/tmp/cargo-target-<unit>/debug/rigger`), keyed off
+/// `main_repo_root` (the MAIN checkout's own root, never the linked worktree itself - the
+/// candidate is resolved relative to `git-common-dir`, which for a linked worktree points
+/// back at the main repo's `.git`, not a directory inside the worktree).
+fn stage_unit_derived_binary(main_repo_root: &Path, unit: &str) {
+    let dir = main_repo_root
+        .join(".rigger")
+        .join("tmp")
+        .join(format!("cargo-target-{unit}"))
+        .join("debug");
+    std::fs::create_dir_all(&dir).unwrap();
+    let dest = dir.join("rigger");
+    std::fs::copy(rigger_bin(), &dest)
+        .unwrap_or_else(|e| panic!("copy the tree-built binary to {}: {e}", dest.display()));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+/// Spec 75, crit 2, closing a gap this unit's own periphery accounting left open
+/// (sdet-u75c2-unit-derived-candidate-never-executed): the two tests above exercise only the
+/// "own local target" tier (`stage_tree_built_binary`, `./target/debug/rigger`) - a plain,
+/// non-worktree temp git project can never even reach the UNIT-DERIVED tier, because
+/// `basename $(git rev-parse --show-toplevel)` never matches `rigger-wt-*` there. Every real
+/// unit gate in this loop runs inside exactly such a worktree - this very test suite is
+/// compiled from one - so the unit-derived tier is the candidate spec 75 was written to serve
+/// FIRST, not an edge case, yet nothing before this test ever drove it through a real `git
+/// worktree add` and real `/bin/sh` execution. Uses a genuinely linked worktree named
+/// `rigger-wt-probeunit`, whose `git-common-dir` resolves back to the MAIN checkout's `.git`
+/// (verified: that is exactly how this very spawn's own worktree resolves), and proves
+/// discrimination twice over in the SAME worktree: first REFUSED with nothing but the stale
+/// PATH shim (proving the hook genuinely fires inside a linked worktree at all - without this
+/// half, a hook that silently never ran there would make the pass below vacuous), then the
+/// identical staged commit PASSES once the unit-derived binary is staged at the path the hook
+/// computes relative to `git-common-dir`.
+#[test]
+fn setup_precommit_hook_prefers_a_unit_derived_binary_in_a_real_linked_worktree_over_a_stale_path_rigger(
+) {
+    let main = temp_git_project_with_commit();
+    let main_root = main.path();
+    setup_selfhosting_repo_with_fresh_docs(main_root);
+    let fresh_skill_before =
+        git_out(main_root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+    assert!(
+        fresh_skill_before.contains("name: using-rigger"),
+        "the seed must be a real fresh render, not a stub; got:\n{fresh_skill_before}"
+    );
+
+    let wt_parent = tempfile::tempdir().expect("create a parent dir for the linked worktree");
+    let wt_path = wt_parent.path().join("rigger-wt-probeunit");
+    git_ok(
+        main_root,
+        &[
+            "worktree",
+            "add",
+            wt_path.to_str().expect("utf8 worktree path"),
+            "-b",
+            "probeunit-branch",
+        ],
+    );
+
+    let commit_path = stage_stale_rigger_shim(&wt_path);
+    std::fs::write(
+        wt_path.join("code.txt"),
+        "a rendered fact this worktree's code added\n",
+    )
+    .unwrap();
+    git_ok(&wt_path, &["add", "code.txt"]);
+
+    // Round 1: no unit-derived candidate staged anywhere yet, and this worktree has no local
+    // target build either - only the stale PATH shim is reachable, so this must REFUSE exactly
+    // like the plain (non-worktree) fixture above, proving the hook genuinely runs here.
+    let out1 = Command::new("git")
+        .args(["commit", "-q", "-m", "add a rendered fact"])
+        .current_dir(&wt_path)
+        .env("PATH", &commit_path)
+        .env_remove("CARGO_TARGET_DIR")
+        .output()
+        .expect("git must be runnable");
+    let stderr1 = String::from_utf8_lossy(&out1.stderr);
+    assert!(
+        !out1.status.success(),
+        "with no unit-derived candidate staged, a linked worktree with only a stale PATH \
+         rigger must still be REFUSED, same as the plain-project fixture; stderr:\n{stderr1}"
+    );
+    assert!(
+        stderr1.contains("skills/using-rigger/SKILL.md")
+            && stderr1.contains("docs/handbook/using-rigger.md"),
+        "the round-1 refusal must name both drifted docs; stderr:\n{stderr1}"
+    );
+    let staged1 = git_out(&wt_path, &["diff", "--cached", "--name-only"]).unwrap_or_default();
+    assert!(
+        staged1.contains("code.txt"),
+        "the refused round-1 commit must leave code.txt staged, unreverted; staged:\n{staged1}"
+    );
+
+    // Round 2: same staged snapshot, now WITH the unit-derived candidate staged at the path
+    // relative to `main_root`'s own `.git` (never inside the worktree) - the only thing that
+    // changed between rounds is this candidate's presence.
+    stage_unit_derived_binary(main_root, "probeunit");
+    let out2 = Command::new("git")
+        .args(["commit", "-q", "-m", "add a rendered fact"])
+        .current_dir(&wt_path)
+        .env("PATH", &commit_path)
+        .env_remove("CARGO_TARGET_DIR")
+        .output()
+        .expect("git must be runnable");
+    let stderr2 = String::from_utf8_lossy(&out2.stderr);
+    assert!(
+        out2.status.success(),
+        "the unit-derived candidate must be found and PREFERRED over the stale PATH rigger \
+         once staged; stderr:\n{stderr2}"
+    );
+    assert!(
+        !stderr2.contains("refusing"),
+        "a matching unit-derived render must never refuse; stderr:\n{stderr2}"
+    );
+
+    let tree = git_out(&wt_path, &["ls-tree", "-r", "--name-only", "HEAD"]).unwrap_or_default();
+    assert!(
+        tree.contains("code.txt"),
+        "the worktree's own change must ride the commit; tree:\n{tree}"
+    );
+    let committed_after =
+        git_out(&wt_path, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+    assert_eq!(
+        committed_after, fresh_skill_before,
+        "the already-fresh doc must land byte-identical - the unit-derived binary's render \
+         matched what was staged"
+    );
+
+    git_ok(
+        main_root,
+        &[
+            "worktree",
+            "remove",
+            "--force",
+            wt_path.to_str().expect("utf8 worktree path"),
+        ],
+    );
+}
+
 /// Spec 24, crit 2 (idempotency, end to end): the hook is SAFE to live in everyone's
 /// `.git/hooks` - re-running `rigger setup` does NOT duplicate it. The installed hook is
 /// byte-identical after a second setup, still carries exactly one managed block, and the rerun
