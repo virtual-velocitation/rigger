@@ -7542,13 +7542,23 @@ fn installed_workflow_provenance(root: &Path) -> Option<String> {
 /// is 0 for an ancestor and 1 otherwise; any other status is treated as undecidable. This
 /// is the ordering oracle the [`drift_side`] decision injects, so the pure decision stays
 /// testable in both directions without a live repo.
+///
+/// Spec 74, criterion 2 periphery finding: captures the child's stdout/stderr (`.output()`)
+/// rather than inheriting the parent's (`.status()`), so an unresolvable `ancestor` - the
+/// exact "does not carry rigger's history" case this doc comment already calls out as
+/// normal and silently handled via `None` - never leaks git's own `fatal: Not a valid
+/// object name ...` onto the CALLER's stderr. Before this fix `behind_the_tree_advisory`
+/// (below) called this UNCONDITIONALLY on every `rigger validate` invocation, so the leak
+/// fired on nearly every non-self-hosting target project, not merely the rare drifted-
+/// workflow-with-recorded-provenance case [`workflow_drift_advisory`] alone would reach;
+/// mirrors [`git_commit_distance`]'s already-correct `.output()` pattern immediately below.
 fn git_is_ancestor(root: &Path, ancestor: &str, descendant: &str) -> Option<bool> {
-    let status = Command::new("git")
+    let out = Command::new("git")
         .args(["merge-base", "--is-ancestor", ancestor, descendant])
         .current_dir(root)
-        .status()
+        .output()
         .ok()?;
-    match status.code() {
+    match out.status.code() {
         Some(0) => Some(true),
         Some(1) => Some(false),
         _ => None,
