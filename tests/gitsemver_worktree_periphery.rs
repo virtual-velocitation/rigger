@@ -11,25 +11,18 @@
 //! built inside a linked worktree exactly like the one this test constructs (this very
 //! test file's own worktree included), so this is not a hypothetical edge case.
 //!
-//! Verified independently (outside any test, against a disposable fixture) before writing
-//! this test: `go-gitsemver`'s git library cannot resolve `HEAD` through a linked
-//! worktree's `gitdir:` indirection - `-p <linked-worktree-dir> --show-variable
-//! FullSemVer` exits non-zero with "resolving target branch: getting HEAD: reference not
-//! found", even though the SAME commit resolves correctly when `-p` points at the
-//! worktree's own primary checkout. That non-zero exit is already covered by
-//! [`gitsemver::derive_version`]'s documented "ANY failure" fallback contract (the same
-//! branch `tool_not_found_...` and `outside_a_git_checkout_...` in
-//! `tests/gitsemver_derivation.rs` already exercise), so this is NOT a contract violation
-//! for criterion 1 (never fabricates, never fails the build) - it is locked in here as a
-//! real, previously-unverified scenario, not a bug this unit's code must fix.
-//!
-//! Practical consequence (noted for visibility, not asserted as a requirement of this
-//! test): a build performed inside any linked worktree - this project's own primary way
-//! of building each spec unit - reports `+unversioned` even when the tool is present and
-//! the checkout is real, so the "version moves with the tree" goal spec 74's Problem
-//! statement opens with is not realized in that build context. That is a product-level
-//! observation outside criterion 1's literal scope (which names only "tool absent" and
-//! "outside a checkout"), left for a follow-up spec rather than fixed here.
+//! `go-gitsemver`'s OWN git library cannot resolve `HEAD` through a linked worktree's
+//! `gitdir:` indirection - `-p <linked-worktree-dir> --show-variable FullSemVer` exits
+//! non-zero with "resolving target branch: getting HEAD: reference not found", even
+//! though the SAME commit resolves correctly when `-p` points at the worktree's own
+//! primary checkout. [`gitsemver::derive_version`] works around this the same way
+//! `build.rs`'s `git_watch_paths` already resolves a linked worktree's shared git state
+//! for `BUILD_PROVENANCE`: it resolves the primary checkout's root and this checkout's
+//! own `HEAD` commit through REAL `git rev-parse` first, then hands `go-gitsemver`
+//! `-p <primary root> -c <that commit>` - coordinates it CAN resolve, still delegating
+//! 100% of the version computation to the tool. So a build performed inside a linked
+//! worktree now derives the SAME real version the primary checkout would, matching the
+//! "version moves with the tree" goal spec 74's Problem statement opens with.
 
 #[path = "../build/gitsemver.rs"]
 #[allow(dead_code)]
@@ -90,7 +83,7 @@ fn gitsemver_available() -> bool {
 }
 
 #[test]
-fn a_linked_worktree_falls_back_to_the_unversioned_marker_even_though_it_is_a_real_checkout() {
+fn a_linked_worktree_derives_the_same_real_version_as_its_primary_checkout() {
     if !gitsemver_available() {
         eprintln!("skipping: go-gitsemver not on PATH");
         return;
@@ -98,9 +91,9 @@ fn a_linked_worktree_falls_back_to_the_unversioned_marker_even_though_it_is_a_re
     let primary_dir = tempfile::tempdir().unwrap();
     fixture_repo(primary_dir.path());
 
-    // Sanity check: the SAME commit history derives a real version when NOT invoked
-    // through a worktree indirection, so the fallback asserted below can only be
-    // attributed to the worktree, never to thin or malformed fixture history.
+    // The version derived directly from the primary checkout: the reference the
+    // worktree-derived version below must match exactly, since both point at the same
+    // commit.
     let primary_version = gitsemver::derive_version("go-gitsemver", primary_dir.path());
     assert!(
         !primary_version.contains("unversioned"),
@@ -127,15 +120,19 @@ fn a_linked_worktree_falls_back_to_the_unversioned_marker_even_though_it_is_a_re
     let worktree_version = gitsemver::derive_version("go-gitsemver", worktree_dir.path());
 
     assert_eq!(
-        worktree_version,
-        format!(
-            "{}{}",
-            env!("CARGO_PKG_VERSION"),
-            gitsemver::UNVERSIONED_SUFFIX
-        ),
-        "a linked git worktree must fall back to the bare crate semver plus the explicit \
-         unversioned marker (go-gitsemver cannot resolve HEAD through the worktree's \
-         gitdir indirection), matching the documented ANY-failure contract - never \
-         fabricate a derived-looking version, never fail the build; got: {worktree_version}"
+        worktree_version, primary_version,
+        "a linked git worktree (`.git` a file pointing into the shared \
+         `.git/worktrees/...` directory - this project's own primary way of building \
+         every spec unit) must derive the SAME real version its primary checkout does, \
+         not silently fall back to the unversioned marker: go-gitsemver's own git \
+         library cannot resolve HEAD through the worktree indirection, so \
+         derive_version resolves the primary checkout root and this checkout's own HEAD \
+         commit itself (via real `git rev-parse`) and hands them to the tool as -p/-c; \
+         got worktree={worktree_version} primary={primary_version}"
+    );
+    assert!(
+        !worktree_version.contains("unversioned"),
+        "a linked-worktree derivation must never carry the fallback marker when the \
+         tool is present and the checkout is real; got: {worktree_version}"
     );
 }
