@@ -6193,6 +6193,14 @@ fn step_surfaces_a_hung_spawn_with_a_stale_marker_as_a_liveness_halt() {
         line.contains("infra") && line.contains("no remediation attempt"),
         "the halt must state infra classification and no-attempt-charged; got: {line:?}"
     );
+    // Spec 69, criterion 5, signal 2 (review u69c5, cause genuine-defect): a hung spawn's
+    // liveness halt must ALSO stamp a run-scoped `halted` entry on the generic `attention`
+    // channel, mirroring what the `halted` field above already surfaces - not visible only
+    // on the budget-breaker half of that union.
+    assert!(
+        line.contains(r#""attention":[{"kind":"halted","detail":"#),
+        "the hung halt must also stamp a run-scoped `halted` attention entry; got: {line:?}"
+    );
 
     // Step 3: re-step WITHOUT recording a result. The hung spawn is already answered by the
     // liveness fault, so it is NOT re-parked/re-run (no dup-exec) - its id must NOT reappear as
@@ -6207,6 +6215,10 @@ fn step_surfaces_a_hung_spawn_with_a_stale_marker_as_a_liveness_halt() {
     assert!(
         json_string_field(line, "marker_path").is_none() && !line.contains(r#""wave":[{"#),
         "the answered hung spawn is not re-run (no fresh wave item / dup-exec); got: {line:?}"
+    );
+    assert!(
+        line.contains(r#""attention":[{"kind":"halted","detail":"#),
+        "the attention entry must re-surface alongside the halt on a later step too; got: {line:?}"
     );
 
     // Step 4: the operator re-drives the now-healthy agent and records a REAL result. Being
@@ -6224,6 +6236,10 @@ fn step_surfaces_a_hung_spawn_with_a_stale_marker_as_a_liveness_halt() {
     assert!(
         !line.contains(r#""halted":"#),
         "recording a real result clears the liveness halt; got: {line:?}"
+    );
+    assert!(
+        !line.contains(r#""attention":"#),
+        "recording a real result must also clear the mirrored `halted` attention entry; got: {line:?}"
     );
     assert!(
         line.contains(r#""done":true"#),

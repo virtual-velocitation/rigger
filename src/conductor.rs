@@ -1836,6 +1836,18 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         .into_iter()
         .map(|w| w.unit)
         .collect();
+    // Signal 2's OTHER halt source (review u69c5, cause genuine-defect): `step.halted`
+    // (main.rs) is already the UNION of the budget breaker (`ctx.halt_reason()`, read
+    // above) and a hung spawn's liveness fault (`liveness::hung_spawns`) - but until this
+    // fix, `compute_attention` only ever saw the budget half, so a hung-agent halt produced
+    // ZERO attention entry no matter what test exercised it. `hung_spawns` is a pure fold
+    // over `current_events` (no I/O, unlike the marker-staleness `sweep` itself, which
+    // `rigger step` already runs in main.rs BEFORE this call - so any fault it just
+    // recorded is already present here), so recomputing it here costs nothing and stays the
+    // ONE authority (`liveness::hung_spawns`/`liveness::halt_reason`) the wire's own
+    // `step.halted` union already calls - never a second parallel detector.
+    let hung = crate::liveness::hung_spawns(current_events)?;
+    let hung_halt = (!hung.is_empty()).then(|| crate::liveness::halt_reason(&hung));
     rs.attention = compute_attention(
         &prior,
         &rs,
@@ -1843,17 +1855,20 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         base_spawns as usize,
         after_spawns,
         &parked_units,
+        hung_halt.as_deref(),
     );
     Ok(rs)
 }
 
 /// The push-side attention entries THIS `run()` call's step surfaced (spec 69, criterion
 /// 5): a before/after diff of the run's state at the START of this call (`prior`) against
-/// its state at the END (`after`), plus the spawn/budget counts over the same window and
-/// the wave still parked at the end. Computed HERE rather than in `ledger.rs` because the
-/// stalled-frontier signal needs the CURRENT wave ([`spawn::step_result`]), which
-/// `ledger.rs` deliberately never depends on (`spawn.rs` depends on `ledger`, not the
-/// reverse - see `ledger::RunState::escalated_units`'s own doc comment).
+/// its state at the END (`after`), plus the spawn/budget counts over the same window, the
+/// wave still parked at the end, and the reason (if any) a hung spawn's liveness fault is
+/// halting the run. Computed HERE rather than in `ledger.rs` because the stalled-frontier
+/// signal needs the CURRENT wave ([`spawn::step_result`]), which `ledger.rs` deliberately
+/// never depends on - `ledger.rs` imports nothing from `spawn.rs`, while `spawn.rs` imports
+/// [`ledger::AttentionEntry`], a one-way dependency verifiable directly from each file's own
+/// `use` block, not stated in any doc comment.
 ///
 /// Every signal is a CROSSING within this call's window, never a persisting state: a unit
 /// that STAYS escalated, or a budget that STAYS spent, does not re-stamp on a later call
@@ -1870,6 +1885,7 @@ fn compute_attention(
     before_spawns: usize,
     after_spawns: usize,
     parked_units: &BTreeSet<String>,
+    hung_halt: Option<&str>,
 ) -> Vec<ledger::AttentionEntry> {
     let mut out = Vec::new();
 
@@ -1887,13 +1903,23 @@ fn compute_attention(
         }
     }
 
-    // Signal 2: the run HALTED. `RunCtx::halt_reason` reads an in-process flag that starts
-    // `false` on every call to `run`, so `Some(..)` here already means THIS call tripped
-    // the breaker - no separate before/after comparison is needed for it to be "new".
-    if let Some(reason) = &after.budget_halt {
+    // Signal 2: the run HALTED - either of the TWO sources `step.halted` (main.rs) already
+    // unifies (review u69c5, cause genuine-defect: this signal covered only the first of
+    // them until this fix). The budget breaker: `RunCtx::halt_reason` reads an in-process
+    // flag that starts `false` on every call to `run`, so `Some(..)` here already means
+    // THIS call tripped it - no separate before/after comparison needed for it to be "new".
+    // A hung spawn's liveness halt (`hung_halt`, the caller's fold of `current_events` via
+    // `liveness::hung_spawns`) mirrors that SAME no-persisted-crossing-state discipline: it
+    // is folded fresh from the log on every call, so a hung spawn that stays hung re-derives
+    // the identical reason string every call, exactly like a budget that stays tripped
+    // re-derives `Some(..)` every call it is asked about - neither is a NEW kind of restamp,
+    // both are "still true, re-read fresh". The budget reason takes precedence when both
+    // could in principle be set, mirroring the SAME precedence `rigger step` already gives
+    // the budget halt on the `halted` wire field.
+    if let Some(reason) = after.budget_halt.as_deref().or(hung_halt) {
         out.push(ledger::AttentionEntry::run_scoped(
             ledger::ATTENTION_HALTED,
-            reason.clone(),
+            reason,
         ));
     }
 
@@ -21907,6 +21933,168 @@ mod tests {
             ],
             "a budget halt must stamp a run-scoped `halted` entry carrying the same reason \
              as `budget_halt`"
+        );
+    }
+
+    #[test]
+    fn a_hung_liveness_halt_stamps_an_attention_entry() {
+        // Spec 69, criterion 5, signal 2 (run HALTED with reason) must mirror BOTH halt
+        // sources the `step.halted` wire field already unifies (review u69c5, cause
+        // genuine-defect): the budget breaker (covered above) AND a hung spawn's liveness
+        // fault. In production `rigger step` (main.rs) runs the liveness sweep and records
+        // the fault BEFORE calling `run`, so by the time this call starts the fault is
+        // already in the log - reproduced directly here (a pure event, not a real stale
+        // marker file) since the sweep's OWN staleness classification is untouched by this
+        // unit.
+        use crate::driver::replay::ReplayDriver;
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "u".into(),
+            Stage {
+                name: "u".into(),
+                agent: "a".into(),
+                gates: vec!["ok".into()],
+                ..Default::default()
+            },
+        );
+
+        let st = Store::open(":memory:").unwrap();
+        crate::run::ensure_started(&st, &[]).unwrap();
+
+        let step = |st: &Store| {
+            let driver = ReplayDriver::new(st);
+            let deps = Deps {
+                store: st,
+                driver: &driver,
+                gates: &ExecRunner,
+                repo: String::new(),
+                grounder: None,
+                graph: None,
+                criteria: Vec::new(),
+            };
+            run(&cfg, &deps).unwrap()
+        };
+
+        // Round 1: the implementer's attempt 0 is freshly parked - nothing crosses yet.
+        let rs = step(&st);
+        assert!(
+            rs.attention.is_empty(),
+            "parking the first attempt crosses no threshold"
+        );
+
+        // The liveness sweep records a no-attempt-charged fault on the parked spawn's id
+        // (spec 10, unit 3) - the SAME `SpawnResult` helper and `record_result_if_absent`
+        // call `liveness::sweep` itself uses on a genuinely stale marker.
+        let id = spawn_id("u", ROLE_IMPLEMENTER, 0);
+        let fault = crate::spawn::SpawnResult::liveness_fault(&id, "the agent hung", "infra");
+        crate::spawn::record_result_if_absent(&st, &fault).unwrap();
+
+        let rs = step(&st);
+        assert_eq!(
+            rs.units["u"].attempts, 0,
+            "a liveness fault charges no remediation attempt"
+        );
+        let expected_reason = crate::liveness::halt_reason(&[crate::liveness::HungSpawn {
+            id: id.clone(),
+            unit: "u".into(),
+            class: "infra".into(),
+        }]);
+        assert_eq!(
+            rs.attention,
+            vec![ledger::AttentionEntry::run_scoped(
+                ledger::ATTENTION_HALTED,
+                expected_reason,
+            )],
+            "a hung spawn's liveness halt must stamp a run-scoped `halted` entry too - the \
+             SAME union `step.halted` already gives the budget and liveness sources, not \
+             visible only on the budget side"
+        );
+    }
+
+    #[test]
+    fn an_escalation_does_not_restamp_attention_on_a_resumed_process() {
+        // Spec 69, criterion 5, signal 1: "once per threshold crossing" must hold across a
+        // REAL process boundary too, not just within one `run()` call - a resumed step that
+        // finds the unit already escalated (from an EARLIER process) must not re-report it,
+        // exactly like `a_second_failure_recurs_and_a_third_also_stalls_the_frontier` proves
+        // for signals 3/5 (previously untested for signal 1 - the resume path is inherently
+        // resume-safe: `prior` is freshly re-derived from the log at the START of every
+        // call, so an escalation already in the log before this call is already in `prior`
+        // and never counts as newly crossed).
+        use crate::driver::replay::ReplayDriver;
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        // max_retries=1: `remediate(0, 1)` already decides Escalate on the FIRST failure
+        // (prior_attempts=0 -> attempts=1 -> `1 >= 1`), so one recorded failure is enough
+        // to drive the unit straight to Escalated with no second park.
+        cfg.workflow.defaults.max_retries = 1;
+        cfg.workflow.stages.insert(
+            "u".into(),
+            Stage {
+                name: "u".into(),
+                agent: "a".into(),
+                gates: vec!["ok".into()],
+                ..Default::default()
+            },
+        );
+
+        let st = Store::open(":memory:").unwrap();
+        crate::run::ensure_started(&st, &[]).unwrap();
+
+        let step = |st: &Store| {
+            let driver = ReplayDriver::new(st);
+            let deps = Deps {
+                store: st,
+                driver: &driver,
+                gates: &ExecRunner,
+                repo: String::new(),
+                grounder: None,
+                graph: None,
+                criteria: Vec::new(),
+            };
+            run(&cfg, &deps).unwrap()
+        };
+
+        // Round 1: attempt 0 is freshly parked - nothing crosses yet.
+        let rs = step(&st);
+        assert!(
+            rs.attention.is_empty(),
+            "parking the first attempt crosses no threshold"
+        );
+
+        // Attempt 0 fails: `max_retries=1` escalates the unit on THIS single failure.
+        crate::spawn::record_result(
+            &st,
+            &crate::spawn::SpawnResult::failed(spawn_id("u", ROLE_IMPLEMENTER, 0), "boom"),
+        )
+        .unwrap();
+        let rs = step(&st);
+        assert_eq!(rs.units["u"].status, ledger::Status::Escalated);
+        assert_eq!(
+            rs.attention,
+            vec![ledger::AttentionEntry::unit_scoped(
+                ledger::ATTENTION_ESCALATED,
+                "u",
+                "escalated after exhausting remediation",
+            )],
+            "the step that escalates the unit must stamp exactly one escalated entry"
+        );
+
+        // Round 3: a FRESH process (a new `ReplayDriver`/`Deps`, a real resume boundary) with
+        // NOTHING new recorded. The unit is already escalated from round 2, folded into
+        // THIS call's own `prior` at the top of `run()` - so it must NOT re-stamp.
+        let rs = step(&st);
+        assert_eq!(rs.units["u"].status, ledger::Status::Escalated);
+        assert!(
+            rs.attention.is_empty(),
+            "a resumed process finding the unit already escalated must not re-stamp it, got \
+             {:?}",
+            rs.attention
         );
     }
 
