@@ -60,3 +60,33 @@ see whether the installed binary is behind the tree.
 - Environment: `go-gitsemver` is installed (via `go install`, on PATH through the mise Go
   toolchain) and reports `FullSemVer: 0.3.0` against this repo's `v0.3.0` source. Crate
   semver in Cargo.toml stays the static base cargo requires.
+- u74c3 (this criterion) verified at rigger-run tip 33edcc4, where c1/c2 are already
+  merged: `cargo fmt --check` clean, `cargo clippy --all-targets -- -D warnings` clean on
+  BOTH feature lanes, `cargo test` 2033 passed/2 ignored (default features), 1915
+  passed/2 ignored (`--no-default-features`) - zero code changes needed to close this
+  criterion. `build.mutation` is "on" in this run's `.rigger/workflow.yml`; the diff
+  against the rigger-run merge-base (33edcc4, identical to this unit's own starting
+  HEAD) touches zero `.rs` files, so the mutation-efficacy accounting is provably empty
+  by construction - not a skipped step, recorded as DecisionMade
+  d-u74c3-mutation-accounting.
+- Three non-blocking fast-follow threads on `src/main.rs`, carried forward from the c2
+  review rounds so they are not lost now that c1-c3 close:
+  - `behind_the_tree_advisory` hardcodes calls to `git_is_ancestor`, `git_commit_distance`,
+    and `gitsemver::derive_version` instead of accepting them as injected params, unlike
+    its file-sibling `workflow_drift_advisory` (main.rs:7711) which injects its ancestry
+    oracle as a closure for exactly this reason - a testability-consistency improvement,
+    not a stated-rule violation
+    (arch-u74c2-behind-the-tree-advisory-hardcoded-oracle-not-injected).
+  - `missing_gitsemver_binary_advisory`'s fire arm (the `Some(...)` case) has no
+    CLI-level periphery proof, only its silent case does; proving the fire case needs a
+    genuinely new technique this codebase has no precedent for yet - a cold,
+    PATH-controlled second `rigger` binary build with `go-gitsemver` absent, then driving
+    THAT binary's `validate`
+    (sdet-u74c2-missing-binary-advisory-fire-path-untested-at-cli).
+  - If `go-gitsemver` is present at build time (a genuinely derived version, no
+    `+unversioned`) but absent from `PATH` at a LATER `rigger validate` invocation, both
+    new advisories go fully silent - zero signal that validate could not even check
+    whether the tree has moved (adv-u74c2-validate-time-tool-loss-fully-silent).
+  Whichever future unit next touches `behind_the_tree_advisory` or
+  `missing_gitsemver_binary_advisory` for an unrelated reason should also weigh these
+  three.
