@@ -11,7 +11,7 @@ On EVERY look, check all FIVE signals below, not just the one you already suspec
 
 1. **escalated blockers** - a unit `rigger status` (or the dashboard) marks `escalated (awaiting a human)`. Respond with `rigger-handle-an-escalation`.
 2. **heartbeat staleness** VS LIVE AGENT PROCESSES - an in-flight agent's last heartbeat is stale but its worker process is actually gone, not merely slow (the driver quit, crashed, or the machine slept). Respond with `rigger-resume-a-run`.
-3. **dash liveness** - the dashboard URL does not answer, `rigger status` says it is not serving, or a browser just spins. Respond with `rigger-restore-the-dash`.
+3. **dash liveness** - the dashboard URL does not answer, `rigger watch` reports it not serving, or a browser just spins. Respond with `rigger-restore-the-dash`.
 4. **reject-recurrence trend** - a unit keeps failing the SAME finding rather than converging (reject-recurrence at or past the diagnose threshold). Respond with `rigger-diagnose-churn`.
 5. **frontier progress** - is the run actually consuming what it spawns? A spawn id surviving consecutive looks, an hours-old last run event under "working" agents, or a repeating wave is a STALL even though every signal above reads clean - this is why progress is its own signal, not a restatement of liveness. Respond: stop the driver and diagnose before another round spends.
 
