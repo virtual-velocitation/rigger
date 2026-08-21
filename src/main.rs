@@ -9734,6 +9734,23 @@ fn docs_context() -> rigger::docs::DocsContext {
         spec_shape_recommendation: spec::SHAPE_RECOMMENDATION.to_string(),
         subcommands: SUBCOMMANDS.iter().map(|c| c.to_string()).collect(),
         specs_location: DEFAULT_SPECS_LOCATION.to_string(),
+        // Spec 69, criterion 1: the five `rigger watch` signals, in Design order, read from
+        // the SAME `watch::Signal::name()`/`response()` `rigger watch` itself prints on an
+        // anomaly line - so `rigger-watch-a-run`'s render can never silently drift from the
+        // command's real signal set.
+        watch_signals: [
+            watch::Signal::Escalated,
+            watch::Signal::DeadDriver,
+            watch::Signal::DashNotServing,
+            watch::Signal::RejectRecurrence,
+            watch::Signal::FrontierStall,
+        ]
+        .map(|signal| rigger::docs::WatchSignalFact {
+            name: signal.name().to_string(),
+            response: signal.response().to_string(),
+        }),
+        watch_poll_interval_secs: watch::DEFAULT_INTERVAL_SECS,
+        reject_recurrence_diagnose_threshold: watch::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD,
     }
 }
 
@@ -11169,6 +11186,25 @@ mod tests {
                 .iter()
                 .map(|c| c.to_string())
                 .collect::<Vec<_>>()
+        );
+        // Spec 69, criterion 1: the watch facts `rigger-watch-a-run`/`rigger-diagnose-churn`
+        // interpolate must be the SAME values `rigger watch` itself uses, not a hand copy.
+        let expected_signals = [
+            watch::Signal::Escalated,
+            watch::Signal::DeadDriver,
+            watch::Signal::DashNotServing,
+            watch::Signal::RejectRecurrence,
+            watch::Signal::FrontierStall,
+        ]
+        .map(|signal| rigger::docs::WatchSignalFact {
+            name: signal.name().to_string(),
+            response: signal.response().to_string(),
+        });
+        assert_eq!(ctx.watch_signals, expected_signals);
+        assert_eq!(ctx.watch_poll_interval_secs, watch::DEFAULT_INTERVAL_SECS);
+        assert_eq!(
+            ctx.reject_recurrence_diagnose_threshold,
+            watch::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD
         );
     }
 
