@@ -12592,6 +12592,31 @@ fn status_json_appends_the_dashboard_entry_after_a_real_in_flight_agent() {
     );
 }
 
+/// Spec 69, criterion 4, the human-readable sibling `status_json_appends_no_dashboard_entry_
+/// when_none_was_ever_recorded` above left unproven: [`dash::DashStatus::Absent`] renders to
+/// `None` and prints nothing is pinned in isolation by `dash_status_line`'s own unit test in
+/// `src/main.rs`, and the `--json` array stays byte-identical `[]` is proven end-to-end above -
+/// but nothing yet drove the REAL `cmd_status` text path (recorded-url lookup, marker read,
+/// `dash::dash_status`, then `dash_status_line`) through the built binary when a project has
+/// never recorded a dash at all. Every other status test in this file only asserts a line IS
+/// present via `contains`, so a wiring bug that wrongly printed a "dashboard:" line in the
+/// Absent case (e.g. probing a stray recorded url from a stale fixture, or a `None` mishandled
+/// as `NotServing`) would pass every existing assertion undetected.
+#[test]
+fn status_prints_no_dashboard_line_when_none_was_ever_recorded() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+
+    let (out, err, ok) = run_rigger(root, &["status"]);
+    assert!(ok, "rigger status must succeed; stderr:\n{err}");
+    assert!(
+        !out.contains("dashboard:"),
+        "no dash was ever recorded, so the text output must carry no dashboard line at all; \
+         stdout:\n{out}"
+    );
+}
+
 /// spec 22, criterion 2 (the ACCEPT arm - sibling to the refuse arm proven directly in
 /// `src/mcpserver.rs`): the shared `emit_event` core still ACCEPTS every agent-emittable
 /// context event and appends it, so both the CLI (`rigger emit`) and the MCP
