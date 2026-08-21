@@ -4824,6 +4824,19 @@ enum DashStart {
     Failed,
 }
 
+/// The recorded-serving predicate BOTH the step path's idempotent-start decision
+/// ([`ensure_run_dashboard_at`], via [`dash::dash_start_needed`]) and `rigger status`'s
+/// truthful presentation ([`cmd_status`], via [`dash::dash_status`]) verify a marker's port
+/// against - ONE named symbol, not two independently duplicated literal closures, so the two
+/// surfaces provably share the same probe rather than merely claiming to (arch-u69c4-parity-
+/// claim-rests-on-stale-unlinked-docs-not-a-shared-symbol). A REAL network probe of the port,
+/// never a bare pid-liveness check: a marker left by a self-reaped or pid-recycled dash must
+/// never masquerade as still serving just because its pid happens to be alive (possibly reused
+/// by an unrelated process).
+fn dash_marker_serving(m: dash::DashMarker) -> bool {
+    dash::dash_serving_on(m.port)
+}
+
 /// Idempotently ensure a run dashboard serves the project whose marker lives at
 /// `marker_path` (spec 39, criterion 1: idempotent start on step). Reads the per-project
 /// [`dash::DashMarker`]; if it names a still-serving dash (per `still_serving`), returns
@@ -4833,7 +4846,8 @@ enum DashStart {
 ///
 /// `still_serving` and `start` are INJECTED so the start-once behavior is provable without a
 /// real dashboard process; the production caller ([`ensure_run_dashboard`]) passes
-/// [`dash::pid_is_alive`] over the marker's pid and [`spawn_run_dashboard_detached`].
+/// [`dash_marker_serving`] (a real port probe, not a bare pid check - see its own doc) and
+/// [`spawn_run_dashboard_detached`].
 fn ensure_run_dashboard_at(
     marker_path: &Path,
     still_serving: impl Fn(dash::DashMarker) -> bool,
@@ -4983,12 +4997,7 @@ fn ensure_run_dashboard(config_dash_enabled: bool) {
     let marker_path = std::path::PathBuf::from(db_path(DASH_MARKER_FILE));
     match ensure_run_dashboard_at(
         &marker_path,
-        // Singleton-aware short-circuit (spec 50, criterion 4): a marker suppresses a fresh start
-        // only when a dash is actually SERVING its recorded port - a probe, not a bare pid-liveness
-        // check - so a marker left by a self-reaped or pid-recycled dash never masks a stopped
-        // singleton, and a singleton a PRIOR run (or another project's step) left serving the fixed
-        // address is reused rather than re-spawned.
-        |m| dash::dash_serving_on(m.port),
+        dash_marker_serving,
         spawn_run_dashboard_detached,
     ) {
         DashStart::Started(port) => {
@@ -5013,6 +5022,48 @@ fn recorded_dash_url(loc: &StoreLocation) -> Option<String> {
     let url = std::fs::read_to_string(loc.file(DASH_URL_FILE)).ok()?;
     let url = url.trim().to_string();
     (!url.is_empty()).then_some(url)
+}
+
+/// Render `rigger status`'s dashboard line (spec 69, criterion 4: "`rigger status` never lies
+/// about the dash"). `None` when nothing was ever recorded ([`dash::DashStatus::Absent`]) - the
+/// unchanged silent case. A trusted URL prints EXACTLY as before
+/// ([`dash::DashStatus::Serving`]). A probe PROVED the recorded URL dead prints the truthful
+/// line instead - naming the matching marker's pid when one is known, or naming none when only
+/// a mismatched marker (or none at all) was recorded (round 3: a mismatched marker's pid
+/// belongs to an unrelated dash and must never be printed as though it were this URL's) - plus
+/// both self-heal paths, so an operator is never sent chasing a URL nothing answers.
+fn dash_status_line(status: &dash::DashStatus) -> Option<String> {
+    match status {
+        dash::DashStatus::Absent => None,
+        dash::DashStatus::Serving(url) => Some(format!("dashboard: {url}")),
+        dash::DashStatus::NotServing { pid: Some(pid) } => Some(format!(
+            "dashboard: not serving (marker names dead pid {pid}) - run 'rigger dash' or the \
+             next step restarts it"
+        )),
+        dash::DashStatus::NotServing { pid: None } => Some(
+            "dashboard: not serving (recorded url is unreachable) - run 'rigger dash' or the \
+             next step restarts it"
+                .to_string(),
+        ),
+    }
+}
+
+/// Render `rigger status --json`'s dashboard entry (spec 69, criterion 4's third clause:
+/// "`--json` carries the same truth"), the JSON sibling of [`dash_status_line`]. `None` for
+/// [`dash::DashStatus::Absent`] - nothing to append, mirroring the text render's silent case.
+/// A trusted URL and a proven-dead marker each render as a small, self-describing object
+/// under a `"dashboard"` key - never a bare string or a shape that could be mistaken for an
+/// [`progress::AgentActivity`] entry - so the caller can tell it apart from an agent entry by
+/// its keys alone. `pid` serializes as `null` when no matching marker named one (round 3).
+fn dash_status_json(status: &dash::DashStatus) -> Option<serde_json::Value> {
+    let dashboard = match status {
+        dash::DashStatus::Absent => return None,
+        dash::DashStatus::Serving(url) => serde_json::json!({"status": "serving", "url": url}),
+        dash::DashStatus::NotServing { pid } => {
+            serde_json::json!({"status": "not_serving", "pid": pid})
+        }
+    };
+    Some(serde_json::json!({ "dashboard": dashboard }))
 }
 
 fn cmd_dash(args: &[String]) -> Res {
@@ -5934,8 +5985,39 @@ fn cmd_status(args: &[String]) -> Res {
     }
 
     let view = progress::consolidate(run_events, &prog_events, &liveness_ages, now)?;
+
+    // Spec 69, criterion 4: never printed (or, under `--json`, ever wired) on trust alone.
+    // [`dash::dash_status`] probes with [`dash::dash_serving_on`] directly - the SAME
+    // underlying probe [`dash_marker_serving`] wraps for the step path's own idempotent-start
+    // decision, so this surface and the step path can never disagree about whether a recorded
+    // dash is alive. A marker-less recorded URL (the guard-bound `rigger run` / `rigger
+    // serve` dash writes none) is unverifiable, not dead, and stays trusted exactly as before
+    // this criterion; a marker naming a DIFFERENT dash than the recorded URL (round 3,
+    // adv-u69c4r2-mismatched-marker-still-trusts-a-dead-url) is NOT "nothing to check" either -
+    // `dash_status` probes the URL's own port directly in that case, never the marker's
+    // unrelated one. Computed HERE, before the `--json` early return below, so `--json`
+    // carries the same truth as the human table (round 2: the prior placement after the
+    // `--json` return left `--json` structurally unable to compute it at all).
+    let dash_marker = dash::DashMarker::read(Path::new(&loc.file(DASH_MARKER_FILE)));
+    let dash_status =
+        dash::dash_status(recorded_dash_url(&loc), dash_marker, dash::dash_serving_on);
+
     if json {
-        println!("{}", serde_json::to_string(&view)?);
+        // The dashboard truth is APPENDED to the in-flight-agent array rather than wrapping
+        // it in a new top-level shape: the liveness courier (workflows/rigger.js:218) does
+        // `Array.isArray(arr) ? arr.find(a => a.id === id) : null` over this exact line, so
+        // the top level MUST stay a bare array - wrapping it in an object would silently and
+        // permanently blind spec 10/14's liveness watchdog (`find` never runs, every
+        // liveness read becomes `null`, "conservatively" treated as never-stale forever).
+        // Absent (nothing ever recorded) appends nothing, so a project with no dash history
+        // gets byte-identical `--json` output to before this criterion; the appended object
+        // carries no `id` field, so it can never collide with a real spawn id.
+        let mut value = serde_json::to_value(&view)?;
+        if let (Some(arr), Some(dashboard)) = (value.as_array_mut(), dash_status_json(&dash_status))
+        {
+            arr.push(dashboard);
+        }
+        println!("{}", serde_json::to_string(&value)?);
         return Ok(());
     }
 
@@ -5963,8 +6045,8 @@ fn cmd_status(args: &[String]) -> Res {
     // whenever a driver recorded one, even for an otherwise-quiet run, so an operator can
     // always find the live observability page. Printed before the run summary so it appears
     // in the "no agents in flight" case too.
-    if let Some(url) = recorded_dash_url(&loc) {
-        println!("dashboard: {url}");
+    if let Some(line) = dash_status_line(&dash_status) {
+        println!("{line}");
     }
 
     // Readable table. The blackout is visible as `last store event` age >> activity age.
@@ -10202,6 +10284,21 @@ mod tests {
         );
     }
 
+    /// [`dash_marker_serving`] is the ONE named predicate `ensure_run_dashboard`'s real
+    /// production wiring passes to [`ensure_run_dashboard_at`] - pinned directly, not only
+    /// through an injected test double, so a mutant that made it unconditionally trust any
+    /// marker (round 3, part of closing adv-u69c4r2-mismatched-marker-still-trusts-a-dead-url's
+    /// remediation) cannot slip through untested. A port nothing binds must read as NOT
+    /// serving - the real network probe, never a bare presence check.
+    #[test]
+    fn dash_marker_serving_reports_false_when_nothing_answers_the_markers_port() {
+        let port = dash::free_port_from(40000).expect("a free loopback port must be available");
+        assert!(
+            !dash_marker_serving(dash::DashMarker { port, pid: 1 }),
+            "a marker naming a port nothing serves must read as not serving"
+        );
+    }
+
     /// A marker left by a crashed/reaped dash (recorded but NOT serving) does not suppress a
     /// fresh start: the step starts a new dash and overwrites the stale marker.
     #[test]
@@ -10287,6 +10384,83 @@ mod tests {
         assert!(
             dash_ensure_suppressed(true, false),
             "both opt-outs set stays suppressed"
+        );
+    }
+
+    /// Spec 69, criterion 4: `dash_status_line` renders each [`dash::DashStatus`] outcome to
+    /// the EXACT text `rigger status` prints - `Absent` prints nothing (today's silent
+    /// no-recorded-dash case), `Serving` prints the unchanged `dashboard: <url>` line, a
+    /// `NotServing` with a known pid (a MATCHING marker proven dead) prints the truthful line
+    /// naming that pid and both self-heal paths, and a `NotServing` with no pid (round 3: a
+    /// mismatched-or-absent marker, the url's own port directly proven dead) prints the
+    /// truthful line WITHOUT fabricating a pid - never a stale URL either way.
+    #[test]
+    fn dash_status_line_renders_each_outcome_to_its_exact_text() {
+        assert_eq!(
+            dash_status_line(&dash::DashStatus::Absent),
+            None,
+            "no recorded dash prints nothing"
+        );
+        assert_eq!(
+            dash_status_line(&dash::DashStatus::Serving("http://127.0.0.1:7420/".into())),
+            Some("dashboard: http://127.0.0.1:7420/".to_string()),
+            "a trusted URL prints exactly as before this criterion"
+        );
+        assert_eq!(
+            dash_status_line(&dash::DashStatus::NotServing { pid: Some(4242) }),
+            Some(
+                "dashboard: not serving (marker names dead pid 4242) - run 'rigger dash' or \
+                 the next step restarts it"
+                    .to_string()
+            ),
+            "a matching marker proven dead names the pid and both self-heal paths, never a \
+             stale URL"
+        );
+        assert_eq!(
+            dash_status_line(&dash::DashStatus::NotServing { pid: None }),
+            Some(
+                "dashboard: not serving (recorded url is unreachable) - run 'rigger dash' or \
+                 the next step restarts it"
+                    .to_string()
+            ),
+            "a directly-proven-dead url with no matching marker names both self-heal paths \
+             without fabricating a pid"
+        );
+    }
+
+    /// Spec 69, criterion 4's third clause ("`--json` carries the same truth"): the JSON
+    /// sibling of the text-render test above, over the same [`dash::DashStatus`] outcomes.
+    /// `Absent` appends nothing (round 2: this is what closes the "vacuously true" gap - before
+    /// round 2, `--json` never even reached a computed [`dash::DashStatus`], so this branch and
+    /// the informative ones below were indistinguishable).
+    #[test]
+    fn dash_status_json_renders_each_outcome_to_its_exact_shape() {
+        assert_eq!(
+            dash_status_json(&dash::DashStatus::Absent),
+            None,
+            "no recorded dash appends nothing to the --json array"
+        );
+        assert_eq!(
+            dash_status_json(&dash::DashStatus::Serving("http://127.0.0.1:7420/".into())),
+            Some(serde_json::json!({
+                "dashboard": {"status": "serving", "url": "http://127.0.0.1:7420/"}
+            })),
+            "a trusted URL carries its status and url"
+        );
+        assert_eq!(
+            dash_status_json(&dash::DashStatus::NotServing { pid: Some(4242) }),
+            Some(serde_json::json!({
+                "dashboard": {"status": "not_serving", "pid": 4242}
+            })),
+            "a matching marker proven dead carries its status and the dead pid, never a URL"
+        );
+        assert_eq!(
+            dash_status_json(&dash::DashStatus::NotServing { pid: None }),
+            Some(serde_json::json!({
+                "dashboard": {"status": "not_serving", "pid": null}
+            })),
+            "a directly-proven-dead url with no matching marker carries null, never a \
+             fabricated pid"
         );
     }
 
