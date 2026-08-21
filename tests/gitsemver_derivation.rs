@@ -24,6 +24,12 @@
 //! version's build metadata (the exact-commit identity the spec-74 Problem statement
 //! opens with - order from semver, identity from the sha), and that the fallback never
 //! carries a stray `ShortSha` fragment.
+//!
+//! A fifth test pins that a successful derivation never mutates the repository's own
+//! `.git/config` as a side effect: `go-gitsemver` silently strips
+//! `extensions.worktreeConfig` from it by default unless invoked with
+//! `--no-repair-worktree-config`, an undocumented on-disk mutation with no place in what
+//! the Design calls compile-time derivation.
 
 #[path = "../build/gitsemver.rs"]
 #[allow(dead_code)]
@@ -176,6 +182,80 @@ fn tool_not_found_falls_back_to_the_crate_semver_with_an_unversioned_marker() {
         ),
         "a missing binary must fall back to the bare crate semver plus the explicit \
          unversioned marker, never fabricate a version, and never fail the build"
+    );
+}
+
+#[test]
+fn a_successful_derivation_never_mutates_the_repositorys_git_config() {
+    if !gitsemver_available() {
+        eprintln!("skipping: go-gitsemver not on PATH");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    fixture_repo(dir.path(), "docs: update the readme");
+
+    let config_path = dir.path().join(".git").join("config");
+    let before = std::fs::read(&config_path).expect("read fixture .git/config before");
+
+    let version = gitsemver::derive_version("go-gitsemver", dir.path());
+    assert!(
+        !version.contains("unversioned"),
+        "the fixture history must derive a real version so this test actually exercises \
+         a SUCCESSFUL derivation's side effects, not the tool-absent/non-checkout \
+         fallback paths; got: {version}"
+    );
+
+    let after = std::fs::read(&config_path).expect("read fixture .git/config after");
+    assert_eq!(
+        before, after,
+        "derive_version must never mutate the repository's own .git/config as a side \
+         effect of what the Design calls compile-time derivation"
+    );
+}
+
+#[test]
+fn worktree_config_extension_never_mutated_even_though_it_defeats_derivation() {
+    if !gitsemver_available() {
+        eprintln!("skipping: go-gitsemver not on PATH");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    fixture_repo(dir.path(), "docs: update the readme");
+    // Enable the git extension `go-gitsemver` repairs (silently strips from
+    // `.git/config`) by default unless `--no-repair-worktree-config` suppresses it.
+    // Verified independently before writing this test: go-gitsemver's own git library
+    // flatly refuses to OPEN a repository declaring this extension at all once the
+    // repair is suppressed ("core.repositoryformatversion does not support extension:
+    // worktreeconfig") - repairing-by-mutation was the ONLY way it could ever read such
+    // a repo. So suppressing the mutation and deriving a real version are mutually
+    // exclusive for this specific, rare input; `derive_version`'s documented
+    // ANY-failure fallback contract (never fabricate, never fail the build) is exactly
+    // what covers that trade-off - the same contract the tool-absent and
+    // outside-a-checkout scenarios already exercise.
+    git(dir.path(), &["config", "extensions.worktreeConfig", "true"]);
+
+    let config_path = dir.path().join(".git").join("config");
+    let before = std::fs::read(&config_path).expect("read fixture .git/config before");
+
+    let version = gitsemver::derive_version("go-gitsemver", dir.path());
+
+    let after = std::fs::read(&config_path).expect("read fixture .git/config after");
+    assert_eq!(
+        before, after,
+        "derive_version must never mutate the repository's own .git/config, even on a \
+         repo that declares extensions.worktreeConfig - suppressing go-gitsemver's \
+         default-on repair-by-mutation must never be silently dropped"
+    );
+    assert_eq!(
+        version,
+        format!(
+            "{}{}",
+            env!("CARGO_PKG_VERSION"),
+            gitsemver::UNVERSIONED_SUFFIX
+        ),
+        "with the mutation suppressed, go-gitsemver cannot open a repo declaring \
+         extensions.worktreeConfig at all, so derivation must fall back cleanly rather \
+         than fabricate a version or fail the build; got: {version}"
     );
 }
 

@@ -22,25 +22,80 @@
 //! validate advisory (which folds every `+unversioned` cause into one message for the
 //! same reason: the embedded marker itself cannot distinguish its cause). The build
 //! must NEVER fail because the derivation tool could not run.
+//!
+//! `dir` is resolved through real `git rev-parse` (never through `go-gitsemver` itself)
+//! before the tool is invoked, mirroring `build.rs`'s own `git_watch_paths` pattern for
+//! `BUILD_PROVENANCE`. `go-gitsemver`'s git library cannot resolve `HEAD` through a
+//! LINKED git worktree's `gitdir:` indirection (`.git` a file, not a directory) - this
+//! project's own primary way of building every spec unit - so a bare `-p dir` there
+//! fails and silently falls back to [`UNVERSIONED_SUFFIX`] even though the worktree is a
+//! real checkout with real history. Resolving `dir`'s PRIMARY checkout root (the parent
+//! of the shared common `.git` directory) and this checkout's own resolved `HEAD` commit
+//! through real git first, then handing `go-gitsemver` `-p <primary root> -c <commit>`,
+//! gives it coordinates it CAN resolve - delegating 100% of the version computation to
+//! the tool still, only correctly locating its input. For a plain (non-worktree)
+//! repository this resolves to `dir` and its own `HEAD`: the same inputs `go-gitsemver`
+//! would have used unassisted, so the common case is unchanged.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Appended to the bare crate semver whenever the real derivation is unavailable, so a
 /// reader can never mistake the fallback for a genuinely derived version.
 pub const UNVERSIONED_SUFFIX: &str = "+unversioned";
 
-/// Run `<bin> -p <dir> --show-variable <variable>`, trimmed. `None` on ANY failure: the
-/// binary missing from PATH (`Command::output` errors with `NotFound`), `dir` not a git
-/// checkout, a non-zero exit, or empty output.
-fn show_variable(bin: &str, dir: &Path, variable: &str) -> Option<String> {
-    let out = Command::new(bin)
-        .arg("-p")
+/// Resolve `dir`'s primary checkout root and its own `HEAD` commit via real `git`,
+/// exactly as `build.rs`'s `git_watch_paths` resolves a linked worktree's shared git
+/// state. `--path-format=absolute` makes `--git-common-dir` return an absolute path
+/// regardless of whether `dir` is already the process's cwd, so no manual
+/// relative-to-`dir` joining is needed. `None` when `dir` is not inside a git checkout
+/// at all (git itself is unavailable, or `dir` truly is outside any repository) - the
+/// caller falls back to invoking the tool directly on `dir` and lets IT report that
+/// failure, preserving the existing outside-a-checkout fallback behavior.
+fn resolve_repo(dir: &Path) -> Option<(PathBuf, String)> {
+    let common_dir = git_rev_parse(dir, &["--path-format=absolute", "--git-common-dir"])?;
+    let repo_root = PathBuf::from(common_dir).parent()?.to_path_buf();
+    let commit = git_rev_parse(dir, &["HEAD"])?;
+    Some((repo_root, commit))
+}
+
+/// Run `git -C <dir> rev-parse <args...>`, trimmed. `None` on any failure: git
+/// unavailable, `dir` not inside a git checkout, a non-zero exit, or empty output.
+fn git_rev_parse(dir: &Path, args: &[&str]) -> Option<String> {
+    let out = Command::new("git")
+        .arg("-C")
         .arg(dir)
-        .arg("--show-variable")
-        .arg(variable)
+        .arg("rev-parse")
+        .args(args)
         .output()
         .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
+}
+
+/// Run `<bin> --no-repair-worktree-config -p <path> [-c <commit>] --show-variable
+/// <variable>`, trimmed. `None` on ANY failure: the binary missing from PATH
+/// (`Command::output` errors with `NotFound`), `path` not a git checkout, a non-zero
+/// exit, or empty output. `--no-repair-worktree-config` suppresses `go-gitsemver`'s
+/// default-on behavior of silently deleting `extensions.worktreeConfig` from
+/// `.git/config` as a side effect of reading it - a mutation with no place in what the
+/// Design calls compile-time derivation, undocumented, and unrelated to computing a
+/// version string.
+fn show_variable(bin: &str, path: &Path, commit: Option<&str>, variable: &str) -> Option<String> {
+    let mut cmd = Command::new(bin);
+    cmd.arg("--no-repair-worktree-config").arg("-p").arg(path);
+    if let Some(commit) = commit {
+        cmd.arg("-c").arg(commit);
+    }
+    cmd.arg("--show-variable").arg(variable);
+    let out = cmd.output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -71,11 +126,21 @@ fn append_build_metadata(full_semver: &str, short_sha: &str) -> String {
 /// identical either way) plus [`UNVERSIONED_SUFFIX`] whenever `go-gitsemver` cannot
 /// produce a `FullSemVer`. `bin` is the executable name/path to invoke (parameterized
 /// so tests can force a not-found tool without touching PATH).
+///
+/// `dir` is resolved through [`resolve_repo`] first so a LINKED git worktree derives its
+/// real version instead of falling back (see the module doc comment); when `dir` is not
+/// inside any git checkout at all, resolution yields `None` and `go-gitsemver` is
+/// invoked on `dir` directly, unassisted, so it reports the same "not a checkout"
+/// failure it always has.
 pub fn derive_version(bin: &str, dir: &Path) -> String {
-    let Some(full_semver) = show_variable(bin, dir, "FullSemVer") else {
+    let (path, commit) = match resolve_repo(dir) {
+        Some((repo_root, commit)) => (repo_root, Some(commit)),
+        None => (dir.to_path_buf(), None),
+    };
+    let Some(full_semver) = show_variable(bin, &path, commit.as_deref(), "FullSemVer") else {
         return format!("{}{UNVERSIONED_SUFFIX}", env!("CARGO_PKG_VERSION"));
     };
-    match show_variable(bin, dir, "ShortSha") {
+    match show_variable(bin, &path, commit.as_deref(), "ShortSha") {
         Some(short_sha) => append_build_metadata(&full_semver, &short_sha),
         None => full_semver,
     }
