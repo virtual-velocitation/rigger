@@ -9024,7 +9024,54 @@ fn precommit_block() -> String {
 # succeeds and DIFFERS from what is already staged, the commit is REFUSED rather than
 # silently rewritten: a stale binary on PATH must never launder its own re-render into a
 # commit over the operator's correctly staged content.
-if command -v rigger >/dev/null 2>&1; then
+#
+# BINARY SELECTION (spec 75): prefer a `rigger` BUILT FROM THIS TREE over whatever happens to
+# sit first on PATH, so a worktree whose code legitimately changes a rendered fact renders with
+# a binary that actually reflects that change instead of deadlocking against a stale PATH
+# install. Candidate order, most authoritative first: the env-provided cargo target dir
+# (release then debug), this working tree's own local target (release then debug), this
+# worktree's own unit-derived scratch cargo-target - its unit is read from the worktree
+# directory name, `rigger-wt-<unit>` (release then debug), the run's shared step-cache target
+# (debug only - unit gates build the debug profile only), and finally PATH. SAFE-CLOSED: a
+# wrong candidate can only ever convert a false refusal into a pass when its render genuinely
+# matches what is already staged - never the reverse - so this can only make the hook MORE
+# correct, never less.
+git_common_dir=$(git rev-parse --git-common-dir 2>/dev/null)
+worktree_top=$(git rev-parse --show-toplevel 2>/dev/null)
+worktree_base=$(basename "$worktree_top" 2>/dev/null)
+unit=
+case "$worktree_base" in
+    rigger-wt-*) unit="${worktree_base#rigger-wt-}" ;;
+esac
+unit_release=
+unit_debug=
+shared_debug=
+if [ -n "$git_common_dir" ]; then
+    if [ -n "$unit" ]; then
+        unit_release="$git_common_dir/../.rigger/tmp/cargo-target-$unit/release/rigger"
+        unit_debug="$git_common_dir/../.rigger/tmp/cargo-target-$unit/debug/rigger"
+    fi
+    shared_debug="$git_common_dir/../.rigger/tmp/cargo-target/debug/rigger"
+fi
+rigger_bin=
+for candidate in \
+    "${CARGO_TARGET_DIR:+$CARGO_TARGET_DIR/release/rigger}" \
+    "${CARGO_TARGET_DIR:+$CARGO_TARGET_DIR/debug/rigger}" \
+    "./target/release/rigger" \
+    "./target/debug/rigger" \
+    "$unit_release" \
+    "$unit_debug" \
+    "$shared_debug" \
+; do
+    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+        rigger_bin="$candidate"
+        break
+    fi
+done
+if [ -z "$rigger_bin" ] && command -v rigger >/dev/null 2>&1; then
+    rigger_bin=$(command -v rigger)
+fi
+if [ -n "$rigger_bin" ]; then
     # Only check in a repo that ALREADY TRACKS these rendered docs (rigger's own self-hosting
     # repo). An operator project never carries them, so leave it untouched.
     tracked=
@@ -9041,7 +9088,7 @@ if command -v rigger >/dev/null 2>&1; then
     # so `rigger docs` never runs and never creates a stray untracked doc file the operator did
     # not ask for.
     if [ -z "$untracked" ] && [ -n "$tracked" ]; then
-        if rigger docs >/dev/null 2>&1; then
+        if "$rigger_bin" docs >/dev/null 2>&1; then
             # `rigger docs` just wrote a fresh render into the working tree. Compare it against
             # what is ALREADY STAGED (the index) - never stage the fresh render itself. A doc
             # that differs is drifted: either the staged content is genuinely stale, or this
@@ -9054,10 +9101,9 @@ if command -v rigger >/dev/null 2>&1; then
                 fi
             done
             if [ -n "$drifted" ]; then
-                rigger_bin_path=$(command -v rigger)
-                rigger_prov=$(rigger version 2>/dev/null)
+                rigger_prov=$("$rigger_bin" version 2>/dev/null)
                 echo "rigger: pre-commit: refusing to commit - the committed docs have drifted from a fresh render: $drifted" 1>&2
-                echo "rigger: pre-commit: rendering binary: $rigger_bin_path ($rigger_prov)" 1>&2
+                echo "rigger: pre-commit: rendering binary: $rigger_bin ($rigger_prov)" 1>&2
                 echo 'rigger: pre-commit: nothing was staged. Fix by either re-rendering with the tree-built binary (rigger docs, then git add the result), or reinstalling rigger so PATH points at a binary built from this tree' 1>&2
                 exit 1
             fi
@@ -9066,7 +9112,7 @@ if command -v rigger >/dev/null 2>&1; then
         fi
     fi
 else
-    echo 'rigger: pre-commit: rigger not on PATH; skipping docs regeneration (rigger validate is the backstop)' 1>&2
+    echo 'rigger: pre-commit: no rigger binary found (checked the tree build output and PATH); skipping docs regeneration (rigger validate is the backstop)' 1>&2
 fi
 # Best-effort on unavailability only (the drift check is the hard backstop for that case): a
 # matching render (or a `rigger` that could not even attempt one) falls through to here and
@@ -10349,7 +10395,7 @@ mod tests {
             "a detected drift must hard-fail the commit, not warn-and-proceed; got:\n{hook}"
         );
         assert!(
-            hook.contains("command -v rigger") && hook.contains("rigger version"),
+            hook.contains("command -v rigger") && hook.contains("\"$rigger_bin\" version"),
             "the refusal names the rendering binary's path AND its build provenance; got:\n{hook}"
         );
         assert!(
@@ -10357,6 +10403,121 @@ mod tests {
                 && (hook.contains("tree-built") || hook.contains("tree built")),
             "the refusal names the two remedies - re-render with the tree-built binary, or \
              reinstall; got:\n{hook}"
+        );
+    }
+
+    /// spec 75, crit 1 (BINARY SELECTION, pure): the managed block must prefer a `rigger`
+    /// built FROM THIS TREE over whatever happens to be first on PATH, so a worktree whose
+    /// code legitimately changes a rendered fact renders with a binary that actually reflects
+    /// it (rather than deadlocking against a stale PATH install). Proves, at the
+    /// `compose_precommit_bytes` seam, that the block tries every candidate in the spec's
+    /// exact order - env target dir (release then debug), local target (release then debug),
+    /// this worktree's own unit-derived scratch cargo-target (release then debug), the shared
+    /// step-cache target (debug only), PATH last - and that BOTH the render call and the
+    /// provenance line invoke the RESOLVED binary, not a bare unqualified `rigger`. This
+    /// criterion OWNS the candidate order and its rendering in the template (c2 owns the
+    /// end-to-end fixture-driven behavior, not this test).
+    #[test]
+    fn precommit_block_resolves_a_tree_built_binary_before_path() {
+        let hook = compose_precommit(None);
+
+        // The actual TRY order is the order of the `for candidate in ...` list (shell
+        // variables like `$unit_release` are computed once, above the loop, for POSIX
+        // correctness - their VALUES, not their computation site, are what matters), bounded
+        // between "for candidate in" and its closing "; do". Slicing to exactly that region
+        // means a candidate's VALUE text appearing earlier (in its own assignment) can never
+        // be mistaken for its position in the try order.
+        let loop_start = hook
+            .find("for candidate in")
+            .expect("a for-loop iterates the candidates in order");
+        let loop_body_start = loop_start + "for candidate in".len();
+        let loop_end = hook[loop_body_start..]
+            .find("; do")
+            .map(|i| loop_body_start + i)
+            .expect("the candidate for-loop is closed with `; do`");
+        let candidate_list = &hook[loop_body_start..loop_end];
+        let idx_env_release = candidate_list
+            .find("$CARGO_TARGET_DIR/release/rigger")
+            .expect("env target dir release candidate is tried");
+        let idx_env_debug = candidate_list
+            .find("$CARGO_TARGET_DIR/debug/rigger")
+            .expect("env target dir debug candidate is tried");
+        let idx_local_release = candidate_list
+            .find("./target/release/rigger")
+            .expect("local target release candidate is tried");
+        let idx_local_debug = candidate_list
+            .find("./target/debug/rigger")
+            .expect("local target debug candidate is tried");
+        let idx_unit_release = candidate_list
+            .find("$unit_release")
+            .expect("unit-derived cargo-target release candidate is tried");
+        let idx_unit_debug = candidate_list
+            .find("$unit_debug")
+            .expect("unit-derived cargo-target debug candidate is tried");
+        let idx_shared_debug = candidate_list
+            .find("$shared_debug")
+            .expect("shared step-cache debug candidate is tried");
+        // PATH is consulted only as the fallback AFTER the candidate loop closes.
+        let idx_path_fallback = hook[loop_end..]
+            .find("command -v rigger")
+            .map(|i| loop_end + i)
+            .expect("PATH fallback candidate is tried after the loop");
+        assert!(
+            idx_env_release < idx_env_debug
+                && idx_env_debug < idx_local_release
+                && idx_local_release < idx_local_debug
+                && idx_local_debug < idx_unit_release
+                && idx_unit_release < idx_unit_debug
+                && idx_unit_debug < idx_shared_debug
+                && idx_shared_debug < idx_path_fallback,
+            "candidates must be TRIED in the spec's exact order (env dir release/debug, local \
+             target release/debug, unit-derived cargo-target release/debug, shared step-cache \
+             debug, PATH last); got:\n{hook}"
+        );
+
+        // The unit-derived candidates ($unit_release/$unit_debug) are POINTED at paths keyed
+        // by the worktree directory name `rigger-wt-<unit>`, and the shared step-cache
+        // candidate ($shared_debug) is a DISTINCT debug-only path with no `-$unit` segment.
+        assert!(
+            hook.contains("rigger-wt-*")
+                && hook.contains("cargo-target-$unit/release/rigger")
+                && hook.contains("cargo-target-$unit/debug/rigger"),
+            "the unit-derived candidates are keyed off the worktree directory name \
+             `rigger-wt-<unit>`; got:\n{hook}"
+        );
+        assert!(
+            hook.contains("/.rigger/tmp/cargo-target/debug/rigger")
+                && !hook.contains("/.rigger/tmp/cargo-target/release/rigger"),
+            "the shared step-cache candidate is DEBUG ONLY (unit gates build the debug profile \
+             only); got:\n{hook}"
+        );
+
+        // Both the render call and the provenance line invoke the RESOLVED binary, never a
+        // bare unqualified `rigger` (spec 75 done-when 1: "invokes the resolved binary for
+        // both the render and the provenance line").
+        assert!(
+            hook.contains("\"$rigger_bin\" docs"),
+            "the docs render must invoke the resolved candidate binary; got:\n{hook}"
+        );
+        assert!(
+            hook.contains("\"$rigger_bin\" version"),
+            "the provenance line must invoke the resolved candidate binary; got:\n{hook}"
+        );
+        assert!(
+            !hook.contains("if rigger docs"),
+            "the old bare-unqualified render invocation must be gone; got:\n{hook}"
+        );
+        assert!(
+            !hook.contains("$(rigger version"),
+            "the old bare-unqualified provenance invocation must be gone; got:\n{hook}"
+        );
+
+        // The top-level availability gate now covers EVERY candidate (including PATH), not
+        // PATH alone - a wrong/stale candidate can only ever convert a false refusal into a
+        // pass when the render genuinely matches (safe-closed), never the reverse.
+        assert!(
+            hook.contains("[ -n \"$rigger_bin\" ]"),
+            "the block gates on a RESOLVED binary (any candidate), not PATH alone; got:\n{hook}"
         );
     }
 
