@@ -5015,6 +5015,16 @@ fn recorded_dash_url(loc: &StoreLocation) -> Option<String> {
     (!url.is_empty()).then_some(url)
 }
 
+/// The loopback PORT embedded in a recorded dash URL (`http://127.0.0.1:<port>/`, the only
+/// shape [`spawn_run_dashboard`]/[`spawn_run_dashboard_detached`] ever write). `None` for
+/// anything that does not parse as `...:<u16>` with an optional trailing slash - a malformed
+/// or foreign value is treated as unparseable, never guessed at. Used by [`watch_poll`] to
+/// probe a recorded dash's port directly when no [`dash::DashMarker`] exists to read one from
+/// (the shape `rigger run` / `rigger serve` leave - they record only this URL, never a marker).
+fn port_from_dash_url(url: &str) -> Option<u16> {
+    url.rsplit_once(':')?.1.trim_end_matches('/').parse().ok()
+}
+
 fn cmd_dash(args: &[String]) -> Res {
     // `--export <path>` and/or `--port <n>`; loopback only (no host flag by design).
     // `--reap-on-idle` makes this dash SELF-REAP when the run it serves goes idle/complete
@@ -6149,9 +6159,11 @@ fn cmd_watch(args: &[String]) -> Res {
 /// scope store-integrity needs, mirroring `rigger validate`'s own order-signature
 /// detector, spec 71), tries the step lock non-blocking (free = no `rigger step` is
 /// running right now), gathers each currently-parked spawn's heartbeat-marker age
-/// exactly as `cmd_status` does, and probes the recorded dash marker with a real
-/// serve check - then hands all of it to [`watch::detect`], the pure core. Never
-/// talks to the driver: every input here is store, process-table, or status truth.
+/// exactly as `cmd_status` does, and probes the dash's liveness with a real serve check
+/// (the recorded marker's port when one exists, else the recorded `dash.url`'s own port;
+/// see the dash-probe comment inline below for why both breadcrumbs matter), then hands
+/// all of it to [`watch::detect`], the pure core. Never talks to the driver: every input
+/// here is store, process-table, or status truth.
 ///
 /// `loc`/`selection` are INJECTED rather than read ambiently in here (mirrors
 /// [`refuse_derived_reset_if_live`]'s same shape): the composition root
@@ -6202,16 +6214,36 @@ fn watch_poll(
         }
     }
 
-    // Dash liveness: read the per-project marker (port + pid) and VERIFY with the
-    // same real serve probe `dash_serving_on` uses - a marker naming a dead or
-    // hung-holder pid never reads as serving, exactly like c4's status truth.
+    // Dash liveness: prefer the per-project MARKER (port + pid) when one exists,
+    // verified with the same real serve probe `dash_serving_on` uses - a marker naming
+    // a dead or hung-holder pid never reads as serving, exactly like c4's status truth.
+    //
+    // Only ONE of the three real dash-launching drivers (`rigger step`, via
+    // `ensure_run_dashboard`) ever writes a marker; `rigger run` and `rigger serve`
+    // (`spawn_run_dashboard`/`spawn_run_dashboard_detached`) record ONLY the
+    // `dash.url` breadcrumb. Without a fallback, a marker-absent project always read
+    // as `NotRecorded` regardless of whether a dash was ever actually up - silently
+    // blind for 2 of the 3 real drivers (round-3 reject cause
+    // adv-u69c1r3-watch-once-inherits-marker-absent-blindspot). So when no marker
+    // exists, probe the PORT EMBEDDED IN THE RECORDED URL directly instead - the same
+    // safe, timeout-bounded `dash_serving_on` probe, just without a pid to name. Only
+    // when NEITHER breadcrumb is recorded at all (`dash: off` / `RIGGER_NO_DASH`, or
+    // watched before any run began) does this read as "never started" - not an
+    // anomaly.
     let marker_path = std::path::PathBuf::from(loc.file(DASH_MARKER_FILE));
     let dash = match dash::DashMarker::read(&marker_path) {
-        None => watch::DashProbe::NotRecorded,
         Some(m) if dash::dash_serving_on(m.port) => watch::DashProbe::Serving,
         Some(m) => watch::DashProbe::NotServing {
-            pid: m.pid,
+            pid: Some(m.pid),
             port: m.port,
+        },
+        None => match recorded_dash_url(loc)
+            .as_deref()
+            .and_then(port_from_dash_url)
+        {
+            Some(port) if dash::dash_serving_on(port) => watch::DashProbe::Serving,
+            Some(port) => watch::DashProbe::NotServing { pid: None, port },
+            None => watch::DashProbe::NotRecorded,
         },
     };
 

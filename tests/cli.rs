@@ -13362,6 +13362,118 @@ fn watch_once_output_matches_what_restore_the_dash_promises_about_a_dead_marker(
     );
 }
 
+/// Round-3 reject cause (adv-u69c1r3-watch-once-inherits-marker-absent-blindspot), closed:
+/// the sibling test above only seeds `.rigger/dash.marker`, the shape ONLY the `rigger step`
+/// drive path ever writes. `rigger run` and `rigger serve` (`spawn_run_dashboard` /
+/// `spawn_run_dashboard_detached`, src/main.rs) write ONLY `.rigger/dash.url`, never a
+/// marker - 2 of the 3 real dash-launching drivers. Before the round-4 fix, `watch_poll`
+/// mapped an absent marker straight to `DashProbe::NotRecorded`, which `detect()` never
+/// turns into an anomaly, so `rigger watch --once` printed NOTHING for this exact,
+/// empirically-reproduced shape (verified by the round-3 adversary against the real
+/// binary). This drives that identical shape - a `dash.url` naming a definitely-unbound
+/// loopback port, with NO `dash.marker` file at all - through the real compiled binary and
+/// proves it now reports the dead dash, not silence.
+///
+/// Unlike its marker-present sibling, this is NOT gated on a specific skill-prose string:
+/// it pins the underlying MECHANISM (`watch_poll`'s marker-absent fallback to the recorded
+/// URL's own port) directly, the same way `watch_once_on_a_freshly_initialized_store_reports_nothing_and_exits_cleanly`
+/// pins the clean-store path unconditionally - a future prose rewrite has nothing to do
+/// with whether this specific driver shape is actually caught.
+#[test]
+fn watch_once_reports_a_dead_dash_when_only_the_url_breadcrumb_is_recorded_and_no_marker_exists() {
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    // Exactly what `spawn_run_dashboard`/`spawn_run_dashboard_detached` write on `rigger run`
+    // / `rigger serve`: `.rigger/dash.url`, and nothing else - no `.rigger/dash.marker`.
+    let dead_port = free_loopback_port();
+    std::fs::write(
+        root.join(".rigger/dash.url"),
+        format!("http://127.0.0.1:{dead_port}/"),
+    )
+    .expect("seed the dash.url breadcrumb");
+    assert!(
+        !root.join(".rigger/dash.marker").exists(),
+        "this fixture must leave no marker behind - that is the exact shape under test"
+    );
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 even with a dead, marker-less dash url; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("dash liveness") && out.contains(&dead_port.to_string()),
+        "a dash.url naming a dead port with NO marker must still be reported - either \
+         watch_poll's marker-absent fallback regressed, or it was never reached; got:\n{out}"
+    );
+    assert!(
+        !out.contains("marker names dead pid"),
+        "with no marker recorded there is no pid to name - a marker-present phrasing here \
+         means a pid was invented rather than genuinely read; got:\n{out}"
+    );
+}
+
+/// The other half of the marker-absent fallback: a GENUINELY LIVE dash reached only
+/// through the URL breadcrumb (still no marker) must read as `Serving`, not merely "not
+/// verifiably dead". The sibling test above only proves the dead-port half; mutation
+/// testing (round-4 mutation-efficacy accounting) found `dash::dash_serving_on(port)` in
+/// `watch_poll`'s marker-absent branch hardcoded to `false` survived every test in the
+/// suite - nothing drove a real, answering dash through this exact fallback path, so a
+/// regression that always reported it as dead would have gone undetected. Spins up a real
+/// `rigger dash`, records ONLY its URL (the `rigger run` / `rigger serve` shape - no
+/// marker), and asserts `rigger watch --once` reports no anomaly.
+#[test]
+fn watch_once_reports_nothing_when_a_real_dash_serves_the_url_only_recorded_port() {
+    use std::process::Stdio;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    let dash_port = free_loopback_port();
+    let url = format!("http://127.0.0.1:{dash_port}/");
+    let mut dash = common::rigger_courier()
+        .args(["dash", "--port", &dash_port.to_string()])
+        .current_dir(root)
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn a serving `rigger dash`");
+    if !matches!(http_get(&url), Some(body) if body.contains("rigger dash")) {
+        let _ = dash.kill();
+        let _ = dash.wait();
+        panic!("the serving `rigger dash` never came up at {url}");
+    }
+
+    // Exactly the marker-absent shape: only `.rigger/dash.url` recorded, no
+    // `.rigger/dash.marker` - the URL points at a port a REAL dash answers on.
+    std::fs::write(root.join(".rigger/dash.url"), &url).expect("seed the dash.url breadcrumb");
+    assert!(
+        !root.join(".rigger/dash.marker").exists(),
+        "this fixture must leave no marker behind - that is the exact shape under test"
+    );
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+
+    // Reap the dash BEFORE asserting so a failure never leaks a dashboard.
+    let _ = dash.kill();
+    let _ = dash.wait();
+
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 against a genuinely live, marker-less dash; stderr:\n{err}"
+    );
+    assert!(
+        out.trim().is_empty(),
+        "a dash genuinely serving the URL-only recorded port (no marker) must report NO dash \
+         liveness anomaly - either the marker-absent fallback never probes for real, or it \
+         misreads a live dash as dead; got:\n{out}"
+    );
+}
+
 /// Spec 46, criterion 2 (the pre-run graph-hygiene guidance ships to CONSUMERS through the
 /// INSTALL seam): a consumer never edits rigger's own repo copies - they run `rigger setup`,
 /// which renders and INSTALLS the `using-rigger` skill into THEIR project at

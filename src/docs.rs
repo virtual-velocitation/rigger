@@ -860,7 +860,10 @@ fn render_restore_the_dash_skill(_ctx: &DocsContext) -> String {
          that line alone. `rigger watch --once` IS the accurate check: it verifies the \
          recorded marker by actually probing its port, and prints a `dash liveness` line \
          naming the dead PID when nothing answers there - trust that over a bare status \
-         line.\n"
+         line. `rigger run` and `rigger serve` never write that marker at all (only \
+         `rigger step` does) - for those two drivers `rigger watch` falls back to probing \
+         the recorded dash URL's OWN port directly, and its `dash liveness` line still \
+         fires, just without a pid to name.\n"
     );
     let _ = writeln!(
         s,
@@ -879,7 +882,11 @@ fn render_restore_the_dash_skill(_ctx: &DocsContext) -> String {
          prints that exact PID on its dash-liveness line. RESUME that \
          process if it is merely stopped (a suspended terminal, a paused container), or KILL \
          it if it is dead weight - THAT pid, the one the marker and `rigger watch`'s own \
-         line actually name - then restart with `rigger dash`.\n"
+         line actually name - then restart with `rigger dash`. When NO marker was ever \
+         recorded (`rigger run` / `rigger serve`), `rigger watch`'s line names no pid at all \
+         - skip straight to restarting with `rigger dash`; its singleton bind never fights a \
+         genuinely-live dash, and a bind failure against a real non-dash holder is then a \
+         manual, outside-`rigger` situation, never one to guess a pid for.\n"
     );
     let _ = writeln!(s, "## Anti-move\n");
     let _ = writeln!(
@@ -888,7 +895,8 @@ fn render_restore_the_dash_skill(_ctx: &DocsContext) -> String {
          path itself writes and overwrites, and a hand-edited value only makes the next real \
          dash's own self-heal harder to trust. And never kill a process by PORT-ADJACENT \
          GUESSWORK (\"kill whatever's near the dash port\") - resume or kill the EXACT pid \
-         the marker and `rigger watch`'s own line name, never a guess.\n"
+         the marker and `rigger watch`'s own line name, never a guess, and never one you \
+         found some other way when the line names none at all.\n"
     );
     let _ = writeln!(s, "## See also\n");
     let _ = writeln!(

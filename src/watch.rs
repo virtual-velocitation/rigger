@@ -237,18 +237,30 @@ impl Anomaly {
 }
 
 /// The dash liveness probe's outcome (spec 69 Design signal 3), resolved by the
-/// caller's I/O (a marker read plus a real serve probe) and handed in already
+/// caller's I/O (a marker-or-URL read plus a real serve probe) and handed in already
 /// classified - `detect` never touches a socket or a file.
+///
+/// TWO breadcrumbs can independently record a dash, and only ONE of the three real
+/// dash-launching drivers writes both: the `rigger step` drive path writes a
+/// per-project MARKER (port + pid) alongside the URL, but `rigger run` and `rigger
+/// serve` (`spawn_run_dashboard`/`spawn_run_dashboard_detached`'s guard-bound callers)
+/// write ONLY the URL breadcrumb, never a marker - so the caller's probe falls back to
+/// the URL's own port when no marker exists, and [`NotServing`](DashProbe::NotServing)
+/// carries `pid: None` in that case rather than inventing one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DashProbe {
-    /// No dash marker was ever recorded for this project - a headless run by
-    /// choice, not an anomaly.
+    /// Neither a marker nor a URL was ever recorded for this project - a headless run
+    /// by choice (e.g. `dash: off` / `RIGGER_NO_DASH`), not an anomaly.
     NotRecorded,
-    /// A marker is recorded and something answers on its port.
+    /// Something answers the recorded port with the dash's own signature.
     Serving,
-    /// A marker is recorded but nothing verifiably serves its port - the "hung
-    /// holder" or dead-process case `rigger-restore-the-dash` diagnoses.
-    NotServing { pid: u32, port: u16 },
+    /// Nothing verifiably serves the recorded port - the "hung holder" or
+    /// dead-process case `rigger-restore-the-dash` diagnoses. `pid` names the
+    /// culprit ONLY when a marker actually recorded one; `None` when the probe fell
+    /// back to the URL breadcrumb alone (no marker was ever written, e.g. `rigger
+    /// run` / `rigger serve`) - there is genuinely no pid to name in that case, never
+    /// a guess.
+    NotServing { pid: Option<u32>, port: u16 },
 }
 
 /// Everything [`detect`] needs, already gathered by the caller (store, process
@@ -427,11 +439,17 @@ pub fn detect(inputs: &WatchInputs) -> Vec<Anomaly> {
 
     // Signal 3: dash liveness.
     if let DashProbe::NotServing { pid, port } = &inputs.dash {
+        let detail = match pid {
+            Some(pid) => format!("marker names dead pid {pid} on port {port}"),
+            // No marker was ever recorded (rigger run / rigger serve) - the probe fell
+            // back to the recorded dash.url's own port; genuinely no pid to name.
+            None => format!("recorded dash.url port {port} does not answer (no marker, no pid)"),
+        };
         out.push(Anomaly {
             signal: Signal::DashNotServing,
             subject: "dash".to_string(),
             magnitude: 0,
-            detail: format!("marker names dead pid {pid} on port {port}"),
+            detail,
         });
     }
 
@@ -866,7 +884,7 @@ mod tests {
             step_lock_free: true,
             wave_liveness_ages: &BTreeMap::new(),
             dash: DashProbe::NotServing {
-                pid: 424_242,
+                pid: Some(424_242),
                 port: 7420,
             },
         };
@@ -874,6 +892,39 @@ mod tests {
         assert_eq!(anomalies.len(), 1);
         assert_eq!(anomalies[0].signal, Signal::DashNotServing);
         assert!(anomalies[0].detail.contains("424242"));
+        assert!(anomalies[0].line().contains("rigger-restore-the-dash"));
+    }
+
+    /// The marker-absent case (`rigger run` / `rigger serve`, which record only the URL
+    /// breadcrumb, never a marker - see `DashProbe` docs): a dead port is STILL reported,
+    /// with no pid invented. This is the round-3 reject's own root cause
+    /// (adv-u69c1r3-watch-once-inherits-marker-absent-blindspot) - before this fix
+    /// `NotServing` required a `u32` pid unconditionally, so the caller had nothing to
+    /// construct here and had to map this exact shape to `NotRecorded`, the non-anomaly
+    /// variant, leaving `rigger watch --once` silently blind for 2 of the 3 real drivers.
+    #[test]
+    fn a_dead_dash_url_with_no_marker_is_reported_without_inventing_a_pid() {
+        let inputs = WatchInputs {
+            run_events: &[],
+            full_events: &[],
+            now: SystemTime::now(),
+            last_event_at: None,
+            step_lock_free: true,
+            wave_liveness_ages: &BTreeMap::new(),
+            dash: DashProbe::NotServing {
+                pid: None,
+                port: 7420,
+            },
+        };
+        let anomalies = detect(&inputs);
+        assert_eq!(anomalies.len(), 1);
+        assert_eq!(anomalies[0].signal, Signal::DashNotServing);
+        assert!(anomalies[0].detail.contains("7420"));
+        assert!(
+            !anomalies[0].detail.contains("pid ") || anomalies[0].detail.contains("no pid"),
+            "a marker-absent report must never claim a specific pid: {}",
+            anomalies[0].detail
+        );
         assert!(anomalies[0].line().contains("rigger-restore-the-dash"));
     }
 
