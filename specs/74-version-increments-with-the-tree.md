@@ -37,9 +37,12 @@ see whether the installed binary is behind the tree.
   binary's emits an advisory naming both versions and the commit distance, stays silent
   on that comparison when they match or when either side is unversioned, and separately
   emits an advisory naming the missing `go-gitsemver` binary whenever the built binary
-  carries the `+unversioned` marker because the tool was absent at build time - proven at
-  the validate seam. This criterion OWNS both the behind-the-tree advisory and the
-  missing-binary advisory; derivation is criterion 1's, NOT this one's.
+  carries the `+unversioned` marker, REGARDLESS OF CAUSE (tool absent at build time, the
+  build not run inside a git checkout, or any other reason the marker appears) - a single
+  binary-embedded marker cannot distinguish its cause, so every cause folds into this one
+  advisory - proven at the validate seam. This criterion OWNS both the behind-the-tree
+  advisory and the missing-binary advisory for every `+unversioned` cause; derivation is
+  criterion 1's, NOT this one's.
 - [ ] Both feature lanes green: `cargo fmt --check`; `cargo clippy --all-targets -D
   warnings`; `cargo test` on default features AND `--no-default-features`.
 
