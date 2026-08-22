@@ -16565,6 +16565,130 @@ mod tests {
         );
     }
 
+    /// Extract a top-level `function <name>(...) { ... }` body (from the opening brace after
+    /// `signature` to its matching closing brace) from JS source. The same brace-counting as
+    /// [`meta_object_body`], generalized to a named function so a test can pin what that
+    /// function's body does (or does not) contain, rather than the whole embedded file.
+    fn js_function_body<'a>(src: &'a str, signature: &str) -> &'a str {
+        let start = src
+            .find(signature)
+            .unwrap_or_else(|| panic!("workflow must define `{signature}`"));
+        let open = start
+            + src[start..]
+                .find('{')
+                .expect("function signature must open a brace");
+        let mut depth = 0usize;
+        for (i, c) in src[open..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &src[open..=open + i];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("`{signature}` body is not brace-balanced");
+    }
+
+    /// Spec 69, criterion 6 ("the driver relays it" - THIS unit OWNS the relay; the wire
+    /// stamp is criterion 5's, pinned above by `the_step_schema_admits_the_attention_array`).
+    /// Each `attention` entry the wire carries must render as ONE narrator `log()` line naming
+    /// the event (`kind`), the unit, and a response - mirroring `src/watch.rs::Signal::
+    /// response`'s convention for the pull-side watchdog (decision
+    /// d-u69c6-attention-response-mapping): `escalated` and `halted` resolve to the two
+    /// existing spec-68 skills the Design's own Notes point at by name ("resume and escalation
+    /// response protocols are spec 68's skills, referenced by name"), `worker-death-recurred`
+    /// to the churn skill, `budget-final-tenth` to the resume skill (a preemptive warning for
+    /// the same halt), and `stalled-frontier` names the Design's own literal directive instead
+    /// of inventing a sixth skill - exactly as `Signal::FrontierStall` does on the pull side.
+    /// This is a RENDER-ONLY relay (spec 69: "log lines only, no new stops, no retry-rule
+    /// changes"), so the function must never call `stop(`; an entry-less step must render
+    /// nothing, which iterating the wire's own array (never a second anomaly list) guarantees
+    /// structurally. The relay must fire "at the wave it arrived" - before that wave's own
+    /// agents are spawned, not after.
+    #[test]
+    fn the_driver_relays_each_attention_entry_as_a_narrator_log_line() {
+        let code = strip_line_comments(RIGGER_WORKFLOW);
+
+        // The relay is a named function, both DEFINED and actually CALLED (not merely
+        // declared and dead).
+        assert!(
+            code.contains("function relayAttention(step)"),
+            "the driver must define a relayAttention(step) function that renders the wire's \
+             attention array"
+        );
+        assert_eq!(
+            code.matches("relayAttention(step)").count(),
+            2,
+            "relayAttention(step) must appear exactly twice: its own definition signature and \
+             one call site that actually invokes it"
+        );
+
+        let body = js_function_body(&code, "function relayAttention(step) {");
+
+        // Renders ONLY what the wire says: iterates the wire's own `attention` array (omitted
+        // entirely on a clean step - criterion 5's `skip_serializing_if`), never a second,
+        // independently-maintained anomaly list; an entry-less step's loop body never runs.
+        assert!(
+            body.contains("step.attention || []"),
+            "relayAttention must iterate step.attention (guarded with || [] against the \
+             omitted-on-a-clean-step shape), so an entry-less step renders nothing"
+        );
+
+        // Each entry names its event (kind) and detail in one log() line.
+        assert!(
+            body.contains("log(") && body.contains("a.kind") && body.contains("a.detail"),
+            "each attention entry must render as a log() line naming its kind and detail"
+        );
+
+        // The five wire kinds (ledger::ATTENTION_*, the closed vocabulary criterion 5 stamps)
+        // each resolve to a response - pinned against the SAME string constants the wire stamp
+        // uses, so a renamed kind breaks this test rather than silently going unmapped.
+        for (kind, response) in [
+            (ledger::ATTENTION_ESCALATED, "rigger-handle-an-escalation"),
+            (ledger::ATTENTION_HALTED, "rigger-resume-a-run"),
+            (
+                ledger::ATTENTION_WORKER_DEATH_RECURRED,
+                "rigger-diagnose-churn",
+            ),
+            (ledger::ATTENTION_BUDGET_FINAL_TENTH, "rigger-resume-a-run"),
+            (
+                ledger::ATTENTION_STALLED_FRONTIER,
+                "stop the driver and diagnose before another round spends",
+            ),
+        ] {
+            assert!(
+                code.contains(&format!("'{kind}': '{response}'"))
+                    || code.contains(&format!("{kind}: '{response}'")),
+                "the driver must map wire kind '{kind}' to response '{response}'"
+            );
+        }
+
+        // Render-only: never a new stop path (spec 69: "log lines only, no new stops").
+        assert!(
+            !body.contains("stop("),
+            "the attention relay must never call stop() - it is a render-only narration; the \
+             wire stamp already decided what happened"
+        );
+
+        // "At the wave it arrived": the relay call must precede that step's own wave-spawn
+        // narration, not follow it.
+        let call_pos = code
+            .rfind("relayAttention(step)")
+            .expect("relayAttention(step) must be called");
+        let wave_spawn_pos = code
+            .find("wave ${waves}: spawning")
+            .expect("the driver must narrate spawning the wave");
+        assert!(
+            call_pos < wave_spawn_pos,
+            "attention must be relayed for the step BEFORE its wave is spawned (\"at the wave \
+             it arrived\"), not after"
+        );
+    }
+
     /// Spec 69, criterion 5, signal 2's hung-liveness half (review u69c5 round 3, cause
     /// genuine-defect): `merge_hung_attention` must not fire when there is nothing newly
     /// hung, proving the crossing gate, not just the merge mechanics, since a wrong-way bug
