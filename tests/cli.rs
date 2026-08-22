@@ -6507,6 +6507,16 @@ fn step_surfaces_a_hung_unbounded_spawn_recorded_as_a_liveness_fault_by_the_driv
         line.contains("infra") && line.contains("no remediation attempt"),
         "the halt states infra classification and no-attempt-charged; got: {line:?}"
     );
+    // Round 4 (review u69c5 round 3, cause genuine-defect): this is the FIRST `rigger step`
+    // process able to observe a fault that a wholly separate process (the driver's
+    // out-of-band `rigger result --error` above) recorded strictly BETWEEN steps 1 and 2 -
+    // so it is a genuine NEW crossing and the push-side `attention` wire must carry it too,
+    // not just the pre-existing `halted` field.
+    assert!(
+        line.contains(r#""attention":[{"kind":"halted""#) && line.contains("a/implementer#0"),
+        "the FIRST step able to observe an out-of-band driver-recorded hang must stamp it on \
+         the attention wire (once per crossing); got: {line:?}"
+    );
 
     // Step 3: re-step without recording a real result - the fault ANSWERS the spawn, so it is
     // never re-run (no dup-exec) and the halt re-surfaces so the stall stays visible.
@@ -6521,6 +6531,13 @@ fn step_surfaces_a_hung_unbounded_spawn_recorded_as_a_liveness_fault_by_the_driv
         json_string_field(line, "marker_path").is_none() && !line.contains(r#""wave":[{"#),
         "the answered hung spawn is not re-run (no fresh wave item / dup-exec); got: {line:?}"
     );
+    // The SAME hang, still unresolved - not a new crossing, so `attention` stays empty (and
+    // thus omitted from the wire) even though `halted` correctly keeps re-surfacing every step.
+    assert!(
+        !line.contains(r#""attention":"#),
+        "a still-true, unchanged hang must not re-stamp attention on a later step (once per \
+         crossing); got: {line:?}"
+    );
 
     // Step 4: recording a REAL result (last-write-wins) supersedes the fault and the run converges.
     let (_o, err, ok) = run_rigger(
@@ -6534,6 +6551,10 @@ fn step_surfaces_a_hung_unbounded_spawn_recorded_as_a_liveness_fault_by_the_driv
     assert!(
         !line.contains(r#""halted":"#) && line.contains(r#""done":true"#),
         "a real result clears the halt and the run converges; got: {line:?}"
+    );
+    assert!(
+        !line.contains(r#""attention":"#),
+        "a recovered run must carry no attention entry either; got: {line:?}"
     );
 }
 

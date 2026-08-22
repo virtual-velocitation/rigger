@@ -1864,8 +1864,12 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // `prior_events` read - `rigger step`'s pre-run sweep (main.rs) or a driver's separate
     // `rigger result --error` - so a diff of `prior_events` vs `current_events` taken INSIDE
     // `run()` can never see that crossing; both snapshots already postdate it. `rigger step`
-    // (main.rs) computes that half itself, from the ONE store read it already performs before
-    // running the sweep - the only boundary that actually precedes the crossing.
+    // (main.rs) computes that half itself instead, from a PERSISTED cross-process cursor
+    // (`liveness::hung_cursor_path`) rather than any store read taken at its own process
+    // start - review u69c5 round 4, cause genuine-defect, found that even main.rs's own
+    // "earliest" store read is too late for a fault a wholly separate driver process records
+    // strictly BETWEEN two `rigger step` invocations; see `hung_cursor_path`'s own doc
+    // comment for the full reasoning.
     rs.attention = compute_attention(
         &prior,
         &rs,
@@ -1917,11 +1921,18 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
 /// function is ever reached) or a driver's separate `rigger result --error` call in an earlier
 /// process. Either way, by the time `run()` starts, both `prior_events` and `current_events`
 /// already reflect it - so no diff taken from INSIDE this call's own window can ever see that
-/// crossing; `prior` here is simply too late a boundary. `rigger step` (main.rs) is the only
-/// place that has an EARLIER one (the store read it already performs before invoking the
-/// sweep), so it owns detecting that specific crossing, then merges the resulting entry into
-/// this function's output using the SAME `ATTENTION_HALTED` kind, budget-first precedence, and
-/// canonical position - see its own call site for the ordering mechanics. This still satisfies
+/// crossing; `prior` here is simply too late a boundary. Nor is ANY store read `rigger step`
+/// (main.rs) could take at its own process start early enough (review u69c5 round 4, cause
+/// genuine-defect): a driver's out-of-band `rigger result --error` runs as a wholly separate
+/// process strictly BETWEEN two `rigger step` invocations, so by the time the NEXT invocation
+/// opens the store, that write already predates every read it could possibly take. The one
+/// boundary that IS early enough is "the end of the PREVIOUS `rigger step` invocation", which
+/// only a value persisted OUTSIDE the log, by that previous process, can supply - so `rigger
+/// step` (main.rs) owns detecting this crossing from a small persisted cursor
+/// (`liveness::hung_cursor_path`, written at the end of every step and read at the start of
+/// the next - see its own doc comment for the full reasoning), then merges the resulting entry
+/// into this function's output using the SAME `ATTENTION_HALTED` kind, budget-first precedence,
+/// and canonical position - see its own call site for the ordering mechanics. This still satisfies
 /// spec 69's own text ("Threshold events stamp ONCE PER CROSSING, conductor-side" / "stamped
 /// BY `rigger step` FROM live conductor state exactly as `halted` is"): `main.rs::cmd_step`
 /// IS the conductor side of this codebase, as distinct from the DRIVER side

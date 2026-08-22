@@ -2045,22 +2045,31 @@ fn cmd_step(args: &[String]) -> Res {
 
     let graph = Projector::open(&db_path("graph.db"), &project_identity())?;
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
-    // The store state BEFORE this step's own liveness sweep runs (spec 69, criterion 5;
-    // review u69c5 round 3, cause genuine-defect): the ONE boundary that actually precedes a
-    // hung-liveness fault's crossing, needed below to detect a NEWLY-hung spawn rather than
-    // restamping one this run already surfaced (see `conductor::compute_attention`'s doc
-    // comment for why that crossing cannot be detected from inside `conductor::run` itself -
-    // both its own `prior`/`after` reads already postdate any fault-recording action, sweep
-    // or driver). Read ONCE here, before the sweep mutates the log, and reused by the sweep
-    // call itself below - still the single store read for "the state before this step's own
-    // work", not a second one.
+    // The store state BEFORE this step's own liveness sweep runs (spec 69, criterion 5):
+    // used below to scope the sweep's marker reads to THIS run (a slug-colliding re-run
+    // never reads a prior run's leftover mtime) and, since `run_id` never changes within a
+    // step, reused verbatim for the hung-attention cursor path too (see `pre_hung_ids`
+    // below). Read ONCE here, before the sweep mutates the log.
     let pre = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
-    let pre_hung_ids: std::collections::BTreeSet<String> =
-        rigger::liveness::hung_spawns(runscope::current_run(&pre))
-            .map_err(|e| e.to_string())?
-            .into_iter()
-            .map(|h| h.id)
-            .collect();
+    // Empty before the first RunStarted (the first step, where nothing is in-flight to sweep
+    // and nothing has ever been surfaced anyway).
+    let run_id = runscope::current_run_id(&pre).unwrap_or_default();
+    // The hung-attention CROSSING BOUNDARY (spec 69, criterion 5; review u69c5 round 3,
+    // cause genuine-defect): the spawn ids already surfaced on the `attention` wire as of
+    // the end of the PREVIOUS `rigger step` invocation, read from the persisted cursor
+    // (see `liveness::hung_cursor_path`'s own doc comment for why a fresh read taken at
+    // THIS process's own start - the prior approach - can never see a fault an out-of-band
+    // driver call recorded strictly between two step invocations: that write already
+    // predates every read this process could take). `conductor::compute_attention`'s own
+    // doc comment covers why this specific signal cannot be computed from inside
+    // `conductor::run` at all, in-process or otherwise. Absent scratch (the repo-less
+    // unit-test path only - guarded the same way every other scratch-dependent read in this
+    // function already is) has nowhere to persist a cursor and reads as empty, same as a
+    // fresh run's first step.
+    let pre_hung_ids: std::collections::BTreeSet<String> = scratch_root
+        .as_deref()
+        .map(|root| rigger::liveness::read_hung_cursor(root, &run_id))
+        .unwrap_or_default();
 
     // Liveness sweep (spec 10, unit 3): BEFORE the conductor replays the frontier, classify
     // any IN-FLIGHT spawn whose per-spawn heartbeat marker went stale beyond its
@@ -2071,11 +2080,6 @@ fn cmd_step(args: &[String]) -> Res {
     if let Some(root) = &scratch_root {
         match cfg.workflow.failure_taxonomy() {
             Ok(taxonomy) => {
-                // The current run id scopes the marker path (spec 10, unit 3): the sweep reads
-                // markers under this run's subdir, so a slug-colliding re-run never reads a
-                // prior run's leftover mtime. Empty before the first RunStarted (the first
-                // step, where nothing is in-flight to sweep anyway).
-                let run_id = runscope::current_run_id(&pre).unwrap_or_default();
                 match rigger::liveness::sweep(
                     &store,
                     runscope::current_run(&pre),
@@ -2219,16 +2223,32 @@ fn cmd_step(args: &[String]) -> Res {
     }
     // The hung-liveness half of `attention`'s `halted` signal (spec 69, criterion 5; review
     // u69c5 round 3, cause genuine-defect): computed HERE, not inside `conductor::run`, because
-    // its crossing boundary is `pre_hung_ids` (read above, before this step's own sweep ran) -
-    // see `conductor::compute_attention`'s own doc comment for why that boundary cannot live
-    // inside `run()` itself. A spawn hung in `hung` that was NOT already hung as of
-    // `pre_hung_ids` is a genuine NEW crossing this step; one already hung as of `pre_hung_ids`
-    // is a still-true restamp and does not fire again. `merge_hung_attention` (pulled out for
-    // unit-testability - see its own doc comment) owns the precedence-and-ordering mechanics.
+    // its crossing boundary is `pre_hung_ids` (the PERSISTED cursor read above - see
+    // `liveness::hung_cursor_path`'s own doc comment for why - never a fresh read taken at
+    // this process's own start) - see `conductor::compute_attention`'s own doc comment for why
+    // that boundary cannot live inside `run()` itself either way. A spawn hung in `hung` that
+    // was NOT already hung as of `pre_hung_ids` is a genuine NEW crossing this step; one
+    // already hung as of `pre_hung_ids` is a still-true restamp and does not fire again.
+    // `merge_hung_attention` (pulled out for unit-testability - see its own doc comment) owns
+    // the precedence-and-ordering mechanics.
     let newly_hung = hung.iter().any(|h| !pre_hung_ids.contains(&h.id));
     step.attention = merge_hung_attention(step.attention, newly_hung, || {
         rigger::liveness::halt_reason(&hung)
     });
+    // Persist the hung-attention cursor (spec 69, criterion 5; review u69c5 round 3, cause
+    // genuine-defect): overwrite it with THIS step's own full `hung` set - the exact set
+    // `pre_hung_ids` above just diffed against - so the NEXT `rigger step` invocation (this
+    // process's own next step, OR the very next one after an out-of-band driver fault) reads
+    // an up-to-date boundary rather than the one this process itself started with. Best-effort;
+    // a write failure only risks one extra re-stamp later, never fails this step (see
+    // `liveness::write_hung_cursor`'s own doc comment).
+    if let Some(root) = &scratch_root {
+        let current_hung_ids: std::collections::BTreeSet<String> =
+            hung.iter().map(|h| h.id.clone()).collect();
+        if let Err(e) = rigger::liveness::write_hung_cursor(root, &run_id, &current_hung_ids) {
+            eprintln!("rigger step: could not persist the hung-attention cursor: {e}");
+        }
+    }
     // RUN TEARDOWN at a terminal run state (spec 34, criterion 3): reclaim the run's run-level
     // shared scratch - `agent-scratch` (probe repos + verification builds a worker parks under
     // <scratch-root>/agent-scratch per the driver's scratch policy), `agent-live` (per-spawn
