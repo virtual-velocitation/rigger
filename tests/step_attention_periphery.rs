@@ -626,3 +626,295 @@ fn hung_liveness_halt_lands_ahead_of_real_worker_death_and_stalled_frontier_sign
          got: {line:?}"
     );
 }
+
+// =============================================================================================
+// Criterion 6 (THE DRIVER RELAYS IT) - the JS render side. Everything above proves criterion 5:
+// the Rust-emitted wire. `src/main.rs::mod tests::the_driver_relays_each_attention_entry_as_a_
+// narrator_log_line` (the implementer's own unit test) proves the SOURCE TEXT of `relayAttention`
+// and `ATTENTION_RESPONSE` contains the right substrings in the right relative order - it never
+// actually RUNS the function, so a behavioral bug (a broken template-literal interpolation, an
+// `||` fallback that only misbehaves on a genuinely ABSENT key rather than a merely falsy one,
+// an off-by-one in iterating a multi-entry array) would pass every existing assertion untouched.
+//
+// The WHOLE `workflows/rigger.js` file cannot execute outside the workflow harness (see `tests/
+// cli.rs::rigger_js_source`'s own doc comment: top-level await, the injected `agent`/`parallel`/
+// `log` globals) - but `relayAttention` and `ATTENTION_RESPONSE` depend on NEITHER `agent` nor
+// `parallel`, only the single `log(string)` global the harness injects, trivial to stub. The
+// tests below extract BOTH declarations VERBATIM from the real on-disk source - never hand-
+// copied, so a future edit to either is exercised here without a separate update - and run them
+// for real under `node`, closing the cross-module seam probe #5 (this unit's mechanical
+// enumeration) turned up: a new call from the Rust-emitted wire (criterion 5, proven end to end
+// above) into this JS consumer (criterion 6).
+
+/// Extract a top-level declaration - `function <name>(...) { ... }` or `const <NAME> = { ... }` -
+/// VERBATIM from `start_marker` through its brace-matched close, inclusive. The same brace-
+/// counting `src/main.rs::mod tests::js_function_body` uses (this file's own copy, per the
+/// established per-file duplication convention documented at the top of this file), but keeps
+/// the marker text itself too, so the result is a directly-executable standalone JS statement
+/// rather than a bare function body.
+fn js_declaration<'a>(src: &'a str, start_marker: &str) -> &'a str {
+    let start = src
+        .find(start_marker)
+        .unwrap_or_else(|| panic!("workflow must contain `{start_marker}`"));
+    let open = start
+        + src[start..]
+            .find('{')
+            .expect("declaration must open a brace");
+    let mut depth = 0usize;
+    for (i, c) in src[open..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &src[start..=open + i];
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("`{start_marker}` is not brace-balanced");
+}
+
+/// Run the REAL `relayAttention` - extracted verbatim from the shipped `workflows/rigger.js`,
+/// never hand-copied - against `step_json` (a `{"attention": [...]}` object, or `{}`/`{"attention":
+/// []}` for the two shapes a clean step can send) under a real `node` subprocess. `log` is
+/// stubbed to the one thing the harness contract requires of it - a single-string-argument
+/// narrator sink - and nothing else; `relayAttention` calls no other injected global. Returns
+/// the narrator lines actually printed, in order, or `None` when `node` is not on PATH - the
+/// same graceful-absence contract `src/main.rs`'s own `node --check` test already established
+/// for this crate (missing node is an environment fact, never a test failure).
+fn run_relay_attention(step_json: &str) -> Option<Vec<String>> {
+    let src = rigger_js_source();
+    let response_table = js_declaration(&src, "const ATTENTION_RESPONSE = {");
+    let relay_fn = js_declaration(&src, "function relayAttention(step) {");
+
+    let script = format!(
+        "function log(s) {{ process.stdout.write(s + '\\n') }}\n{response_table}\n{relay_fn}\n\
+         relayAttention(JSON.parse(process.argv[2]))\n"
+    );
+
+    let node = std::env::var("RIGGER_NODE").unwrap_or_else(|_| "node".to_string());
+    let mut f = tempfile::NamedTempFile::new().unwrap();
+    std::io::Write::write_all(&mut f, script.as_bytes()).unwrap();
+
+    match Command::new(&node).arg(f.path()).arg(step_json).output() {
+        Ok(out) => {
+            assert!(
+                out.status.success(),
+                "the real relayAttention must run without throwing on input {step_json}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let text = String::from_utf8_lossy(&out.stdout).into_owned();
+            Some(
+                text.lines()
+                    .filter(|l| !l.is_empty())
+                    .map(|l| l.to_string())
+                    .collect(),
+            )
+        }
+        Err(e) => {
+            assert!(
+                e.kind() == std::io::ErrorKind::NotFound,
+                "node failed for a reason other than being absent: {e}"
+            );
+            None
+        }
+    }
+}
+
+/// Spec 69, criterion 6, driven end to end across the real cross-module seam: the Rust-emitted
+/// wire (criterion 5, proven at the real binary boundary by
+/// `recurrence_and_stalled_frontier_survive_real_process_boundaries` above) actually reaches and
+/// RENDERS correctly through the real, unmodified `relayAttention` the driver ships - never a
+/// hand-typed stand-in for either side. Drives the same worker-death-recurred ->
+/// stalled-frontier progression as that test (real `rigger step` subprocesses against a real
+/// on-disk store), lifts the REAL `attention` array a real process printed - at round 3 (one
+/// entry) and round 4 (two entries, in wire order) - straight off that process's own stdout,
+/// and feeds it, byte for byte, into the real extracted `relayAttention`.
+#[test]
+fn relay_attention_renders_the_real_wire_produced_by_a_real_step_process() {
+    let dir = temp_repoless_project();
+    let root = dir.path();
+    write_attention_progression_workflow(root);
+
+    let (_out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "round 1 step must succeed; stderr: {err}");
+
+    seed_run_events(
+        root,
+        &[("SpawnResult", r#"{"id":"u/implementer#0","error":"boom"}"#)],
+    );
+    let (_out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "round 2 step must succeed; stderr: {err}");
+
+    // Round 3: the first attention crossing (worker-death-recurred alone) - lift the REAL
+    // one-entry wire and render it for real.
+    seed_run_events(
+        root,
+        &[("SpawnResult", r#"{"id":"u/implementer#1","error":"boom"}"#)],
+    );
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "round 3 step must succeed; stderr: {err}");
+    let step: serde_json::Value = serde_json::from_str(out.trim())
+        .unwrap_or_else(|e| panic!("round 3 step must print valid JSON: {e}; stdout: {out:?}"));
+    let attention = step
+        .get("attention")
+        .unwrap_or_else(|| panic!("round 3 must have stamped attention; stdout: {out:?}"));
+    let step_for_relay = serde_json::json!({ "attention": attention }).to_string();
+
+    let Some(lines) = run_relay_attention(&step_for_relay) else {
+        return; // node unavailable; graceful absence, mirrored from src/main.rs's own gate.
+    };
+    assert_eq!(
+        lines,
+        vec![
+            "attention - worker-death-recurred: u - 2 attempts (respond: rigger-diagnose-churn)"
+                .to_string()
+        ],
+        "the real relayAttention must render round 3's real single-entry wire as one narrator \
+         line naming the kind, unit, detail and mapped response; got {lines:?}"
+    );
+
+    // Round 4: the SAME real process now stamps TWO entries in one wire - the multi-entry
+    // iteration and ordering a single-entry check cannot distinguish from a hardcoded one-liner.
+    seed_run_events(
+        root,
+        &[("SpawnResult", r#"{"id":"u/implementer#2","error":"boom"}"#)],
+    );
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "round 4 step must succeed; stderr: {err}");
+    let step: serde_json::Value = serde_json::from_str(out.trim())
+        .unwrap_or_else(|e| panic!("round 4 step must print valid JSON: {e}; stdout: {out:?}"));
+    let attention = step
+        .get("attention")
+        .unwrap_or_else(|| panic!("round 4 must have stamped attention; stdout: {out:?}"));
+    let step_for_relay = serde_json::json!({ "attention": attention }).to_string();
+    let lines = run_relay_attention(&step_for_relay).expect("node already proven available above");
+    assert_eq!(
+        lines,
+        vec![
+            "attention - worker-death-recurred: u - 3 attempts (respond: rigger-diagnose-churn)"
+                .to_string(),
+            "attention - stalled-frontier: u - 3 recorded results, still parked (respond: stop \
+             the driver and diagnose before another round spends)"
+                .to_string(),
+        ],
+        "round 4's real TWO-entry wire must render as two narrator lines in the SAME order the \
+         wire carries them, each with its own mapped response; got {lines:?}"
+    );
+}
+
+/// Spec 69, criterion 6's own documented defensive fallback - "An unrecognized kind (never
+/// produced today - the wire's vocabulary is closed) falls back to the umbrella watch skill
+/// rather than rendering nothing" (`workflows/rigger.js`'s own comment on `ATTENTION_RESPONSE`) -
+/// and the run-scoped subject default (`ledger::AttentionEntry`'s own doc comment: "`unit` ...
+/// is empty (omitted from the wire) for a run-scoped" kind). Neither is producible by the real
+/// binary today (the wire's kind vocabulary is closed - `ledger::attention_kind_rank`'s own doc
+/// comment: "An unknown kind (never produced today)"), so this constructs the EXACT wire shape
+/// `ledger::AttentionEntry`'s `#[serde(skip_serializing_if = "String::is_empty")]` produces for
+/// a run-scoped entry - the `unit` key entirely ABSENT, never present-and-empty - and drives it
+/// through the real, unmodified `relayAttention`.
+#[test]
+fn relay_attention_falls_back_on_an_unrecognized_kind_and_defaults_a_run_scoped_subject() {
+    let step = serde_json::json!({
+        "attention": [
+            { "kind": "some-future-kind-nobody-emits-yet", "detail": "x" }
+        ]
+    })
+    .to_string();
+    let Some(lines) = run_relay_attention(&step) else {
+        return;
+    };
+    assert_eq!(
+        lines,
+        vec![
+            "attention - some-future-kind-nobody-emits-yet: run - x (respond: \
+             rigger-watch-a-run)"
+                .to_string()
+        ],
+        "an unrecognized kind must fall back to the umbrella watch skill, and an absent `unit` \
+         key (the real run-scoped wire shape) must default the subject to 'run', never \
+         'undefined' or a thrown error; got {lines:?}"
+    );
+}
+
+/// Spec 69, criterion 6: "log lines only, no new stops" - and specifically, a step that crossed
+/// no threshold must render NOTHING. `AttentionEntry`'s wire never carries the `attention` key
+/// at all on a clean step (criterion 5's `skip_serializing_if`, proven at the real binary
+/// boundary by `recurrence_and_stalled_frontier_survive_real_process_boundaries`'s round-1/2/5
+/// assertions above: `!line.contains("attention")`) - this proves the JS CONSUMER side of that
+/// same omission: the real, unmodified `relayAttention`, run for real, prints nothing for BOTH
+/// the genuinely-absent-key shape a clean step actually sends and the present-but-empty-array
+/// shape, so neither can regress into a spurious narrator line or a thrown error on an absent
+/// property.
+#[test]
+fn relay_attention_renders_nothing_for_a_clean_step_in_either_shape() {
+    for step in [
+        serde_json::json!({}).to_string(),
+        serde_json::json!({ "attention": [] }).to_string(),
+    ] {
+        let Some(lines) = run_relay_attention(&step) else {
+            return;
+        };
+        assert!(
+            lines.is_empty(),
+            "a clean step ({step}) must render NO narrator lines; got {lines:?}"
+        );
+    }
+}
+
+/// The two response mappings the real progression scenario above cannot reach without a
+/// separate, much heavier scenario (a wedged escalation, a budget-breaker trip) - each
+/// constructed as the exact wire shape `ledger::AttentionEntry` produces for that kind
+/// (unit-scoped `escalated` carries `unit`; run-scoped `halted`/`budget-final-tenth` omit it,
+/// same as the fallback test above), and driven through the real, unmodified `relayAttention`.
+/// `worker-death-recurred` and `stalled-frontier` are proven from the REAL wire above, not
+/// re-derived here - together these five cases cover every kind
+/// `ledger::attention_kind_rank`'s own canonical order enumerates.
+#[test]
+fn relay_attention_maps_the_remaining_three_known_kinds_to_their_documented_response() {
+    let cases = [
+        (
+            serde_json::json!({"attention": [
+                {"kind": "escalated", "unit": "x", "detail": "exhausted remediation"}
+            ]}),
+            "attention - escalated: x - exhausted remediation (respond: \
+             rigger-handle-an-escalation)",
+        ),
+        (
+            serde_json::json!({"attention": [
+                {"kind": "halted", "detail": "budget breaker tripped"}
+            ]}),
+            "attention - halted: run - budget breaker tripped (respond: rigger-resume-a-run)",
+        ),
+        (
+            serde_json::json!({"attention": [
+                {"kind": "budget-final-tenth", "detail": "one tenth of budget remains"}
+            ]}),
+            "attention - budget-final-tenth: run - one tenth of budget remains (respond: \
+             rigger-resume-a-run)",
+        ),
+    ];
+    for (step, expected) in cases {
+        let step = step.to_string();
+        let Some(lines) = run_relay_attention(&step) else {
+            return;
+        };
+        assert_eq!(
+            lines,
+            vec![expected.to_string()],
+            "wire shape {step} must render exactly {expected:?}; got {lines:?}"
+        );
+    }
+}
+
+/// Read `workflows/rigger.js` at test time from the crate manifest dir - mirrors `tests/
+/// cli.rs`'s identical `rigger_js_source` helper (this file's own established per-file
+/// duplication convention, documented at the top of this file).
+fn rigger_js_source() -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("workflows")
+        .join("rigger.js");
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
