@@ -13614,6 +13614,79 @@ fn watch_once_reports_no_dash_anomaly_for_a_fresh_run_that_inherits_an_earlier_r
     );
 }
 
+/// SDET periphery gap (round-6 accounting): every existing binary-level dash-liveness test
+/// exercises either the SUPPRESS side of the round-6 mtime comparison (the sibling above:
+/// breadcrumb strictly OLDER than `run_started_at`) or the UNKNOWN side (no `RunStarted`
+/// seeded at all, so `run_started_at` is `None` and the burden-of-proof-toward-reporting
+/// default fires regardless of the comparison). None drove the third, most ordinary case
+/// through the real compiled binary: a fresh, NOT-DONE run whose OWN dash breadcrumb is
+/// written AFTER its own `RunStarted` (the real shape `ensure_run_dashboard` leaves - the
+/// marker is written moments into the run, then never touched again while the dash stays
+/// up) and then genuinely dies. `watch::detect`'s own unit test
+/// (`a_dead_dash_url_with_no_marker_is_reported_without_inventing_a_pid`, src/watch.rs)
+/// pins this at the pure-function level by constructing `WatchInputs` directly in-process,
+/// but that is structurally blind to `watch_poll`'s real wiring (src/main.rs): the
+/// `run_events.first().map(|e| e.recorded_at)` read and the `mtime_of` filesystem read that
+/// feed `run_started_at`/`dash_breadcrumb_written_at`. An inverted comparison there (`<`
+/// flipped to `<=`/`>`, or `mtime_of` reading the wrong file) would silently swallow every
+/// LIVE run's own genuinely dead dash - the single most common real anomaly this signal
+/// exists to catch - while every other test in this file kept passing, since none of them
+/// pin the "both known, breadcrumb newer" direction against the real binary. This closes
+/// that gap: seeds a fresh, not-done run's `RunStarted`, waits past the sleep margin the
+/// sibling tests use, THEN writes the dead marker (so its mtime unambiguously postdates
+/// `run_started_at`), and proves `rigger watch --once` still reports it.
+#[test]
+fn watch_once_reports_this_runs_own_dead_marker_when_written_after_its_run_started() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    // r1: fresh and NOT done (started, one unit still in flight) - the run whose own dash
+    // this marker belongs to.
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["spec 69"]}"#),
+            ("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+        ],
+    );
+
+    // The same filesystem-mtime safety margin the fresh-run sibling test above uses, so the
+    // marker's mtime lands unambiguously AFTER r1's own `RunStarted.recorded_at` rather than
+    // risking a coin-flip tie on a coarse-grained filesystem clock.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    // The dash launched moments into r1's own run and then died - exactly the shape
+    // `ensure_run_dashboard` leaves (marker written once, near run start, never refreshed
+    // while the dash stays up). A definitely-unbound loopback port and an impossible pid,
+    // the same dead-marker shape every sibling test in this file seeds.
+    let dead_port = free_loopback_port();
+    let dead_pid = u32::MAX;
+    DashMarker {
+        port: dead_port,
+        pid: dead_pid,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the dash marker");
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 on a fresh run with its own dead dash marker; \
+         stderr:\n{err}"
+    );
+    assert!(
+        out.contains("dash liveness") && out.contains(&dead_pid.to_string()),
+        "a fresh, not-done run's OWN dead dash marker - written strictly AFTER this run's own \
+         RunStarted, so it cannot be mistaken for an inherited earlier run's stale breadcrumb \
+         - must still be reported; either the round-6 mtime comparison misreads this ordinary \
+         case as inherited, or the wiring feeding it `run_started_at`/`dash_breadcrumb_written_at` \
+         has regressed; got:\n{out}"
+    );
+}
+
 /// Spec 46, criterion 2 (the pre-run graph-hygiene guidance ships to CONSUMERS through the
 /// INSTALL seam): a consumer never edits rigger's own repo copies - they run `rigger setup`,
 /// which renders and INSTALLS the `using-rigger` skill into THEIR project at
