@@ -909,6 +909,55 @@ fn relay_attention_maps_the_remaining_three_known_kinds_to_their_documented_resp
     }
 }
 
+/// Review u69c6 round 1, architecture-reviewer finding `f-u69c6-response-map-duplicated-
+/// no-pin`: `ATTENTION_RESPONSE` (the push-side driver relay, `workflows/rigger.js`)
+/// reimplements the SAME anomaly-kind-to-response-skill convention `src/watch.rs::Signal::
+/// response` already establishes for the pull-side `rigger watch` command - both files' own
+/// doc comments say so in as many words (`rigger.js`'s: "mirroring the SAME convention `src/
+/// watch.rs::Signal::response` establishes for the pull-side ... command"; `watch.rs`'s:
+/// "the response text is what 'signal, subject, and response' (spec 69 Design) means") - as
+/// freshly hardcoded JS string literals, with NOTHING pinning the two tables together: a
+/// skill renamed in `watch.rs` (or the reverse, a JS literal edited alone) drifts silently,
+/// since nothing before this test re-derives one side from the other or compares them.
+///
+/// Pins each JS response literal against the real `Signal::response()` literal for the
+/// semantically matching pull-side signal - the SAME skill/directive text both sides commit
+/// to - so a rename on EITHER side fails HERE instead of drifting silently. `DashNotServing`
+/// and `StoreIntegrity` have no push-side counterpart (the wire's `attention` vocabulary is
+/// closed - `ledger::attention_kind_rank`'s own doc comment - and neither anomaly is
+/// derivable from a single `rigger step` call, only from `rigger watch`'s own local probes:
+/// a dash-liveness socket check, a whole-log order-signature scan), so only the four kinds
+/// with a real pull-side counterpart are pinned here; `halted` and `budget-final-tenth` both
+/// resolve to the SAME skill as `DeadDriver` (the JS module comment: "`budget-final-tenth`
+/// resolves to the resume skill too - a preemptive, run-scoped warning for the SAME halt an
+/// operator would otherwise only learn of via `halted` once it actually trips"), so both are
+/// pinned against it - proving the duplication a decision, not a coincidence.
+#[test]
+fn attention_response_mirrors_the_pull_side_signal_response_for_every_shared_skill() {
+    use rigger::watch::Signal;
+
+    let src = rigger_js_source();
+    let table = js_declaration(&src, "const ATTENTION_RESPONSE = {");
+
+    for (js_kind, signal) in [
+        ("escalated", Signal::Escalated),
+        ("halted", Signal::DeadDriver),
+        ("worker-death-recurred", Signal::RejectRecurrence),
+        ("budget-final-tenth", Signal::DeadDriver),
+        ("stalled-frontier", Signal::FrontierStall),
+    ] {
+        let response = signal.response();
+        let needle = format!("'{js_kind}': '{response}'");
+        assert!(
+            table.contains(&needle),
+            "ATTENTION_RESPONSE['{js_kind}'] must equal Signal::{signal:?}::response() \
+             ({response:?}), the SAME skill the pull-side `rigger watch` names for this \
+             anomaly - a rename on either side must fail here, not drift silently; real \
+             ATTENTION_RESPONSE table: {table}"
+        );
+    }
+}
+
 /// Read `workflows/rigger.js` at test time from the crate manifest dir - mirrors `tests/
 /// cli.rs`'s identical `rigger_js_source` helper (this file's own established per-file
 /// duplication convention, documented at the top of this file).
