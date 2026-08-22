@@ -273,10 +273,33 @@ pub fn pid_is_alive(pid: u32) -> bool {
 /// parse as `scheme://host:port...` with a valid `u16` port, so a malformed or foreign URL is
 /// treated as unparseable rather than guessed at - the safe direction [`dash_status`] takes for
 /// every other ambiguous input.
-fn url_port(url: &str) -> Option<u16> {
+///
+/// This is the ONE url-port parser shared by the library (`dash_status` below) and the `rigger`
+/// binary's `watch_poll` (spec 69, round 11 architecture/adversary review,
+/// `arch-u69c1-duplicate-url-port-parser`). `watch_poll` (`src/main.rs`) used to hand-roll a
+/// second, DIVERGENT copy (`port_from_dash_url`, last-colon-in-the-whole-url) that only agreed
+/// with this scheme-and-path-aware parser on the single documented no-path URL shape; it now
+/// calls this fn directly instead. `pub`, not `pub(crate)`: the binary is a separate crate that
+/// depends on this library crate, so a `pub(crate)` item here would be invisible to it.
+pub fn url_port(url: &str) -> Option<u16> {
     let after_scheme = url.split("://").nth(1)?;
     let host_port = after_scheme.split('/').next().unwrap_or(after_scheme);
     host_port.rsplit_once(':')?.1.parse().ok()
+}
+
+/// The port-match-then-name-pid rule (spec 69, round 11 architecture/adversary review,
+/// `arch-u69c1-pid-match-rule-duplicated-dash-status-watch-poll` /
+/// `adv-u69c1-pid-match-duplication-verified-and-escalated`): a marker's `pid` is only ever
+/// attributable to `port` when the marker's OWN port matches it - a marker naming some OTHER
+/// dash's port carries a pid that belongs to an unrelated process, never this one's. `dash_status`
+/// and `watch_poll` (`src/main.rs`) both need exactly this rule when deciding whether to name a
+/// pid, so it is factored here as the crate's one implementation rather than each hand-rolling its
+/// own copy (round 9's `adv-u69c1r9-watch-poll-dashprobe-diverges-from-dash-status-mismatch-
+/// handling` was a real, adjudicator-upheld regression traced to exactly that duplication).
+/// `pub`, not `pub(crate)`: `watch_poll` lives in the `rigger` BINARY, a separate crate from
+/// this library, so `pub(crate)` here would not reach it.
+pub fn pid_if_port_matches(marker: &DashMarker, port: u16) -> Option<u32> {
+    (marker.port == port).then_some(marker.pid)
 }
 
 /// The truthful presentation of the dash breadcrumb `rigger status` shows (spec 69, criterion
@@ -354,8 +377,9 @@ pub fn dash_status(
     };
     // A pid is only ever named when the marker's port MATCHES this url's - a mismatched
     // marker's pid belongs to some other, unrelated dash and must never be printed as though it
-    // were this url's.
-    let pid = (marker.port == port).then_some(marker.pid);
+    // were this url's. Shared with `watch_poll` (`src/main.rs`) via [`pid_if_port_matches`] so
+    // the rule is implemented exactly once in the crate.
+    let pid = pid_if_port_matches(&marker, port);
     if port_serving(port) {
         DashStatus::Serving(url)
     } else {

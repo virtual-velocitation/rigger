@@ -5252,16 +5252,6 @@ fn dash_status_json(status: &dash::DashStatus) -> Option<serde_json::Value> {
     Some(serde_json::json!({ "dashboard": dashboard }))
 }
 
-/// The loopback PORT embedded in a recorded dash URL (`http://127.0.0.1:<port>/`, the only
-/// shape [`spawn_run_dashboard`]/[`spawn_run_dashboard_detached`] ever write). `None` for
-/// anything that does not parse as `...:<u16>` with an optional trailing slash - a malformed
-/// or foreign value is treated as unparseable, never guessed at. Used by [`watch_poll`] to
-/// probe a recorded dash's port directly when no [`dash::DashMarker`] exists to read one from
-/// (the shape `rigger run` / `rigger serve` leave - they record only this URL, never a marker).
-fn port_from_dash_url(url: &str) -> Option<u16> {
-    url.rsplit_once(':')?.1.trim_end_matches('/').parse().ok()
-}
-
 fn cmd_dash(args: &[String]) -> Res {
     // `--export <path>` and/or `--port <n>`; loopback only (no host flag by design).
     // `--reap-on-idle` makes this dash SELF-REAP when the run it serves goes idle/complete
@@ -6532,7 +6522,7 @@ fn watch_poll(
         // while this probe DETECTS (it always probes, marker or not - the
         // url-only-dead-dash contract pinned in tests/cli.rs). The mismatch RULE is
         // shared; the trust-without-probing rule is dash_status's alone.
-        (Some(url), Some(m)) => match port_from_dash_url(&url) {
+        (Some(url), Some(m)) => match dash::url_port(&url) {
             Some(url_port) => {
                 // Round-9 escalation-remedy reject (adv-u69c1-mismatched-marker-suppression-
                 // borrows-wrong-files-mtime): the probe always targets the URL's OWN port
@@ -6543,8 +6533,11 @@ fn watch_poll(
                 // WHICHEVER file actually backed the classification"). Sourcing the marker's
                 // mtime unconditionally let a stale, mismatched marker that predates this run's
                 // own RunStarted wrongly suppress a fresh, currently-dead url written after it.
-                let port_matches = m.port == url_port;
-                let pid = port_matches.then_some(m.pid);
+                // `pid`/`port_matches` come from the SAME shared rule `dash_status` uses
+                // (`dash::pid_if_port_matches`, round 11 architecture/adversary review) rather
+                // than a second hand-rolled copy - `pid.is_some()` iff the marker's port matched.
+                let pid = dash::pid_if_port_matches(&m, url_port);
+                let port_matches = pid.is_some();
                 let written_at = if port_matches {
                     mtime_of(&marker_path)
                 } else {
@@ -6582,7 +6575,7 @@ fn watch_poll(
         // URL recorded, no marker at all: probe the url's own port (detection, not
         // presentation - a dead url-only dash must still be reported; pinned by the
         // url-breadcrumb-only test in tests/cli.rs). No marker, no pid to name.
-        (Some(url), None) => match port_from_dash_url(&url) {
+        (Some(url), None) => match dash::url_port(&url) {
             Some(port) if dash::dash_serving_on(port) => {
                 (watch::DashProbe::Serving, mtime_of(&url_path))
             }
