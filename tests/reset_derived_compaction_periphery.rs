@@ -1311,6 +1311,30 @@ fn docs_context_for_paragraph_comparison() -> rigger::docs::DocsContext {
         spec_shape_recommendation: "not the real recommendation".into(),
         subcommands: vec!["not-a-real-subcommand".into()],
         specs_location: "not/the/real/specs".into(),
+        watch_signals: [
+            rigger::docs::WatchSignalFact {
+                name: "not-a-real-signal-1".into(),
+                response: "not-a-real-response-1".into(),
+            },
+            rigger::docs::WatchSignalFact {
+                name: "not-a-real-signal-2".into(),
+                response: "not-a-real-response-2".into(),
+            },
+            rigger::docs::WatchSignalFact {
+                name: "not-a-real-signal-3".into(),
+                response: "not-a-real-response-3".into(),
+            },
+            rigger::docs::WatchSignalFact {
+                name: "not-a-real-signal-4".into(),
+                response: "not-a-real-response-4".into(),
+            },
+            rigger::docs::WatchSignalFact {
+                name: "not-a-real-signal-5".into(),
+                response: "not-a-real-response-5".into(),
+            },
+        ],
+        watch_poll_interval_secs: 999_999,
+        reject_recurrence_diagnose_threshold: 999,
     }
 }
 

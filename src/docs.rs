@@ -55,6 +55,28 @@ pub struct DocsContext {
     /// Where this repo keeps its specs. A project-overlay override point (unit 3);
     /// defaults to the shared convention.
     pub specs_location: String,
+    /// The five `rigger watch` signals (spec 69), in Design order (escalated,
+    /// dead-driver, dash-not-serving, reject-recurrence, frontier-stall) - each
+    /// carrying its canonical name and response, read from `crate::watch::Signal`
+    /// (`name()`/`response()`) by the composition root so `rigger-watch-a-run`'s
+    /// render never imports `crate::watch` directly.
+    pub watch_signals: [WatchSignalFact; 5],
+    /// The default `rigger watch` poll interval in seconds
+    /// (`crate::watch::DEFAULT_INTERVAL_SECS`).
+    pub watch_poll_interval_secs: u64,
+    /// The reject-recurrence diagnose threshold `rigger-diagnose-churn` pins its own
+    /// procedure text against (`crate::watch::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD`).
+    pub reject_recurrence_diagnose_threshold: u32,
+}
+
+/// One `rigger watch` signal's canonical name and response (spec 69), carried on
+/// [`DocsContext`] so a render function reads it through the one injected channel
+/// like every other drift-prone fact in this file, instead of reaching into
+/// `crate::watch` directly from production code.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WatchSignalFact {
+    pub name: String,
+    pub response: String,
 }
 
 /// Render the `using-rigger` skill: a self-contained front-door that tells an agent
@@ -708,6 +730,263 @@ fn render_handle_an_escalation_skill(ctx: &DocsContext) -> String {
     s
 }
 
+/// Render the `rigger-watch-a-run` skill (spec 69, criterion 1): the manual-look monitoring
+/// protocol for a launched run. The FIVE SIGNAL NAMES and each one's RESPONSE text are
+/// interpolated from `ctx.watch_signals`, and the poll interval from
+/// `ctx.watch_poll_interval_secs` - both populated by the composition root straight from
+/// `crate::watch::Signal` (`name()`/`response()`) and `crate::watch::DEFAULT_INTERVAL_SECS`,
+/// the exact values `rigger watch` itself prints on an anomaly line (`src/watch.rs`) - so
+/// this skill's own headline claim ("names the five signals each mapped to its response
+/// skill") is pinned against the runtime, never hand-copied: a renamed signal or a changed
+/// response breaks the render the same moment it would break `rigger watch`'s own output.
+/// Reading these facts through `ctx`, like every other drift-prone value in this file,
+/// rather than importing `crate::watch` directly keeps this render a pure function of its
+/// one injected context - the same DI-provable shape `docs_context_reads_every_fact_from_code`
+/// and the sentinel-context tests already hold every other fact in this file to.
+fn render_watch_a_run_skill(ctx: &DocsContext) -> String {
+    let [escalated, dead_driver, dash_not_serving, reject_recurrence, frontier_stall] =
+        &ctx.watch_signals;
+    let mut s = String::new();
+    s.push_str("---\n");
+    s.push_str("name: rigger-watch-a-run\n");
+    s.push_str(
+        "description: Monitor a run you just launched, or one that has driven unattended a \
+         while, for the five signals a run can be failing on even while every other view \
+         still looks healthy. Read this before walking away from a launched run.\n",
+    );
+    s.push_str("---\n\n");
+    s.push_str("# rigger-watch-a-run\n\n");
+    let _ = writeln!(s, "## Procedure\n");
+    let _ = writeln!(
+        s,
+        "On EVERY look, check all FIVE signals below, not just the one you already suspect - \
+         a run can read healthy on any single signal while another one is quietly failing, \
+         which is why liveness reads healthy in a stalled run (signal 5 exists for exactly \
+         that case):\n"
+    );
+    let _ = writeln!(
+        s,
+        "1. **{}** - a unit `rigger status` (or the dashboard) marks `escalated (awaiting a \
+         human)`. Respond with `{}`.",
+        escalated.name, escalated.response
+    );
+    let _ = writeln!(
+        s,
+        "2. **{}** VS LIVE AGENT PROCESSES - an in-flight agent's last heartbeat is stale but \
+         its worker process is actually gone, not merely slow (the driver quit, crashed, or \
+         the machine slept). Respond with `{}`.",
+        dead_driver.name, dead_driver.response
+    );
+    let _ = writeln!(
+        s,
+        "3. **{}** - the dashboard URL does not answer, `rigger watch` reports it not \
+         serving, or a browser just spins. Respond with `{}`.",
+        dash_not_serving.name, dash_not_serving.response
+    );
+    let _ = writeln!(
+        s,
+        "4. **{}** - a unit keeps failing the SAME finding rather than converging \
+         (reject-recurrence at or past the diagnose threshold). Respond with `{}`.",
+        reject_recurrence.name, reject_recurrence.response
+    );
+    let _ = writeln!(
+        s,
+        "5. **{}** - is the run actually consuming what it spawns? A spawn id surviving \
+         consecutive looks, an hours-old last run event under \"working\" agents, or a \
+         repeating wave is a STALL even though every signal above reads clean - this is why \
+         progress is its own signal, not a restatement of liveness. Respond: {}.\n",
+        frontier_stall.name, frontier_stall.response
+    );
+    let _ = writeln!(
+        s,
+        "FIRST instruction, every time: on launch, ARM `rigger watch` under the harness's \
+         background monitor - it polls store and status on its own (default every {}s, \
+         `--interval <s>` to change it) and folds these same five signals, plus a sixth \
+         store-integrity check of its own, into one printed line per anomaly. The manual look \
+         above is the FALLBACK for when nothing is armed, exercised at least once per \
+         remediation cycle even while `rigger watch` is running.\n",
+        ctx.watch_poll_interval_secs
+    );
+    let _ = writeln!(s, "## Anti-move\n");
+    let _ = writeln!(
+        s,
+        "Do not make polling `git log` or `ps` by hand the PRIMARY view - a shell only shows \
+         what a shell can see, and misses the signals the store and status already resolve \
+         for you (escalation, reject-recurrence, frontier progress). And do not \
+         hand-intervene in a run that is merely SLOW, not stuck: a long-running unit with \
+         fresh heartbeats and advancing store events is working, not stalled, and \
+         hand-driving it only races the loop (see rigger-resume-a-run's own anti-move).\n"
+    );
+    let _ = writeln!(s, "## See also\n");
+    let _ = writeln!(
+        s,
+        "{}, {}, {}, and {} - the four response skills this protocol routes to by name; never \
+         invent a response beyond them.\n",
+        escalated.response,
+        dead_driver.response,
+        dash_not_serving.response,
+        reject_recurrence.response
+    );
+    s
+}
+
+/// Render the `rigger-restore-the-dash` skill (spec 69, criterion 1): getting the run
+/// dashboard serving again. `ctx` is accepted only to match the registry's uniform
+/// signature; nothing here is drift-prone enough to interpolate from it.
+fn render_restore_the_dash_skill(_ctx: &DocsContext) -> String {
+    let mut s = String::new();
+    s.push_str("---\n");
+    s.push_str("name: rigger-restore-the-dash\n");
+    s.push_str(
+        "description: Get the run dashboard serving again when its URL does not answer, \
+         `rigger watch` reports it not serving, or a browser just spins. Read this before \
+         restarting the dash or touching its marker file by hand.\n",
+    );
+    s.push_str("---\n\n");
+    s.push_str("# rigger-restore-the-dash\n\n");
+    let _ = writeln!(s, "## Procedure\n");
+    let _ = writeln!(
+        s,
+        "The dash is a SINGLETON per project: at most one `rigger dash` serves a given \
+         project's fixed address at a time. A second `rigger dash` against an address a real \
+         rigger dash already answers on reports that address and exits 0 rather than binding \
+         a second one - so a not-serving dash is never \"already running somewhere else\", it \
+         is genuinely down.\n"
+    );
+    let _ = writeln!(
+        s,
+        "`rigger status`'s dashboard line is NOT yet a liveness check - it always prints \
+         whatever URL was last recorded, even when nothing answers there, so do not trust \
+         that line alone. `rigger watch --once` IS the accurate check: it verifies the \
+         recorded marker by actually probing its port, and prints a `dash liveness` line \
+         naming the dead PID when nothing answers there - trust that over a bare status \
+         line. `rigger run` and `rigger serve` never write that marker at all (only \
+         `rigger step` does) - for those two drivers `rigger watch` falls back to probing \
+         the recorded dash URL's OWN port directly, and its `dash liveness` line still \
+         fires, just without a pid to name.\n"
+    );
+    let _ = writeln!(
+        s,
+        "Restart with a plain `rigger dash` (no flags needed for the default address). The \
+         singleton bind then does the right thing either way: if the address is genuinely \
+         free it binds and serves; if a live rigger dash is already there after all, it \
+         reports that address and exits cleanly instead of fighting it.\n"
+    );
+    let _ = writeln!(
+        s,
+        "The HUNG-HOLDER case is the one that actually hangs a client instead of failing \
+         cleanly: the marker records a port whose process died, froze, or was suspended \
+         without releasing it, so a fresh probe against that port neither serves nor cleanly \
+         refuses - it just hangs, and so does anything waiting on it. The marker's own PID, \
+         not a fresh diagnosis, is what names the culprit: `rigger watch` reads it and \
+         prints that exact PID on its dash-liveness line. RESUME that \
+         process if it is merely stopped (a suspended terminal, a paused container), or KILL \
+         it if it is dead weight - THAT pid, the one the marker and `rigger watch`'s own \
+         line actually name - then restart with `rigger dash`. When NO marker was ever \
+         recorded (`rigger run` / `rigger serve`), `rigger watch`'s line names no pid at all \
+         - skip straight to restarting with `rigger dash`; its singleton bind never fights a \
+         genuinely-live dash, and a bind failure against a real non-dash holder is then a \
+         manual, outside-`rigger` situation, never one to guess a pid for.\n"
+    );
+    let _ = writeln!(s, "## Anti-move\n");
+    let _ = writeln!(
+        s,
+        "Never hand-edit the dash marker file to \"fix\" it - it is a breadcrumb the step \
+         path itself writes and overwrites, and a hand-edited value only makes the next real \
+         dash's own self-heal harder to trust. And never kill a process by PORT-ADJACENT \
+         GUESSWORK (\"kill whatever's near the dash port\") - resume or kill the EXACT pid \
+         the marker and `rigger watch`'s own line name, never a guess, and never one you \
+         found some other way when the line names none at all.\n"
+    );
+    let _ = writeln!(s, "## See also\n");
+    let _ = writeln!(
+        s,
+        "rigger-watch-a-run names dash liveness as one of its five signals, routing here by \
+         name; rigger-diagnose-churn for the DIFFERENT case of a unit that keeps failing \
+         review, not a dead dashboard.\n"
+    );
+    s
+}
+
+/// Render the `rigger-diagnose-churn` skill (spec 69, criterion 1): acting on a unit stuck
+/// in reject-recurrence. The diagnose threshold is interpolated from
+/// `ctx.reject_recurrence_diagnose_threshold`, populated by the composition root straight
+/// from `crate::watch::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD` - the same bound `rigger watch`
+/// alerts on - so this skill can never quote a stale number, and reads it through the same
+/// injected channel every other drift-prone fact in this file uses rather than importing
+/// `crate::watch` directly.
+fn render_diagnose_churn_skill(ctx: &DocsContext) -> String {
+    let mut s = String::new();
+    s.push_str("---\n");
+    s.push_str("name: rigger-diagnose-churn\n");
+    s.push_str(
+        "description: Act on a unit whose blocker line shows `reject-recurrence #n/max \
+         (remediating)` past roughly 3 attempts, or whose diffs are oscillating rather than \
+         converging. Read this before blaming the model or the panel, or reaching for \
+         `max_retries`.\n",
+    );
+    s.push_str("---\n\n");
+    s.push_str("# rigger-diagnose-churn\n\n");
+    let _ = writeln!(s, "## Procedure\n");
+    let _ = writeln!(
+        s,
+        "By the time reject-recurrence reaches the diagnose threshold ({threshold}, the same \
+         bound `rigger watch`'s reject-recurrence-trend signal alerts on), do the FINDING \
+         AUDIT before reacting to the raw attempt count: read every blocking finding against \
+         the diffs it cites - each finding names a checkable fact, and the audit is comparing \
+         that fact against what the diff actually does, not trusting the finding's prose. A \
+         high attempt count on its own proves nothing about what actually went wrong.\n",
+        threshold = ctx.reject_recurrence_diagnose_threshold
+    );
+    let _ = writeln!(
+        s,
+        "SEPARATE infra-caused attempts before judging the rest: a finding about a deleted \
+         worktree, a thrashed shared build cache, or a quota-killed agent is an INFRA \
+         failure, not a semantic one - it inflates the attempt count without saying anything \
+         about whether the unit's actual approach is wrong. Fix infra in the binary via its \
+         own spec; never let it count toward, or be blamed as, review strictness.\n"
+    );
+    let _ = writeln!(
+        s,
+        "Once the infra noise is set aside, look at what remains: if the SURVIVING, \
+         factually-correct findings keep citing the SAME constraint against different, \
+         otherwise-reasonable diffs, the spec itself is self-contradictory - no \
+         implementation can satisfy a contradiction, so every attempt is individually correct \
+         to reject and the run will churn forever without a spec change. Fix it with the \
+         amendment protocol (`planning-a-spec`: amend Design and Global constraints only, \
+         commit when no step is mid-flight, then `rigger emit DecisionMade` naming the spec \
+         file so in-flight reviewers see it through the graph immediately).\n"
+    );
+    let _ = writeln!(
+        s,
+        "For any OTHER recurring pattern, match the SIGNATURE you found against \
+         `planning-a-spec`'s own \"Quick reference: churn signature -> planning defect\" \
+         table - it maps what a rejection loop looks like (twinned units, a bundled \
+         checkbox, an unresolved either/or, findings blaming process-local state, a \
+         paraphrased criterion) to the specific catalog class and its fix at spec time, so \
+         the diagnosis names the actual defect class rather than just \"it keeps failing\".\n"
+    );
+    let _ = writeln!(s, "## Anti-move\n");
+    let _ = writeln!(
+        s,
+        "Never blame the model or the panel without having run the finding audit first - a \
+         reviewer that is factually correct every single round is not the problem, even when \
+         it rejects the same unit five times in a row. And do not reflexively raise \
+         `defaults.max_retries` to buy another attempt: a bigger budget spent against the \
+         SAME unaudited failure reproduces exactly the failure the audit exists to catch, \
+         just more expensively.\n"
+    );
+    let _ = writeln!(s, "## See also\n");
+    let _ = writeln!(
+        s,
+        "planning-a-spec owns the churn-signature table and the spec-amendment protocol this \
+         procedure applies; rigger-watch-a-run names reject-recurrence as one of its five \
+         signals, routing here by name; rigger-handle-an-escalation for when a unit exhausts \
+         its remediation budget rather than merely churning.\n"
+    );
+    s
+}
+
 /// The line stamped onto EVERY registry skill's rendered content (spec 68, Design): an
 /// agent must never install, replace, or modify the operator's own installed `rigger`
 /// binary. [`SkillEntry::render`] appends this ONCE, structurally, for every entry - it is
@@ -746,9 +1025,10 @@ impl SkillEntry {
 }
 
 /// The skill registry (spec 68, criterion 1): `using-rigger` (the driving discipline),
-/// `planning-a-spec` (the authoring discipline), and the five-member per-operation family
-/// (spec 68, criterion 2) - one skill per operation, joining this same list by appending
-/// entries, never by adding a second, independently-walked enumeration.
+/// `planning-a-spec` (the authoring discipline), the five-member per-operation family
+/// (spec 68, criterion 2), and the three watch-discipline skills (spec 69, criterion 1) -
+/// one skill per operation, joining this same list by appending entries, never by adding a
+/// second, independently-walked enumeration.
 pub fn skill_registry() -> Vec<SkillEntry> {
     vec![
         SkillEntry {
@@ -779,6 +1059,18 @@ pub fn skill_registry() -> Vec<SkillEntry> {
             name: "rigger-handle-an-escalation",
             render_body: render_handle_an_escalation_skill,
         },
+        SkillEntry {
+            name: "rigger-watch-a-run",
+            render_body: render_watch_a_run_skill,
+        },
+        SkillEntry {
+            name: "rigger-restore-the-dash",
+            render_body: render_restore_the_dash_skill,
+        },
+        SkillEntry {
+            name: "rigger-diagnose-churn",
+            render_body: render_diagnose_churn_skill,
+        },
     ]
 }
 
@@ -798,6 +1090,55 @@ mod tests {
             spec_shape_recommendation: "sentinel recommendation text".to_string(),
             subcommands: vec!["sentinelcmd-a".to_string(), "sentinelcmd-b".to_string()],
             specs_location: "sentinel-specs/".to_string(),
+            watch_signals: [
+                WatchSignalFact {
+                    name: "sentinel-signal-escalated".to_string(),
+                    response: "sentinel-response-escalated".to_string(),
+                },
+                WatchSignalFact {
+                    name: "sentinel-signal-dead-driver".to_string(),
+                    response: "sentinel-response-dead-driver".to_string(),
+                },
+                WatchSignalFact {
+                    name: "sentinel-signal-dash-not-serving".to_string(),
+                    response: "sentinel-response-dash-not-serving".to_string(),
+                },
+                WatchSignalFact {
+                    name: "sentinel-signal-reject-recurrence".to_string(),
+                    response: "sentinel-response-reject-recurrence".to_string(),
+                },
+                WatchSignalFact {
+                    name: "sentinel-signal-frontier-stall".to_string(),
+                    response: "sentinel-response-frontier-stall".to_string(),
+                },
+            ],
+            watch_poll_interval_secs: 424_242,
+            reject_recurrence_diagnose_threshold: 909_090,
+        }
+    }
+
+    /// A [`DocsContext`] carrying `sentinel_ctx`'s values for every unrelated field, but the
+    /// REAL `crate::watch` facts for the three watch fields - so a test built on it can prove
+    /// `render_watch_a_run_skill`/`render_diagnose_churn_skill` show the runtime's actual
+    /// signal names/responses/thresholds, the accuracy-pin `sentinel_ctx` alone cannot make
+    /// (its watch fields are deliberately fake).
+    fn real_watch_facts_ctx() -> DocsContext {
+        DocsContext {
+            watch_signals: [
+                crate::watch::Signal::Escalated,
+                crate::watch::Signal::DeadDriver,
+                crate::watch::Signal::DashNotServing,
+                crate::watch::Signal::RejectRecurrence,
+                crate::watch::Signal::FrontierStall,
+            ]
+            .map(|signal| WatchSignalFact {
+                name: signal.name().to_string(),
+                response: signal.response().to_string(),
+            }),
+            watch_poll_interval_secs: crate::watch::DEFAULT_INTERVAL_SECS,
+            reject_recurrence_diagnose_threshold:
+                crate::watch::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD,
+            ..sentinel_ctx()
         }
     }
 
@@ -1159,9 +1500,10 @@ mod tests {
         }
     }
 
-    /// Spec 68, criterion 2: the five-member per-operation family is IN the registry,
-    /// each name present exactly once, alongside (not instead of) `using-rigger` and
-    /// `planning-a-spec`.
+    /// Spec 68, criterion 2 (extended by spec 69, criterion 1 with the three watch-discipline
+    /// skills): the five-member per-operation family AND the three watch skills are IN the
+    /// registry, each name present exactly once, alongside (not instead of) `using-rigger`
+    /// and `planning-a-spec`.
     #[test]
     fn registry_names_all_five_per_operation_skills_exactly_once_each() {
         let names: Vec<&str> = skill_registry().iter().map(|e| e.name).collect();
@@ -1173,6 +1515,9 @@ mod tests {
             "rigger-reindex",
             "rigger-resume-a-run",
             "rigger-handle-an-escalation",
+            "rigger-watch-a-run",
+            "rigger-restore-the-dash",
+            "rigger-diagnose-churn",
         ] {
             assert_eq!(
                 names.iter().filter(|n| **n == expected).count(),
@@ -1182,8 +1527,8 @@ mod tests {
         }
         assert_eq!(
             names.len(),
-            7,
-            "the registry must have exactly 7 entries; got {names:?}"
+            10,
+            "the registry must have exactly 10 entries; got {names:?}"
         );
     }
 
@@ -1375,5 +1720,250 @@ mod tests {
             out.contains(&ctx.max_retries.to_string()),
             "the escalation skill must interpolate ctx.max_retries, not hard-code a bound"
         );
+    }
+
+    /// Spec 69, criterion 1 (WATCH SKILLS RENDER TRUE, the headline claim): `rigger-watch-a-run`
+    /// names the five signals `crate::watch::Signal` actually defines, each mapped BY THE SAME
+    /// STRING to its real response - pinned against the runtime (`Signal::name()`/`response()`
+    /// and `watch::SKILL_SIGNAL_NAMES`), the exact authority `src/watch.rs`'s own module doc
+    /// names both the command and this skill as pinned against, so the two can never silently
+    /// drift apart on what a signal is called or where it routes. Uses `real_watch_facts_ctx`
+    /// (not `sentinel_ctx`) because the render now reads these facts from `ctx` - the
+    /// composition root (`docs_context_reads_every_fact_from_code`, in the binary) is what
+    /// proves `ctx` itself carries the real values; this test proves the render is faithful
+    /// to whatever `ctx` says.
+    #[test]
+    fn watch_a_run_names_all_five_signals_each_mapped_to_its_response() {
+        let out = render_watch_a_run_skill(&real_watch_facts_ctx());
+        for signal in [
+            crate::watch::Signal::Escalated,
+            crate::watch::Signal::DeadDriver,
+            crate::watch::Signal::DashNotServing,
+            crate::watch::Signal::RejectRecurrence,
+            crate::watch::Signal::FrontierStall,
+        ] {
+            assert!(
+                out.contains(signal.name()),
+                "must name signal {:?}",
+                signal.name()
+            );
+            assert!(
+                out.contains(signal.response()),
+                "signal {:?} must map to its real response {:?}",
+                signal.name(),
+                signal.response()
+            );
+        }
+        for name in crate::watch::SKILL_SIGNAL_NAMES {
+            assert!(
+                out.contains(name),
+                "must carry the exact skill signal name {name:?} `rigger watch` pins against"
+            );
+        }
+        assert!(
+            out.contains(&crate::watch::DEFAULT_INTERVAL_SECS.to_string()),
+            "the poll interval must be pinned against watch::DEFAULT_INTERVAL_SECS"
+        );
+        assert!(
+            out.contains("ARM") && out.contains("rigger watch"),
+            "the FIRST instruction must tell the reader to arm `rigger watch`"
+        );
+    }
+
+    /// Spec 69, criterion 1 (the DI-provable property every other fact in this file already
+    /// has): `render_watch_a_run_skill` and `render_diagnose_churn_skill` are pure functions
+    /// of `ctx` for the watch facts - SENTINEL signal names/responses/threshold/interval
+    /// (values `crate::watch` never produces) reach the rendered output, which a hardcoded
+    /// `crate::watch::Signal::X.name()` call in the render body could never do. Mirrors
+    /// `escalation_skill_is_parameterized_by_max_retries`'s shape for this file's newest facts.
+    #[test]
+    fn watch_and_diagnose_churn_skills_are_parameterized_by_watch_facts() {
+        let ctx = sentinel_ctx();
+        let watch_out = render_watch_a_run_skill(&ctx);
+        for signal in &ctx.watch_signals {
+            assert!(
+                watch_out.contains(&signal.name),
+                "rigger-watch-a-run must interpolate ctx.watch_signals, not hard-code a name; \
+                 missing {:?}",
+                signal.name
+            );
+            assert!(
+                watch_out.contains(&signal.response),
+                "rigger-watch-a-run must interpolate ctx.watch_signals, not hard-code a \
+                 response; missing {:?}",
+                signal.response
+            );
+        }
+        assert!(
+            watch_out.contains(&ctx.watch_poll_interval_secs.to_string()),
+            "rigger-watch-a-run must interpolate ctx.watch_poll_interval_secs, not hard-code \
+             the poll interval"
+        );
+
+        let churn_out = render_diagnose_churn_skill(&ctx);
+        assert!(
+            churn_out.contains(&ctx.reject_recurrence_diagnose_threshold.to_string()),
+            "rigger-diagnose-churn must interpolate ctx.reject_recurrence_diagnose_threshold, \
+             not hard-code the diagnose threshold"
+        );
+    }
+
+    /// Spec 69, criterion 1: `rigger-restore-the-dash` carries the HUNG-HOLDER diagnosis - a
+    /// stopped-but-still-bound process makes clients hang rather than fail cleanly, and the
+    /// marker's own recorded PID (not a fresh bind attempt) is what names the culprit to
+    /// resume or kill - plus the singleton semantics and the `rigger dash` restart path.
+    #[test]
+    fn restore_the_dash_carries_the_hung_holder_diagnosis() {
+        let out = render_restore_the_dash_skill(&sentinel_ctx());
+        assert!(
+            out.contains("HUNG-HOLDER"),
+            "must name the hung-holder case"
+        );
+        assert!(out.contains("SINGLETON"), "must state singleton semantics");
+        assert!(
+            out.contains("rigger dash"),
+            "must name the real restart command"
+        );
+        assert!(out.contains("PID"), "must name the PID as the diagnosis");
+        assert!(
+            out.contains("RESUME") && out.contains("KILL"),
+            "must name both remedies for the hung holder's process"
+        );
+        assert_eq!(out.matches("## Procedure").count(), 1);
+        assert_eq!(out.matches("## Anti-move").count(), 1);
+    }
+
+    /// Spec 69, criterion 1: `rigger-diagnose-churn` carries the finding-audit procedure WITH
+    /// the infra-separation step (F8), pinned against the real diagnose threshold rather than
+    /// a hand-typed number, and cross-links `planning-a-spec`'s own churn-signature table and
+    /// amendment protocol rather than duplicating either (one authority per concern).
+    #[test]
+    fn diagnose_churn_carries_the_finding_audit_and_infra_separation() {
+        let out = render_diagnose_churn_skill(&real_watch_facts_ctx());
+        assert!(
+            out.contains(&crate::watch::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD.to_string()),
+            "must pin the real diagnose threshold, not a hand-typed number"
+        );
+        assert!(out.contains("FINDING AUDIT"), "must name the finding audit");
+        assert!(
+            out.contains("SEPARATE") && out.contains("INFRA"),
+            "must carry the infra-separation step"
+        );
+        assert!(
+            out.contains("planning-a-spec") && out.contains("churn signature"),
+            "must cross-link the churn-signature table rather than duplicate it"
+        );
+        assert!(
+            out.contains("amendment protocol"),
+            "must name the spec-amendment protocol"
+        );
+        assert_eq!(out.matches("## Procedure").count(), 1);
+        assert_eq!(out.matches("## Anti-move").count(), 1);
+    }
+
+    /// Spec 69, criterion 1 (accuracy-pinned reject-recurrence tag): `rigger-diagnose-churn`
+    /// names the REAL reject-recurrence tag [`crate::blocker::Kind::RejectRecurrence`] actually
+    /// renders (`crate::blocker::Blocker::line`), not a hand-typed approximation - normalized
+    /// to its `#n/max` SHAPE (the real counts vary per unit; the words and punctuation around
+    /// them do not) so a rename of the tag's wording breaks this test the same way
+    /// `escalation_skill_names_the_real_blocker_line` catches a rename of the escalated tag.
+    #[test]
+    fn diagnose_churn_names_the_real_reject_recurrence_tag() {
+        let out = render_diagnose_churn_skill(&sentinel_ctx());
+        let real_line = crate::blocker::Blocker {
+            subject: "some-unit".to_string(),
+            kind: crate::blocker::Kind::RejectRecurrence { n: 2, max: 5 },
+        }
+        .line();
+        let normalized = real_line.replace("#2/5", "#n/max");
+        assert!(
+            out.contains(&normalized),
+            "must name the real reject-recurrence tag shape {normalized:?} (from \
+             blocker::Kind::RejectRecurrence::line, not a hand-typed one); got: {out}"
+        );
+    }
+
+    /// Spec 69, criterion 1: each of the three watch-discipline skills' frontmatter carries
+    /// its own symptom-bearing "tell" from the spec Design table (this file IS the routing
+    /// layer), exactly one `## Procedure` and one `## Anti-move` section in that order, and
+    /// cross-links at least one sibling by name - the same shape the spec-68 family proves,
+    /// applied to this family.
+    #[test]
+    fn watch_skills_have_symptom_carrying_descriptions_and_cross_link() {
+        /// One watch-discipline skill's name, render function, and the symptom "tells" its
+        /// description must carry - factored out so the case table below stays a plain slice
+        /// literal instead of tripping clippy's type-complexity lint on an inline tuple type.
+        type WatchSkillCase = (
+            &'static str,
+            fn(&DocsContext) -> String,
+            &'static [&'static str],
+        );
+
+        // `real_watch_facts_ctx`, not `sentinel_ctx`: rigger-watch-a-run's own cross-link
+        // sentence is now built entirely from `ctx.watch_signals[..].response` (the DI fix
+        // for arch-u69c1-docscontext-bypass), so it needs the REAL sibling-skill-name
+        // responses to actually name a sibling; the other two skills' cross-links are
+        // hardcoded prose, unaffected either way.
+        let ctx = real_watch_facts_ctx();
+        let cases: &[WatchSkillCase] = &[
+            (
+                "rigger-watch-a-run",
+                render_watch_a_run_skill,
+                &["just launched", "driven unattended"],
+            ),
+            (
+                "rigger-restore-the-dash",
+                render_restore_the_dash_skill,
+                &["does not answer", "not serving", "spins"],
+            ),
+            (
+                "rigger-diagnose-churn",
+                render_diagnose_churn_skill,
+                &["reject-recurrence", "oscillating"],
+            ),
+        ];
+        let family = [
+            "rigger-watch-a-run",
+            "rigger-restore-the-dash",
+            "rigger-diagnose-churn",
+        ];
+        for (name, render, tells) in cases {
+            let out = render(&ctx);
+            let frontmatter_end = out.find("\n---\n\n").map(|i| i + 6).unwrap_or(out.len());
+            let frontmatter = &out[..frontmatter_end];
+            assert!(
+                frontmatter.starts_with(&format!("---\nname: {name}\n")),
+                "{name}: frontmatter must open naming itself; got: {}",
+                &frontmatter[..frontmatter.len().min(80)]
+            );
+            for tell in *tells {
+                assert!(
+                    frontmatter.contains(tell),
+                    "{name}: description must carry the symptom {tell:?}; got: {frontmatter}"
+                );
+            }
+            assert_eq!(
+                out.matches("## Procedure").count(),
+                1,
+                "{name}: must carry exactly one Procedure section"
+            );
+            assert_eq!(
+                out.matches("## Anti-move").count(),
+                1,
+                "{name}: must carry exactly one named Anti-move section"
+            );
+            assert!(
+                out.find("## Procedure").unwrap() < out.find("## Anti-move").unwrap(),
+                "{name}: Procedure must come before Anti-move"
+            );
+            let mentions_a_sibling = family
+                .iter()
+                .filter(|other| **other != *name)
+                .any(|other| out.contains(other));
+            assert!(
+                mentions_a_sibling,
+                "{name}: must cross-link at least one sibling skill by name"
+            );
+        }
     }
 }

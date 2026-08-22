@@ -237,18 +237,32 @@ impl Anomaly {
 }
 
 /// The dash liveness probe's outcome (spec 69 Design signal 3), resolved by the
-/// caller's I/O (a marker read plus a real serve probe) and handed in already
+/// caller's I/O (a marker-or-URL read plus a real serve probe) and handed in already
 /// classified - `detect` never touches a socket or a file.
+///
+/// TWO breadcrumbs can independently record a dash, and only ONE of the three real
+/// dash-launching drivers writes both: the `rigger step` drive path writes a
+/// per-project MARKER (port + pid) alongside the URL, but `rigger run` and `rigger
+/// serve` (`spawn_run_dashboard`/`spawn_run_dashboard_detached`'s guard-bound callers)
+/// write ONLY the URL breadcrumb, never a marker - so the caller's probe falls back to
+/// the URL's own port when no marker exists, and [`NotServing`](DashProbe::NotServing)
+/// carries `pid: None` in that case rather than inventing one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DashProbe {
-    /// No dash marker was ever recorded for this project - a headless run by
-    /// choice, not an anomaly.
+    /// Neither a marker nor a URL was ever recorded for this project - a headless run
+    /// by choice (e.g. `dash: off` / `RIGGER_NO_DASH`), not an anomaly.
     NotRecorded,
-    /// A marker is recorded and something answers on its port.
+    /// Something answers the recorded port with the dash's own signature.
     Serving,
-    /// A marker is recorded but nothing verifiably serves its port - the "hung
-    /// holder" or dead-process case `rigger-restore-the-dash` diagnoses.
-    NotServing { pid: u32, port: u16 },
+    /// Nothing verifiably serves the recorded port - the "hung holder" or
+    /// dead-process case `rigger-restore-the-dash` diagnoses. `pid` names the
+    /// culprit ONLY when a marker actually recorded one FOR THIS PORT; `None` when
+    /// the probe fell back to the URL breadcrumb alone (no marker was ever written,
+    /// e.g. `rigger run` / `rigger serve`) or when the on-disk marker's port differs
+    /// from the recorded URL's (`dash::dash_status`'s canonical mismatch handling: a
+    /// mismatched marker's pid belongs to some other dash and is never named as this
+    /// url's) - there is genuinely no pid to name in either case, never a guess.
+    NotServing { pid: Option<u32>, port: u16 },
 }
 
 /// Everything [`detect`] needs, already gathered by the caller (store, process
@@ -276,6 +290,57 @@ pub struct WatchInputs<'a> {
     pub wave_liveness_ages: &'a BTreeMap<String, u64>,
     /// The dash liveness probe's already-classified outcome.
     pub dash: DashProbe,
+    /// When THIS run began - its own [`crate::run::TYPE_RUN_STARTED`] event's
+    /// `recorded_at` - or `None` when no run has started yet in the scope handed in.
+    /// Used ONLY to scope Signal 3 (dash liveness); see
+    /// [`Self::dash_breadcrumb_written_at`] for why.
+    pub run_started_at: Option<SystemTime>,
+    /// The last-modified moment of whichever breadcrumb file backed [`Self::dash`]'s
+    /// classification (the marker when one was read, else the `dash.url` file), or
+    /// `None` when neither breadcrumb exists ([`DashProbe::NotRecorded`], where
+    /// Signal 3 never fires anyway) or its mtime could not be read.
+    ///
+    /// Round-6 fix (round-5 reject cause
+    /// adv2-u69c1-r5-uphold-sdet-second-run-stale-marker): both dash breadcrumb
+    /// files are project-level singletons an EARLIER, already-finished run may have
+    /// left dead behind (see the module doc + [`DashProbe`] doc) - the round-5
+    /// `!run.done()` gate alone only closes the DONE-run half of that; a FRESH,
+    /// NOT-DONE run that never itself touched the dash still inherited an earlier
+    /// run's stale breadcrumb as a false anomaly, since neither breadcrumb file
+    /// carries a run identity to tell the two apart. Per
+    /// adv2-u69c1-r5-root-cause-marker-lacks-run-identity, reshaping
+    /// [`crate::dash::DashMarker`] to add one risks regressing spec 39's own
+    /// documented cross-run-persistent-singleton idempotency contract (the marker
+    /// is DELIBERATELY meant to survive across runs), so this pairs with
+    /// [`Self::run_started_at`] instead: a SEPARATE per-run fact, derived from the
+    /// breadcrumb file's own mtime, that answers "does THIS breadcrumb PROVABLY
+    /// predate this run's own start?" without touching the marker's shape at all.
+    /// The burden of proof runs toward reporting, not suppressing: `detect` only
+    /// suppresses when BOTH this and [`Self::run_started_at`] are known and the
+    /// breadcrumb is strictly older - either unknown still reports, exactly as
+    /// before this field existed (round-3/4's own established behavior for a
+    /// project with a dash breadcrumb but no run recorded yet) - AND
+    /// [`Self::dash_attempted_this_run`] does not already prove otherwise.
+    pub dash_breadcrumb_written_at: Option<SystemTime>,
+    /// Round-8 fix (adv-u69c1r7-mint-order-bug-is-structural-not-a-coverage-gap): whether the
+    /// CURRENTLY WATCHED run's own step path itself attempted a dash ensure THIS run - an
+    /// EXPLICIT per-run fact (a run-id match against the caller's `DASH_ATTEMPT_FILE` read,
+    /// `main.rs::record_dash_attempt`'s write site), never inferred from wall-clock order.
+    ///
+    /// [`Self::dash_breadcrumb_written_at`] vs [`Self::run_started_at`] answers "did this
+    /// breadcrumb predate this run" by ORDER, which the round-7 review's own (mistaken, see
+    /// `DASH_ATTEMPT_FILE`'s doc) causality claim shows is easy to reason about backwards even
+    /// when the order itself is right - it is still an INFERENCE about ownership, not the fact
+    /// itself. This field is the fact itself: `true` only when the run this watch is scoped to
+    /// (`run_events`'s own current run id) is the SAME run whose step path most recently
+    /// attempted the ensure, regardless of what any file's mtime says. When `true`, `detect`
+    /// NEVER suppresses Signal 3 for a `NotServing` probe - this run vouched for the dash, so a
+    /// dead dash is this run's own concern to report, full stop. When `false` (no attempt was
+    /// ever recorded for this exact run - the shape every pre-round-8 test in this file and
+    /// `tests/cli.rs` builds, since none of them drive the real dash-ensure call), `detect` falls
+    /// back to the pre-existing `dash_breadcrumb_written_at`/`run_started_at` comparison
+    /// unchanged, so no established suppression regresses.
+    pub dash_attempted_this_run: bool,
 }
 
 #[derive(Deserialize)]
@@ -425,14 +490,64 @@ pub fn detect(inputs: &WatchInputs) -> Vec<Anomaly> {
         }
     }
 
-    // Signal 3: dash liveness.
-    if let DashProbe::NotServing { pid, port } = &inputs.dash {
-        out.push(Anomaly {
-            signal: Signal::DashNotServing,
-            subject: "dash".to_string(),
-            magnitude: 0,
-            detail: format!("marker names dead pid {pid} on port {port}"),
-        });
+    // Signal 3: dash liveness. Never fires on a DONE run, mirroring Signal 2 above -
+    // `.rigger/dash.url` and `.rigger/dash.marker` are project-level singleton files
+    // that are never removed once their dash exits, so a finished run's stale
+    // breadcrumb is success (the dash did its job and stopped), not a permanent
+    // anomaly (round-4 reject: adv-u69c1r4-dash-anomaly-permanent-false-positive).
+    if !run.done() {
+        if let DashProbe::NotServing { pid, port } = &inputs.dash {
+            // Round-6 fix (round-5 reject cause adv2-u69c1-r5-uphold-sdet-second-run-
+            // stale-marker): `!run.done()` alone only closes the DONE-run half of the
+            // stale-breadcrumb problem. Both dash breadcrumb files are project-level
+            // singletons an EARLIER, already-finished run may have left dead behind, so a
+            // FRESH, NOT-DONE run that never itself touched the dash must not inherit that
+            // stale breadcrumb either. Neither file carries a run id (see
+            // `dash_breadcrumb_written_at`'s doc for why this does not reshape the marker
+            // to add one), so suppress ONLY when the breadcrumb DEFINITIVELY predates THIS
+            // run - the one per-run fact available without touching that shape. The
+            // burden of proof is on demonstrating staleness, not on demonstrating
+            // freshness: either side unknown (no run has started yet in this project - the
+            // `watch_once_output_matches_what_restore_the_dash_promises_about_a_dead_
+            // marker` integration test's own shape, `rigger watch --once` run before any
+            // `rigger step` - or the breadcrumb's mtime could not be read) still reports,
+            // exactly as it did before this fix; only a PROVEN-earlier breadcrumb is new
+            // grounds to suppress.
+            //
+            // Round-8 fix (adv-u69c1r7-mint-order-bug-is-structural-not-a-coverage-gap):
+            // `dash_attempted_this_run` short-circuits the whole comparison to FALSE (never
+            // suppress) when this exact run's own step path is EXPLICITLY known to have
+            // attempted the dash ensure - a run-id fact, not a timestamp inference. Only when
+            // that explicit fact is absent (the pre-round-8 shape every existing test still
+            // builds) does the mtime comparison run at all, so it is now a fallback, not the
+            // sole authority; see `WatchInputs::dash_attempted_this_run`'s doc for why an
+            // explicit fact replaces reasoning about wall-clock order here.
+            let breadcrumb_predates_this_run = !inputs.dash_attempted_this_run
+                && matches!(
+                    (inputs.dash_breadcrumb_written_at, inputs.run_started_at),
+                    (Some(written), Some(started)) if written < started
+                );
+            if !breadcrumb_predates_this_run {
+                let detail = match pid {
+                    Some(pid) => format!("marker names dead pid {pid} on port {port}"),
+                    // No MATCHING marker: either none was ever recorded (rigger run /
+                    // rigger serve) or the one on disk names a different port than the
+                    // recorded dash.url's - either way there is genuinely no pid to name
+                    // for THIS url (dash_status's canonical mismatch handling).
+                    None => {
+                        format!(
+                            "recorded dash.url port {port} does not answer (no matching marker, no pid)"
+                        )
+                    }
+                };
+                out.push(Anomaly {
+                    signal: Signal::DashNotServing,
+                    subject: "dash".to_string(),
+                    magnitude: 0,
+                    detail,
+                });
+            }
+        }
     }
 
     // Signal 6 (beyond the skill's five): store integrity.
@@ -513,6 +628,9 @@ mod tests {
             step_lock_free: true,
             wave_liveness_ages: ages,
             dash: DashProbe::NotRecorded,
+            run_started_at: None,
+            dash_breadcrumb_written_at: None,
+            dash_attempted_this_run: false,
         }
     }
 
@@ -729,6 +847,9 @@ mod tests {
             step_lock_free: true,
             wave_liveness_ages: &ages,
             dash: DashProbe::NotRecorded,
+            run_started_at: None,
+            dash_breadcrumb_written_at: None,
+            dash_attempted_this_run: false,
         };
         let anomalies = detect(&inputs);
         assert_eq!(anomalies.len(), 1);
@@ -749,6 +870,9 @@ mod tests {
             step_lock_free: false,
             wave_liveness_ages: &BTreeMap::new(),
             dash: DashProbe::NotRecorded,
+            run_started_at: None,
+            dash_breadcrumb_written_at: None,
+            dash_attempted_this_run: false,
         };
         assert!(detect(&inputs).is_empty());
     }
@@ -772,6 +896,9 @@ mod tests {
             step_lock_free: true,
             wave_liveness_ages: &ages,
             dash: DashProbe::NotRecorded,
+            run_started_at: None,
+            dash_breadcrumb_written_at: None,
+            dash_attempted_this_run: false,
         };
         assert!(detect(&inputs).is_empty());
     }
@@ -797,6 +924,9 @@ mod tests {
             step_lock_free: true,
             wave_liveness_ages: &ages,
             dash: DashProbe::NotRecorded,
+            run_started_at: None,
+            dash_breadcrumb_written_at: None,
+            dash_attempted_this_run: false,
         };
         assert!(
             detect(&inputs).is_empty(),
@@ -827,6 +957,9 @@ mod tests {
             step_lock_free: true,
             wave_liveness_ages: &ages,
             dash: DashProbe::NotRecorded,
+            run_started_at: None,
+            dash_breadcrumb_written_at: None,
+            dash_attempted_this_run: false,
         };
         assert!(
             detect(&inputs).is_empty(),
@@ -850,6 +983,41 @@ mod tests {
             step_lock_free: true,
             wave_liveness_ages: &BTreeMap::new(),
             dash: DashProbe::NotRecorded,
+            run_started_at: None,
+            dash_breadcrumb_written_at: None,
+            dash_attempted_this_run: false,
+        };
+        assert!(detect(&inputs).is_empty());
+    }
+
+    /// Round-4 reject (adv-u69c1r4-dash-anomaly-permanent-false-positive): `.rigger/
+    /// dash.url` and `.rigger/dash.marker` are project-level singleton files never
+    /// removed once a dash exits, so a done run's stale breadcrumb must not read as
+    /// an anomaly either - mirrors
+    /// `a_done_run_never_reports_a_dead_driver_however_quiet_the_store` above but
+    /// for Signal 3 instead of Signal 2, closing the exact gap that test's own
+    /// neighbor left open.
+    #[test]
+    fn a_done_run_never_reports_a_dead_dash_either() {
+        let events = positioned(vec![
+            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
+            ev(ledger::TYPE_UNIT_INTEGRATED, r#"{"id":"u","commit":"c"}"#),
+        ]);
+        let inputs = WatchInputs {
+            run_events: &events,
+            full_events: &events,
+            now: SystemTime::now(),
+            last_event_at: None,
+            step_lock_free: true,
+            wave_liveness_ages: &BTreeMap::new(),
+            dash: DashProbe::NotServing {
+                pid: None,
+                port: 7420,
+            },
+            // Irrelevant here: `!run.done()` short-circuits before either field is read.
+            run_started_at: None,
+            dash_breadcrumb_written_at: None,
+            dash_attempted_this_run: false,
         };
         assert!(detect(&inputs).is_empty());
     }
@@ -858,22 +1026,65 @@ mod tests {
 
     #[test]
     fn a_dash_marker_naming_a_dead_pid_is_reported() {
+        let now = SystemTime::now();
         let inputs = WatchInputs {
             run_events: &[],
             full_events: &[],
-            now: SystemTime::now(),
+            now,
             last_event_at: None,
             step_lock_free: true,
             wave_liveness_ages: &BTreeMap::new(),
             dash: DashProbe::NotServing {
-                pid: 424_242,
+                pid: Some(424_242),
                 port: 7420,
             },
+            // The breadcrumb was written AFTER this run began - THIS run's own dash.
+            run_started_at: Some(now - Duration::from_secs(60)),
+            dash_breadcrumb_written_at: Some(now - Duration::from_secs(30)),
+            dash_attempted_this_run: false,
         };
         let anomalies = detect(&inputs);
         assert_eq!(anomalies.len(), 1);
         assert_eq!(anomalies[0].signal, Signal::DashNotServing);
         assert!(anomalies[0].detail.contains("424242"));
+        assert!(anomalies[0].line().contains("rigger-restore-the-dash"));
+    }
+
+    /// The marker-absent case (`rigger run` / `rigger serve`, which record only the URL
+    /// breadcrumb, never a marker - see `DashProbe` docs): a dead port is STILL reported,
+    /// with no pid invented. This is the round-3 reject's own root cause
+    /// (adv-u69c1r3-watch-once-inherits-marker-absent-blindspot) - before this fix
+    /// `NotServing` required a `u32` pid unconditionally, so the caller had nothing to
+    /// construct here and had to map this exact shape to `NotRecorded`, the non-anomaly
+    /// variant, leaving `rigger watch --once` silently blind for 2 of the 3 real drivers.
+    #[test]
+    fn a_dead_dash_url_with_no_marker_is_reported_without_inventing_a_pid() {
+        let now = SystemTime::now();
+        let inputs = WatchInputs {
+            run_events: &[],
+            full_events: &[],
+            now,
+            last_event_at: None,
+            step_lock_free: true,
+            wave_liveness_ages: &BTreeMap::new(),
+            dash: DashProbe::NotServing {
+                pid: None,
+                port: 7420,
+            },
+            // The breadcrumb was written AFTER this run began - THIS run's own dash.
+            run_started_at: Some(now - Duration::from_secs(60)),
+            dash_breadcrumb_written_at: Some(now - Duration::from_secs(30)),
+            dash_attempted_this_run: false,
+        };
+        let anomalies = detect(&inputs);
+        assert_eq!(anomalies.len(), 1);
+        assert_eq!(anomalies[0].signal, Signal::DashNotServing);
+        assert!(anomalies[0].detail.contains("7420"));
+        assert!(
+            !anomalies[0].detail.contains("pid ") || anomalies[0].detail.contains("no pid"),
+            "a marker-absent report must never claim a specific pid: {}",
+            anomalies[0].detail
+        );
         assert!(anomalies[0].line().contains("rigger-restore-the-dash"));
     }
 
@@ -887,6 +1098,9 @@ mod tests {
             step_lock_free: true,
             wave_liveness_ages: &BTreeMap::new(),
             dash: DashProbe::NotRecorded,
+            run_started_at: None,
+            dash_breadcrumb_written_at: None,
+            dash_attempted_this_run: false,
         };
         assert!(detect(&inputs).is_empty());
     }
@@ -901,8 +1115,133 @@ mod tests {
             step_lock_free: true,
             wave_liveness_ages: &BTreeMap::new(),
             dash: DashProbe::Serving,
+            run_started_at: None,
+            dash_breadcrumb_written_at: None,
+            dash_attempted_this_run: false,
         };
         assert!(detect(&inputs).is_empty());
+    }
+
+    /// Round-6 fix (round-5 reject cause adv2-u69c1-r5-uphold-sdet-second-run-stale-marker):
+    /// a dead marker whose mtime PREDATES this run's own `RunStarted` is an EARLIER run's
+    /// leftover breadcrumb, not this run's own dash - `!run.done()` alone (the round-5 fix)
+    /// only closes the done-run half of that; this closes the not-done half directly at the
+    /// pure `detect` level, mirroring `watch_once_reports_no_dash_anomaly_for_a_fresh_run_
+    /// that_inherits_an_earlier_runs_dead_marker` (tests/cli.rs) which drives the identical
+    /// shape through the real compiled binary and I/O seam.
+    #[test]
+    fn a_dead_marker_predating_this_runs_own_start_is_not_this_runs_anomaly() {
+        let now = SystemTime::now();
+        let inputs = WatchInputs {
+            run_events: &[],
+            full_events: &[],
+            now,
+            last_event_at: None,
+            step_lock_free: true,
+            wave_liveness_ages: &BTreeMap::new(),
+            dash: DashProbe::NotServing {
+                pid: Some(424_242),
+                port: 7420,
+            },
+            // This run began AFTER the breadcrumb was last written - an earlier run's
+            // leftover, never this run's own.
+            run_started_at: Some(now - Duration::from_secs(30)),
+            dash_breadcrumb_written_at: Some(now - Duration::from_secs(60)),
+            dash_attempted_this_run: false,
+        };
+        assert!(
+            detect(&inputs).is_empty(),
+            "a breadcrumb written BEFORE this run began must never be reported as this run's \
+             own dead dash"
+        );
+    }
+
+    /// Round-8 fix (spec 69, adv-u69c1r7-mint-order-bug-is-structural-not-a-coverage-gap): the
+    /// EXACT SAME timestamp shape as the sibling test above -
+    /// `a_dead_marker_predating_this_runs_own_start_is_not_this_runs_anomaly` - a breadcrumb
+    /// mtime strictly OLDER than `run_started_at`, which alone would suppress per the
+    /// pre-existing fallback comparison. The only difference: `dash_attempted_this_run` is
+    /// `true` here - an explicit, run-id-matched fact (in production, `main.rs::watch_poll`
+    /// setting it means `DASH_ATTEMPT_FILE` names THIS exact run, written by
+    /// `record_dash_attempt` from `ensure_run_dashboard`/`start_run_dashboard`). This proves the
+    /// explicit fact WINS over the timestamp fallback: a real per-run attempt is never
+    /// suppressed by a stale-looking mtime pair, however that pair arose (a coarse filesystem
+    /// clock, a future refactor that reorders the mint relative to the ensure call, or any
+    /// other reason the timestamps alone might mislead) - exactly the robustness round 7's
+    /// review asked for: a fact, not an inference from wall-clock order.
+    #[test]
+    fn dash_attempted_this_run_overrides_a_breadcrumb_that_looks_like_it_predates_the_run() {
+        let now = SystemTime::now();
+        let inputs = WatchInputs {
+            run_events: &[],
+            full_events: &[],
+            now,
+            last_event_at: None,
+            step_lock_free: true,
+            wave_liveness_ages: &BTreeMap::new(),
+            dash: DashProbe::NotServing {
+                pid: Some(424_242),
+                port: 7420,
+            },
+            // The IDENTICAL "predates this run" timestamp shape the sibling test above proves
+            // suppresses - the only variable changed below is `dash_attempted_this_run`.
+            run_started_at: Some(now - Duration::from_secs(30)),
+            dash_breadcrumb_written_at: Some(now - Duration::from_secs(60)),
+            dash_attempted_this_run: true,
+        };
+        let anomalies = detect(&inputs);
+        assert_eq!(
+            anomalies.len(),
+            1,
+            "an explicit dash_attempted_this_run=true fact must force reporting even when the \
+             mtime fallback alone would suppress"
+        );
+        assert_eq!(anomalies[0].signal, Signal::DashNotServing);
+        assert!(anomalies[0].detail.contains("424242"));
+    }
+
+    /// The burden of proof runs toward REPORTING, not suppressing: only a breadcrumb
+    /// DEFINITIVELY (both sides known) older than this run's own start is grounds to
+    /// suppress. Either side unknown - no run has started yet in this project (the
+    /// realistic case: a dash breadcrumb exists but `rigger step` never has, exactly the
+    /// shape `watch_once_output_matches_what_restore_the_dash_promises_about_a_dead_
+    /// marker`, tests/cli.rs, drives through the real binary), or the breadcrumb's mtime
+    /// could not be read - must still report, exactly as Signal 3 always has.
+    #[test]
+    fn unknown_run_started_at_or_breadcrumb_mtime_still_reports_the_dead_dash() {
+        let now = SystemTime::now();
+        let ages = BTreeMap::new();
+
+        for (run_started_at, dash_breadcrumb_written_at, case) in [
+            (None, None, "both sides unknown - e.g. no run recorded yet"),
+            (
+                None,
+                Some(now),
+                "run_started_at unknown, breadcrumb mtime known",
+            ),
+            (
+                Some(now),
+                None,
+                "breadcrumb mtime unknown, run_started_at known",
+            ),
+        ] {
+            let inputs = WatchInputs {
+                run_events: &[],
+                full_events: &[],
+                now,
+                last_event_at: None,
+                step_lock_free: true,
+                wave_liveness_ages: &ages,
+                dash: DashProbe::NotServing {
+                    pid: Some(424_242),
+                    port: 7420,
+                },
+                run_started_at,
+                dash_breadcrumb_written_at,
+                dash_attempted_this_run: false,
+            };
+            assert_eq!(detect(&inputs).len(), 1, "{case}");
+        }
     }
 
     // --- order_signatures: the shared detector `rigger validate`'s own order-signature
@@ -992,6 +1331,9 @@ mod tests {
             step_lock_free: true,
             wave_liveness_ages: &BTreeMap::new(),
             dash: DashProbe::NotRecorded,
+            run_started_at: None,
+            dash_breadcrumb_written_at: None,
+            dash_attempted_this_run: false,
         };
         let anomalies = detect(&inputs);
         assert_eq!(anomalies.len(), 1);
@@ -1021,6 +1363,9 @@ mod tests {
             step_lock_free: true,
             wave_liveness_ages: &BTreeMap::new(),
             dash: DashProbe::NotRecorded,
+            run_started_at: None,
+            dash_breadcrumb_written_at: None,
+            dash_attempted_this_run: false,
         };
         assert!(detect(&inputs).is_empty());
     }
@@ -1081,6 +1426,9 @@ mod tests {
             step_lock_free: true,
             wave_liveness_ages: &BTreeMap::new(),
             dash: DashProbe::NotRecorded,
+            run_started_at: None,
+            dash_breadcrumb_written_at: None,
+            dash_attempted_this_run: false,
         };
         let anomalies = detect(&inputs);
         let signals: Vec<Signal> = anomalies.iter().map(|a| a.signal).collect();
