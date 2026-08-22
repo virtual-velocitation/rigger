@@ -10360,17 +10360,20 @@ fn installed_workflow_courier_waits_on_an_auto_backgrounded_step() {
 }
 
 /// Spec 46, criterion 1 - PERIPHERY (setup -> gitignore-on-disk seam): the always-on dash
-/// writes two runtime breadcrumbs under `.rigger/` - `.rigger/dash.url` and
-/// `.rigger/dash.marker`. Left untracked-and-not-ignored in a consumer's repo they get swept
-/// into a unit worktree's commit by `git add`, then collide with the live dash's rewrites when
-/// the conductor merges the unit ("untracked working tree files would be overwritten"). The
-/// implementer's unit tests call `init_project` IN-PROCESS and assert the `.gitignore` CONTENT
-/// and the returned report - but neither drives the real `rigger setup` subcommand end-to-end
-/// (arg dispatch -> cmd_setup -> init_project -> file write), and neither proves that a real
-/// git actually HONORS the written lines. This test closes that boundary: it runs the built
-/// binary's `setup`, reads the on-disk `.gitignore` the consumer keeps, and then proves the
-/// actual collision-preventing behavior - a real `git check-ignore` treats both breadcrumbs as
-/// ignored, so a later `git add` never sweeps them into a unit commit.
+/// writes runtime breadcrumbs under `.rigger/` - `.rigger/dash.url`, `.rigger/dash.marker`,
+/// and, since round 8 (spec 69, `record_dash_attempt`), `.rigger/dash.attempt`. Left
+/// untracked-and-not-ignored in a consumer's repo they get swept into a unit worktree's commit
+/// by `git add`, then collide with the live dash's rewrites when the conductor merges the unit
+/// ("untracked working tree files would be overwritten"). The implementer's unit tests call
+/// `init_project` IN-PROCESS and assert the `.gitignore` CONTENT and the returned report - but
+/// neither drives the real `rigger setup` subcommand end-to-end (arg dispatch -> cmd_setup ->
+/// init_project -> file write), and neither proves that a real git actually HONORS the written
+/// lines. This test closes that boundary: it runs the built binary's `setup`, reads the
+/// on-disk `.gitignore` the consumer keeps, and then proves the actual collision-preventing
+/// behavior - a real `git check-ignore` treats all three breadcrumbs as ignored, so a later
+/// `git add` never sweeps them into a unit commit. (The round-8 breadcrumb was added to this
+/// test's own list after the round-8 fix itself only extended `init_project`'s in-process unit
+/// tests, never this end-to-end git-honors-it proof - sdet-u69c1-r8-periphery-reaccounting.)
 #[test]
 fn setup_gitignores_the_dash_breadcrumbs_and_git_honors_them_end_to_end() {
     let dir = temp_project();
@@ -10382,8 +10385,8 @@ fn setup_gitignores_the_dash_breadcrumbs_and_git_honors_them_end_to_end() {
     let (_out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
     assert!(ok, "rigger setup must succeed; stderr:\n{err}");
 
-    // 1. CLI -> init_project -> disk wiring: the consumer's on-disk `.gitignore` ignores BOTH
-    //    dash breadcrumbs, exactly as it does for the other machine-local installs.
+    // 1. CLI -> init_project -> disk wiring: the consumer's on-disk `.gitignore` ignores ALL
+    //    THREE dash breadcrumbs, exactly as it does for the other machine-local installs.
     let gitignore = std::fs::read_to_string(root.join(".gitignore"))
         .expect("rigger setup must write a .gitignore at the project root");
     assert!(
@@ -10394,8 +10397,12 @@ fn setup_gitignores_the_dash_breadcrumbs_and_git_honors_them_end_to_end() {
         gitignore.lines().any(|l| l.trim() == ".rigger/dash.marker"),
         "the installed .gitignore must ignore the dash marker breadcrumb; got:\n{gitignore}"
     );
+    assert!(
+        gitignore.lines().any(|l| l.trim() == ".rigger/dash.attempt"),
+        "the installed .gitignore must ignore the round-8 dash attempt breadcrumb; got:\n{gitignore}"
+    );
 
-    // 2. The actual collision-preventing behavior, end to end: create the two breadcrumbs the
+    // 2. The actual collision-preventing behavior, end to end: create the three breadcrumbs the
     //    live dash would write, then prove a REAL git treats each as ignored. `git check-ignore
     //    -q` exits 0 only for an ignored path, so a subsequent `git add -A` (which the conductor
     //    runs before committing a unit) never sweeps them in, and the "untracked working tree
@@ -10407,7 +10414,12 @@ fn setup_gitignores_the_dash_breadcrumbs_and_git_honors_them_end_to_end() {
     )
     .unwrap();
     std::fs::write(root.join(".rigger").join("dash.marker"), "7420\n1234\n").unwrap();
-    for breadcrumb in [".rigger/dash.url", ".rigger/dash.marker"] {
+    std::fs::write(root.join(".rigger").join("dash.attempt"), "r1").unwrap();
+    for breadcrumb in [
+        ".rigger/dash.url",
+        ".rigger/dash.marker",
+        ".rigger/dash.attempt",
+    ] {
         let ignored = Command::new("git")
             .args(["check-ignore", "-q", breadcrumb])
             .current_dir(root)
@@ -10429,9 +10441,10 @@ fn setup_gitignores_the_dash_breadcrumbs_and_git_honors_them_end_to_end() {
 /// `.git/info/exclude`); if setup let those decide what to append, an operator whose global
 /// excludes already cover `.claude/` and `.rigger/` would ship a `.gitignore` MISSING the
 /// dash-breadcrumb lines - and a teammate or CI cloning with a clean HOME would then let
-/// `git add` sweep `.rigger/dash.url` / `.rigger/dash.marker` into a unit commit, the exact
-/// "untracked working tree files would be overwritten" collision criterion 1 exists to
-/// prevent. This test runs the real `rigger setup` under a `GIT_CONFIG_GLOBAL` whose
+/// `git add` sweep `.rigger/dash.url` / `.rigger/dash.marker` / `.rigger/dash.attempt` (round
+/// 8, spec 69) into a unit commit, the exact "untracked working tree files would be
+/// overwritten" collision criterion 1 exists to prevent. This test runs the real `rigger
+/// setup` under a `GIT_CONFIG_GLOBAL` whose
 /// `core.excludesFile` already ignores `.claude/` and `.rigger/`, and asserts the committed
 /// `.gitignore` STILL carries every required line - so the shipped artifact is machine
 /// independent. It is a regression guard against re-introducing a machine-local ignore lookup
@@ -10495,6 +10508,7 @@ fn setup_writes_a_machine_independent_gitignore_under_a_hostile_global_config() 
         ".rigger/shim",
         ".rigger/dash.url",
         ".rigger/dash.marker",
+        ".rigger/dash.attempt",
     ] {
         assert!(
             gitignore.lines().any(|l| l.trim() == pattern),
@@ -13777,6 +13791,87 @@ fn watch_once_reports_a_dead_marker_predating_run_started_when_dash_attempt_name
     );
 }
 
+/// SDET periphery gap, round-8 accounting (sdet-u69c1-r8-mutation-accounting-correction):
+/// EMPIRICALLY VERIFIED, not theoretical - the round-8 mutation-accounting decision
+/// (`u69c1r8-mutation-accounting`) claims `src/main.rs:6347` col 64 (`replace && with ||` in
+/// the `dash_attempted_this_run` expression, `!attempted_run.is_empty() && attempted_run ==
+/// run_id`) is CAUGHT. It is not: hand-applying exactly that mutation, rebuilding the release
+/// binary, and rerunning the full dash-liveness suite leaves every existing test green,
+/// including its own sibling `watch_once_reports_a_dead_marker_predating_run_started_when_
+/// dash_attempt_names_this_run` above and the real end-to-end
+/// `watch_once_reports_a_real_steps_own_dash_after_the_step_process_has_long_since_exited`
+/// below. The reason: every existing test that writes `.rigger/dash.attempt` at all writes a
+/// run id that MATCHES the run being watched, so `!attempted_run.is_empty()` (true for ANY
+/// nonempty content, matching or not) already forces the same `true` the real `==` comparison
+/// would - the `||` mutant is indistinguishable from correct code on every shape any current
+/// test drives. The one shape that DOES discriminate them - a nonempty `.rigger/dash.attempt`
+/// naming a DIFFERENT run than the one currently watched - was untested.
+///
+/// This closes it: the identical "predates this run" marker/timestamp shape the sibling test
+/// above uses (so the timestamp fallback alone would suppress), but `.rigger/dash.attempt`
+/// names a run this test never seeds ("some-other-run") instead of the watched run "r1" -
+/// modeling a real production shape (an EARLIER or unrelated run's own step attempted a dash,
+/// stamping the breadcrumb, before this fresh run ever touched it). `rigger watch --once`
+/// must report NOTHING: a foreign, non-matching `dash_attempted_this_run` fact must never
+/// override the fallback, only a genuine same-run match may. Under the `&&`-with-`||` mutant
+/// above, `!is_empty()` alone would force `dash_attempted_this_run = true` here regardless of
+/// the mismatch, wrongly reporting an anomaly - proving this test kills the mutant the
+/// existing suite could not.
+#[test]
+fn watch_once_suppresses_a_predating_marker_when_dash_attempt_names_a_different_run() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    // The dead marker, written FIRST - the identical shape the sibling match test above seeds.
+    let dead_port = free_loopback_port();
+    let dead_pid = u32::MAX;
+    DashMarker {
+        port: dead_port,
+        pid: dead_pid,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the dash marker");
+
+    // The same filesystem-mtime safety margin every sibling test in this file uses, so r1's
+    // own `RunStarted` lands unambiguously AFTER the marker write - the fallback comparison
+    // alone would suppress this exact shape.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    // r1: fresh and NOT done, seeded AFTER the marker - the run this watch is scoped to.
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["spec 69"]}"#),
+            ("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+        ],
+    );
+
+    // The critical difference from the sibling match test: `.rigger/dash.attempt` names a
+    // DIFFERENT, nonempty run id - never "r1", the run actually being watched. A real
+    // `ensure_run_dashboard`/`start_run_dashboard` call from r1's own step path would have
+    // written "r1" here; this models that no such call ever happened for r1 (the breadcrumb
+    // is foreign), so the explicit fact must stay silent and defer to the timestamp fallback.
+    std::fs::write(root.join(".rigger/dash.attempt"), "some-other-run")
+        .expect("seed a foreign dash attempt marker");
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 against a predating marker whose dash.attempt names \
+         a different run; stderr:\n{err}"
+    );
+    assert!(
+        out.trim().is_empty(),
+        "a dash.attempt breadcrumb naming a DIFFERENT run than the one being watched must NOT \
+         force reporting - only a genuine same-run match may override the timestamp fallback, \
+         and here the fallback alone suppresses (the marker predates r1's own RunStarted); \
+         got:\n{out}"
+    );
+}
+
 /// Spec 46, criterion 2 (the pre-run graph-hygiene guidance ships to CONSUMERS through the
 /// INSTALL seam): a consumer never edits rigger's own repo copies - they run `rigger setup`,
 /// which renders and INSTALLS the `using-rigger` skill into THEIR project at
@@ -15672,6 +15767,15 @@ fn step_honors_the_rigger_no_dash_opt_out() {
         !err.contains("serving this run"),
         "under RIGGER_NO_DASH the step announces no dash; stderr:\n{err}"
     );
+    // Round-8 fix (spec 69): `record_dash_attempt` is called only PAST the opt-out's early
+    // return in `ensure_run_dashboard` - an opted-out step attempts no dash at all, so there is
+    // nothing this run to vouch for. The doc comment on `ensure_run_dashboard` claims this
+    // explicitly; this closes the periphery gap on that claim, driven through a real step.
+    assert!(
+        !root.join(".rigger").join("dash.attempt").exists(),
+        "under RIGGER_NO_DASH the step must record NO dash attempt breadcrumb either - the \
+         opt-out skips record_dash_attempt along with the dash itself; one was written"
+    );
 }
 
 /// Spec 50, criterion 4 (opt-out): the CONFIG opt-out `dash: off` in workflow.yml suppresses the
@@ -15729,6 +15833,13 @@ fn step_honors_the_config_dash_off_opt_out() {
     assert!(
         !stderr.contains("serving this run"),
         "under `dash: off` the step announces no dash; stderr:\n{stderr}"
+    );
+    // Round-8 fix (spec 69): the config opt-out returns from `ensure_run_dashboard` before
+    // `record_dash_attempt` runs too, exactly like the env opt-out above - no dash breadcrumb
+    // of any kind for an opted-out step.
+    assert!(
+        !root.join(".rigger").join("dash.attempt").exists(),
+        "under `dash: off` the step must record NO dash attempt breadcrumb either; one was written"
     );
     // The run still proceeded normally: it registered its instance (criterion 2) even with the
     // dash opted out, proving the opt-out drops only the dash, not the run.
