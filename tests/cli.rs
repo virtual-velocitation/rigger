@@ -10758,17 +10758,20 @@ fn installed_workflow_courier_waits_on_an_auto_backgrounded_step() {
 }
 
 /// Spec 46, criterion 1 - PERIPHERY (setup -> gitignore-on-disk seam): the always-on dash
-/// writes two runtime breadcrumbs under `.rigger/` - `.rigger/dash.url` and
-/// `.rigger/dash.marker`. Left untracked-and-not-ignored in a consumer's repo they get swept
-/// into a unit worktree's commit by `git add`, then collide with the live dash's rewrites when
-/// the conductor merges the unit ("untracked working tree files would be overwritten"). The
-/// implementer's unit tests call `init_project` IN-PROCESS and assert the `.gitignore` CONTENT
-/// and the returned report - but neither drives the real `rigger setup` subcommand end-to-end
-/// (arg dispatch -> cmd_setup -> init_project -> file write), and neither proves that a real
-/// git actually HONORS the written lines. This test closes that boundary: it runs the built
-/// binary's `setup`, reads the on-disk `.gitignore` the consumer keeps, and then proves the
-/// actual collision-preventing behavior - a real `git check-ignore` treats both breadcrumbs as
-/// ignored, so a later `git add` never sweeps them into a unit commit.
+/// writes runtime breadcrumbs under `.rigger/` - `.rigger/dash.url`, `.rigger/dash.marker`,
+/// and, since round 8 (spec 69, `record_dash_attempt`), `.rigger/dash.attempt`. Left
+/// untracked-and-not-ignored in a consumer's repo they get swept into a unit worktree's commit
+/// by `git add`, then collide with the live dash's rewrites when the conductor merges the unit
+/// ("untracked working tree files would be overwritten"). The implementer's unit tests call
+/// `init_project` IN-PROCESS and assert the `.gitignore` CONTENT and the returned report - but
+/// neither drives the real `rigger setup` subcommand end-to-end (arg dispatch -> cmd_setup ->
+/// init_project -> file write), and neither proves that a real git actually HONORS the written
+/// lines. This test closes that boundary: it runs the built binary's `setup`, reads the
+/// on-disk `.gitignore` the consumer keeps, and then proves the actual collision-preventing
+/// behavior - a real `git check-ignore` treats all three breadcrumbs as ignored, so a later
+/// `git add` never sweeps them into a unit commit. (The round-8 breadcrumb was added to this
+/// test's own list after the round-8 fix itself only extended `init_project`'s in-process unit
+/// tests, never this end-to-end git-honors-it proof - sdet-u69c1-r8-periphery-reaccounting.)
 #[test]
 fn setup_gitignores_the_dash_breadcrumbs_and_git_honors_them_end_to_end() {
     let dir = temp_project();
@@ -10780,8 +10783,8 @@ fn setup_gitignores_the_dash_breadcrumbs_and_git_honors_them_end_to_end() {
     let (_out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
     assert!(ok, "rigger setup must succeed; stderr:\n{err}");
 
-    // 1. CLI -> init_project -> disk wiring: the consumer's on-disk `.gitignore` ignores BOTH
-    //    dash breadcrumbs, exactly as it does for the other machine-local installs.
+    // 1. CLI -> init_project -> disk wiring: the consumer's on-disk `.gitignore` ignores ALL
+    //    THREE dash breadcrumbs, exactly as it does for the other machine-local installs.
     let gitignore = std::fs::read_to_string(root.join(".gitignore"))
         .expect("rigger setup must write a .gitignore at the project root");
     assert!(
@@ -10792,8 +10795,12 @@ fn setup_gitignores_the_dash_breadcrumbs_and_git_honors_them_end_to_end() {
         gitignore.lines().any(|l| l.trim() == ".rigger/dash.marker"),
         "the installed .gitignore must ignore the dash marker breadcrumb; got:\n{gitignore}"
     );
+    assert!(
+        gitignore.lines().any(|l| l.trim() == ".rigger/dash.attempt"),
+        "the installed .gitignore must ignore the round-8 dash attempt breadcrumb; got:\n{gitignore}"
+    );
 
-    // 2. The actual collision-preventing behavior, end to end: create the two breadcrumbs the
+    // 2. The actual collision-preventing behavior, end to end: create the three breadcrumbs the
     //    live dash would write, then prove a REAL git treats each as ignored. `git check-ignore
     //    -q` exits 0 only for an ignored path, so a subsequent `git add -A` (which the conductor
     //    runs before committing a unit) never sweeps them in, and the "untracked working tree
@@ -10805,7 +10812,12 @@ fn setup_gitignores_the_dash_breadcrumbs_and_git_honors_them_end_to_end() {
     )
     .unwrap();
     std::fs::write(root.join(".rigger").join("dash.marker"), "7420\n1234\n").unwrap();
-    for breadcrumb in [".rigger/dash.url", ".rigger/dash.marker"] {
+    std::fs::write(root.join(".rigger").join("dash.attempt"), "r1").unwrap();
+    for breadcrumb in [
+        ".rigger/dash.url",
+        ".rigger/dash.marker",
+        ".rigger/dash.attempt",
+    ] {
         let ignored = Command::new("git")
             .args(["check-ignore", "-q", breadcrumb])
             .current_dir(root)
@@ -10827,9 +10839,10 @@ fn setup_gitignores_the_dash_breadcrumbs_and_git_honors_them_end_to_end() {
 /// `.git/info/exclude`); if setup let those decide what to append, an operator whose global
 /// excludes already cover `.claude/` and `.rigger/` would ship a `.gitignore` MISSING the
 /// dash-breadcrumb lines - and a teammate or CI cloning with a clean HOME would then let
-/// `git add` sweep `.rigger/dash.url` / `.rigger/dash.marker` into a unit commit, the exact
-/// "untracked working tree files would be overwritten" collision criterion 1 exists to
-/// prevent. This test runs the real `rigger setup` under a `GIT_CONFIG_GLOBAL` whose
+/// `git add` sweep `.rigger/dash.url` / `.rigger/dash.marker` / `.rigger/dash.attempt` (round
+/// 8, spec 69) into a unit commit, the exact "untracked working tree files would be
+/// overwritten" collision criterion 1 exists to prevent. This test runs the real `rigger
+/// setup` under a `GIT_CONFIG_GLOBAL` whose
 /// `core.excludesFile` already ignores `.claude/` and `.rigger/`, and asserts the committed
 /// `.gitignore` STILL carries every required line - so the shipped artifact is machine
 /// independent. It is a regression guard against re-introducing a machine-local ignore lookup
@@ -10893,6 +10906,7 @@ fn setup_writes_a_machine_independent_gitignore_under_a_hostile_global_config() 
         ".rigger/shim",
         ".rigger/dash.url",
         ".rigger/dash.marker",
+        ".rigger/dash.attempt",
     ] {
         assert!(
             gitignore.lines().any(|l| l.trim() == pattern),
@@ -13845,6 +13859,866 @@ fn setup_installs_every_per_operation_skill_into_the_consumer_project() {
     }
 }
 
+/// The three watch-discipline skill names spec 69, criterion 1 adds to the registry
+/// (`rigger docs`, `rigger validate`, and `rigger setup` already loop over `skill_registry()`
+/// generically, as `PER_OPERATION_SKILL_NAMES`'s own comment above notes - shared by the
+/// three tests below, mirroring that const's own trio one family later).
+const WATCHING_DISCIPLINE_SKILL_NAMES: [&str; 3] = [
+    "rigger-watch-a-run",
+    "rigger-restore-the-dash",
+    "rigger-diagnose-churn",
+];
+
+/// Spec 69, criterion 1 (the render pipeline reaches all THREE new registry entries, end to
+/// end, through the COMPILED binary): `rigger docs` renders every watch-discipline skill to
+/// its own committed `skills/<name>/SKILL.md`, with its own loadable frontmatter, its
+/// Procedure/Anti-move sections, and the structurally-stamped operator-binary prohibition.
+/// The implementer's own in-process `write_docs_writes_every_registry_skill_plus_the_handbook`
+/// and `install_and_docs_each_cover_exactly_the_registry_no_more_no_less` tests (src/main.rs)
+/// call `write_docs`/`install_skills` directly in-process against `skill_registry()` itself,
+/// which proves the pipeline is registry-generic but can never prove what the COMPILED binary
+/// actually writes to disk for THESE three names specifically - the sibling
+/// `docs_renders_every_per_operation_skill_through_the_compiled_binary` test proved the
+/// binary-driven render pipeline for the five-member family added by spec 68; it never drove
+/// this family, so a path-wiring bug specific to one of these three (`skill_source_rel`
+/// mapping a name to the wrong directory, or a registry entry silently dropped from the
+/// loop) would satisfy every existing binary-driving test and only show up here. This test
+/// also pins each skill's own runtime-interpolated content (the five signal names and the
+/// poll interval `rigger-watch-a-run` reads from `crate::watch`, the hung-holder/singleton
+/// language `rigger-restore-the-dash` carries, and the finding-audit/infra-separation
+/// language `rigger-diagnose-churn` carries) all the way through the render-to-disk seam, not
+/// just the render function's own return value the unit tests already check in-process.
+#[test]
+fn docs_renders_every_watching_discipline_skill_through_the_compiled_binary() {
+    let proj = temp_project();
+    let root = proj.path();
+
+    let (stdout, stderr, ok) = run_rigger(root, &["docs"]);
+    assert!(ok, "rigger docs must succeed; stderr: {stderr}");
+
+    for name in WATCHING_DISCIPLINE_SKILL_NAMES {
+        let rel = format!("skills/{name}/SKILL.md");
+        assert!(
+            stdout.contains(&rel),
+            "rigger docs must report rendering {name} at {rel}; got: {stdout}"
+        );
+
+        let path = root.join(&rel);
+        let rendered = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("rigger docs must have written {rel}: {e}"));
+        assert!(
+            rendered.starts_with(&format!("---\nname: {name}\n")),
+            "{name}: must open with its own loadable frontmatter; got: {}",
+            &rendered[..rendered.len().min(60)]
+        );
+        assert!(
+            rendered.contains("## Procedure") && rendered.contains("## Anti-move"),
+            "{name}: rendered skill must carry its Procedure and Anti-move sections; \
+             got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("## Operator binary boundary")
+                && rendered.contains("never installs, replaces, or modifies the operator's"),
+            "{name}: rendered skill must carry the structurally-stamped operator-binary \
+             prohibition; got:\n{rendered}"
+        );
+
+        // Byte-stable across runs (the drift check the next test relies on depends on this).
+        let (_o2, _e2, ok2) = run_rigger(root, &["docs"]);
+        assert!(ok2, "a second `rigger docs` run must succeed");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            rendered,
+            "{name}: a second render must be byte-identical"
+        );
+    }
+
+    // Each skill's own runtime-pinned content reaches the file the compiled binary actually
+    // wrote - not just the render function's in-process return value.
+    let watch_a_run = std::fs::read_to_string(root.join("skills/rigger-watch-a-run/SKILL.md"))
+        .expect("rigger docs wrote rigger-watch-a-run");
+    for signal_name in [
+        "escalated blockers",
+        "heartbeat staleness",
+        "dash liveness",
+        "reject-recurrence trend",
+        "frontier progress",
+    ] {
+        assert!(
+            watch_a_run.contains(signal_name),
+            "rigger-watch-a-run on disk must name signal {signal_name:?}; got:\n{watch_a_run}"
+        );
+    }
+    assert!(
+        watch_a_run.contains("ARM") && watch_a_run.contains("rigger watch"),
+        "rigger-watch-a-run on disk must tell the reader to ARM `rigger watch`; \
+         got:\n{watch_a_run}"
+    );
+
+    let restore_the_dash =
+        std::fs::read_to_string(root.join("skills/rigger-restore-the-dash/SKILL.md"))
+            .expect("rigger docs wrote rigger-restore-the-dash");
+    assert!(
+        restore_the_dash.contains("HUNG-HOLDER") && restore_the_dash.contains("SINGLETON"),
+        "rigger-restore-the-dash on disk must carry the hung-holder and singleton diagnosis; \
+         got:\n{restore_the_dash}"
+    );
+    assert!(
+        restore_the_dash.contains("rigger dash"),
+        "rigger-restore-the-dash on disk must name the real restart command; \
+         got:\n{restore_the_dash}"
+    );
+
+    let diagnose_churn =
+        std::fs::read_to_string(root.join("skills/rigger-diagnose-churn/SKILL.md"))
+            .expect("rigger docs wrote rigger-diagnose-churn");
+    assert!(
+        diagnose_churn.contains("FINDING AUDIT")
+            && diagnose_churn.contains("SEPARATE")
+            && diagnose_churn.contains("INFRA"),
+        "rigger-diagnose-churn on disk must carry the finding-audit and infra-separation \
+         steps; got:\n{diagnose_churn}"
+    );
+    assert!(
+        diagnose_churn.contains("planning-a-spec") && diagnose_churn.contains("churn signature"),
+        "rigger-diagnose-churn on disk must cross-link the churn-signature table rather than \
+         duplicate it; got:\n{diagnose_churn}"
+    );
+}
+
+/// Spec 69, criterion 1 (the docs-drift GATE covers all THREE new entries individually, end
+/// to end, through the compiled binary): `rigger validate` fails when exactly ONE
+/// watch-discipline skill has drifted, names that skill (and no other registry member -
+/// neither a sibling watch-discipline skill nor a pre-existing entry from an earlier family),
+/// and passes again once it is re-rendered - proven for EACH of the three in turn. Mirrors
+/// the sibling `validate_docs_drift_gate_covers_each_per_operation_skill` test's rationale:
+/// `docs_drift` builds its check list by mapping each registry name through
+/// `skill_source_rel`, so a copy-paste mistake in that mapping for any ONE of these three
+/// entries would only be caught by exercising that entry's own path, not by exercising any
+/// other - and only a real subprocess run proves the compiled binary's exit status and
+/// stderr wording, which the implementer's in-process tests never invoke.
+#[test]
+fn validate_docs_drift_gate_covers_each_watching_discipline_skill() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_o, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    let (_o, err, ok) = run_rigger(root, &["docs"]);
+    assert!(ok, "rigger docs must succeed; stderr:\n{err}");
+
+    // Baseline: every committed doc, including all three watch-discipline entries, starts in
+    // sync.
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "validate must pass when every registry entry (including the three watch-discipline \
+         ones) is in sync; stderr:\n{err}"
+    );
+
+    for name in WATCHING_DISCIPLINE_SKILL_NAMES {
+        let path = root.join(format!("skills/{name}/SKILL.md"));
+        assert!(
+            path.exists(),
+            "rigger docs must have written {name}'s skill"
+        );
+
+        append_line(&path, "hand-edited line the render never emits");
+        let (_out, err, ok) = run_rigger(root, &["validate"]);
+        assert!(!ok, "validate must FAIL when {name} drifts; stderr:\n{err}");
+        assert!(
+            err.contains(&format!("skills/{name}/SKILL.md")) && err.contains("rigger docs"),
+            "the drift failure must name the drifted {name} skill and the `rigger docs` fix; \
+             stderr:\n{err}"
+        );
+        for other in WATCHING_DISCIPLINE_SKILL_NAMES
+            .iter()
+            .filter(|other| **other != name)
+        {
+            assert!(
+                !err.contains(&format!("skills/{other}/SKILL.md")),
+                "{name} alone drifted, but the failure also names untouched sibling {other}; \
+                 stderr:\n{err}"
+            );
+        }
+        for other in PER_OPERATION_SKILL_NAMES {
+            assert!(
+                !err.contains(&format!("skills/{other}/SKILL.md")),
+                "{name} alone drifted, but the failure also names an untouched \
+                 per-operation-family entry {other}; stderr:\n{err}"
+            );
+        }
+        assert!(
+            !err.contains("skills/using-rigger/SKILL.md")
+                && !err.contains("skills/planning-a-spec/SKILL.md"),
+            "{name} alone drifted, but the failure also names an untouched pre-existing \
+             registry entry; stderr:\n{err}"
+        );
+
+        // Re-render restores sync for every entry -> validate passes again before the next
+        // iteration drifts a different one.
+        let (_o, _e, ok) = run_rigger(root, &["docs"]);
+        assert!(ok, "re-rendering the docs must succeed");
+        let (_out, err, ok) = run_rigger(root, &["validate"]);
+        assert!(
+            ok,
+            "validate must pass again once {name}'s drift is re-rendered; stderr:\n{err}"
+        );
+    }
+}
+
+/// Spec 69, criterion 1 (the INSTALL seam reaches all THREE new entries, end to end, through
+/// the compiled binary): `rigger setup` installs every watch-discipline skill into the
+/// consumer project at its own `.claude/skills/<name>/SKILL.md` path, carrying the
+/// operator-binary prohibition, and reports installing it; a no-op rerun leaves every one of
+/// them untouched (no report line, no moved mtime). Mirrors the sibling
+/// `setup_installs_every_per_operation_skill_into_the_consumer_project` test's rationale:
+/// install is its own function with its own loop (`install_skills`), independent from the
+/// docs/render and validate/drift seams the two tests above cover, so a bug specific to that
+/// loop (skipping an entry, or reusing one `InstallOutcome`/one rendered body across several
+/// entries) would pass every other test in this file and only show up by checking each
+/// installed file's own name and content here.
+#[test]
+fn setup_installs_every_watching_discipline_skill_into_the_consumer_project() {
+    let proj = temp_project();
+    let root = proj.path();
+
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+
+    let mut installed_before = Vec::new();
+    for name in WATCHING_DISCIPLINE_SKILL_NAMES {
+        let installed_path = root.join(format!(".claude/skills/{name}/SKILL.md"));
+        assert!(
+            installed_path.exists(),
+            "setup must install {name} at .claude/skills/{name}/SKILL.md"
+        );
+        assert!(
+            out.contains(&format!("installed the {name} skill"))
+                && out.contains(&format!(".claude/skills/{name}/SKILL.md")),
+            "setup must report installing {name}; got:\n{out}"
+        );
+
+        let installed = std::fs::read_to_string(&installed_path)
+            .unwrap_or_else(|e| panic!("{name} was installed: {e}"));
+        assert!(
+            installed.starts_with(&format!("---\nname: {name}\n")),
+            "the installed {name} skill must be loadable; got: {}",
+            &installed[..installed.len().min(60)]
+        );
+        assert!(
+            installed.contains("## Operator binary boundary"),
+            "the installed {name} skill must carry the operator-binary prohibition too; \
+             got:\n{installed}"
+        );
+
+        let mtime = std::fs::metadata(&installed_path)
+            .unwrap()
+            .modified()
+            .unwrap();
+        installed_before.push((name, installed_path, mtime));
+    }
+
+    // A no-op rerun leaves every one of the three untouched: no install/refresh report line,
+    // and not even a moved mtime.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let (out2, err2, ok2) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok2, "a no-op setup rerun must succeed; stderr:\n{err2}");
+    for (name, installed_path, before) in installed_before {
+        assert!(
+            !out2.contains(&format!("installed the {name} skill"))
+                && !out2.contains(&format!("refreshed the drifted {name} skill")),
+            "an already-current {name} must not be reported as installed/refreshed; \
+             got:\n{out2}"
+        );
+        let after = std::fs::metadata(&installed_path)
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert_eq!(
+            before, after,
+            "an up-to-date {name} must not even move its mtime"
+        );
+    }
+}
+
+/// Spec 69, criterion 1 (WATCH SKILLS RENDER TRUE, proven against the ACTUAL compiled
+/// `rigger watch --once`, not merely trusted from the render function's own prose): whenever
+/// the COMMITTED `rigger-restore-the-dash` skill claims (verbatim) that "`rigger watch
+/// --once` ... verifies the recorded marker by actually probing its port, and prints a
+/// `dash liveness` line naming the dead PID when nothing answers there", that claim must be TRUE
+/// of the real binary, not merely asserted in prose - so this drives the real `rigger watch
+/// --once` through the exact "dead marker" scenario the skill describes (a
+/// `.rigger/dash.marker` naming a definitely-dead pid on a definitely-unbound loopback port,
+/// the same file `cmd_watch` actually reads) and checks the output against the skill's own
+/// literal promise. The check is GATED on the skill still making that specific claim (read
+/// fresh from the compiled binary's own `rigger docs` output) rather than fixed here as a
+/// hardcoded expectation: this test's job is proving the shipped PROSE never outruns the
+/// shipped CODE, not prescribing which of the two a future round corrects to close the gap -
+/// so a round that instead rewrites the claim to describe different real behavior leaves this
+/// test nothing to check, and it passes cleanly, exactly as it should. This is the corrected
+/// successor of an earlier version of this same test that pinned the identical promise
+/// against `rigger status` instead: `cmd_status` (src/main.rs) has no liveness check at all
+/// (that is sibling criterion u69c4's territory, not yet integrated here), so the skill text
+/// was rewritten to point operators at the check that is ALREADY true today - `rigger watch
+/// --once`, confirmed live above `cmd_watch`'s own marker-read-and-probe (src/main.rs, near
+/// `dash::DashMarker::read`/`dash::dash_serving_on`) - and this test now pins THAT claim
+/// instead of the one that no longer ships.
+/// `docs_renders_every_watching_discipline_skill_through_the_compiled_binary` above only
+/// proves the skill's rendered TEXT is stable and structurally complete; it cannot catch text
+/// describing a command behavior the command does not actually have, which is a boundary bug
+/// this criterion's own Done-when text ("command references accuracy-pinned") exists to catch
+/// one level deeper than a bare subcommand name.
+#[test]
+fn watch_once_output_matches_what_restore_the_dash_promises_about_a_dead_marker() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    let (_o, err, ok) = run_rigger(root, &["docs"]);
+    assert!(ok, "rigger docs must succeed; stderr:\n{err}");
+    let restore_the_dash =
+        std::fs::read_to_string(root.join("skills/rigger-restore-the-dash/SKILL.md"))
+            .expect("rigger docs wrote rigger-restore-the-dash");
+    let claims_watch_once_verifies_the_marker = restore_the_dash.contains(
+        "verifies the recorded marker by actually probing its port, and prints a `dash \
+         liveness` line naming the dead PID when nothing answers there",
+    );
+    if !claims_watch_once_verifies_the_marker {
+        // The shipped skill no longer makes this specific claim - nothing left to enforce.
+        return;
+    }
+
+    // A definitely-unbound loopback port (reserved-then-released, per this file's own
+    // `free_loopback_port` convention) and an impossible pid (`u32::MAX`, the same
+    // "impossible pid" value `pid_is_alive_reports_self_and_rejects_an_impossible_pid`,
+    // src/dash.rs, already pins) - so nothing on this machine answers on the port and no
+    // process holds the pid. `cmd_watch` reads ONLY `.rigger/dash.marker` for this signal
+    // (no `.rigger/dash.url` breadcrumb involved), so seeding just the marker exactly
+    // matches what the compiled binary actually consumes.
+    let dead_port = free_loopback_port();
+    let dead_pid = u32::MAX;
+    DashMarker {
+        port: dead_port,
+        pid: dead_pid,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the dash marker");
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 even with a dead dash marker; stderr:\n{err}"
+    );
+
+    // The skill's literal promise: a `dash liveness` line naming the dead pid.
+    assert!(
+        out.contains("dash liveness") && out.contains(&dead_pid.to_string()),
+        "rigger-restore-the-dash promises `rigger watch --once` prints a `dash liveness` \
+         line naming the dead pid {dead_pid} for a marker like this one - either the skill \
+         overclaims what the compiled binary does, or `rigger watch`'s own dash-liveness \
+         signal has regressed; got:\n{out}"
+    );
+}
+
+/// Round-3 reject cause (adv-u69c1r3-watch-once-inherits-marker-absent-blindspot), closed:
+/// the sibling test above only seeds `.rigger/dash.marker`, the shape ONLY the `rigger step`
+/// drive path ever writes. `rigger run` and `rigger serve` (`spawn_run_dashboard` /
+/// `spawn_run_dashboard_detached`, src/main.rs) write ONLY `.rigger/dash.url`, never a
+/// marker - 2 of the 3 real dash-launching drivers. Before the round-4 fix, `watch_poll`
+/// mapped an absent marker straight to `DashProbe::NotRecorded`, which `detect()` never
+/// turns into an anomaly, so `rigger watch --once` printed NOTHING for this exact,
+/// empirically-reproduced shape (verified by the round-3 adversary against the real
+/// binary). This drives that identical shape - a `dash.url` naming a definitely-unbound
+/// loopback port, with NO `dash.marker` file at all - through the real compiled binary and
+/// proves it now reports the dead dash, not silence.
+///
+/// Unlike its marker-present sibling, this is NOT gated on a specific skill-prose string:
+/// it pins the underlying MECHANISM (`watch_poll`'s marker-absent fallback to the recorded
+/// URL's own port) directly, the same way `watch_once_on_a_freshly_initialized_store_reports_nothing_and_exits_cleanly`
+/// pins the clean-store path unconditionally - a future prose rewrite has nothing to do
+/// with whether this specific driver shape is actually caught.
+#[test]
+fn watch_once_reports_a_dead_dash_when_only_the_url_breadcrumb_is_recorded_and_no_marker_exists() {
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    // Exactly what `spawn_run_dashboard`/`spawn_run_dashboard_detached` write on `rigger run`
+    // / `rigger serve`: `.rigger/dash.url`, and nothing else - no `.rigger/dash.marker`.
+    let dead_port = free_loopback_port();
+    std::fs::write(
+        root.join(".rigger/dash.url"),
+        format!("http://127.0.0.1:{dead_port}/"),
+    )
+    .expect("seed the dash.url breadcrumb");
+    assert!(
+        !root.join(".rigger/dash.marker").exists(),
+        "this fixture must leave no marker behind - that is the exact shape under test"
+    );
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 even with a dead, marker-less dash url; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("dash liveness") && out.contains(&dead_port.to_string()),
+        "a dash.url naming a dead port with NO marker must still be reported - either \
+         watch_poll's marker-absent fallback regressed, or it was never reached; got:\n{out}"
+    );
+    assert!(
+        !out.contains("marker names dead pid"),
+        "with no marker recorded there is no pid to name - a marker-present phrasing here \
+         means a pid was invented rather than genuinely read; got:\n{out}"
+    );
+}
+
+/// The other half of the marker-absent fallback: a GENUINELY LIVE dash reached only
+/// through the URL breadcrumb (still no marker) must read as `Serving`, not merely "not
+/// verifiably dead". The sibling test above only proves the dead-port half; mutation
+/// testing (round-4 mutation-efficacy accounting) found `dash::dash_serving_on(port)` in
+/// `watch_poll`'s marker-absent branch hardcoded to `false` survived every test in the
+/// suite - nothing drove a real, answering dash through this exact fallback path, so a
+/// regression that always reported it as dead would have gone undetected. Spins up a real
+/// `rigger dash`, records ONLY its URL (the `rigger run` / `rigger serve` shape - no
+/// marker), and asserts `rigger watch --once` reports no anomaly.
+#[test]
+fn watch_once_reports_nothing_when_a_real_dash_serves_the_url_only_recorded_port() {
+    use std::process::Stdio;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    let dash_port = free_loopback_port();
+    let url = format!("http://127.0.0.1:{dash_port}/");
+    let mut dash = common::rigger_courier()
+        .args(["dash", "--port", &dash_port.to_string()])
+        .current_dir(root)
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn a serving `rigger dash`");
+    if !matches!(http_get(&url), Some(body) if body.contains("rigger dash")) {
+        let _ = dash.kill();
+        let _ = dash.wait();
+        panic!("the serving `rigger dash` never came up at {url}");
+    }
+
+    // Exactly the marker-absent shape: only `.rigger/dash.url` recorded, no
+    // `.rigger/dash.marker` - the URL points at a port a REAL dash answers on.
+    std::fs::write(root.join(".rigger/dash.url"), &url).expect("seed the dash.url breadcrumb");
+    assert!(
+        !root.join(".rigger/dash.marker").exists(),
+        "this fixture must leave no marker behind - that is the exact shape under test"
+    );
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+
+    // Reap the dash BEFORE asserting so a failure never leaks a dashboard.
+    let _ = dash.kill();
+    let _ = dash.wait();
+
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 against a genuinely live, marker-less dash; stderr:\n{err}"
+    );
+    assert!(
+        out.trim().is_empty(),
+        "a dash genuinely serving the URL-only recorded port (no marker) must report NO dash \
+         liveness anomaly - either the marker-absent fallback never probes for real, or it \
+         misreads a live dash as dead; got:\n{out}"
+    );
+}
+
+/// Round-4 reject (adv-u69c1r4-dash-anomaly-permanent-false-positive), round-5 fix: `.rigger/
+/// dash.marker` and `.rigger/dash.url` are project-level singleton files never removed once
+/// their dash exits, so a project's FIRST run leaves a dead marker behind forever - and
+/// before the round-5 fix, every LATER `rigger watch --once` in that same project reported a
+/// permanent false "dash liveness" anomaly, even after a run finished successfully with no
+/// dash-launching process left to be dead. `watch::detect`'s own unit test
+/// (`a_done_run_never_reports_a_dead_dash_either`, src/watch.rs) proves the pure function
+/// gates Signal 3 on `!run.done()`, mirroring Signal 2's existing gate two lines above it -
+/// but that test builds `WatchInputs` directly in-process and never proves `watch_poll`
+/// (the real I/O seam: `require_store_dir`, the marker file read, the dash probe) and
+/// `cmd_watch`'s dedup/print loop actually wire a real DONE run's events through to that
+/// gate. This drives the identical marker-present dead-dash shape
+/// `watch_once_output_matches_what_restore_the_dash_promises_about_a_dead_marker` above
+/// pins for an UNFINISHED run, but through a DONE run's real store, and proves the compiled
+/// binary reports nothing - the boundary the round-4 adversary finding demanded. Confirmed
+/// this reproduces the round-4 defect: reverted to `ec4c316` (round-4 HEAD, before the
+/// `!run.done()` gate existed) this test fails, printing a "dash liveness" line naming the
+/// dead pid for a run whose every unit already integrated.
+#[test]
+fn watch_once_reports_no_dash_anomaly_for_a_done_run_even_with_a_dead_marker() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    // A done run: one unit started and integrated, no failed deferred gate - exactly
+    // `ledger::Run::done`'s own three conjuncts (non-empty, all-integrated, no deferred
+    // gate failure).
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["spec 69"]}"#),
+            ("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+            ("UnitIntegrated", r#"{"id":"u1","commit":"abc"}"#),
+        ],
+    );
+
+    // The exact dead-marker shape the unfinished-run sibling test seeds: a definitely-unbound
+    // loopback port and an impossible pid, so nothing on this machine answers on the port and
+    // no process holds the pid.
+    let dead_port = free_loopback_port();
+    let dead_pid = u32::MAX;
+    DashMarker {
+        port: dead_port,
+        pid: dead_pid,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the dash marker");
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 on a done run with a dead dash marker; stderr:\n{err}"
+    );
+    assert!(
+        out.trim().is_empty(),
+        "a DONE run's stale dash marker must report NO dash liveness anomaly - the run \
+         finished and its dash exited on purpose, which is success, not a dead dash; \
+         got:\n{out}"
+    );
+}
+
+/// Round-5 reject cause (adv2-u69c1-r5-uphold-sdet-second-run-stale-marker), round-6 fix: the
+/// round-5 `!run.done()` gate above only scopes the CURRENTLY WATCHED run's own done-ness -
+/// `.rigger/dash.marker` is a project-level singleton NEVER removed once its dash exits (same
+/// fact the sibling test above relies on), so a FRESH, NOT-DONE run that never itself touched
+/// the dash still inherited an EARLIER, already-done run's stale dead marker as a false
+/// anomaly. This is the exact shape sdet-u69c1-r5-second-run-stale-marker-false-positive and
+/// adv2-u69c1-r5-uphold-sdet-second-run-stale-marker independently reproduced against the real
+/// binary: seed a done run r1 with a dead marker, THEN a fresh not-done run r2 with zero
+/// dash-related activity of its own, and prove `rigger watch --once` reports nothing for r2 -
+/// the marker predates r2's own `RunStarted`, so it cannot be r2's own breadcrumb. Per
+/// adv2-u69c1-r5-root-cause-marker-lacks-run-identity, the fix does not reshape
+/// `DashMarker` (spec 39's idempotent-start-on-step contract needs the marker to persist
+/// ACROSS runs by design); it compares the breadcrumb file's own mtime against this run's own
+/// `RunStarted` moment instead - a separate per-run fact, not a mutation of the shared marker.
+#[test]
+fn watch_once_reports_no_dash_anomaly_for_a_fresh_run_that_inherits_an_earlier_runs_dead_marker() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    // r1: done (one unit started and integrated, no failed deferred gate) - `ledger::Run::
+    // done`'s own three conjuncts, exactly as the sibling test above seeds it.
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["spec 69"]}"#),
+            ("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+            ("UnitIntegrated", r#"{"id":"u1","commit":"abc"}"#),
+        ],
+    );
+
+    // r1's dash died and left its marker behind - the project-level singleton is never
+    // removed on exit. The exact dead-marker shape both sibling tests above seed: a
+    // definitely-unbound loopback port and an impossible pid.
+    let dead_port = free_loopback_port();
+    let dead_pid = u32::MAX;
+    DashMarker {
+        port: dead_port,
+        pid: dead_pid,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the dash marker");
+
+    // A filesystem-mtime safety margin: r2's own `RunStarted` (recorded_at is stamped at
+    // nanosecond precision by the store, but the marker file's mtime is whatever the
+    // filesystem grants) must land strictly AFTER the marker write on any filesystem's
+    // mtime granularity, so the fix under test - comparing the marker's mtime against r2's
+    // own run-start moment - sees an unambiguous order rather than a coin-flip tie.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    // r2: fresh, NOT done, and never itself touched the dash - zero dash-related activity
+    // of its own. Nothing wrote or refreshed `.rigger/dash.marker` after r2 began; a real
+    // r2 whose own step path called `ensure_run_dashboard` would have rewritten it.
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r2","criteria":["spec 69"]}"#),
+            ("UnitStarted", r#"{"id":"u2","agent":"worker"}"#),
+        ],
+    );
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 for a fresh run inheriting an earlier run's dead \
+         marker; stderr:\n{err}"
+    );
+    assert!(
+        out.trim().is_empty(),
+        "a fresh, not-done run that never touched the dash must report NO dash liveness \
+         anomaly for a marker an EARLIER, already-done run left behind - the marker predates \
+         this run's own RunStarted, so it cannot be this run's own breadcrumb; got:\n{out}"
+    );
+}
+
+/// SDET periphery gap (round-6 accounting): every existing binary-level dash-liveness test
+/// exercises either the SUPPRESS side of the round-6 mtime comparison (the sibling above:
+/// breadcrumb strictly OLDER than `run_started_at`) or the UNKNOWN side (no `RunStarted`
+/// seeded at all, so `run_started_at` is `None` and the burden-of-proof-toward-reporting
+/// default fires regardless of the comparison). None drove the third, most ordinary case
+/// through the real compiled binary: a fresh, NOT-DONE run whose OWN dash breadcrumb is
+/// written AFTER its own `RunStarted` and then genuinely dies.
+///
+/// This IS the real call order, confirmed against the compiled binary (round-8
+/// investigation, not merely read from source): `cmd_step` calls `enforce_definition_pin`
+/// (which mints a brand-new run's `RunStarted` via `runscope::ensure_started_pinned` /
+/// `start_fresh` when the store has none yet) BEFORE it calls `ensure_run_dashboard` - so on
+/// a project's first-ever step, `RunStarted.recorded_at` lands measurably before the dash
+/// marker's own mtime, not after. (`rigger run` / `rigger serve` share the identical shape via
+/// `fresh_run_if_requested`, called before `start_run_dashboard`.) The sibling
+/// `watch_once_reports_a_real_steps_own_dash_after_the_step_process_has_long_since_exited`
+/// test below proves this end to end through a REAL `rigger step` and a REAL killed dash
+/// process, with no synthetic event seeding at all - the authoritative confirmation this
+/// synthetic-seeding test's own comment here would otherwise only assert.
+///
+/// `watch::detect`'s own unit test
+/// (`a_dead_dash_url_with_no_marker_is_reported_without_inventing_a_pid`, src/watch.rs)
+/// pins this at the pure-function level by constructing `WatchInputs` directly in-process,
+/// but that is structurally blind to `watch_poll`'s real wiring (src/main.rs): the
+/// `run_events.first().map(|e| e.recorded_at)` read and the `mtime_of` filesystem read that
+/// feed `run_started_at`/`dash_breadcrumb_written_at`. An inverted comparison there (`<`
+/// flipped to `<=`/`>`, or `mtime_of` reading the wrong file) would silently swallow every
+/// LIVE run's own genuinely dead dash - the single most common real anomaly this signal
+/// exists to catch - while every other test in this file kept passing, since none of them
+/// pin the "both known, breadcrumb newer" direction against the real binary. This closes
+/// that gap: seeds a fresh, not-done run's `RunStarted`, waits past the sleep margin the
+/// sibling tests use, THEN writes the dead marker (so its mtime unambiguously postdates
+/// `run_started_at`), and proves `rigger watch --once` still reports it. Since round 8, this
+/// exercises the fallback path specifically (`dash_attempted_this_run` is `false` here - this
+/// test never calls the real dash-ensure code path that would set it - so the report comes
+/// entirely from the pre-existing `dash_breadcrumb_written_at`/`run_started_at` comparison,
+/// unchanged by the round-8 fix).
+#[test]
+fn watch_once_reports_this_runs_own_dead_marker_when_written_after_its_run_started() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    // r1: fresh and NOT done (started, one unit still in flight) - the run whose own dash
+    // this marker belongs to.
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["spec 69"]}"#),
+            ("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+        ],
+    );
+
+    // The same filesystem-mtime safety margin the fresh-run sibling test above uses, so the
+    // marker's mtime lands unambiguously AFTER r1's own `RunStarted.recorded_at` rather than
+    // risking a coin-flip tie on a coarse-grained filesystem clock.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    // The dash launched moments into r1's own run and then died - exactly the shape
+    // `ensure_run_dashboard` leaves (marker written once, near run start, never refreshed
+    // while the dash stays up). A definitely-unbound loopback port and an impossible pid,
+    // the same dead-marker shape every sibling test in this file seeds.
+    let dead_port = free_loopback_port();
+    let dead_pid = u32::MAX;
+    DashMarker {
+        port: dead_port,
+        pid: dead_pid,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the dash marker");
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 on a fresh run with its own dead dash marker; \
+         stderr:\n{err}"
+    );
+    assert!(
+        out.contains("dash liveness") && out.contains(&dead_pid.to_string()),
+        "a fresh, not-done run's OWN dead dash marker - written strictly AFTER this run's own \
+         RunStarted, so it cannot be mistaken for an inherited earlier run's stale breadcrumb \
+         - must still be reported; either the round-6 mtime comparison misreads this ordinary \
+         case as inherited, or the wiring feeding it `run_started_at`/`dash_breadcrumb_written_at` \
+         has regressed; got:\n{out}"
+    );
+}
+
+/// Round-8 fix, `watch_poll`'s own wiring (src/main.rs) for `dash_attempted_this_run`: the
+/// sibling `watch_once_reports_a_real_steps_own_dash_after_the_step_process_has_long_since_exited`
+/// test above drives the REAL `ensure_run_dashboard` write site end to end, but in every real
+/// production shape the timestamp FALLBACK (`dash_breadcrumb_written_at`/`run_started_at`)
+/// independently reaches the same "report it" answer too (this file's own investigation proved
+/// the marker always postdates RunStarted for a real run's own attempt) - so that test cannot,
+/// by itself, prove `watch_poll`'s `.rigger/dash.attempt` READ and run-id MATCH
+/// (`main.rs::watch_poll`, the `std::fs::read_to_string(loc.file(DASH_ATTEMPT_FILE))...
+/// attempted_run == run_id` expression) is actually load-bearing: a mutant that broke JUST that
+/// expression (e.g. inverting the `==`, deleting the `!attempted_run.is_empty()` guard, or an
+/// `&&`/`||` flip) would still pass it via the independently-correct fallback. This test closes
+/// that gap by constructing the ONE shape where the two signals DISAGREE - synthetically, since
+/// no real production sequence can produce it (this file's own investigation again): a marker
+/// whose mtime PROVABLY PREDATES `RunStarted` (the fallback alone would suppress, exactly the
+/// shape `watch_once_reports_no_dash_anomaly_for_a_fresh_run_that_inherits_an_earlier_runs_dead_
+/// marker` above proves suppresses), but with `.rigger/dash.attempt` naming this EXACT run,
+/// written directly (not through a real `ensure_run_dashboard` call, which never produces this
+/// ordering) - proving the report fires ONLY because `dash_attempted_this_run` genuinely
+/// overrode the fallback, not coincidentally.
+#[test]
+fn watch_once_reports_a_dead_marker_predating_run_started_when_dash_attempt_names_this_run() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    // The dead marker, written FIRST - the same definitely-unbound loopback port and
+    // impossible pid every sibling test in this file seeds.
+    let dead_port = free_loopback_port();
+    let dead_pid = u32::MAX;
+    DashMarker {
+        port: dead_port,
+        pid: dead_pid,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the dash marker");
+
+    // The same filesystem-mtime safety margin the inherited-marker sibling test above uses, so
+    // r1's own `RunStarted` lands unambiguously AFTER the marker write.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    // r1: fresh and NOT done, seeded AFTER the marker - the exact "predates this run" shape
+    // `watch_once_reports_no_dash_anomaly_for_a_fresh_run_that_inherits_an_earlier_runs_dead_
+    // marker` above proves the FALLBACK ALONE suppresses.
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["spec 69"]}"#),
+            ("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+        ],
+    );
+
+    // The critical breadcrumb: `.rigger/dash.attempt` names r1 directly - simulating what a
+    // real `ensure_run_dashboard` call would have written this run, WITHOUT actually calling
+    // it (which would rewrite the marker with a fresh mtime and defeat the very ordering this
+    // test needs). This is the one fact `watch_poll` must read and match against r1's own id.
+    std::fs::write(root.join(".rigger/dash.attempt"), "r1").expect("seed the dash attempt marker");
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 against a predating marker whose dash.attempt names \
+         this run; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("dash liveness") && out.contains(&dead_pid.to_string()),
+        "a marker that LOOKS like it predates this run's own RunStarted must still be reported \
+         when .rigger/dash.attempt explicitly names this exact run - proving watch_poll's own \
+         file-read-and-match wiring (not merely the pure watch::detect fallback comparison, \
+         which alone would suppress this exact shape) is what forced the report; got:\n{out}"
+    );
+}
+
+/// SDET periphery gap, round-8 accounting (sdet-u69c1-r8-mutation-accounting-correction):
+/// EMPIRICALLY VERIFIED, not theoretical - the round-8 mutation-accounting decision
+/// (`u69c1r8-mutation-accounting`) claims `src/main.rs:6347` col 64 (`replace && with ||` in
+/// the `dash_attempted_this_run` expression, `!attempted_run.is_empty() && attempted_run ==
+/// run_id`) is CAUGHT. It is not: hand-applying exactly that mutation, rebuilding the release
+/// binary, and rerunning the full dash-liveness suite leaves every existing test green,
+/// including its own sibling `watch_once_reports_a_dead_marker_predating_run_started_when_
+/// dash_attempt_names_this_run` above and the real end-to-end
+/// `watch_once_reports_a_real_steps_own_dash_after_the_step_process_has_long_since_exited`
+/// below. The reason: every existing test that writes `.rigger/dash.attempt` at all writes a
+/// run id that MATCHES the run being watched, so `!attempted_run.is_empty()` (true for ANY
+/// nonempty content, matching or not) already forces the same `true` the real `==` comparison
+/// would - the `||` mutant is indistinguishable from correct code on every shape any current
+/// test drives. The one shape that DOES discriminate them - a nonempty `.rigger/dash.attempt`
+/// naming a DIFFERENT run than the one currently watched - was untested.
+///
+/// This closes it: the identical "predates this run" marker/timestamp shape the sibling test
+/// above uses (so the timestamp fallback alone would suppress), but `.rigger/dash.attempt`
+/// names a run this test never seeds ("some-other-run") instead of the watched run "r1" -
+/// modeling a real production shape (an EARLIER or unrelated run's own step attempted a dash,
+/// stamping the breadcrumb, before this fresh run ever touched it). `rigger watch --once`
+/// must report NOTHING: a foreign, non-matching `dash_attempted_this_run` fact must never
+/// override the fallback, only a genuine same-run match may. Under the `&&`-with-`||` mutant
+/// above, `!is_empty()` alone would force `dash_attempted_this_run = true` here regardless of
+/// the mismatch, wrongly reporting an anomaly - proving this test kills the mutant the
+/// existing suite could not.
+#[test]
+fn watch_once_suppresses_a_predating_marker_when_dash_attempt_names_a_different_run() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    // The dead marker, written FIRST - the identical shape the sibling match test above seeds.
+    let dead_port = free_loopback_port();
+    let dead_pid = u32::MAX;
+    DashMarker {
+        port: dead_port,
+        pid: dead_pid,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the dash marker");
+
+    // The same filesystem-mtime safety margin every sibling test in this file uses, so r1's
+    // own `RunStarted` lands unambiguously AFTER the marker write - the fallback comparison
+    // alone would suppress this exact shape.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    // r1: fresh and NOT done, seeded AFTER the marker - the run this watch is scoped to.
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["spec 69"]}"#),
+            ("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+        ],
+    );
+
+    // The critical difference from the sibling match test: `.rigger/dash.attempt` names a
+    // DIFFERENT, nonempty run id - never "r1", the run actually being watched. A real
+    // `ensure_run_dashboard`/`start_run_dashboard` call from r1's own step path would have
+    // written "r1" here; this models that no such call ever happened for r1 (the breadcrumb
+    // is foreign), so the explicit fact must stay silent and defer to the timestamp fallback.
+    std::fs::write(root.join(".rigger/dash.attempt"), "some-other-run")
+        .expect("seed a foreign dash attempt marker");
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 against a predating marker whose dash.attempt names \
+         a different run; stderr:\n{err}"
+    );
+    assert!(
+        out.trim().is_empty(),
+        "a dash.attempt breadcrumb naming a DIFFERENT run than the one being watched must NOT \
+         force reporting - only a genuine same-run match may override the timestamp fallback, \
+         and here the fallback alone suppresses (the marker predates r1's own RunStarted); \
+         got:\n{out}"
+    );
+}
+
 /// Spec 46, criterion 2 (the pre-run graph-hygiene guidance ships to CONSUMERS through the
 /// INSTALL seam): a consumer never edits rigger's own repo copies - they run `rigger setup`,
 /// which renders and INSTALLS the `using-rigger` skill into THEIR project at
@@ -15740,6 +16614,15 @@ fn step_honors_the_rigger_no_dash_opt_out() {
         !err.contains("serving this run"),
         "under RIGGER_NO_DASH the step announces no dash; stderr:\n{err}"
     );
+    // Round-8 fix (spec 69): `record_dash_attempt` is called only PAST the opt-out's early
+    // return in `ensure_run_dashboard` - an opted-out step attempts no dash at all, so there is
+    // nothing this run to vouch for. The doc comment on `ensure_run_dashboard` claims this
+    // explicitly; this closes the periphery gap on that claim, driven through a real step.
+    assert!(
+        !root.join(".rigger").join("dash.attempt").exists(),
+        "under RIGGER_NO_DASH the step must record NO dash attempt breadcrumb either - the \
+         opt-out skips record_dash_attempt along with the dash itself; one was written"
+    );
 }
 
 /// Spec 50, criterion 4 (opt-out): the CONFIG opt-out `dash: off` in workflow.yml suppresses the
@@ -15797,6 +16680,13 @@ fn step_honors_the_config_dash_off_opt_out() {
     assert!(
         !stderr.contains("serving this run"),
         "under `dash: off` the step announces no dash; stderr:\n{stderr}"
+    );
+    // Round-8 fix (spec 69): the config opt-out returns from `ensure_run_dashboard` before
+    // `record_dash_attempt` runs too, exactly like the env opt-out above - no dash breadcrumb
+    // of any kind for an opted-out step.
+    assert!(
+        !root.join(".rigger").join("dash.attempt").exists(),
+        "under `dash: off` the step must record NO dash attempt breadcrumb either; one was written"
     );
     // The run still proceeded normally: it registered its instance (criterion 2) even with the
     // dash opted out, proving the opt-out drops only the dash, not the run.
@@ -17869,5 +18759,414 @@ fn rust_engineer_persona_pins_the_mutation_accounting_contract() {
          reason, unviable, timeout), the diff base, the mutant total, and the provably-empty \
          no-Rust-file case - so drift in the operator-seeded persona fails this suite instead \
          of silently diverging from the spec it satisfies. Missing fragments: {missing:#?}"
+    );
+}
+
+/// Round-8 fix, closing sdet-u69c1r7-fresh-run-own-dead-dash-suppressed-by-mint-order /
+/// adv-u69c1r7-mint-order-bug-is-structural-not-a-coverage-gap for real: every sibling dash-
+/// liveness test in this file seeds `RunStarted` and the dash marker DIRECTLY via
+/// `seed_run_events`/`DashMarker::write` - never through the real `ensure_run_dashboard` call
+/// `cmd_step` actually makes. Round 7's own "confirmation" probe did the same (its own report
+/// describes "appends RunStarted/UnitStarted" after seeding the marker - a direct event-stream
+/// write, not a real step) and asserted that ordering was "the real production order" without
+/// ever driving the compiled binary's actual `cmd_step` call chain to check. It is not: read
+/// directly, `cmd_step` calls `enforce_definition_pin` (which mints a brand-new run's
+/// `RunStarted` via `runscope::ensure_started_pinned`/`start_fresh`) BEFORE it calls
+/// `ensure_run_dashboard` - confirmed against the compiled binary during this round's
+/// investigation (a fresh run's `RunStarted.recorded_at` lands measurably BEFORE its own dash
+/// marker's mtime, not after).
+///
+/// Rather than re-litigate that causality claim, this test sidesteps it entirely: it drives a
+/// REAL `rigger step` (the real `ensure_run_dashboard` -> `record_dash_attempt` -> real,
+/// detached `rigger dash` child), kills that real dash process so its marker names a genuinely
+/// dead pid, and proves `rigger watch --once` reports it. This is authoritative regardless of
+/// which way the timestamps land, because the round-8 fix (`DASH_ATTEMPT_FILE` /
+/// `WatchInputs::dash_attempted_this_run`) makes the report an explicit run-id fact, not a
+/// wall-clock inference - so this test exercises the REAL write site end to end, the one layer
+/// no pure `watch::detect` unit test (necessarily built on synthetic `WatchInputs`) can reach.
+#[test]
+fn watch_once_reports_a_real_steps_own_dash_after_the_step_process_has_long_since_exited() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    let dash_port = free_loopback_port();
+
+    // A real `rigger step`: this project's FIRST step, so `ensure_run_dashboard` runs on the
+    // exact fresh-run boundary round 7 flagged, spawning a real, detached `rigger dash` and
+    // recording BOTH `.rigger/dash.marker` (port + pid) and `.rigger/dash.attempt` (this run's
+    // id, via `record_dash_attempt`). The step process itself has already exited by the time
+    // this line returns - only the detached dash and the two breadcrumbs it left behind
+    // survive, exactly the shape a driver leaves between steps.
+    let (_out, err) = run_step_dash_enabled(root, dash_port);
+    let (_port, pid) = read_dash_marker(root)
+        .unwrap_or_else(|| panic!("step must record a dash marker; stderr:\n{err}"));
+
+    assert!(
+        std::fs::read_to_string(root.join(".rigger/dash.attempt")).is_ok(),
+        "a real step's own ensure_run_dashboard call must record .rigger/dash.attempt \
+         (record_dash_attempt); without it this test cannot exercise the round-8 fact at all"
+    );
+
+    // Kill the real dash this run itself just spawned, so the NEXT probe finds a genuinely dead
+    // pid on the recorded port - not a synthetic marker, an actual process this test terminated.
+    reap_pid(pid);
+    // Best-effort wait for the port to actually free up, so the probe below cannot race a
+    // not-yet-reaped socket into a false "still serving" read.
+    for _ in 0..50 {
+        if !rigger::dash::dash_serving_on(dash_port) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    let (out, watch_err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 against this run's own just-killed dash; \
+         stderr:\n{watch_err}"
+    );
+    assert!(
+        out.contains("dash liveness") && out.contains(&pid.to_string()),
+        "a run's OWN dash, started by its OWN real step and then killed, must be reported \
+         regardless of any timestamp ordering between the marker write and this run's \
+         RunStarted - the round-8 dash_attempted_this_run fact (an explicit run-id match, not a \
+         wall-clock inference) must force this even if a future refactor ever changed which \
+         side of RunStarted the dash-ensure call lands on; got:\n{out}"
+    );
+}
+
+/// The mismatched-marker case for `watch_poll`'s dash probe (the round-9 escalation
+/// remedy, adv-u69c1r9-watch-poll-dashprobe-diverges-from-dash-status-mismatch-handling):
+/// when BOTH breadcrumbs exist and the on-disk marker's port differs from the recorded
+/// dash.url's, the probe must follow `dash::dash_status`'s canonical handling - the URL's
+/// own port is what gets probed and reported, and the mismatched marker's pid is NEVER
+/// named as though it belonged to this url. Both ports are definitely-unbound loopback
+/// ports (the same reserve-then-release convention as the dead-marker test above), so the
+/// url's port is genuinely dead and must be the one the report names.
+#[test]
+fn watch_once_never_names_a_mismatched_markers_pid_for_the_recorded_urls_port() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    let url_port = free_loopback_port();
+    let marker_port = loop {
+        let p = free_loopback_port();
+        if p != url_port {
+            break p;
+        }
+    };
+    let impossible_pid = u32::MAX;
+    std::fs::write(
+        root.join(".rigger/dash.url"),
+        format!("http://127.0.0.1:{url_port}/"),
+    )
+    .expect("seed dash.url");
+    DashMarker {
+        port: marker_port,
+        pid: impossible_pid,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the mismatched dash marker");
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(ok, "rigger watch --once must exit 0; stderr:\n{err}");
+    assert!(
+        out.contains(&format!("port {url_port}")),
+        "the dash liveness report must probe and name the recorded dash.url's own port \
+         ({url_port}), the canonical dash_status target; got:\n{out}"
+    );
+    assert!(
+        !out.contains(&impossible_pid.to_string()),
+        "a mismatched marker's pid must never be named as this url's; got:\n{out}"
+    );
+    assert!(
+        !out.contains(&format!("port {marker_port}")),
+        "the mismatched marker's own port must not be reported as the dash's; got:\n{out}"
+    );
+}
+
+/// Round-9 escalation-remedy reject (adj-u69c1r9-verdict-reject upholding
+/// adv-u69c1-mismatched-marker-suppression-borrows-wrong-files-mtime): the mismatched-marker
+/// arm above always sourced `dash_breadcrumb_written_at` from the MARKER's mtime, even in this
+/// exact branch where the marker's port does NOT match the url's own port and the
+/// classification is driven entirely by the url (the sibling test above proves the url's port
+/// is what gets probed and reported, never the marker's). That contradicts the function's own
+/// doc comment, which requires the mtime gathered to be "of WHICHEVER file actually backed the
+/// classification... so the two can never point at different files" (src/main.rs, the comment
+/// above the `(recorded, marker)` match). Sourcing the wrong file's mtime lets a STALE marker
+/// that predates this run's own `RunStarted` wrongly suppress a FRESH, currently-dead url that
+/// this run's own dash-launching invocation wrote AFTER `RunStarted` - exactly the multi-process
+/// shape `main.rs`'s own doc comment on `ensure_run_dashboard` describes ("two concurrent
+/// harnesses each get their own [port]"), not a contrived edge case: both breadcrumb files are
+/// project-level singletons never removed once their dash exits, so an old marker outliving a
+/// fresh url write is ordinary.
+///
+/// This seeds exactly that shape: a stale marker written BEFORE `RunStarted` (so the
+/// pre-existing `breadcrumb_predates_this_run` fallback would suppress if it read the marker's
+/// mtime, the identical ordering
+/// `watch_once_reports_no_dash_anomaly_for_a_fresh_run_that_inherits_an_earlier_runs_dead_marker`
+/// above proves suppresses for the marker-only arm), then a DIFFERENT, later invocation writes a
+/// fresh `dash.url` naming a different, currently-dead port AFTER `RunStarted`. No
+/// `.rigger/dash.attempt` is written at all, so the round-8 same-run short-circuit
+/// (`dash_attempted_this_run`) is not what makes this report - only the timestamp fallback is in
+/// play, and it must read the URL's own mtime (fresh, postdating `RunStarted`), not the stale
+/// marker's, to reach the correct "report it" answer.
+#[test]
+fn watch_once_reports_a_mismatched_dead_url_when_only_the_stale_marker_predates_run_started() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    // The stale marker, written FIRST, before this run's own RunStarted - the same
+    // predates-this-run shape the inherited-marker sibling test proves suppresses when it is
+    // the file backing the classification. Here it must NOT back the classification, since the
+    // url's own port is what gets probed below.
+    let marker_port = free_loopback_port();
+    let marker_pid = u32::MAX;
+    DashMarker {
+        port: marker_port,
+        pid: marker_pid,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the stale, pre-run dash marker");
+
+    // The same filesystem-mtime safety margin every sibling test in this file uses, so this
+    // run's own RunStarted lands unambiguously AFTER the marker write.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["spec 69"]}"#),
+            ("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+        ],
+    );
+
+    // Another margin so the fresh url write below lands unambiguously AFTER RunStarted too -
+    // it must read as this run's OWN breadcrumb, not an inherited one.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    // A DIFFERENT dash-launching invocation than the one that wrote the marker: a fresh
+    // dash.url, written after RunStarted, naming a different, currently-dead port. No
+    // dash.marker rewrite here - the marker on disk stays the stale one from before RunStarted,
+    // and its port differs from this url's, so this is the mismatched-marker arm.
+    let url_port = free_loopback_port();
+    assert_ne!(
+        url_port, marker_port,
+        "the ledger must never repeat a port within one test"
+    );
+    std::fs::write(
+        root.join(".rigger/dash.url"),
+        format!("http://127.0.0.1:{url_port}/"),
+    )
+    .expect("seed the fresh dash.url");
+
+    // No .rigger/dash.attempt at all: the round-8 same-run short-circuit must play no part in
+    // this report - only the timestamp fallback, correctly sourced from the url's own mtime.
+    assert!(!root.join(".rigger/dash.attempt").exists());
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 for a mismatched marker/url pair; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("dash liveness") && out.contains(&format!("port {url_port}")),
+        "a fresh dash.url written AFTER this run's own RunStarted must be reported as a dead \
+         dash even though the on-disk marker is stale and mismatched - the mtime backing the \
+         predates-this-run comparison must come from the url that actually decided the \
+         classification, not the marker that did not; got:\n{out}"
+    );
+    assert!(
+        !out.contains(&marker_pid.to_string()),
+        "the stale, mismatched marker's pid must never be named as this url's; got:\n{out}"
+    );
+}
+
+/// SDET periphery gap first flagged at round 9 (sdet-u69c1r9-malformed-url-marker-fallback-
+/// untested) and reconfirmed still open through attempt 2/round 10
+/// (sdet-u69c1-attempt2-malformed-url-marker-fallback-still-untested,
+/// adv-u69c1-attempt2-gates-independently-reverified): `watch_poll`'s `(Some(url), Some(m))`
+/// dash-probe arm (src/main.rs) branches on `dash::url_port(&url)`. The `Some(url_port)`
+/// sub-branch (a well-formed url) is pinned by the mismatched-marker siblings above, but the
+/// `None` sub-branch - an UNPARSEABLE or foreign `dash.url` with a marker still on disk - falls
+/// back to probing the MARKER's own port directly and, unlike the well-formed sub-branch, DOES
+/// name the marker's pid (there is no url port left to prefer instead). Every existing
+/// marker-plus-url fixture in this file writes a well-formed `http://127.0.0.1:<port>/` url, so
+/// this fallback sub-branch has never been exercised by any test; a mutant that deleted this
+/// arm entirely, or made it silently classify as `NotRecorded`/`Serving` regardless of the
+/// marker probe, would pass the full suite.
+#[test]
+fn watch_once_falls_back_to_the_marker_when_the_recorded_url_is_unparseable() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    // A malformed dash.url - no `://` scheme separator at all, so `dash::url_port`'s
+    // `split("://").nth(1)` finds nothing to parse; the same "foreign or malformed" input its
+    // own doc comment names as unparseable, never guessed at.
+    std::fs::write(root.join(".rigger/dash.url"), "not-a-url")
+        .expect("seed the malformed dash.url");
+
+    // The only other breadcrumb: a marker naming a definitely-unbound loopback port, so the
+    // fallback probe of the marker's OWN port reads dead.
+    let dead_port = free_loopback_port();
+    let dead_pid = u32::MAX;
+    DashMarker {
+        port: dead_port,
+        pid: dead_pid,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the dash marker");
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 against an unparseable dash.url with a marker present; \
+         stderr:\n{err}"
+    );
+    assert!(
+        out.contains("dash liveness")
+            && out.contains(&dead_pid.to_string())
+            && out.contains(&dead_port.to_string()),
+        "an unparseable dash.url must fall back to probing the marker's own port and name its \
+         pid - the same report a marker-only fixture would produce, not silence and not a \
+         url-shaped report; got:\n{out}"
+    );
+}
+
+/// Round-12 fix (arch-u69c1-duplicate-url-port-parser / arch-u69c1r11-pidmatch-and-
+/// urlparser-duplication-still-unfixed / adv-u69c1r11-elevate-pidmatch-remedy-now):
+/// `watch_poll`'s marker-absent arm (src/main.rs, the `(Some(url), None)` match arm) used to
+/// call its own private `port_from_dash_url`, which took the LAST colon in the WHOLE url -
+/// only agreeing with `dash::url_port`'s scheme-and-path-aware parse on the single documented
+/// no-path `http://127.0.0.1:<port>/` shape, and diverging (silently failing to parse at all)
+/// on any recorded url with a colon appearing somewhere after the port, e.g. inside a path
+/// segment. `port_from_dash_url` is gone; this arm now calls `dash::url_port` directly, the
+/// crate's one implementation (also used by `dash_status`). No existing fixture in this file
+/// ever wrote a `dash.url` whose path contains a colon (grepped: every seeded url is a bare
+/// `http://127.0.0.1:<port>/` or `.../api/state` shape), so this exact divergence class was
+/// never driven through the compiled binary. This seeds a `dash.url` naming a
+/// definitely-unbound loopback port followed by a path segment containing a colon, with NO
+/// marker recorded (the `rigger run` / `rigger serve` shape), and proves the port is still
+/// correctly extracted and reported dead. Confirmed this reproduces the pre-round-12 defect:
+/// against the old `port_from_dash_url` (`url.rsplit_once(':')` over the whole string), the
+/// last colon in this fixture's url falls inside the path, so the parse yields a non-numeric
+/// tail and fails outright - the arm falls through to `DashProbe::NotRecorded` and `rigger
+/// watch --once` prints nothing at all for a genuinely dead, recorded dash.
+#[test]
+fn watch_once_parses_the_urls_port_past_a_colon_in_the_path_with_no_marker() {
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    let dead_port = free_loopback_port();
+    std::fs::write(
+        root.join(".rigger/dash.url"),
+        format!("http://127.0.0.1:{dead_port}/run:abc"),
+    )
+    .expect("seed the dash.url breadcrumb");
+    assert!(
+        !root.join(".rigger/dash.marker").exists(),
+        "this fixture must leave no marker behind - that is the exact shape under test"
+    );
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 against a dead, marker-less dash url whose path \
+         contains a colon; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("dash liveness") && out.contains(&dead_port.to_string()),
+        "a dash.url whose path contains a colon after the port must still have its port \
+         correctly parsed and reported dead - the old last-colon-in-the-whole-url parser \
+         (removed round 12) would have taken the colon inside \"run:abc\" instead, failed to \
+         parse a numeric port at all, and silently reported nothing; got:\n{out}"
+    );
+}
+
+/// The sibling of the test above for `watch_poll`'s OTHER changed call site: the
+/// `(Some(url), Some(m))` match arm (src/main.rs) also used to call `port_from_dash_url` and
+/// now calls `dash::url_port` directly, a textually separate line from the marker-absent
+/// arm's - a mutation or reversion could regress this call site alone and leave the sibling
+/// arm's test (and every existing well-formed-url fixture, none of which puts a colon in the
+/// path) blind to it, exactly the "one arm fixed, the duplicate elsewhere left behind" shape
+/// this unit's own history repeats (round 10 fixed the mtime symptom but left the pid-match
+/// classifier duplicated; the adversary named that pattern explicitly at
+/// arch-u69c1-r10-pid-match-duplication-is-the-recurring-drift-source). Deliberately a
+/// MISMATCHED marker (different port than the url), not a matching one: a matching marker's
+/// pid is named identically whichever code path decides it (the correct
+/// `dash::url_port`-then-`pid_if_port_matches` route, or the OLD parser's total parse
+/// failure falling back to probing the marker's own port directly - confirmed empirically,
+/// see below), so that shape cannot discriminate old from new behavior here. A genuine port
+/// mismatch can: this seeds a colon-bearing-path `dash.url` naming one definitely-unbound
+/// loopback port and a marker naming a DIFFERENT one, and proves the report names the URL's
+/// own (correctly-parsed) port and never the mismatched marker's port or pid - mirroring
+/// `watch_once_never_names_a_mismatched_markers_pid_for_the_recorded_urls_port` above, but
+/// through a url shape that only reaches the `Some(url_port)` sub-branch (and hence
+/// `pid_if_port_matches` at all) once `dash::url_port` correctly parses past the path colon.
+/// Confirmed this reproduces the pre-round-12 defect: reverted to the old
+/// `port_from_dash_url` (`main.rs` at `a6f8a18`, this unit's prior tip), the whole-string
+/// last-colon parse fails on this fixture's url (its tail is non-numeric), so the arm falls
+/// into the UNPARSEABLE-url branch and probes the MISMATCHED marker's OWN port directly
+/// instead - reporting the marker's port and its impossible pid, exactly the wrong dash, and
+/// never the url's own port at all.
+#[test]
+fn watch_once_never_names_a_mismatched_markers_pid_when_the_urls_path_contains_a_colon() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    let url_port = free_loopback_port();
+    let marker_port = loop {
+        let p = free_loopback_port();
+        if p != url_port {
+            break p;
+        }
+    };
+    let impossible_pid = u32::MAX;
+    std::fs::write(
+        root.join(".rigger/dash.url"),
+        format!("http://127.0.0.1:{url_port}/run:abc"),
+    )
+    .expect("seed the dash.url breadcrumb");
+    DashMarker {
+        port: marker_port,
+        pid: impossible_pid,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the mismatched dash marker");
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 against a dead dash url whose path contains a colon, \
+         with a mismatched marker present; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("dash liveness") && out.contains(&format!("port {url_port}")),
+        "the dash liveness report must probe and name the recorded dash.url's own port \
+         ({url_port}), parsed past the colon in its path - either dash::url_port regressed at \
+         this call site, or the url was wrongly treated as unparseable and the mismatched \
+         marker's own port substituted for it; got:\n{out}"
+    );
+    assert!(
+        !out.contains(&impossible_pid.to_string()),
+        "a mismatched marker's pid must never be named as this url's, even when the url's \
+         path contains a colon; got:\n{out}"
+    );
+    assert!(
+        !out.contains(&format!("port {marker_port}")),
+        "the mismatched marker's own port must not be reported as the dash's; got:\n{out}"
     );
 }

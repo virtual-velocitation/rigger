@@ -73,6 +73,45 @@ const DASH_URL_FILE: &str = "dash.url";
 /// most one run dashboard per project (spec 39, criterion 1: idempotent start on step).
 const DASH_MARKER_FILE: &str = "dash.marker";
 
+/// The per-project breadcrumb, under [`RIGGER_DIR`], naming the run id whose OWN step path most
+/// recently attempted a dash ensure (spec 69, round-8 fix for
+/// adv-u69c1r7-mint-order-bug-is-structural-not-a-coverage-gap). Written by
+/// [`record_dash_attempt`] on EVERY [`ensure_run_dashboard`] / [`start_run_dashboard`] call that
+/// is not itself suppressed by the opt-out - regardless of whether that attempt started a new
+/// dash, found one already serving, or failed - because all three outcomes mean the same thing
+/// for this breadcrumb's purpose: THIS run's own step path just vouched for the dash, so a probe
+/// that later finds it dead is this run's concern to report, not a maybe-inherited artifact.
+///
+/// This exists because [`watch::WatchInputs::dash_breadcrumb_written_at`] /
+/// [`watch::WatchInputs::run_started_at`]'s wall-clock `written < started` comparison, though
+/// empirically correct against the real call order in every one of the three drivers (RunStarted
+/// mints via [`enforce_definition_pin`] / [`fresh_run_if_requested`] BEFORE the dash-ensure call
+/// in the very same function - never the other way around, verified against the compiled binary,
+/// not merely read from source), is still reasoning about ORDER to infer OWNERSHIP - exactly the
+/// kind of proxy round 3-7's own reject history shows is easy to get backwards (round 7's own
+/// review asserted the opposite order from what the binary actually does). This breadcrumb
+/// replaces that inference with the fact itself for the common case: an EXPLICIT run-id match,
+/// immune to clock skew or a future refactor that reorders the mint relative to the dash-ensure
+/// call. It only ever WIDENS reporting (see `detect`'s `breadcrumb_predates_this_run`): a match
+/// forces reporting regardless of what the timestamps say; a miss (absent file, or one naming an
+/// older/different run - including every existing seeded-event test, which never calls the real
+/// dash-ensure path at all and so never writes this file) falls back to the pre-existing
+/// timestamp comparison unchanged, so no established suppression regresses.
+const DASH_ATTEMPT_FILE: &str = "dash.attempt";
+
+/// Record that THIS run's own step path just attempted a dash ensure (spec 69, round-8 fix; see
+/// [`DASH_ATTEMPT_FILE`]'s doc for the full rationale). Best-effort like every other dash
+/// breadcrumb write in this module - a failed write only risks a later false suppression of an
+/// anomaly this run's own dash-liveness probe should catch anyway via the timestamp fallback,
+/// never a broken run. `run_id` empty (no run started yet in this project) writes nothing: there
+/// is no run for the breadcrumb to name, so a later watch poll correctly falls back to the
+/// existing unknown-run handling rather than matching an empty string against another empty one.
+fn record_dash_attempt(run_id: &str) {
+    if !run_id.is_empty() {
+        let _ = std::fs::write(db_path(DASH_ATTEMPT_FILE), run_id);
+    }
+}
+
 /// Environment opt-out for the step path's always-on dashboard: when
 /// [`DASH_DISABLE_ENV`] is set (to any value) the step does NOT auto-start a run
 /// dashboard. Production leaves it unset (the dash is always-on, no opt-in flag - spec
@@ -2142,7 +2181,7 @@ fn cmd_step(args: &[String]) -> Res {
     // config opt-out is read off the already-loaded `cfg`, not re-loaded. Placed just before the
     // conductor advances the frontier so the dash is serving while this step's gates and spawns
     // are in flight.
-    ensure_run_dashboard(cfg.workflow.dash_enabled());
+    ensure_run_dashboard(cfg.workflow.dash_enabled(), &store);
 
     let driver = ReplayDriver::new(&store);
     let deps = Deps {
@@ -2945,7 +2984,7 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // Always-on dash (spec 19b, unit 1): auto-start a `rigger dash` serving this run before
     // the loop begins, so an active harness is never invisible. Held for the whole run - the
     // guard reaps the dash when this scope ends (unit 3's reaping mechanism).
-    let _dash = start_run_dashboard();
+    let _dash = start_run_dashboard(&store);
     let rs = conductor::run(&cfg, &deps)?;
     // The release-target base the ready-to-release handoff names (spec 38, criterion 3): read
     // the base PERSISTED on this run's RunStarted, so the end-of-run summary, `rigger status`,
@@ -3093,7 +3132,7 @@ fn run_workflow(parsed: &RunArgs) -> Res {
     // whole MCP session, so an active harness is never invisible. Held here (not inside the
     // scope) so it is reaped when `run_workflow` returns - after the session ends - by unit
     // 3's guard.
-    let _dash = start_run_dashboard();
+    let _dash = start_run_dashboard(&store);
 
     // The conductor orchestrates in the background; this thread serves the MCP
     // bridge over stdio. The shim drains spawns via rigger_next/result; closing
@@ -4902,7 +4941,15 @@ impl Runner for ReplayRunner {
 /// never stopping. Best-effort: if the dash cannot be started the run still proceeds (the
 /// dash is observability, not the deliverable), so a port-starved or spawn-refused
 /// environment degrades to a headless run rather than aborting one.
-fn start_run_dashboard() -> Option<dash::ReapedChild> {
+///
+/// `store` is read once here to stamp [`DASH_ATTEMPT_FILE`] with the current run's id via
+/// [`record_dash_attempt`] (spec 69, round-8 fix), mirroring [`ensure_run_dashboard`]'s own
+/// stamp on the step path - by the time this runs, `fresh_run_if_requested` has already
+/// ensured/minted the run, so the id is always available for a real run.
+fn start_run_dashboard(store: &dyn EventStore) -> Option<dash::ReapedChild> {
+    if let Ok(events) = store.read_stream(conductor::STREAM, 0, Direction::Forward) {
+        record_dash_attempt(&runscope::current_run_id(&events).unwrap_or_default());
+    }
     match spawn_run_dashboard() {
         Ok((guard, url)) => {
             // Stderr, not stdout: in the workflow driver (`rigger serve`) stdout is the MCP
@@ -5119,10 +5166,19 @@ fn dash_ensure_port_from(raw: Option<&str>) -> u16 {
 /// [`dash_ensure_suppressed`]) - a headless or CI run then binds NO port at all and proceeds
 /// normally. Best-effort and headless-degrading otherwise: a failed start only warns. The started
 /// dash is DETACHED so it survives across the run's many short-lived `step` processes.
-fn ensure_run_dashboard(config_dash_enabled: bool) {
+///
+/// `store` is read once here to stamp [`DASH_ATTEMPT_FILE`] with the current run's id via
+/// [`record_dash_attempt`] (spec 69, round-8 fix) - by the time this runs, `enforce_definition_pin`
+/// has already ensured/minted the run for this step, so the id is always available for a real
+/// run. Skipped entirely on the opt-out path above: an opted-out step attempts no dash at all, so
+/// there is nothing this run to vouch for.
+fn ensure_run_dashboard(config_dash_enabled: bool, store: &dyn EventStore) {
     let env_disabled = std::env::var_os(DASH_DISABLE_ENV).is_some();
     if dash_ensure_suppressed(env_disabled, config_dash_enabled) {
         return;
+    }
+    if let Ok(events) = store.read_stream(conductor::STREAM, 0, Direction::Forward) {
+        record_dash_attempt(&runscope::current_run_id(&events).unwrap_or_default());
     }
     let marker_path = std::path::PathBuf::from(db_path(DASH_MARKER_FILE));
     match ensure_run_dashboard_at(
@@ -6361,9 +6417,11 @@ fn cmd_watch(args: &[String]) -> Res {
 /// scope store-integrity needs, mirroring `rigger validate`'s own order-signature
 /// detector, spec 71), tries the step lock non-blocking (free = no `rigger step` is
 /// running right now), gathers each currently-parked spawn's heartbeat-marker age
-/// exactly as `cmd_status` does, and probes the recorded dash marker with a real
-/// serve check - then hands all of it to [`watch::detect`], the pure core. Never
-/// talks to the driver: every input here is store, process-table, or status truth.
+/// exactly as `cmd_status` does, and probes the dash's liveness with a real serve check
+/// (the recorded marker's port when one exists, else the recorded `dash.url`'s own port;
+/// see the dash-probe comment inline below for why both breadcrumbs matter), then hands
+/// all of it to [`watch::detect`], the pure core. Never talks to the driver: every input
+/// here is store, process-table, or status truth.
 ///
 /// `loc`/`selection` are INJECTED rather than read ambiently in here (mirrors
 /// [`refuse_derived_reset_if_live`]'s same shape): the composition root
@@ -6382,6 +6440,11 @@ fn watch_poll(
     let run_events = runscope::current_run(&all_in_project).to_vec();
     let run_id = runscope::current_run_id(&all_in_project).unwrap_or_default();
     let last_event_at = run_events.last().map(|e| e.recorded_at);
+    // When THIS run began - its own leading `RunStarted`'s `recorded_at` (`current_run`
+    // always slices from that event onward), or `None` when no run has started yet in
+    // this scope. Used ONLY to scope Signal 3 (dash liveness); see the dash-probe block
+    // below for why.
+    let run_started_at = run_events.first().map(|e| e.recorded_at);
 
     // Store integrity reads the WHOLE log across every stream (spec 71's own scope: a
     // disordered stream is a store-wide fault, not a per-run one), reusing the same
@@ -6414,18 +6477,147 @@ fn watch_poll(
         }
     }
 
-    // Dash liveness: read the per-project marker (port + pid) and VERIFY with the
-    // same real serve probe `dash_serving_on` uses - a marker naming a dead or
-    // hung-holder pid never reads as serving, exactly like c4's status truth.
+    // Dash liveness: prefer the per-project MARKER (port + pid) when one exists,
+    // verified with the same real serve probe `dash_serving_on` uses - a marker naming
+    // a dead or hung-holder pid never reads as serving, exactly like c4's status truth.
+    //
+    // Only ONE of the three real dash-launching drivers (`rigger step`, via
+    // `ensure_run_dashboard`) ever writes a marker; `rigger run` and `rigger serve`
+    // (`spawn_run_dashboard`/`spawn_run_dashboard_detached`) record ONLY the
+    // `dash.url` breadcrumb. Without a fallback, a marker-absent project always read
+    // as `NotRecorded` regardless of whether a dash was ever actually up - silently
+    // blind for 2 of the 3 real drivers (round-3 reject cause
+    // adv-u69c1r3-watch-once-inherits-marker-absent-blindspot). So when no marker
+    // exists, probe the PORT EMBEDDED IN THE RECORDED URL directly instead - the same
+    // safe, timeout-bounded `dash_serving_on` probe, just without a pid to name. Only
+    // when NEITHER breadcrumb is recorded at all (`dash: off` / `RIGGER_NO_DASH`, or
+    // watched before any run began) does the DashProbe VALUE constructed here read as
+    // "never started". A `NotServing` value built here does not by itself guarantee an
+    // anomaly, though: both breadcrumb files are project-level singletons never removed
+    // once their dash exits, so `watch::detect` additionally gates this signal on the
+    // run being unfinished (`!run.done()`) AND, since round-6 (round-5 reject cause
+    // adv2-u69c1-r5-uphold-sdet-second-run-stale-marker), on the breadcrumb file NOT
+    // being DEFINITIVELY older than `run_started_at` above - a done run's stale
+    // breadcrumb is success, and a FRESH run that never touched the dash must not
+    // inherit an EARLIER run's dead one either; both are suppressed in `detect`, not
+    // here. The burden of proof runs toward reporting: unknown mtime or run-start info
+    // (e.g. a dash breadcrumb with no run ever recorded in this project yet) still
+    // reports, exactly as before this fix - only a PROVEN-older breadcrumb suppresses.
+    // `dash_breadcrumb_written_at` is the mtime of WHICHEVER file actually backed the
+    // classification below (the marker when read, else the url file), gathered
+    // alongside it so the two can never point at different files.
     let marker_path = std::path::PathBuf::from(loc.file(DASH_MARKER_FILE));
-    let dash = match dash::DashMarker::read(&marker_path) {
-        None => watch::DashProbe::NotRecorded,
-        Some(m) if dash::dash_serving_on(m.port) => watch::DashProbe::Serving,
-        Some(m) => watch::DashProbe::NotServing {
-            pid: m.pid,
-            port: m.port,
+    let url_path = std::path::PathBuf::from(loc.file(DASH_URL_FILE));
+    let mtime_of = |p: &Path| std::fs::metadata(p).ok()?.modified().ok();
+    let marker = dash::DashMarker::read(&marker_path);
+    let recorded = recorded_dash_url(loc);
+    let (dash, dash_breadcrumb_written_at) = match (recorded, marker) {
+        // A recorded URL with a parseable port is the canonical authority, exactly as
+        // `dash::dash_status` (src/dash.rs) decides it for the mismatched-marker case
+        // sibling criterion u69c4 hardened: the probe targets the URL'S OWN port, and a
+        // marker's pid is named ONLY when its port matches the url's - a mismatched
+        // marker's pid belongs to some other dash and is never printed as this url's.
+        // Deliberately NOT a bare call to `dash_status`: that surface PRESENTS (an
+        // absent marker leaves the url "unverifiable but trusted" - never falsely dead),
+        // while this probe DETECTS (it always probes, marker or not - the
+        // url-only-dead-dash contract pinned in tests/cli.rs). The mismatch RULE is
+        // shared; the trust-without-probing rule is dash_status's alone.
+        (Some(url), Some(m)) => match dash::url_port(&url) {
+            Some(url_port) => {
+                // Round-9 escalation-remedy reject (adv-u69c1-mismatched-marker-suppression-
+                // borrows-wrong-files-mtime): the probe always targets the URL's OWN port
+                // (below), but ONLY when the marker's port matches it did the marker actually
+                // back that classification (its pid is named); on a mismatch the marker played
+                // no part - the url alone decided - so the mtime gathered here must follow
+                // suit, exactly as the doc comment above this whole match requires ("of
+                // WHICHEVER file actually backed the classification"). Sourcing the marker's
+                // mtime unconditionally let a stale, mismatched marker that predates this run's
+                // own RunStarted wrongly suppress a fresh, currently-dead url written after it.
+                // `pid`/`port_matches` come from the SAME shared rule `dash_status` uses
+                // (`dash::pid_if_port_matches`, round 11 architecture/adversary review) rather
+                // than a second hand-rolled copy - `pid.is_some()` iff the marker's port matched.
+                let pid = dash::pid_if_port_matches(&m, url_port);
+                let port_matches = pid.is_some();
+                let written_at = if port_matches {
+                    mtime_of(&marker_path)
+                } else {
+                    mtime_of(&url_path)
+                };
+                if dash::dash_serving_on(url_port) {
+                    (watch::DashProbe::Serving, written_at)
+                } else {
+                    (
+                        watch::DashProbe::NotServing {
+                            pid,
+                            port: url_port,
+                        },
+                        written_at,
+                    )
+                }
+            }
+            // An unparseable recorded URL (foreign or malformed - the same ambiguous
+            // input `dash_status` treats as unverifiable): the marker is the only
+            // checkable breadcrumb left, so probe it as the marker-only arm does.
+            None => {
+                if dash::dash_serving_on(m.port) {
+                    (watch::DashProbe::Serving, mtime_of(&marker_path))
+                } else {
+                    (
+                        watch::DashProbe::NotServing {
+                            pid: Some(m.pid),
+                            port: m.port,
+                        },
+                        mtime_of(&marker_path),
+                    )
+                }
+            }
         },
+        // URL recorded, no marker at all: probe the url's own port (detection, not
+        // presentation - a dead url-only dash must still be reported; pinned by the
+        // url-breadcrumb-only test in tests/cli.rs). No marker, no pid to name.
+        (Some(url), None) => match dash::url_port(&url) {
+            Some(port) if dash::dash_serving_on(port) => {
+                (watch::DashProbe::Serving, mtime_of(&url_path))
+            }
+            Some(port) => (
+                watch::DashProbe::NotServing { pid: None, port },
+                mtime_of(&url_path),
+            ),
+            None => (watch::DashProbe::NotRecorded, None),
+        },
+        // No URL recorded: a marker alone stays this probe's own authority. `dash_status`
+        // deliberately reads url-first and would call this Absent, but a marker-only dash
+        // is real (the step path writes a marker; the dead-marker contract in
+        // `rigger-restore-the-dash` pins that `rigger watch --once` reports it), so
+        // suppressing it here would hide a genuinely dead dash.
+        (None, Some(m)) => {
+            if dash::dash_serving_on(m.port) {
+                (watch::DashProbe::Serving, mtime_of(&marker_path))
+            } else {
+                (
+                    watch::DashProbe::NotServing {
+                        pid: Some(m.pid),
+                        port: m.port,
+                    },
+                    mtime_of(&marker_path),
+                )
+            }
+        }
+        (None, None) => (watch::DashProbe::NotRecorded, None),
     };
+
+    // Round-8 fix (spec 69, adv-u69c1r7-mint-order-bug-is-structural-not-a-coverage-gap): whether
+    // THIS project's CURRENTLY WATCHED run's own step path attempted a dash ensure THIS run - an
+    // explicit run-id match against `DASH_ATTEMPT_FILE` ([`record_dash_attempt`]'s write site),
+    // not an inference from timestamps. A match means Signal 3 must never suppress: this run's
+    // own step path just vouched for the dash. An absent file or one naming a different run (every
+    // existing seeded-event test included, since none of them drive the real dash-ensure call)
+    // means this signal alone is silent and `detect` falls back to the pre-existing
+    // `dash_breadcrumb_written_at`/`run_started_at` comparison unchanged.
+    let dash_attempted_this_run = std::fs::read_to_string(loc.file(DASH_ATTEMPT_FILE))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .is_some_and(|attempted_run| !attempted_run.is_empty() && attempted_run == run_id);
 
     let inputs = watch::WatchInputs {
         run_events: &run_events,
@@ -6435,6 +6627,9 @@ fn watch_poll(
         step_lock_free,
         wave_liveness_ages: &wave_liveness_ages,
         dash,
+        run_started_at,
+        dash_breadcrumb_written_at,
+        dash_attempted_this_run,
     };
     Ok(watch::detect(&inputs))
 }
@@ -8762,17 +8957,22 @@ fn init_project(root: &Path) -> Result<ScaffoldReport, Box<dyn std::error::Error
     // `.rigger/dash.url` and `.rigger/dash.marker` are the dash's discoverability breadcrumbs
     // (spec 39) - left untracked-and-not-ignored they get swept into a unit worktree's commit by
     // `git add` and then collide with the live dash's rewrites when the conductor merges the unit
-    // ("untracked working tree files would be overwritten"). `.rigger/store.conn` is the store
-    // resolver's per-machine secret file (spec 48 rung 3): it carries the connection string's
-    // credentials, so it is git-ignored BY CONSTRUCTION - a developer's credentials can never ride
-    // a committed file. Record WHICH patterns were appended so the summary reports the real
-    // gitignore change and nothing it did not do.
+    // ("untracked working tree files would be overwritten"). `.rigger/dash.attempt` (spec 69,
+    // round-8 fix) is a THIRD runtime breadcrumb of the identical shape - `ensure_run_dashboard`
+    // / `start_run_dashboard` rewrite it on every dash-ensure call exactly as they rewrite the
+    // other two - so it collides the same way if left untracked-and-not-ignored, and is ignored
+    // here for the same reason. `.rigger/store.conn` is the store resolver's per-machine secret
+    // file (spec 48 rung 3): it carries the connection string's credentials, so it is git-ignored
+    // BY CONSTRUCTION - a developer's credentials can never ride a committed file. Record WHICH
+    // patterns were appended so the summary reports the real gitignore change and nothing it did
+    // not do.
     let mut gitignore_added = Vec::new();
     for pattern in [
         ".claude/",
         ".rigger/shim/",
         ".rigger/dash.url",
         ".rigger/dash.marker",
+        ".rigger/dash.attempt",
         ".rigger/store.conn",
     ] {
         if write_gitignore_entries(root, pattern)? {
@@ -9946,6 +10146,23 @@ fn docs_context() -> rigger::docs::DocsContext {
         spec_shape_recommendation: spec::SHAPE_RECOMMENDATION.to_string(),
         subcommands: SUBCOMMANDS.iter().map(|c| c.to_string()).collect(),
         specs_location: DEFAULT_SPECS_LOCATION.to_string(),
+        // Spec 69, criterion 1: the five `rigger watch` signals, in Design order, read from
+        // the SAME `watch::Signal::name()`/`response()` `rigger watch` itself prints on an
+        // anomaly line - so `rigger-watch-a-run`'s render can never silently drift from the
+        // command's real signal set.
+        watch_signals: [
+            watch::Signal::Escalated,
+            watch::Signal::DeadDriver,
+            watch::Signal::DashNotServing,
+            watch::Signal::RejectRecurrence,
+            watch::Signal::FrontierStall,
+        ]
+        .map(|signal| rigger::docs::WatchSignalFact {
+            name: signal.name().to_string(),
+            response: signal.response().to_string(),
+        }),
+        watch_poll_interval_secs: watch::DEFAULT_INTERVAL_SECS,
+        reject_recurrence_diagnose_threshold: watch::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD,
     }
 }
 
@@ -11474,6 +11691,25 @@ mod tests {
                 .map(|c| c.to_string())
                 .collect::<Vec<_>>()
         );
+        // Spec 69, criterion 1: the watch facts `rigger-watch-a-run`/`rigger-diagnose-churn`
+        // interpolate must be the SAME values `rigger watch` itself uses, not a hand copy.
+        let expected_signals = [
+            watch::Signal::Escalated,
+            watch::Signal::DeadDriver,
+            watch::Signal::DashNotServing,
+            watch::Signal::RejectRecurrence,
+            watch::Signal::FrontierStall,
+        ]
+        .map(|signal| rigger::docs::WatchSignalFact {
+            name: signal.name().to_string(),
+            response: signal.response().to_string(),
+        });
+        assert_eq!(ctx.watch_signals, expected_signals);
+        assert_eq!(ctx.watch_poll_interval_secs, watch::DEFAULT_INTERVAL_SECS);
+        assert_eq!(
+            ctx.reject_recurrence_diagnose_threshold,
+            watch::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD
+        );
     }
 
     /// Spec 20, unit 1 (the golden fact test): known code facts appear VERBATIM in BOTH
@@ -11636,6 +11872,44 @@ mod tests {
                 "rigger-handle-an-escalation",
                 &["status", "peers", "run", "serve"],
             ),
+        ];
+        let registry = rigger::docs::skill_registry();
+        for (name, commands) in cases {
+            let entry = registry
+                .iter()
+                .find(|e| e.name == *name)
+                .unwrap_or_else(|| panic!("{name} must be in the registry"));
+            let rendered = entry.render(&ctx);
+            for cmd in *commands {
+                assert!(
+                    SUBCOMMANDS.contains(cmd),
+                    "{name} references `rigger {cmd}`, but {cmd:?} is not in SUBCOMMANDS - \
+                     the binary has no such command"
+                );
+                let literal = format!("rigger {cmd}");
+                assert!(
+                    rendered.contains(&literal),
+                    "{name} must actually reference `{literal}` somewhere in its rendered \
+                     content, not just claim to via this test's own table"
+                );
+            }
+        }
+    }
+
+    /// Spec 69, criterion 1 (the accuracy pin, extending the spec-68 sibling
+    /// [`per_operation_skills_reference_only_real_subcommands`] to the three watch-discipline
+    /// skills): every bare `rigger <cmd>` `rigger-watch-a-run` / `rigger-restore-the-dash` /
+    /// `rigger-diagnose-churn` teach names a REAL entry in [`SUBCOMMANDS`], and is literally
+    /// present in the rendered output - so a dropped or renamed `rigger dash`, `rigger
+    /// status`, `rigger watch`, or `rigger emit` reference in this family fails here, not
+    /// just misleads an operator.
+    #[test]
+    fn watching_discipline_skills_reference_only_real_subcommands() {
+        let ctx = docs_context();
+        let cases: &[(&str, &[&str])] = &[
+            ("rigger-watch-a-run", &["status", "watch"]),
+            ("rigger-restore-the-dash", &["dash", "status", "watch"]),
+            ("rigger-diagnose-churn", &["emit", "watch"]),
         ];
         let registry = rigger::docs::skill_registry();
         for (name, commands) in cases {
@@ -15655,8 +15929,12 @@ mod tests {
                 .contains(&".rigger/dash.url".to_string())
                 && first
                     .gitignore_added
-                    .contains(&".rigger/dash.marker".to_string()),
-            "the first init reports appending BOTH dash-artifact ignore patterns, got: {:?}",
+                    .contains(&".rigger/dash.marker".to_string())
+                && first
+                    .gitignore_added
+                    .contains(&".rigger/dash.attempt".to_string()),
+            "the first init reports appending ALL THREE dash-artifact ignore patterns (url, \
+             marker, and the round-8 attempt breadcrumb), got: {:?}",
             first.gitignore_added
         );
 
@@ -15670,8 +15948,14 @@ mod tests {
             content.lines().any(|l| l.trim() == ".rigger/dash.marker"),
             "the written .gitignore ignores the dash marker breadcrumb, got:\n{content}"
         );
+        assert!(
+            content.lines().any(|l| l.trim() == ".rigger/dash.attempt"),
+            "the written .gitignore ignores the dash attempt breadcrumb (spec 69, round-8 fix; \
+             the same collision-with-a-unit-commit risk as the other two dash breadcrumbs), \
+             got:\n{content}"
+        );
 
-        // Idempotent: a second setup finds both already ignored and appends nothing new.
+        // Idempotent: a second setup finds all three already ignored and appends nothing new.
         let second = init_project(dir.path()).expect("a rerun must succeed");
         assert!(
             !second
@@ -15679,7 +15963,10 @@ mod tests {
                 .contains(&".rigger/dash.url".to_string())
                 && !second
                     .gitignore_added
-                    .contains(&".rigger/dash.marker".to_string()),
+                    .contains(&".rigger/dash.marker".to_string())
+                && !second
+                    .gitignore_added
+                    .contains(&".rigger/dash.attempt".to_string()),
             "a rerun re-appends no dash-artifact ignore pattern, got: {:?}",
             second.gitignore_added
         );
@@ -15700,6 +15987,14 @@ mod tests {
                 .count(),
             1,
             "exactly one .rigger/dash.marker ignore line - no duplicate accrued, got:\n{after}"
+        );
+        assert_eq!(
+            after
+                .lines()
+                .filter(|l| l.trim() == ".rigger/dash.attempt")
+                .count(),
+            1,
+            "exactly one .rigger/dash.attempt ignore line - no duplicate accrued, got:\n{after}"
         );
     }
 
@@ -15798,18 +16093,23 @@ mod tests {
                 .contains(&".rigger/dash.url".to_string())
                 && report
                     .gitignore_added
-                    .contains(&".rigger/dash.marker".to_string()),
-            "setup appends the explicit dash lines even when .rigger/ broadly covers them, \
-             so the committed .gitignore stays self-contained, got: {:?}",
+                    .contains(&".rigger/dash.marker".to_string())
+                && report
+                    .gitignore_added
+                    .contains(&".rigger/dash.attempt".to_string()),
+            "setup appends the explicit dash lines (including the round-8 attempt breadcrumb) \
+             even when .rigger/ broadly covers them, so the committed .gitignore stays \
+             self-contained, got: {:?}",
             report.gitignore_added
         );
 
         let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
         assert!(
             content.lines().any(|l| l.trim() == ".rigger/dash.url")
-                && content.lines().any(|l| l.trim() == ".rigger/dash.marker"),
-            "both explicit per-file dash ignore lines are present in the committed .gitignore \
-             even though .rigger/ already covers them, got:\n{content}"
+                && content.lines().any(|l| l.trim() == ".rigger/dash.marker")
+                && content.lines().any(|l| l.trim() == ".rigger/dash.attempt"),
+            "all three explicit per-file dash ignore lines are present in the committed \
+             .gitignore even though .rigger/ already covers them, got:\n{content}"
         );
 
         // Idempotent: a rerun re-appends nothing (the exact lines are already present), so the
@@ -15821,7 +16121,10 @@ mod tests {
                 .contains(&".rigger/dash.url".to_string())
                 && !second
                     .gitignore_added
-                    .contains(&".rigger/dash.marker".to_string()),
+                    .contains(&".rigger/dash.marker".to_string())
+                && !second
+                    .gitignore_added
+                    .contains(&".rigger/dash.attempt".to_string()),
             "a rerun re-appends no dash line (exact-line idempotency), got: {:?}",
             second.gitignore_added
         );
