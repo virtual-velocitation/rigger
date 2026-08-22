@@ -18992,7 +18992,7 @@ fn watch_once_reports_a_mismatched_dead_url_when_only_the_stale_marker_predates_
 /// untested) and reconfirmed still open through attempt 2/round 10
 /// (sdet-u69c1-attempt2-malformed-url-marker-fallback-still-untested,
 /// adv-u69c1-attempt2-gates-independently-reverified): `watch_poll`'s `(Some(url), Some(m))`
-/// dash-probe arm (src/main.rs) branches on `port_from_dash_url(&url)`. The `Some(url_port)`
+/// dash-probe arm (src/main.rs) branches on `dash::url_port(&url)`. The `Some(url_port)`
 /// sub-branch (a well-formed url) is pinned by the mismatched-marker siblings above, but the
 /// `None` sub-branch - an UNPARSEABLE or foreign `dash.url` with a marker still on disk - falls
 /// back to probing the MARKER's own port directly and, unlike the well-formed sub-branch, DOES
@@ -19009,9 +19009,9 @@ fn watch_once_falls_back_to_the_marker_when_the_recorded_url_is_unparseable() {
     let root = proj.path();
     seed_store(root);
 
-    // A malformed dash.url - no `:<digits>` tail at all, so `port_from_dash_url`'s
-    // `rsplit_once(':')` finds nothing to parse; the same "foreign or malformed" input its own
-    // doc comment names as unparseable, never guessed at.
+    // A malformed dash.url - no `://` scheme separator at all, so `dash::url_port`'s
+    // `split("://").nth(1)` finds nothing to parse; the same "foreign or malformed" input its
+    // own doc comment names as unparseable, never guessed at.
     std::fs::write(root.join(".rigger/dash.url"), "not-a-url")
         .expect("seed the malformed dash.url");
 
