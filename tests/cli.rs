@@ -19041,3 +19041,132 @@ fn watch_once_falls_back_to_the_marker_when_the_recorded_url_is_unparseable() {
          url-shaped report; got:\n{out}"
     );
 }
+
+/// Round-12 fix (arch-u69c1-duplicate-url-port-parser / arch-u69c1r11-pidmatch-and-
+/// urlparser-duplication-still-unfixed / adv-u69c1r11-elevate-pidmatch-remedy-now):
+/// `watch_poll`'s marker-absent arm (src/main.rs, the `(Some(url), None)` match arm) used to
+/// call its own private `port_from_dash_url`, which took the LAST colon in the WHOLE url -
+/// only agreeing with `dash::url_port`'s scheme-and-path-aware parse on the single documented
+/// no-path `http://127.0.0.1:<port>/` shape, and diverging (silently failing to parse at all)
+/// on any recorded url with a colon appearing somewhere after the port, e.g. inside a path
+/// segment. `port_from_dash_url` is gone; this arm now calls `dash::url_port` directly, the
+/// crate's one implementation (also used by `dash_status`). No existing fixture in this file
+/// ever wrote a `dash.url` whose path contains a colon (grepped: every seeded url is a bare
+/// `http://127.0.0.1:<port>/` or `.../api/state` shape), so this exact divergence class was
+/// never driven through the compiled binary. This seeds a `dash.url` naming a
+/// definitely-unbound loopback port followed by a path segment containing a colon, with NO
+/// marker recorded (the `rigger run` / `rigger serve` shape), and proves the port is still
+/// correctly extracted and reported dead. Confirmed this reproduces the pre-round-12 defect:
+/// against the old `port_from_dash_url` (`url.rsplit_once(':')` over the whole string), the
+/// last colon in this fixture's url falls inside the path, so the parse yields a non-numeric
+/// tail and fails outright - the arm falls through to `DashProbe::NotRecorded` and `rigger
+/// watch --once` prints nothing at all for a genuinely dead, recorded dash.
+#[test]
+fn watch_once_parses_the_urls_port_past_a_colon_in_the_path_with_no_marker() {
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    let dead_port = free_loopback_port();
+    std::fs::write(
+        root.join(".rigger/dash.url"),
+        format!("http://127.0.0.1:{dead_port}/run:abc"),
+    )
+    .expect("seed the dash.url breadcrumb");
+    assert!(
+        !root.join(".rigger/dash.marker").exists(),
+        "this fixture must leave no marker behind - that is the exact shape under test"
+    );
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 against a dead, marker-less dash url whose path \
+         contains a colon; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("dash liveness") && out.contains(&dead_port.to_string()),
+        "a dash.url whose path contains a colon after the port must still have its port \
+         correctly parsed and reported dead - the old last-colon-in-the-whole-url parser \
+         (removed round 12) would have taken the colon inside \"run:abc\" instead, failed to \
+         parse a numeric port at all, and silently reported nothing; got:\n{out}"
+    );
+}
+
+/// The sibling of the test above for `watch_poll`'s OTHER changed call site: the
+/// `(Some(url), Some(m))` match arm (src/main.rs) also used to call `port_from_dash_url` and
+/// now calls `dash::url_port` directly, a textually separate line from the marker-absent
+/// arm's - a mutation or reversion could regress this call site alone and leave the sibling
+/// arm's test (and every existing well-formed-url fixture, none of which puts a colon in the
+/// path) blind to it, exactly the "one arm fixed, the duplicate elsewhere left behind" shape
+/// this unit's own history repeats (round 10 fixed the mtime symptom but left the pid-match
+/// classifier duplicated; the adversary named that pattern explicitly at
+/// arch-u69c1-r10-pid-match-duplication-is-the-recurring-drift-source). Deliberately a
+/// MISMATCHED marker (different port than the url), not a matching one: a matching marker's
+/// pid is named identically whichever code path decides it (the correct
+/// `dash::url_port`-then-`pid_if_port_matches` route, or the OLD parser's total parse
+/// failure falling back to probing the marker's own port directly - confirmed empirically,
+/// see below), so that shape cannot discriminate old from new behavior here. A genuine port
+/// mismatch can: this seeds a colon-bearing-path `dash.url` naming one definitely-unbound
+/// loopback port and a marker naming a DIFFERENT one, and proves the report names the URL's
+/// own (correctly-parsed) port and never the mismatched marker's port or pid - mirroring
+/// `watch_once_never_names_a_mismatched_markers_pid_for_the_recorded_urls_port` above, but
+/// through a url shape that only reaches the `Some(url_port)` sub-branch (and hence
+/// `pid_if_port_matches` at all) once `dash::url_port` correctly parses past the path colon.
+/// Confirmed this reproduces the pre-round-12 defect: reverted to the old
+/// `port_from_dash_url` (`main.rs` at `a6f8a18`, this unit's prior tip), the whole-string
+/// last-colon parse fails on this fixture's url (its tail is non-numeric), so the arm falls
+/// into the UNPARSEABLE-url branch and probes the MISMATCHED marker's OWN port directly
+/// instead - reporting the marker's port and its impossible pid, exactly the wrong dash, and
+/// never the url's own port at all.
+#[test]
+fn watch_once_never_names_a_mismatched_markers_pid_when_the_urls_path_contains_a_colon() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    let url_port = free_loopback_port();
+    let marker_port = loop {
+        let p = free_loopback_port();
+        if p != url_port {
+            break p;
+        }
+    };
+    let impossible_pid = u32::MAX;
+    std::fs::write(
+        root.join(".rigger/dash.url"),
+        format!("http://127.0.0.1:{url_port}/run:abc"),
+    )
+    .expect("seed the dash.url breadcrumb");
+    DashMarker {
+        port: marker_port,
+        pid: impossible_pid,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the mismatched dash marker");
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 against a dead dash url whose path contains a colon, \
+         with a mismatched marker present; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("dash liveness") && out.contains(&format!("port {url_port}")),
+        "the dash liveness report must probe and name the recorded dash.url's own port \
+         ({url_port}), parsed past the colon in its path - either dash::url_port regressed at \
+         this call site, or the url was wrongly treated as unparseable and the mismatched \
+         marker's own port substituted for it; got:\n{out}"
+    );
+    assert!(
+        !out.contains(&impossible_pid.to_string()),
+        "a mismatched marker's pid must never be named as this url's, even when the url's \
+         path contains a colon; got:\n{out}"
+    );
+    assert!(
+        !out.contains(&format!("port {marker_port}")),
+        "the mismatched marker's own port must not be reported as the dash's; got:\n{out}"
+    );
+}
