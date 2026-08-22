@@ -1335,7 +1335,7 @@ fn main() {
         "init" => cmd_init(),
         "setup" => cmd_setup(&args[2..]),
         "docs" => cmd_docs(&args[2..]),
-        "prime" => cmd_prime(),
+        "prime" => cmd_prime(&args[2..]),
         "version" | "--version" | "-V" => cmd_version(),
         "help" | "-h" | "--help" => {
             usage();
@@ -1484,7 +1484,9 @@ native /rigger Claude Code workflow (.claude/workflows/\n                       
 rigger.js) and provision the JS driver (.rigger/shim/ +\n                              \
 npm install). After it: run `/rigger <spec>` in Claude\n                              \
 Code (primary), or `rigger workflow` as a fallback\n  \
-rigger prime                print recent decisions (what the hook runs)\n  \
+rigger prime [<spec>]       print recent decisions (what the hook runs); given a spec\n                              \
+path, also names `rigger validate <spec>` (the pre-launch\n                              \
+spec lint) as a next step\n  \
 rigger version              print the crate version and the build-provenance id\n                              \
 (a git commit/describe embedded at build time) so an\n                              \
 agent can identify the exact binary. Also `--version`\n\n\
@@ -10266,11 +10268,35 @@ fn docs_drift_failure(root: &Path) -> Option<String> {
     ))
 }
 
-fn cmd_prime() -> Res {
+/// The DISCOVERABILITY reminder (spec 66, criterion 5): the one line every pre-launch
+/// "next steps" surface prints when a spec path is in play, naming `rigger validate
+/// <spec>` - the mechanical pre-launch spec lint (spec 18/66) - as a next step. Single-
+/// sourced so every such surface says the exact same thing rather than each inventing its
+/// own wording (`cmd_prime` is the current caller; a second pre-launch surface that later
+/// learns a spec path reuses this rather than re-deriving the line).
+fn spec_lint_next_step(spec_path: &str) -> String {
+    format!(
+        "next: `rigger validate {spec_path}` checks the spec's shape (multi-behavior \
+         criteria, missing ownership, draft-smell phrasing, em dashes) before you spend a \
+         run on it"
+    )
+}
+
+/// `rigger prime [<spec>]` - print recent decisions (what the SessionStart hook runs), and,
+/// when a spec path is given, the DISCOVERABILITY next step naming the spec lint (spec 66,
+/// criterion 5) so an operator or agent about to drive `/rigger <spec>` finds `rigger
+/// validate <spec>` instead of stumbling onto it by accident. `args.first()` is the spec
+/// path; the bare `rigger prime` the installed hook actually runs carries none, and stays
+/// exactly as it was - no lint mention.
+fn cmd_prime(args: &[String]) -> Res {
+    let spec_path = args.first();
     let path = db_path("events.db");
     let selection = store_selection(None, None)?;
     if selection.is_sqlite() && !Path::new(&path).exists() {
         println!("# Rigger: no decisions recorded yet (run `rigger run` to start).");
+        if let Some(spec) = spec_path {
+            println!("{}", spec_lint_next_step(spec));
+        }
         return Ok(());
     }
     let store = resolve_store(&selection, &path)?;
@@ -10291,6 +10317,9 @@ fn cmd_prime() -> Res {
     }
     if shown == 0 {
         println!("(none yet)");
+    }
+    if let Some(spec) = spec_path {
+        println!("{}", spec_lint_next_step(spec));
     }
     Ok(())
 }
@@ -10567,6 +10596,22 @@ blocks integration no matter what the static gates say.\n",
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- Spec 66, criterion 5: DISCOVERABILITY - `rigger prime` names the spec lint ---
+
+    /// [`spec_lint_next_step`] is the single-sourced text every pre-launch "next steps"
+    /// surface prints when a spec path is in play: it must name the exact command
+    /// (`rigger validate <spec>`) against the exact spec path handed in, so an operator or
+    /// agent can copy-paste it verbatim.
+    #[test]
+    fn spec_lint_next_step_names_rigger_validate_and_the_given_spec_path() {
+        let line = spec_lint_next_step("specs/42-widgets.md");
+        assert!(
+            line.contains("rigger validate specs/42-widgets.md"),
+            "must name the exact pre-launch lint command against the given spec path; got: \
+             {line:?}"
+        );
+    }
 
     // --- Spec 39, criterion 1: idempotent start of the run dashboard on the step path ---
 

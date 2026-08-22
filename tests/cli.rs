@@ -19170,3 +19170,71 @@ fn watch_once_never_names_a_mismatched_markers_pid_when_the_urls_path_contains_a
         "the mismatched marker's own port must not be reported as the dash's; got:\n{out}"
     );
 }
+
+// --- Spec 66, criterion 5: DISCOVERABILITY - `rigger prime` names the spec lint ---
+//
+// `rigger prime` is the pre-launch surface installed as the Claude Code SessionStart hook -
+// the first thing that runs when a session (about to drive `/rigger <spec>`) begins. When it
+// is given a spec path it must mention `rigger validate <spec>` (the spec lint, spec 18/66) as
+// a next step, so the mechanical pre-launch check is discovered rather than found by accident.
+// Bare `rigger prime` (the hook's actual installed invocation, which knows no spec) must stay
+// exactly as it was: no lint mention.
+
+#[test]
+fn prime_with_no_spec_path_never_mentions_the_spec_lint() {
+    let proj = temp_project();
+    let root = proj.path();
+
+    let (out, err, ok) = run_rigger(root, &["prime"]);
+    assert!(ok, "bare `rigger prime` must succeed; stderr:\n{err}");
+    assert!(
+        !out.contains("rigger validate"),
+        "bare `rigger prime` (no spec path given) must not mention the spec lint; got:\n{out}"
+    );
+}
+
+#[test]
+fn prime_given_a_spec_path_names_the_spec_lint_as_a_next_step() {
+    let proj = temp_project();
+    let root = proj.path();
+
+    // No store seeded: `cmd_prime` takes its absent-db early-return path (mirroring
+    // cmd_stats's NO_RUNS_MESSAGE guard) - the spec-lint reminder must still appear there,
+    // since a project with no run history yet is exactly when the reminder matters most.
+    let (out, err, ok) = run_rigger(root, &["prime", "specs/42-widgets.md"]);
+    assert!(
+        ok,
+        "`rigger prime <spec>` against a never-run project must succeed; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("rigger validate specs/42-widgets.md"),
+        "given a spec path, `rigger prime` must name `rigger validate <spec>` as a next \
+         step even on the no-runs-yet path; got:\n{out}"
+    );
+}
+
+#[test]
+fn prime_given_a_spec_path_names_the_spec_lint_alongside_recent_decisions() {
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    // A seeded-but-empty store takes cmd_prime's OTHER path (the "recent decisions"
+    // listing, here empty -> "(none yet)") - the reminder must appear there too, not only
+    // on the absent-db early return, so both of cmd_prime's paths stay in lock-step.
+    let (out, err, ok) = run_rigger(root, &["prime", "specs/42-widgets.md"]);
+    assert!(
+        ok,
+        "`rigger prime <spec>` against a seeded-but-empty store must succeed; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("# Rigger: recent decisions"),
+        "a seeded (even empty) store must take the recent-decisions path, not the \
+         absent-db one; got:\n{out}"
+    );
+    assert!(
+        out.contains("rigger validate specs/42-widgets.md"),
+        "given a spec path, `rigger prime` must name `rigger validate <spec>` as a next \
+         step on the recent-decisions path too; got:\n{out}"
+    );
+}
