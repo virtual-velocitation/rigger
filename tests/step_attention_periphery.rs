@@ -48,6 +48,89 @@
 //! crossing semantics, ordering, and non-restamping logic themselves (the implementer's own
 //! `mod tests` in `src/conductor.rs`, which this file does not re-derive - it only proves
 //! that logic's OUTPUT reaches the real wire, across real process boundaries).
+//!
+//! ROUND-4 ADDITIONS (review u69c5 round 4, cause genuine-defect): the fix replaced the
+//! process-start `pre_hung_ids` read with a small persisted cross-process cursor
+//! (`liveness::hung_cursor_path` / `read_hung_cursor` / `write_hung_cursor` - THREE new
+//! public functions) so a driver-recorded liveness fault landing strictly BETWEEN two
+//! `rigger step` invocations still stamps `attention` on the first step able to observe it
+//! (see `hung_cursor_path`'s own doc comment for the full crossing-boundary reasoning). The
+//! fix's own extension of `tests/cli.rs`'s
+//! `step_surfaces_a_hung_unbounded_spawn_recorded_as_a_liveness_fault_by_the_driver` already
+//! proves that real cross-process BEHAVIOR end to end (stamp once, no restamp, clear on
+//! recovery), and the implementer's own `mod tests` in `src/liveness.rs` already proves each
+//! function's contract from INSIDE the crate (path shape, round trip, malformed input).
+//! Neither proves the thing `hung_cursor_functions_are_a_working_public_contract_across_the_
+//! crate_boundary` below does: that the three functions are usable, AS DOCUMENTED, from
+//! OUTSIDE the module's own privileged position - the same api-edge guarantee this file's
+//! `attention_kind_rank` test above already established for the round-3 public function - so
+//! an accidental drop of `pub` (or of `pub mod liveness` in `lib.rs`) fails HERE, at the
+//! crate boundary, rather than only inside the module that would silently stop exporting it.
+
+/// Spec 69, criterion 5 (review u69c5 round 4, cause genuine-defect): `liveness::
+/// hung_cursor_path`, `read_hung_cursor`, and `write_hung_cursor` are the three new PUBLIC
+/// functions the round-4 fix added - called EXACTLY as an external crate consumer would
+/// (`use rigger::liveness::{...}`), never through any crate-internal privilege the
+/// implementer's own `src/liveness.rs::tests` has. Full permutation coverage of each
+/// function's own contract (path shape variants, per-run scoping, malformed-file handling)
+/// already lives there and is not re-derived here; this proves only that the exported
+/// symbols work as documented when called from outside the crate, plus one case genuinely
+/// missing from BOTH existing layers: `write_hung_cursor` called with the fully EMPTY set -
+/// exactly what `cmd_step` does unconditionally on every step where every previously-hung
+/// spawn has now recovered (its own doc comment: "Unconditionally overwritten every step...
+/// so a recovered spawn drops out of the file the same step it drops out of `hung_spawns`").
+/// The implementer's own round-trip test only ever shrinks to a non-empty set; the CLI
+/// end-to-end test asserts the WIRE's `attention` field, never the cursor FILE's own bytes -
+/// so neither proves the file itself reads back genuinely empty rather than retaining stale
+/// content the wire assertion happens not to notice.
+#[test]
+fn hung_cursor_functions_are_a_working_public_contract_across_the_crate_boundary() {
+    use rigger::liveness::{hung_cursor_path, read_hung_cursor, write_hung_cursor};
+    use std::collections::BTreeSet;
+
+    let scratch = tempfile::tempdir().unwrap();
+    let root = scratch.path().to_str().unwrap();
+
+    // The documented path shape, proven once here as a CONTRACT reachable from outside the
+    // crate: a sibling FILE of the run's own marker subdirectory (`agent-live/<run>/`),
+    // never a path inside it.
+    let path = hung_cursor_path(root, "r1");
+    assert_eq!(
+        path,
+        std::path::Path::new(root)
+            .join("agent-live")
+            .join("r1.hung-cursor"),
+        "hung_cursor_path's documented shape is part of its public contract; got: {path:?}"
+    );
+
+    // Nothing written yet: empty, not an error - callable from outside the crate exactly as
+    // `cmd_step` calls it on a run's very first step, before any prior step ever ran.
+    assert!(
+        read_hung_cursor(root, "r1").is_empty(),
+        "an absent cursor must read as empty, not an error, across the crate boundary"
+    );
+
+    // A full round trip through the public API.
+    let mut hung: BTreeSet<String> = BTreeSet::new();
+    hung.insert("x/implementer#0".to_string());
+    write_hung_cursor(root, "r1", &hung).unwrap();
+    assert_eq!(
+        read_hung_cursor(root, "r1"),
+        hung,
+        "a written cursor must read back exactly the set that was written"
+    );
+
+    // The genuinely untested case: an unconditional overwrite with the fully EMPTY set (every
+    // previously-hung spawn has now recovered) - `cmd_step` performs exactly this call on
+    // every step, and the NEXT step's crossing check depends on the file actually being
+    // empty afterward, not merely on the wire omitting `attention` that one time.
+    write_hung_cursor(root, "r1", &BTreeSet::new()).unwrap();
+    assert!(
+        read_hung_cursor(root, "r1").is_empty(),
+        "an unconditional overwrite with the empty set (every spawn recovered) must read back \
+         empty, never the previous step's stale ids"
+    );
+}
 
 mod common;
 
