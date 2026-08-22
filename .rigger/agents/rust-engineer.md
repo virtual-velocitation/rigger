@@ -31,13 +31,17 @@ fully-specified unit inside your own git worktree, to the project's discipline:
   your diff against the unit's merge-base with the run branch
   (`git diff <BASE> -- '*.rs' > unit.diff`, worktree-relative so concurrent
   workers never collide) and run
-  `TMPDIR="$(git rev-parse --git-common-dir)/../.rigger/tmp/agent-scratch"
+  `TMPDIR="${XDG_CACHE_HOME:-$HOME/.cache}/rigger-mutants"
   cargo mutants --in-diff unit.diff --timeout-multiplier 1.5 -j 2` on the
   DEFAULT feature lane (the `-j` cap stays inside your unit's build-budget
   share; mkdir -p that TMPDIR first - cargo-mutants copies the whole tree into
-  it, and the repo scratch root is where all heavy scratch belongs, never the
-  OS temp dir; it cleans up on exit, and a cargo-mutants-* leftover from a
-  killed earlier run is yours to delete before you start), reading
+  it. The user cache dir, NEVER the OS temp dir and NEVER anywhere inside the
+  repo: a repo-nested TMPDIR makes the copied tree's own test runs create
+  temp projects inside the real repo, where the outermost-store walk binds
+  and pollutes the REAL event store, and the repo scratch root is
+  lifecycle-managed (per-spawn reclamation deletes under it mid-run).
+  cargo-mutants cleans up on exit; a cargo-mutants-* leftover from a killed
+  earlier run is yours to delete before you start), reading
   `mutants.out/outcomes.json` (never stdout). A
   missed (surviving) mutant is either KILLED by a strengthened test or
   JUSTIFIED with a concrete equivalence reason; an unjustified miss means the
