@@ -317,8 +317,28 @@ pub struct WatchInputs<'a> {
     /// suppresses when BOTH this and [`Self::run_started_at`] are known and the
     /// breadcrumb is strictly older - either unknown still reports, exactly as
     /// before this field existed (round-3/4's own established behavior for a
-    /// project with a dash breadcrumb but no run recorded yet).
+    /// project with a dash breadcrumb but no run recorded yet) - AND
+    /// [`Self::dash_attempted_this_run`] does not already prove otherwise.
     pub dash_breadcrumb_written_at: Option<SystemTime>,
+    /// Round-8 fix (adv-u69c1r7-mint-order-bug-is-structural-not-a-coverage-gap): whether the
+    /// CURRENTLY WATCHED run's own step path itself attempted a dash ensure THIS run - an
+    /// EXPLICIT per-run fact (a run-id match against the caller's `DASH_ATTEMPT_FILE` read,
+    /// `main.rs::record_dash_attempt`'s write site), never inferred from wall-clock order.
+    ///
+    /// [`Self::dash_breadcrumb_written_at`] vs [`Self::run_started_at`] answers "did this
+    /// breadcrumb predate this run" by ORDER, which the round-7 review's own (mistaken, see
+    /// `DASH_ATTEMPT_FILE`'s doc) causality claim shows is easy to reason about backwards even
+    /// when the order itself is right - it is still an INFERENCE about ownership, not the fact
+    /// itself. This field is the fact itself: `true` only when the run this watch is scoped to
+    /// (`run_events`'s own current run id) is the SAME run whose step path most recently
+    /// attempted the ensure, regardless of what any file's mtime says. When `true`, `detect`
+    /// NEVER suppresses Signal 3 for a `NotServing` probe - this run vouched for the dash, so a
+    /// dead dash is this run's own concern to report, full stop. When `false` (no attempt was
+    /// ever recorded for this exact run - the shape every pre-round-8 test in this file and
+    /// `tests/cli.rs` builds, since none of them drive the real dash-ensure call), `detect` falls
+    /// back to the pre-existing `dash_breadcrumb_written_at`/`run_started_at` comparison
+    /// unchanged, so no established suppression regresses.
+    pub dash_attempted_this_run: bool,
 }
 
 #[derive(Deserialize)]
@@ -491,10 +511,20 @@ pub fn detect(inputs: &WatchInputs) -> Vec<Anomaly> {
             // `rigger step` - or the breadcrumb's mtime could not be read) still reports,
             // exactly as it did before this fix; only a PROVEN-earlier breadcrumb is new
             // grounds to suppress.
-            let breadcrumb_predates_this_run = matches!(
-                (inputs.dash_breadcrumb_written_at, inputs.run_started_at),
-                (Some(written), Some(started)) if written < started
-            );
+            //
+            // Round-8 fix (adv-u69c1r7-mint-order-bug-is-structural-not-a-coverage-gap):
+            // `dash_attempted_this_run` short-circuits the whole comparison to FALSE (never
+            // suppress) when this exact run's own step path is EXPLICITLY known to have
+            // attempted the dash ensure - a run-id fact, not a timestamp inference. Only when
+            // that explicit fact is absent (the pre-round-8 shape every existing test still
+            // builds) does the mtime comparison run at all, so it is now a fallback, not the
+            // sole authority; see `WatchInputs::dash_attempted_this_run`'s doc for why an
+            // explicit fact replaces reasoning about wall-clock order here.
+            let breadcrumb_predates_this_run = !inputs.dash_attempted_this_run
+                && matches!(
+                    (inputs.dash_breadcrumb_written_at, inputs.run_started_at),
+                    (Some(written), Some(started)) if written < started
+                );
             if !breadcrumb_predates_this_run {
                 let detail = match pid {
                     Some(pid) => format!("marker names dead pid {pid} on port {port}"),
@@ -595,6 +625,7 @@ mod tests {
             dash: DashProbe::NotRecorded,
             run_started_at: None,
             dash_breadcrumb_written_at: None,
+            dash_attempted_this_run: false,
         }
     }
 
@@ -813,6 +844,7 @@ mod tests {
             dash: DashProbe::NotRecorded,
             run_started_at: None,
             dash_breadcrumb_written_at: None,
+            dash_attempted_this_run: false,
         };
         let anomalies = detect(&inputs);
         assert_eq!(anomalies.len(), 1);
@@ -835,6 +867,7 @@ mod tests {
             dash: DashProbe::NotRecorded,
             run_started_at: None,
             dash_breadcrumb_written_at: None,
+            dash_attempted_this_run: false,
         };
         assert!(detect(&inputs).is_empty());
     }
@@ -860,6 +893,7 @@ mod tests {
             dash: DashProbe::NotRecorded,
             run_started_at: None,
             dash_breadcrumb_written_at: None,
+            dash_attempted_this_run: false,
         };
         assert!(detect(&inputs).is_empty());
     }
@@ -887,6 +921,7 @@ mod tests {
             dash: DashProbe::NotRecorded,
             run_started_at: None,
             dash_breadcrumb_written_at: None,
+            dash_attempted_this_run: false,
         };
         assert!(
             detect(&inputs).is_empty(),
@@ -919,6 +954,7 @@ mod tests {
             dash: DashProbe::NotRecorded,
             run_started_at: None,
             dash_breadcrumb_written_at: None,
+            dash_attempted_this_run: false,
         };
         assert!(
             detect(&inputs).is_empty(),
@@ -944,6 +980,7 @@ mod tests {
             dash: DashProbe::NotRecorded,
             run_started_at: None,
             dash_breadcrumb_written_at: None,
+            dash_attempted_this_run: false,
         };
         assert!(detect(&inputs).is_empty());
     }
@@ -975,6 +1012,7 @@ mod tests {
             // Irrelevant here: `!run.done()` short-circuits before either field is read.
             run_started_at: None,
             dash_breadcrumb_written_at: None,
+            dash_attempted_this_run: false,
         };
         assert!(detect(&inputs).is_empty());
     }
@@ -998,6 +1036,7 @@ mod tests {
             // The breadcrumb was written AFTER this run began - THIS run's own dash.
             run_started_at: Some(now - Duration::from_secs(60)),
             dash_breadcrumb_written_at: Some(now - Duration::from_secs(30)),
+            dash_attempted_this_run: false,
         };
         let anomalies = detect(&inputs);
         assert_eq!(anomalies.len(), 1);
@@ -1030,6 +1069,7 @@ mod tests {
             // The breadcrumb was written AFTER this run began - THIS run's own dash.
             run_started_at: Some(now - Duration::from_secs(60)),
             dash_breadcrumb_written_at: Some(now - Duration::from_secs(30)),
+            dash_attempted_this_run: false,
         };
         let anomalies = detect(&inputs);
         assert_eq!(anomalies.len(), 1);
@@ -1055,6 +1095,7 @@ mod tests {
             dash: DashProbe::NotRecorded,
             run_started_at: None,
             dash_breadcrumb_written_at: None,
+            dash_attempted_this_run: false,
         };
         assert!(detect(&inputs).is_empty());
     }
@@ -1071,6 +1112,7 @@ mod tests {
             dash: DashProbe::Serving,
             run_started_at: None,
             dash_breadcrumb_written_at: None,
+            dash_attempted_this_run: false,
         };
         assert!(detect(&inputs).is_empty());
     }
@@ -1100,12 +1142,57 @@ mod tests {
             // leftover, never this run's own.
             run_started_at: Some(now - Duration::from_secs(30)),
             dash_breadcrumb_written_at: Some(now - Duration::from_secs(60)),
+            dash_attempted_this_run: false,
         };
         assert!(
             detect(&inputs).is_empty(),
             "a breadcrumb written BEFORE this run began must never be reported as this run's \
              own dead dash"
         );
+    }
+
+    /// Round-8 fix (spec 69, adv-u69c1r7-mint-order-bug-is-structural-not-a-coverage-gap): the
+    /// EXACT SAME timestamp shape as the sibling test above -
+    /// `a_dead_marker_predating_this_runs_own_start_is_not_this_runs_anomaly` - a breadcrumb
+    /// mtime strictly OLDER than `run_started_at`, which alone would suppress per the
+    /// pre-existing fallback comparison. The only difference: `dash_attempted_this_run` is
+    /// `true` here - an explicit, run-id-matched fact (in production, `main.rs::watch_poll`
+    /// setting it means `DASH_ATTEMPT_FILE` names THIS exact run, written by
+    /// `record_dash_attempt` from `ensure_run_dashboard`/`start_run_dashboard`). This proves the
+    /// explicit fact WINS over the timestamp fallback: a real per-run attempt is never
+    /// suppressed by a stale-looking mtime pair, however that pair arose (a coarse filesystem
+    /// clock, a future refactor that reorders the mint relative to the ensure call, or any
+    /// other reason the timestamps alone might mislead) - exactly the robustness round 7's
+    /// review asked for: a fact, not an inference from wall-clock order.
+    #[test]
+    fn dash_attempted_this_run_overrides_a_breadcrumb_that_looks_like_it_predates_the_run() {
+        let now = SystemTime::now();
+        let inputs = WatchInputs {
+            run_events: &[],
+            full_events: &[],
+            now,
+            last_event_at: None,
+            step_lock_free: true,
+            wave_liveness_ages: &BTreeMap::new(),
+            dash: DashProbe::NotServing {
+                pid: Some(424_242),
+                port: 7420,
+            },
+            // The IDENTICAL "predates this run" timestamp shape the sibling test above proves
+            // suppresses - the only variable changed below is `dash_attempted_this_run`.
+            run_started_at: Some(now - Duration::from_secs(30)),
+            dash_breadcrumb_written_at: Some(now - Duration::from_secs(60)),
+            dash_attempted_this_run: true,
+        };
+        let anomalies = detect(&inputs);
+        assert_eq!(
+            anomalies.len(),
+            1,
+            "an explicit dash_attempted_this_run=true fact must force reporting even when the \
+             mtime fallback alone would suppress"
+        );
+        assert_eq!(anomalies[0].signal, Signal::DashNotServing);
+        assert!(anomalies[0].detail.contains("424242"));
     }
 
     /// The burden of proof runs toward REPORTING, not suppressing: only a breadcrumb
@@ -1146,6 +1233,7 @@ mod tests {
                 },
                 run_started_at,
                 dash_breadcrumb_written_at,
+                dash_attempted_this_run: false,
             };
             assert_eq!(detect(&inputs).len(), 1, "{case}");
         }
@@ -1240,6 +1328,7 @@ mod tests {
             dash: DashProbe::NotRecorded,
             run_started_at: None,
             dash_breadcrumb_written_at: None,
+            dash_attempted_this_run: false,
         };
         let anomalies = detect(&inputs);
         assert_eq!(anomalies.len(), 1);
@@ -1271,6 +1360,7 @@ mod tests {
             dash: DashProbe::NotRecorded,
             run_started_at: None,
             dash_breadcrumb_written_at: None,
+            dash_attempted_this_run: false,
         };
         assert!(detect(&inputs).is_empty());
     }
@@ -1333,6 +1423,7 @@ mod tests {
             dash: DashProbe::NotRecorded,
             run_started_at: None,
             dash_breadcrumb_written_at: None,
+            dash_attempted_this_run: false,
         };
         let anomalies = detect(&inputs);
         let signals: Vec<Signal> = anomalies.iter().map(|a| a.signal).collect();

@@ -13620,9 +13620,21 @@ fn watch_once_reports_no_dash_anomaly_for_a_fresh_run_that_inherits_an_earlier_r
 /// seeded at all, so `run_started_at` is `None` and the burden-of-proof-toward-reporting
 /// default fires regardless of the comparison). None drove the third, most ordinary case
 /// through the real compiled binary: a fresh, NOT-DONE run whose OWN dash breadcrumb is
-/// written AFTER its own `RunStarted` (the real shape `ensure_run_dashboard` leaves - the
-/// marker is written moments into the run, then never touched again while the dash stays
-/// up) and then genuinely dies. `watch::detect`'s own unit test
+/// written AFTER its own `RunStarted` and then genuinely dies.
+///
+/// This IS the real call order, confirmed against the compiled binary (round-8
+/// investigation, not merely read from source): `cmd_step` calls `enforce_definition_pin`
+/// (which mints a brand-new run's `RunStarted` via `runscope::ensure_started_pinned` /
+/// `start_fresh` when the store has none yet) BEFORE it calls `ensure_run_dashboard` - so on
+/// a project's first-ever step, `RunStarted.recorded_at` lands measurably before the dash
+/// marker's own mtime, not after. (`rigger run` / `rigger serve` share the identical shape via
+/// `fresh_run_if_requested`, called before `start_run_dashboard`.) The sibling
+/// `watch_once_reports_a_real_steps_own_dash_after_the_step_process_has_long_since_exited`
+/// test below proves this end to end through a REAL `rigger step` and a REAL killed dash
+/// process, with no synthetic event seeding at all - the authoritative confirmation this
+/// synthetic-seeding test's own comment here would otherwise only assert.
+///
+/// `watch::detect`'s own unit test
 /// (`a_dead_dash_url_with_no_marker_is_reported_without_inventing_a_pid`, src/watch.rs)
 /// pins this at the pure-function level by constructing `WatchInputs` directly in-process,
 /// but that is structurally blind to `watch_poll`'s real wiring (src/main.rs): the
@@ -13634,7 +13646,11 @@ fn watch_once_reports_no_dash_anomaly_for_a_fresh_run_that_inherits_an_earlier_r
 /// pin the "both known, breadcrumb newer" direction against the real binary. This closes
 /// that gap: seeds a fresh, not-done run's `RunStarted`, waits past the sleep margin the
 /// sibling tests use, THEN writes the dead marker (so its mtime unambiguously postdates
-/// `run_started_at`), and proves `rigger watch --once` still reports it.
+/// `run_started_at`), and proves `rigger watch --once` still reports it. Since round 8, this
+/// exercises the fallback path specifically (`dash_attempted_this_run` is `false` here - this
+/// test never calls the real dash-ensure code path that would set it - so the report comes
+/// entirely from the pre-existing `dash_breadcrumb_written_at`/`run_started_at` comparison,
+/// unchanged by the round-8 fix).
 #[test]
 fn watch_once_reports_this_runs_own_dead_marker_when_written_after_its_run_started() {
     use rigger::dash::DashMarker;
@@ -13684,6 +13700,80 @@ fn watch_once_reports_this_runs_own_dead_marker_when_written_after_its_run_start
          - must still be reported; either the round-6 mtime comparison misreads this ordinary \
          case as inherited, or the wiring feeding it `run_started_at`/`dash_breadcrumb_written_at` \
          has regressed; got:\n{out}"
+    );
+}
+
+/// Round-8 fix, `watch_poll`'s own wiring (src/main.rs) for `dash_attempted_this_run`: the
+/// sibling `watch_once_reports_a_real_steps_own_dash_after_the_step_process_has_long_since_exited`
+/// test above drives the REAL `ensure_run_dashboard` write site end to end, but in every real
+/// production shape the timestamp FALLBACK (`dash_breadcrumb_written_at`/`run_started_at`)
+/// independently reaches the same "report it" answer too (this file's own investigation proved
+/// the marker always postdates RunStarted for a real run's own attempt) - so that test cannot,
+/// by itself, prove `watch_poll`'s `.rigger/dash.attempt` READ and run-id MATCH
+/// (`main.rs::watch_poll`, the `std::fs::read_to_string(loc.file(DASH_ATTEMPT_FILE))...
+/// attempted_run == run_id` expression) is actually load-bearing: a mutant that broke JUST that
+/// expression (e.g. inverting the `==`, deleting the `!attempted_run.is_empty()` guard, or an
+/// `&&`/`||` flip) would still pass it via the independently-correct fallback. This test closes
+/// that gap by constructing the ONE shape where the two signals DISAGREE - synthetically, since
+/// no real production sequence can produce it (this file's own investigation again): a marker
+/// whose mtime PROVABLY PREDATES `RunStarted` (the fallback alone would suppress, exactly the
+/// shape `watch_once_reports_no_dash_anomaly_for_a_fresh_run_that_inherits_an_earlier_runs_dead_
+/// marker` above proves suppresses), but with `.rigger/dash.attempt` naming this EXACT run,
+/// written directly (not through a real `ensure_run_dashboard` call, which never produces this
+/// ordering) - proving the report fires ONLY because `dash_attempted_this_run` genuinely
+/// overrode the fallback, not coincidentally.
+#[test]
+fn watch_once_reports_a_dead_marker_predating_run_started_when_dash_attempt_names_this_run() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    // The dead marker, written FIRST - the same definitely-unbound loopback port and
+    // impossible pid every sibling test in this file seeds.
+    let dead_port = free_loopback_port();
+    let dead_pid = u32::MAX;
+    DashMarker {
+        port: dead_port,
+        pid: dead_pid,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the dash marker");
+
+    // The same filesystem-mtime safety margin the inherited-marker sibling test above uses, so
+    // r1's own `RunStarted` lands unambiguously AFTER the marker write.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    // r1: fresh and NOT done, seeded AFTER the marker - the exact "predates this run" shape
+    // `watch_once_reports_no_dash_anomaly_for_a_fresh_run_that_inherits_an_earlier_runs_dead_
+    // marker` above proves the FALLBACK ALONE suppresses.
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["spec 69"]}"#),
+            ("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+        ],
+    );
+
+    // The critical breadcrumb: `.rigger/dash.attempt` names r1 directly - simulating what a
+    // real `ensure_run_dashboard` call would have written this run, WITHOUT actually calling
+    // it (which would rewrite the marker with a fresh mtime and defeat the very ordering this
+    // test needs). This is the one fact `watch_poll` must read and match against r1's own id.
+    std::fs::write(root.join(".rigger/dash.attempt"), "r1").expect("seed the dash attempt marker");
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 against a predating marker whose dash.attempt names \
+         this run; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("dash liveness") && out.contains(&dead_pid.to_string()),
+        "a marker that LOOKS like it predates this run's own RunStarted must still be reported \
+         when .rigger/dash.attempt explicitly names this exact run - proving watch_poll's own \
+         file-read-and-match wiring (not merely the pure watch::detect fallback comparison, \
+         which alone would suppress this exact shape) is what forced the report; got:\n{out}"
     );
 }
 
@@ -17711,5 +17801,78 @@ fn rust_engineer_persona_pins_the_mutation_accounting_contract() {
          reason, unviable, timeout), the diff base, the mutant total, and the provably-empty \
          no-Rust-file case - so drift in the operator-seeded persona fails this suite instead \
          of silently diverging from the spec it satisfies. Missing fragments: {missing:#?}"
+    );
+}
+
+/// Round-8 fix, closing sdet-u69c1r7-fresh-run-own-dead-dash-suppressed-by-mint-order /
+/// adv-u69c1r7-mint-order-bug-is-structural-not-a-coverage-gap for real: every sibling dash-
+/// liveness test in this file seeds `RunStarted` and the dash marker DIRECTLY via
+/// `seed_run_events`/`DashMarker::write` - never through the real `ensure_run_dashboard` call
+/// `cmd_step` actually makes. Round 7's own "confirmation" probe did the same (its own report
+/// describes "appends RunStarted/UnitStarted" after seeding the marker - a direct event-stream
+/// write, not a real step) and asserted that ordering was "the real production order" without
+/// ever driving the compiled binary's actual `cmd_step` call chain to check. It is not: read
+/// directly, `cmd_step` calls `enforce_definition_pin` (which mints a brand-new run's
+/// `RunStarted` via `runscope::ensure_started_pinned`/`start_fresh`) BEFORE it calls
+/// `ensure_run_dashboard` - confirmed against the compiled binary during this round's
+/// investigation (a fresh run's `RunStarted.recorded_at` lands measurably BEFORE its own dash
+/// marker's mtime, not after).
+///
+/// Rather than re-litigate that causality claim, this test sidesteps it entirely: it drives a
+/// REAL `rigger step` (the real `ensure_run_dashboard` -> `record_dash_attempt` -> real,
+/// detached `rigger dash` child), kills that real dash process so its marker names a genuinely
+/// dead pid, and proves `rigger watch --once` reports it. This is authoritative regardless of
+/// which way the timestamps land, because the round-8 fix (`DASH_ATTEMPT_FILE` /
+/// `WatchInputs::dash_attempted_this_run`) makes the report an explicit run-id fact, not a
+/// wall-clock inference - so this test exercises the REAL write site end to end, the one layer
+/// no pure `watch::detect` unit test (necessarily built on synthetic `WatchInputs`) can reach.
+#[test]
+fn watch_once_reports_a_real_steps_own_dash_after_the_step_process_has_long_since_exited() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    let dash_port = free_loopback_port();
+
+    // A real `rigger step`: this project's FIRST step, so `ensure_run_dashboard` runs on the
+    // exact fresh-run boundary round 7 flagged, spawning a real, detached `rigger dash` and
+    // recording BOTH `.rigger/dash.marker` (port + pid) and `.rigger/dash.attempt` (this run's
+    // id, via `record_dash_attempt`). The step process itself has already exited by the time
+    // this line returns - only the detached dash and the two breadcrumbs it left behind
+    // survive, exactly the shape a driver leaves between steps.
+    let (_out, err) = run_step_dash_enabled(root, dash_port);
+    let (_port, pid) = read_dash_marker(root)
+        .unwrap_or_else(|| panic!("step must record a dash marker; stderr:\n{err}"));
+
+    assert!(
+        std::fs::read_to_string(root.join(".rigger/dash.attempt")).is_ok(),
+        "a real step's own ensure_run_dashboard call must record .rigger/dash.attempt \
+         (record_dash_attempt); without it this test cannot exercise the round-8 fact at all"
+    );
+
+    // Kill the real dash this run itself just spawned, so the NEXT probe finds a genuinely dead
+    // pid on the recorded port - not a synthetic marker, an actual process this test terminated.
+    reap_pid(pid);
+    // Best-effort wait for the port to actually free up, so the probe below cannot race a
+    // not-yet-reaped socket into a false "still serving" read.
+    for _ in 0..50 {
+        if !rigger::dash::dash_serving_on(dash_port) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    let (out, watch_err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 against this run's own just-killed dash; \
+         stderr:\n{watch_err}"
+    );
+    assert!(
+        out.contains("dash liveness") && out.contains(&pid.to_string()),
+        "a run's OWN dash, started by its OWN real step and then killed, must be reported \
+         regardless of any timestamp ordering between the marker write and this run's \
+         RunStarted - the round-8 dash_attempted_this_run fact (an explicit run-id match, not a \
+         wall-clock inference) must force this even if a future refactor ever changed which \
+         side of RunStarted the dash-ensure call lands on; got:\n{out}"
     );
 }
