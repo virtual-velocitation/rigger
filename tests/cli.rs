@@ -13537,6 +13537,83 @@ fn watch_once_reports_no_dash_anomaly_for_a_done_run_even_with_a_dead_marker() {
     );
 }
 
+/// Round-5 reject cause (adv2-u69c1-r5-uphold-sdet-second-run-stale-marker), round-6 fix: the
+/// round-5 `!run.done()` gate above only scopes the CURRENTLY WATCHED run's own done-ness -
+/// `.rigger/dash.marker` is a project-level singleton NEVER removed once its dash exits (same
+/// fact the sibling test above relies on), so a FRESH, NOT-DONE run that never itself touched
+/// the dash still inherited an EARLIER, already-done run's stale dead marker as a false
+/// anomaly. This is the exact shape sdet-u69c1-r5-second-run-stale-marker-false-positive and
+/// adv2-u69c1-r5-uphold-sdet-second-run-stale-marker independently reproduced against the real
+/// binary: seed a done run r1 with a dead marker, THEN a fresh not-done run r2 with zero
+/// dash-related activity of its own, and prove `rigger watch --once` reports nothing for r2 -
+/// the marker predates r2's own `RunStarted`, so it cannot be r2's own breadcrumb. Per
+/// adv2-u69c1-r5-root-cause-marker-lacks-run-identity, the fix does not reshape
+/// `DashMarker` (spec 39's idempotent-start-on-step contract needs the marker to persist
+/// ACROSS runs by design); it compares the breadcrumb file's own mtime against this run's own
+/// `RunStarted` moment instead - a separate per-run fact, not a mutation of the shared marker.
+#[test]
+fn watch_once_reports_no_dash_anomaly_for_a_fresh_run_that_inherits_an_earlier_runs_dead_marker() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    // r1: done (one unit started and integrated, no failed deferred gate) - `ledger::Run::
+    // done`'s own three conjuncts, exactly as the sibling test above seeds it.
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["spec 69"]}"#),
+            ("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+            ("UnitIntegrated", r#"{"id":"u1","commit":"abc"}"#),
+        ],
+    );
+
+    // r1's dash died and left its marker behind - the project-level singleton is never
+    // removed on exit. The exact dead-marker shape both sibling tests above seed: a
+    // definitely-unbound loopback port and an impossible pid.
+    let dead_port = free_loopback_port();
+    let dead_pid = u32::MAX;
+    DashMarker {
+        port: dead_port,
+        pid: dead_pid,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the dash marker");
+
+    // A filesystem-mtime safety margin: r2's own `RunStarted` (recorded_at is stamped at
+    // nanosecond precision by the store, but the marker file's mtime is whatever the
+    // filesystem grants) must land strictly AFTER the marker write on any filesystem's
+    // mtime granularity, so the fix under test - comparing the marker's mtime against r2's
+    // own run-start moment - sees an unambiguous order rather than a coin-flip tie.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    // r2: fresh, NOT done, and never itself touched the dash - zero dash-related activity
+    // of its own. Nothing wrote or refreshed `.rigger/dash.marker` after r2 began; a real
+    // r2 whose own step path called `ensure_run_dashboard` would have rewritten it.
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r2","criteria":["spec 69"]}"#),
+            ("UnitStarted", r#"{"id":"u2","agent":"worker"}"#),
+        ],
+    );
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 for a fresh run inheriting an earlier run's dead \
+         marker; stderr:\n{err}"
+    );
+    assert!(
+        out.trim().is_empty(),
+        "a fresh, not-done run that never touched the dash must report NO dash liveness \
+         anomaly for a marker an EARLIER, already-done run left behind - the marker predates \
+         this run's own RunStarted, so it cannot be this run's own breadcrumb; got:\n{out}"
+    );
+}
+
 /// Spec 46, criterion 2 (the pre-run graph-hygiene guidance ships to CONSUMERS through the
 /// INSTALL seam): a consumer never edits rigger's own repo copies - they run `rigger setup`,
 /// which renders and INSTALLS the `using-rigger` skill into THEIR project at
