@@ -1872,7 +1872,11 @@ mod tests {
         let out = render_diagnose_churn_skill(&sentinel_ctx());
         let real_line = crate::blocker::Blocker {
             subject: "some-unit".to_string(),
-            kind: crate::blocker::Kind::RejectRecurrence { n: 2, max: 5 },
+            kind: crate::blocker::Kind::RejectRecurrence {
+                n: 2,
+                max: 5,
+                cause: "remediating".to_string(),
+            },
         }
         .line();
         let normalized = real_line.replace("#2/5", "#n/max");
