@@ -18987,3 +18987,57 @@ fn watch_once_reports_a_mismatched_dead_url_when_only_the_stale_marker_predates_
         "the stale, mismatched marker's pid must never be named as this url's; got:\n{out}"
     );
 }
+
+/// SDET periphery gap first flagged at round 9 (sdet-u69c1r9-malformed-url-marker-fallback-
+/// untested) and reconfirmed still open through attempt 2/round 10
+/// (sdet-u69c1-attempt2-malformed-url-marker-fallback-still-untested,
+/// adv-u69c1-attempt2-gates-independently-reverified): `watch_poll`'s `(Some(url), Some(m))`
+/// dash-probe arm (src/main.rs) branches on `port_from_dash_url(&url)`. The `Some(url_port)`
+/// sub-branch (a well-formed url) is pinned by the mismatched-marker siblings above, but the
+/// `None` sub-branch - an UNPARSEABLE or foreign `dash.url` with a marker still on disk - falls
+/// back to probing the MARKER's own port directly and, unlike the well-formed sub-branch, DOES
+/// name the marker's pid (there is no url port left to prefer instead). Every existing
+/// marker-plus-url fixture in this file writes a well-formed `http://127.0.0.1:<port>/` url, so
+/// this fallback sub-branch has never been exercised by any test; a mutant that deleted this
+/// arm entirely, or made it silently classify as `NotRecorded`/`Serving` regardless of the
+/// marker probe, would pass the full suite.
+#[test]
+fn watch_once_falls_back_to_the_marker_when_the_recorded_url_is_unparseable() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    // A malformed dash.url - no `:<digits>` tail at all, so `port_from_dash_url`'s
+    // `rsplit_once(':')` finds nothing to parse; the same "foreign or malformed" input its own
+    // doc comment names as unparseable, never guessed at.
+    std::fs::write(root.join(".rigger/dash.url"), "not-a-url")
+        .expect("seed the malformed dash.url");
+
+    // The only other breadcrumb: a marker naming a definitely-unbound loopback port, so the
+    // fallback probe of the marker's OWN port reads dead.
+    let dead_port = free_loopback_port();
+    let dead_pid = u32::MAX;
+    DashMarker {
+        port: dead_port,
+        pid: dead_pid,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the dash marker");
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 against an unparseable dash.url with a marker present; \
+         stderr:\n{err}"
+    );
+    assert!(
+        out.contains("dash liveness")
+            && out.contains(&dead_pid.to_string())
+            && out.contains(&dead_port.to_string()),
+        "an unparseable dash.url must fall back to probing the marker's own port and name its \
+         pid - the same report a marker-only fixture would produce, not silence and not a \
+         url-shaped report; got:\n{out}"
+    );
+}
