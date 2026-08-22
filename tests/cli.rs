@@ -2916,6 +2916,16 @@ fn step_prints_a_disjoint_two_spawn_wave_then_reports_done() {
         !line.contains("escalated"),
         "a clean convergence (no escalated unit) must omit the escalated field; got: {line:?}"
     );
+    // Nor does a clean convergence carry the push-side `attention` array (spec 69, criterion
+    // 5): neither unit crossed any of the five watching-discipline thresholds, so the field
+    // is omitted entirely and the historical `{"wave":[],"done":true}` wire shape survives
+    // through the REAL compiled binary, not just the implementer's own direct-call
+    // `serde_json::to_string(&Step{..})` unit test.
+    assert!(
+        !line.contains("attention"),
+        "a clean convergence (nothing crossed a watching-discipline threshold) must omit \
+         the attention field; got: {line:?}"
+    );
 }
 
 /// Scaffold a project with ONE standalone review-only stage (`agents: [lens]`, no
@@ -6007,6 +6017,12 @@ fn step_carries_the_escalated_set_when_a_fixpoint_is_reached_with_a_wedged_unit(
         !line.contains("escalated"),
         "no unit has escalated yet, so the escalated field is omitted; got: {line:?}"
     );
+    // Spec 69, criterion 5: nothing has crossed a watching-discipline threshold on this
+    // first step either, so the push-side `attention` array is also omitted.
+    assert!(
+        !line.contains("attention"),
+        "no threshold has crossed yet, so the attention field is omitted; got: {line:?}"
+    );
 
     // Drain the implementer via a recorded SpawnResult (the `rigger result` channel).
     seed_run_events(
@@ -6036,6 +6052,45 @@ fn step_carries_the_escalated_set_when_a_fixpoint_is_reached_with_a_wedged_unit(
         line.contains(r#""escalated":["solo"]"#),
         "a fixpoint reached with an escalated unit must carry it in the escalated set; got: {line:?}"
     );
+    // Spec 69, criterion 5 (the step wire carries attention - THIS unit's own contract):
+    // the same real `rigger step` invocation that carries the escalated set must ALSO carry
+    // a push-side `attention` entry naming the escalation, through the compiled binary's
+    // actual stdout - not merely through `conductor::run` called directly in-process (the
+    // implementer's own `mod tests` in src/conductor.rs), which can never observe whether
+    // `cmd_step` truly wires `RunState::attention` onto the printed `Step`. `max_retries: 1`
+    // means this unit's first failure IS its escalation, so `worker-death-recurred` (which
+    // needs a SECOND failure) does not also fire here - this step isolates the `escalated`
+    // signal cleanly at the process boundary.
+    assert!(
+        line.contains(r#""attention":[{"kind":"escalated","unit":"solo","detail":"#),
+        "an escalated fixpoint must stamp an attention entry naming the escalated unit, on \
+         the real binary's own stdout; got: {line:?}"
+    );
+
+    // Step 3 (review u69c5, finding sdet-u69c5-escalated-resume-restamp-untested-but-
+    // verified-correct: no test drove a THIRD real `rigger step` after an escalation to
+    // prove the `escalated` signal does not re-stamp on a RESUMED process - only
+    // worker-death-recurred/stalled-frontier and budget-final-tenth had that real-process-
+    // boundary re-stamp guard coverage; this closes the gap). A FRESH process, nothing new
+    // recorded - the run is already at its fixpoint, unchanged. The LEVEL-triggered
+    // `escalated` set field must still re-surface (it reflects current truth every call,
+    // exactly like `halted`), but the EDGE-triggered `attention` array must be absent: the
+    // crossing already happened, once, in step 2 - "once per threshold crossing" (spec 69)
+    // is a property of the PERSISTED log a brand-new process re-derives, not Rust state the
+    // second process happened to carry forward.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "step 3 must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(r#""escalated":["solo"]"#),
+        "the LEVEL-triggered escalated set must still re-surface on a fresh process reading \
+         back the same store; got: {line:?}"
+    );
+    assert!(
+        !line.contains(r#""attention":"#),
+        "a fresh process reading a store where the escalation already happened must NOT \
+         re-stamp the EDGE-triggered attention entry; got: {line:?}"
+    );
 }
 
 /// Gap 13: a spawn-budget HALT must be LOUD, not indistinguishable from convergence.
@@ -6061,6 +6116,166 @@ fn step_prints_a_budget_halt_reason_when_the_breaker_trips() {
     assert!(
         line.contains(r#""halted":"budget exhausted: 1/1 spawns""#),
         "a tripped budget must print a halt reason distinct from convergence; got: {line:?}"
+    );
+    // Spec 69, criterion 5: a budget of 1 is ALSO its own final tenth (1 - 1/10 = 1,
+    // floored), so the SAME real step that halts must carry BOTH a run-scoped `halted`
+    // attention entry AND a `budget-final-tenth` one, in the fixed kind order (`halted`
+    // before `budget-final-tenth`) - a genuine co-occurrence on the compiled binary's own
+    // stdout, not two separate reports of one signal. This is what the implementer's own
+    // in-process `mod tests` (which call `conductor::run` directly) cannot show: whether
+    // `cmd_step` truly moves the live `RunState::attention` onto the printed `Step` rather
+    // than, say, only the `halted` field it was already carrying before this unit.
+    assert!(
+        line.contains(
+            r#""attention":[{"kind":"halted","detail":"budget exhausted: 1/1 spawns"},{"kind":"budget-final-tenth","detail":"1/1 spawns"}]"#
+        ),
+        "a budget halt that is also the budget's final tenth must stamp both run-scoped \
+         attention entries, in order, on the real binary's own stdout; got: {line:?}"
+    );
+}
+
+/// Spec 69, criterion 5, signal 2 (BUDGET half), "once per threshold crossing" - PROVEN
+/// ACROSS A REAL PROCESS BOUNDARY (review u69c5 round 2, cause genuine-defect). The
+/// implementer's own in-process unit test
+/// (`a_budget_halt_does_not_restamp_on_a_later_poll_with_nothing_new`, `src/conductor.rs`)
+/// proves the SIGNAL COMPUTATION against an in-memory `:memory:` store across two `run()`
+/// calls in ONE test process. It cannot prove what `step_prints_a_budget_halt_reason_when_
+/// the_breaker_trips` above proves for a SINGLE crossing: that a SECOND, fresh `rigger
+/// step` process - re-deriving `budget_exhausted_before` from a REAL SQLite file it just
+/// opened, not Rust state the first process happened to carry forward - agrees the
+/// crossing already happened and does not re-stamp.
+#[test]
+fn a_budget_halt_does_not_restamp_on_a_later_real_step_with_nothing_new() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_budget_one_two_stage_workflow(root);
+
+    // Step 1: `a` is admitted and parks, `b` is refused - the breaker trips, crossing both
+    // the budget halt and its own final-tenth threshold in the same call.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "step 1 must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(
+            r#""attention":[{"kind":"halted","detail":"budget exhausted: 1/1 spawns"},{"kind":"budget-final-tenth","detail":"1/1 spawns"}]"#
+        ),
+        "step 1 crosses the budget threshold and must stamp both entries; got: {line:?}"
+    );
+
+    // Step 2: a FRESH `rigger step` process, nothing new recorded. `a`'s spawn replays its
+    // still-unanswered park for free and `b` is refused again - the SAME spawn count on
+    // both sides of THIS call's own window, so the crossing gate does not re-fire. The
+    // LEVEL-triggered `halted` field correctly re-derives `Some(..)` (the breaker genuinely
+    // re-trips every call it is asked), but the EDGE-triggered `attention` array must be
+    // absent - proven here against a store this SECOND process opened fresh, not Rust
+    // state the first process happened to carry forward.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "step 2 must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(r#""halted":"budget exhausted: 1/1 spawns""#),
+        "the LEVEL-triggered halted field must still re-surface on a fresh process reading \
+         back the same store; got: {line:?}"
+    );
+    assert!(
+        !line.contains(r#""attention":"#),
+        "a fresh process reading a store where the crossing already happened must NOT \
+         re-stamp the EDGE-triggered attention entries; got: {line:?}"
+    );
+}
+
+/// Like [`write_budget_one_two_stage_workflow`] but a DEPENDENCY chain instead of two
+/// independent stages: `s2 needs s1`, so `s2` is not ready until `s1` INTEGRATES - the
+/// scenario where the budget count itself does not change on the call that genuinely
+/// halts (review u69c5 round 3, cause genuine-defect). `on_pass` is deliberately left
+/// unset (empty resolves to `merge` - §3.2) - `s2`'s readiness needs a real
+/// `UnitIntegrated`, which an `on_pass: none` unit (verified-but-never-merged) never
+/// emits, so `s2` would stay blocked forever and the run would falsely converge
+/// (`done: true`, nothing pending) rather than reach the genuine halt this test drives at.
+fn write_budget_one_dependency_workflow(root: &Path) {
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: steptest
+defaults:
+  grounder: nop
+  budget: 1
+stages:
+  s1:
+    agent: worker
+  s2:
+    agent: worker
+    needs: [s1]
+"#,
+    )
+    .unwrap();
+}
+
+/// Spec 69, criterion 5, signal 2 (BUDGET half), "once per threshold crossing" - a SECOND
+/// gap in the same signal (review u69c5 round 3, cause genuine-defect), proven ACROSS A
+/// REAL PROCESS BOUNDARY. The implementer's own in-process unit test
+/// (`a_delayed_budget_halt_after_a_dependency_unlocks_still_stamps`, `src/conductor.rs`)
+/// proves the fix's SIGNAL COMPUTATION against an in-memory store; this drives the exact
+/// same scenario through the compiled binary, a REAL on-disk SQLite store, and a REAL
+/// `rigger result` recorded by a SEPARATE process between the two steps - the round-3 fix
+/// gates the budget half on the durable `BudgetExhausted` event's presence in
+/// `prior_events`, and only a fresh process re-reading that event off disk (not Rust state
+/// a single long-lived process carried forward) proves the gate survives the process
+/// boundary the fix's whole rationale depends on.
+#[test]
+fn a_delayed_budget_halt_after_a_dependency_unlocks_still_stamps_on_a_real_process_boundary() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_budget_one_dependency_workflow(root);
+
+    // Step 1: only `s1` is ready (`s2` needs it). `s1`'s implementer parks; nothing else is
+    // ready to refuse, so the budget is reached (0 -> 1) WITHOUT tripping the breaker.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "step 1 must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(r#""id":"s1/implementer#0""#),
+        "step 1 must park s1's implementer; got: {line:?}"
+    );
+    assert!(
+        !line.contains(r#""halted":"#),
+        "reaching the budget count with nothing left to refuse must not halt yet; got: {line:?}"
+    );
+    assert!(
+        line.contains(r#""attention":[{"kind":"budget-final-tenth","detail":"1/1 spawns"}]"#),
+        "step 1 crosses the final-tenth spawn-count threshold (signal 4, unaffected by this \
+         fix) but must NOT stamp `halted` (signal 2): nothing was refused this call; \
+         got: {line:?}"
+    );
+
+    // A SEPARATE process records s1's real result - exactly a courier's `rigger result`
+    // call - so s1 integrates (no gates, `on_pass: none`) and unlocks s2.
+    let (_out, err, ok) = run_rigger(root, &["result", "s1/implementer#0", "done"]);
+    assert!(ok, "recording s1's result must succeed; stderr: {err}");
+
+    // Step 2: a FRESH `rigger step` process. s1 integrated, s2 becomes ready, and is
+    // REFUSED (budget already spent) - the call that GENUINELY halts, even though the
+    // spawn count itself does not change this call (`before_spawns == after_spawns == 1`).
+    // Must stamp `halted` exactly once, proving `budget_exhausted_before` correctly
+    // re-derives `false` (nothing tripped the breaker as of `prior_events`) from a store
+    // this brand-new process just opened off disk.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "step 2 must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(r#""halted":"budget exhausted: 1/1 spawns""#),
+        "step 2 must genuinely halt: s2 is refused; got: {line:?}"
+    );
+    assert!(
+        line.contains(r#""attention":[{"kind":"halted","detail":"budget exhausted: 1/1 spawns"}]"#),
+        "step 2 is the call that GENUINELY halts (s2 refused) and must stamp the entry, even \
+         though the spawn count itself is unchanged this call; got: {line:?}"
     );
 }
 
@@ -6148,10 +6363,22 @@ fn step_surfaces_a_hung_spawn_with_a_stale_marker_as_a_liveness_halt() {
         line.contains("infra") && line.contains("no remediation attempt"),
         "the halt must state infra classification and no-attempt-charged; got: {line:?}"
     );
+    // Spec 69, criterion 5, signal 2 (review u69c5, cause genuine-defect): a hung spawn's
+    // liveness halt must ALSO stamp a run-scoped `halted` entry on the generic `attention`
+    // channel, mirroring what the `halted` field above already surfaces - not visible only
+    // on the budget-breaker half of that union.
+    assert!(
+        line.contains(r#""attention":[{"kind":"halted","detail":"#),
+        "the hung halt must also stamp a run-scoped `halted` attention entry; got: {line:?}"
+    );
 
     // Step 3: re-step WITHOUT recording a result. The hung spawn is already answered by the
     // liveness fault, so it is NOT re-parked/re-run (no dup-exec) - its id must NOT reappear as
-    // a fresh wave item - and the halt RE-SURFACES so the stall stays visible every step.
+    // a fresh wave item. The LEVEL-triggered `halted` field re-surfaces (it reflects current
+    // truth every call, by design), but the EDGE-triggered `attention` entry does NOT re-stamp
+    // with nothing new crossed since step 2 already surfaced it - "once per threshold crossing"
+    // (spec 69, criterion 5's own text; review u69c5 round 2, finding
+    // adv-u69c5r2-halted-signal-restamps-every-poll-violates-once-per-crossing).
     let (out, err, ok) = run_rigger(root, &["step"]);
     assert!(ok, "the re-step must succeed; stderr: {err}");
     let line = out.trim();
@@ -6162,6 +6389,11 @@ fn step_surfaces_a_hung_spawn_with_a_stale_marker_as_a_liveness_halt() {
     assert!(
         json_string_field(line, "marker_path").is_none() && !line.contains(r#""wave":[{"#),
         "the answered hung spawn is not re-run (no fresh wave item / dup-exec); got: {line:?}"
+    );
+    assert!(
+        !line.contains(r#""attention":"#),
+        "the attention entry must NOT re-stamp on a later step with nothing new crossed - only \
+         the level-triggered `halted` field re-surfaces; got: {line:?}"
     );
 
     // Step 4: the operator re-drives the now-healthy agent and records a REAL result. Being
@@ -6179,6 +6411,10 @@ fn step_surfaces_a_hung_spawn_with_a_stale_marker_as_a_liveness_halt() {
     assert!(
         !line.contains(r#""halted":"#),
         "recording a real result clears the liveness halt; got: {line:?}"
+    );
+    assert!(
+        !line.contains(r#""attention":"#),
+        "recording a real result must also clear the mirrored `halted` attention entry; got: {line:?}"
     );
     assert!(
         line.contains(r#""done":true"#),
@@ -6271,6 +6507,16 @@ fn step_surfaces_a_hung_unbounded_spawn_recorded_as_a_liveness_fault_by_the_driv
         line.contains("infra") && line.contains("no remediation attempt"),
         "the halt states infra classification and no-attempt-charged; got: {line:?}"
     );
+    // Round 4 (review u69c5 round 3, cause genuine-defect): this is the FIRST `rigger step`
+    // process able to observe a fault that a wholly separate process (the driver's
+    // out-of-band `rigger result --error` above) recorded strictly BETWEEN steps 1 and 2 -
+    // so it is a genuine NEW crossing and the push-side `attention` wire must carry it too,
+    // not just the pre-existing `halted` field.
+    assert!(
+        line.contains(r#""attention":[{"kind":"halted""#) && line.contains("a/implementer#0"),
+        "the FIRST step able to observe an out-of-band driver-recorded hang must stamp it on \
+         the attention wire (once per crossing); got: {line:?}"
+    );
 
     // Step 3: re-step without recording a real result - the fault ANSWERS the spawn, so it is
     // never re-run (no dup-exec) and the halt re-surfaces so the stall stays visible.
@@ -6285,6 +6531,13 @@ fn step_surfaces_a_hung_unbounded_spawn_recorded_as_a_liveness_fault_by_the_driv
         json_string_field(line, "marker_path").is_none() && !line.contains(r#""wave":[{"#),
         "the answered hung spawn is not re-run (no fresh wave item / dup-exec); got: {line:?}"
     );
+    // The SAME hang, still unresolved - not a new crossing, so `attention` stays empty (and
+    // thus omitted from the wire) even though `halted` correctly keeps re-surfacing every step.
+    assert!(
+        !line.contains(r#""attention":"#),
+        "a still-true, unchanged hang must not re-stamp attention on a later step (once per \
+         crossing); got: {line:?}"
+    );
 
     // Step 4: recording a REAL result (last-write-wins) supersedes the fault and the run converges.
     let (_o, err, ok) = run_rigger(
@@ -6298,6 +6551,151 @@ fn step_surfaces_a_hung_unbounded_spawn_recorded_as_a_liveness_fault_by_the_driv
     assert!(
         !line.contains(r#""halted":"#) && line.contains(r#""done":true"#),
         "a real result clears the halt and the run converges; got: {line:?}"
+    );
+    assert!(
+        !line.contains(r#""attention":"#),
+        "a recovered run must carry no attention entry either; got: {line:?}"
+    );
+}
+
+/// Spec 69, criterion 5 (review u69c5 round 5, cause genuine-defect, findings
+/// sdet-u69c5r4-repoless-cursor-restamps-every-step /
+/// adv-u69c5r4-confirm-sdet-repoless-restamp-empirically-proven): the SAME driver-recorded-hang
+/// scenario as `step_surfaces_a_hung_unbounded_spawn_recorded_as_a_liveness_fault_by_the_driver`
+/// above, but repo-less (`temp_repoless_project` - no `.git`, so `scratch_root` resolves to
+/// `None` and there is nowhere to persist the round-4 cross-process cursor). Before this
+/// round's fix, `pre_hung_ids` collapsed to empty on EVERY step in this path (a plain
+/// `Option::map`/`unwrap_or_default` over `scratch_root`) while `hung` itself is derived purely
+/// from the event log and is NOT gated on `scratch_root` - so `newly_hung` was true on every
+/// single step and the SAME still-unresolved hang restamped `attention` forever, the opposite
+/// failure direction from the crossing-swallowing bug this cursor mechanism exists to close.
+///
+/// The fix gates the crossing check itself on `scratch_root.is_some()`: with no scratch there
+/// is no boundary available at all to tell a genuine new crossing from a still-true restamp
+/// (every repo-less-reachable fault is recorded by a wholly separate `rigger result --error`
+/// process call that, by construction, always predates the observing step's own reads - unlike
+/// the scratch-present sweep, there is no in-process moment that precedes it), so `attention`
+/// carries NO hung-liveness entry in this path at all, on ANY step - never restamping, but also
+/// never firing. `step.halted` (fed from the SAME, ungated `hung` set) is completely
+/// unaffected and keeps halting loudly on every step, exactly as `a_liveness_fault_on_a_review_
+/// spawn_halts_instead_of_re_parking` already proves independently - this test's job is only
+/// the (previously broken) `attention` half.
+#[test]
+fn step_attention_never_restamps_a_hung_unbounded_spawn_when_repo_less() {
+    let dir = temp_repoless_project();
+    let root = dir.path();
+    write_unbounded_liveness_workflow(root);
+
+    // Step 1: the implementer parks in-flight, unbounded (no marker, nothing hung yet).
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(r#""id":"a/implementer#0""#),
+        "step 1 parks the implementer in-flight; got: {line:?}"
+    );
+
+    // The native driver's outer wall-clock records a liveness fault out of band, exactly as
+    // the git-repo sibling test above does.
+    let (_o, err, ok) = run_rigger(
+        root,
+        &[
+            "result",
+            "a/implementer#0",
+            "worker a/implementer#0 hung: ran past the outer wall-clock with no per-spawn max_wall_clock",
+            "--error",
+            "--meta",
+            r#"{"liveness_class":"infra"}"#,
+        ],
+    );
+    assert!(
+        ok,
+        "recording the driver's liveness fault must succeed; stderr: {err}"
+    );
+
+    // Step 2: the halt still surfaces loudly on the pre-existing, ungated `halted` field, but
+    // repo-less has no crossing boundary to seed `attention` from, so it stays omitted -
+    // consistently, not restamped-every-step as the pre-fix bug produced.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "step 2 must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(r#""halted":"#) && line.contains("a/implementer#0"),
+        "the hung unbounded spawn must surface as a halt naming it; got: {line:?}"
+    );
+    assert!(
+        !line.contains(r#""attention":"#),
+        "repo-less has no persisted crossing boundary, so attention must stay omitted rather \
+         than guess (right or wrong) at a genuine-new-crossing verdict; got: {line:?}"
+    );
+
+    // Step 3: the SAME hang, still unresolved - nothing new recorded. `halted` keeps
+    // re-surfacing (it is still true); `attention` stays consistently omitted, proving this is
+    // steady, deterministic behavior across repeated repo-less steps, not a fluke of step 2.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "step 3 must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(r#""halted":"#) && line.contains("a/implementer#0"),
+        "the halt re-surfaces on a later step; got: {line:?}"
+    );
+    assert!(
+        !line.contains(r#""attention":"#),
+        "attention must stay omitted on a later repo-less step too - never restamping the same \
+         still-true hang every step; got: {line:?}"
+    );
+}
+
+/// Spec 69, criterion 5 (review u69c5 round 5, cause genuine-defect, finding
+/// adv-u69c5r4-cursor-write-outruns-its-own-delivery): `println!` is `attention`'s ONLY
+/// delivery channel (it is never appended to the event log), so persisting the hung-attention
+/// cursor - which durably marks a crossing as "already surfaced" - must never run BEFORE the
+/// print that is the sole thing that actually surfaces it. A process death between the two
+/// calls (SIGKILL, OOM, a broken pipe to the driver) would otherwise permanently swallow a
+/// genuine new crossing no observer ever saw: the next step's `pre_hung_ids` would already
+/// contain the id, so `newly_hung` reads false forever after.
+///
+/// It is a SOURCE-TEXT assertion, not a behavior test - the same convention
+/// `worktree_sweep_completes_before_any_add_within_one_step` above uses for an identical
+/// "no test can force this exact interleaving without killing the process mid-line" problem:
+/// a crash between two adjacent statements is not something an integration test can inject
+/// deterministically, so the ordering itself is pinned directly in `cmd_step`'s own source
+/// text, at a bar a no-op cannot pass.
+#[test]
+fn the_hung_cursor_is_persisted_only_after_the_step_that_carries_it_is_printed() {
+    let src = main_rs_source();
+
+    let step_at = src
+        .find("fn cmd_step(args: &[String]) -> Res {")
+        .expect("main.rs must still define cmd_step, the `rigger step` lifecycle");
+    let step_end = src[step_at..]
+        .find("\nfn ")
+        .map(|off| step_at + off)
+        .expect("cmd_step must be followed by another top-level fn");
+    let cmd_step = &src[step_at..step_end];
+
+    let print_at = cmd_step
+        .find("println!(\"{}\", serde_json::to_string(&step)?)")
+        .expect(
+            "cmd_step must print the serialized Step - the sole delivery channel for `attention`",
+        );
+    let persist_at = cmd_step
+        .find("liveness::write_hung_cursor(")
+        .expect("cmd_step must persist the hung-attention cursor");
+
+    assert_eq!(
+        cmd_step
+            .matches("println!(\"{}\", serde_json::to_string(&step)?)")
+            .count(),
+        1,
+        "cmd_step must print the Step exactly once, so this pin stays unambiguous"
+    );
+    assert!(
+        print_at < persist_at,
+        "the Step must be printed (delivered to the driver) BEFORE the hung-attention cursor \
+         is durably persisted; found the cursor write at offset {persist_at} before the print \
+         at offset {print_at} within cmd_step - a crash between them would then permanently \
+         swallow a genuine new crossing no observer ever saw"
     );
 }
 

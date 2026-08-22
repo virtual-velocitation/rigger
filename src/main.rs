@@ -2045,6 +2045,34 @@ fn cmd_step(args: &[String]) -> Res {
 
     let graph = Projector::open(&db_path("graph.db"), &project_identity())?;
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
+    // The store state BEFORE this step's own liveness sweep runs (spec 69, criterion 5):
+    // used below to scope the sweep's marker reads to THIS run (a slug-colliding re-run
+    // never reads a prior run's leftover mtime) and, since `run_id` never changes within a
+    // step, reused verbatim for the hung-attention cursor path too (see `pre_hung_ids`
+    // below). Read ONCE here, before the sweep mutates the log.
+    let pre = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    // Empty before the first RunStarted (the first step, where nothing is in-flight to sweep
+    // and nothing has ever been surfaced anyway).
+    let run_id = runscope::current_run_id(&pre).unwrap_or_default();
+    // The hung-attention CROSSING BOUNDARY (spec 69, criterion 5; review u69c5 round 3,
+    // cause genuine-defect): the spawn ids already surfaced on the `attention` wire as of
+    // the end of the PREVIOUS `rigger step` invocation, read from the persisted cursor
+    // (see `liveness::hung_cursor_path`'s own doc comment for why a fresh read taken at
+    // THIS process's own start - the prior approach - can never see a fault an out-of-band
+    // driver call recorded strictly between two step invocations: that write already
+    // predates every read this process could take). `conductor::compute_attention`'s own
+    // doc comment covers why this specific signal cannot be computed from inside
+    // `conductor::run` at all, in-process or otherwise. Absent scratch (the repo-less
+    // unit-test path only - guarded the same way every other scratch-dependent read in this
+    // function already is) has nowhere to persist a cursor, so this reads as empty - see the
+    // `newly_hung` computation below (review u69c5 round 5, cause genuine-defect) for why an
+    // always-empty read here is made SAFE (never a false "newly hung" every step) rather than
+    // read at face value the way it is in the scratch-present path.
+    let pre_hung_ids: std::collections::BTreeSet<String> = scratch_root
+        .as_deref()
+        .map(|root| rigger::liveness::read_hung_cursor(root, &run_id))
+        .unwrap_or_default();
+
     // Liveness sweep (spec 10, unit 3): BEFORE the conductor replays the frontier, classify
     // any IN-FLIGHT spawn whose per-spawn heartbeat marker went stale beyond its
     // `max_wall_clock` as an infrastructure fault (a HUNG agent) and record it on the
@@ -2054,12 +2082,6 @@ fn cmd_step(args: &[String]) -> Res {
     if let Some(root) = &scratch_root {
         match cfg.workflow.failure_taxonomy() {
             Ok(taxonomy) => {
-                let pre = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
-                // The current run id scopes the marker path (spec 10, unit 3): the sweep reads
-                // markers under this run's subdir, so a slug-colliding re-run never reads a
-                // prior run's leftover mtime. Empty before the first RunStarted (the first
-                // step, where nothing is in-flight to sweep anyway).
-                let run_id = runscope::current_run_id(&pre).unwrap_or_default();
                 match rigger::liveness::sweep(
                     &store,
                     runscope::current_run(&pre),
@@ -2177,6 +2199,14 @@ fn cmd_step(args: &[String]) -> Res {
     // Stamped BEFORE the `halted` move below (which consumes `rs.budget_halt`), as it borrows
     // `rs`.
     step.escalated = rs.escalated_units();
+    // Surface the push-side ATTENTION array (spec 69, criterion 5): the conductor already
+    // computed it as a before/after diff of this call's own transition (see
+    // `conductor::compute_attention`), so this is a plain move of the live state onto the
+    // wire - exactly like `escalated` and `halted`, and like them omitted when empty so a
+    // clean step's `{"wave":[],"done":true}` shape stays byte-for-byte unchanged. Rendering
+    // each entry as a narrator log line is a later criterion's job (spec 69, "the driver
+    // relays it"); this step only stamps the wire.
+    step.attention = rs.attention;
     step.halted = rs.budget_halt;
     // Hung agents (spec 10, unit 3): any spawn whose LATEST result is a liveness fault is a
     // hung, unrecovered agent whose worker may STILL be alive and writing under the shared
@@ -2192,6 +2222,72 @@ fn cmd_step(args: &[String]) -> Res {
         // Recovery: record a real result on the named spawn (last-write-wins supersedes the
         // fault), then re-drive.
         step.halted = Some(rigger::liveness::halt_reason(&hung));
+    }
+    // The hung-liveness half of `attention`'s `halted` signal (spec 69, criterion 5; review
+    // u69c5 round 3, cause genuine-defect): computed HERE, not inside `conductor::run`, because
+    // its crossing boundary is `pre_hung_ids` (the boundary computed above - the PERSISTED
+    // cursor whenever scratch is available, see `liveness::hung_cursor_path`'s own doc comment
+    // for why - never a fresh read taken at this process's own start) - see
+    // `conductor::compute_attention`'s own doc comment for why that boundary cannot live
+    // inside `run()` itself either way. A spawn hung in `hung` that
+    // was NOT already hung as of `pre_hung_ids` is a genuine NEW crossing this step; one
+    // already hung as of `pre_hung_ids` is a still-true restamp and does not fire again.
+    // `merge_hung_attention` (pulled out for unit-testability - see its own doc comment) owns
+    // the precedence-and-ordering mechanics.
+    //
+    // Gated on `scratch_root.is_some()` (review u69c5 round 5, cause genuine-defect, findings
+    // sdet-u69c5r4-repoless-cursor-restamps-every-step /
+    // adv-u69c5r4-confirm-sdet-repoless-restamp-empirically-proven): absent scratch,
+    // `pre_hung_ids` above has nowhere to persist a cursor and always reads empty, while
+    // `hung` (unlike `pre_hung_ids`) is derived purely from the event log and is NOT itself
+    // gated on `scratch_root` - so comparing the two directly would read every step as a fresh
+    // crossing and restamp `attention` forever instead of once, the opposite failure direction
+    // from the crash-window gap the persisted cursor exists to close. `step.halted` just above
+    // is UNCHANGED by this gate - it stays sourced from the full, ungated `hung` set, so a
+    // hung spawn still halts loudly on every step regardless of scratch (this only scopes the
+    // separate crossing-tracked `attention` entry). Without a persisted cursor there is no
+    // boundary available at all to tell a genuine new crossing from a still-true restamp in
+    // this path (every repo-less-reachable fault is recorded by a wholly separate `rigger
+    // result --error` process call, which by construction always predates this step's own
+    // reads - there is no in-process moment that precedes it the way the scratch-present
+    // sweep's pre-sweep read does), so gating BOTH halves of the comparison to the SAME
+    // scratch-presence keeps them consistent in every path: `attention` simply carries no
+    // hung-liveness entry when repo-less, rather than guessing wrong in either direction.
+    let newly_hung = scratch_root.is_some() && hung.iter().any(|h| !pre_hung_ids.contains(&h.id));
+    step.attention = merge_hung_attention(step.attention, newly_hung, || {
+        rigger::liveness::halt_reason(&hung)
+    });
+    // `step` is now fully finalized - nothing below this point mutates it further.
+    //
+    // DELIVER the step BEFORE persisting the hung-attention cursor (spec 69, criterion 5;
+    // review u69c5 round 5, cause genuine-defect, finding
+    // adv-u69c5r4-cursor-write-outruns-its-own-delivery): the `println!` below is `attention`'s
+    // SOLE delivery channel - it is never appended to the event log (see `Step`'s own
+    // `attention` field: `skip_serializing_if = "Vec::is_empty"`, live-wire-only by design) -
+    // so persisting the cursor first would let a process death strictly between the two calls
+    // (SIGKILL, OOM, a broken pipe to the driver) durably mark a crossing "already surfaced"
+    // even though no observer ever actually saw it: the next invocation's `pre_hung_ids` would
+    // already contain the id, so `newly_hung` reads false forever after - silently swallowing a
+    // genuine crossing, the exact failure mode this whole mechanism exists to close. Printing
+    // FIRST means a crash in that window instead costs one harmless extra restamp next step
+    // (the cursor never got updated, so the unchanged crossing is detected again) - the same
+    // "fail toward one extra harmless re-notification, never toward silently swallowing a
+    // genuine new crossing" direction `write_hung_cursor`'s own doc comment already commits to.
+    println!("{}", serde_json::to_string(&step)?);
+    // Persist the hung-attention cursor (spec 69, criterion 5; review u69c5 round 3, cause
+    // genuine-defect): overwrite it with THIS step's own full `hung` set - the exact set
+    // `pre_hung_ids` above just diffed against - so the NEXT `rigger step` invocation (this
+    // process's own next step, OR the very next one after an out-of-band driver fault) reads
+    // an up-to-date boundary rather than the one this process itself started with. Best-effort;
+    // a write failure only risks one extra re-stamp later, never fails this step (see
+    // `liveness::write_hung_cursor`'s own doc comment). Runs AFTER the print above, never
+    // before it (see that comment for why).
+    if let Some(root) = &scratch_root {
+        let current_hung_ids: std::collections::BTreeSet<String> =
+            hung.iter().map(|h| h.id.clone()).collect();
+        if let Err(e) = rigger::liveness::write_hung_cursor(root, &run_id, &current_hung_ids) {
+            eprintln!("rigger step: could not persist the hung-attention cursor: {e}");
+        }
     }
     // RUN TEARDOWN at a terminal run state (spec 34, criterion 3): reclaim the run's run-level
     // shared scratch - `agent-scratch` (probe repos + verification builds a worker parks under
@@ -2231,8 +2327,42 @@ fn cmd_step(args: &[String]) -> Res {
             reclaim_run_scratch(root);
         }
     }
-    println!("{}", serde_json::to_string(&step)?);
     Ok(())
+}
+
+/// Merge the hung-liveness half of signal 2 (`halted`) into `attention` (spec 69, criterion
+/// 5; review u69c5 round 3, cause genuine-defect) and restore the canonical kind order -
+/// pulled out of [`cmd_step`] (not reachable through the crate API - `main.rs` is a binary)
+/// purely so the PRECEDENCE-AND-ORDERING mechanics are independently unit-testable, separate
+/// from the CROSSING decision (`newly_hung`, computed at the call site from `pre_hung_ids` -
+/// see `conductor::compute_attention`'s own doc comment for why that decision cannot live
+/// inside `conductor::run` itself).
+///
+/// `attention` already carries whatever `compute_attention` built (escalated /
+/// budget-halted / worker-death-recurred / budget-final-tenth / stalled-frontier, in THAT
+/// canonical order). Pushes ONE run-scoped `halted` entry - built lazily via `reason` only
+/// when actually needed, since `liveness::halt_reason` walks the whole hung set - when
+/// `newly_hung` is true AND no `halted` entry is already present (a budget halt this same
+/// call takes precedence, mirroring the SAME precedence the `halted` wire field itself
+/// already gives the budget breaker over the hung fallback, just above this function's call
+/// site). A STABLE sort by [`ledger::attention_kind_rank`] afterward only ever needs to
+/// relocate the ONE entry just appended - `compute_attention`'s own entries are already in
+/// canonical order, and a stable sort never disturbs their relative order (e.g. two
+/// `stalled-frontier` units stay lexical) - so the merged array is byte-identical to what
+/// `compute_attention` alone would have produced had it been able to see this crossing.
+fn merge_hung_attention(
+    mut attention: Vec<ledger::AttentionEntry>,
+    newly_hung: bool,
+    reason: impl FnOnce() -> String,
+) -> Vec<ledger::AttentionEntry> {
+    if newly_hung && attention.iter().all(|e| e.kind != ledger::ATTENTION_HALTED) {
+        attention.push(ledger::AttentionEntry::run_scoped(
+            ledger::ATTENTION_HALTED,
+            reason(),
+        ));
+        attention.sort_by_key(|e| ledger::attention_kind_rank(e.kind));
+    }
+    attention
 }
 
 /// The step-start sweep's liveness decision (spec 64, criterion 4 fix): given the outcome of
@@ -16413,6 +16543,111 @@ mod tests {
                 "node --check failed for a reason other than node being absent: {e}"
             ),
         }
+    }
+
+    /// Spec 69, criterion 5 (this unit OWNS the wire stamp): the STEP schema must ADMIT the
+    /// `attention` array - the top level rejects unknown properties (`additionalProperties:
+    /// false`), so a step carrying a non-empty `attention` would otherwise fail validation
+    /// and the signal would be lost, exactly the `halted`/`escalated` precedent this
+    /// mirrors. This unit stamps the wire ONLY; rendering an entry as a narrator log line
+    /// is a later criterion's job, so this test asserts schema admission alone.
+    #[test]
+    fn the_step_schema_admits_the_attention_array() {
+        assert!(
+            RIGGER_WORKFLOW.contains("attention: {"),
+            "the STEP schema must declare the optional `attention` array (top-level \
+             additionalProperties is false, so an undeclared `attention` would be rejected \
+             and a flagged step's signal would be lost)"
+        );
+        assert!(
+            RIGGER_WORKFLOW.contains("kind: { type: 'string' }"),
+            "the `attention` item schema must admit `kind` (the signal name)"
+        );
+    }
+
+    /// Spec 69, criterion 5, signal 2's hung-liveness half (review u69c5 round 3, cause
+    /// genuine-defect): `merge_hung_attention` must not fire when there is nothing newly
+    /// hung, proving the crossing gate, not just the merge mechanics, since a wrong-way bug
+    /// here would restamp on every call exactly like the defect this round fixes.
+    #[test]
+    fn merge_hung_attention_does_nothing_when_not_newly_hung() {
+        let attention = vec![ledger::AttentionEntry::unit_scoped(
+            ledger::ATTENTION_ESCALATED,
+            "u",
+            "escalated after exhausting remediation",
+        )];
+        let merged = merge_hung_attention(attention.clone(), false, || {
+            panic!("the reason closure must not run when nothing is newly hung")
+        });
+        assert_eq!(
+            merged, attention,
+            "attention must be untouched when newly_hung is false"
+        );
+    }
+
+    /// A budget halt this same call takes precedence over a co-occurring hung-liveness halt
+    /// (mirroring the SAME precedence the `halted` wire field already gives the budget
+    /// breaker over its own hung fallback, just above this function's call site in
+    /// `cmd_step`) - proving the merge does NOT stamp a second `halted` entry, and does not
+    /// evaluate the (potentially expensive) reason closure, when one is already present.
+    #[test]
+    fn merge_hung_attention_defers_to_an_existing_budget_halt() {
+        let attention = vec![ledger::AttentionEntry::run_scoped(
+            ledger::ATTENTION_HALTED,
+            "budget exhausted: 1/1 spawns",
+        )];
+        let merged = merge_hung_attention(attention.clone(), true, || {
+            panic!("the reason closure must not run when a halted entry already exists")
+        });
+        assert_eq!(
+            merged, attention,
+            "a budget halt already on the channel must not be joined by a second halted entry"
+        );
+    }
+
+    /// The merge must land the hung-liveness `halted` entry in its CANONICAL position
+    /// (escalated, halted, worker-death-recurred, budget-final-tenth, stalled-frontier) even
+    /// when `compute_attention` already produced entries both BEFORE and AFTER that slot in
+    /// the SAME step (a different unit independently escalating, and a third stalling) - a
+    /// naive push-to-the-end would leave `halted` stuck last, violating the wire's
+    /// documented deterministic order.
+    #[test]
+    fn merge_hung_attention_lands_in_canonical_position_alongside_other_signals() {
+        let attention = vec![
+            ledger::AttentionEntry::unit_scoped(
+                ledger::ATTENTION_ESCALATED,
+                "e",
+                "escalated after exhausting remediation",
+            ),
+            ledger::AttentionEntry::unit_scoped(
+                ledger::ATTENTION_STALLED_FRONTIER,
+                "s",
+                "3 recorded results, still parked",
+            ),
+        ];
+        let merged =
+            merge_hung_attention(attention, true, || "liveness: 1 spawn(s) hung".to_string());
+        assert_eq!(
+            merged,
+            vec![
+                ledger::AttentionEntry::unit_scoped(
+                    ledger::ATTENTION_ESCALATED,
+                    "e",
+                    "escalated after exhausting remediation",
+                ),
+                ledger::AttentionEntry::run_scoped(
+                    ledger::ATTENTION_HALTED,
+                    "liveness: 1 spawn(s) hung",
+                ),
+                ledger::AttentionEntry::unit_scoped(
+                    ledger::ATTENTION_STALLED_FRONTIER,
+                    "s",
+                    "3 recorded results, still parked",
+                ),
+            ],
+            "the hung halted entry must be inserted BETWEEN escalated and stalled-frontier, \
+             the canonical order, not appended after both"
+        );
     }
 
     /// Spec 44, criterion 1 (this unit OWNS the courier-prompt guarantee): the step

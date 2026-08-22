@@ -1809,15 +1809,248 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     ctx.run_deferred_gates(&stages, converged)?;
 
     let events = deps.store.read_stream(STREAM, 0, Direction::Forward)?;
+    let current_events = crate::run::current_run(&events);
     // Project the caller-visible run state from ONLY this run's slice (Gap 11, unit 1),
     // then stamp the live HALT reason (Gap 13) from the conductor's IN-PROCESS breaker
     // state, not from a fold of the log: a halt is a runtime condition of THIS process (a
     // resume with a raised budget clears it), so `rigger step` reads it here to print a
     // halt reason distinct from convergence and the thin driver stops loudly on it.
-    let mut rs =
-        ledger::project(crate::run::current_run(&events)).map_err(|e| Error(e.to_string()))?;
+    let mut rs = ledger::project(current_events).map_err(|e| Error(e.to_string()))?;
     rs.budget_halt = ctx.halt_reason();
+    // Spec 69, criterion 5 (the step wire carries attention): a before/after diff of THIS
+    // call's window, `prior` (this call's own resume seed, already projected above) against
+    // `rs` - see [`compute_attention`] for why the diff, not a persisting-state read, is
+    // what "once per threshold crossing" needs with no new event and no cross-process dedup.
+    // `base_spawns` is the already-folded distinct-spawn count from BEFORE this call (seeded
+    // above for the budget breaker itself); the after-count reads the SAME in-process
+    // `ctx.spawns` counter `budget_tripped`/`halt_reason` read - the single source of truth
+    // for "spawns made", which (unlike `spawn::recorded` over the event log) counts a
+    // BLOCKING driver's spawns too: only a stepwise/replay driver ever PARKS a
+    // `SpawnRequested` for the log to hold, so scanning the log would silently read zero
+    // for every other driver. The still-parked wave IS read from the log (a blocking
+    // driver leaves it empty, correctly never stalling the frontier).
+    let after_spawns = ctx.spawns.load(Ordering::SeqCst) as usize;
+    let parked_units: BTreeSet<String> = spawn::step_result(current_events)
+        .map_err(|e| Error(e.to_string()))?
+        .wave
+        .into_iter()
+        .map(|w| w.unit)
+        .collect();
+    // Signal 2 (BUDGET half) crossing fact: was the durable `BudgetExhausted` audit event
+    // (emitted exactly once per run by `trip_budget_breaker`, keyed on `BUDGET_EXHAUSTED_KEY`
+    // - see its own doc comment) already present as of `prior_events` (this call's OWN start
+    // boundary)? Reusing that existing, already-idempotent event as the crossing fact - rather
+    // than a spawn-count comparison - is deliberate (review u69c5 round 3 self-check, cause
+    // genuine-defect, found by probing `compute_attention`'s own doc comment against a
+    // dependency-chained scenario): a `before_spawns < budget && after_spawns >= budget` gate
+    // is a ONE-TIME window at the exact call that reaches the spawn count, which can pass
+    // WITHOUT tripping the breaker (nothing else was ready to refuse that call, e.g. a
+    // dependent stage not yet unlocked) - so a LATER call, once a dependency unlocks new ready
+    // work and the breaker genuinely refuses it, finds `before_spawns == after_spawns ==
+    // budget` (no new spawn was admitted, only refused) and the crossing gate never re-opens,
+    // silently losing the entry forever even though that later call is the one that actually
+    // halts. The event-presence fact has no such gap: `BudgetExhausted` is appended the FIRST
+    // time (and only the first time, by construction) the breaker actually refuses a spawn, so
+    // "absent from `prior_events`, `after.budget_halt` now `Some`" is exactly "this call is
+    // the first genuine halt" - see `compute_attention`'s own doc comment for the full
+    // reasoning and a regression test (`a_delayed_budget_halt_after_a_dependency_unlocks_still_stamps`)
+    // pinning the scenario the spawn-count gate missed.
+    let budget_exhausted_before = prior_events
+        .iter()
+        .any(|e| e.type_ == TYPE_BUDGET_EXHAUSTED);
+    // Signal 2's hung-liveness half is deliberately NOT computed here (review u69c5 round 3,
+    // cause genuine-defect - see `compute_attention`'s own doc comment for why: the fault
+    // that makes a spawn "hung" is always recorded by an action that PRECEDES this call's own
+    // `prior_events` read - `rigger step`'s pre-run sweep (main.rs) or a driver's separate
+    // `rigger result --error` - so a diff of `prior_events` vs `current_events` taken INSIDE
+    // `run()` can never see that crossing; both snapshots already postdate it. `rigger step`
+    // (main.rs) computes that half itself instead, from a PERSISTED cross-process cursor
+    // (`liveness::hung_cursor_path`) rather than any store read taken at its own process
+    // start - review u69c5 round 4, cause genuine-defect, found that even main.rs's own
+    // "earliest" store read is too late for a fault a wholly separate driver process records
+    // strictly BETWEEN two `rigger step` invocations; see `hung_cursor_path`'s own doc
+    // comment for the full reasoning.
+    rs.attention = compute_attention(
+        &prior,
+        &rs,
+        cfg.workflow.defaults.budget,
+        base_spawns as usize,
+        after_spawns,
+        budget_exhausted_before,
+        &parked_units,
+    );
     Ok(rs)
+}
+
+/// The push-side attention entries THIS `run()` call's step surfaced (spec 69, criterion
+/// 5): a before/after diff of the run's state at the START of this call (`prior`) against
+/// its state at the END (`after`), plus the spawn/budget counts over the same window and
+/// the wave still parked at the end - everything EXCEPT the hung-liveness half of signal 2,
+/// which `rigger step` (main.rs) merges in separately (see below for why). Computed HERE
+/// rather than in `ledger.rs` because the stalled-frontier signal needs the CURRENT wave
+/// ([`spawn::step_result`]), which `ledger.rs` deliberately never depends on - `ledger.rs`
+/// imports nothing from `spawn.rs`, while `spawn.rs` imports [`ledger::AttentionEntry`], a
+/// one-way dependency verifiable directly from each file's own `use` block, not stated in
+/// any doc comment.
+///
+/// Every signal is a CROSSING within this call's window, never a persisting state: a unit
+/// that STAYS escalated, or a budget that STAYS spent, does not re-stamp on a later call
+/// that changes nothing else about it - "once per threshold crossing" (spec 69) falls out
+/// of the diff itself, with no new event type and no cross-process dedup state (none is
+/// introduced anywhere in this spec). This applies to EVERY signal without exception (review
+/// u69c5 round 2, finding adv-u69c5r2-halted-signal-restamps-every-poll-violates-once-per-crossing:
+/// an earlier version stamped signal 2 straight off the CURRENT halt state with no
+/// before/after comparison at all, so it restamped on every call for which the condition was
+/// still true rather than once on the crossing into it - the one signal in this function that
+/// was not actually a diff).
+///
+/// Signal 2 (the run HALTED) is the one signal this function only PARTIALLY owns: it computes
+/// the BUDGET half (below), but the hung-liveness half is deliberately computed OUTSIDE this
+/// function, by `rigger step` (main.rs) itself, and merged into the `attention` array there -
+/// the one place besides here that constructs an [`ledger::ATTENTION_HALTED`] entry, and the
+/// only other caller in the whole codebase. This is not a second parallel implementation of
+/// "what a halted entry looks like" (still built through the same
+/// [`ledger::AttentionEntry::run_scoped`] constructor both sites call); it is a domain split
+/// forced by WHERE each half's crossing actually happens: the budget breaker trips entirely
+/// inside `run()`'s own wave loop, so `prior`/`after` (both folded from event-log reads taken
+/// at this call's own start/end) correctly bracket it. A hung-liveness fault, by contrast, has
+/// no analogous "processing" step inside `run()` at all - `liveness::hung_spawns` is a pure
+/// fold with no event of its own, so the SpawnResult that makes a spawn "hung" is the fact,
+/// full stop, the MOMENT it is recorded. And it is always recorded by an action that PRECEDES
+/// `run()`'s own `prior_events` read: `rigger step`'s pre-run sweep (main.rs, well before this
+/// function is ever reached) or a driver's separate `rigger result --error` call in an earlier
+/// process. Either way, by the time `run()` starts, both `prior_events` and `current_events`
+/// already reflect it - so no diff taken from INSIDE this call's own window can ever see that
+/// crossing; `prior` here is simply too late a boundary. Nor is ANY store read `rigger step`
+/// (main.rs) could take at its own process start early enough (review u69c5 round 4, cause
+/// genuine-defect): a driver's out-of-band `rigger result --error` runs as a wholly separate
+/// process strictly BETWEEN two `rigger step` invocations, so by the time the NEXT invocation
+/// opens the store, that write already predates every read it could possibly take. The one
+/// boundary that IS early enough is "the end of the PREVIOUS `rigger step` invocation", which
+/// only a value persisted OUTSIDE the log, by that previous process, can supply - so `rigger
+/// step` (main.rs) owns detecting this crossing from a small persisted cursor
+/// (`liveness::hung_cursor_path`, written at the end of every step and read at the start of
+/// the next - see its own doc comment for the full reasoning), then merges the resulting entry
+/// into this function's output using the SAME `ATTENTION_HALTED` kind, budget-first precedence,
+/// and canonical position - see its own call site for the ordering mechanics. This still satisfies
+/// spec 69's own text ("Threshold events stamp ONCE PER CROSSING, conductor-side" / "stamped
+/// BY `rigger step` FROM live conductor state exactly as `halted` is"): `main.rs::cmd_step`
+/// IS the conductor side of this codebase, as distinct from the DRIVER side
+/// (`workflows/rigger.js`, spec 69's own next criterion, "the driver relays it") - and
+/// `halted` itself has always been assembled the SAME way, partly in `cmd_step` (its hung
+/// fallback, unchanged by this unit), never solely inside `compute_attention`.
+///
+/// Deterministically ordered - escalated, halted, worker-death-recurred, budget-final-tenth,
+/// stalled-frontier; lexical by unit id within a kind (`after.units` is a `BTreeMap`,
+/// `parked_units` a `BTreeSet`) - so two folds of the same log agree byte-for-byte on the
+/// wire (main.rs's merge preserves this canonical order too; see its own comment).
+///
+/// Signal 2's BUDGET half is gated on `budget_exhausted_before` (whether the durable
+/// `BudgetExhausted` audit event, keyed to append AT MOST ONCE per run by
+/// [`RunCtx::trip_budget_breaker`](RunCtx::trip_budget_breaker), was already present as of
+/// `prior_events` - see the call site for the full reasoning), NOT on a spawn-count
+/// comparison. An earlier version of this fix (review u69c5 round 3 self-check, cause
+/// genuine-defect) gated it the same way signal 4 gates budget-final-tenth
+/// (`before_spawns < budget && after_spawns >= budget`) - correct for the common
+/// co-occurring-refusal case, but the crossing window is the ONE call that reaches the
+/// spawn count, which can pass without a refusal (nothing else ready yet); a dependency
+/// unlocking new ready work on a LATER call then finds the spawn count unchanged
+/// (`before_spawns == after_spawns == budget`, since the new spawn is refused, not
+/// admitted) and the gate never reopens - silently losing the entry on the call that
+/// actually halts. `a_delayed_budget_halt_after_a_dependency_unlocks_still_stamps` pins
+/// this exact scenario.
+fn compute_attention(
+    prior: &RunState,
+    after: &RunState,
+    budget: u32,
+    before_spawns: usize,
+    after_spawns: usize,
+    budget_exhausted_before: bool,
+    parked_units: &BTreeSet<String>,
+) -> Vec<ledger::AttentionEntry> {
+    let mut out = Vec::new();
+
+    // Signal 1: a unit ESCALATED. Terminal and monotonic (a unit never un-escalates), so a
+    // member of `escalated_units()` after this call that was ABSENT before it is exactly a
+    // NEW escalation, never a stale re-report of one this run already surfaced.
+    let before_escalated: HashSet<String> = prior.escalated_units().into_iter().collect();
+    for id in after.escalated_units() {
+        if !before_escalated.contains(&id) {
+            out.push(ledger::AttentionEntry::unit_scoped(
+                ledger::ATTENTION_ESCALATED,
+                id,
+                "escalated after exhausting remediation",
+            ));
+        }
+    }
+
+    // Signal 2 (BUDGET half only - see the doc comment above for the hung half, computed by
+    // `rigger step` itself, and for why this is gated on event presence rather than a
+    // spawn-count comparison): `after.budget_halt` being `Some` means the breaker genuinely
+    // refused a ready spawn THIS call (see `RunCtx::halt_reason`); `!budget_exhausted_before`
+    // means no earlier call in this run has already recorded that fact. Together they are
+    // exactly "the first call whose breaker trip durably happened" - once per run, since
+    // `BudgetExhausted` itself only ever appends once.
+    if !budget_exhausted_before {
+        if let Some(reason) = after.budget_halt.as_deref() {
+            out.push(ledger::AttentionEntry::run_scoped(
+                ledger::ATTENTION_HALTED,
+                reason,
+            ));
+        }
+    }
+
+    // Signal 3: a worker's death RECURRED - a unit's remediation attempt count rose during
+    // this call to its SECOND (or later) failure. A unit's FIRST-ever failure is not a
+    // recurrence (nothing "recurred" yet), so it deliberately stamps nothing.
+    for (id, unit) in &after.units {
+        let before_attempts = prior.units.get(id).map_or(0, |u| u.attempts);
+        if unit.attempts > before_attempts && unit.attempts >= 2 {
+            out.push(ledger::AttentionEntry::unit_scoped(
+                ledger::ATTENTION_WORKER_DEATH_RECURRED,
+                id.clone(),
+                format!("{} attempts", unit.attempts),
+            ));
+        }
+    }
+
+    // Signal 4: the budget crossed into its FINAL TENTH (spending reached the last 10% of
+    // a positive budget during this call). Integer division floors the reserved final
+    // slice, so a budget under 10 is already "in its final tenth" from its very first
+    // spawn - truthful for a budget that small, not a rounding bug: there is no slack to
+    // warn about earlier. A zero budget is unlimited and never crosses.
+    if budget > 0 {
+        let threshold = budget as usize - (budget / 10) as usize;
+        if before_spawns < threshold && after_spawns >= threshold {
+            out.push(ledger::AttentionEntry::run_scoped(
+                ledger::ATTENTION_BUDGET_FINAL_TENTH,
+                format!("{after_spawns}/{budget} spawns"),
+            ));
+        }
+    }
+
+    // Signal 5: STALLED FRONTIER - THIS call just folded another recorded (failed) result
+    // that pushed a unit's count past two, and its next attempt is STILL parked
+    // (unanswered) at the end of the call. Gated on `attempts` having RISEN this call (not
+    // merely "already above two"), exactly like signal 3, so a later call over an unchanged
+    // unit - still parked, still at the same count, nothing new folded - does not re-stamp
+    // it: the crossing is "another full-cost round just burned past the bound", not "the
+    // bound is still exceeded". An escalated unit has nothing parked (remediation stopped
+    // there), so this never double-fires alongside signal 1 for the same unit.
+    for id in parked_units {
+        if let Some(unit) = after.units.get(id) {
+            let before_attempts = prior.units.get(id).map_or(0, |u| u.attempts);
+            if unit.attempts > before_attempts && unit.attempts > 2 {
+                out.push(ledger::AttentionEntry::unit_scoped(
+                    ledger::ATTENTION_STALLED_FRONTIER,
+                    id.clone(),
+                    format!("{} recorded results, still parked", unit.attempts),
+                ));
+            }
+        }
+    }
+
+    out
 }
 
 /// Whether the workflow has a planner stage that produces a DAG at runtime, which
@@ -21671,6 +21904,773 @@ mod tests {
         // The run completes (Ok), not aborted; the crashing unit escalates.
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(rs.units["s"].status, ledger::Status::Escalated);
+    }
+
+    #[test]
+    fn a_newly_escalated_unit_stamps_an_attention_entry() {
+        // Spec 69, criterion 5, signal 1 (unit ESCALATED): the step during which a unit
+        // exhausts remediation and goes terminal without integrating must surface it on
+        // the wire, naming the unit - not just fold it into `units[..].status`, which an
+        // orchestrator would have to poll every unit to notice.
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "a".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            fail_spawn: true,
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["s"].status, ledger::Status::Escalated);
+        // The default remediation bound (MAX_RETRIES=3) means the escalating attempt is
+        // ALSO the unit's third failure - a recurrence - so both entries fire together;
+        // that co-occurrence is correct, not a double-report of the same signal.
+        assert_eq!(
+            rs.attention,
+            vec![
+                ledger::AttentionEntry::unit_scoped(
+                    ledger::ATTENTION_ESCALATED,
+                    "s",
+                    "escalated after exhausting remediation",
+                ),
+                ledger::AttentionEntry::unit_scoped(
+                    ledger::ATTENTION_WORKER_DEATH_RECURRED,
+                    "s",
+                    "3 attempts",
+                ),
+            ],
+            "an escalated unit must stamp an `escalated` entry naming it, in deterministic \
+             kind order ahead of the co-occurring recurrence"
+        );
+    }
+
+    #[test]
+    fn a_budget_halt_stamps_an_attention_entry() {
+        // Spec 69, criterion 5, signal 2 (run HALTED with reason): mirrors `budget_halt`
+        // exactly (same reason string), but on the generic `attention` channel a driver
+        // can render without a field-by-field halt/escalated/attention triage.
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.defaults.budget = 1;
+        for name in ["w1", "w2"] {
+            cfg.workflow.stages.insert(
+                name.into(),
+                Stage {
+                    name: name.into(),
+                    agent: "a".into(),
+                    gates: vec!["ok".into()],
+                    ..Default::default()
+                },
+            );
+        }
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        // A budget of 1 is ALSO its own final tenth (1 - 1/10 = 1, floored): the one
+        // admitted spawn crosses both signals in the same call, deterministically ordered
+        // (`halted` before `budget-final-tenth`) - a genuine co-occurrence, not a
+        // duplicate report of one signal.
+        assert_eq!(
+            rs.attention,
+            vec![
+                ledger::AttentionEntry::run_scoped(
+                    ledger::ATTENTION_HALTED,
+                    "budget exhausted: 1/1 spawns",
+                ),
+                ledger::AttentionEntry::run_scoped(
+                    ledger::ATTENTION_BUDGET_FINAL_TENTH,
+                    "1/1 spawns",
+                ),
+            ],
+            "a budget halt must stamp a run-scoped `halted` entry carrying the same reason \
+             as `budget_halt`"
+        );
+    }
+
+    #[test]
+    fn a_budget_halt_does_not_restamp_on_a_later_poll_with_nothing_new() {
+        // Spec 69, criterion 5, signal 2 (BUDGET half), "once per threshold crossing" (review
+        // u69c5 round 2, cause genuine-defect, finding
+        // adv-u69c5r2-halted-signal-restamps-every-poll-violates-once-per-crossing): the
+        // finding names this defect as present in the budget half since round 1, unchanged by
+        // any round's fix - `RunCtx::budget_halted` re-trips (and `after.budget_halt` reads
+        // `Some(..)` again) on EVERY subsequent step for which ready-but-unspawned work still
+        // exists and the budget stays spent, since `trip_budget_breaker` is idempotent-but-
+        // re-callable, not "only once ever". Driven over the stepwise/replay driver (unlike
+        // `a_budget_halt_stamps_an_attention_entry` above, whose blocking `Stub` driver
+        // completes a run in one `run()` call and so cannot exercise a SECOND poll against an
+        // still-halted, still-parked run).
+        use crate::driver::replay::ReplayDriver;
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.defaults.budget = 1;
+        for name in ["w1", "w2"] {
+            cfg.workflow.stages.insert(
+                name.into(),
+                Stage {
+                    name: name.into(),
+                    agent: "a".into(),
+                    gates: vec!["ok".into()],
+                    ..Default::default()
+                },
+            );
+        }
+
+        let st = Store::open(":memory:").unwrap();
+        crate::run::ensure_started(&st, &[]).unwrap();
+
+        let step = |st: &Store| {
+            let driver = ReplayDriver::new(st);
+            let deps = Deps {
+                store: st,
+                driver: &driver,
+                gates: &ExecRunner,
+                repo: String::new(),
+                grounder: None,
+                graph: None,
+                criteria: Vec::new(),
+            };
+            run(&cfg, &deps).unwrap()
+        };
+
+        // Round 1: `w1`'s implementer is admitted (budget 0 -> 1) and parks unanswered; `w2`'s
+        // is REFUSED (budget already spent) - the breaker trips, crossing both the budget halt
+        // and its own final-tenth threshold (budget 1's final tenth is 1, floored) in the same
+        // call, exactly like `a_budget_halt_stamps_an_attention_entry` above.
+        let rs = step(&st);
+        assert_eq!(
+            rs.budget_halt.as_deref(),
+            Some("budget exhausted: 1/1 spawns")
+        );
+        assert_eq!(
+            rs.attention,
+            vec![
+                ledger::AttentionEntry::run_scoped(
+                    ledger::ATTENTION_HALTED,
+                    "budget exhausted: 1/1 spawns",
+                ),
+                ledger::AttentionEntry::run_scoped(
+                    ledger::ATTENTION_BUDGET_FINAL_TENTH,
+                    "1/1 spawns",
+                ),
+            ],
+            "round 1 crosses the budget threshold and must stamp both entries"
+        );
+
+        // Round 2: nothing new recorded - `w1` replays its still-unanswered park for free
+        // (already recorded, no new spawn), and `w2` is refused again (the SAME spawn count on
+        // both sides of this call's own window: `before_spawns == after_spawns == 1`, so the
+        // crossing gate does not re-fire). `budget_halt` is a LEVEL field and correctly
+        // re-derives `Some(..)` - the breaker genuinely re-trips this call too - but
+        // `attention` must stay empty: the crossing already happened, once, in round 1.
+        let rs = step(&st);
+        assert_eq!(
+            rs.budget_halt.as_deref(),
+            Some("budget exhausted: 1/1 spawns"),
+            "the LEVEL-triggered budget_halt field must still re-surface every call"
+        );
+        assert!(
+            rs.attention.is_empty(),
+            "a budget halt that stays true across a later poll with nothing new must NOT \
+             re-stamp the EDGE-triggered attention entries, got {:?}",
+            rs.attention
+        );
+    }
+
+    #[test]
+    fn a_delayed_budget_halt_after_a_dependency_unlocks_still_stamps() {
+        // Spec 69, criterion 5, signal 2 (BUDGET half), "once per threshold crossing" -
+        // a SECOND gap in the same signal, found by probing the round-3 spawn-count-crossing
+        // fix (`before_spawns < budget && after_spawns >= budget`) against a dependency chain
+        // rather than two independently-ready stages: `s2 needs s1`, so `s2` is not ready
+        // until `s1` integrates. Round 1 admits `s1` (0->1, reaching budget 1) with NOTHING
+        // else ready to refuse - the breaker never trips, so `budget_halt` is `None` and
+        // nothing stamps (correct, per signal 2's own "stamps nothing until the call that
+        // genuinely halts" intent). Once `s1` integrates and unlocks `s2`, round 2 is the
+        // call that ACTUALLY halts (`s2` is refused, budget already spent) - but
+        // `before_spawns == after_spawns == 1` in round 2 (no NEW spawn is admitted, only
+        // refused), so a spawn-count crossing gate never re-opens and silently loses the
+        // entry forever. Reproduced empirically before the fix (probed directly): round 2
+        // printed `budget_halt=Some("budget exhausted: 1/1 spawns")` alongside an EMPTY
+        // `attention`. The fix gates on the durable `BudgetExhausted` event's presence in
+        // `prior_events` instead (see `compute_attention`'s doc comment), which correctly
+        // stays absent through round 1 (never emitted, nothing tripped) and so still stamps
+        // in round 2, the call that is the genuine first crossing.
+        use crate::driver::replay::ReplayDriver;
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.defaults.budget = 1;
+        cfg.workflow.stages.insert(
+            "s1".into(),
+            Stage {
+                name: "s1".into(),
+                agent: "a".into(),
+                gates: vec!["ok".into()],
+                ..Default::default()
+            },
+        );
+        cfg.workflow.stages.insert(
+            "s2".into(),
+            Stage {
+                name: "s2".into(),
+                agent: "a".into(),
+                needs: vec!["s1".into()],
+                gates: vec!["ok".into()],
+                ..Default::default()
+            },
+        );
+
+        let st = Store::open(":memory:").unwrap();
+        crate::run::ensure_started(&st, &[]).unwrap();
+
+        let step = |st: &Store| {
+            let driver = ReplayDriver::new(st);
+            let deps = Deps {
+                store: st,
+                driver: &driver,
+                gates: &ExecRunner,
+                repo: String::new(),
+                grounder: None,
+                graph: None,
+                criteria: Vec::new(),
+            };
+            run(&cfg, &deps).unwrap()
+        };
+
+        // Round 1: only s1 is ready (s2 needs it). s1's implementer parks; nothing else is
+        // ready to refuse, so the budget is reached (0->1) WITHOUT tripping the breaker.
+        let rs = step(&st);
+        assert!(
+            rs.budget_halt.is_none(),
+            "reaching the budget count with nothing left to refuse must not halt yet"
+        );
+        assert_eq!(
+            rs.attention,
+            vec![ledger::AttentionEntry::run_scoped(
+                ledger::ATTENTION_BUDGET_FINAL_TENTH,
+                "1/1 spawns",
+            )],
+            "round 1 crosses the final-tenth spawn-count threshold (signal 4, unaffected by \
+             this fix) but must NOT stamp `halted` (signal 2): nothing was actually refused \
+             this call, got {:?}",
+            rs.attention
+        );
+
+        // Answer s1 so it integrates and unlocks s2.
+        crate::spawn::record_result(
+            &st,
+            &crate::spawn::SpawnResult::ok(spawn_id("s1", ROLE_IMPLEMENTER, 0), "done"),
+        )
+        .unwrap();
+
+        // Round 2: s1 integrates, s2 becomes ready, and is REFUSED (budget already spent) -
+        // the call that GENUINELY halts, and must stamp exactly once even though the spawn
+        // count itself did not change this call.
+        let rs = step(&st);
+        assert_eq!(
+            rs.budget_halt.as_deref(),
+            Some("budget exhausted: 1/1 spawns"),
+            "round 2 must genuinely halt: s2 is refused"
+        );
+        assert_eq!(
+            rs.attention,
+            vec![ledger::AttentionEntry::run_scoped(
+                ledger::ATTENTION_HALTED,
+                "budget exhausted: 1/1 spawns",
+            )],
+            "round 2 is the call that GENUINELY halts (s2 refused) and must stamp the entry"
+        );
+    }
+
+    #[test]
+    fn compute_attention_leaves_the_hung_liveness_halt_to_the_caller() {
+        // Spec 69, criterion 5, signal 2 (run HALTED with reason): `conductor::run` alone
+        // stamps ONLY the budget half of this signal (see `compute_attention`'s own doc
+        // comment for why) - a hung spawn's liveness fault crosses BEFORE this call's own
+        // `prior_events` read (the sweep, or a driver's separate `rigger result --error`,
+        // always run/records earlier), so `run()` can never see that crossing from inside its
+        // own window no matter how the fault got there. `rigger step` (main.rs) is the one
+        // place with an earlier boundary (its pre-sweep store read) and merges the hung half
+        // in itself - proven end to end, over the REAL sweep and a REAL stale marker file, by
+        // `tests/cli.rs::step_surfaces_a_hung_spawn_with_a_stale_marker_as_a_liveness_halt`.
+        // This test pins the OTHER half of that division: `run()` in isolation must stay
+        // silent on it, so a future change does not silently reintroduce a second, competing
+        // hung-detector inside `compute_attention` alongside main.rs's.
+        use crate::driver::replay::ReplayDriver;
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "u".into(),
+            Stage {
+                name: "u".into(),
+                agent: "a".into(),
+                gates: vec!["ok".into()],
+                ..Default::default()
+            },
+        );
+
+        let st = Store::open(":memory:").unwrap();
+        crate::run::ensure_started(&st, &[]).unwrap();
+
+        let step = |st: &Store| {
+            let driver = ReplayDriver::new(st);
+            let deps = Deps {
+                store: st,
+                driver: &driver,
+                gates: &ExecRunner,
+                repo: String::new(),
+                grounder: None,
+                graph: None,
+                criteria: Vec::new(),
+            };
+            run(&cfg, &deps).unwrap()
+        };
+
+        // Round 1: the implementer's attempt 0 is freshly parked - nothing crosses yet.
+        let rs = step(&st);
+        assert!(
+            rs.attention.is_empty(),
+            "parking the first attempt crosses no threshold"
+        );
+
+        // A no-attempt-charged fault recorded on the parked spawn's id (spec 10, unit 3) - the
+        // SAME `SpawnResult` helper and `record_result_if_absent` call `liveness::sweep` itself
+        // uses on a genuinely stale marker, standing in for the sweep (main.rs) having already
+        // recorded it before this next `run()` call, exactly as it would in production.
+        let id = spawn_id("u", ROLE_IMPLEMENTER, 0);
+        let fault = crate::spawn::SpawnResult::liveness_fault(&id, "the agent hung", "infra");
+        crate::spawn::record_result_if_absent(&st, &fault).unwrap();
+
+        let rs = step(&st);
+        assert_eq!(
+            rs.units["u"].attempts, 0,
+            "a liveness fault charges no remediation attempt"
+        );
+        assert!(
+            rs.attention.is_empty(),
+            "conductor::run alone must NOT stamp a hung-liveness `halted` entry - that half is \
+             main.rs's job (see the CLI end-to-end test); got {:?}",
+            rs.attention
+        );
+    }
+
+    #[test]
+    fn an_escalation_does_not_restamp_attention_on_a_resumed_process() {
+        // Spec 69, criterion 5, signal 1: "once per threshold crossing" must hold across a
+        // REAL process boundary too, not just within one `run()` call - a resumed step that
+        // finds the unit already escalated (from an EARLIER process) must not re-report it,
+        // exactly like `a_second_failure_recurs_and_a_third_also_stalls_the_frontier` proves
+        // for signals 3/5 (previously untested for signal 1 - the resume path is inherently
+        // resume-safe: `prior` is freshly re-derived from the log at the START of every
+        // call, so an escalation already in the log before this call is already in `prior`
+        // and never counts as newly crossed).
+        use crate::driver::replay::ReplayDriver;
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        // max_retries=1: `remediate(0, 1)` already decides Escalate on the FIRST failure
+        // (prior_attempts=0 -> attempts=1 -> `1 >= 1`), so one recorded failure is enough
+        // to drive the unit straight to Escalated with no second park.
+        cfg.workflow.defaults.max_retries = 1;
+        cfg.workflow.stages.insert(
+            "u".into(),
+            Stage {
+                name: "u".into(),
+                agent: "a".into(),
+                gates: vec!["ok".into()],
+                ..Default::default()
+            },
+        );
+
+        let st = Store::open(":memory:").unwrap();
+        crate::run::ensure_started(&st, &[]).unwrap();
+
+        let step = |st: &Store| {
+            let driver = ReplayDriver::new(st);
+            let deps = Deps {
+                store: st,
+                driver: &driver,
+                gates: &ExecRunner,
+                repo: String::new(),
+                grounder: None,
+                graph: None,
+                criteria: Vec::new(),
+            };
+            run(&cfg, &deps).unwrap()
+        };
+
+        // Round 1: attempt 0 is freshly parked - nothing crosses yet.
+        let rs = step(&st);
+        assert!(
+            rs.attention.is_empty(),
+            "parking the first attempt crosses no threshold"
+        );
+
+        // Attempt 0 fails: `max_retries=1` escalates the unit on THIS single failure.
+        crate::spawn::record_result(
+            &st,
+            &crate::spawn::SpawnResult::failed(spawn_id("u", ROLE_IMPLEMENTER, 0), "boom"),
+        )
+        .unwrap();
+        let rs = step(&st);
+        assert_eq!(rs.units["u"].status, ledger::Status::Escalated);
+        assert_eq!(
+            rs.attention,
+            vec![ledger::AttentionEntry::unit_scoped(
+                ledger::ATTENTION_ESCALATED,
+                "u",
+                "escalated after exhausting remediation",
+            )],
+            "the step that escalates the unit must stamp exactly one escalated entry"
+        );
+
+        // Round 3: a FRESH process (a new `ReplayDriver`/`Deps`, a real resume boundary) with
+        // NOTHING new recorded. The unit is already escalated from round 2, folded into
+        // THIS call's own `prior` at the top of `run()` - so it must NOT re-stamp.
+        let rs = step(&st);
+        assert_eq!(rs.units["u"].status, ledger::Status::Escalated);
+        assert!(
+            rs.attention.is_empty(),
+            "a resumed process finding the unit already escalated must not re-stamp it, got \
+             {:?}",
+            rs.attention
+        );
+    }
+
+    #[test]
+    fn a_clean_step_stamps_no_attention() {
+        // Spec 69, criterion 5: "omitted entirely on a clean step" - a run that converges
+        // with nothing crossing any of the five signal thresholds must surface an empty
+        // `attention`, so the wire stays byte-stable for the common case.
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "w".into(),
+            Stage {
+                name: "w".into(),
+                agent: "a".into(),
+                gates: vec!["ok".into()],
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert!(
+            rs.attention.is_empty(),
+            "a clean converged step must stamp no attention entries, got {:?}",
+            rs.attention
+        );
+    }
+
+    #[test]
+    fn a_second_failure_recurs_and_a_third_also_stalls_the_frontier() {
+        // Spec 69, criterion 5, signals 3 (a worker's death RECURRED) and 5 (STALLED
+        // FRONTIER - a parked spawn already carrying more than two recorded results):
+        // driven over the stepwise/replay driver across several real `rigger step`-shaped
+        // calls, since "still parked" is a property of the wave a step process prints,
+        // not of the blocking Stub driver's single synchronous call.
+        //
+        // max_retries=5 (> 3) so the unit is STILL retrying (not yet escalated) once its
+        // attempt count passes the stalled-frontier threshold of 2 - the scenario the
+        // signal exists to catch.
+        use crate::driver::replay::ReplayDriver;
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.defaults.max_retries = 5;
+        cfg.workflow.stages.insert(
+            "u".into(),
+            Stage {
+                name: "u".into(),
+                agent: "a".into(),
+                gates: vec!["ok".into()],
+                ..Default::default()
+            },
+        );
+
+        let st = Store::open(":memory:").unwrap();
+        crate::run::ensure_started(&st, &[]).unwrap();
+
+        let step = |st: &Store| {
+            let driver = ReplayDriver::new(st);
+            let deps = Deps {
+                store: st,
+                driver: &driver,
+                gates: &ExecRunner,
+                repo: String::new(),
+                grounder: None,
+                graph: None,
+                criteria: Vec::new(),
+            };
+            run(&cfg, &deps).unwrap()
+        };
+
+        // Round 1: nothing recorded yet - the implementer's attempt 0 is freshly parked.
+        let rs = step(&st);
+        assert!(
+            rs.attention.is_empty(),
+            "parking the first attempt crosses no threshold"
+        );
+
+        // Attempt 0 fails: the FIRST failure is not a recurrence.
+        crate::spawn::record_result(
+            &st,
+            &crate::spawn::SpawnResult::failed(spawn_id("u", ROLE_IMPLEMENTER, 0), "boom"),
+        )
+        .unwrap();
+        let rs = step(&st);
+        assert_eq!(rs.units["u"].attempts, 1);
+        assert!(
+            rs.attention.is_empty(),
+            "a unit's FIRST failure is not a recurrence and must stamp nothing, got {:?}",
+            rs.attention
+        );
+
+        // Attempt 1 fails: the SECOND failure - a recurrence.
+        crate::spawn::record_result(
+            &st,
+            &crate::spawn::SpawnResult::failed(spawn_id("u", ROLE_IMPLEMENTER, 1), "boom"),
+        )
+        .unwrap();
+        let rs = step(&st);
+        assert_eq!(rs.units["u"].attempts, 2);
+        assert_eq!(
+            rs.attention,
+            vec![ledger::AttentionEntry::unit_scoped(
+                ledger::ATTENTION_WORKER_DEATH_RECURRED,
+                "u",
+                "2 attempts",
+            )],
+            "a unit's SECOND failure must stamp exactly one worker-death-recurred entry"
+        );
+
+        // Attempt 2 fails: the THIRD failure - another recurrence, AND now the unit
+        // already carries more than two recorded (failed) results while a fresh attempt
+        // (#3) is still parked awaiting an answer: the stalled-frontier signal.
+        crate::spawn::record_result(
+            &st,
+            &crate::spawn::SpawnResult::failed(spawn_id("u", ROLE_IMPLEMENTER, 2), "boom"),
+        )
+        .unwrap();
+        let rs = step(&st);
+        assert_eq!(rs.units["u"].attempts, 3);
+        assert_eq!(
+            rs.attention,
+            vec![
+                ledger::AttentionEntry::unit_scoped(
+                    ledger::ATTENTION_WORKER_DEATH_RECURRED,
+                    "u",
+                    "3 attempts",
+                ),
+                ledger::AttentionEntry::unit_scoped(
+                    ledger::ATTENTION_STALLED_FRONTIER,
+                    "u",
+                    "3 recorded results, still parked",
+                ),
+            ],
+            "the THIRD failure must stamp both a recurrence AND a stalled-frontier entry \
+             (deterministically ordered, escalated < halted < worker-death-recurred < \
+             budget-final-tenth < stalled-frontier)"
+        );
+
+        // A FOURTH step with nothing new recorded: attempt #3 is STILL the same parked,
+        // unanswered spawn, and the unit's attempt count is UNCHANGED at 3. Neither signal
+        // may re-stamp - "once per threshold crossing" (spec 69) means the crossing, not
+        // the still-exceeded state, so a step that folds no new result must be silent even
+        // though the unit remains both a recurring failure AND stalled.
+        let rs = step(&st);
+        assert_eq!(rs.units["u"].attempts, 3);
+        assert!(
+            rs.attention.is_empty(),
+            "a step that folds no new result must not re-stamp a crossing this run already \
+             surfaced, got {:?}",
+            rs.attention
+        );
+    }
+
+    #[test]
+    fn nine_of_ten_budget_crosses_the_final_tenth() {
+        // Spec 69, criterion 5, signal 4 (the budget crossed into its final tenth): nine
+        // independent single-spawn units against a budget of 10 leaves exactly 1/10
+        // (10%) remaining - the crossing boundary - so the run-scoped entry must appear
+        // exactly once, naming no unit.
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.defaults.budget = 10;
+        for i in 0..9 {
+            let name = format!("w{i}");
+            cfg.workflow.stages.insert(
+                name.clone(),
+                Stage {
+                    name,
+                    agent: "a".into(),
+                    gates: vec!["ok".into()],
+                    ..Default::default()
+                },
+            );
+        }
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert!(
+            rs.budget_halt.is_none(),
+            "9/10 spawns must not halt the run"
+        );
+        assert_eq!(
+            rs.attention,
+            vec![ledger::AttentionEntry::run_scoped(
+                ledger::ATTENTION_BUDGET_FINAL_TENTH,
+                "9/10 spawns",
+            )],
+            "crossing into the final tenth of the budget must stamp exactly one \
+             run-scoped entry, got {:?}",
+            rs.attention
+        );
+    }
+
+    #[test]
+    fn a_re_step_already_past_the_budget_threshold_does_not_re_stamp() {
+        // Spec 69, criterion 5, signal 4: "once per threshold crossing" means a call whose
+        // spawn count is ALREADY at or beyond the threshold BEFORE it starts - not newly
+        // reaching it during this call - must stay silent. This needs the count to actually
+        // PERSIST across two separate `run()` calls, which only the stepwise/replay driver
+        // gives (a blocking driver never records a `SpawnRequested`, so its budget counter
+        // resets to the log's folded count - 0 - on every fresh call; see
+        // `u69c5-spawn-count-source`).
+        //
+        // 18 independent single-spawn stages against a budget of 20: the first call parks
+        // all 18 at once (disjoint ready units share a wave) and crosses the threshold
+        // (18 = 20 - 20/10); recording their results and stepping again folds them to
+        // Integrated with NOTHING new to reserve, so the second call's before/after spawn
+        // count is unchanged at 18 - already past, not a fresh crossing.
+        use crate::driver::replay::ReplayDriver;
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.defaults.budget = 20;
+        let names: Vec<String> = (0..18).map(|i| format!("g{i}")).collect();
+        for name in &names {
+            cfg.workflow.stages.insert(
+                name.clone(),
+                Stage {
+                    name: name.clone(),
+                    agent: "a".into(),
+                    gates: vec!["ok".into()],
+                    ..Default::default()
+                },
+            );
+        }
+
+        let st = Store::open(":memory:").unwrap();
+        crate::run::ensure_started(&st, &[]).unwrap();
+
+        let step = |st: &Store| {
+            let driver = ReplayDriver::new(st);
+            let deps = Deps {
+                store: st,
+                driver: &driver,
+                gates: &ExecRunner,
+                repo: String::new(),
+                grounder: None,
+                graph: None,
+                criteria: Vec::new(),
+            };
+            run(&cfg, &deps).unwrap()
+        };
+
+        // Call 1: all 18 disjoint units are ready at once and park together in one wave -
+        // the crossing.
+        let rs = step(&st);
+        assert!(
+            rs.budget_halt.is_none(),
+            "18/20 spawns must not halt the run"
+        );
+        assert_eq!(
+            rs.attention,
+            vec![ledger::AttentionEntry::run_scoped(
+                ledger::ATTENTION_BUDGET_FINAL_TENTH,
+                "18/20 spawns",
+            )],
+            "parking all 18 must cross the final-tenth threshold exactly once, got {:?}",
+            rs.attention
+        );
+
+        // Answer every parked spawn, as a courier would between steps.
+        for name in &names {
+            crate::spawn::record_result(
+                &st,
+                &crate::spawn::SpawnResult::ok(spawn_id(name, ROLE_IMPLEMENTER, 0), "done"),
+            )
+            .unwrap();
+        }
+
+        // Call 2: folds all 18 results to Integrated. Nothing new is ready to reserve, so
+        // the spawn count is unchanged at 18 - already at the threshold, not newly
+        // crossing it.
+        let rs = step(&st);
+        assert!(rs.done(), "every unit answered must reach a clean fixpoint");
+        assert!(
+            rs.attention.is_empty(),
+            "a re-step whose spawn count was ALREADY at the threshold before it started \
+             must not re-stamp the crossing, got {:?}",
+            rs.attention
+        );
     }
 
     #[test]

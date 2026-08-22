@@ -102,6 +102,80 @@ pub struct RunState {
     /// terminal exclusion needs the FINAL folded state: a unit that is manual-reviewed and
     /// then integrated must leave the inbox.
     pub manual_review: Vec<String>,
+    /// The push-side anomalies THIS run process's step surfaced (spec 69: the watching
+    /// discipline's step wire). Like [`budget_halt`](RunState::budget_halt) this is NOT
+    /// folded from the durable log by [`project`] - it is a fact of the transition this
+    /// process's `conductor::run` just drove (a before/after comparison over its own
+    /// in-process run), so `project` leaves it empty and only the live run stamps it.
+    /// `rigger step` copies it onto its printed `Step` (spec 69, criterion 5's OWN wire
+    /// stamp; the driver's narration of it is a later criterion).
+    pub attention: Vec<AttentionEntry>,
+}
+
+/// One of the five spec-69 watching-discipline signals `AttentionEntry::kind` carries.
+/// Closed vocabulary (never inferred downstream) - kept as `&str` constants rather than an
+/// enum so the wire value and the Rust match arm are the same literal, with no separate
+/// `as_str`/`parse` translation to drift out of sync.
+pub const ATTENTION_ESCALATED: &str = "escalated";
+pub const ATTENTION_HALTED: &str = "halted";
+pub const ATTENTION_WORKER_DEATH_RECURRED: &str = "worker-death-recurred";
+pub const ATTENTION_BUDGET_FINAL_TENTH: &str = "budget-final-tenth";
+pub const ATTENTION_STALLED_FRONTIER: &str = "stalled-frontier";
+
+/// The canonical kind order (spec 69, criterion 5): escalated, halted, worker-death-recurred,
+/// budget-final-tenth, stalled-frontier. `conductor::compute_attention` constructs its own
+/// entries in this order already (so it never needs this function); `rigger step` (main.rs)
+/// calls it to re-sort `attention` (via a STABLE sort, so entries of the SAME kind keep their
+/// relative order) after appending the hung-liveness half of signal 2, which `main.rs` computes
+/// separately and merges in - see `compute_attention`'s own doc comment for why. An unknown
+/// kind (never produced today) sorts last rather than panicking.
+pub fn attention_kind_rank(kind: &str) -> usize {
+    const ORDER: [&str; 5] = [
+        ATTENTION_ESCALATED,
+        ATTENTION_HALTED,
+        ATTENTION_WORKER_DEATH_RECURRED,
+        ATTENTION_BUDGET_FINAL_TENTH,
+        ATTENTION_STALLED_FRONTIER,
+    ];
+    ORDER.iter().position(|k| *k == kind).unwrap_or(usize::MAX)
+}
+
+/// One push-side anomaly a step surfaced (spec 69): the wire carries what an unattended
+/// run needs read, so an orchestrator never has to poll the log for it. `kind` is one of
+/// the five `ATTENTION_*` constants above; `unit` names the subject for a unit-scoped kind
+/// and is empty (omitted from the wire) for a run-scoped one (`halted`,
+/// `budget-final-tenth`); `detail` is the human-readable why, so a later criterion's
+/// narrator line needs no further log lookup to render one line naming event + unit.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct AttentionEntry {
+    pub kind: &'static str,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub unit: String,
+    pub detail: String,
+}
+
+impl AttentionEntry {
+    /// A unit-scoped entry (escalated / worker-death-recurred / stalled-frontier).
+    pub fn unit_scoped(
+        kind: &'static str,
+        unit: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Self {
+        AttentionEntry {
+            kind,
+            unit: unit.into(),
+            detail: detail.into(),
+        }
+    }
+
+    /// A run-scoped entry (halted / budget-final-tenth) - no single unit is the subject.
+    pub fn run_scoped(kind: &'static str, detail: impl Into<String>) -> Self {
+        AttentionEntry {
+            kind,
+            unit: String::new(),
+            detail: detail.into(),
+        }
+    }
 }
 
 /// The ready-to-release handoff (spec 38, criterion 3): the human-facing summary the loop
