@@ -7711,16 +7711,20 @@ fn fold_recorded_result_into_graph(
 
 fn cmd_validate(args: &[String]) -> Res {
     let root = Path::new(".");
-    // Optional `<spec>` path (spec 18, Unit 4): emit heuristic spec-shape advisories that
-    // name the rule and recommend the fix. These are ADVISORY - they never change the exit
-    // status - so a badly-shaped criterion is surfaced, not refused. Run before config
-    // validation so a spec can be linted from a fresh checkout whose rigger config is not
-    // yet valid; an unreadable spec path is still an input error (the lint is heuristic,
-    // but "you named a spec that does not exist" is not).
+    // Optional `<spec>` path (spec 18, Unit 4; spec 66, unit c3): emit heuristic spec-lint
+    // advisories - shape (multi-behavior / sub-bullet-as-unit / over-long), ownership
+    // (F1), open dispositions (F4), and hygiene (em dash) - each naming its criterion (when
+    // tied to one) and field-guide class. These are ADVISORY - they never change the exit
+    // status - so a badly-shaped or ownerless criterion is surfaced, not refused. Run
+    // before config validation so a spec can be linted from a fresh checkout whose rigger
+    // config is not yet valid; an unreadable spec path is still an input error (the lint is
+    // heuristic, but "you named a spec that does not exist" is not). `spec_lint_advisories`
+    // is the ONE combined lint surface (it internally reuses `spec_shape_advisories`),
+    // never a second, parallel aggregation.
     if let Some(spec_path) = args.first() {
         let text = std::fs::read_to_string(spec_path)
             .map_err(|e| format!("read spec {spec_path}: {e}"))?;
-        for advisory in spec::spec_shape_advisories(&text) {
+        for advisory in spec::spec_lint_advisories(&text) {
             eprintln!("warning: spec {spec_path}: {advisory}");
         }
     }
