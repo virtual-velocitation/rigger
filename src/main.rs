@@ -16674,18 +16674,27 @@ mod tests {
              wire stamp already decided what happened"
         );
 
-        // "At the wave it arrived": the relay call must precede that step's own wave-spawn
-        // narration, not follow it.
+        // "At the wave it arrived": the relay call must precede the wave-spawn CONDITIONAL
+        // itself (`if (wave.length > 0)`), not merely its inner spawn-narration text - a
+        // weaker check anchored on the log() line alone stays green even if a future edit
+        // nests the call inside that block (review u69c6 round 1, cause genuine-defect:
+        // moving the shipped, unconditional call to the block's first line left every
+        // periphery test and this test green, because the call still textually preceded the
+        // log() line while now running only when wave.length > 0). Anchoring on the `if`
+        // line itself catches that exact nesting: a step whose wave is empty - the
+        // escalated/halted/stalled-frontier "nothing left to spawn" case an unattended
+        // operator most needs the narrator line for - must still get its attention relayed.
         let call_pos = code
             .rfind("relayAttention(step)")
             .expect("relayAttention(step) must be called");
-        let wave_spawn_pos = code
-            .find("wave ${waves}: spawning")
-            .expect("the driver must narrate spawning the wave");
+        let wave_conditional_pos = code
+            .find("if (wave.length > 0)")
+            .expect("the driver must gate wave-spawning on a non-empty wave");
         assert!(
-            call_pos < wave_spawn_pos,
-            "attention must be relayed for the step BEFORE its wave is spawned (\"at the wave \
-             it arrived\"), not after"
+            call_pos < wave_conditional_pos,
+            "attention must be relayed for the step BEFORE the wave-spawn conditional \
+             (\"at the wave it arrived\"), not nested inside it - a step with an empty wave \
+             (escalated/halted/stalled-frontier) must still get its attention relayed"
         );
     }
 
