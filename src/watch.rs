@@ -256,10 +256,12 @@ pub enum DashProbe {
     Serving,
     /// Nothing verifiably serves the recorded port - the "hung holder" or
     /// dead-process case `rigger-restore-the-dash` diagnoses. `pid` names the
-    /// culprit ONLY when a marker actually recorded one; `None` when the probe fell
-    /// back to the URL breadcrumb alone (no marker was ever written, e.g. `rigger
-    /// run` / `rigger serve`) - there is genuinely no pid to name in that case, never
-    /// a guess.
+    /// culprit ONLY when a marker actually recorded one FOR THIS PORT; `None` when
+    /// the probe fell back to the URL breadcrumb alone (no marker was ever written,
+    /// e.g. `rigger run` / `rigger serve`) or when the on-disk marker's port differs
+    /// from the recorded URL's (`dash::dash_status`'s canonical mismatch handling: a
+    /// mismatched marker's pid belongs to some other dash and is never named as this
+    /// url's) - there is genuinely no pid to name in either case, never a guess.
     NotServing { pid: Option<u32>, port: u16 },
 }
 
@@ -528,11 +530,14 @@ pub fn detect(inputs: &WatchInputs) -> Vec<Anomaly> {
             if !breadcrumb_predates_this_run {
                 let detail = match pid {
                     Some(pid) => format!("marker names dead pid {pid} on port {port}"),
-                    // No marker was ever recorded (rigger run / rigger serve) - the probe
-                    // fell back to the recorded dash.url's own port; genuinely no pid to
-                    // name.
+                    // No MATCHING marker: either none was ever recorded (rigger run /
+                    // rigger serve) or the one on disk names a different port than the
+                    // recorded dash.url's - either way there is genuinely no pid to name
+                    // for THIS url (dash_status's canonical mismatch handling).
                     None => {
-                        format!("recorded dash.url port {port} does not answer (no marker, no pid)")
+                        format!(
+                            "recorded dash.url port {port} does not answer (no matching marker, no pid)"
+                        )
                     }
                 };
                 out.push(Anomaly {
