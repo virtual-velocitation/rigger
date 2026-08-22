@@ -276,6 +276,266 @@ fn truncate_for_message(s: &str) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------------------
+// Spec 66 (unit c3): the mechanical subset of the planning-field-guide recipe as a lint -
+// ownership (F1), open dispositions (F4), and hygiene (the diff gate's em-dash rule) - the
+// three classes `spec_shape_advisories` above does NOT cover. These reuse the SAME parsing
+// primitives (`extract_criteria`, `checkbox_text`) rather than a second parser, and
+// [`spec_lint_advisories`] is the ONE combined surface `cmd_validate` calls for the full
+// pre-launch lint (see decision d-u66c3-lint-mechanism).
+// ---------------------------------------------------------------------------------------
+
+/// One discipline advisory from the mechanical spec lint: which field-guide class it maps
+/// to (`"F1 ownership"`, `"F4 disposition"`, or `"hygiene"` for the diff gate's em-dash
+/// rule, which has no catalog entry of its own), the 1-based Done-when criterion it is
+/// tied to (`None` when the offending text sits outside any checkbox - Design prose,
+/// Global constraints, or Notes), and a human detail. Advisory only: `rigger validate`
+/// never fails on one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LintAdvisory {
+    pub class: &'static str,
+    pub criterion: Option<usize>,
+    pub detail: String,
+}
+
+impl std::fmt::Display for LintAdvisory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.criterion {
+            Some(n) => write!(f, "{} (criterion {n}): {}", self.class, self.detail),
+            None => write!(f, "{}: {}", self.class, self.detail),
+        }
+    }
+}
+
+/// F1 ownership (`docs/handbook/planning-field-guide.md`): the #1 recurring plan-critique
+/// killer is a criterion whose concern is silently claimed by two units, because neither
+/// carries an ownership sentence a reviewer (or a planner copying criteria verbatim) can
+/// check against its neighbors. At three-plus Done-when criteria, a checkbox carrying
+/// neither "OWNS" nor "owner" is flagged a twin-risk. Silent below three criteria: an
+/// ownership collision needs at least two OTHER criteria to collide with.
+pub fn ownership_advisories(text: &str) -> Vec<LintAdvisory> {
+    let criteria = extract_criteria(text);
+    if criteria.len() < 3 {
+        return Vec::new();
+    }
+    criteria
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| !carries_owner_sentence(c))
+        .map(|(i, _)| LintAdvisory {
+            class: "F1 ownership",
+            criterion: Some(i + 1),
+            detail: "no OWNS/owner sentence; among three-plus criteria this is a twin-risk \
+                     - a reviewer cannot tell this concern is not already claimed by a \
+                     neighbor"
+                .to_string(),
+        })
+        .collect()
+}
+
+fn carries_owner_sentence(criterion: &str) -> bool {
+    let lower = criterion.to_lowercase();
+    lower.contains("owns") || lower.contains("owner")
+}
+
+/// F4 open dispositions (`docs/handbook/planning-field-guide.md`): "removed" and "ignored"
+/// are different verdicts on the same files, and an unresolved disposition left in prose
+/// is a rejection loop waiting to happen - the implementer picks one reading, a reviewer
+/// picks the other. The countermeasure is grepping a draft for its own draft-smell
+/// phrases; this lint runs that grep mechanically for the three the field guide names:
+/// "worth considering", "either ... or", and "could instead". Scanned in PROSE only: the
+/// `## Notes` section (and any deeper subsection under it) is the spec's explicit-deferral
+/// home, so a hit there is exempt; a fenced code block or a backtick-quoted inline code
+/// span can carry any of these words as literal quoted text, so both are excluded too -
+/// quoted code can never false-positive.
+pub fn disposition_advisories(text: &str) -> Vec<LintAdvisory> {
+    let notes = notes_section_lines(text);
+    let fenced = fenced_code_lines(text);
+    let owners = line_criterion(text);
+    let mut out = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        if notes[i] || fenced[i] {
+            continue;
+        }
+        let prose = strip_inline_code(line);
+        if let Some(phrase) = disposition_smell(&prose) {
+            out.push(LintAdvisory {
+                class: "F4 disposition",
+                criterion: owners[i],
+                detail: format!(
+                    "open disposition (\"{phrase}\") outside Notes; decide it in Design or \
+                     move it to Notes as an explicit deferral"
+                ),
+            });
+        }
+    }
+    out
+}
+
+/// The first draft-smell phrase `prose` contains, case-insensitively, or `None`. The
+/// "either ... or" pairing requires an "or" AFTER the "either" on the same (already
+/// code-stripped) line - a single "either" with no paired "or" is a false-positive risk
+/// the field guide's own countermeasure does not describe.
+fn disposition_smell(prose: &str) -> Option<&'static str> {
+    let lower = prose.to_lowercase();
+    if lower.contains("worth considering") {
+        return Some("worth considering");
+    }
+    if lower.contains("could instead") {
+        return Some("could instead");
+    }
+    if let Some(pos) = lower.find("either") {
+        if lower[pos..].contains(" or") {
+            return Some("either ... or");
+        }
+    }
+    None
+}
+
+/// Hygiene: a U+2014 em dash anywhere in the document - inside a criterion, Design prose,
+/// or Notes alike, with NO exemption - is flagged now rather than discovered only when the
+/// diff gate rejects the committed spec later (`.rigger/workflow.yml`'s em-dash check).
+pub fn hygiene_advisories(text: &str) -> Vec<LintAdvisory> {
+    let owners = line_criterion(text);
+    text.lines()
+        .enumerate()
+        .filter(|(_, line)| line.contains('\u{2014}'))
+        .map(|(i, _)| LintAdvisory {
+            class: "hygiene",
+            criterion: owners[i],
+            detail: "contains a U+2014 em dash; the diff gate rejects it - use a hyphen or \
+                     rewrite the sentence"
+                .to_string(),
+        })
+        .collect()
+}
+
+/// The full mechanical spec lint (spec 66): every shape advisory ([`spec_shape_advisories`]
+/// above, mapped through with its ORIGINAL wording preserved verbatim so every existing
+/// caller/test pinned to that wording keeps matching), plus ownership, open-disposition,
+/// and hygiene advisories. This is the ONE surface `cmd_validate` calls for the pre-launch
+/// spec lint - never a second, parallel aggregation.
+pub fn spec_lint_advisories(text: &str) -> Vec<LintAdvisory> {
+    let mut out: Vec<LintAdvisory> = spec_shape_advisories(text)
+        .into_iter()
+        .map(|a| LintAdvisory {
+            class: match a.rule {
+                ShapeRule::MultiBehavior => "F2 bundling",
+                ShapeRule::SubBulletAsUnit | ShapeRule::OverLong => "F6 copyability",
+            },
+            // The criterion number is already named inside `detail` (ShapeAdvisory's own
+            // Display), so it is not duplicated here.
+            criterion: None,
+            detail: a.to_string(),
+        })
+        .collect();
+    out.extend(ownership_advisories(text));
+    out.extend(disposition_advisories(text));
+    out.extend(hygiene_advisories(text));
+    out
+}
+
+/// For each line (0-based, aligned with `text.lines()`), whether it falls inside a
+/// `## Notes` (or deeper) section - the section runs from that heading to the next heading
+/// at the SAME OR SHALLOWER level, or to end of file.
+fn notes_section_lines(text: &str) -> Vec<bool> {
+    let mut out = Vec::with_capacity(text.lines().count());
+    let mut notes_level: Option<usize> = None;
+    for line in text.lines() {
+        if let Some(level) = heading_level(line) {
+            if let Some(nl) = notes_level {
+                if level <= nl {
+                    notes_level = None;
+                }
+            }
+            let title = line.trim_start()[level..].trim();
+            if title.to_lowercase().starts_with("notes") {
+                notes_level = Some(level);
+            }
+        }
+        out.push(notes_level.is_some());
+    }
+    out
+}
+
+/// The heading level (number of leading `#`s) of a markdown ATX heading line, or `None`.
+fn heading_level(line: &str) -> Option<usize> {
+    let trimmed = line.trim_start();
+    let hashes = trimmed.chars().take_while(|&c| c == '#').count();
+    if (1..=6).contains(&hashes) && trimmed.as_bytes().get(hashes) == Some(&b' ') {
+        Some(hashes)
+    } else {
+        None
+    }
+}
+
+/// For each line (0-based), whether it sits inside a fenced code block. The ` ``` `
+/// delimiter lines themselves count as inside, so a phrase on the fence line is never
+/// flagged.
+fn fenced_code_lines(text: &str) -> Vec<bool> {
+    let mut out = Vec::with_capacity(text.lines().count());
+    let mut fenced = false;
+    for line in text.lines() {
+        if line.trim_start().starts_with("```") {
+            fenced = !fenced;
+            out.push(true);
+        } else {
+            out.push(fenced);
+        }
+    }
+    out
+}
+
+/// `line` with every backtick-delimited inline code span blanked to spaces (never
+/// dropped, so word boundaries around the span cannot merge two words into a new one), so
+/// a prose scan cannot match text quoted as code.
+fn strip_inline_code(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut in_code = false;
+    for ch in line.chars() {
+        if ch == '`' {
+            in_code = !in_code;
+            out.push(' ');
+        } else if in_code {
+            out.push(' ');
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// For each line (0-based), the 1-based Done-when criterion whose checkbox block it falls
+/// inside (the checkbox's own line, or a more-indented line directly under it - the same
+/// block boundary [`sub_bullet_criteria`] uses), or `None` for a line outside any checkbox
+/// (headings, Design/Notes/Global-constraints prose, blank lines).
+fn line_criterion(text: &str) -> Vec<Option<usize>> {
+    let mut out = Vec::with_capacity(text.lines().count());
+    let mut count = 0usize;
+    let mut open: Option<usize> = None;
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        let indent = line.len() - trimmed.len();
+        if checkbox_text(line).is_some() {
+            count += 1;
+            open = Some(indent);
+            out.push(Some(count));
+        } else if trimmed.is_empty() {
+            out.push(None);
+        } else if let Some(cb_indent) = open {
+            if indent > cb_indent {
+                out.push(Some(count));
+            } else {
+                open = None;
+                out.push(None);
+            }
+        } else {
+            out.push(None);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -455,5 +715,297 @@ mod tests {
             "got {:?}",
             path_tokens(&criteria)
         );
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Spec 66, unit c3: the mechanical planning-field-guide recipe as a lint - ownership
+    // (F1), open dispositions (F4), and hygiene (em dash) - reusing extract_criteria /
+    // checkbox_text (no second parser), surfaced through spec_lint_advisories.
+    // -----------------------------------------------------------------------------------
+
+    /// F1 ownership: below three criteria, the ownership check stays silent even when
+    /// NONE of the criteria carry an OWNS/owner sentence - a collision needs at least two
+    /// other criteria to collide with.
+    #[test]
+    fn ownership_check_is_silent_below_three_criteria() {
+        let text = "## Done when\n\n\
+            - [ ] the store passes the contract suite\n\
+            - [ ] the graph projector supersedes an older decision\n";
+        assert!(
+            ownership_advisories(text).is_empty(),
+            "two criteria must never draw an ownership advisory; got: {:?}",
+            ownership_advisories(text)
+        );
+    }
+
+    /// F1 ownership: at three-plus criteria, a checkbox with no "OWNS"/"owner" sentence is
+    /// flagged `F1 ownership` naming the right criterion; a sibling that DOES carry one
+    /// stays silent.
+    #[test]
+    fn ownership_check_flags_the_criterion_missing_an_owns_sentence() {
+        let text = "## Done when\n\n\
+            - [ ] the daemon writes a pidfile. This criterion OWNS the pidfile write.\n\
+            - [ ] the store passes the contract suite\n\
+            - [ ] the graph supersedes an older decision. This criterion OWNS the supersede path.\n";
+        let advisories = ownership_advisories(text);
+        let hit = advisories
+            .iter()
+            .find(|a| a.class == "F1 ownership")
+            .expect("the ownerless criterion must be flagged F1 ownership");
+        assert_eq!(hit.criterion, Some(2), "criterion 2 is the ownerless one");
+        assert!(
+            !advisories
+                .iter()
+                .any(|a| a.criterion == Some(1) || a.criterion == Some(3)),
+            "criteria carrying an OWNS sentence must stay silent; got: {advisories:?}"
+        );
+    }
+
+    /// F1 ownership: "owner" (not just "OWNS") also counts as an ownership sentence.
+    #[test]
+    fn ownership_check_accepts_the_word_owner() {
+        let text = "## Done when\n\n\
+            - [ ] the daemon writes a pidfile; no clear owner is named otherwise\n\
+            - [ ] the store passes the contract suite. This criterion OWNS the suite.\n\
+            - [ ] the graph supersedes an older decision. This criterion OWNS the supersede path.\n";
+        assert!(
+            !ownership_advisories(text)
+                .iter()
+                .any(|a| a.criterion == Some(1)),
+            "the word owner must satisfy the ownership check"
+        );
+    }
+
+    /// F4 open dispositions: each of the three draft-smell phrases the field guide names
+    /// is caught in prose - "worth considering", "could instead", and an "either ... or"
+    /// pairing.
+    #[test]
+    fn disposition_check_catches_each_draft_smell_phrase() {
+        let text = "## Design\n\n\
+            The retry policy is worth considering for a future revision.\n\n\
+            We could instead retry indefinitely.\n\n\
+            Either the daemon retries or it escalates immediately.\n";
+        let advisories = disposition_advisories(text);
+        assert!(
+            advisories
+                .iter()
+                .any(|a| a.detail.contains("worth considering")),
+            "must catch \"worth considering\"; got: {advisories:?}"
+        );
+        assert!(
+            advisories
+                .iter()
+                .any(|a| a.detail.contains("could instead")),
+            "must catch \"could instead\"; got: {advisories:?}"
+        );
+        assert!(
+            advisories.iter().any(|a| a.detail.contains("either")),
+            "must catch the either...or pairing; got: {advisories:?}"
+        );
+        assert!(
+            advisories.iter().all(|a| a.class == "F4 disposition"),
+            "every disposition advisory carries the F4 disposition class; got: {advisories:?}"
+        );
+    }
+
+    /// F4 open dispositions: a smell phrase inside the `## Notes` section is an explicit,
+    /// intentional deferral - it must NOT be flagged.
+    #[test]
+    fn disposition_check_is_silent_inside_notes() {
+        let text = "## Design\n\nsettled prose, nothing open.\n\n\
+            ## Notes (non-criteria)\n\n\
+            - worth considering for a later revision, deliberately deferred here.\n";
+        assert!(
+            disposition_advisories(text).is_empty(),
+            "a smell phrase inside Notes is an explicit deferral, not an open disposition; \
+             got: {:?}",
+            disposition_advisories(text)
+        );
+    }
+
+    /// F4 open dispositions: the Notes exemption ends at the next heading - prose AFTER
+    /// Notes is scanned again.
+    #[test]
+    fn disposition_check_resumes_scanning_after_notes_ends() {
+        let text = "## Notes (non-criteria)\n\nworth considering, deferred.\n\n\
+            ## Global constraints\n\nit is worth considering here too.\n";
+        let advisories = disposition_advisories(text);
+        assert_eq!(
+            advisories.len(),
+            1,
+            "only the occurrence AFTER Notes ends must be flagged; got: {advisories:?}"
+        );
+    }
+
+    /// F4 open dispositions: a smell phrase quoted inside a fenced code block or an inline
+    /// code span must never false-positive.
+    #[test]
+    fn disposition_check_ignores_fenced_and_inline_code() {
+        let text = "## Design\n\n\
+            ```\nworth considering as literal example text\n```\n\n\
+            The config carries `either this or that` as a literal token, unrelated prose.\n";
+        assert!(
+            disposition_advisories(text).is_empty(),
+            "quoted code must never false-positive; got: {:?}",
+            disposition_advisories(text)
+        );
+    }
+
+    /// F4 open dispositions: a smell phrase inside a Done-when checkbox is attributed to
+    /// that criterion.
+    #[test]
+    fn disposition_check_attributes_a_hit_inside_a_criterion() {
+        let text = "## Done when\n\n\
+            - [ ] the store passes the contract suite\n\
+            - [ ] either the recovery path retries or it escalates immediately\n";
+        let advisories = disposition_advisories(text);
+        let hit = advisories
+            .iter()
+            .find(|a| a.class == "F4 disposition")
+            .expect("the either...or checkbox must be flagged");
+        assert_eq!(hit.criterion, Some(2));
+    }
+
+    /// Hygiene: a U+2014 em dash is flagged anywhere in the document - Design prose here,
+    /// with NO criterion attribution since it sits outside any checkbox.
+    #[test]
+    fn hygiene_check_flags_an_em_dash_in_prose() {
+        let text = "## Design\n\nthe daemon starts \u{2014} then it writes a pidfile.\n";
+        let advisories = hygiene_advisories(text);
+        let hit = advisories
+            .iter()
+            .find(|a| a.class == "hygiene")
+            .expect("a U+2014 em dash in prose must be flagged");
+        assert_eq!(hit.criterion, None);
+    }
+
+    /// Hygiene: an em dash INSIDE a Done-when checkbox is attributed to that criterion -
+    /// no exemption for criteria, Notes, or code, unlike the disposition check.
+    #[test]
+    fn hygiene_check_attributes_a_hit_inside_a_criterion() {
+        let text = "## Done when\n\n\
+            - [ ] the store passes the contract suite\n\
+            - [ ] the report renders a summary line \u{2014} appended at the end\n";
+        let advisories = hygiene_advisories(text);
+        let hit = advisories
+            .iter()
+            .find(|a| a.class == "hygiene")
+            .expect("the em dash inside criterion 2 must be flagged");
+        assert_eq!(hit.criterion, Some(2));
+    }
+
+    /// `line_criterion` attributes an INDENTED CONTINUATION line to its checkbox even when
+    /// the checkbox's own line is much LONGER than the continuation line - pinning genuine
+    /// indent arithmetic (`line.len() - trimmed.len()`) rather than a formula that happens
+    /// to agree with real indentation only when longer lines are also more indented (e.g.
+    /// `line.len() + trimmed.len()` would invert the block boundary here).
+    #[test]
+    fn line_criterion_attributes_a_short_continuation_under_a_long_checkbox() {
+        let text = "- [ ] the store passes the full end-to-end contract suite across every \
+                     adapter\n\
+                     \x20\x20a short tail\n";
+        assert_eq!(line_criterion(text), vec![Some(1), Some(1)]);
+    }
+
+    /// `line_criterion` closes a checkbox's block on a DEDENT TO THE SAME indent, not only
+    /// on an outdent - pinning the strict `>` comparison (not `>=`) so a plain line back at
+    /// the checkbox's own margin is prose, not the block's continuation.
+    #[test]
+    fn line_criterion_closes_the_block_on_a_same_indent_line() {
+        let text = "- [ ] the store passes the contract suite\n\
+                     a line back at the same margin\n";
+        assert_eq!(line_criterion(text), vec![Some(1), None]);
+    }
+
+    /// A markdown heading carries at most six `#`s (CommonMark); seven or more - even
+    /// followed by a space, which otherwise looks exactly like a heading - is NOT one, so
+    /// it can never open (or close) a `## Notes` section by accident.
+    #[test]
+    fn heading_level_rejects_more_than_six_hashes() {
+        assert_eq!(heading_level("####### Notes"), None);
+    }
+
+    /// Hygiene: a document with no em dash draws no hygiene advisory.
+    #[test]
+    fn hygiene_check_is_silent_without_an_em_dash() {
+        let text = "## Design\n\nplain hyphen-only prose, no unicode dash at all.\n";
+        assert!(hygiene_advisories(text).is_empty());
+    }
+
+    /// spec_lint_advisories is the ONE combined surface `cmd_validate` calls: on a fixture
+    /// carrying all four Done-when-c3 defect kinds (a multi-behavior criterion, an
+    /// ownerless criterion among three-plus, a disposition smell, and an em dash), it
+    /// reports each with a criterion and a field-guide class, and stays silent on a clean
+    /// fixture.
+    #[test]
+    fn spec_lint_advisories_reports_every_defect_with_its_criterion_and_class() {
+        let text = "# Widget\n\n## Done when\n\n\
+            - [ ] the daemon starts on boot, and it writes a pidfile, and it rotates the log \
+            nightly. This criterion OWNS the startup sequence.\n\
+            - [ ] the store passes the contract suite\n\
+            - [ ] either the recovery path retries or it escalates immediately. This \
+            criterion OWNS the recovery path.\n\
+            - [ ] the report renders a trailing summary line \u{2014} appended at the end. \
+            This criterion OWNS the summary render.\n";
+        let advisories = spec_lint_advisories(text);
+
+        let shape_hit = advisories
+            .iter()
+            .find(|a| a.detail.contains("multi-behavior"))
+            .expect("criterion 1's multi-behavior defect must be reported");
+        assert_eq!(shape_hit.class, "F2 bundling");
+
+        let ownership_hit = advisories
+            .iter()
+            .find(|a| a.class == "F1 ownership")
+            .expect("criterion 2's missing OWNS sentence must be reported");
+        assert_eq!(ownership_hit.criterion, Some(2));
+
+        let disposition_hit = advisories
+            .iter()
+            .find(|a| a.class == "F4 disposition")
+            .expect("criterion 3's either...or smell must be reported");
+        assert_eq!(disposition_hit.criterion, Some(3));
+
+        let hygiene_hit = advisories
+            .iter()
+            .find(|a| a.class == "hygiene")
+            .expect("criterion 4's em dash must be reported");
+        assert_eq!(hygiene_hit.criterion, Some(4));
+
+        // Every advisory prints with SOME class label (never blank).
+        for a in &advisories {
+            assert!(!a.class.is_empty());
+            assert!(!a.to_string().is_empty());
+        }
+    }
+
+    /// spec_lint_advisories reports a clean fixture (three-plus criteria, each carrying an
+    /// OWNS sentence, single-behavior, no smells, no em dash) as fully clean.
+    #[test]
+    fn spec_lint_advisories_is_silent_on_a_clean_fixture() {
+        let text = "# Widget\n\n## Done when\n\n\
+            - [ ] the store passes the contract suite. This criterion OWNS the contract \
+            coverage.\n\
+            - [ ] the graph projector supersedes an older decision. This criterion OWNS the \
+            supersede path.\n\
+            - [ ] the conductor integrates an approved unit. This criterion OWNS the \
+            integration step.\n";
+        assert!(
+            spec_lint_advisories(text).is_empty(),
+            "a fully clean fixture must draw no advisory; got: {:?}",
+            spec_lint_advisories(text)
+        );
+    }
+
+    /// Determinism: calling spec_lint_advisories twice on the same text yields identical
+    /// output (no map iteration / unordered collection anywhere in the pipeline).
+    #[test]
+    fn spec_lint_advisories_is_deterministic() {
+        let text = "## Done when\n\n\
+            - [ ] the daemon writes a pidfile, and it rotates the log, and it archives it\n\
+            - [ ] the store passes the contract suite\n\
+            - [ ] either it retries or it escalates \u{2014} immediately\n";
+        assert_eq!(spec_lint_advisories(text), spec_lint_advisories(text));
     }
 }
