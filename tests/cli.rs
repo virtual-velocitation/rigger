@@ -6558,6 +6558,147 @@ fn step_surfaces_a_hung_unbounded_spawn_recorded_as_a_liveness_fault_by_the_driv
     );
 }
 
+/// Spec 69, criterion 5 (review u69c5 round 5, cause genuine-defect, findings
+/// sdet-u69c5r4-repoless-cursor-restamps-every-step /
+/// adv-u69c5r4-confirm-sdet-repoless-restamp-empirically-proven): the SAME driver-recorded-hang
+/// scenario as `step_surfaces_a_hung_unbounded_spawn_recorded_as_a_liveness_fault_by_the_driver`
+/// above, but repo-less (`temp_repoless_project` - no `.git`, so `scratch_root` resolves to
+/// `None` and there is nowhere to persist the round-4 cross-process cursor). Before this
+/// round's fix, `pre_hung_ids` collapsed to empty on EVERY step in this path (a plain
+/// `Option::map`/`unwrap_or_default` over `scratch_root`) while `hung` itself is derived purely
+/// from the event log and is NOT gated on `scratch_root` - so `newly_hung` was true on every
+/// single step and the SAME still-unresolved hang restamped `attention` forever, the opposite
+/// failure direction from the crossing-swallowing bug this cursor mechanism exists to close.
+///
+/// The fix gates the crossing check itself on `scratch_root.is_some()`: with no scratch there
+/// is no boundary available at all to tell a genuine new crossing from a still-true restamp
+/// (every repo-less-reachable fault is recorded by a wholly separate `rigger result --error`
+/// process call that, by construction, always predates the observing step's own reads - unlike
+/// the scratch-present sweep, there is no in-process moment that precedes it), so `attention`
+/// carries NO hung-liveness entry in this path at all, on ANY step - never restamping, but also
+/// never firing. `step.halted` (fed from the SAME, ungated `hung` set) is completely
+/// unaffected and keeps halting loudly on every step, exactly as `a_liveness_fault_on_a_review_
+/// spawn_halts_instead_of_re_parking` already proves independently - this test's job is only
+/// the (previously broken) `attention` half.
+#[test]
+fn step_attention_never_restamps_a_hung_unbounded_spawn_when_repo_less() {
+    let dir = temp_repoless_project();
+    let root = dir.path();
+    write_unbounded_liveness_workflow(root);
+
+    // Step 1: the implementer parks in-flight, unbounded (no marker, nothing hung yet).
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(r#""id":"a/implementer#0""#),
+        "step 1 parks the implementer in-flight; got: {line:?}"
+    );
+
+    // The native driver's outer wall-clock records a liveness fault out of band, exactly as
+    // the git-repo sibling test above does.
+    let (_o, err, ok) = run_rigger(
+        root,
+        &[
+            "result",
+            "a/implementer#0",
+            "worker a/implementer#0 hung: ran past the outer wall-clock with no per-spawn max_wall_clock",
+            "--error",
+            "--meta",
+            r#"{"liveness_class":"infra"}"#,
+        ],
+    );
+    assert!(
+        ok,
+        "recording the driver's liveness fault must succeed; stderr: {err}"
+    );
+
+    // Step 2: the halt still surfaces loudly on the pre-existing, ungated `halted` field, but
+    // repo-less has no crossing boundary to seed `attention` from, so it stays omitted -
+    // consistently, not restamped-every-step as the pre-fix bug produced.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "step 2 must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(r#""halted":"#) && line.contains("a/implementer#0"),
+        "the hung unbounded spawn must surface as a halt naming it; got: {line:?}"
+    );
+    assert!(
+        !line.contains(r#""attention":"#),
+        "repo-less has no persisted crossing boundary, so attention must stay omitted rather \
+         than guess (right or wrong) at a genuine-new-crossing verdict; got: {line:?}"
+    );
+
+    // Step 3: the SAME hang, still unresolved - nothing new recorded. `halted` keeps
+    // re-surfacing (it is still true); `attention` stays consistently omitted, proving this is
+    // steady, deterministic behavior across repeated repo-less steps, not a fluke of step 2.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "step 3 must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(r#""halted":"#) && line.contains("a/implementer#0"),
+        "the halt re-surfaces on a later step; got: {line:?}"
+    );
+    assert!(
+        !line.contains(r#""attention":"#),
+        "attention must stay omitted on a later repo-less step too - never restamping the same \
+         still-true hang every step; got: {line:?}"
+    );
+}
+
+/// Spec 69, criterion 5 (review u69c5 round 5, cause genuine-defect, finding
+/// adv-u69c5r4-cursor-write-outruns-its-own-delivery): `println!` is `attention`'s ONLY
+/// delivery channel (it is never appended to the event log), so persisting the hung-attention
+/// cursor - which durably marks a crossing as "already surfaced" - must never run BEFORE the
+/// print that is the sole thing that actually surfaces it. A process death between the two
+/// calls (SIGKILL, OOM, a broken pipe to the driver) would otherwise permanently swallow a
+/// genuine new crossing no observer ever saw: the next step's `pre_hung_ids` would already
+/// contain the id, so `newly_hung` reads false forever after.
+///
+/// It is a SOURCE-TEXT assertion, not a behavior test - the same convention
+/// `worktree_sweep_completes_before_any_add_within_one_step` above uses for an identical
+/// "no test can force this exact interleaving without killing the process mid-line" problem:
+/// a crash between two adjacent statements is not something an integration test can inject
+/// deterministically, so the ordering itself is pinned directly in `cmd_step`'s own source
+/// text, at a bar a no-op cannot pass.
+#[test]
+fn the_hung_cursor_is_persisted_only_after_the_step_that_carries_it_is_printed() {
+    let src = main_rs_source();
+
+    let step_at = src
+        .find("fn cmd_step(args: &[String]) -> Res {")
+        .expect("main.rs must still define cmd_step, the `rigger step` lifecycle");
+    let step_end = src[step_at..]
+        .find("\nfn ")
+        .map(|off| step_at + off)
+        .expect("cmd_step must be followed by another top-level fn");
+    let cmd_step = &src[step_at..step_end];
+
+    let print_at = cmd_step
+        .find("println!(\"{}\", serde_json::to_string(&step)?)")
+        .expect(
+            "cmd_step must print the serialized Step - the sole delivery channel for `attention`",
+        );
+    let persist_at = cmd_step
+        .find("liveness::write_hung_cursor(")
+        .expect("cmd_step must persist the hung-attention cursor");
+
+    assert_eq!(
+        cmd_step
+            .matches("println!(\"{}\", serde_json::to_string(&step)?)")
+            .count(),
+        1,
+        "cmd_step must print the Step exactly once, so this pin stays unambiguous"
+    );
+    assert!(
+        print_at < persist_at,
+        "the Step must be printed (delivered to the driver) BEFORE the hung-attention cursor \
+         is durably persisted; found the cursor write at offset {persist_at} before the print \
+         at offset {print_at} within cmd_step - a crash between them would then permanently \
+         swallow a genuine new crossing no observer ever saw"
+    );
+}
+
 /// BLOCKER-1 end-to-end: under a NON-default scratch config (`RIGGER_TMPDIR` pointing outside
 /// the repo), the marker path the wave carries - the worker-WRITE path - must be the SAME path
 /// the sweep READS. A driver that re-hardcoded a `${repo}/.rigger/tmp` root would diverge from

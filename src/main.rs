@@ -2064,8 +2064,10 @@ fn cmd_step(args: &[String]) -> Res {
     // doc comment covers why this specific signal cannot be computed from inside
     // `conductor::run` at all, in-process or otherwise. Absent scratch (the repo-less
     // unit-test path only - guarded the same way every other scratch-dependent read in this
-    // function already is) has nowhere to persist a cursor and reads as empty, same as a
-    // fresh run's first step.
+    // function already is) has nowhere to persist a cursor, so this reads as empty - see the
+    // `newly_hung` computation below (review u69c5 round 5, cause genuine-defect) for why an
+    // always-empty read here is made SAFE (never a false "newly hung" every step) rather than
+    // read at face value the way it is in the scratch-present path.
     let pre_hung_ids: std::collections::BTreeSet<String> = scratch_root
         .as_deref()
         .map(|root| rigger::liveness::read_hung_cursor(root, &run_id))
@@ -2223,25 +2225,63 @@ fn cmd_step(args: &[String]) -> Res {
     }
     // The hung-liveness half of `attention`'s `halted` signal (spec 69, criterion 5; review
     // u69c5 round 3, cause genuine-defect): computed HERE, not inside `conductor::run`, because
-    // its crossing boundary is `pre_hung_ids` (the PERSISTED cursor read above - see
-    // `liveness::hung_cursor_path`'s own doc comment for why - never a fresh read taken at
-    // this process's own start) - see `conductor::compute_attention`'s own doc comment for why
-    // that boundary cannot live inside `run()` itself either way. A spawn hung in `hung` that
+    // its crossing boundary is `pre_hung_ids` (the boundary computed above - the PERSISTED
+    // cursor whenever scratch is available, see `liveness::hung_cursor_path`'s own doc comment
+    // for why - never a fresh read taken at this process's own start) - see
+    // `conductor::compute_attention`'s own doc comment for why that boundary cannot live
+    // inside `run()` itself either way. A spawn hung in `hung` that
     // was NOT already hung as of `pre_hung_ids` is a genuine NEW crossing this step; one
     // already hung as of `pre_hung_ids` is a still-true restamp and does not fire again.
     // `merge_hung_attention` (pulled out for unit-testability - see its own doc comment) owns
     // the precedence-and-ordering mechanics.
-    let newly_hung = hung.iter().any(|h| !pre_hung_ids.contains(&h.id));
+    //
+    // Gated on `scratch_root.is_some()` (review u69c5 round 5, cause genuine-defect, findings
+    // sdet-u69c5r4-repoless-cursor-restamps-every-step /
+    // adv-u69c5r4-confirm-sdet-repoless-restamp-empirically-proven): absent scratch,
+    // `pre_hung_ids` above has nowhere to persist a cursor and always reads empty, while
+    // `hung` (unlike `pre_hung_ids`) is derived purely from the event log and is NOT itself
+    // gated on `scratch_root` - so comparing the two directly would read every step as a fresh
+    // crossing and restamp `attention` forever instead of once, the opposite failure direction
+    // from the crash-window gap the persisted cursor exists to close. `step.halted` just above
+    // is UNCHANGED by this gate - it stays sourced from the full, ungated `hung` set, so a
+    // hung spawn still halts loudly on every step regardless of scratch (this only scopes the
+    // separate crossing-tracked `attention` entry). Without a persisted cursor there is no
+    // boundary available at all to tell a genuine new crossing from a still-true restamp in
+    // this path (every repo-less-reachable fault is recorded by a wholly separate `rigger
+    // result --error` process call, which by construction always predates this step's own
+    // reads - there is no in-process moment that precedes it the way the scratch-present
+    // sweep's pre-sweep read does), so gating BOTH halves of the comparison to the SAME
+    // scratch-presence keeps them consistent in every path: `attention` simply carries no
+    // hung-liveness entry when repo-less, rather than guessing wrong in either direction.
+    let newly_hung = scratch_root.is_some() && hung.iter().any(|h| !pre_hung_ids.contains(&h.id));
     step.attention = merge_hung_attention(step.attention, newly_hung, || {
         rigger::liveness::halt_reason(&hung)
     });
+    // `step` is now fully finalized - nothing below this point mutates it further.
+    //
+    // DELIVER the step BEFORE persisting the hung-attention cursor (spec 69, criterion 5;
+    // review u69c5 round 5, cause genuine-defect, finding
+    // adv-u69c5r4-cursor-write-outruns-its-own-delivery): the `println!` below is `attention`'s
+    // SOLE delivery channel - it is never appended to the event log (see `Step`'s own
+    // `attention` field: `skip_serializing_if = "Vec::is_empty"`, live-wire-only by design) -
+    // so persisting the cursor first would let a process death strictly between the two calls
+    // (SIGKILL, OOM, a broken pipe to the driver) durably mark a crossing "already surfaced"
+    // even though no observer ever actually saw it: the next invocation's `pre_hung_ids` would
+    // already contain the id, so `newly_hung` reads false forever after - silently swallowing a
+    // genuine crossing, the exact failure mode this whole mechanism exists to close. Printing
+    // FIRST means a crash in that window instead costs one harmless extra restamp next step
+    // (the cursor never got updated, so the unchanged crossing is detected again) - the same
+    // "fail toward one extra harmless re-notification, never toward silently swallowing a
+    // genuine new crossing" direction `write_hung_cursor`'s own doc comment already commits to.
+    println!("{}", serde_json::to_string(&step)?);
     // Persist the hung-attention cursor (spec 69, criterion 5; review u69c5 round 3, cause
     // genuine-defect): overwrite it with THIS step's own full `hung` set - the exact set
     // `pre_hung_ids` above just diffed against - so the NEXT `rigger step` invocation (this
     // process's own next step, OR the very next one after an out-of-band driver fault) reads
     // an up-to-date boundary rather than the one this process itself started with. Best-effort;
     // a write failure only risks one extra re-stamp later, never fails this step (see
-    // `liveness::write_hung_cursor`'s own doc comment).
+    // `liveness::write_hung_cursor`'s own doc comment). Runs AFTER the print above, never
+    // before it (see that comment for why).
     if let Some(root) = &scratch_root {
         let current_hung_ids: std::collections::BTreeSet<String> =
             hung.iter().map(|h| h.id.clone()).collect();
@@ -2287,7 +2327,6 @@ fn cmd_step(args: &[String]) -> Res {
             reclaim_run_scratch(root);
         }
     }
-    println!("{}", serde_json::to_string(&step)?);
     Ok(())
 }
 
