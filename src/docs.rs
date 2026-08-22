@@ -431,6 +431,177 @@ fn render_planning_a_spec_skill(_ctx: &DocsContext) -> String {
     PLANNING_A_SPEC_BODY.to_string()
 }
 
+/// The planning field guide's body, committed as-is at
+/// `docs/handbook/planning-field-guide.md` (spec 66, criterion 2): the failure catalog
+/// (F1-F9) this repo's own event history recorded, the mid-run amendment protocol, and
+/// measured outcomes. This is a HANDBOOK PAGE, not a skill (it carries no frontmatter and
+/// is not in [`skill_registry`]) - it is the "how to produce a loop-ready spec" companion
+/// the `planning-a-spec` skill and `authoring-loops.md`'s shape rules both point readers
+/// at. Self-contained: a consumer needs no access to this repo's history to use it. Like
+/// [`PLANNING_A_SPEC_BODY`], it carries no code-derived facts, so it is a plain constant
+/// rather than a `DocsContext`-parameterized template.
+const PLANNING_FIELD_GUIDE_BODY: &str = r#"# Planning a loop run: the field guide
+
+The handbook's [authoring-loops](authoring-loops.md) rules say what a loop-ready spec IS. This
+guide is the other half: how to PRODUCE one, distilled from this repository's own event store -
+every escalation, plan-critique rejection, and multi-attempt review churn it has recorded. The
+one-sentence summary of all of it: **almost every expensive run failure was decided before the
+run started, at planning time, and each failure class below has a mechanical countermeasure.**
+
+## The failure catalog
+
+Each class below appeared in the recorded history at least once; the recurring ones are marked.
+Read this before writing a spec; the authoring recipe that follows exists to make each class
+structurally impossible.
+
+### F1 - Duplicated or ambiguously-owned units (the #1 recurring killer)
+
+Six separate plan-critique escalations trace to one shape: the planner turns one criterion into
+TWO units - byte-identical criterion text, identical blast radius, no exclusion naming which
+twin owns what ("mechanism" and "proof" twins, "scaffold" and "seam" twins, or whole DAGs
+duplicated as parallel chains). The reviewers then enforce each twin against the other and
+neither converges.
+
+**Countermeasure:** the OWNS sentence lives INSIDE the criterion checkbox ("This criterion OWNS
+the selection surface"), and every neighbor that could plausibly claim the same concern carries
+the exclusion by name ("the orphan-id advisory is unit-9's, NOT this unit's"). A criterion whose
+ownership sentence sits outside the checkbox gets truncated away when the planner copies
+criteria verbatim into units - that truncation is a recorded failure, not a hypothesis.
+
+### F2 - Bundled criteria
+
+One checkbox demanding two mitigations ("a drift monitor AND distilled playbooks") forces the
+planner to either split it (creating F1 twins) or build an unreviewably wide unit. The
+plan-critique gate correctly escalated a spec for exactly this.
+
+**Countermeasure:** one observable behavior per checkbox. If the sentence contains "and" between
+two verifiable outcomes, it is two criteria wearing one checkbox - split it yourself rather
+than letting the planner guess.
+
+### F3 - The self-contradictory spec (the most expensive single failure)
+
+When a spec states requirements in more than one form - a prescribed mechanism, asserted
+properties of that mechanism, and independent constraints on the outcome - the forms can
+contradict each other in a corner case the author never walked, and the contradiction is
+invisible until an implementation reaches it. No implementation can satisfy a contradiction:
+every attempt violates one clause or another, each rejection is individually correct, and the
+run churns until someone re-reads the SPEC instead of the diffs. The tell is rejections that
+keep citing the same constraint against different, otherwise-reasonable implementations - or a
+review verdict that names the cause as spec ambiguity outright. (Recorded cost: six attempts
+rejected against one unwalked corner - a file reverting to earlier content - before the spec
+was amended.)
+
+**Countermeasure:** the constraints walk. Take every Global constraint and every criterion and
+walk them against the standard corner-case list: empty input, repeated input, REVERT/rollback to
+a prior state, concurrent actors, crash-and-resume, cold start (fresh process, empty caches). A
+constraint you have not walked against a corner case is a rejection you have scheduled for
+attempt 5. When Design prescribes a mechanism, the walk applies to the mechanism too - or drop
+the prescription and let the criteria state observables the implementer must find a mechanism
+for.
+
+### F4 - Open dispositions
+
+"Removed" and "ignored" are different verdicts on the same files; if the spec has not picked
+one, the implementer picks one and a reviewer picks the other (a recorded rejection loop). Any
+question a reviewer could reasonably re-litigate - backend scope, what happens on the degraded
+path, whether a doc updates - is a disposition the spec must close.
+
+**Countermeasure:** grep your draft for every "or", "either", "could", and "worth considering" -
+each is either a decision to make now or a Notes line explicitly deferring it OUT of scope.
+Recent specs close these with explicit "BACKEND SCOPE, decided here so no unit has to" blocks;
+that pattern generalizes: decide it where you noticed it.
+
+### F5 - State that lives in the wrong place
+
+A guard against CROSS-PROCESS duplication implemented as an in-process seen-set defends nothing:
+every driver step and every cold rebuild is its own process, so the set starts empty exactly
+when it matters. The class generalizes: any criterion about persistence, dedup, recovery, or
+budgets must say WHERE the authoritative state lives (the log, a file, a lock) and the spec must
+reject in-memory stand-ins by name, or an implementer will reach for the easy one and a reviewer
+will (correctly) reject it late.
+
+### F6 - Criteria that cannot survive verbatim copying
+
+The planner copies criteria into units verbatim and the conductor reconciles proposals against a
+baseline match. Over-long criteria, sub-bullets-as-units, and multi-sentence checkboxes get
+paraphrased or truncated in that copy, and the mismatch fails the reconcile. The spec-shape lint
+flags these; heed it before launch rather than after the plan escalates.
+
+**Countermeasure:** a criterion is ONE self-contained sentence-or-two, copyable as a unit's
+whole contract. Type shapes, tables, and long detail go in a non-criteria Notes section.
+
+### F7 - Unpinned environment
+
+Agent models resolve through aliases, and an alias can silently re-point between runs (a
+recorded re-point preceded the churniest run in this repo's history and was flagged only by
+`rigger validate`, which nobody ran). Gates, corpus, and binary are part of the same
+environment.
+
+**Countermeasure:** `rigger validate` is a MANDATORY preflight, not a linter you run when
+curious. On a model-drift warning, run the canary (`rigger canary --if-model-changed`) before
+trusting a big run to the new resolution.
+
+### F8 - Infra noise misread as semantic failure
+
+Attempt counts inflate from harness defects (assigned worktrees deleted between spawns, shared
+build caches thrashed by concurrent lanes, agents killed by quota exhaustion). A run that "took
+6 attempts" may have burned half of them on infrastructure. Reacting to the raw count - blaming
+the spec, the model, or the panel - misdiagnoses it.
+
+**Countermeasure:** before reacting to churn, audit the blocking findings against the diffs
+(they cite checkable facts) and separate infra findings from semantic ones. Fix infra in the
+binary via its own spec; never let it masquerade as review strictness.
+
+### F9 - Unbounded claim surface: prose that says more than the artifact owes
+
+Every statement in a reviewed artifact is a claim that can be falsified, and prose invites
+stronger claims than anything else: universal quantifiers ("never", "only", "all"), exhaustive
+enumerations, and reassuring guarantees nobody asked for. Under adversarial review each
+unnecessary claim is an independent way to fail - and remediation makes it WORSE by default,
+because the natural way to fix a falsified statement is to write a longer, more qualified one,
+which adds new claims to falsify. The result is an artifact whose verified core is done while
+its claim surface grows a fresh defect per round and never converges. (Recorded cost: four
+consecutive rejections of a unit whose code was ratified and untouched throughout.)
+
+**Countermeasure, at spec time:** bound the claim surface in the criterion itself - demand the
+RULE stated short and pinned by an accuracy check, and say explicitly that no enumeration of
+cases or guarantees beyond it is owed. **At remediation time:** prefer deletion to replacement -
+a claim the artifact does not owe is removed, not repaired - and treat any fix that ADDS a
+universal as the failure mode repeating.
+
+## Amending a spec mid-run
+
+Sometimes the panel proves the spec wrong while the run is live (F3 was caught exactly this
+way). The protocol, validated in production:
+
+1. Amend Design and Global constraints ONLY. The criteria checkboxes are the RUN'S IDENTITY -
+   the conductor adopts a run by matching criteria, so editing a checkbox mid-run orphans the
+   live run. Criteria changes wait for a fresh run.
+2. Commit the amendment to the run branch when no step is mid-flight.
+3. Emit the clarification as a decision (`rigger emit DecisionMade ...` naming the spec file) -
+   in-flight reviewers ground through the knowledge graph and see it IMMEDIATELY, ahead of
+   their worktrees picking up the text.
+4. If the run still escalates, restart FRESH under the amended spec: durable unit branches
+   carry the work forward, the budget resets, and the graph's findings steer the new attempts.
+
+## What good looks like, measured
+
+Runs whose specs followed all of the above have recorded 85-100% first-pass yields, zero
+escalations, and flawless 6-wave convergences. The disasters (40 rejections over three
+criteria; six attempts against a contradiction; four plan-critique rounds) each map to a
+catalog class above. The delta is not model quality or reviewer mood - it is whether the spec
+closed these holes before `rigger run` ever started. Use the `planning-a-spec` skill to apply
+this guide as a procedure.
+"#;
+
+/// Render the planning field guide handbook page (spec 66, criterion 2). `ctx` is accepted
+/// only to match the uniform `fn(&DocsContext) -> String` signature every handbook-page
+/// entry in the binary's `HANDBOOK_PAGES` list shares (the same shape [`SkillEntry`] uses
+/// for skills); this body has nothing in it to interpolate from `ctx`.
+pub fn render_planning_field_guide(_ctx: &DocsContext) -> String {
+    PLANNING_FIELD_GUIDE_BODY.to_string()
+}
+
 /// Render the `rigger-reset-store` skill (spec 68, criterion 2): store hygiene for the
 /// three files under `.rigger/`. `ctx` is accepted only to match the registry's uniform
 /// signature; nothing here is drift-prone enough to interpolate from it.
