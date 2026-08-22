@@ -6228,8 +6228,12 @@ fn watch_poll(
     // exists, probe the PORT EMBEDDED IN THE RECORDED URL directly instead - the same
     // safe, timeout-bounded `dash_serving_on` probe, just without a pid to name. Only
     // when NEITHER breadcrumb is recorded at all (`dash: off` / `RIGGER_NO_DASH`, or
-    // watched before any run began) does this read as "never started" - not an
-    // anomaly.
+    // watched before any run began) does the DashProbe VALUE constructed here read as
+    // "never started". A `NotServing` value built here does not by itself guarantee an
+    // anomaly, though: both breadcrumb files are project-level singletons never removed
+    // once their dash exits, so `watch::detect` additionally gates this signal on the
+    // run being unfinished (`!run.done()`) - a done run's stale breadcrumb is success,
+    // not a dead dash, and is suppressed there rather than here.
     let marker_path = std::path::PathBuf::from(loc.file(DASH_MARKER_FILE));
     let dash = match dash::DashMarker::read(&marker_path) {
         Some(m) if dash::dash_serving_on(m.port) => watch::DashProbe::Serving,

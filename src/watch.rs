@@ -437,20 +437,29 @@ pub fn detect(inputs: &WatchInputs) -> Vec<Anomaly> {
         }
     }
 
-    // Signal 3: dash liveness.
-    if let DashProbe::NotServing { pid, port } = &inputs.dash {
-        let detail = match pid {
-            Some(pid) => format!("marker names dead pid {pid} on port {port}"),
-            // No marker was ever recorded (rigger run / rigger serve) - the probe fell
-            // back to the recorded dash.url's own port; genuinely no pid to name.
-            None => format!("recorded dash.url port {port} does not answer (no marker, no pid)"),
-        };
-        out.push(Anomaly {
-            signal: Signal::DashNotServing,
-            subject: "dash".to_string(),
-            magnitude: 0,
-            detail,
-        });
+    // Signal 3: dash liveness. Never fires on a DONE run, mirroring Signal 2 above -
+    // `.rigger/dash.url` and `.rigger/dash.marker` are project-level singleton files
+    // that are never removed once their dash exits, so a finished run's stale
+    // breadcrumb is success (the dash did its job and stopped), not a permanent
+    // anomaly (round-4 reject: adv-u69c1r4-dash-anomaly-permanent-false-positive).
+    if !run.done() {
+        if let DashProbe::NotServing { pid, port } = &inputs.dash {
+            let detail = match pid {
+                Some(pid) => format!("marker names dead pid {pid} on port {port}"),
+                // No marker was ever recorded (rigger run / rigger serve) - the probe
+                // fell back to the recorded dash.url's own port; genuinely no pid to
+                // name.
+                None => {
+                    format!("recorded dash.url port {port} does not answer (no marker, no pid)")
+                }
+            };
+            out.push(Anomaly {
+                signal: Signal::DashNotServing,
+                subject: "dash".to_string(),
+                magnitude: 0,
+                detail,
+            });
+        }
     }
 
     // Signal 6 (beyond the skill's five): store integrity.
@@ -868,6 +877,34 @@ mod tests {
             step_lock_free: true,
             wave_liveness_ages: &BTreeMap::new(),
             dash: DashProbe::NotRecorded,
+        };
+        assert!(detect(&inputs).is_empty());
+    }
+
+    /// Round-4 reject (adv-u69c1r4-dash-anomaly-permanent-false-positive): `.rigger/
+    /// dash.url` and `.rigger/dash.marker` are project-level singleton files never
+    /// removed once a dash exits, so a done run's stale breadcrumb must not read as
+    /// an anomaly either - mirrors
+    /// `a_done_run_never_reports_a_dead_driver_however_quiet_the_store` above but
+    /// for Signal 3 instead of Signal 2, closing the exact gap that test's own
+    /// neighbor left open.
+    #[test]
+    fn a_done_run_never_reports_a_dead_dash_either() {
+        let events = positioned(vec![
+            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
+            ev(ledger::TYPE_UNIT_INTEGRATED, r#"{"id":"u","commit":"c"}"#),
+        ]);
+        let inputs = WatchInputs {
+            run_events: &events,
+            full_events: &events,
+            now: SystemTime::now(),
+            last_event_at: None,
+            step_lock_free: true,
+            wave_liveness_ages: &BTreeMap::new(),
+            dash: DashProbe::NotServing {
+                pid: None,
+                port: 7420,
+            },
         };
         assert!(detect(&inputs).is_empty());
     }
