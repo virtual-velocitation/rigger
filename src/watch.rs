@@ -306,7 +306,7 @@ fn reject_recurrence_streak(run_events: &[Event], unit_id: &str) -> (String, u32
             continue;
         }
         let this_cause = if p.cause.is_empty() {
-            ledger::CAUSE_UNKNOWN.to_string()
+            "unknown".to_string()
         } else {
             p.cause
         };
