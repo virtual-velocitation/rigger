@@ -13474,6 +13474,69 @@ fn watch_once_reports_nothing_when_a_real_dash_serves_the_url_only_recorded_port
     );
 }
 
+/// Round-4 reject (adv-u69c1r4-dash-anomaly-permanent-false-positive), round-5 fix: `.rigger/
+/// dash.marker` and `.rigger/dash.url` are project-level singleton files never removed once
+/// their dash exits, so a project's FIRST run leaves a dead marker behind forever - and
+/// before the round-5 fix, every LATER `rigger watch --once` in that same project reported a
+/// permanent false "dash liveness" anomaly, even after a run finished successfully with no
+/// dash-launching process left to be dead. `watch::detect`'s own unit test
+/// (`a_done_run_never_reports_a_dead_dash_either`, src/watch.rs) proves the pure function
+/// gates Signal 3 on `!run.done()`, mirroring Signal 2's existing gate two lines above it -
+/// but that test builds `WatchInputs` directly in-process and never proves `watch_poll`
+/// (the real I/O seam: `require_store_dir`, the marker file read, the dash probe) and
+/// `cmd_watch`'s dedup/print loop actually wire a real DONE run's events through to that
+/// gate. This drives the identical marker-present dead-dash shape
+/// `watch_once_output_matches_what_restore_the_dash_promises_about_a_dead_marker` above
+/// pins for an UNFINISHED run, but through a DONE run's real store, and proves the compiled
+/// binary reports nothing - the boundary the round-4 adversary finding demanded. Confirmed
+/// this reproduces the round-4 defect: reverted to `ec4c316` (round-4 HEAD, before the
+/// `!run.done()` gate existed) this test fails, printing a "dash liveness" line naming the
+/// dead pid for a run whose every unit already integrated.
+#[test]
+fn watch_once_reports_no_dash_anomaly_for_a_done_run_even_with_a_dead_marker() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    // A done run: one unit started and integrated, no failed deferred gate - exactly
+    // `ledger::Run::done`'s own three conjuncts (non-empty, all-integrated, no deferred
+    // gate failure).
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["spec 69"]}"#),
+            ("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+            ("UnitIntegrated", r#"{"id":"u1","commit":"abc"}"#),
+        ],
+    );
+
+    // The exact dead-marker shape the unfinished-run sibling test seeds: a definitely-unbound
+    // loopback port and an impossible pid, so nothing on this machine answers on the port and
+    // no process holds the pid.
+    let dead_port = free_loopback_port();
+    let dead_pid = u32::MAX;
+    DashMarker {
+        port: dead_port,
+        pid: dead_pid,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the dash marker");
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 on a done run with a dead dash marker; stderr:\n{err}"
+    );
+    assert!(
+        out.trim().is_empty(),
+        "a DONE run's stale dash marker must report NO dash liveness anomaly - the run \
+         finished and its dash exited on purpose, which is success, not a dead dash; \
+         got:\n{out}"
+    );
+}
+
 /// Spec 46, criterion 2 (the pre-run graph-hygiene guidance ships to CONSUMERS through the
 /// INSTALL seam): a consumer never edits rigger's own repo copies - they run `rigger setup`,
 /// which renders and INSTALLS the `using-rigger` skill into THEIR project at
