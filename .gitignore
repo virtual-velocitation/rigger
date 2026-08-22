@@ -45,3 +45,9 @@ shim/node_modules/
 # (defaults.workdir / RIGGER_TMPDIR override the location; Gap 14)
 .rigger/tmp
 .rigger/store.conn
+
+# The mutation-efficacy step's per-unit diff (rust-engineer.md: `git diff <BASE> --
+# '*.rs' > unit.diff`), written at the worktree root as scratch input to
+# `cargo mutants --in-diff`. Never a Done-when deliverable - ignore it wherever it
+# lands so it can never be swept into a unit's commit again.
+/unit.diff
