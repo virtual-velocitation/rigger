@@ -245,6 +245,42 @@ fn seed_order_signature(root: &Path) {
     }
 }
 
+/// Seed an out-of-order TAIL directly on a stream DISTINCT from the run stream
+/// (`"other"`, still namespaced to this project), rather than the run stream
+/// [`seed_order_signature`] itself uses - a store-wide corruption shape `watch_poll`'s
+/// `full_events` read picks up (it reads every stream under this project's namespace, spec
+/// 71's own scope: "a disordered stream is a store-wide fault, not a per-run one") without
+/// touching `run_events` (scoped to `conductor::STREAM` = `"run"` only). That separation is
+/// what lets this seed compose cleanly, in the SAME store, alongside [`seed_run_events`]'s
+/// legitimate run-scoped anomalies for the criterion's own combined scenario below - putting
+/// the tail on `"run"` too would work for `order_signatures` itself, but every revision 1..N
+/// there is already claimed by a real appended event, leaving no unused, still-disordering
+/// value the `UNIQUE(stream, revision)` constraint would accept. Mirrors
+/// [`seed_order_signature`]'s exact technique (three distinct revisions landing out of
+/// position order: 5, then 1, then 2 - two rows disagree with the running max of 5),
+/// parameterized onto a stream the four run-scoped signals never read.
+fn seed_out_of_order_tail(root: &Path, stream_suffix: &str) {
+    let db = root.join(".rigger").join("events.db");
+    // The schema is already laid down by the `seed_run_events`/`seed_store` call this
+    // combined scenario always makes first; opening again here is a no-op, kept for the same
+    // self-contained-precondition reason `seed_order_signature` opens it.
+    Store::open(db.to_str().unwrap()).unwrap();
+    let stream = format!(
+        "{}{stream_suffix}",
+        Namespaced::prefix_for(&run_stream_identity(root))
+    );
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let ts = now_nanos();
+    for revision in [5i64, 1, 2] {
+        conn.execute(
+            "INSERT INTO events (stream, type, id, data, meta, valid_from, recorded_at, revision)
+             VALUES (?1, 'Seed', ?2, X'7b7d', '{}', ?3, ?3, ?4)",
+            rusqlite::params![stream, format!("tail-{revision}"), ts, revision],
+        )
+        .unwrap();
+    }
+}
+
 /// The shared consolidation's own periphery proof (spec 69 c2 round 2,
 /// `d-u69c2r2-consolidate-order-signatures`): `watch::order_signatures` is now the ONE
 /// detector both `rigger validate`
@@ -502,6 +538,232 @@ fn watch_streaming_survives_a_transient_store_read_failure_and_recovers() {
     assert!(
         line.contains("escalated blockers") && line.contains("u-recovered"),
         "the recovered poll must report the new anomaly: {line}"
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+// --- The criterion's own literal combination, and streaming's other dedup half ---
+//
+// The two tests below close the only sub-clauses of spec 69's own Done-when text for THE
+// WATCHDOG left proven exclusively inside-out (`src/watch.rs::a_store_seeded_with_a_multi_
+// result_spawn_an_escalated_unit_reject_recurrence_three_and_an_out_of_order_tail_prints_
+// one_line_each` calls `detect()` directly with a hand-built `WatchInputs`; `src/watch.rs::
+// dedup_re_alerts_when_the_magnitude_increments` calls `Dedup::step` directly with bare
+// `Anomaly` values) - neither has ever been driven through the compiled `rigger watch`
+// binary, the composition this file exists to own (module doc above). The pure core is
+// already correct and mutation-tested (peer decision `d-u69c3-mutation-accounting`:
+// `watch.rs:296 reject_recurrence_streak` fully caught); what was missing is proof that
+// `main()`'s dispatch, `watch_poll`'s real store read, and the streaming loop's real
+// `Dedup` actually WIRE that correct core to an operator's terminal for these two shapes.
+
+/// The criterion's own combined scenario, verbatim (spec 69 Done-when): "a store seeded with
+/// a multi-result spawn, an escalated unit, a unit at reject-recurrence three, and an
+/// out-of-order tail prints one line per anomaly naming signal, subject, and response skill",
+/// all FOUR anomalies in ONE store, through the real compiled `rigger watch --once`, in
+/// Design order. Every other test in this file drives at most two signals in one store (the
+/// headline test above: escalated + frontier-stall; the store-integrity test: that signal
+/// alone); this is the one place the whole combination is proven end to end rather than
+/// piecewise, closing the gap the module doc's own reasoning implies - a regression that
+/// narrowed `watch_poll`'s real read (e.g. dropping a signal arm, or scoping `full_events`
+/// down to the run stream) could leave every piecewise CLI test above green while the
+/// combined shape a real operator's store actually presents silently lost a line.
+#[test]
+fn watch_once_reports_the_criterions_own_multi_anomaly_scenario_through_the_real_compiled_binary() {
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+    seed_run_events(
+        root,
+        &[
+            ("UnitStarted", r#"{"id":"u-esc"}"#),
+            ("UnitEscalated", r#"{"id":"u-esc"}"#),
+            ("UnitStarted", r#"{"id":"u-fail"}"#),
+            (
+                "UnitFailed",
+                r#"{"id":"u-fail","attempts":1,"cause":"gate:fmt"}"#,
+            ),
+            ("UnitStarted", r#"{"id":"u-fail"}"#),
+            (
+                "UnitFailed",
+                r#"{"id":"u-fail","attempts":2,"cause":"gate:fmt"}"#,
+            ),
+            ("UnitStarted", r#"{"id":"u-fail"}"#),
+            (
+                "UnitFailed",
+                r#"{"id":"u-fail","attempts":3,"cause":"gate:fmt"}"#,
+            ),
+            (
+                "SpawnResult",
+                r#"{"id":"u-stall/implementer#0","output":"a"}"#,
+            ),
+            (
+                "SpawnResult",
+                r#"{"id":"u-stall/implementer#0","output":"b"}"#,
+            ),
+            (
+                "SpawnResult",
+                r#"{"id":"u-stall/implementer#0","output":"c"}"#,
+            ),
+        ],
+    );
+    seed_out_of_order_tail(root, "other");
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 even with every anomaly firing at once: {err}"
+    );
+    let lines: Vec<&str> = out.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(
+        lines.len(),
+        4,
+        "one line per anomaly, four anomalies seeded together, in Design order: {out}"
+    );
+    assert!(
+        lines[0].contains("escalated blockers")
+            && lines[0].contains("u-esc")
+            && lines[0].contains("rigger-handle-an-escalation"),
+        "line 1 (Design order: escalated blockers first): {}",
+        lines[0]
+    );
+    assert!(
+        lines[1].contains("reject-recurrence trend")
+            && lines[1].contains("u-fail")
+            && lines[1].contains("reject-recurrence #3")
+            && lines[1].contains("gate:fmt")
+            && lines[1].contains("rigger-diagnose-churn"),
+        "line 2 (the unit at reject-recurrence three, its cause named): {}",
+        lines[1]
+    );
+    assert!(
+        lines[2].contains("frontier progress")
+            && lines[2].contains("u-stall/implementer#0")
+            && lines[2].contains("stop the driver and diagnose"),
+        "line 3 (the multi-result spawn): {}",
+        lines[2]
+    );
+    assert!(
+        lines[3].contains("store integrity")
+            && lines[3].contains("other")
+            && lines[3].contains("2 row(s) where position order and revision order disagree"),
+        "line 4 (the out-of-order tail, store integrity sorts last): {}",
+        lines[3]
+    );
+}
+
+/// The criterion's other still-inside-out-only half, verbatim (spec 69 Done-when):
+/// "streaming mode dedupes a persisting anomaly until it clears and re-alerts a churn count
+/// on each increment". `watch_without_once_streams_and_re_polls_a_live_mutating_store_
+/// until_killed` above already proves live dedup SUPPRESSION through the real binary, but
+/// only for `Escalated`, a magnitude-0 signal that can never climb - it cannot exercise
+/// re-alert-on-increment by construction. This test drives the one signal that DOES carry a
+/// climbing magnitude (`RejectRecurrence`, spec 69 Design: "counted and re-alerted PER
+/// FAILURE CAUSE") through a real streaming process, live: below threshold (silent) -> the
+/// streak crosses 3 (first alert) -> holds at 3 (deduped) -> climbs to 4 (RE-alerts under the
+/// same signal+subject key, not suppressed as a repeat of the magnitude-3 line already
+/// printed) - the one behavior no synchronous single-call unit test can exercise, since it
+/// needs a real process re-polling a store that keeps changing while it runs.
+#[test]
+fn watch_streaming_re_alerts_a_reject_recurrence_churn_count_on_each_increment() {
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+    // Two same-cause failures: below the diagnose threshold of three, must stay silent.
+    seed_run_events(
+        root,
+        &[
+            ("UnitStarted", r#"{"id":"u-churn"}"#),
+            (
+                "UnitFailed",
+                r#"{"id":"u-churn","attempts":1,"cause":"gate:fmt"}"#,
+            ),
+            ("UnitStarted", r#"{"id":"u-churn"}"#),
+            (
+                "UnitFailed",
+                r#"{"id":"u-churn","attempts":2,"cause":"gate:fmt"}"#,
+            ),
+        ],
+    );
+
+    let mut child = common::rigger_courier()
+        .args(["watch", "--interval", "1"])
+        .current_dir(root)
+        .env("RIGGER_NO_DASH", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn `rigger watch`");
+    let stdout = child.stdout.take().expect("watch stdout is piped");
+
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines().map_while(Result::ok) {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+
+    // Phase 1: two same-cause failures is below threshold - the first (immediate) poll must
+    // print nothing, and the process must still be running.
+    assert!(
+        rx.recv_timeout(Duration::from_millis(700)).is_err(),
+        "two same-cause failures is below the reject-recurrence threshold: must be silent"
+    );
+    assert!(child.try_wait().expect("try_wait").is_none());
+
+    // Phase 2: a third same-cause failure crosses the threshold, live - the churn count's
+    // FIRST alert, magnitude 3.
+    seed_run_events(
+        root,
+        &[
+            ("UnitStarted", r#"{"id":"u-churn"}"#),
+            (
+                "UnitFailed",
+                r#"{"id":"u-churn","attempts":3,"cause":"gate:fmt"}"#,
+            ),
+        ],
+    );
+    let first = rx
+        .recv_timeout(Duration::from_secs(8))
+        .expect("crossing the reject-recurrence threshold live must alert");
+    assert!(
+        first.contains("reject-recurrence trend")
+            && first.contains("u-churn")
+            && first.contains("reject-recurrence #3"),
+        "the first churn alert must name the streak at 3: {first}"
+    );
+
+    // Phase 3: the SAME streak, unchanged, on the next real poll(s): deduped.
+    assert!(
+        rx.recv_timeout(Duration::from_millis(1500)).is_err(),
+        "a persisting churn count at the SAME magnitude must stay deduped"
+    );
+
+    // Phase 4: the churn count CLIMBS to 4, live - re-alerts under the same signal+subject
+    // key (Done-when: "re-alerts a churn count on each increment"), never suppressed as a
+    // repeat of the magnitude-3 alert already printed.
+    seed_run_events(
+        root,
+        &[
+            ("UnitStarted", r#"{"id":"u-churn"}"#),
+            (
+                "UnitFailed",
+                r#"{"id":"u-churn","attempts":4,"cause":"gate:fmt"}"#,
+            ),
+        ],
+    );
+    let second = rx
+        .recv_timeout(Duration::from_secs(8))
+        .expect("the churn count climbing from 3 to 4 must re-alert live, not stay deduped");
+    assert!(
+        second.contains("reject-recurrence trend")
+            && second.contains("u-churn")
+            && second.contains("reject-recurrence #4"),
+        "the second churn alert must name the climbed streak at 4: {second}"
     );
 
     let _ = child.kill();
