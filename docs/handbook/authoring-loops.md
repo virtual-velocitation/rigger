@@ -37,6 +37,8 @@ Rules that make a spec loop-ready:
 7. **Assign every demanded mitigation to exactly one criterion, and say so.** When a review disposition spawns follow-up criteria, name which unit OWNS each mitigation and write the exclusion into the neighbors ("the orphan-id advisory is unit-9's, NOT this unit's") - otherwise a reviewer enforces a sibling's criterion and the implementer cannot converge on its own.
 8. **A criterion must not leave a disposition open.** "Removed" and "ignored" are different verdicts on the same files; if the spec has not picked one, the implementer will pick one and a reviewer will pick the other. Decide in the spec; a criterion a reviewer can reasonably re-litigate is a rejection loop waiting to run.
 
+These rules say what a loop-ready spec IS. The [planning field guide](planning-field-guide.md) is the other half - how to PRODUCE one: the failure catalog distilled from this repository's own run history, with a mechanical countermeasure for each recorded class. Read it before writing a spec.
+
 The entry gate is real: `rigger run <spec>` refuses to start unless every acceptance criterion is covered by a stage. A spec with no enumerable criteria does not run - fix the spec.
 
 ## The workflow: `.rigger/workflow.yml`

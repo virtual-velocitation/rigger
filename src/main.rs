@@ -204,6 +204,35 @@ fn workflow_path(root: &Path) -> std::path::PathBuf {
 /// a fresh render (spec 20, unit 2). The single source of this path.
 const HANDBOOK_DISCIPLINE_REL: &str = "docs/handbook/using-rigger.md";
 
+/// Where `rigger docs` writes the rendered planning field guide handbook page, relative to
+/// the project root (spec 66, criterion 2): the failure-catalog companion to
+/// `authoring-loops.md`'s shape rules, cross-linked from there. Drift-checked the same way
+/// as [`HANDBOOK_DISCIPLINE_REL`]. The single source of this path.
+const PLANNING_FIELD_GUIDE_REL: &str = "docs/handbook/planning-field-guide.md";
+
+/// One [`HANDBOOK_PAGES`] entry: the page's committed rel path and the pure render
+/// function that produces its fresh content. Named so clippy's `type_complexity` lint
+/// stays clean and so [`write_docs`]/[`docs_drift`] read as "a rel path and a renderer",
+/// not an inline tuple type.
+type HandbookPageEntry = (&'static str, fn(&rigger::docs::DocsContext) -> String);
+
+/// Every handbook page `rigger docs` renders and the docs-drift gate checks, OUTSIDE the
+/// skill registry (these are handbook chapters, not installable skills - see
+/// [`rigger::docs::skill_registry`] for those). [`write_docs`] and [`docs_drift`] both walk
+/// this ONE list, in this order, so adding a page here is the only step needed to render
+/// and drift-check it (spec 66, criterion 2: generalizes the formerly-single-page
+/// mechanism, mirroring the registry's "one enumeration every surface walks" shape).
+const HANDBOOK_PAGES: &[HandbookPageEntry] = &[
+    (
+        HANDBOOK_DISCIPLINE_REL,
+        rigger::docs::render_handbook_discipline,
+    ),
+    (
+        PLANNING_FIELD_GUIDE_REL,
+        rigger::docs::render_planning_field_guide,
+    ),
+];
+
 /// The default location this repo keeps its specs, surfaced in the rendered discipline as
 /// a project specific a repo overlay (spec 20, unit 3) can override without editing the
 /// shared discipline source.
@@ -10166,23 +10195,23 @@ fn docs_context() -> rigger::docs::DocsContext {
     }
 }
 
-/// Render EVERY [registry skill](rigger::docs::skill_registry) plus the handbook
-/// discipline chapter from [`docs_context`], and write them under `root`: each skill at
-/// [`skill_source_rel`]`(entry.name)`, the handbook at [`HANDBOOK_DISCIPLINE_REL`]. Returns
-/// the paths written, in registry order followed by the handbook - a stable order. Rooted
-/// at `root` so it is testable against a temp dir without touching the process cwd; parent
-/// directories are created so a fresh checkout renders every file (spec 68, criterion 1:
-/// generalizes over the whole registry - adding an entry needs no edit here).
+/// Render EVERY [registry skill](rigger::docs::skill_registry) plus every
+/// [`HANDBOOK_PAGES`] entry from [`docs_context`], and write them under `root`: each skill
+/// at [`skill_source_rel`]`(entry.name)`, each handbook page at its own rel path. Returns
+/// the paths written, in registry order followed by [`HANDBOOK_PAGES`] order - a stable
+/// order. Rooted at `root` so it is testable against a temp dir without touching the
+/// process cwd; parent directories are created so a fresh checkout renders every file
+/// (spec 68, criterion 1; spec 66, criterion 2: generalizes over the whole registry AND
+/// the whole handbook-page list - adding an entry to either needs no edit here).
 fn write_docs(root: &Path) -> Result<Vec<std::path::PathBuf>, Box<dyn std::error::Error>> {
     let ctx = docs_context();
     let mut outputs: Vec<(std::path::PathBuf, String)> = rigger::docs::skill_registry()
         .into_iter()
         .map(|entry| (root.join(skill_source_rel(entry.name)), entry.render(&ctx)))
         .collect();
-    outputs.push((
-        root.join(HANDBOOK_DISCIPLINE_REL),
-        rigger::docs::render_handbook_discipline(&ctx),
-    ));
+    for (rel, render) in HANDBOOK_PAGES {
+        outputs.push((root.join(rel), render(&ctx)));
+    }
     let mut written = Vec::with_capacity(outputs.len());
     for (path, contents) in &outputs {
         if let Some(parent) = path.parent() {
@@ -10195,11 +10224,11 @@ fn write_docs(root: &Path) -> Result<Vec<std::path::PathBuf>, Box<dyn std::error
 }
 
 /// `rigger docs` renders the operating discipline from the code the binary runs on into
-/// its committed outputs - every registry skill plus the handbook discipline chapter - so
-/// the discipline stays in lock-step with behavior instead of drifting from it. Re-run it
-/// after changing a source fact or a template and commit the result; `rigger validate`
-/// (spec 20, unit 2; spec 68, criterion 1) fails loudly if a committed copy drifts from a
-/// fresh render.
+/// its committed outputs - every registry skill plus every handbook page in
+/// [`HANDBOOK_PAGES`] - so the discipline stays in lock-step with behavior instead of
+/// drifting from it. Re-run it after changing a source fact or a template and commit the
+/// result; `rigger validate` (spec 20, unit 2; spec 68, criterion 1; spec 66, criterion 2)
+/// fails loudly if a committed copy drifts from a fresh render.
 fn cmd_docs(_args: &[String]) -> Res {
     for path in write_docs(Path::new("."))? {
         println!("rendered {}", path.display());
@@ -10209,26 +10238,26 @@ fn cmd_docs(_args: &[String]) -> Res {
 
 /// The committed discipline outputs under `root` that have DRIFTED from a fresh render of
 /// the current code-derived context (spec 20, unit 2; spec 68, criterion 1: the docs-drift
-/// gate covers EVERY registry entry), in report order (registry order, then the handbook).
-/// A path is reported only when the committed file EXISTS and its BYTES differ from a
-/// fresh render; an ABSENT (or unreadable) file is skipped - these are rigger's OWN
-/// committed docs, and an operator project never carries them, so their absence is not
-/// drift (the same "nothing installed, nothing to drift" rule
-/// [`installed_workflow_drifted`] applies to the workflow). Reuses the SINGLE render
-/// authority ([`docs_context`] + `rigger::docs::skill_registry`/`render_handbook_discipline`)
-/// and the same [`skill_source_rel`] / [`HANDBOOK_DISCIPLINE_REL`] paths [`write_docs`]
-/// writes, so the drift check and the write can never disagree on what "the docs" are.
-/// Rooted at `root` so the seam is testable against a temp dir without touching the cwd.
+/// gate covers EVERY registry entry; spec 66, criterion 2: AND every [`HANDBOOK_PAGES`]
+/// entry), in report order (registry order, then [`HANDBOOK_PAGES`] order). A path is
+/// reported only when the committed file EXISTS and its BYTES differ from a fresh render;
+/// an ABSENT (or unreadable) file is skipped - these are rigger's OWN committed docs, and
+/// an operator project never carries them, so their absence is not drift (the same
+/// "nothing installed, nothing to drift" rule [`installed_workflow_drifted`] applies to
+/// the workflow). Reuses the SINGLE render authority ([`docs_context`] +
+/// `rigger::docs::skill_registry`/[`HANDBOOK_PAGES`]) and the same [`skill_source_rel`] /
+/// `HANDBOOK_PAGES` paths [`write_docs`] writes, so the drift check and the write can
+/// never disagree on what "the docs" are. Rooted at `root` so the seam is testable against
+/// a temp dir without touching the cwd.
 fn docs_drift(root: &Path) -> Vec<std::path::PathBuf> {
     let ctx = docs_context();
     let mut checks: Vec<(std::path::PathBuf, String)> = rigger::docs::skill_registry()
         .into_iter()
         .map(|entry| (root.join(skill_source_rel(entry.name)), entry.render(&ctx)))
         .collect();
-    checks.push((
-        root.join(HANDBOOK_DISCIPLINE_REL),
-        rigger::docs::render_handbook_discipline(&ctx),
-    ));
+    for (rel, render) in HANDBOOK_PAGES {
+        checks.push((root.join(rel), render(&ctx)));
+    }
     let mut drifted = Vec::new();
     for (path, fresh) in checks {
         // Byte comparison (not `read_to_string`): a committed file corrupted to non-UTF-8 is
@@ -11774,11 +11803,11 @@ mod tests {
         }
     }
 
-    /// Spec 20, unit 1; spec 68, criterion 1: `rigger docs` renders EVERY registry skill
-    /// plus the handbook and writes them to their committed paths under the project root.
-    /// Proven against a temp root so it needs no process-cwd change: every file lands at
-    /// its single-source path with the code facts (and, for a skill, the operator-binary
-    /// prohibition) in it.
+    /// Spec 20, unit 1; spec 68, criterion 1; spec 66, criterion 2: `rigger docs` renders
+    /// EVERY registry skill plus every [`HANDBOOK_PAGES`] entry and writes them to their
+    /// committed paths under the project root. Proven against a temp root so it needs no
+    /// process-cwd change: every file lands at its single-source path with the code facts
+    /// (and, for a skill, the operator-binary prohibition) in it.
     #[test]
     fn write_docs_writes_every_registry_skill_plus_the_handbook() {
         let dir = tempfile::tempdir().unwrap();
@@ -11787,20 +11816,29 @@ mod tests {
             .iter()
             .map(|e| dir.path().join(skill_source_rel(e.name)))
             .collect();
-        expected.push(dir.path().join(HANDBOOK_DISCIPLINE_REL));
+        for (rel, _) in HANDBOOK_PAGES {
+            expected.push(dir.path().join(rel));
+        }
         assert_eq!(written, expected);
 
         let skill_path = dir.path().join(skill_source_rel("using-rigger"));
         let handbook_path = dir.path().join(HANDBOOK_DISCIPLINE_REL);
+        let guide_path = dir.path().join(PLANNING_FIELD_GUIDE_REL);
         let skill = std::fs::read_to_string(&skill_path).unwrap();
         let handbook = std::fs::read_to_string(&handbook_path).unwrap();
+        let guide = std::fs::read_to_string(&guide_path).unwrap();
         assert!(skill.contains(DEFAULT_BASE_REF) && skill.contains("name: using-rigger"));
         assert!(skill.contains(rigger::docs::OPERATOR_BINARY_PROHIBITION));
         assert!(handbook.contains(DEFAULT_BASE_REF));
+        assert!(
+            guide.contains("Planning a loop run: the field guide")
+                && guide.contains("F1 - Duplicated or ambiguously-owned units")
+        );
         // Byte-stable: a second render writes identical bytes (the drift check needs this).
         write_docs(dir.path()).unwrap();
         assert_eq!(std::fs::read_to_string(&skill_path).unwrap(), skill);
         assert_eq!(std::fs::read_to_string(&handbook_path).unwrap(), handbook);
+        assert_eq!(std::fs::read_to_string(&guide_path).unwrap(), guide);
     }
 
     /// Spec 68, criterion 1 (the structural pin): the SET of names `rigger setup` installs
@@ -11840,11 +11878,13 @@ mod tests {
             .iter()
             .map(|name| root.join(skill_source_rel(name)))
             .collect();
-        expected_written.insert(root.join(HANDBOOK_DISCIPLINE_REL));
+        for (rel, _) in HANDBOOK_PAGES {
+            expected_written.insert(root.join(rel));
+        }
         assert_eq!(
             written, expected_written,
             "rigger docs must render EXACTLY the registry's skill paths plus the (non-registry) \
-             handbook, no more, no less"
+             handbook pages, no more, no less"
         );
     }
 
@@ -11987,21 +12027,36 @@ mod tests {
             "both drifted skills are flagged, in registry order"
         );
 
-        // Drift the handbook too -> it reports LAST, after every registry skill.
+        // Drift the handbook too -> it reports next, after every registry skill.
         std::fs::write(&handbook_path, "hand-edited handbook, not a render\n").unwrap();
         assert_eq!(
             docs_drift(root),
-            vec![skill_path, other_skill_path, handbook_path]
+            vec![
+                skill_path.clone(),
+                other_skill_path.clone(),
+                handbook_path.clone()
+            ]
+        );
+
+        // Drift the SECOND handbook page (spec 66, criterion 2) too -> it reports LAST,
+        // after every registry skill and the first handbook page - proving the drift gate
+        // holds over the planning field guide the same way it holds over using-rigger.md.
+        let guide_path = root.join(PLANNING_FIELD_GUIDE_REL);
+        std::fs::write(&guide_path, "hand-edited guide, not a render\n").unwrap();
+        assert_eq!(
+            docs_drift(root),
+            vec![skill_path, other_skill_path, handbook_path, guide_path]
         );
     }
 
-    /// Spec 20, unit 2; spec 68, criterion 1 (the CI-lane guard, generalized over the whole
-    /// registry): EVERY REAL committed registry skill plus the handbook discipline chapter
-    /// must be byte-identical to a fresh render of the current code facts, so a changed
-    /// const/template/registry entry that was NOT followed by `rigger docs` reddens `cargo
-    /// test` in CI - not only `rigger validate` on a live checkout (the validate fixture
-    /// renders fresh in a temp project, so it is always in sync THERE and cannot catch real
-    /// repo drift). Reads the committed files from the crate manifest dir.
+    /// Spec 20, unit 2; spec 68, criterion 1; spec 66, criterion 2 (the CI-lane guard,
+    /// generalized over the whole registry AND every [`HANDBOOK_PAGES`] entry): EVERY REAL
+    /// committed registry skill plus every handbook page must be byte-identical to a fresh
+    /// render of the current code facts, so a changed const/template/registry entry that
+    /// was NOT followed by `rigger docs` reddens `cargo test` in CI - not only `rigger
+    /// validate` on a live checkout (the validate fixture renders fresh in a temp project,
+    /// so it is always in sync THERE and cannot catch real repo drift). Reads the committed
+    /// files from the crate manifest dir.
     #[test]
     fn committed_registry_docs_are_in_sync_with_a_fresh_render() {
         let ctx = docs_context();
@@ -12015,10 +12070,9 @@ mod tests {
                 )
             })
             .collect();
-        checks.push((
-            manifest.join(HANDBOOK_DISCIPLINE_REL),
-            rigger::docs::render_handbook_discipline(&ctx),
-        ));
+        for (rel, render) in HANDBOOK_PAGES {
+            checks.push((manifest.join(rel), render(&ctx)));
+        }
         for (path, fresh) in checks {
             let committed = std::fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("read committed {}: {e}", path.display()));
@@ -12030,6 +12084,46 @@ mod tests {
                 path.display()
             );
         }
+    }
+
+    /// Spec 66, criterion 2 (the handbook-page-renders criterion, stated exactly as
+    /// written): `rigger docs` writes the planning field guide handbook page,
+    /// `authoring-loops.md` links to it, and the docs-drift gate holds over both. The
+    /// render/write half is proven against a temp root (mirroring
+    /// [`write_docs_writes_every_registry_skill_plus_the_handbook`]); the link and the
+    /// drift-gate-holds halves are proven against the REAL committed repo tree, so a
+    /// dropped link or a hand-edit that skips `rigger docs` fails `cargo test`, not only a
+    /// live `rigger validate`.
+    #[test]
+    fn planning_field_guide_page_renders_and_is_linked_from_authoring_loops() {
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let ctx = docs_context();
+
+        // `rigger docs` writes the planning field guide handbook page.
+        let dir = tempfile::tempdir().unwrap();
+        let written = write_docs(dir.path()).unwrap();
+        assert!(written.contains(&dir.path().join(PLANNING_FIELD_GUIDE_REL)));
+        let rendered = std::fs::read_to_string(dir.path().join(PLANNING_FIELD_GUIDE_REL))
+            .expect("write_docs must create the planning field guide page");
+        assert_eq!(rendered, rigger::docs::render_planning_field_guide(&ctx));
+        assert!(rendered.contains("F1 - Duplicated or ambiguously-owned units"));
+
+        // `authoring-loops.md` links to it.
+        let authoring_loops =
+            std::fs::read_to_string(manifest.join("docs/handbook/authoring-loops.md"))
+                .expect("authoring-loops.md must be readable from the committed tree");
+        assert!(
+            authoring_loops.contains("planning-field-guide.md"),
+            "authoring-loops.md must link to the planning field guide handbook page"
+        );
+
+        // The docs-drift gate holds over both, against the REAL committed tree (not a
+        // synthetic fixture): the committed guide page (and every other registry/handbook
+        // output) is in sync with a fresh render right now.
+        assert!(
+            docs_drift_failure(manifest).is_none(),
+            "the committed planning field guide must be in sync with a fresh render"
+        );
     }
 
     /// Spec 19a, unit 1 (the shared current-blocker classifier): `rigger status` and the
