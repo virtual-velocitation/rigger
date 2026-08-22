@@ -34,6 +34,7 @@
 //! do the dead-worker-exit driver's job, which is out of this unit's scope.) Recovery is
 //! uniform too: an operator records a real result (last-write-wins) and re-drives.
 
+use std::collections::BTreeSet;
 use std::time::{Duration, SystemTime};
 
 use crate::eventstore::{Error, Event, EventStore};
@@ -294,6 +295,86 @@ pub fn halt_reason(hung: &[HungSpawn]) -> String {
          last-write-wins supersedes the liveness fault).",
         hung.len()
     )
+}
+
+/// The persisted CROSSING BOUNDARY for the hung-liveness half of the push-side `attention`
+/// signal (spec 69, criterion 5; review u69c5 round 3, cause genuine-defect): which hung
+/// spawn ids `rigger step` has ALREADY surfaced, as of the end of the PREVIOUS invocation.
+///
+/// Every other piece of state `rigger step` uses is re-derived fresh from the event log on
+/// every invocation - the log is the single source of truth, and no other cross-process
+/// state exists anywhere in this codebase's conductor path. This is the one deliberate
+/// exception, forced by what "once per crossing" needs here specifically: the fault that
+/// makes a spawn HUNG is not always recorded by the process that goes on to surface it. A
+/// driver's out-of-band `rigger result --error` (the outer-wall-clock backstop, spec 19c
+/// unit 2, for a spawn with no per-spawn `max_wall_clock` the in-process sweep can never
+/// time out) runs as a wholly separate process strictly BETWEEN two `rigger step`
+/// invocations. By the time the NEXT invocation opens the store, that write already
+/// predates every read it could possibly take - so "this process's own start" is always too
+/// late a boundary; a fault recorded that way is indistinguishable, from inside a fresh
+/// process, from one this run already reported steps ago. The one boundary that IS early
+/// enough is "the end of the PREVIOUS `rigger step` invocation" - and only a value persisted
+/// OUTSIDE the log, by that previous process, for this one to read, can supply it. This is
+/// the exact role [`crate::dash::DashMarker`] already plays for "is a dash already serving
+/// on this machine" - a cross-process fact the append-only log cannot answer either, so a
+/// small on-disk record is the established escape hatch, not a new one.
+///
+/// One id per line (spawn ids never contain a newline), written in the caller's sorted
+/// order so two folds of the same state produce a byte-identical file. Scoped by `run_id` -
+/// a SIBLING of the run's own marker subdir ([`MARKER_SUBDIR`]`/<run>/`), never a file
+/// inside it, so it can never collide with a sanitized spawn-id marker filename regardless
+/// of what a workflow names its units. Reclaimed with the rest of `agent-live` at run
+/// teardown (the same lifecycle a per-spawn marker already has), so it never outlives the
+/// run it tracks. An empty `run_id` (a caller outside a run) still produces a stable path,
+/// mirroring [`marker_path`]'s own convention for the no-run case.
+pub fn hung_cursor_path(scratch_root: &str, run_id: &str) -> std::path::PathBuf {
+    let dir = std::path::Path::new(scratch_root).join(MARKER_SUBDIR);
+    let name = if run_id.is_empty() {
+        ".hung-cursor".to_string()
+    } else {
+        format!("{}.hung-cursor", marker_filename(run_id))
+    };
+    dir.join(name)
+}
+
+/// Read the hung-attention cursor ([`hung_cursor_path`]): the spawn ids already surfaced as
+/// of the end of the PREVIOUS `rigger step`. Absent, unreadable, or malformed all read as
+/// EMPTY - "nothing surfaced yet" - which is the safe default in both directions this can be
+/// wrong: correct on the very first step of a run (nothing has surfaced), and on any read
+/// failure the safe direction is toward one extra, harmless re-notification of a still-true
+/// halt, never toward silently swallowing a genuine new crossing (the exact failure mode
+/// this mechanism exists to close - see [`hung_cursor_path`]'s own doc comment).
+pub fn read_hung_cursor(scratch_root: &str, run_id: &str) -> BTreeSet<String> {
+    std::fs::read_to_string(hung_cursor_path(scratch_root, run_id))
+        .map(|s| {
+            s.lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Persist the hung-attention cursor ([`hung_cursor_path`]): the FULL set of currently-hung
+/// spawn ids, as computed at the end of THIS `rigger step`, for the NEXT invocation's
+/// [`read_hung_cursor`] to seed its own crossing check from. Unconditionally overwritten
+/// every step (cheap - a handful of short ids) rather than only on a change, so a recovered
+/// spawn drops out of the file the same step it drops out of [`hung_spawns`] and a later
+/// re-hang of the same id is correctly treated as fresh. Best-effort at the call site, like
+/// every other scratch write `rigger step` performs - a failed write only means the NEXT
+/// step may re-stamp a still-true halt once more than strictly necessary, never that this
+/// step fails.
+pub fn write_hung_cursor(
+    scratch_root: &str,
+    run_id: &str,
+    hung: &BTreeSet<String>,
+) -> std::io::Result<()> {
+    let path = hung_cursor_path(scratch_root, run_id);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, hung.iter().cloned().collect::<Vec<_>>().join("\n"))
 }
 
 #[cfg(test)]
@@ -581,5 +662,71 @@ mod tests {
         assert_eq!(stale[0].id, "u/implementer#0");
         assert_eq!(stale[0].class, FailureClass::Infra);
         assert_eq!(stale[0].silent_for, Duration::from_secs(400));
+    }
+
+    #[test]
+    fn hung_cursor_path_is_a_sibling_of_the_run_marker_subdir_never_inside_it() {
+        // With a run id: `<scratch>/agent-live/<sanitized run>.hung-cursor` - a FILE
+        // alongside the `<run>/` marker directory, never a filename inside it, so it can
+        // never collide with a sanitized spawn-id marker regardless of what a workflow
+        // names its units.
+        let p = hung_cursor_path("/scratch", "run/7#a");
+        assert_eq!(
+            p,
+            std::path::Path::new("/scratch/agent-live/run_7_a.hung-cursor")
+        );
+        assert_ne!(
+            p,
+            marker_path("/scratch", "run/7#a", "run/7#a"),
+            "the cursor file must never collide with any sanitized spawn-id marker path"
+        );
+        // An empty run id (a caller outside a run) still produces a stable path, mirroring
+        // `marker_path`'s own no-run convention.
+        let p = hung_cursor_path("/scratch", "");
+        assert_eq!(p, std::path::Path::new("/scratch/agent-live/.hung-cursor"));
+    }
+
+    #[test]
+    fn read_hung_cursor_is_empty_when_absent_and_round_trips_through_write() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().to_str().unwrap();
+
+        // No cursor has ever been written for this run: empty, not an error - the correct
+        // reading for the very first step of a run.
+        assert!(read_hung_cursor(root, "r1").is_empty());
+
+        // A round trip persists the exact set, and only that run's set - a DIFFERENT run id
+        // reads its own (still-empty) cursor, never another run's.
+        let mut hung = BTreeSet::new();
+        hung.insert("a/implementer#0".to_string());
+        hung.insert("b/implementer#0".to_string());
+        write_hung_cursor(root, "r1", &hung).unwrap();
+        assert_eq!(read_hung_cursor(root, "r1"), hung);
+        assert!(
+            read_hung_cursor(root, "r2").is_empty(),
+            "a cursor is scoped per run id; a sibling run must not see it"
+        );
+
+        // Overwriting with a SMALLER set (a recovery) drops the recovered id - the cursor
+        // always reflects THIS step's own full hung set, never a sticky union.
+        let mut recovered = BTreeSet::new();
+        recovered.insert("b/implementer#0".to_string());
+        write_hung_cursor(root, "r1", &recovered).unwrap();
+        assert_eq!(read_hung_cursor(root, "r1"), recovered);
+    }
+
+    #[test]
+    fn read_hung_cursor_reads_a_malformed_or_empty_file_as_empty() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().to_str().unwrap();
+        let path = hung_cursor_path(root, "r1");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+
+        // A blank line and surrounding whitespace never produce a phantom empty-string id.
+        std::fs::write(&path, "\n  \n\n").unwrap();
+        assert!(
+            read_hung_cursor(root, "r1").is_empty(),
+            "blank lines must never surface as a phantom hung id"
+        );
     }
 }
