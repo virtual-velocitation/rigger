@@ -6182,6 +6182,11 @@ fn watch_poll(
     let run_events = runscope::current_run(&all_in_project).to_vec();
     let run_id = runscope::current_run_id(&all_in_project).unwrap_or_default();
     let last_event_at = run_events.last().map(|e| e.recorded_at);
+    // When THIS run began - its own leading `RunStarted`'s `recorded_at` (`current_run`
+    // always slices from that event onward), or `None` when no run has started yet in
+    // this scope. Used ONLY to scope Signal 3 (dash liveness); see the dash-probe block
+    // below for why.
+    let run_started_at = run_events.first().map(|e| e.recorded_at);
 
     // Store integrity reads the WHOLE log across every stream (spec 71's own scope: a
     // disordered stream is a store-wide fault, not a per-run one), reusing the same
@@ -6232,22 +6237,43 @@ fn watch_poll(
     // "never started". A `NotServing` value built here does not by itself guarantee an
     // anomaly, though: both breadcrumb files are project-level singletons never removed
     // once their dash exits, so `watch::detect` additionally gates this signal on the
-    // run being unfinished (`!run.done()`) - a done run's stale breadcrumb is success,
-    // not a dead dash, and is suppressed there rather than here.
+    // run being unfinished (`!run.done()`) AND, since round-6 (round-5 reject cause
+    // adv2-u69c1-r5-uphold-sdet-second-run-stale-marker), on the breadcrumb file NOT
+    // being DEFINITIVELY older than `run_started_at` above - a done run's stale
+    // breadcrumb is success, and a FRESH run that never touched the dash must not
+    // inherit an EARLIER run's dead one either; both are suppressed in `detect`, not
+    // here. The burden of proof runs toward reporting: unknown mtime or run-start info
+    // (e.g. a dash breadcrumb with no run ever recorded in this project yet) still
+    // reports, exactly as before this fix - only a PROVEN-older breadcrumb suppresses.
+    // `dash_breadcrumb_written_at` is the mtime of WHICHEVER file actually backed the
+    // classification below (the marker when read, else the url file), gathered
+    // alongside it so the two can never point at different files.
     let marker_path = std::path::PathBuf::from(loc.file(DASH_MARKER_FILE));
-    let dash = match dash::DashMarker::read(&marker_path) {
-        Some(m) if dash::dash_serving_on(m.port) => watch::DashProbe::Serving,
-        Some(m) => watch::DashProbe::NotServing {
-            pid: Some(m.pid),
-            port: m.port,
-        },
+    let url_path = std::path::PathBuf::from(loc.file(DASH_URL_FILE));
+    let mtime_of = |p: &Path| std::fs::metadata(p).ok()?.modified().ok();
+    let (dash, dash_breadcrumb_written_at) = match dash::DashMarker::read(&marker_path) {
+        Some(m) if dash::dash_serving_on(m.port) => {
+            (watch::DashProbe::Serving, mtime_of(&marker_path))
+        }
+        Some(m) => (
+            watch::DashProbe::NotServing {
+                pid: Some(m.pid),
+                port: m.port,
+            },
+            mtime_of(&marker_path),
+        ),
         None => match recorded_dash_url(loc)
             .as_deref()
             .and_then(port_from_dash_url)
         {
-            Some(port) if dash::dash_serving_on(port) => watch::DashProbe::Serving,
-            Some(port) => watch::DashProbe::NotServing { pid: None, port },
-            None => watch::DashProbe::NotRecorded,
+            Some(port) if dash::dash_serving_on(port) => {
+                (watch::DashProbe::Serving, mtime_of(&url_path))
+            }
+            Some(port) => (
+                watch::DashProbe::NotServing { pid: None, port },
+                mtime_of(&url_path),
+            ),
+            None => (watch::DashProbe::NotRecorded, None),
         },
     };
 
@@ -6259,6 +6285,8 @@ fn watch_poll(
         step_lock_free,
         wave_liveness_ages: &wave_liveness_ages,
         dash,
+        run_started_at,
+        dash_breadcrumb_written_at,
     };
     Ok(watch::detect(&inputs))
 }
