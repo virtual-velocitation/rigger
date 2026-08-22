@@ -6534,16 +6534,31 @@ fn watch_poll(
         // shared; the trust-without-probing rule is dash_status's alone.
         (Some(url), Some(m)) => match port_from_dash_url(&url) {
             Some(url_port) => {
-                let pid = (m.port == url_port).then_some(m.pid);
+                // Round-9 escalation-remedy reject (adv-u69c1-mismatched-marker-suppression-
+                // borrows-wrong-files-mtime): the probe always targets the URL's OWN port
+                // (below), but ONLY when the marker's port matches it did the marker actually
+                // back that classification (its pid is named); on a mismatch the marker played
+                // no part - the url alone decided - so the mtime gathered here must follow
+                // suit, exactly as the doc comment above this whole match requires ("of
+                // WHICHEVER file actually backed the classification"). Sourcing the marker's
+                // mtime unconditionally let a stale, mismatched marker that predates this run's
+                // own RunStarted wrongly suppress a fresh, currently-dead url written after it.
+                let port_matches = m.port == url_port;
+                let pid = port_matches.then_some(m.pid);
+                let written_at = if port_matches {
+                    mtime_of(&marker_path)
+                } else {
+                    mtime_of(&url_path)
+                };
                 if dash::dash_serving_on(url_port) {
-                    (watch::DashProbe::Serving, mtime_of(&marker_path))
+                    (watch::DashProbe::Serving, written_at)
                 } else {
                     (
                         watch::DashProbe::NotServing {
                             pid,
                             port: url_port,
                         },
-                        mtime_of(&marker_path),
+                        written_at,
                     )
                 }
             }

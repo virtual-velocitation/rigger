@@ -18887,3 +18887,103 @@ fn watch_once_never_names_a_mismatched_markers_pid_for_the_recorded_urls_port() 
         "the mismatched marker's own port must not be reported as the dash's; got:\n{out}"
     );
 }
+
+/// Round-9 escalation-remedy reject (adj-u69c1r9-verdict-reject upholding
+/// adv-u69c1-mismatched-marker-suppression-borrows-wrong-files-mtime): the mismatched-marker
+/// arm above always sourced `dash_breadcrumb_written_at` from the MARKER's mtime, even in this
+/// exact branch where the marker's port does NOT match the url's own port and the
+/// classification is driven entirely by the url (the sibling test above proves the url's port
+/// is what gets probed and reported, never the marker's). That contradicts the function's own
+/// doc comment, which requires the mtime gathered to be "of WHICHEVER file actually backed the
+/// classification... so the two can never point at different files" (src/main.rs, the comment
+/// above the `(recorded, marker)` match). Sourcing the wrong file's mtime lets a STALE marker
+/// that predates this run's own `RunStarted` wrongly suppress a FRESH, currently-dead url that
+/// this run's own dash-launching invocation wrote AFTER `RunStarted` - exactly the multi-process
+/// shape `main.rs`'s own doc comment on `ensure_run_dashboard` describes ("two concurrent
+/// harnesses each get their own [port]"), not a contrived edge case: both breadcrumb files are
+/// project-level singletons never removed once their dash exits, so an old marker outliving a
+/// fresh url write is ordinary.
+///
+/// This seeds exactly that shape: a stale marker written BEFORE `RunStarted` (so the
+/// pre-existing `breadcrumb_predates_this_run` fallback would suppress if it read the marker's
+/// mtime, the identical ordering
+/// `watch_once_reports_no_dash_anomaly_for_a_fresh_run_that_inherits_an_earlier_runs_dead_marker`
+/// above proves suppresses for the marker-only arm), then a DIFFERENT, later invocation writes a
+/// fresh `dash.url` naming a different, currently-dead port AFTER `RunStarted`. No
+/// `.rigger/dash.attempt` is written at all, so the round-8 same-run short-circuit
+/// (`dash_attempted_this_run`) is not what makes this report - only the timestamp fallback is in
+/// play, and it must read the URL's own mtime (fresh, postdating `RunStarted`), not the stale
+/// marker's, to reach the correct "report it" answer.
+#[test]
+fn watch_once_reports_a_mismatched_dead_url_when_only_the_stale_marker_predates_run_started() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    // The stale marker, written FIRST, before this run's own RunStarted - the same
+    // predates-this-run shape the inherited-marker sibling test proves suppresses when it is
+    // the file backing the classification. Here it must NOT back the classification, since the
+    // url's own port is what gets probed below.
+    let marker_port = free_loopback_port();
+    let marker_pid = u32::MAX;
+    DashMarker {
+        port: marker_port,
+        pid: marker_pid,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the stale, pre-run dash marker");
+
+    // The same filesystem-mtime safety margin every sibling test in this file uses, so this
+    // run's own RunStarted lands unambiguously AFTER the marker write.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["spec 69"]}"#),
+            ("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+        ],
+    );
+
+    // Another margin so the fresh url write below lands unambiguously AFTER RunStarted too -
+    // it must read as this run's OWN breadcrumb, not an inherited one.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    // A DIFFERENT dash-launching invocation than the one that wrote the marker: a fresh
+    // dash.url, written after RunStarted, naming a different, currently-dead port. No
+    // dash.marker rewrite here - the marker on disk stays the stale one from before RunStarted,
+    // and its port differs from this url's, so this is the mismatched-marker arm.
+    let url_port = free_loopback_port();
+    assert_ne!(
+        url_port, marker_port,
+        "the ledger must never repeat a port within one test"
+    );
+    std::fs::write(
+        root.join(".rigger/dash.url"),
+        format!("http://127.0.0.1:{url_port}/"),
+    )
+    .expect("seed the fresh dash.url");
+
+    // No .rigger/dash.attempt at all: the round-8 same-run short-circuit must play no part in
+    // this report - only the timestamp fallback, correctly sourced from the url's own mtime.
+    assert!(!root.join(".rigger/dash.attempt").exists());
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 for a mismatched marker/url pair; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("dash liveness") && out.contains(&format!("port {url_port}")),
+        "a fresh dash.url written AFTER this run's own RunStarted must be reported as a dead \
+         dash even though the on-disk marker is stale and mismatched - the mtime backing the \
+         predates-this-run comparison must come from the url that actually decided the \
+         classification, not the marker that did not; got:\n{out}"
+    );
+    assert!(
+        !out.contains(&marker_pid.to_string()),
+        "the stale, mismatched marker's pid must never be named as this url's; got:\n{out}"
+    );
+}
