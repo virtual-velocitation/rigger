@@ -18834,3 +18834,56 @@ fn watch_once_reports_a_real_steps_own_dash_after_the_step_process_has_long_sinc
          side of RunStarted the dash-ensure call lands on; got:\n{out}"
     );
 }
+
+/// The mismatched-marker case for `watch_poll`'s dash probe (the round-9 escalation
+/// remedy, adv-u69c1r9-watch-poll-dashprobe-diverges-from-dash-status-mismatch-handling):
+/// when BOTH breadcrumbs exist and the on-disk marker's port differs from the recorded
+/// dash.url's, the probe must follow `dash::dash_status`'s canonical handling - the URL's
+/// own port is what gets probed and reported, and the mismatched marker's pid is NEVER
+/// named as though it belonged to this url. Both ports are definitely-unbound loopback
+/// ports (the same reserve-then-release convention as the dead-marker test above), so the
+/// url's port is genuinely dead and must be the one the report names.
+#[test]
+fn watch_once_never_names_a_mismatched_markers_pid_for_the_recorded_urls_port() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    let url_port = free_loopback_port();
+    let marker_port = loop {
+        let p = free_loopback_port();
+        if p != url_port {
+            break p;
+        }
+    };
+    let impossible_pid = u32::MAX;
+    std::fs::write(
+        root.join(".rigger/dash.url"),
+        format!("http://127.0.0.1:{url_port}/"),
+    )
+    .expect("seed dash.url");
+    DashMarker {
+        port: marker_port,
+        pid: impossible_pid,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the mismatched dash marker");
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(ok, "rigger watch --once must exit 0; stderr:\n{err}");
+    assert!(
+        out.contains(&format!("port {url_port}")),
+        "the dash liveness report must probe and name the recorded dash.url's own port \
+         ({url_port}), the canonical dash_status target; got:\n{out}"
+    );
+    assert!(
+        !out.contains(&impossible_pid.to_string()),
+        "a mismatched marker's pid must never be named as this url's; got:\n{out}"
+    );
+    assert!(
+        !out.contains(&format!("port {marker_port}")),
+        "the mismatched marker's own port must not be reported as the dash's; got:\n{out}"
+    );
+}

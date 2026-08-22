@@ -6519,21 +6519,55 @@ fn watch_poll(
     let marker_path = std::path::PathBuf::from(loc.file(DASH_MARKER_FILE));
     let url_path = std::path::PathBuf::from(loc.file(DASH_URL_FILE));
     let mtime_of = |p: &Path| std::fs::metadata(p).ok()?.modified().ok();
-    let (dash, dash_breadcrumb_written_at) = match dash::DashMarker::read(&marker_path) {
-        Some(m) if dash::dash_serving_on(m.port) => {
-            (watch::DashProbe::Serving, mtime_of(&marker_path))
-        }
-        Some(m) => (
-            watch::DashProbe::NotServing {
-                pid: Some(m.pid),
-                port: m.port,
-            },
-            mtime_of(&marker_path),
-        ),
-        None => match recorded_dash_url(loc)
-            .as_deref()
-            .and_then(port_from_dash_url)
-        {
+    let marker = dash::DashMarker::read(&marker_path);
+    let recorded = recorded_dash_url(loc);
+    let (dash, dash_breadcrumb_written_at) = match (recorded, marker) {
+        // A recorded URL with a parseable port is the canonical authority, exactly as
+        // `dash::dash_status` (src/dash.rs) decides it for the mismatched-marker case
+        // sibling criterion u69c4 hardened: the probe targets the URL'S OWN port, and a
+        // marker's pid is named ONLY when its port matches the url's - a mismatched
+        // marker's pid belongs to some other dash and is never printed as this url's.
+        // Deliberately NOT a bare call to `dash_status`: that surface PRESENTS (an
+        // absent marker leaves the url "unverifiable but trusted" - never falsely dead),
+        // while this probe DETECTS (it always probes, marker or not - the
+        // url-only-dead-dash contract pinned in tests/cli.rs). The mismatch RULE is
+        // shared; the trust-without-probing rule is dash_status's alone.
+        (Some(url), Some(m)) => match port_from_dash_url(&url) {
+            Some(url_port) => {
+                let pid = (m.port == url_port).then_some(m.pid);
+                if dash::dash_serving_on(url_port) {
+                    (watch::DashProbe::Serving, mtime_of(&marker_path))
+                } else {
+                    (
+                        watch::DashProbe::NotServing {
+                            pid,
+                            port: url_port,
+                        },
+                        mtime_of(&marker_path),
+                    )
+                }
+            }
+            // An unparseable recorded URL (foreign or malformed - the same ambiguous
+            // input `dash_status` treats as unverifiable): the marker is the only
+            // checkable breadcrumb left, so probe it as the marker-only arm does.
+            None => {
+                if dash::dash_serving_on(m.port) {
+                    (watch::DashProbe::Serving, mtime_of(&marker_path))
+                } else {
+                    (
+                        watch::DashProbe::NotServing {
+                            pid: Some(m.pid),
+                            port: m.port,
+                        },
+                        mtime_of(&marker_path),
+                    )
+                }
+            }
+        },
+        // URL recorded, no marker at all: probe the url's own port (detection, not
+        // presentation - a dead url-only dash must still be reported; pinned by the
+        // url-breadcrumb-only test in tests/cli.rs). No marker, no pid to name.
+        (Some(url), None) => match port_from_dash_url(&url) {
             Some(port) if dash::dash_serving_on(port) => {
                 (watch::DashProbe::Serving, mtime_of(&url_path))
             }
@@ -6543,6 +6577,25 @@ fn watch_poll(
             ),
             None => (watch::DashProbe::NotRecorded, None),
         },
+        // No URL recorded: a marker alone stays this probe's own authority. `dash_status`
+        // deliberately reads url-first and would call this Absent, but a marker-only dash
+        // is real (the step path writes a marker; the dead-marker contract in
+        // `rigger-restore-the-dash` pins that `rigger watch --once` reports it), so
+        // suppressing it here would hide a genuinely dead dash.
+        (None, Some(m)) => {
+            if dash::dash_serving_on(m.port) {
+                (watch::DashProbe::Serving, mtime_of(&marker_path))
+            } else {
+                (
+                    watch::DashProbe::NotServing {
+                        pid: Some(m.pid),
+                        port: m.port,
+                    },
+                    mtime_of(&marker_path),
+                )
+            }
+        }
+        (None, None) => (watch::DashProbe::NotRecorded, None),
     };
 
     // Round-8 fix (spec 69, adv-u69c1r7-mint-order-bug-is-structural-not-a-coverage-gap): whether
