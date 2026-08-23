@@ -224,30 +224,20 @@ fn multi_behavior_coordinators(criterion: &str) -> Option<usize> {
 /// is not a sub-bullet: it is its own criterion (`extract_criteria` counts it), so it
 /// opens a new scope rather than flagging its parent. Indices align with
 /// [`extract_criteria`] because both recognize a checkbox with the same [`checkbox_text`].
+/// Built on [`line_criterion`]'s block-boundary walk - the ONE place that walk lives -
+/// rather than re-deriving the same count/open/indent state machine a second time.
 fn sub_bullet_criteria(text: &str) -> std::collections::BTreeMap<usize, String> {
+    let owners = line_criterion(text);
     let mut out = std::collections::BTreeMap::new();
-    let mut count = 0usize; // 1-based index of the current checkbox
-    let mut open: Option<usize> = None; // indent of the currently open checkbox, if any
-    for line in text.lines() {
-        let trimmed = line.trim_start();
-        let indent = line.len() - trimmed.len();
+    for (line, owner) in text.lines().zip(owners) {
+        let Some(idx) = owner else { continue };
         if checkbox_text(line).is_some() {
-            count += 1;
-            open = Some(indent);
-        } else if trimmed.is_empty() {
-            // A blank line does not close a markdown list item.
+            // The checkbox's own line (or a nested checkbox, which owns itself) - not a
+            // sub-bullet under a parent.
             continue;
-        } else if let Some(cb_indent) = open {
-            if indent > cb_indent {
-                // A MORE-indented plain bullet under the checkbox is a hidden
-                // sub-criterion; a more-indented non-bullet line is wrapped criterion text.
-                if let Some(bullet) = plain_bullet_text(trimmed) {
-                    out.entry(count).or_insert(bullet);
-                }
-            } else {
-                // A dedent to or under the checkbox closes the item.
-                open = None;
-            }
+        }
+        if let Some(bullet) = plain_bullet_text(line.trim_start()) {
+            out.entry(idx).or_insert(bullet);
         }
     }
     out
@@ -312,25 +302,47 @@ impl std::fmt::Display for LintAdvisory {
 /// carries an ownership sentence a reviewer (or a planner copying criteria verbatim) can
 /// check against its neighbors. At three-plus Done-when criteria, a checkbox carrying
 /// neither "OWNS" nor "owner" is flagged a twin-risk. Silent below three criteria: an
-/// ownership collision needs at least two OTHER criteria to collide with.
+/// ownership collision needs at least two OTHER criteria to collide with. Scans each
+/// criterion's FULL block via [`criterion_blocks`] - never just [`extract_criteria`]'s
+/// first-physical-line text - so an OWNS sentence on a wrapped continuation line (this
+/// repo's own standard Done-when convention) is found.
 pub fn ownership_advisories(text: &str) -> Vec<LintAdvisory> {
     let criteria = extract_criteria(text);
     if criteria.len() < 3 {
         return Vec::new();
     }
-    criteria
-        .iter()
-        .enumerate()
-        .filter(|(_, c)| !carries_owner_sentence(c))
-        .map(|(i, _)| LintAdvisory {
+    let blocks = criterion_blocks(text);
+    (1..=criteria.len())
+        .filter(|i| !blocks.get(i).is_some_and(|b| carries_owner_sentence(b)))
+        .map(|i| LintAdvisory {
             class: "F1 ownership",
-            criterion: Some(i + 1),
+            criterion: Some(i),
             detail: "no OWNS/owner sentence; among three-plus criteria this is a twin-risk \
                      - a reviewer cannot tell this concern is not already claimed by a \
                      neighbor"
                 .to_string(),
         })
         .collect()
+}
+
+/// Map from 1-based criterion index to the FULL text of that criterion's block - the
+/// checkbox's own text plus every line inside its block ([`line_criterion`]'s boundary),
+/// joined with spaces. Unlike [`extract_criteria`] (first physical line only), this
+/// recovers text that sits on a wrapped continuation line or a sub-bullet, so a check like
+/// [`carries_owner_sentence`] sees the whole criterion, not just its opening line.
+fn criterion_blocks(text: &str) -> std::collections::BTreeMap<usize, String> {
+    let owners = line_criterion(text);
+    let mut out: std::collections::BTreeMap<usize, String> = std::collections::BTreeMap::new();
+    for (line, owner) in text.lines().zip(owners) {
+        let Some(idx) = owner else { continue };
+        let body = checkbox_text(line).unwrap_or_else(|| line.trim());
+        let entry = out.entry(idx).or_default();
+        if !entry.is_empty() {
+            entry.push(' ');
+        }
+        entry.push_str(body);
+    }
+    out
 }
 
 fn carries_owner_sentence(criterion: &str) -> bool {
@@ -345,9 +357,11 @@ fn carries_owner_sentence(criterion: &str) -> bool {
 /// phrases; this lint runs that grep mechanically for the three the field guide names:
 /// "worth considering", "either ... or", and "could instead". Scanned in PROSE only: the
 /// `## Notes` section (and any deeper subsection under it) is the spec's explicit-deferral
-/// home, so a hit there is exempt; a fenced code block or a backtick-quoted inline code
-/// span can carry any of these words as literal quoted text, so both are excluded too -
-/// quoted code can never false-positive.
+/// home, so a hit there is exempt; a fenced code block, a backtick-quoted inline code span,
+/// or a double-quoted span (the field guide's own convention for NAMING these exact
+/// phrases, e.g. this spec's own Design bullet) can carry any of these words as literal
+/// quoted text, so all three are excluded too - quoted or named text can never
+/// false-positive.
 pub fn disposition_advisories(text: &str) -> Vec<LintAdvisory> {
     let notes = notes_section_lines(text);
     let fenced = fenced_code_lines(text);
@@ -375,7 +389,9 @@ pub fn disposition_advisories(text: &str) -> Vec<LintAdvisory> {
 /// The first draft-smell phrase `prose` contains, case-insensitively, or `None`. The
 /// "either ... or" pairing requires an "or" AFTER the "either" on the same (already
 /// code-stripped) line - a single "either" with no paired "or" is a false-positive risk
-/// the field guide's own countermeasure does not describe.
+/// the field guide's own countermeasure does not describe. "either" is matched as a
+/// STANDALONE word ([`find_word`]), not a bare substring - "either" is itself a substring
+/// of "neither", so a "neither ... or" sentence must never be misread as this pairing.
 fn disposition_smell(prose: &str) -> Option<&'static str> {
     let lower = prose.to_lowercase();
     if lower.contains("worth considering") {
@@ -384,10 +400,33 @@ fn disposition_smell(prose: &str) -> Option<&'static str> {
     if lower.contains("could instead") {
         return Some("could instead");
     }
-    if let Some(pos) = lower.find("either") {
+    if let Some(pos) = find_word(&lower, "either") {
         if lower[pos..].contains(" or") {
             return Some("either ... or");
         }
+    }
+    None
+}
+
+/// The byte position of `word` as a STANDALONE word inside `haystack` (a non-alphanumeric
+/// or absent character on both sides), or `None`. Guards a plain substring search from
+/// matching a fragment of a larger word - e.g. "either" inside "neither".
+fn find_word(haystack: &str, word: &str) -> Option<usize> {
+    let mut start = 0;
+    while let Some(rel) = haystack[start..].find(word) {
+        let pos = start + rel;
+        let before_ok = haystack[..pos]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !c.is_alphanumeric());
+        let after_ok = haystack[pos + word.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| !c.is_alphanumeric());
+        if before_ok && after_ok {
+            return Some(pos);
+        }
+        start = pos + word.len();
     }
     None
 }
@@ -486,29 +525,40 @@ fn fenced_code_lines(text: &str) -> Vec<bool> {
     out
 }
 
-/// `line` with every backtick-delimited inline code span blanked to spaces (never
-/// dropped, so word boundaries around the span cannot merge two words into a new one), so
-/// a prose scan cannot match text quoted as code.
+/// `line` with every backtick-delimited OR double-quote-delimited span blanked to spaces
+/// (never dropped, so word boundaries around the span cannot merge two words into a new
+/// one), so a prose scan cannot match text quoted as code, nor a phrase NAMED in double
+/// quotes - the field guide's own convention for listing its exact smell phrases (e.g.
+/// specs/66's own Design bullet, which quotes all three: it must not trip its own lint).
+/// Both delimiters share ONE toggle, keyed on the delimiter that opened the current span,
+/// so a stray unmatched mark blanks the rest of the line rather than letting the other
+/// delimiter re-open inside it.
 fn strip_inline_code(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
-    let mut in_code = false;
+    let mut open: Option<char> = None;
     for ch in line.chars() {
-        if ch == '`' {
-            in_code = !in_code;
-            out.push(' ');
-        } else if in_code {
-            out.push(' ');
-        } else {
-            out.push(ch);
+        match open {
+            Some(delim) if ch == delim => {
+                open = None;
+                out.push(' ');
+            }
+            Some(_) => out.push(' '),
+            None if ch == '`' || ch == '"' => {
+                open = Some(ch);
+                out.push(' ');
+            }
+            None => out.push(ch),
         }
     }
     out
 }
 
 /// For each line (0-based), the 1-based Done-when criterion whose checkbox block it falls
-/// inside (the checkbox's own line, or a more-indented line directly under it - the same
-/// block boundary [`sub_bullet_criteria`] uses), or `None` for a line outside any checkbox
-/// (headings, Design/Notes/Global-constraints prose, blank lines).
+/// inside (the checkbox's own line, or a more-indented line directly under it), or `None`
+/// for a line outside any checkbox (headings, Design/Notes/Global-constraints prose, blank
+/// lines). THE single block-boundary walk over the document: [`sub_bullet_criteria`] and
+/// [`criterion_blocks`] are both built on this, rather than each re-deriving their own
+/// count/open/indent state machine.
 fn line_criterion(text: &str) -> Vec<Option<usize>> {
     let mut out = Vec::with_capacity(text.lines().count());
     let mut count = 0usize;
@@ -776,6 +826,55 @@ mod tests {
         );
     }
 
+    /// F1 ownership: an OWNS sentence on a WRAPPED CONTINUATION line (this repo's own
+    /// standard Done-when convention - see specs/66-ship-the-planning-discipline.md's own
+    /// Done-when list) must satisfy the check, not only one on the checkbox's first
+    /// physical line. `extract_criteria`/`checkbox_text` only ever see that first line, so
+    /// the ownership check must scan the criterion's FULL block (via `line_criterion`'s
+    /// block boundary), not `extract_criteria`'s truncated text.
+    #[test]
+    fn ownership_check_finds_an_owns_sentence_on_a_wrapped_continuation_line() {
+        let text = "## Done when\n\n\
+            - [ ] the daemon writes a pidfile that is mode 0644 and readable only by the\n\
+            \x20\x20service account. This criterion OWNS the pidfile permissions.\n\
+            - [ ] the store passes the contract suite. This criterion OWNS the suite.\n\
+            - [ ] the graph supersedes an older decision. This criterion OWNS the supersede \
+            path.\n";
+        assert!(
+            !ownership_advisories(text)
+                .iter()
+                .any(|a| a.criterion == Some(1)),
+            "criterion 1's OWNS sentence sits on a wrapped continuation line, not the \
+             checkbox's first physical line - it must still satisfy the ownership check; \
+             got: {:?}",
+            ownership_advisories(text)
+        );
+    }
+
+    /// `criterion_blocks` must join a checkbox's continuation lines with a SEPARATING
+    /// SPACE, not concatenate them directly - a dropped separator can accidentally weld
+    /// two words across a line break into one that spuriously satisfies
+    /// `carries_owner_sentence`'s substring check (e.g. "own" + "ership" -> "ownership",
+    /// which contains "owner").
+    #[test]
+    fn ownership_check_does_not_let_a_dropped_word_boundary_fake_an_owns_sentence() {
+        let text = "## Done when\n\n\
+            - [ ] the widget adopts a new own\n\
+            \x20\x20ership model for the config\n\
+            - [ ] the store passes the contract suite. This criterion OWNS the suite.\n\
+            - [ ] the graph supersedes an older decision. This criterion OWNS the supersede \
+            path.\n";
+        assert!(
+            ownership_advisories(text)
+                .iter()
+                .any(|a| a.criterion == Some(1)),
+            "criterion 1 has no real OWNS/owner sentence - \"own\" and \"ership\" sit on \
+             separate lines and must NOT be welded into a false \"ownership\" match; got: \
+             {:?}",
+            ownership_advisories(text)
+        );
+    }
+
     /// F4 open dispositions: each of the three draft-smell phrases the field guide names
     /// is caught in prose - "worth considering", "could instead", and an "either ... or"
     /// pairing.
@@ -805,6 +904,68 @@ mod tests {
         assert!(
             advisories.iter().all(|a| a.class == "F4 disposition"),
             "every disposition advisory carries the F4 disposition class; got: {advisories:?}"
+        );
+    }
+
+    /// F4 open dispositions: "either" is a substring of "neither", so a sentence using
+    /// "neither ... or" must NOT be misread as the "either ... or" draft-smell pairing
+    /// just because "either" appears as a fragment of "neither".
+    #[test]
+    fn disposition_check_does_not_match_either_inside_neither() {
+        let text = "## Design\n\nThis works in neither case A or case B.\n";
+        assert!(
+            disposition_advisories(text).is_empty(),
+            "\"neither\" contains \"either\" as a substring; that must not false-fire the \
+             either...or pairing; got: {:?}",
+            disposition_advisories(text)
+        );
+    }
+
+    /// F4 open dispositions: a smell phrase NAMED in double quotes - the field guide's own
+    /// convention for listing the exact phrases it watches for (see specs/66's Design
+    /// bullet, which quotes all three) - must not false-positive, the same as a backtick
+    /// code span already does not.
+    #[test]
+    fn disposition_check_ignores_a_phrase_named_in_double_quotes() {
+        let text = "## Design\n\nThe lint watches for draft-smell phrases: \"worth \
+            considering\", \"either ... or\", \"could instead\".\n";
+        assert!(
+            disposition_advisories(text).is_empty(),
+            "a phrase NAMED in double quotes (not used as open prose) must not \
+             false-positive; got: {:?}",
+            disposition_advisories(text)
+        );
+    }
+
+    /// The double-quote/backtick exemption must properly CLOSE at its matching delimiter
+    /// and resume normal scanning afterward - it must not blank the rest of the line once
+    /// a span opens, or a genuine draft-smell phrase appearing later on the SAME line
+    /// (outside the span) would be missed.
+    #[test]
+    fn disposition_check_resumes_scanning_after_a_quoted_span_closes_on_the_same_line() {
+        let text = "## Design\n\nUse `example` here; this is worth considering separately.\n";
+        assert!(
+            disposition_advisories(text)
+                .iter()
+                .any(|a| a.detail.contains("worth considering")),
+            "scanning must resume after the backtick span closes, catching the later \
+             smell phrase on the same line; got: {:?}",
+            disposition_advisories(text)
+        );
+    }
+
+    /// The double-quote exemption must track its OPENING delimiter all the way to the
+    /// matching CLOSE, not merely blank a couple of characters after the opening mark -
+    /// padding right after the quote (before the phrase itself starts) must not let the
+    /// phrase later in the same span leak into the prose scan.
+    #[test]
+    fn disposition_check_ignores_a_wide_double_quoted_span() {
+        let text =
+            "## Design\n\nThe phrase is named here: \" worth considering \" as an example.\n";
+        assert!(
+            disposition_advisories(text).is_empty(),
+            "the whole double-quoted span must be exempt regardless of its width; got: {:?}",
+            disposition_advisories(text)
         );
     }
 
