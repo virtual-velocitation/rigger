@@ -453,6 +453,106 @@ fn validate_spec_does_not_misread_worth_considering_across_a_hyphenated_compound
     );
 }
 
+/// Round-4 residual gap (`d-u66c3-r4-periphery-tests` reproduced only the "no owner"
+/// phrasing that drove the round-3 REJECT; `denies_ownership`'s other two branches -
+/// "ownerless" and "not owned" - carried a unit test each but no real-binary reproduction).
+/// Both denial phrasings must still make `carries_owner_sentence` return false through the
+/// real binary, so a criterion using either one is flagged F1 twin-risk rather than misread
+/// as carrying an ownership sentence just because it contains the bare substring "owner".
+#[test]
+fn validate_spec_flags_ownerless_and_not_owned_denials_as_twin_risk() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Done when\n\n\
+         - [ ] the daemon writes a pidfile. This criterion is ownerless for now.\n\
+         - [ ] the retry handler backs off exponentially. The backoff logic is not owned \
+         by this criterion.\n\
+         - [ ] the store passes the contract suite. This criterion OWNS the contract \
+         coverage.\n";
+    let path = root.join("ownerless-not-owned-spec.md");
+    std::fs::write(&path, spec).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["validate", path.to_str().unwrap()]);
+    assert!(
+        ok,
+        "spec-lint advisories are heuristic warnings, never a hard failure; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        err.contains("F1 ownership") && err.contains("(criterion 1)"),
+        "\"ownerless\" is an explicit denial, not an ownership sentence; criterion 1 must \
+         be flagged twin-risk on the real binary; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("F1 ownership") && err.contains("(criterion 2)"),
+        "\"not owned\" is an explicit denial, not an ownership sentence; criterion 2 must \
+         be flagged twin-risk on the real binary; stderr:\n{err}"
+    );
+    assert!(
+        !err.contains("(criterion 3)"),
+        "criterion 3 carries a genuine OWNS sentence and must draw no F1 advisory; \
+         stderr:\n{err}"
+    );
+}
+
+/// Round-4 preemptive hardening (`d-u66c3-r4-owns-owner-word-boundary`,
+/// `ownership_check_does_not_match_owns_or_owner_inside_an_unrelated_word` at the unit
+/// layer) never got a real-binary reproduction: `carries_owner_sentence`'s own "owns"/
+/// "owner" match switched from a bare substring test to `find_word`, since "owns" is a
+/// substring of "drowns" and "owner" is a substring of "downer" with zero ownership claim -
+/// the identical bare-substring-across-word-boundary defect class this unit already paid
+/// two REJECT cycles to fix for either/or and worth-considering. Without the fix, either
+/// word would false-satisfy the check and silently suppress a genuine F1 twin-risk
+/// advisory.
+#[test]
+fn validate_spec_does_not_misread_owns_or_owner_inside_an_unrelated_word_as_ownership() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Done when\n\n\
+         - [ ] the retry handler drowns duplicate signals during a backoff storm.\n\
+         - [ ] a stale cache entry is a real downer for latency.\n\
+         - [ ] the store passes the contract suite. This criterion OWNS the contract \
+         coverage.\n";
+    let path = root.join("drowns-downer-spec.md");
+    std::fs::write(&path, spec).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["validate", path.to_str().unwrap()]);
+    assert!(
+        ok,
+        "spec-lint advisories are heuristic warnings, never a hard failure; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        err.contains("F1 ownership") && err.contains("(criterion 1)"),
+        "\"drowns\" contains the bare substring \"owns\" but claims no ownership; \
+         criterion 1 must still be flagged twin-risk on the real binary; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("F1 ownership") && err.contains("(criterion 2)"),
+        "\"downer\" contains the bare substring \"owner\" but claims no ownership; \
+         criterion 2 must still be flagged twin-risk on the real binary; stderr:\n{err}"
+    );
+    assert!(
+        !err.contains("(criterion 3)"),
+        "criterion 3 carries a genuine OWNS sentence and must draw no F1 advisory; \
+         stderr:\n{err}"
+    );
+}
+
 /// A clean fixture - three-plus criteria, each carrying an OWNS sentence, single-behavior,
 /// no disposition smells, no em dash - draws no spec-lint advisory at all, and `rigger
 /// validate` still exits 0.
