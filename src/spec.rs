@@ -347,7 +347,23 @@ fn criterion_blocks(text: &str) -> std::collections::BTreeMap<usize, String> {
 
 fn carries_owner_sentence(criterion: &str) -> bool {
     let lower = criterion.to_lowercase();
-    lower.contains("owns") || lower.contains("owner")
+    if denies_ownership(&lower) {
+        return false;
+    }
+    find_word(&lower, "owns").is_some() || find_word(&lower, "owner").is_some()
+}
+
+/// True when `lower` (already lowercased) explicitly DENIES ownership rather than
+/// claiming it - "no owner", "ownerless", "not owned". Each of these contains the bare
+/// substring "owner" (or is a fused compound of it, e.g. "owner" + "less"), so without this
+/// guard `carries_owner_sentence` would misread an explicit denial as satisfying the F1
+/// ownership check - inverted from its documented purpose of catching exactly this
+/// twin-risk case. Matched with [`find_word`] so the denial phrase itself is standalone,
+/// not a fragment of a longer unrelated word.
+fn denies_ownership(lower: &str) -> bool {
+    find_word(lower, "ownerless").is_some()
+        || find_word(lower, "no owner").is_some()
+        || find_word(lower, "not owned").is_some()
 }
 
 /// F4 open dispositions (`docs/handbook/planning-field-guide.md`): "removed" and "ignored"
@@ -397,7 +413,7 @@ pub fn disposition_advisories(text: &str) -> Vec<LintAdvisory> {
 /// word false-fire as the disjunction's second half).
 fn disposition_smell(prose: &str) -> Option<&'static str> {
     let lower = prose.to_lowercase();
-    if lower.contains("worth considering") {
+    if find_word(&lower, "worth considering").is_some() {
         return Some("worth considering");
     }
     if lower.contains("could instead") {
@@ -411,21 +427,28 @@ fn disposition_smell(prose: &str) -> Option<&'static str> {
     None
 }
 
-/// The byte position of `word` as a STANDALONE word inside `haystack` (a non-alphanumeric
-/// or absent character on both sides), or `None`. Guards a plain substring search from
-/// matching a fragment of a larger word - e.g. "either" inside "neither".
+/// The byte position of `word` as a STANDALONE word inside `haystack` (a character that is
+/// neither alphanumeric nor a hyphen, or absent, on both sides), or `None`. Guards a plain
+/// substring search from matching a fragment of a larger word - e.g. "either" inside
+/// "neither", or "worth" as the tail of the hyphenated compound "self-worth". A hyphen
+/// counts as WORD-FORMING (not a boundary) so a hyphenated compound is treated as one
+/// token, the same way a reader parses it - otherwise "self-worth considering" would
+/// misread its trailing "worth" as the standalone word this function exists to isolate.
 fn find_word(haystack: &str, word: &str) -> Option<usize> {
+    fn is_word_char(c: char) -> bool {
+        c.is_alphanumeric() || c == '-'
+    }
     let mut start = 0;
     while let Some(rel) = haystack[start..].find(word) {
         let pos = start + rel;
         let before_ok = haystack[..pos]
             .chars()
             .next_back()
-            .is_none_or(|c| !c.is_alphanumeric());
+            .is_none_or(|c| !is_word_char(c));
         let after_ok = haystack[pos + word.len()..]
             .chars()
             .next()
-            .is_none_or(|c| !c.is_alphanumeric());
+            .is_none_or(|c| !is_word_char(c));
         if before_ok && after_ok {
             return Some(pos);
         }
@@ -878,6 +901,74 @@ mod tests {
         );
     }
 
+    /// F1 ownership: an explicit DENIAL of ownership ("no owner", "ownerless", "not
+    /// owned") must NOT satisfy `carries_owner_sentence` just because it contains the bare
+    /// substring "owner" - a criterion that says ownership has NOT been assigned is exactly
+    /// the twin-risk case F1 exists to catch, so it must still be flagged, not read as
+    /// carrying an ownership sentence.
+    #[test]
+    fn ownership_check_flags_a_criterion_that_explicitly_denies_ownership() {
+        let text = "## Done when\n\n\
+            - [ ] the daemon writes a pidfile. No owner has been assigned to this \
+            criterion yet.\n\
+            - [ ] the store passes the contract suite. This criterion OWNS the suite.\n\
+            - [ ] the graph supersedes an older decision. This criterion OWNS the supersede \
+            path.\n";
+        let advisories = ownership_advisories(text);
+        assert!(
+            advisories.iter().any(|a| a.criterion == Some(1)),
+            "an explicit ownership denial must still be flagged twin-risk, not misread as \
+             carrying an ownership sentence; got: {advisories:?}"
+        );
+    }
+
+    /// F1 ownership: "ownerless" and "not owned" are also explicit denials, not ownership
+    /// sentences.
+    #[test]
+    fn ownership_check_flags_ownerless_and_not_owned_as_denials() {
+        assert!(
+            !carries_owner_sentence("this criterion is ownerless for now"),
+            "\"ownerless\" is a denial, not an ownership sentence"
+        );
+        assert!(
+            !carries_owner_sentence("the pidfile write is not owned by this criterion"),
+            "\"not owned\" is a denial, not an ownership sentence"
+        );
+        assert!(
+            carries_owner_sentence("this criterion OWNS the pidfile write"),
+            "a genuine OWNS sentence must still satisfy the check"
+        );
+    }
+
+    /// F1 ownership: "owns" and "owner" are themselves substrings of ordinary English
+    /// words that carry no ownership claim at all - "owns" inside "drowns", "owner" inside
+    /// "downer" - so a criterion using one of those unrelated words must not be misread as
+    /// carrying a genuine OWNS/owner sentence just because the bare substring happens to
+    /// appear inside a larger word. The same defect class already fixed twice in this file
+    /// (either/or, then worth-considering); left unapplied here it is the identical corner
+    /// cut one function away.
+    #[test]
+    fn ownership_check_does_not_match_owns_or_owner_inside_an_unrelated_word() {
+        assert!(
+            !carries_owner_sentence(
+                "the retry handler drowns duplicate signals during a backoff storm"
+            ),
+            "\"drowns\" contains the substring \"owns\" but claims no ownership"
+        );
+        assert!(
+            !carries_owner_sentence("a stale cache entry is a real downer for latency"),
+            "\"downer\" contains the substring \"owner\" but claims no ownership"
+        );
+        assert!(
+            carries_owner_sentence("this criterion OWNS the pidfile write"),
+            "a genuine standalone OWNS must still satisfy the check"
+        );
+        assert!(
+            carries_owner_sentence("no clear owner is named otherwise"),
+            "a genuine standalone owner must still satisfy the check"
+        );
+    }
+
     /// F4 open dispositions: each of the three draft-smell phrases the field guide names
     /// is caught in prose - "worth considering", "could instead", and an "either ... or"
     /// pairing.
@@ -936,6 +1027,24 @@ mod tests {
             disposition_advisories(text).is_empty(),
             "\"original\" contains \" or\" as a substring; that must not false-fire the \
              either...or pairing when there is no standalone \"or\" on the line; got: {:?}",
+            disposition_advisories(text)
+        );
+    }
+
+    /// F4 open dispositions: "worth considering" must be matched as a STANDALONE phrase
+    /// the same way either/or already are - a hyphenated compound noun like "self-worth"
+    /// immediately followed by "considering" is ordinary prose, not the hedging
+    /// disposition the check exists to catch, and must not false-fire just because the
+    /// bare substring "worth considering" happens to appear across the hyphen boundary.
+    #[test]
+    fn disposition_check_does_not_match_worth_considering_across_a_hyphenated_compound() {
+        let text = "## Design\n\n\
+            A fair price reflects self-worth considering every relevant factor.\n";
+        assert!(
+            disposition_advisories(text).is_empty(),
+            "\"self-worth\" is a hyphenated compound noun; its trailing \"worth\" followed \
+             by \"considering\" must not false-fire the worth-considering draft-smell \
+             phrase; got: {:?}",
             disposition_advisories(text)
         );
     }

@@ -370,6 +370,89 @@ fn validate_spec_does_not_misread_a_later_or_prefixed_word_as_either_or() {
     );
 }
 
+/// Round-3 REJECT remedy
+/// (`adv-u66c3-r3-ownership-sentinel-inverted-on-explicit-no-owner-prose`):
+/// `carries_owner_sentence` matched the bare substring "owner" with no negation guard, so
+/// an explicit DENIAL of ownership ("No owner has been assigned to this criterion yet.")
+/// was misread as carrying an ownership sentence - inverted from F1's documented purpose of
+/// flagging exactly this twin-risk case. Reproduced on the real binary here.
+#[test]
+fn validate_spec_flags_an_explicit_ownership_denial_as_twin_risk() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Done when\n\n\
+         - [ ] the daemon writes a pidfile. No owner has been assigned to this criterion \
+         yet.\n\
+         - [ ] the store passes the contract suite. This criterion OWNS the suite.\n\
+         - [ ] the graph supersedes an older decision. This criterion OWNS the supersede \
+         path.\n";
+    let path = root.join("owner-denial-spec.md");
+    std::fs::write(&path, spec).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["validate", path.to_str().unwrap()]);
+    assert!(
+        ok,
+        "spec-lint advisories are heuristic warnings, never a hard failure; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        err.contains("F1 ownership") && err.contains("criterion 1"),
+        "an explicit ownership denial contains the bare substring \"owner\" but does NOT \
+         carry an ownership sentence; criterion 1 must still be flagged twin-risk on the \
+         real binary; stderr:\n{err}"
+    );
+}
+
+/// Round-3 REJECT remedy
+/// (`adv-u66c3-r3-worth-considering-still-bare-substring-same-bug-class-as-fixed-either-or`):
+/// the "worth considering" check remained a bare substring test after either/or's own
+/// word-boundary fix, so a hyphenated compound noun like "self-worth" immediately followed
+/// by "considering" false-fired F4 even though it carries no hedging disposition.
+/// Reproduced on the real binary here.
+#[test]
+fn validate_spec_does_not_misread_worth_considering_across_a_hyphenated_compound() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Design\n\n\
+         A fair price reflects self-worth considering every relevant factor.\n\n\
+         ## Done when\n\n\
+         - [ ] the store passes the contract suite. This criterion OWNS the contract \
+         coverage.\n\
+         - [ ] the graph projector supersedes an older decision. This criterion OWNS the \
+         supersede path.\n\
+         - [ ] the conductor integrates an approved unit. This criterion OWNS the \
+         integration step.\n";
+    let path = root.join("hyphenated-worth-spec.md");
+    std::fs::write(&path, spec).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["validate", path.to_str().unwrap()]);
+    assert!(
+        ok,
+        "spec-lint advisories are heuristic warnings, never a hard failure; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        !err.contains("F4 disposition"),
+        "\"self-worth\" is a hyphenated compound noun; its trailing \"worth\" followed by \
+         \"considering\" must not false-fire the worth-considering draft-smell phrase on \
+         the real binary; stderr:\n{err}"
+    );
+}
+
 /// A clean fixture - three-plus criteria, each carrying an OWNS sentence, single-behavior,
 /// no disposition smells, no em dash - draws no spec-lint advisory at all, and `rigger
 /// validate` still exits 0.
