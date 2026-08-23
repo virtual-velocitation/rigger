@@ -81,6 +81,12 @@ page humans read, and the mechanical subset of the recipe as a pre-launch spec l
   0, and reports a clean fixture clean. This criterion OWNS the pre-launch lint surface.
 - [ ] a test proves ONE LINT AUTHORITY: the pre-launch lint and the loop's in-run spec-shape
   lint share the single implementation, pinned so a divergence cannot compile or cannot pass.
+  This criterion OWNS the in-run call site and the shared-implementation pin; the lint's
+  classification logic and the pre-launch `cmd_validate` surface are criterion 3's, NOT this
+  one's.
 - [ ] a test proves DISCOVERABILITY: the pre-launch surface that names next steps mentions the
-  spec lint when given a spec path.
-- [ ] both feature lanes green (fmt, clippy, test on default and `--no-default-features`).
+  spec lint when given a spec path. This criterion OWNS that surface's wording; it claims no
+  lint classification logic or call site of its own.
+- [ ] both feature lanes green (fmt, clippy, test on default and `--no-default-features`). This
+  criterion OWNS the whole-diff gates-green audit; it claims no lint or documentation concept
+  of its own.
