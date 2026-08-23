@@ -7889,7 +7889,7 @@ fn workflow_accepts_a_spec_and_a_base_flag() {
     let dir = temp_project();
     let root = dir.path();
 
-    let (_out, err, ok) = run_rigger(root, &["workflow", "specs/18.md", "--base", "my-feature"]);
+    let (out, err, ok) = run_rigger(root, &["workflow", "specs/18.md", "--base", "my-feature"]);
     assert!(!ok, "the un-provisioned shim still fails the command");
     assert!(
         !err.contains("expected at most one spec path"),
@@ -7899,6 +7899,15 @@ fn workflow_accepts_a_spec_and_a_base_flag() {
     assert!(
         err.contains("not provisioned") || err.contains("rigger setup"),
         "the failure must be the un-provisioned-driver error, proving --base parsed; got: {err:?}"
+    );
+    // DISCOVERABILITY (spec 66, criterion 5): `rigger workflow <spec>` is a real pre-launch
+    // surface that genuinely holds the spec path (unlike the SessionStart-only `rigger prime`
+    // hook), so it must print the spec-lint reminder BEFORE the driver launch fails - proving
+    // the reminder reaches this production invocation, not only a hand-typed `rigger prime`.
+    assert!(
+        out.contains("rigger validate specs/18.md"),
+        "`rigger workflow <spec>` must name `rigger validate <spec>` as a next step even when \
+         the un-provisioned driver launch fails afterward; got stdout:\n{out}"
     );
 }
 
@@ -19319,5 +19328,212 @@ fn watch_once_never_names_a_mismatched_markers_pid_when_the_urls_path_contains_a
     assert!(
         !out.contains(&format!("port {marker_port}")),
         "the mismatched marker's own port must not be reported as the dash's; got:\n{out}"
+    );
+}
+
+// --- Spec 66, criterion 5: DISCOVERABILITY - `rigger prime` names the spec lint ---
+//
+// `rigger prime` is the pre-launch surface installed as the Claude Code SessionStart hook -
+// the first thing that runs when a session (about to drive `/rigger <spec>`) begins. When it
+// is given a spec path it must mention `rigger validate <spec>` (the spec lint, spec 18/66) as
+// a next step, so the mechanical pre-launch check is discovered rather than found by accident.
+// Bare `rigger prime` (the hook's actual installed invocation, which knows no spec) must stay
+// exactly as it was: no lint mention.
+
+#[test]
+fn prime_with_no_spec_path_never_mentions_the_spec_lint() {
+    let proj = temp_project();
+    let root = proj.path();
+
+    let (out, err, ok) = run_rigger(root, &["prime"]);
+    assert!(ok, "bare `rigger prime` must succeed; stderr:\n{err}");
+    assert!(
+        !out.contains("rigger validate"),
+        "bare `rigger prime` (no spec path given) must not mention the spec lint; got:\n{out}"
+    );
+}
+
+#[test]
+fn prime_given_a_spec_path_names_the_spec_lint_as_a_next_step() {
+    let proj = temp_project();
+    let root = proj.path();
+
+    // No store seeded: `cmd_prime` takes its absent-db early-return path (mirroring
+    // cmd_stats's NO_RUNS_MESSAGE guard) - the spec-lint reminder must still appear there,
+    // since a project with no run history yet is exactly when the reminder matters most.
+    let (out, err, ok) = run_rigger(root, &["prime", "specs/42-widgets.md"]);
+    assert!(
+        ok,
+        "`rigger prime <spec>` against a never-run project must succeed; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("rigger validate specs/42-widgets.md"),
+        "given a spec path, `rigger prime` must name `rigger validate <spec>` as a next \
+         step even on the no-runs-yet path; got:\n{out}"
+    );
+}
+
+#[test]
+fn prime_given_a_spec_path_names_the_spec_lint_alongside_recent_decisions() {
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    // A seeded-but-empty store takes cmd_prime's OTHER path (the "recent decisions"
+    // listing, here empty -> "(none yet)") - the reminder must appear there too, not only
+    // on the absent-db early return, so both of cmd_prime's paths stay in lock-step.
+    let (out, err, ok) = run_rigger(root, &["prime", "specs/42-widgets.md"]);
+    assert!(
+        ok,
+        "`rigger prime <spec>` against a seeded-but-empty store must succeed; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("# Rigger: recent decisions"),
+        "a seeded (even empty) store must take the recent-decisions path, not the \
+         absent-db one; got:\n{out}"
+    );
+    assert!(
+        out.contains("rigger validate specs/42-widgets.md"),
+        "given a spec path, `rigger prime` must name `rigger validate <spec>` as a next \
+         step on the recent-decisions path too; got:\n{out}"
+    );
+}
+
+/// The realistic invocation the two paths above only approximate: a project with ACTUAL
+/// recorded decisions (not an empty store falling to "(none yet)"). Structurally this walks
+/// the same final `if let Some(spec) = spec_path` line as the empty-store test above, but it
+/// is the one combination neither existing test drives - real decision content plus the spec
+/// arg together - so it is the only case that can catch the reminder line landing in the
+/// wrong place (e.g. interleaved between decisions, or lost past the top-10 cutoff) rather
+/// than appended once, after every decision line.
+#[test]
+fn prime_given_a_spec_path_names_the_spec_lint_after_real_decision_content() {
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    for (id, summary) in [("d-one", "first decision"), ("d-two", "second decision")] {
+        let (_out, err, ok) = run_rigger(
+            root,
+            &[
+                "emit",
+                "DecisionMade",
+                &format!(r#"{{"id":"{id}","summary":"{summary}","governs":["x.rs"]}}"#),
+            ],
+        );
+        assert!(
+            ok,
+            "seeding {id} via `rigger emit` must succeed; stderr:\n{err}"
+        );
+    }
+
+    let (out, err, ok) = run_rigger(root, &["prime", "specs/42-widgets.md"]);
+    assert!(
+        ok,
+        "`rigger prime <spec>` against a store with real decisions must succeed; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("- d-one: first decision") && out.contains("- d-two: second decision"),
+        "both seeded decisions must be listed; got:\n{out}"
+    );
+    let decisions_at = out
+        .find("- d-two: second decision")
+        .expect("decision line present");
+    let reminder_at = out
+        .find("rigger validate specs/42-widgets.md")
+        .expect("spec-lint reminder present");
+    assert!(
+        reminder_at > decisions_at,
+        "the spec-lint reminder must be appended AFTER the real decision listing, not \
+         interleaved with it or lost above it; got:\n{out}"
+    );
+    assert_eq!(
+        out.matches("rigger validate specs/42-widgets.md").count(),
+        1,
+        "the reminder must appear exactly once, not once per decision; got:\n{out}"
+    );
+}
+
+// --- Spec 66, criterion 5 (round 2): DISCOVERABILITY reaches the REAL pre-launch entries ---
+//
+// `rigger prime` above is the SessionStart hook, but the hook is always invoked with ZERO
+// args (src/hooks.rs pins the literal `rigger prime` string) - so in production it NEVER
+// carries a spec path and the reminder wired there alone never reaches an operator. The two
+// surfaces that DO hold the parsed spec path at the real pre-launch moment are `run_cli`
+// (`rigger run <spec>`) and `cmd_workflow` (`rigger workflow <spec>`); these tests drive the
+// compiled binary through both, proving the reminder reaches an actual production invocation
+// rather than only a hand-typed `rigger prime <spec>`.
+
+/// `rigger run <spec>` names the spec lint even when the run goes on to refuse for an
+/// unrelated reason (no reachable base) - the reminder is printed before any of that
+/// downstream machinery runs, so it survives every failure path, not only a successful run.
+#[test]
+fn run_given_a_spec_path_names_the_spec_lint_as_a_next_step() {
+    // `temp_project()` is a `git init` with NO commit: an unborn HEAD, nothing to branch
+    // from, so `--base origin/does-not-exist` deterministically refuses fast (spec 38,
+    // criterion 2) with no agent ever spawned. A real spec file with one Done-when checkbox
+    // is required so `load_criteria` succeeds and the run actually reaches that base check.
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    std::fs::create_dir_all(root.join("specs")).unwrap();
+    std::fs::write(
+        root.join("specs/42-widgets.md"),
+        "# 42 widgets\n\n## Done when\n\n- [ ] a test proves widgets work\n",
+    )
+    .unwrap();
+
+    let (out, err, ok) = run_rigger(
+        root,
+        &[
+            "run",
+            "specs/42-widgets.md",
+            "--base",
+            "origin/does-not-exist",
+        ],
+    );
+    assert!(
+        !ok,
+        "the no-reachable-base refusal must still fire after the reminder prints; stdout: \
+         {out:?} stderr: {err:?}"
+    );
+    assert!(
+        err.contains("no reachable base"),
+        "sanity: this must be the same no-reachable-base refusal the base test pins; got: {err:?}"
+    );
+    assert!(
+        out.contains("rigger validate specs/42-widgets.md"),
+        "`rigger run <spec>` must name `rigger validate <spec>` as a next step, proving the \
+         reminder reaches this real pre-launch entry (not only `rigger prime`); got stdout:\n{out}"
+    );
+}
+
+/// Bare `rigger run` (no spec positional) must never mention the spec lint - mirroring
+/// `rigger prime`'s no-arg behavior, so the reminder only ever appears when a spec is
+/// genuinely in play.
+#[test]
+fn run_with_no_spec_path_never_mentions_the_spec_lint() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+
+    let (out, _err, _ok) = run_rigger(root, &["run", "--base", "origin/does-not-exist"]);
+    assert!(
+        !out.contains("rigger validate"),
+        "bare `rigger run` (no spec path given) must not mention the spec lint; got:\n{out}"
+    );
+}
+
+/// Bare `rigger workflow` (no spec positional) must never mention the spec lint, mirroring
+/// `rigger run`'s and `rigger prime`'s no-arg behavior.
+#[test]
+fn workflow_with_no_spec_path_never_mentions_the_spec_lint() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (out, _err, _ok) = run_rigger(root, &["workflow"]);
+    assert!(
+        !out.contains("rigger validate"),
+        "bare `rigger workflow` (no spec path given) must not mention the spec lint; got:\n{out}"
     );
 }
