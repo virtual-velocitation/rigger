@@ -430,15 +430,7 @@ pub fn disposition_advisories(text: &str) -> Vec<LintAdvisory> {
     out
 }
 
-/// The first draft-smell phrase `prose` contains, case-insensitively, or `None`. The
-/// "either ... or" pairing requires an "or" AFTER the "either" on the same (already
-/// code-stripped) line - a single "either" with no paired "or" is a false-positive risk
-/// the field guide's own countermeasure does not describe. Both halves are matched as a
-/// STANDALONE word ([`find_word`]), never a bare substring: "either" is itself a substring
-/// of "neither" (a "neither ... or" sentence must never be misread as this pairing), and
-/// "or" is itself a substring of ordinary words like "original", "order", or "orphan" (a
-/// standalone "either" earlier in the line must never make a LATER, unrelated "or"-prefixed
-/// word false-fire as the disjunction's second half).
+/// The first draft-smell phrase `prose` contains, case-insensitively, or `None`.
 fn disposition_smell(prose: &str) -> Option<&'static str> {
     let lower = prose.to_lowercase();
     if find_word(&lower, "worth considering").is_some() {
@@ -447,12 +439,73 @@ fn disposition_smell(prose: &str) -> Option<&'static str> {
     if lower.contains("could instead") {
         return Some("could instead");
     }
-    if let Some(pos) = find_word(&lower, "either") {
-        if find_word(&lower[pos..], "or").is_some() {
-            return Some("either ... or");
-        }
+    if either_or_hedge(&lower) {
+        return Some("either ... or");
     }
     None
+}
+
+/// True when `lower` (already lowercased) contains a genuine, unresolved "either ... or"
+/// hedge: a standalone "either" paired with a standalone "or" IN THE SAME CLAUSE (see
+/// [`clause_end`]) that is not a decided-disposition sentence (see
+/// [`is_decided_disposition`]). Both halves are matched as a STANDALONE word ([`find_word`]),
+/// never a bare substring: "either" is itself a substring of "neither" (a "neither ... or"
+/// sentence must never be misread as this pairing), and "or" is itself a substring of
+/// ordinary words like "original", "order", or "orphan".
+///
+/// Scans every standalone "either" on the line, not only the first: "either" also has an
+/// ordinary, non-disjunctive sense ("one of the two", e.g. specs/68's own "cannot bypass
+/// either surface"), and stopping at the first occurrence would let that earlier,
+/// non-disjunctive use shadow a real disjunction later on the same line - or, before the
+/// per-clause bound below existed, wrongly pair with a faraway, unrelated standalone "or" in
+/// a LATER clause (specs/68 criterion 1's "cannot bypass either surface; ... installs,
+/// replaces, or modifies ..." - a live false-fire this exact shape produced,
+/// `adj-u66c3-r5-reject-selfclean-live-violation`'s remedy plus a corpus-wide sweep found).
+fn either_or_hedge(lower: &str) -> bool {
+    let mut start = 0;
+    while let Some(rel) = find_word(&lower[start..], "either") {
+        let pos = start + rel;
+        let clause = &lower[pos..clause_end(lower, pos)];
+        if find_word(clause, "or").is_some() && !is_decided_disposition(lower, pos) {
+            return true;
+        }
+        start = pos + "either".len();
+    }
+    false
+}
+
+/// The byte position, within `lower`, of the end of the grammatical clause that starts at
+/// `from` - the next `.` or `;` after `from`, or `lower.len()` when neither appears. Bounds
+/// the "either ... or" pairing search to ONE clause, the field guide's own countermeasure
+/// describing a single disjunctive clause, not any two occurrences of the words anywhere on
+/// a physical line regardless of how many unrelated sentences separate them.
+fn clause_end(lower: &str, from: usize) -> usize {
+    lower[from..]
+        .find(['.', ';'])
+        .map_or(lower.len(), |rel| from + rel)
+}
+
+/// True when the standalone word immediately preceding the "either" match at `either_pos`
+/// (byte offset into `lower`) is "satisfied" - the field guide's own decided-disposition
+/// idiom. "Satisfied either by A or by B" names two concrete, already-accepted satisfaction
+/// paths (e.g. specs/68's Global constraints and every Done-when criterion: "each may be
+/// satisfied either by fresh implementation or by independently re-verifying
+/// already-integrated code ..., evidence bar = ..."); unlike a bare hedge ("Either the
+/// daemon retries or it escalates"), it never poses an unresolved question about which
+/// outcome occurs - both named paths are decided-acceptable. Round 5's REJECT
+/// (`adj-u66c3-r5-reject-selfclean-live-violation`) found `disposition_smell` false-firing
+/// on exactly this idiom, 5 times, on real committed spec prose.
+///
+/// The match is a proper trailing WORD, not a bare suffix: `lower[..either_pos]`'s trailing
+/// run of alphanumeric/hyphen characters must equal "satisfied" exactly, so a negated form
+/// like "unsatisfied either ... or ..." (a different word, "un" fused with no boundary) is
+/// NOT exempt and still reads as an open hedge.
+fn is_decided_disposition(lower: &str, either_pos: usize) -> bool {
+    let before = lower[..either_pos].trim_end();
+    let word_start = before
+        .rfind(|c: char| !(c.is_alphanumeric() || c == '-'))
+        .map_or(0, |i| i + 1);
+    &before[word_start..] == "satisfied"
 }
 
 /// The byte position of `word` as a STANDALONE word inside `haystack` (a character that is
@@ -1196,6 +1249,110 @@ mod tests {
                 .any(|a| a.detail.contains("worth considering")),
             "scanning must resume after the backtick span closes, catching the later \
              smell phrase on the same line; got: {:?}",
+            disposition_advisories(text)
+        );
+    }
+
+    /// Round-5 REJECT remedy (`adj-u66c3-r5-reject-selfclean-live-violation`,
+    /// `adv-u66c3-r5-f4-either-or-false-fires-on-a-decided-disposition-rule`): "satisfied
+    /// either by A or by B" is the field guide's own decided-disposition idiom (specs/68's
+    /// Global constraints and all four Done-when criteria use it verbatim) - it names two
+    /// concrete, already-accepted satisfaction paths, not an open question about which
+    /// outcome occurs, so it must never trip F4.
+    #[test]
+    fn disposition_check_does_not_match_a_satisfied_either_or_decided_disposition() {
+        let text = "## Global constraints\n\n\
+            - Disposition for criteria 1-4: each may be satisfied either by fresh \
+            implementation or by independently re-verifying already-integrated code at the \
+            run's base commit - the evidence bar for the re-verify path is rerunning that \
+            criterion's own pinned tests plus both feature lanes.\n";
+        assert!(
+            disposition_advisories(text).is_empty(),
+            "a \"satisfied either ... or ...\" decided-disposition sentence must not \
+             false-fire F4; got: {:?}",
+            disposition_advisories(text)
+        );
+    }
+
+    /// The decided-disposition exemption is scoped to the "satisfied either" idiom
+    /// specifically, not to "either ... or" in general - a genuine unresolved hedge sitting
+    /// right beside a decided one on a different line must still be flagged, proving the fix
+    /// is not a blanket F4 suppression.
+    #[test]
+    fn disposition_check_still_flags_an_unresolved_hedge_beside_a_decided_disposition() {
+        let text = "## Design\n\n\
+            Disposition: satisfied either by A or by B, evidence bar named per path.\n\n\
+            Separately, either the daemon retries or it escalates immediately - undecided.\n";
+        let advisories = disposition_advisories(text);
+        assert_eq!(
+            advisories.len(),
+            1,
+            "only the genuine unresolved hedge must be flagged, not the decided sentence; \
+             got: {advisories:?}"
+        );
+        assert!(advisories[0].detail.contains("either"));
+    }
+
+    /// The "satisfied" governing word must be the STANDALONE word immediately preceding
+    /// "either" - a negated form like "unsatisfied either ... or ..." is a different word
+    /// (word-boundary check, not a bare suffix match) and must still be read as an open
+    /// hedge, not silently swallowed by the decided-disposition exemption.
+    #[test]
+    fn disposition_check_does_not_exempt_unsatisfied_either_or() {
+        let text = "## Design\n\nthe criterion remains unsatisfied either by retry or by \
+            escalation, undecided.\n";
+        assert!(
+            !disposition_advisories(text).is_empty(),
+            "\"unsatisfied\" is a different word from \"satisfied\" - the exemption must not \
+             match a bare suffix; got: {:?}",
+            disposition_advisories(text)
+        );
+    }
+
+    /// Corpus-wide sweep residual (found reproducing round 5's fix on the real specs/68
+    /// file, not named individually in the REJECT verdict): "either" also has an ordinary,
+    /// non-disjunctive sense ("one of the two") with no "or" of its own - specs/68
+    /// criterion 1's "cannot bypass either surface" - followed, in a LATER unrelated clause
+    /// on the same physical line, by a genuine standalone "or" ("installs, replaces, or
+    /// modifies"). Before the either...or pairing was bounded to one clause, this unrelated
+    /// pair false-fired F4. It must not.
+    #[test]
+    fn disposition_check_does_not_pair_a_non_disjunctive_either_with_a_faraway_unrelated_or() {
+        let text = "## Design\n\nan entry cannot bypass either surface; a test also proves \
+            an agent never installs, replaces, or modifies the operator's binary.\n";
+        assert!(
+            disposition_advisories(text).is_empty(),
+            "\"either surface\" has no \"or\" of its own; a faraway, unrelated \"or\" in a \
+             later clause must not be misread as its pair; got: {:?}",
+            disposition_advisories(text)
+        );
+    }
+
+    /// The clause bound must not swallow a GENUINE disjunction that follows a
+    /// non-disjunctive "either" earlier on the same line - the scan must keep looking past
+    /// the first, non-paired "either" rather than stopping there.
+    #[test]
+    fn disposition_check_finds_a_genuine_hedge_after_an_earlier_non_disjunctive_either() {
+        let text = "## Design\n\nan entry cannot bypass either surface; either the daemon \
+            retries or it escalates, undecided.\n";
+        let advisories = disposition_advisories(text);
+        assert!(
+            advisories.iter().any(|a| a.detail.contains("either")),
+            "a genuine hedge later on the line must still be caught even though an earlier, \
+             non-disjunctive \"either\" precedes it; got: {advisories:?}"
+        );
+    }
+
+    /// A bare "either ... or" hedge with no governing "satisfied" word at all is unaffected
+    /// by the exemption and still flags - the baseline case the exemption must not weaken.
+    #[test]
+    fn disposition_check_still_flags_a_bare_either_or_with_no_satisfied_word() {
+        let text = "## Design\n\nreindex either retires or re-points to the symbol index, \
+            whichever the surviving command surface makes honest.\n";
+        assert!(
+            !disposition_advisories(text).is_empty(),
+            "a bare either...or hedge with no \"satisfied\" governing word must still be \
+             flagged; got: {:?}",
             disposition_advisories(text)
         );
     }
