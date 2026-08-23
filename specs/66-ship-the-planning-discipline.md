@@ -8,6 +8,15 @@ page humans read, and the mechanical subset of the recipe as a pre-launch spec l
 
 ## Design
 
+- **Lint-heuristic semantics, decided here** (round-5 disposition closing the defect class
+  four review rounds found one corner at a time): every cue word the spec lint matches
+  (`either`, `or`, `owns`, `owner`, denial phrases) matches as a STANDALONE WORD - one
+  shared word-boundary matcher, never a bare `contains` - with hyphens word-forming.
+  Within one checkbox an AFFIRMATIVE ownership match takes precedence over a denial
+  phrase (a criterion that says "OWNS X; Y is criterion 2's, NOT this one's" carries
+  ownership; the denial half never vetoes it). SELF-CLEAN is the acceptance property: at
+  the unit's HEAD, `rigger validate` over every committed `specs/*.md` - including spec
+  66 itself - raises zero false lint findings, proven by test.
 - **The skill ships as a registry entry** (`src/main.rs`, `src/docs.rs`): `planning-a-spec`
   becomes a binary-embedded render registered in the spec-68 SKILL REGISTRY (spec 68 runs
   FIRST). Drift, overlay, and non-destructive install are the registry's contract, owned by
