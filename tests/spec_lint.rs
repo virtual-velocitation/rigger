@@ -888,22 +888,24 @@ fn validate_does_not_pair_a_non_disjunctive_either_with_a_faraway_or_on_specs_68
     );
 }
 
-/// Round-5 REJECT remedy (2): the mid-run Design amendment (`d66-lint-heuristic-semantics`,
-/// LIVE, unchallenged) pins SELF-CLEAN as spec 66's acceptance property - `rigger validate`
-/// over every committed `specs/*.md` at HEAD raises zero FALSE lint findings, across all
-/// four classes. Whether a given finding is "false" has no automated oracle beyond a
-/// human reading the spec (the same manual cross-check sdet and the adversary ran by hand,
-/// `sdet-u66c3-r5-self-clean-not-proven-by-test`, `adv-u66c3-r5-not-yet-clean-live-selfclean-
-/// violation`), so this test pins that human-vetted result as an executable regression
-/// guard: hygiene is verifiably zero everywhere (a real invariant - the diff gate forbids
-/// U+2014 anywhere, so no committed spec ever carries one); F4 disposition fires on EXACTLY
-/// the one known-genuine hedge (specs/57) and nowhere else, closing the class that broke
-/// this property five rounds running; and F1 ownership / F2+F6 shape - independently
-/// cross-checked as legitimate findings by sdet's and the adversary's round-5 manual sweeps -
-/// are pinned to their current corpus-wide totals, so ANY future drift (a new false
-/// positive, or a lint change that silently drops a true one) fails this test and forces a
-/// conscious human review before it can land, the same way the F4 defect should have been
-/// caught five rounds ago instead of by hand.
+/// Round-6 sharpening (`specs/66-ship-the-planning-discipline.md`'s Design bullet,
+/// "the acceptance property, made precise") replaced the original, machine-unjudgeable
+/// "zero false findings over all historical specs" bar with two narrower, precise
+/// properties: (1) SELF-CLEAN NARROW - spec 66 itself, alone, raises zero findings
+/// (`spec_lint_self_clean_on_spec_66_itself`, below); (2) this test, the LABELED FIXTURE
+/// CORPUS half applied at corpus scale - historical `specs/*.md` are explicitly NOT a
+/// zero-findings corpus, so a finding there is "advisory output, not a test failure". This
+/// test pins the human-vetted (`sdet-u66c3-r5-self-clean-not-proven-by-test`,
+/// `adv-u66c3-r5-reject-selfclean-live-violation`) corpus-wide result as an executable
+/// REGRESSION SNAPSHOT, not a zero-findings claim: hygiene is verifiably zero everywhere (a
+/// real invariant - the diff gate forbids U+2014 anywhere, so no committed spec ever
+/// carries one); F4 disposition fires on EXACTLY the reviewed set of historical hedges and
+/// nowhere else; and F1 ownership / F2+F6 shape - independently cross-checked as legitimate
+/// findings by sdet's and the adversary's round-5 manual sweeps - are pinned to their
+/// current corpus-wide totals. ANY future drift (a new false positive, or a lint change
+/// that silently drops a true one) fails this test and forces a conscious human review
+/// before it can land, the same way the F4 defect should have been caught five rounds ago
+/// instead of by hand.
 #[test]
 fn spec_lint_self_clean_over_the_committed_corpus() {
     let specs_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("specs");
@@ -970,12 +972,13 @@ fn spec_lint_self_clean_over_the_committed_corpus() {
          a missing one a recall regression; got: {f4_hits:?}"
     );
     assert_eq!(
-        f1_total, 194,
+        f1_total, 191,
         "F1 ownership's corpus-wide total is pinned to sdet's round-5 independently \
-         cross-checked count (every one of 194 hits verified against the raw checkbox text \
-         for an actual owns/owner word, zero false positives); a changed total means either \
-         a real spec edit (update this pin after reviewing the new/removed hits) or a \
-         regression in the heuristic"
+         cross-checked count (194), minus the 3 hits removed by giving specs/66's own \
+         criteria 4/5/6 an OWNS sentence (`u66c3-self-clean-ownership-gap-fix`, required by \
+         the SELF-CLEAN NARROW property below); a changed total means either a real spec \
+         edit (update this pin after reviewing the new/removed hits) or a regression in the \
+         heuristic"
     );
     assert_eq!(
         shape_total, 74,
@@ -983,6 +986,31 @@ fn spec_lint_self_clean_over_the_committed_corpus() {
          (spot-checked legitimate by the round-5 adversary sweep); a changed total means \
          either a real spec edit (update this pin after reviewing the new/removed hits) or \
          a regression in the heuristic"
+    );
+}
+
+/// SELF-CLEAN NARROW (`specs/66-ship-the-planning-discipline.md`'s Design bullet, round-6
+/// sharpening): "spec 66 itself raises zero lint findings at the unit's HEAD" - the
+/// half of the acceptance property machine-judgeable with no human oracle, since spec 66
+/// is the ONE spec this lint's own authors control end to end (unlike the historical
+/// corpus above, which may carry TRUE smells this lint is right to surface). Reading the
+/// real committed file (not a fixture standing in for it) so an edit to spec 66 that
+/// reintroduces a self-trip - an unquoted draft-smell phrase, a criterion that loses its
+/// OWNS sentence, an em dash - fails this test immediately rather than waiting for a
+/// human to run `rigger validate` by hand the way five straight review rounds had to
+/// (`adv-u66c3-disposition-lint-self-trips-on-its-own-governing-spec`,
+/// `adv-u66c3-r5-reject-selfclean-live-violation`).
+#[test]
+fn spec_lint_self_clean_on_spec_66_itself() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("specs")
+        .join("66-ship-the-planning-discipline.md");
+    let text = std::fs::read_to_string(&path).expect("read specs/66 itself");
+    let advisories = rigger::spec::spec_lint_advisories(&text);
+    assert!(
+        advisories.is_empty(),
+        "specs/66-ship-the-planning-discipline.md must raise zero lint findings against its \
+         own lint (SELF-CLEAN NARROW); got: {advisories:?}"
     );
 }
 
