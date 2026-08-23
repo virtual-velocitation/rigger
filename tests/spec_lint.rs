@@ -204,6 +204,129 @@ fn validate_spec_reports_two_simultaneous_defects_on_the_same_criterion() {
     );
 }
 
+/// Round-2 fix (`d-u66c3-r2-ownership-scans-full-block`): an OWNS sentence on a WRAPPED
+/// CONTINUATION line - this repo's own standard Done-when convention, the exact shape that
+/// drove `adj-u66c3-reject-genuine-defects` (all 6/6 criteria of specs/66 itself were
+/// wrongly F1-flagged) - must satisfy the ownership check through the real binary, not only
+/// inside `src/spec.rs`'s own unit tests. Criterion 1's OWNS sentence sits on its checkbox's
+/// SECOND physical line; it must draw no F1 ownership advisory.
+#[test]
+fn validate_spec_finds_an_owns_sentence_on_a_wrapped_continuation_line() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Done when\n\n\
+         - [ ] the daemon writes a pidfile that is mode 0644 and readable only by the\n\
+         \x20\x20service account. This criterion OWNS the pidfile permissions.\n\
+         - [ ] the store passes the contract suite. This criterion OWNS the suite.\n\
+         - [ ] the graph supersedes an older decision. This criterion OWNS the supersede \
+         path.\n";
+    let path = root.join("wrapped-owns-spec.md");
+    std::fs::write(&path, spec).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["validate", path.to_str().unwrap()]);
+    assert!(
+        ok,
+        "spec-lint advisories are heuristic warnings, never a hard failure; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        !err.contains("F1 ownership"),
+        "criterion 1's OWNS sentence sits on a wrapped continuation line, not the \
+         checkbox's first physical line - it must still satisfy the ownership check on the \
+         real binary; stderr:\n{err}"
+    );
+}
+
+/// Round-2 fix (`d-u66c3-r2-either-word-boundary`): "either" is a substring of "neither", so
+/// a "neither ... or" sentence must not be misread as the "either ... or" draft-smell
+/// pairing - the exact false positive `sdet-u66c3-either-substring-matches-inside-neither`
+/// reproduced on ordinary English through the real binary.
+#[test]
+fn validate_spec_does_not_misread_neither_or_as_either_or() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Design\n\n\
+         This works in neither case A or case B.\n\n\
+         ## Done when\n\n\
+         - [ ] the store passes the contract suite. This criterion OWNS the contract \
+         coverage.\n\
+         - [ ] the graph projector supersedes an older decision. This criterion OWNS the \
+         supersede path.\n\
+         - [ ] the conductor integrates an approved unit. This criterion OWNS the \
+         integration step.\n";
+    let path = root.join("neither-spec.md");
+    std::fs::write(&path, spec).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["validate", path.to_str().unwrap()]);
+    assert!(
+        ok,
+        "spec-lint advisories are heuristic warnings, never a hard failure; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        !err.contains("F4 disposition"),
+        "\"neither\" contains \"either\" as a substring; that must not false-fire the \
+         either...or pairing on the real binary; stderr:\n{err}"
+    );
+}
+
+/// Round-2 fix (`d-u66c3-r2-quoted-phrase-exempt`): a draft-smell phrase NAMED in double
+/// quotes - the field guide's own convention for listing its exact phrases, the exact shape
+/// that made this lint self-trip on its own governing spec
+/// (`adv-u66c3-disposition-lint-self-trips-on-its-own-governing-spec`) - must not
+/// false-positive through the real binary, sitting outside any checkbox (Design prose), so
+/// this also pins the criterion-less `None` attribution for a quoted-phrase hit.
+#[test]
+fn validate_spec_ignores_a_smell_phrase_named_in_double_quotes() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Design\n\n\
+         The lint watches for draft-smell phrases: \"worth considering\", \"either ... \
+         or\", \"could instead\".\n\n\
+         ## Done when\n\n\
+         - [ ] the store passes the contract suite. This criterion OWNS the contract \
+         coverage.\n\
+         - [ ] the graph projector supersedes an older decision. This criterion OWNS the \
+         supersede path.\n\
+         - [ ] the conductor integrates an approved unit. This criterion OWNS the \
+         integration step.\n";
+    let path = root.join("quoted-phrase-spec.md");
+    std::fs::write(&path, spec).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["validate", path.to_str().unwrap()]);
+    assert!(
+        ok,
+        "spec-lint advisories are heuristic warnings, never a hard failure; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        !err.contains("F4 disposition"),
+        "a smell phrase NAMED in double quotes must not false-positive on the real binary, \
+         the same as a backtick code span already does not; stderr:\n{err}"
+    );
+}
+
 /// A clean fixture - three-plus criteria, each carrying an OWNS sentence, single-behavior,
 /// no disposition smells, no em dash - draws no spec-lint advisory at all, and `rigger
 /// validate` still exits 0.
