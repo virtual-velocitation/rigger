@@ -1188,3 +1188,68 @@ fn validate_flags_a_hedge_split_across_hard_wrapped_lines() {
          and must still be seen by F4's paragraph join; stderr:\n{err}"
     );
 }
+
+/// Round-8 mutation-testing gap (sdet periphery pass): `starts_new_element`'s heading arm
+/// (a line starting with `#`) is what stops the paragraph joiner at a structural boundary.
+/// This spec puts an "either" clause immediately before a heading and its would-be "or"
+/// immediately after, with NO blank line separating either from the heading: two
+/// standalone, unrelated fragments that must never be read as one hedge. If the heading
+/// were not recognized as a new element, the joiner would fuse both fragments into a
+/// single haystack and misfire F4 across the boundary; because it correctly stops the
+/// paragraph at the heading, "either the automatic retry" alone pairs with no "or" and the
+/// heading-plus-tail paragraph alone contains no "either", so F4 stays silent on both.
+#[test]
+fn validate_does_not_fuse_a_hedge_across_a_heading_boundary() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Design\n\n\
+         the recovery approach is either the automatic retry\n\
+         ## Constraints\n\
+         or the manual escalation, undecided which path applies.\n\n\
+         ## Done when\n\n- [ ] the daemon retries on failure. This criterion OWNS retry.\n";
+    let spec_path = root.join("spec.md");
+    std::fs::write(&spec_path, spec).unwrap();
+
+    let (_out, err, ok) = run_rigger(root, &["validate", spec_path.to_str().unwrap()]);
+    assert!(ok, "validate must succeed; stderr:\n{err}");
+    assert!(
+        !err.contains("F4 disposition"),
+        "a heading between an \"either\" fragment and an unrelated \"or\" fragment must \
+         stop the paragraph join - the two must never read as one fused hedge; \
+         stderr:\n{err}"
+    );
+}
+
+/// Round-8 mutation-testing gap (sdet periphery pass), the table-row twin of the heading
+/// case above: `starts_new_element`'s table-row arm (a line starting with `|`) must also
+/// stop the paragraph joiner, so an "either" fragment before a table row and an unrelated
+/// "or" fragment after it are never fused into one hedge.
+#[test]
+fn validate_does_not_fuse_a_hedge_across_a_table_row_boundary() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Design\n\n\
+         the recovery approach is either the automatic retry\n\
+         | before | after |\n\
+         or the manual escalation, undecided which path applies.\n\n\
+         ## Done when\n\n- [ ] the daemon retries on failure. This criterion OWNS retry.\n";
+    let spec_path = root.join("spec.md");
+    std::fs::write(&spec_path, spec).unwrap();
+
+    let (_out, err, ok) = run_rigger(root, &["validate", spec_path.to_str().unwrap()]);
+    assert!(ok, "validate must succeed; stderr:\n{err}");
+    assert!(
+        !err.contains("F4 disposition"),
+        "a table row between an \"either\" fragment and an unrelated \"or\" fragment must \
+         stop the paragraph join - the two must never read as one fused hedge; \
+         stderr:\n{err}"
+    );
+}
