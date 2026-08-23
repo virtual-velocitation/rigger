@@ -2919,6 +2919,15 @@ fn refuse_when_base_lacks_spec_paths(
 /// the DAG to integration. The store is selected by flag and wrapped in the
 /// per-project namespace decorator before it is injected (§5.1.1, R9).
 fn run_cli(parsed: &RunArgs) -> Res {
+    // DISCOVERABILITY (spec 66, criterion 5): `rigger run <spec>` is a REAL pre-launch
+    // surface that genuinely holds the spec path in production (unlike the SessionStart-only
+    // `rigger prime` hook, which the installed hook always invokes with zero args - see
+    // `spec_lint_next_step`'s doc comment). Printed FIRST, before any config load or base
+    // check, so the reminder survives every downstream refusal or failure path, not only a
+    // successful run.
+    if let Some(spec) = &parsed.spec {
+        println!("{}", spec_lint_next_step(spec));
+    }
     // Refuse before starting if a gating persona would stall the integration gate (spec 18,
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
     let cfg = load_run_config(".")?;
@@ -3227,6 +3236,14 @@ fn cmd_workflow(args: &[String]) -> Res {
     // `rigger workflow [spec] [--base <ref>]`: an optional spec path and the run-branch base
     // (spec 18, criterion 6). A second positional or a valueless --base is a clear error.
     let (spec, base) = parse_workflow_args(args)?;
+    // DISCOVERABILITY (spec 66, criterion 5): `rigger workflow <spec>` is a REAL pre-launch
+    // surface that genuinely holds the spec path in production (unlike the SessionStart-only
+    // `rigger prime` hook - see `spec_lint_next_step`'s doc comment). Printed before locating
+    // or launching the JS driver, so the reminder survives an un-provisioned shim or any
+    // other launch failure below.
+    if let Some(spec) = &spec {
+        println!("{}", spec_lint_next_step(spec));
+    }
     let shim = locate_shim(Path::new("."))?;
     // The shim spawns `rigger serve` itself; point it at THIS binary so the driver
     // and the served conductor are always the same build (no PATH ambiguity).
@@ -10272,8 +10289,17 @@ fn docs_drift_failure(root: &Path) -> Option<String> {
 /// "next steps" surface prints when a spec path is in play, naming `rigger validate
 /// <spec>` - the mechanical pre-launch spec lint (spec 18/66) - as a next step. Single-
 /// sourced so every such surface says the exact same thing rather than each inventing its
-/// own wording (`cmd_prime` is the current caller; a second pre-launch surface that later
-/// learns a spec path reuses this rather than re-deriving the line).
+/// own wording.
+///
+/// Callers: `run_cli` (`rigger run <spec>`) and `cmd_workflow` (`rigger workflow <spec>`)
+/// are the surfaces that GENUINELY hold a spec path at the real pre-launch moment in
+/// production, so they are the ones that make this criterion's "reaches every consumer"
+/// promise true. `cmd_prime` also calls this when given an explicit spec arg, but its own
+/// sole AUTOMATIC caller - the installed Claude Code SessionStart hook (`src/hooks.rs`) -
+/// always invokes it with zero args (the hook fires before any spec is ever chosen), so
+/// `cmd_prime`'s spec-arg branch is exercised only by a hand-typed `rigger prime <spec>`,
+/// never by that hook. It is kept (harmless, tested) for that manual use, not as this
+/// criterion's production path.
 fn spec_lint_next_step(spec_path: &str) -> String {
     format!(
         "next: `rigger validate {spec_path}` checks the spec's shape (multi-behavior \
