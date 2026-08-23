@@ -410,16 +410,38 @@ pub fn disposition_advisories(text: &str) -> Vec<LintAdvisory> {
     let notes = notes_section_lines(text);
     let fenced = fenced_code_lines(text);
     let owners = line_criterion(text);
+    let lines: Vec<&str> = text.lines().collect();
     let mut out = Vec::new();
-    for (i, line) in text.lines().enumerate() {
-        if notes[i] || fenced[i] {
+    // Scan LOGICAL PARAGRAPHS, not physical lines: this repo hard-wraps prose, so a
+    // hedge split across a wrap ("either X\nor Y") is one sentence to a reader and must
+    // be one haystack to the lint (the same block-join reasoning `criterion_blocks`
+    // applies for F1). A paragraph is a maximal run of unmasked, non-empty lines whose
+    // continuations do not START a new structural element (bullet, heading, table row,
+    // fence); paragraphs are DISJOINT, so a hedge is reported exactly once, attributed
+    // to the paragraph's first line's criterion owner.
+    let mut i = 0;
+    while i < lines.len() {
+        if notes[i] || fenced[i] || lines[i].trim().is_empty() {
+            i += 1;
             continue;
         }
-        let prose = strip_inline_code(line);
-        if let Some(phrase) = disposition_smell(&prose) {
+        let start = i;
+        let mut joined = strip_inline_code(lines[i]);
+        i += 1;
+        while i < lines.len()
+            && !notes[i]
+            && !fenced[i]
+            && !lines[i].trim().is_empty()
+            && !starts_new_element(lines[i])
+        {
+            joined.push(' ');
+            joined.push_str(&strip_inline_code(lines[i]));
+            i += 1;
+        }
+        if let Some(phrase) = disposition_smell(&joined) {
             out.push(LintAdvisory {
                 class: "F4 disposition",
-                criterion: owners[i],
+                criterion: owners[start],
                 detail: format!(
                     "open disposition (\"{phrase}\") outside Notes; decide it in Design or \
                      move it to Notes as an explicit deferral"
@@ -428,6 +450,19 @@ pub fn disposition_advisories(text: &str) -> Vec<LintAdvisory> {
         }
     }
     out
+}
+
+/// True when `line` begins a NEW structural element rather than continuing the previous
+/// line's hard-wrapped sentence: a bullet (`- ` / `* `), a checkbox item, a heading, a
+/// table row, or a fence opener. The paragraph joiner in [`disposition_advisories`]
+/// breaks on these so two adjacent bullets never merge into one false haystack.
+fn starts_new_element(line: &str) -> bool {
+    let t = line.trim_start();
+    t.starts_with("- ")
+        || t.starts_with("* ")
+        || t.starts_with('#')
+        || t.starts_with('|')
+        || t.starts_with("```")
 }
 
 /// The first draft-smell phrase `prose` contains, case-insensitively, or `None`.
@@ -485,8 +520,8 @@ fn clause_end(lower: &str, from: usize) -> usize {
         .map_or(lower.len(), |rel| from + rel)
 }
 
-/// True when the standalone word immediately preceding the "either" match at `either_pos`
-/// (byte offset into `lower`) is "satisfied" - the field guide's own decided-disposition
+/// True when the nearest word before the "either" match at `either_pos` (byte offset
+/// into `lower`) is an unnegated "satisfied" - the field guide's own decided-disposition
 /// idiom. "Satisfied either by A or by B" names two concrete, already-accepted satisfaction
 /// paths (e.g. specs/68's Global constraints and every Done-when criterion: "each may be
 /// satisfied either by fresh implementation or by independently re-verifying
@@ -496,16 +531,33 @@ fn clause_end(lower: &str, from: usize) -> usize {
 /// (`adj-u66c3-r5-reject-selfclean-live-violation`) found `disposition_smell` false-firing
 /// on exactly this idiom, 5 times, on real committed spec prose.
 ///
-/// The match is a proper trailing WORD, not a bare suffix: `lower[..either_pos]`'s trailing
-/// run of alphanumeric/hyphen characters must equal "satisfied" exactly, so a negated form
-/// like "unsatisfied either ... or ..." (a different word, "un" fused with no boundary) is
-/// NOT exempt and still reads as an open hedge.
+/// The match is TOKEN-BASED, generalizing the round-6 rejects instead of patching a
+/// seventh literal: the nearest WORD before "either" - punctuation between them ignored,
+/// so the comma-separated form "satisfied, either by A or by B" reads as the same decided
+/// idiom - must be "satisfied" exactly (a fused negation like "unsatisfied" is a
+/// different token and stays an open hedge). NEGATION SCOPE: a negator among the two
+/// tokens before "satisfied" ("not satisfied either", "not yet satisfied either")
+/// cancels the exemption - an explicitly negated satisfaction is an OPEN question, the
+/// exact opposite of a decided one.
 fn is_decided_disposition(lower: &str, either_pos: usize) -> bool {
-    let before = lower[..either_pos].trim_end();
-    let word_start = before
-        .rfind(|c: char| !(c.is_alphanumeric() || c == '-'))
-        .map_or(0, |i| i + 1);
-    &before[word_start..] == "satisfied"
+    let words = trailing_words(lower, either_pos, 3);
+    if words.first() != Some(&"satisfied") {
+        return false;
+    }
+    const NEGATORS: [&str; 6] = ["not", "never", "cannot", "no", "neither", "nor"];
+    !words[1..].iter().any(|w| NEGATORS.contains(w))
+}
+
+/// The last `n` whole words (alphanumeric/hyphen runs) of `lower[..pos]`, nearest first.
+/// The token walk behind [`is_decided_disposition`]: punctuation and whitespace between
+/// words carry no meaning here, only the words themselves and their order.
+fn trailing_words(lower: &str, pos: usize, n: usize) -> Vec<&str> {
+    lower[..pos]
+        .split(|c: char| !(c.is_alphanumeric() || c == '-'))
+        .filter(|w| !w.is_empty())
+        .rev()
+        .take(n)
+        .collect()
 }
 
 /// The byte position of `word` as a STANDALONE word inside `haystack` (a character that is

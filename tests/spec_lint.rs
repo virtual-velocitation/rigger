@@ -944,11 +944,30 @@ fn spec_lint_self_clean_over_the_committed_corpus() {
         "no committed spec may carry a U+2014 em dash - the diff gate forbids it, so this \
          must always be zero"
     );
+    // A regression SNAPSHOT, not a zero-false-positive claim (the spec's own Design:
+    // historical specs are advisory output, never a test failure). specs/57 is the one
+    // known-GENUINE hedge ("either retires or re-points ... whichever the surviving
+    // command surface makes honest" - an explicitly open question). specs/18, 73, and 74
+    // are decided ENUMERATIONS ("each fix either refuses ... or makes visible", "is
+    // either KILLED ... or JUSTIFIED", "either side is unversioned" beside a faraway
+    // "or") that became visible when F4 gained the cross-line paragraph join
+    // (adv-u66c3-r6-crossline-hedge-invisible-to-f4): mechanically hedge-shaped,
+    // semantically decided - tolerated advisory noise on historical prose by the
+    // Design's own rule. The snapshot keeps the net taut both ways: a NEW name here is
+    // a false-positive regression to investigate, and 57 vanishing is a recall
+    // regression - either way this assertion fails loudly rather than drifting.
     assert_eq!(
         f4_hits,
-        vec!["57-retire-turbovec.md".to_string()],
-        "F4 disposition must fire on EXACTLY specs/57's known-genuine hedge and nowhere \
-         else across the whole committed corpus; got: {f4_hits:?}"
+        vec![
+            "18-fail-fast-validation.md".to_string(),
+            "57-retire-turbovec.md".to_string(),
+            "73-mutation-testing-implementer-efficacy.md".to_string(),
+            "74-version-increments-with-the-tree.md".to_string(),
+        ],
+        "F4's committed-corpus fire set must match the reviewed snapshot (57 genuine; \
+         18/73/74 decided-enumeration advisory noise per the Design's \
+         historical-specs-are-advisory rule); a new name is a false-positive regression, \
+         a missing one a recall regression; got: {f4_hits:?}"
     );
     assert_eq!(
         f1_total, 194,
@@ -1054,5 +1073,90 @@ fn validate_still_flags_a_genuine_hedge_after_an_earlier_non_disjunctive_either_
          earlier non-disjunctive \"either\" (\"either surface\") on the same line must still \
          be flagged on the real binary - the scan must not stop at the first \"either\"; \
          stderr:\n{err}"
+    );
+}
+
+/// Round-6 upheld finding sdet-u66c3-r6-decided-disposition-comma-boundary-still-false-fires
+/// (the escalation remedy): the decided-disposition idiom survives intervening punctuation -
+/// "satisfied, either by X or by Y" is the same decided shape as "satisfied either by X or
+/// by Y", so the exemption is token-based (nearest WORD before "either"), never
+/// adjacent-characters-based.
+#[test]
+fn validate_exempts_the_comma_separated_decided_disposition() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Design\n\n\
+         each criterion may be satisfied, either by fresh implementation or by \
+         re-verifying already-integrated code.\n\n\
+         ## Done when\n\n- [ ] the daemon retries on failure. This criterion OWNS retry.\n";
+    let spec_path = root.join("spec.md");
+    std::fs::write(&spec_path, spec).unwrap();
+
+    let (_out, err, ok) = run_rigger(root, &["validate", spec_path.to_str().unwrap()]);
+    assert!(ok, "validate must succeed; stderr:\n{err}");
+    assert!(
+        !err.contains("F4 disposition"),
+        "\"satisfied, either ... or\" is the decided-disposition idiom with a comma - the \
+         exemption must survive intervening punctuation; stderr:\n{err}"
+    );
+}
+
+/// Round-6 upheld finding sdet-u66c3-r6-spaced-negation-wrongly-exempts-a-real-open-hedge
+/// (the escalation remedy): an explicitly NEGATED satisfaction ("not yet satisfied
+/// either ... or ...") is an open question, the opposite of a decided disposition - a
+/// negator within the two tokens before "satisfied" cancels the exemption.
+#[test]
+fn validate_still_flags_a_spaced_negation_before_the_decided_idiom() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Design\n\n\
+         the recovery criterion is not yet satisfied either by an automatic retry or by a \
+         manual escalation.\n\n\
+         ## Done when\n\n- [ ] the daemon retries on failure. This criterion OWNS retry.\n";
+    let spec_path = root.join("spec.md");
+    std::fs::write(&spec_path, spec).unwrap();
+
+    let (_out, err, ok) = run_rigger(root, &["validate", spec_path.to_str().unwrap()]);
+    assert!(ok, "validate must succeed; stderr:\n{err}");
+    assert!(
+        err.contains("F4 disposition"),
+        "\"not yet satisfied either ... or\" is an explicitly negated satisfaction - an \
+         open hedge the exemption must not swallow; stderr:\n{err}"
+    );
+}
+
+/// Round-6 upheld finding adv-u66c3-r6-crossline-hedge-invisible-to-f4 (the escalation
+/// remedy): this repo hard-wraps prose, so a hedge split across a wrap is one sentence to
+/// a reader and must be one haystack to the lint - F4 scans logical paragraphs (joined
+/// continuation lines), not physical lines.
+#[test]
+fn validate_flags_a_hedge_split_across_hard_wrapped_lines() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Design\n\n\
+         on a failure the daemon either retries the whole request with a fresh\n\
+         connection or escalates to the operator, undecided which.\n\n\
+         ## Done when\n\n- [ ] the daemon retries on failure. This criterion OWNS retry.\n";
+    let spec_path = root.join("spec.md");
+    std::fs::write(&spec_path, spec).unwrap();
+
+    let (_out, err, ok) = run_rigger(root, &["validate", spec_path.to_str().unwrap()]);
+    assert!(ok, "validate must succeed; stderr:\n{err}");
+    assert!(
+        err.contains("F4 disposition"),
+        "a hedge split across a hard wrap (\"either ...\\n... or ...\") is one sentence \
+         and must still be seen by F4's paragraph join; stderr:\n{err}"
     );
 }
