@@ -9937,11 +9937,18 @@ fn validate_spec_flags_shape_defects_as_named_advisories_and_is_silent_on_a_clea
         "the sub-bullet advisory must name the offending bullet; stderr:\n{err}"
     );
 
-    // A clean single-behavior spec: NO spec-shape advisory at all.
+    // A clean single-behavior spec: NO spec-shape advisory at all. Spec 66 (unit c3) adds
+    // an ownership (F1) check that also activates at three-plus criteria, so each checkbox
+    // here carries an explicit OWNS sentence - a genuinely clean spec is clean across BOTH
+    // the shape lint this test originally proved AND the newer ownership lint, not just
+    // the former.
     let clean_spec = "# Widget\n\n## Done when\n\n\
-         - [ ] the store passes the contract suite\n\
-         - [ ] the graph projector supersedes an older decision\n\
-         - [ ] the conductor integrates an approved unit\n";
+         - [ ] the store passes the contract suite. This criterion OWNS the contract \
+         coverage.\n\
+         - [ ] the graph projector supersedes an older decision. This criterion OWNS the \
+         supersede path.\n\
+         - [ ] the conductor integrates an approved unit. This criterion OWNS the \
+         integration step.\n";
     let clean_path = root.join("clean-spec.md");
     std::fs::write(&clean_path, clean_spec).unwrap();
 
@@ -9949,7 +9956,8 @@ fn validate_spec_flags_shape_defects_as_named_advisories_and_is_silent_on_a_clea
     assert!(ok, "validate must succeed on a clean spec; stderr:\n{err}");
     assert!(
         !err.contains("warning: spec "),
-        "a clean single-behavior spec must yield no spec-shape advisory; stderr:\n{err}"
+        "a clean single-behavior, fully-owned spec must yield no spec-lint advisory; \
+         stderr:\n{err}"
     );
 }
 
