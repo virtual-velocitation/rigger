@@ -6,7 +6,11 @@
 //!
 //! What this file OWNS: the end-to-end `cmd_validate` wiring (the compiled binary's
 //! stdout/stderr/exit code on a real spec file), driving the real binary so the observable
-//! surface an operator sees is pinned exactly. NOT owned: the pure lint heuristics
+//! surface an operator sees is pinned exactly, PLUS the corpus-wide SELF-CLEAN regression
+//! guard (`spec_lint_self_clean_over_the_committed_corpus`) the mid-run Design amendment
+//! `d66-lint-heuristic-semantics` requires - that one test calls `rigger::spec` directly
+//! (walking every committed `specs/*.md` through the real binary would be prohibitively
+//! slow) rather than driving the compiled binary. NOT owned: the pure lint heuristics
 //! themselves (ownership/disposition/hygiene detection, Notes/fence/inline-code exclusion),
 //! which carry their own unit tests beside their implementation in `src/spec.rs`.
 
@@ -775,5 +779,190 @@ fn validate_spec_does_not_weld_own_and_er_into_owner_across_a_wrapped_continuati
         "criterion 1 has no real OWNS/owner sentence - \"own\" and \"er\" sit on separate \
          physical lines and must NOT be welded into a false standalone \"owner\" match on \
          the real binary; stderr:\n{err}"
+    );
+}
+
+/// Round-5 REJECT remedy (`adj-u66c3-r5-reject-selfclean-live-violation`,
+/// `adv-u66c3-r5-f4-either-or-false-fires-on-a-decided-disposition-rule`): F4 fired 5 times
+/// on specs/68's own "Disposition: satisfied either by fresh implementation or by
+/// independently re-verifying already-integrated code..., evidence bar = ..." clause
+/// (Global constraints plus all four Done-when criteria) - a decided evidence-acceptance
+/// policy naming two concrete, already-accepted paths, not an open hedge. Reproduced
+/// against the REAL committed governing spec file (the adversary's own required
+/// reproduction, `./target/debug/rigger validate specs/68-ship-the-operating-discipline.md`)
+/// so a regression in the decided-disposition exemption is caught at the observable
+/// boundary, not only inside `src/spec.rs`'s own unit tests.
+#[test]
+fn validate_does_not_flag_specs_68_own_satisfied_either_or_disposition_clause() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec68 = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("specs")
+        .join("68-ship-the-operating-discipline.md");
+    let (out, err, ok) = run_rigger(root, &["validate", spec68.to_str().unwrap()]);
+    assert!(
+        ok,
+        "spec-lint advisories are heuristic warnings, never a hard failure; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        !err.contains("F4 disposition"),
+        "specs/68's own \"satisfied either ... or ...\" decided-disposition clause (Global \
+         constraints plus all four Done-when criteria) must no longer self-trip F4 on the \
+         real binary; stderr:\n{err}"
+    );
+}
+
+/// The decided-disposition exemption is scoped to the "satisfied either" idiom, not a
+/// blanket F4 suppression: specs/57's genuine, unresolved hedge ("reindex either retires or
+/// re-points to the symbol index, whichever the surviving command surface makes honest")
+/// must still be flagged on the real binary - proving the fix closes the false-positive
+/// side of the defect without silently reopening the false-negative side.
+#[test]
+fn validate_still_flags_specs_57_genuine_either_or_hedge() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec57 = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("specs")
+        .join("57-retire-turbovec.md");
+    let (out, err, ok) = run_rigger(root, &["validate", spec57.to_str().unwrap()]);
+    assert!(
+        ok,
+        "spec-lint advisories are heuristic warnings, never a hard failure; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        err.contains("F4 disposition"),
+        "specs/57's genuine unresolved either...or hedge must still be flagged on the real \
+         binary - the decided-disposition exemption must not blanket-suppress F4; \
+         stderr:\n{err}"
+    );
+}
+
+/// Corpus-wide sweep residual: specs/68 criterion 1's "cannot bypass either surface" uses
+/// "either" in its ordinary, non-disjunctive sense ("one of the two"), with a genuine
+/// standalone "or" only much later, in an unrelated clause ("installs, replaces, or
+/// modifies"). Before the either...or pairing was bounded to one grammatical clause, this
+/// unrelated pair false-fired F4 on criterion 1 even after the "satisfied either" exemption
+/// closed the other four hits on the same file. Reproduced on the real binary against the
+/// full committed spec 68, including this exact criterion.
+#[test]
+fn validate_does_not_pair_a_non_disjunctive_either_with_a_faraway_or_on_specs_68() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec68 = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("specs")
+        .join("68-ship-the-operating-discipline.md");
+    let (out, err, ok) = run_rigger(root, &["validate", spec68.to_str().unwrap()]);
+    assert!(
+        ok,
+        "spec-lint advisories are heuristic warnings, never a hard failure; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        !err.contains("(criterion 1)"),
+        "criterion 1's non-disjunctive \"either surface\" must not pair with the faraway, \
+         unrelated \"or\" in \"installs, replaces, or modifies\" on the real binary; \
+         stderr:\n{err}"
+    );
+}
+
+/// Round-5 REJECT remedy (2): the mid-run Design amendment (`d66-lint-heuristic-semantics`,
+/// LIVE, unchallenged) pins SELF-CLEAN as spec 66's acceptance property - `rigger validate`
+/// over every committed `specs/*.md` at HEAD raises zero FALSE lint findings, across all
+/// four classes. Whether a given finding is "false" has no automated oracle beyond a
+/// human reading the spec (the same manual cross-check sdet and the adversary ran by hand,
+/// `sdet-u66c3-r5-self-clean-not-proven-by-test`, `adv-u66c3-r5-not-yet-clean-live-selfclean-
+/// violation`), so this test pins that human-vetted result as an executable regression
+/// guard: hygiene is verifiably zero everywhere (a real invariant - the diff gate forbids
+/// U+2014 anywhere, so no committed spec ever carries one); F4 disposition fires on EXACTLY
+/// the one known-genuine hedge (specs/57) and nowhere else, closing the class that broke
+/// this property five rounds running; and F1 ownership / F2+F6 shape - independently
+/// cross-checked as legitimate findings by sdet's and the adversary's round-5 manual sweeps -
+/// are pinned to their current corpus-wide totals, so ANY future drift (a new false
+/// positive, or a lint change that silently drops a true one) fails this test and forces a
+/// conscious human review before it can land, the same way the F4 defect should have been
+/// caught five rounds ago instead of by hand.
+#[test]
+fn spec_lint_self_clean_over_the_committed_corpus() {
+    let specs_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("specs");
+    let mut entries: Vec<_> = std::fs::read_dir(&specs_dir)
+        .expect("read specs/ directory")
+        .map(|e| e.expect("read specs/ dir entry").path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("md"))
+        .collect();
+    entries.sort();
+    assert!(
+        entries.len() >= 3,
+        "sanity: the committed specs/ corpus must be non-trivial; got {} files",
+        entries.len()
+    );
+
+    let mut f1_total = 0usize;
+    let mut shape_total = 0usize;
+    let mut hygiene_total = 0usize;
+    let mut f4_hits: Vec<String> = Vec::new();
+
+    for path in &entries {
+        let text = std::fs::read_to_string(path).expect("read committed spec file");
+        let advisories = rigger::spec::spec_lint_advisories(&text);
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        for a in &advisories {
+            match a.class {
+                "F1 ownership" => f1_total += 1,
+                "F2 bundling" | "F6 copyability" => shape_total += 1,
+                "hygiene" => hygiene_total += 1,
+                "F4 disposition" => f4_hits.push(name.clone()),
+                other => panic!("unknown lint class {other:?} on {name}; got: {a}"),
+            }
+        }
+    }
+
+    assert_eq!(
+        hygiene_total, 0,
+        "no committed spec may carry a U+2014 em dash - the diff gate forbids it, so this \
+         must always be zero"
+    );
+    assert_eq!(
+        f4_hits,
+        vec!["57-retire-turbovec.md".to_string()],
+        "F4 disposition must fire on EXACTLY specs/57's known-genuine hedge and nowhere \
+         else across the whole committed corpus; got: {f4_hits:?}"
+    );
+    assert_eq!(
+        f1_total, 194,
+        "F1 ownership's corpus-wide total is pinned to sdet's round-5 independently \
+         cross-checked count (every one of 194 hits verified against the raw checkbox text \
+         for an actual owns/owner word, zero false positives); a changed total means either \
+         a real spec edit (update this pin after reviewing the new/removed hits) or a \
+         regression in the heuristic"
+    );
+    assert_eq!(
+        shape_total, 74,
+        "F2 bundling / F6 copyability's corpus-wide total is pinned as a regression guard \
+         (spot-checked legitimate by the round-5 adversary sweep); a changed total means \
+         either a real spec edit (update this pin after reviewing the new/removed hits) or \
+         a regression in the heuristic"
     );
 }
