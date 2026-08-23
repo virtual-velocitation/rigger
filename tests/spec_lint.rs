@@ -684,3 +684,96 @@ fn validate_spec_recognizes_owner_inside_a_hyphenated_compound() {
          \"owner\" inside it on the real binary; stderr:\n{err}"
     );
 }
+
+/// Round-5 residual gap: the fix commit's own periphery tests (the two above) both prove
+/// the round-4 REJECT remedy through the "owns" half of `carries_owner_sentence`'s
+/// `find_word_across_hyphen(&lower, "owns").is_some() || affirmative_owner_occurs(&lower)`,
+/// which short-circuits before `affirmative_owner_occurs` ever runs. The remedy's own
+/// doc comment and commit message both claim a standalone "owner" (not just "owns") wins
+/// over an unrelated denial elsewhere in the block, but no test at any layer ever
+/// constructs a block whose ONLY affirmative signal is a standalone "owner" word coexisting
+/// with an unrelated "no owner" denial, the exact scenario `affirmative_owner_occurs` and
+/// `denied_owner_positions` exist to arbitrate. Reproduced here on the real binary with no
+/// "owns" word anywhere in the fixture, so the assertion can only pass if the
+/// "owner"-specific position-exclusion logic itself is correct.
+#[test]
+fn validate_spec_lets_a_standalone_owner_win_over_an_unrelated_denial_elsewhere() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Done when\n\n\
+         - [ ] the daemon writes a pidfile; no owner is named for the legacy format \
+         quirk, but the widget team is the owner of this criterion overall.\n\
+         - [ ] the store passes the contract suite. This criterion OWNS the contract \
+         coverage.\n\
+         - [ ] the graph projector supersedes an older decision. This criterion OWNS the \
+         supersede path.\n";
+    let path = root.join("standalone-owner-wins-spec.md");
+    std::fs::write(&path, spec).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["validate", path.to_str().unwrap()]);
+    assert!(
+        ok,
+        "spec-lint advisories are heuristic warnings, never a hard failure; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        !err.contains("(criterion 1)"),
+        "criterion 1's unrelated \"no owner\" mention must not veto its own separate, \
+         genuine standalone \"owner\" claim later in the same block - the block contains no \
+         \"owns\" word at all, so this can only pass if the \"owner\"-specific \
+         position-exclusion logic itself is correct on the real binary; stderr:\n{err}"
+    );
+}
+
+/// Round-5 mutation-accounting closed a genuine coverage gap in `criterion_blocks`'s
+/// line-join (`d-u66c3-r5-mutation-accounting`): deleting the `!` guard that skips a
+/// leading space before the block's first line silently drops the JOINING space between
+/// every later wrapped-continuation line instead, welding two independent words across a
+/// line break into one - e.g. a checkbox whose first physical line ends "own" and whose
+/// continuation line starts "er ..." welds into the exact five letters "owner", which
+/// passes `find_word_across_hyphen`'s own boundary check on both sides. The implementer's
+/// remedy (`ownership_check_does_not_let_a_dropped_word_boundary_weld_own_and_er_into_owner`)
+/// pins this only at the private-helper unit layer; reproduced here through the real binary
+/// so a regression in the joining space is caught at the observable boundary too, not only
+/// inside `src/spec.rs mod tests`.
+#[test]
+fn validate_spec_does_not_weld_own_and_er_into_owner_across_a_wrapped_continuation_line() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Done when\n\n\
+         - [ ] the widget locks down its own\n\
+         \x20\x20er and simpler path through the config.\n\
+         - [ ] the store passes the contract suite. This criterion OWNS the contract \
+         coverage.\n\
+         - [ ] the graph projector supersedes an older decision. This criterion OWNS the \
+         supersede path.\n";
+    let path = root.join("own-er-weld-spec.md");
+    std::fs::write(&path, spec).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["validate", path.to_str().unwrap()]);
+    assert!(
+        ok,
+        "spec-lint advisories are heuristic warnings, never a hard failure; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        err.contains("F1 ownership") && err.contains("(criterion 1)"),
+        "criterion 1 has no real OWNS/owner sentence - \"own\" and \"er\" sit on separate \
+         physical lines and must NOT be welded into a false standalone \"owner\" match on \
+         the real binary; stderr:\n{err}"
+    );
+}
