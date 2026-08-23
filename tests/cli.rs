@@ -13491,6 +13491,157 @@ fn validate_docs_drift_gate_covers_the_second_registry_entry() {
     );
 }
 
+/// Spec 66, criterion 2 (the render pipeline covers the WHOLE handbook-page list, end to
+/// end): `rigger docs` renders EVERY entry in the binary's handbook-page list - not only the
+/// pre-existing `using-rigger.md` discipline chapter, but the second, generalized entry
+/// `docs/handbook/planning-field-guide.md` too - carrying its real failure-catalog content.
+/// This mirrors `docs_renders_every_registry_skill_including_planning_a_spec` (spec 68,
+/// criterion 1) one layer over: THAT test proves the SKILL registry's generalization reaches
+/// a second skill; this one proves the separate HANDBOOK-PAGE list's generalization reaches
+/// a second handbook page. Driving the real binary proves the whole composition path
+/// (docs_context -> render_planning_field_guide -> write) actually produces the committed
+/// file an author commits and the drift check re-renders against - the class of regression
+/// an in-process test that only checks the returned path list (names/paths match, but the
+/// loop silently re-renders entry 1 twice, or writes entry 2's bytes to entry 1's path)
+/// cannot catch.
+#[test]
+fn docs_renders_the_planning_field_guide_second_handbook_page() {
+    let proj = temp_project();
+    let root = proj.path();
+
+    let (stdout, stderr, ok) = run_rigger(root, &["docs"]);
+    assert!(ok, "rigger docs must succeed; stderr: {stderr}");
+    assert!(
+        stdout.contains("using-rigger.md") && stdout.contains("planning-field-guide.md"),
+        "rigger docs must report rendering BOTH handbook pages; got: {stdout}"
+    );
+
+    let handbook_path = root.join("docs/handbook/using-rigger.md");
+    let guide_path = root.join("docs/handbook/planning-field-guide.md");
+    assert!(
+        handbook_path.exists(),
+        "the pre-existing handbook chapter must still be rendered"
+    );
+    let handbook = std::fs::read_to_string(&handbook_path)
+        .expect("the pre-existing handbook chapter must still be readable");
+    let guide = std::fs::read_to_string(&guide_path)
+        .expect("rigger docs must have written the second handbook page to disk");
+
+    // The rendered file carries the field guide's real content, not a stub or the wrong
+    // entry's bytes: its title, its full F1-F9 failure catalog (every class, not a subset),
+    // the mid-run amendment protocol, and the measured-outcomes close.
+    assert!(
+        guide.starts_with("# Planning a loop run: the field guide"),
+        "the guide must open with its own title; got: {}",
+        &guide[..guide.len().min(60)]
+    );
+    for class in [
+        "### F1 - Duplicated or ambiguously-owned units",
+        "### F2 - Bundled criteria",
+        "### F3 - The self-contradictory spec",
+        "### F4 - Open dispositions",
+        "### F5 - State that lives in the wrong place",
+        "### F6 - Criteria that cannot survive verbatim copying",
+        "### F7 - Unpinned environment",
+        "### F8 - Infra noise misread as semantic failure",
+        "### F9 - Unbounded claim surface",
+    ] {
+        assert!(
+            guide.contains(class),
+            "the rendered guide must carry catalog class {class:?}; got:\n{guide}"
+        );
+    }
+    assert!(
+        guide.contains("## Amending a spec mid-run")
+            && guide.contains("## What good looks like, measured"),
+        "the rendered guide must carry the amendment protocol and the measured-outcomes \
+         close; got:\n{guide}"
+    );
+
+    // Byte-stable across runs (the drift check depends on it), and the untouched first entry
+    // is undisturbed by rendering the second.
+    let (_o2, _e2, ok2) = run_rigger(root, &["docs"]);
+    assert!(ok2);
+    assert_eq!(
+        std::fs::read_to_string(&guide_path).unwrap(),
+        guide,
+        "a second render of the second handbook-page entry must be byte-identical"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&handbook_path).unwrap(),
+        handbook,
+        "the untouched first entry is byte-identical after rendering the second"
+    );
+}
+
+/// Spec 66, criterion 2 (the docs-drift GATE covers the WHOLE handbook-page list, end to
+/// end): `rigger validate` FAILS when the committed planning field guide - the second entry
+/// in the binary's handbook-page list - drifts from a fresh render, even while the
+/// pre-existing `using-rigger.md` chapter and every registry skill stay perfectly in sync;
+/// and it stays SILENT about those untouched outputs. Mirrors
+/// `validate_docs_drift_gate_covers_the_second_registry_entry` (spec 68, criterion 1) for the
+/// separate handbook-page list: proves the drift gate was not merely widened to accept a
+/// second handbook file without actually CHECKING it byte-for-byte - a class the
+/// implementer's in-process `docs_drift` unit test (which drives `docs_drift` by calling the
+/// Rust function directly, never through the built binary's argument parsing and exit-code
+/// plumbing) cannot rule out.
+#[test]
+fn validate_docs_drift_gate_covers_the_planning_field_guide_page() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_o, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    let (_o, err, ok) = run_rigger(root, &["docs"]);
+    assert!(ok, "rigger docs must succeed; stderr:\n{err}");
+
+    let guide_path = root.join("docs/handbook/planning-field-guide.md");
+    let handbook_path = root.join("docs/handbook/using-rigger.md");
+    let skill_path = root.join("skills/using-rigger/SKILL.md");
+    assert!(
+        guide_path.exists(),
+        "rigger docs must have written the planning field guide handbook page"
+    );
+
+    // IN SYNC -> validate passes.
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "validate must pass when every handbook page is in sync; stderr:\n{err}"
+    );
+
+    // Drift ONLY the planning field guide; the pre-existing handbook and the skill stay fresh.
+    append_line(&guide_path, "hand-edited line the render never emits");
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        !ok,
+        "validate must FAIL when the planning field guide drifts, even though the original \
+         handbook chapter is untouched; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("docs/handbook/planning-field-guide.md") && err.contains("rigger docs"),
+        "the drift failure must name the drifted guide and the `rigger docs` fix; stderr:\n{err}"
+    );
+    assert!(
+        !err.contains("docs/handbook/using-rigger.md")
+            && !err.contains("skills/using-rigger/SKILL.md"),
+        "the untouched handbook chapter and skill must NOT be reported as drifted; stderr:\n{err}"
+    );
+
+    // Re-render restores sync -> validate passes again (the gate is not stuck failing).
+    let (_o, _e, ok) = run_rigger(root, &["docs"]);
+    assert!(ok, "re-rendering the docs must succeed");
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "validate must pass again once the guide's drift is re-rendered; stderr:\n{err}"
+    );
+    assert!(
+        handbook_path.exists() && skill_path.exists(),
+        "the untouched original entries were never disturbed and must still exist"
+    );
+}
+
 /// Spec 20, unit 3 (setup install + project overlay, end to end): `rigger setup` installs
 /// the rendered `using-rigger` skill as a file DISTINCT from the `/rigger` workflow, and a
 /// project overlay adds this repo's specifics (base branch, specs location) into the
