@@ -19545,3 +19545,83 @@ fn workflow_with_no_spec_path_never_mentions_the_spec_lint() {
         "bare `rigger workflow` (no spec path given) must not mention the spec lint; got:\n{out}"
     );
 }
+
+// --- Spec 66, criterion 5 (round 3): DISCOVERABILITY reaches `rigger step` - the PRIMARY,
+// most-used consumer (the native `/rigger <spec>` workflow's driver; see `cmd_step`'s own doc
+// comment). `run_cli` and `cmd_workflow` above hold the spec path at a one-shot launch moment,
+// but `cmd_step` is what actually reruns the pre-launch check on, so it must name the lint too -
+// on STDERR, never stdout, because `cmd_step` prints exactly one line of `{wave,done}` JSON on
+// stdout that a driver parses (see `acquire_step_lock`'s and `cmd_step`'s own doc comments); a
+// stdout reminder would corrupt that single-line contract.
+
+/// `rigger step --spec <path>` names the spec lint on STDERR, and stdout still carries nothing
+/// but the single-line `{wave,done}` JSON the driver parses - proving the reminder reaches the
+/// primary loop-driving surface without corrupting its wire contract.
+#[test]
+fn step_given_a_spec_path_names_the_spec_lint_on_stderr_without_corrupting_the_wave_json() {
+    let dir = temp_repoless_project();
+    let root = dir.path();
+    // A single stage whose `coverage:` matches the spec's one criterion VERBATIM, so the
+    // coverage gate (conductor::coverage_gap) is satisfied and the step actually reaches
+    // the wave-printing path instead of refusing on an unrelated criterion-coverage error -
+    // this test is about the reminder and the stdout wire contract, not decomposition.
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        "name: steptest\ndefaults:\n  grounder: nop\n  budget: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n    coverage: \"a test proves the thing works\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("specs.md"),
+        "# S\n\n## Done when\n\n- [ ] a test proves the thing works\n",
+    )
+    .unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["step", "--spec", "specs.md"]);
+    assert!(ok, "the step must still succeed; stderr: {err}");
+    assert!(
+        err.contains("rigger validate specs.md"),
+        "`rigger step --spec <path>` must name `rigger validate <path>` as a next step on \
+         stderr; got stderr:\n{err}"
+    );
+    let line = out.trim();
+    assert!(
+        !line.contains("rigger validate"),
+        "the reminder must NEVER leak onto stdout - that channel carries only the wave JSON a \
+         driver parses; got stdout:\n{out}"
+    );
+    assert!(
+        line.lines().count() == 1,
+        "stdout must still be exactly the one JSON line, not split by an interleaved reminder; \
+         got stdout:\n{out}"
+    );
+    let parsed: serde_json::Value =
+        serde_json::from_str(line).expect("stdout must still be valid, uncorrupted JSON");
+    assert!(
+        parsed.get("wave").is_some(),
+        "the parsed JSON must still carry the wave field; got: {parsed:?}"
+    );
+}
+
+/// `rigger step` with no `--spec` given must never mention the spec lint, mirroring `rigger
+/// run`'s and `rigger workflow`'s no-arg behavior (spec 66, criterion 5).
+#[test]
+fn step_with_no_spec_path_never_mentions_the_spec_lint() {
+    let dir = temp_repoless_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the step must succeed; stderr: {err}");
+    assert!(
+        !out.contains("rigger validate") && !err.contains("rigger validate"),
+        "bare `rigger step` (no --spec given) must not mention the spec lint anywhere; got \
+         stdout:\n{out}\nstderr:\n{err}"
+    );
+}
