@@ -19238,3 +19238,58 @@ fn prime_given_a_spec_path_names_the_spec_lint_alongside_recent_decisions() {
          step on the recent-decisions path too; got:\n{out}"
     );
 }
+
+/// The realistic invocation the two paths above only approximate: a project with ACTUAL
+/// recorded decisions (not an empty store falling to "(none yet)"). Structurally this walks
+/// the same final `if let Some(spec) = spec_path` line as the empty-store test above, but it
+/// is the one combination neither existing test drives - real decision content plus the spec
+/// arg together - so it is the only case that can catch the reminder line landing in the
+/// wrong place (e.g. interleaved between decisions, or lost past the top-10 cutoff) rather
+/// than appended once, after every decision line.
+#[test]
+fn prime_given_a_spec_path_names_the_spec_lint_after_real_decision_content() {
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    for (id, summary) in [("d-one", "first decision"), ("d-two", "second decision")] {
+        let (_out, err, ok) = run_rigger(
+            root,
+            &[
+                "emit",
+                "DecisionMade",
+                &format!(r#"{{"id":"{id}","summary":"{summary}","governs":["x.rs"]}}"#),
+            ],
+        );
+        assert!(
+            ok,
+            "seeding {id} via `rigger emit` must succeed; stderr:\n{err}"
+        );
+    }
+
+    let (out, err, ok) = run_rigger(root, &["prime", "specs/42-widgets.md"]);
+    assert!(
+        ok,
+        "`rigger prime <spec>` against a store with real decisions must succeed; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("- d-one: first decision") && out.contains("- d-two: second decision"),
+        "both seeded decisions must be listed; got:\n{out}"
+    );
+    let decisions_at = out
+        .find("- d-two: second decision")
+        .expect("decision line present");
+    let reminder_at = out
+        .find("rigger validate specs/42-widgets.md")
+        .expect("spec-lint reminder present");
+    assert!(
+        reminder_at > decisions_at,
+        "the spec-lint reminder must be appended AFTER the real decision listing, not \
+         interleaved with it or lost above it; got:\n{out}"
+    );
+    assert_eq!(
+        out.matches("rigger validate specs/42-widgets.md").count(),
+        1,
+        "the reminder must appear exactly once, not once per decision; got:\n{out}"
+    );
+}
