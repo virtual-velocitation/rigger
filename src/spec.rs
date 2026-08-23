@@ -347,23 +347,51 @@ fn criterion_blocks(text: &str) -> std::collections::BTreeMap<usize, String> {
 
 fn carries_owner_sentence(criterion: &str) -> bool {
     let lower = criterion.to_lowercase();
-    if denies_ownership(&lower) {
-        return false;
-    }
-    find_word(&lower, "owns").is_some() || find_word(&lower, "owner").is_some()
+    find_word_across_hyphen(&lower, "owns").is_some() || affirmative_owner_occurs(&lower)
 }
 
-/// True when `lower` (already lowercased) explicitly DENIES ownership rather than
-/// claiming it - "no owner", "ownerless", "not owned". Each of these contains the bare
-/// substring "owner" (or is a fused compound of it, e.g. "owner" + "less"), so without this
-/// guard `carries_owner_sentence` would misread an explicit denial as satisfying the F1
-/// ownership check - inverted from its documented purpose of catching exactly this
-/// twin-risk case. Matched with [`find_word`] so the denial phrase itself is standalone,
-/// not a fragment of a longer unrelated word.
-fn denies_ownership(lower: &str) -> bool {
-    find_word(lower, "ownerless").is_some()
-        || find_word(lower, "no owner").is_some()
-        || find_word(lower, "not owned").is_some()
+/// True when `lower` (already lowercased) contains a standalone "owner" occurrence that is
+/// NOT the "owner" consumed by a "no owner" denial phrase elsewhere in the block. Round-4's
+/// `denies_ownership` vetoed the WHOLE block the instant any of "no owner"/"ownerless"/"not
+/// owned" appeared anywhere in it, even when a genuine, unrelated "OWNS"/"owner" sentence
+/// sat elsewhere in the same block - exactly this unit's own governing spec (specs/66's
+/// criterion 3 affirmatively OWNS its lint surface while separately describing "an
+/// ownerless criterion" as fixture prose for the test it specifies). An affirmative match
+/// anywhere in the block must win; only the SPECIFIC "owner" word a "no owner" phrase
+/// consumes is excluded, never the block as a whole. "ownerless" and "not owned" need no
+/// equivalent exclusion bookkeeping: neither ever produces a standalone "owner" match in
+/// the first place ("ownerless" fuses "owner" straight into "less" with no boundary between
+/// them, and "owned" is simply a different word from "owner"), so a block whose only owner
+/// mention is one of those two phrases already fails this scan with no special-casing.
+/// Matched with [`find_word_across_hyphen`] (not [`find_word`]) so a legitimate hyphenated
+/// compound like "co-owner" still registers as a real ownership claim - the hyphen as
+/// word-forming rule exists for phrase-boundary hedges like "self-worth considering", not
+/// for a compound ownership noun.
+fn affirmative_owner_occurs(lower: &str) -> bool {
+    let denied = denied_owner_positions(lower);
+    let mut start = 0;
+    while let Some(rel) = find_word_across_hyphen(&lower[start..], "owner") {
+        let pos = start + rel;
+        if !denied.contains(&pos) {
+            return true;
+        }
+        start = pos + "owner".len();
+    }
+    false
+}
+
+/// Byte positions, within `lower`, of the "owner" word that belongs to a "no owner" denial
+/// phrase - excluded from [`affirmative_owner_occurs`]'s count so the denial suppresses
+/// only the occurrence it actually consumes, not every "owner" in the block.
+fn denied_owner_positions(lower: &str) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    while let Some(rel) = find_word_across_hyphen(&lower[start..], "no owner") {
+        let pos = start + rel;
+        out.push(pos + "no ".len());
+        start = pos + "no owner".len();
+    }
+    out
 }
 
 /// F4 open dispositions (`docs/handbook/planning-field-guide.md`): "removed" and "ignored"
@@ -435,9 +463,24 @@ fn disposition_smell(prose: &str) -> Option<&'static str> {
 /// token, the same way a reader parses it - otherwise "self-worth considering" would
 /// misread its trailing "worth" as the standalone word this function exists to isolate.
 fn find_word(haystack: &str, word: &str) -> Option<usize> {
-    fn is_word_char(c: char) -> bool {
-        c.is_alphanumeric() || c == '-'
-    }
+    find_word_boundary(haystack, word, true)
+}
+
+/// Same search as [`find_word`], but a hyphen counts as a plain BOUNDARY, not a
+/// word-forming character - so a legitimate hyphenated compound like "co-owner" splits
+/// into separate tokens, letting a real ownership claim buried in it still match. Used
+/// only where the hyphen-word-forming rule would wrongly hide a genuine standalone word
+/// (owner/owns matching); [`find_word`]'s hyphen-word-forming rule exists for
+/// phrase-boundary hedges like "self-worth considering", a different concern.
+fn find_word_across_hyphen(haystack: &str, word: &str) -> Option<usize> {
+    find_word_boundary(haystack, word, false)
+}
+
+/// Shared word-boundary walker behind [`find_word`] and [`find_word_across_hyphen`] - the
+/// one substring-with-boundary-check algorithm in this file, parameterized on whether a
+/// hyphen counts as word-forming rather than duplicated per caller.
+fn find_word_boundary(haystack: &str, word: &str, hyphen_is_word_char: bool) -> Option<usize> {
+    let is_word_char = |c: char| c.is_alphanumeric() || (hyphen_is_word_char && c == '-');
     let mut start = 0;
     while let Some(rel) = haystack[start..].find(word) {
         let pos = start + rel;
@@ -901,6 +944,34 @@ mod tests {
         );
     }
 
+    /// The sibling of the test above, closing the same defect class with a fixture the
+    /// welded word "ownership" cannot exercise: "own" welded straight to "ership" still
+    /// fails `find_word_across_hyphen`'s OWN after-boundary check (the trailing "ship"
+    /// keeps it from matching standalone "owner"), so that fixture cannot tell a correct
+    /// join from a dropped-separator weld apart. Splitting "own" from "er" instead welds
+    /// into EXACTLY the five letters "owner" with nothing trailing - a weld
+    /// `find_word_across_hyphen`'s boundary check cannot distinguish from a genuine
+    /// standalone word, so only the separating space stands between this fixture and a
+    /// false ownership claim.
+    #[test]
+    fn ownership_check_does_not_let_a_dropped_word_boundary_weld_own_and_er_into_owner() {
+        let text = "## Done when\n\n\
+            - [ ] the widget locks down its own\n\
+            \x20\x20er and simpler path through the config\n\
+            - [ ] the store passes the contract suite. This criterion OWNS the suite.\n\
+            - [ ] the graph supersedes an older decision. This criterion OWNS the supersede \
+            path.\n";
+        assert!(
+            ownership_advisories(text)
+                .iter()
+                .any(|a| a.criterion == Some(1)),
+            "criterion 1 has no real OWNS/owner sentence - \"own\" and \"er\" sit on \
+             separate lines and must NOT be welded into a false standalone \"owner\" match; \
+             got: {:?}",
+            ownership_advisories(text)
+        );
+    }
+
     /// F1 ownership: an explicit DENIAL of ownership ("no owner", "ownerless", "not
     /// owned") must NOT satisfy `carries_owner_sentence` just because it contains the bare
     /// substring "owner" - a criterion that says ownership has NOT been assigned is exactly
@@ -966,6 +1037,53 @@ mod tests {
         assert!(
             carries_owner_sentence("no clear owner is named otherwise"),
             "a genuine standalone owner must still satisfy the check"
+        );
+    }
+
+    /// Round-4 REJECT remedy (a) (`adj-u66c3-r4-reject-owner-veto-and-compound-hyphen-defects`):
+    /// `denies_ownership` vetoed the WHOLE block the instant any denial phrase appeared
+    /// anywhere in it, even when a completely separate, genuine "OWNS"/"owner" sentence sat
+    /// elsewhere in the same block - exactly the shape of this unit's own governing spec
+    /// (specs/66's criterion 3 affirmatively OWNS its lint surface while separately
+    /// describing an "ownerless criterion" as fixture prose). An affirmative match
+    /// elsewhere in the block must win; only the "owner" consumed by the "no owner" phrase
+    /// itself is excluded.
+    #[test]
+    fn ownership_check_lets_an_affirmative_owns_win_over_an_unrelated_denial_elsewhere() {
+        assert!(
+            carries_owner_sentence(
+                "this criterion OWNS the pre-launch lint surface. the test also builds an \
+                 ownerless fixture to prove the check fires on it"
+            ),
+            "an unrelated \"ownerless\" mention describing a FIXTURE must not veto a real \
+             OWNS sentence elsewhere in the same block"
+        );
+        assert!(
+            carries_owner_sentence(
+                "the pidfile write is not owned by criterion two. this criterion OWNS the \
+                 daemon startup sequence"
+            ),
+            "an unrelated \"not owned\" mention must not veto a real OWNS sentence \
+             elsewhere in the same block"
+        );
+        assert!(
+            !carries_owner_sentence("no owner has been assigned to this criterion yet"),
+            "a block whose ONLY owner mention is itself the \"no owner\" denial phrase must \
+             still be flagged twin-risk, not read as carrying an ownership sentence"
+        );
+    }
+
+    /// Round-4 REJECT remedy (b): a legitimate hyphenated compound noun like "co-owner"
+    /// must still register as a real ownership claim. `find_word`'s hyphen-as-word-forming
+    /// rule (added to fix "self-worth considering") exists for phrase-boundary hedges, not
+    /// for a compound ownership noun - a genuine ownership claim buried in a hyphenated
+    /// compound must not be silenced.
+    #[test]
+    fn ownership_check_recognizes_owner_inside_a_hyphenated_compound() {
+        assert!(
+            carries_owner_sentence("the co-owner of this criterion is the widget team"),
+            "\"co-owner\" is a real ownership claim; the hyphen must not hide the standalone \
+             \"owner\" inside it"
         );
     }
 

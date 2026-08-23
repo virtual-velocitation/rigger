@@ -585,3 +585,102 @@ fn validate_reports_a_clean_spec_clean() {
         "a fully clean spec must draw NO spec-lint advisory; stderr:\n{err}"
     );
 }
+
+/// Round-4 REJECT remedy (a)
+/// (`adj-u66c3-r4-reject-owner-veto-and-compound-hyphen-defects`): `denies_ownership`
+/// vetoed the WHOLE block the instant it contained "ownerless"/"no owner"/"not owned"
+/// anywhere, even when a genuine, unrelated "OWNS" sentence sat elsewhere in the same
+/// block - exactly the shape of this unit's own governing spec, whose criterion 3
+/// affirmatively OWNS its lint surface while separately describing "an ownerless
+/// criterion" as fixture prose for the test it specifies. Reproduced on the real binary
+/// here with a synthetic fixture in the same shape, AND against the governing spec file
+/// itself (the adjudicator's own required fixture).
+#[test]
+fn validate_spec_lets_an_affirmative_owns_win_over_an_unrelated_denial_elsewhere() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Done when\n\n\
+         - [ ] a test proves the lint fires on a fixture containing an ownerless \
+         criterion among three-plus. This criterion OWNS the pre-launch lint surface.\n\
+         - [ ] the store passes the contract suite. This criterion OWNS the contract \
+         coverage.\n\
+         - [ ] the graph projector supersedes an older decision. This criterion OWNS the \
+         supersede path.\n";
+    let path = root.join("affirmative-wins-spec.md");
+    std::fs::write(&path, spec).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["validate", path.to_str().unwrap()]);
+    assert!(
+        ok,
+        "spec-lint advisories are heuristic warnings, never a hard failure; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        !err.contains("F1 ownership"),
+        "criterion 1's own \"ownerless\" mention describes the FIXTURE the test builds, \
+         not a self-referential denial - it must not veto criterion 1's real, separate \
+         OWNS sentence on the real binary; stderr:\n{err}"
+    );
+
+    let governing_spec = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("specs")
+        .join("66-ship-the-planning-discipline.md");
+    let (out2, err2, ok2) = run_rigger(root, &["validate", governing_spec.to_str().unwrap()]);
+    assert!(
+        ok2,
+        "spec-lint advisories are heuristic warnings, never a hard failure; stderr:\n{err2}"
+    );
+    assert!(
+        out2.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out2}"
+    );
+    assert!(
+        !err2.contains("(criterion 3)"),
+        "this unit's own governing spec must no longer self-trip its own lint on \
+         criterion 3 (the adjudicator's own required fixture); stderr:\n{err2}"
+    );
+}
+
+/// Round-4 REJECT remedy (b): `find_word`'s hyphen-as-word-forming rule (added to fix
+/// "self-worth considering") also silenced "owner" inside a legitimate hyphenated
+/// compound like "co-owner". Reproduced on the real binary here.
+#[test]
+fn validate_spec_recognizes_owner_inside_a_hyphenated_compound() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Done when\n\n\
+         - [ ] the daemon writes a pidfile. The co-owner of this criterion is the widget \
+         team.\n\
+         - [ ] the store passes the contract suite. This criterion OWNS the contract \
+         coverage.\n\
+         - [ ] the graph projector supersedes an older decision. This criterion OWNS the \
+         supersede path.\n";
+    let path = root.join("co-owner-spec.md");
+    std::fs::write(&path, spec).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["validate", path.to_str().unwrap()]);
+    assert!(
+        ok,
+        "spec-lint advisories are heuristic warnings, never a hard failure; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        !err.contains("F1 ownership"),
+        "\"co-owner\" is a real ownership claim; the hyphen must not hide the standalone \
+         \"owner\" inside it on the real binary; stderr:\n{err}"
+    );
+}
