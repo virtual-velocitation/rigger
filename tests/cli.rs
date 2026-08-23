@@ -19625,3 +19625,61 @@ fn step_with_no_spec_path_never_mentions_the_spec_lint() {
          stdout:\n{out}\nstderr:\n{err}"
     );
 }
+
+/// `cmd_step`'s own doc comment and its inline placement comment both claim the reminder is
+/// "printed FIRST... so the reminder survives every downstream refusal or failure path -
+/// mirroring `run_cli`'s and `cmd_workflow`'s placement." `run_cli`'s analogous claim has a
+/// dedicated test (`run_given_a_spec_path_names_the_spec_lint_as_a_next_step`, spec 66 round
+/// 2) that proves the reminder survives a downstream no-reachable-base refusal; `cmd_step`'s
+/// round-4 tests above only cover the success path and the no-`--spec` path, leaving that
+/// specific "survives a downstream refusal" claim unverified for this third call site. This
+/// closes that gap the same way: an unborn-HEAD repo with an unresolvable `--base` makes
+/// `rigger step` fail loudly on the no-reachable-base gate (spec 38, criterion 2), which
+/// fires strictly AFTER the reminder is printed - so a passing reminder assertion here proves
+/// the print-before-refuse ordering the doc comment claims, not merely that the reminder
+/// exists somewhere in the binary's output.
+#[test]
+fn step_given_a_spec_path_names_the_spec_lint_even_when_the_step_then_refuses_for_no_reachable_base(
+) {
+    // `temp_project()` is a `git init` with NO commit: an unborn HEAD, nothing to branch
+    // from, so `--base origin/does-not-exist` deterministically refuses fast (spec 38,
+    // criterion 2), mirroring `run_given_a_spec_path_names_the_spec_lint_as_a_next_step`
+    // above and `step_refuses_when_there_is_no_reachable_base` elsewhere in this file.
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    std::fs::create_dir_all(root.join("specs")).unwrap();
+    std::fs::write(
+        root.join("specs/42-widgets.md"),
+        "# 42 widgets\n\n## Done when\n\n- [ ] a test proves widgets work\n",
+    )
+    .unwrap();
+
+    let (out, err, ok) = run_rigger(
+        root,
+        &[
+            "step",
+            "--spec",
+            "specs/42-widgets.md",
+            "--base",
+            "origin/does-not-exist",
+        ],
+    );
+    assert!(
+        !ok,
+        "the no-reachable-base refusal must still fire after the reminder prints; stdout: \
+         {out:?} stderr: {err:?}"
+    );
+    assert!(
+        err.contains("no reachable base"),
+        "sanity: this must be the same no-reachable-base refusal `step_refuses_when_there_is_no_reachable_base` \
+         pins; got: {err:?}"
+    );
+    assert!(
+        err.contains("rigger validate specs/42-widgets.md"),
+        "`rigger step --spec <path>` must name `rigger validate <path>` on stderr even when the \
+         step goes on to refuse for an unrelated downstream reason (proving the reminder is \
+         printed first and survives every failure path, not only a successful step); got \
+         stderr:\n{err}"
+    );
+}
