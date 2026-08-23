@@ -327,6 +327,49 @@ fn validate_spec_ignores_a_smell_phrase_named_in_double_quotes() {
     );
 }
 
+/// Round-2 REJECT remedy (`sdet-u66c3-r2-or-side-still-bare-substring`,
+/// `adv-u66c3-r2-or-side-substring-confirmed-live`): the round-2 fix gave "either" a word
+/// boundary but left the "or" side a bare substring check, so a standalone "either" earlier
+/// on a line made ANY later or-prefixed non-disjunctive word ("original", "order", "orphan")
+/// false-fire the either...or draft-smell pairing with zero real disjunction. Reproduced on
+/// the real binary here.
+#[test]
+fn validate_spec_does_not_misread_a_later_or_prefixed_word_as_either_or() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Design\n\n\
+         Either approach works well; the original design remains valid throughout.\n\n\
+         ## Done when\n\n\
+         - [ ] the store passes the contract suite. This criterion OWNS the contract \
+         coverage.\n\
+         - [ ] the graph projector supersedes an older decision. This criterion OWNS the \
+         supersede path.\n\
+         - [ ] the conductor integrates an approved unit. This criterion OWNS the \
+         integration step.\n";
+    let path = root.join("or-prefixed-word-spec.md");
+    std::fs::write(&path, spec).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["validate", path.to_str().unwrap()]);
+    assert!(
+        ok,
+        "spec-lint advisories are heuristic warnings, never a hard failure; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        !err.contains("F4 disposition"),
+        "\"original\" contains \" or\" as a substring but is not a real either...or \
+         disjunction; a standalone \"either\" earlier on the line must not make it \
+         false-fire on the real binary; stderr:\n{err}"
+    );
+}
+
 /// A clean fixture - three-plus criteria, each carrying an OWNS sentence, single-behavior,
 /// no disposition smells, no em dash - draws no spec-lint advisory at all, and `rigger
 /// validate` still exits 0.

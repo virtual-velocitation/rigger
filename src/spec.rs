@@ -389,9 +389,12 @@ pub fn disposition_advisories(text: &str) -> Vec<LintAdvisory> {
 /// The first draft-smell phrase `prose` contains, case-insensitively, or `None`. The
 /// "either ... or" pairing requires an "or" AFTER the "either" on the same (already
 /// code-stripped) line - a single "either" with no paired "or" is a false-positive risk
-/// the field guide's own countermeasure does not describe. "either" is matched as a
-/// STANDALONE word ([`find_word`]), not a bare substring - "either" is itself a substring
-/// of "neither", so a "neither ... or" sentence must never be misread as this pairing.
+/// the field guide's own countermeasure does not describe. Both halves are matched as a
+/// STANDALONE word ([`find_word`]), never a bare substring: "either" is itself a substring
+/// of "neither" (a "neither ... or" sentence must never be misread as this pairing), and
+/// "or" is itself a substring of ordinary words like "original", "order", or "orphan" (a
+/// standalone "either" earlier in the line must never make a LATER, unrelated "or"-prefixed
+/// word false-fire as the disjunction's second half).
 fn disposition_smell(prose: &str) -> Option<&'static str> {
     let lower = prose.to_lowercase();
     if lower.contains("worth considering") {
@@ -401,7 +404,7 @@ fn disposition_smell(prose: &str) -> Option<&'static str> {
         return Some("could instead");
     }
     if let Some(pos) = find_word(&lower, "either") {
-        if lower[pos..].contains(" or") {
+        if find_word(&lower[pos..], "or").is_some() {
             return Some("either ... or");
         }
     }
@@ -917,6 +920,22 @@ mod tests {
             disposition_advisories(text).is_empty(),
             "\"neither\" contains \"either\" as a substring; that must not false-fire the \
              either...or pairing; got: {:?}",
+            disposition_advisories(text)
+        );
+    }
+
+    /// F4 open dispositions: "or" is itself a substring of ordinary words - "original",
+    /// "order", "orphan" - so a standalone "either" earlier on the line must not make a
+    /// LATER, unrelated "or"-prefixed word false-fire as the disjunction's second half. The
+    /// fixture sentence has a real standalone "either" but no real disjunction at all.
+    #[test]
+    fn disposition_check_does_not_match_or_inside_a_later_word() {
+        let text = "## Design\n\n\
+            Either approach works well; the original design remains valid throughout.\n";
+        assert!(
+            disposition_advisories(text).is_empty(),
+            "\"original\" contains \" or\" as a substring; that must not false-fire the \
+             either...or pairing when there is no standalone \"or\" on the line; got: {:?}",
             disposition_advisories(text)
         );
     }
