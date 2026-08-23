@@ -1954,6 +1954,18 @@ fn acquire_step_lock(rigger_dir: &Path) -> Result<std::fs::File, Box<dyn std::er
 
 fn cmd_step(args: &[String]) -> Res {
     let args = parse_step_args(args)?;
+    // DISCOVERABILITY (spec 66, criterion 5, round 3): `rigger step` is the PRIMARY,
+    // most-used pre-launch surface - on the native `/rigger <spec>` path `cmd_step` IS the
+    // driver (see this fn's own doc comment above), so it must name the spec lint too, not
+    // only the one-shot `run_cli`/`cmd_workflow` entries. Printed FIRST, before any config
+    // load or base check, so the reminder survives every downstream refusal or failure path -
+    // mirroring `run_cli`'s and `cmd_workflow`'s placement. Routed to STDERR, never stdout:
+    // `cmd_step` prints exactly ONE line of `{wave,done}` JSON on stdout that a driver parses
+    // (see this fn's doc comment and `acquire_step_lock`'s), and a stdout `println!` here
+    // (mirroring the other two callers verbatim) would corrupt that single-line contract.
+    if let Some(spec) = &args.spec {
+        eprintln!("{}", spec_lint_next_step(spec));
+    }
     // Refuse a doomed run up front: a gating persona that never puts its verdict on the result
     // channel would stall the integration gate (spec 18, unit 2). This reuses unit 1's lint at
     // the run's config-load seam, before any unit is parked.
@@ -10324,15 +10336,20 @@ fn docs_drift_failure(root: &Path) -> Option<String> {
 /// sourced so every such surface says the exact same thing rather than each inventing its
 /// own wording.
 ///
-/// Callers: `run_cli` (`rigger run <spec>`) and `cmd_workflow` (`rigger workflow <spec>`)
-/// are the surfaces that GENUINELY hold a spec path at the real pre-launch moment in
-/// production, so they are the ones that make this criterion's "reaches every consumer"
-/// promise true. `cmd_prime` also calls this when given an explicit spec arg, but its own
-/// sole AUTOMATIC caller - the installed Claude Code SessionStart hook (`src/hooks.rs`) -
-/// always invokes it with zero args (the hook fires before any spec is ever chosen), so
-/// `cmd_prime`'s spec-arg branch is exercised only by a hand-typed `rigger prime <spec>`,
-/// never by that hook. It is kept (harmless, tested) for that manual use, not as this
-/// criterion's production path.
+/// Callers: `run_cli` (`rigger run <spec>`), `cmd_workflow` (`rigger workflow <spec>`), and
+/// `cmd_step` (`rigger step --spec <spec>`) are the surfaces that GENUINELY hold a spec path
+/// at the real pre-launch moment in production, so they are the ones that make this
+/// criterion's "reaches every consumer" promise true. `cmd_step` is the PRIMARY one: on the
+/// native `/rigger <spec>` Claude Code workflow, `cmd_step` IS the driver (there is no
+/// separate setup step - `shim/shim.mjs`'s whole mechanism is to courier `rigger step`
+/// calls), so it is by far the most-exercised of the three; it prints the reminder on
+/// STDERR (unlike the other two, which use stdout) because its stdout carries exactly one
+/// line of `{wave,done}` JSON a driver parses, and the reminder must never share that line.
+/// `cmd_prime` also calls this when given an explicit spec arg, but its own sole AUTOMATIC
+/// caller - the installed Claude Code SessionStart hook (`src/hooks.rs`) - always invokes it
+/// with zero args (the hook fires before any spec is ever chosen), so `cmd_prime`'s spec-arg
+/// branch is exercised only by a hand-typed `rigger prime <spec>`, never by that hook. It is
+/// kept (harmless, tested) for that manual use, not as this criterion's production path.
 fn spec_lint_next_step(spec_path: &str) -> String {
     format!(
         "next: `rigger validate {spec_path}` checks the spec's shape (multi-behavior \
