@@ -1482,6 +1482,31 @@ mod tests {
         assert_eq!(hit.criterion, Some(2));
     }
 
+    /// `starts_new_element` recognizes EACH of its five prefix kinds independently
+    /// (`d-u66c3-mutation-starts-new-element-gap`): every existing `disposition_advisories`
+    /// scenario only ever exercises a "- " dash bullet (the only bullet mark this repo's own
+    /// Done-when checkboxes use) or a fence line (which the paragraph loop's separate
+    /// `fenced[i]` check already excludes regardless of what this function returns for it),
+    /// so mutation testing surfaced three surviving `||` -> `&&` mutants spanning the '#',
+    /// '|', and "```" arms of the boolean chain - none of the five-term `||` chain's terms
+    /// beyond the first "- "/"* " pair was ever independently proven true on its own. Each
+    /// assertion below fixes exactly one term true with the other four false, which
+    /// (boolean algebra, since a line's first character satisfies at most one of these five
+    /// prefixes) forces every possible single-`||`-mutated-to-`&&` variant of the chain to
+    /// disagree with the correct `true` result for at least one assertion here.
+    #[test]
+    fn starts_new_element_recognizes_every_prefix_kind_independently() {
+        assert!(starts_new_element("- a dash bullet"), "dash bullet");
+        assert!(starts_new_element("* a star bullet"), "star bullet");
+        assert!(starts_new_element("# a heading"), "heading");
+        assert!(starts_new_element("| a table row |"), "table row");
+        assert!(starts_new_element("```a fence opener"), "fence opener");
+        assert!(
+            !starts_new_element("plain prose with none of the five prefixes"),
+            "plain prose must not start a new element"
+        );
+    }
+
     /// Hygiene: a U+2014 em dash is flagged anywhere in the document - Design prose here,
     /// with NO criterion attribution since it sits outside any checkbox.
     #[test]
