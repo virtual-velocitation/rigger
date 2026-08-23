@@ -966,3 +966,93 @@ fn spec_lint_self_clean_over_the_committed_corpus() {
          a regression in the heuristic"
     );
 }
+
+/// Round-6 sdet-author periphery gap (`d-u66c3-r6-periphery-accounting`): the round-6 fix's
+/// own three CLI tests reproduce the committed corpus's exact false-fires
+/// (specs/68's "satisfied either", specs/57's bare hedge, specs/68 criterion 1's
+/// clause-bounded non-pairing), but `is_decided_disposition`'s negation guard - a
+/// standalone "unsatisfied" immediately before "either" is a DIFFERENT word from
+/// "satisfied" and must NOT be exempted - has no committed-corpus occurrence, so it was
+/// proven only inside `src/spec.rs`'s own unit tests
+/// (`disposition_check_does_not_exempt_unsatisfied_either_or`), never through the compiled
+/// binary. Closes that gap with a synthetic fixture, matching this suite's established
+/// precedent of driving the real binary against text that mirrors a corpus-absent branch
+/// (see `validate_spec_attributes_a_prose_level_defect_to_no_criterion`).
+#[test]
+fn validate_still_flags_an_unsatisfied_either_or_as_an_open_hedge() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Design\n\n\
+         the recovery criterion remains unsatisfied either by an automatic retry or by a \
+         manual escalation, undecided.\n\n\
+         ## Done when\n\n- [ ] the daemon retries on failure. This criterion OWNS retry.\n";
+    let spec_path = root.join("spec.md");
+    std::fs::write(&spec_path, spec).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["validate", spec_path.to_str().unwrap()]);
+    assert!(
+        ok,
+        "spec-lint advisories are heuristic warnings, never a hard failure; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        err.contains("F4 disposition"),
+        "\"unsatisfied either ... or\" is a different word from \"satisfied either ... or\" \
+         - the decided-disposition exemption must not swallow it, and it must still be \
+         flagged as an open hedge on the real binary; stderr:\n{err}"
+    );
+}
+
+/// Round-6 sdet-author periphery gap (`d-u66c3-r6-periphery-accounting`): `either_or_hedge`
+/// now scans every standalone "either" on a line rather than stopping at the first, so a
+/// non-disjunctive "either" (no "or" in its own clause) cannot shadow a genuine disjunction
+/// later on the SAME line. The round-6 fix's CLI test
+/// (`validate_does_not_pair_a_non_disjunctive_either_with_a_faraway_or_on_specs_68`) proves
+/// only the negative half, that a faraway "or" in a LATER, unrelated clause must not
+/// false-fire, reproducing specs/68 criterion 1 verbatim. The positive half, a genuine
+/// hedge that DOES follow an earlier non-disjunctive "either" on the same line, has no
+/// committed-corpus occurrence (proven only by
+/// `disposition_check_finds_a_genuine_hedge_after_an_earlier_non_disjunctive_either`'s unit
+/// fixture), so a regression that stopped the scan at the first "either" again (silencing a
+/// real hedge that happens to follow a non-disjunctive one) would pass the round-6 CLI suite
+/// unnoticed. Closed with a synthetic fixture combining both halves on one line.
+#[test]
+fn validate_still_flags_a_genuine_hedge_after_an_earlier_non_disjunctive_either_on_specs_68_shape()
+{
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Design\n\n\
+         an entry cannot bypass either surface; either the daemon retries or it escalates, \
+         undecided.\n\n\
+         ## Done when\n\n- [ ] the daemon retries on failure. This criterion OWNS retry.\n";
+    let spec_path = root.join("spec.md");
+    std::fs::write(&spec_path, spec).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["validate", spec_path.to_str().unwrap()]);
+    assert!(
+        ok,
+        "spec-lint advisories are heuristic warnings, never a hard failure; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        err.contains("F4 disposition"),
+        "a genuine hedge (\"either the daemon retries or it escalates\") following an \
+         earlier non-disjunctive \"either\" (\"either surface\") on the same line must still \
+         be flagged on the real binary - the scan must not stop at the first \"either\"; \
+         stderr:\n{err}"
+    );
+}
