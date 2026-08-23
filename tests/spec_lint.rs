@@ -97,6 +97,113 @@ fn validate_spec_reports_every_c3_defect_with_its_criterion_and_field_guide_clas
     );
 }
 
+/// The line of `err` containing `needle`, or a panic naming what was searched for - so a
+/// missing line fails with the same diagnostic detail as a `contains` assertion.
+fn find_line<'a>(err: &'a str, needle: &str) -> &'a str {
+    err.lines()
+        .find(|line| line.contains(needle))
+        .unwrap_or_else(|| panic!("no stderr line contains {needle:?}; stderr:\n{err}"))
+}
+
+/// A defect sitting in Design prose - OUTSIDE every Done-when checkbox - draws no
+/// criterion attribution: `LintAdvisory::criterion` is `None`, and `Display`'s `None` arm
+/// (`"{class}: {detail}"`, no `(criterion N)` clause) is what an operator actually sees on
+/// the real, compiled binary's stderr. The two dirty-fixture tests above only ever place a
+/// defect INSIDE a checkbox, so this is the only test proving the `None` branch of the
+/// `LintAdvisory` `Display` contract - and the criterion-less disposition/hygiene wiring -
+/// end to end through `cmd_validate`, not merely inside `src/spec.rs`'s own unit tests.
+#[test]
+fn validate_spec_attributes_a_prose_level_defect_to_no_criterion() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Design\n\n\
+         the daemon starts \u{2014} then it writes a pidfile.\n\n\
+         the retry policy could instead retry indefinitely.\n\n\
+         ## Done when\n\n\
+         - [ ] the store passes the contract suite. This criterion OWNS the contract \
+         coverage.\n\
+         - [ ] the graph projector supersedes an older decision. This criterion OWNS the \
+         supersede path.\n\
+         - [ ] the conductor integrates an approved unit. This criterion OWNS the \
+         integration step.\n";
+    let path = root.join("prose-spec.md");
+    std::fs::write(&path, spec).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["validate", path.to_str().unwrap()]);
+    assert!(
+        ok,
+        "a prose-level advisory must never fail validate's exit status; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+
+    let hygiene_line = find_line(&err, "hygiene:");
+    assert!(
+        !hygiene_line.contains("(criterion"),
+        "an em dash in Design prose sits outside every checkbox, so its advisory must \
+         carry NO criterion clause; line:\n{hygiene_line}"
+    );
+
+    let disposition_line = find_line(&err, "F4 disposition:");
+    assert!(
+        !disposition_line.contains("(criterion"),
+        "a disposition smell in Design prose sits outside every checkbox, so its advisory \
+         must carry NO criterion clause; line:\n{disposition_line}"
+    );
+}
+
+/// Two independent checks (F1 ownership and hygiene) firing on the SAME criterion both
+/// surface, each naming that criterion - proving `spec_lint_advisories`' aggregation loop
+/// (four independent checks folded into one `Vec`, printed one `eprintln!` per advisory in
+/// `cmd_validate`) never lets a later advisory replace or suppress an earlier one for a
+/// criterion with more than one defect. No fixture anywhere else - unit or periphery -
+/// exercises two simultaneous defects on one criterion.
+#[test]
+fn validate_spec_reports_two_simultaneous_defects_on_the_same_criterion() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Done when\n\n\
+         - [ ] the store passes the contract suite. This criterion OWNS the contract \
+         coverage.\n\
+         - [ ] the report renders a trailing summary line \u{2014} appended at the end.\n\
+         - [ ] the conductor integrates an approved unit. This criterion OWNS the \
+         integration step.\n";
+    let path = root.join("double-defect-spec.md");
+    std::fs::write(&path, spec).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["validate", path.to_str().unwrap()]);
+    assert!(
+        ok,
+        "two simultaneous advisories must never fail validate's exit status; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+
+    let ownership_line = find_line(&err, "F1 ownership");
+    assert!(
+        ownership_line.contains("(criterion 2)"),
+        "criterion 2's missing OWNS sentence must be flagged; line:\n{ownership_line}"
+    );
+    let hygiene_line = find_line(&err, "hygiene");
+    assert!(
+        hygiene_line.contains("(criterion 2)"),
+        "criterion 2's em dash must ALSO be flagged - neither advisory suppresses the \
+         other; line:\n{hygiene_line}"
+    );
+}
+
 /// A clean fixture - three-plus criteria, each carrying an OWNS sentence, single-behavior,
 /// no disposition smells, no em dash - draws no spec-lint advisory at all, and `rigger
 /// validate` still exits 0.
