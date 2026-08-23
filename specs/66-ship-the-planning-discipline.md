@@ -25,13 +25,16 @@ page humans read, and the mechanical subset of the recipe as a pre-launch spec l
 - **Quote-masking fails closed, decided here** (closing the stray-delimiter class rounds
   kept re-finding one shape at a time): the lint's one invariant is that quoted or named
   text can NEVER false-positive; advisory recall is expendable, the invariant is not. So
-  when a paragraph's quote delimiters are UNBALANCED (an odd count of a delimiter kind -
-  a stray inches mark, an unclosed backtick), the masker masks from that kind's FIRST
-  mark to the end of the paragraph: any genuinely quoted text, which necessarily follows
-  some opener, is then masked under ANY arrangement of strays. Balanced paragraphs keep
-  normal closed-span masking. No per-shape stray handling - the parity rule is the whole
-  mechanism, and a test pins each direction (a stray before a real quote still masks the
-  quote; a balanced paragraph still lints its unquoted hedge).
+  per delimiter kind within a paragraph, the mask is ONE span with no nearest-closer
+  logic at all (nearest-closer is where every recurrence lived - stray marks, embedded
+  digit-adjacent marks, twin spans): an EVEN count of that kind masks from its FIRST
+  mark through its LAST mark; an ODD count masks from its FIRST mark to the paragraph
+  end. Any genuinely quoted text lies after some opener of its kind, so the invariant
+  holds under any arrangement of strays, units marks, or multiple spans; unquoted prose
+  between spans is over-masked, which is expendable recall. Tests pin each direction: a
+  stray before a real quote still masks the quote, a digit-adjacent mark inside a span
+  cannot close it early, two spans in one paragraph mask through both, and a balanced
+  paragraph still lints its unquoted hedge outside the marks.
 - **The skill ships as a registry entry** (`src/main.rs`, `src/docs.rs`): `planning-a-spec`
   becomes a binary-embedded render registered in the spec-68 SKILL REGISTRY (spec 68 runs
   FIRST). Drift, overlay, and non-destructive install are the registry's contract, owned by
