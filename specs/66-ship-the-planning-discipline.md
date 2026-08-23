@@ -14,9 +14,14 @@ page humans read, and the mechanical subset of the recipe as a pre-launch spec l
   shared word-boundary matcher, never a bare `contains` - with hyphens word-forming.
   Within one checkbox an AFFIRMATIVE ownership match takes precedence over a denial
   phrase (a criterion that says "OWNS X; Y is criterion 2's, NOT this one's" carries
-  ownership; the denial half never vetoes it). SELF-CLEAN is the acceptance property: at
-  the unit's HEAD, `rigger validate` over every committed `specs/*.md` - including spec
-  66 itself - raises zero false lint findings, proven by test.
+  ownership; the denial half never vetoes it). The acceptance property, made precise
+  (round-6 sharpening - "zero false findings over all historical specs" is unjudgeable
+  by machine, since old specs may carry TRUE smells): (1) SELF-CLEAN NARROW, proven by
+  test: spec 66 itself raises zero lint findings at the unit's HEAD; (2) a LABELED
+  FIXTURE CORPUS, proven by test: true positives fire and boundary-adjacent negatives
+  (substring-inside-word, hyphenated forms, denial-beside-affirmative) stay silent.
+  Historical `specs/*.md` are NOT a zero-findings corpus; a finding there is advisory
+  output, not a test failure.
 - **The skill ships as a registry entry** (`src/main.rs`, `src/docs.rs`): `planning-a-spec`
   becomes a binary-embedded render registered in the spec-68 SKILL REGISTRY (spec 68 runs
   FIRST). Drift, overlay, and non-destructive install are the registry's contract, owned by
