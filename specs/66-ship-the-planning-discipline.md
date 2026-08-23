@@ -22,6 +22,16 @@ page humans read, and the mechanical subset of the recipe as a pre-launch spec l
   (substring-inside-word, hyphenated forms, denial-beside-affirmative) stay silent.
   Historical `specs/*.md` are NOT a zero-findings corpus; a finding there is advisory
   output, not a test failure.
+- **Quote-masking fails closed, decided here** (closing the stray-delimiter class rounds
+  kept re-finding one shape at a time): the lint's one invariant is that quoted or named
+  text can NEVER false-positive; advisory recall is expendable, the invariant is not. So
+  when a paragraph's quote delimiters are UNBALANCED (an odd count of a delimiter kind -
+  a stray inches mark, an unclosed backtick), the masker masks from that kind's FIRST
+  mark to the end of the paragraph: any genuinely quoted text, which necessarily follows
+  some opener, is then masked under ANY arrangement of strays. Balanced paragraphs keep
+  normal closed-span masking. No per-shape stray handling - the parity rule is the whole
+  mechanism, and a test pins each direction (a stray before a real quote still masks the
+  quote; a balanced paragraph still lints its unquoted hedge).
 - **The skill ships as a registry entry** (`src/main.rs`, `src/docs.rs`): `planning-a-spec`
   becomes a binary-embedded render registered in the spec-68 SKILL REGISTRY (spec 68 runs
   FIRST). Drift, overlay, and non-destructive install are the registry's contract, owned by
