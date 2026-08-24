@@ -1309,6 +1309,38 @@ mod tests {
     }
 
     #[test]
+    fn resolved_model_never_reads_a_conflicting_claim_from_the_agents_own_output() {
+        // Spec 61 c10 (AUTHORITATIVE MODEL IDENTITY): "a conflicting agent-prose claim
+        // never enters the record" - resolved_model() is sourced EXCLUSIVELY from the
+        // structured `meta` object a runner (never the agent itself) attaches, so a
+        // model id an agent typed into its own free-text `output` - even one shaped
+        // exactly like the real meta payload - can never be mistaken for it.
+        let prose_claim = SpawnResult::ok(
+            "u/implementer#0",
+            r#"done. {"resolved_model":"a-model-i-am-lying-about"}"#,
+        );
+        assert_eq!(
+            prose_claim.resolved_model(),
+            "",
+            "a claim living only in `output` (agent prose) must never surface as the resolved model"
+        );
+
+        // The SAME output, once a runner ALSO attaches the real value via the
+        // structured `meta` channel, is honored - and it is the meta value that wins,
+        // never the (different) prose claim sitting right next to it in `output`.
+        let with_structured_meta = SpawnResult::ok(
+            "u/implementer#0",
+            r#"done. {"resolved_model":"a-model-i-am-lying-about"}"#,
+        )
+        .with_meta(serde_json::json!({ "resolved_model": "claude-sonnet-4-9-20260215" }));
+        assert_eq!(
+            with_structured_meta.resolved_model(),
+            "claude-sonnet-4-9-20260215",
+            "the structured meta value is authoritative even when output carries a conflicting claim"
+        );
+    }
+
+    #[test]
     fn recording_a_result_persists_it_and_result_of_reads_it_back() {
         let store = Store::open(":memory:").unwrap();
         // No result yet -> the spawn is still parked at the frontier.
