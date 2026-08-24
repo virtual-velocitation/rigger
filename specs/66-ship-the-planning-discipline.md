@@ -58,6 +58,15 @@ page humans read, and the mechanical subset of the recipe as a pre-launch spec l
   Each warning names the criterion and its field-guide class.
 - **Discoverability** (`src/main.rs`, `rigger prime` / the workflow's launch path): the
   pre-launch surfaces that name next steps mention the spec lint when a spec path is in play.
+  REMINDER DEDUP, decided here (closing the ad-hoc-mechanism class: a bare env sentinel
+  leaks across unrelated process trees, a printed-once static leaks across in-process
+  calls): a nesting surface that has already printed the reminder passes the suppression
+  DOWN as an env variable whose VALUE is its own process id, and a child honors the
+  suppression ONLY when that value parses and equals its direct parent process id
+  (`std::os::unix::process::parent_id`); any absent, foreign, stale, or malformed value
+  means the surface prints. State lives in the explicit parent-to-child contract, never
+  ambient presence - a test pins both directions (nested invocation suppressed, ambient
+  pollution from an unrelated tree still prints).
 
 ## Notes (non-criteria)
 
