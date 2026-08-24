@@ -19811,3 +19811,87 @@ fn step_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site() 
          stderr:\n{err}"
     );
 }
+
+/// `rigger run --driver workflow <spec>` (and, identically, `rigger serve <spec>` - both
+/// dispatch straight into the SAME `run_workflow`) is `load_criteria`'s third real call
+/// site (main.rs:3119), alongside `run_cli` and `cmd_step` above - `load_criteria`'s own
+/// doc comment names it as a covered production entry, but neither of the two tests above
+/// drives this call site: `run_workflow_refuses_when_there_is_no_reachable_base` (this same
+/// file) omits the spec positional entirely, so `load_criteria` never reaches the lint
+/// branch there. This closes that gap: drives the compiled binary through the direct
+/// (no-Node-shim) workflow dispatch with a spec path in play, proving the SAME advisory
+/// `rigger validate <spec>` prints pre-launch also surfaces here, from the identical
+/// `spec::spec_lint_advisories` implementation - not a fourth, parallel parser - and stays
+/// silent on a clean spec. Unlike the `cmd_step` sibling test, `run_workflow` never calls
+/// `spec_lint_next_step` (criterion 5's reminder) itself - only `cmd_step`, `run_cli`, and
+/// `cmd_workflow` do - so there is no generic-reminder text already containing
+/// "multi-behavior" to make a bare substring match tautological here; the plain assertion
+/// is already discriminating.
+#[test]
+fn run_driver_workflow_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    std::fs::create_dir_all(root.join("specs")).unwrap();
+
+    let bad_spec = "# 42 widgets\n\n## Done when\n\n\
+         - [ ] the daemon starts on boot, and it writes a pidfile, and it rotates the log \
+         nightly\n";
+    std::fs::write(root.join("specs/42-widgets.md"), bad_spec).unwrap();
+
+    let (_out, err, ok) = run_rigger(
+        root,
+        &[
+            "run",
+            "--driver",
+            "workflow",
+            "specs/42-widgets.md",
+            "--base",
+            "origin/does-not-exist",
+        ],
+    );
+    assert!(
+        !ok,
+        "the no-reachable-base refusal must still fire after the in-run lint prints; \
+         stderr:\n{err}"
+    );
+    assert!(
+        err.contains("rigger workflow") && err.contains("no reachable base"),
+        "sanity: this must be the same `rigger workflow`-labelled no-reachable-base refusal \
+         `run_workflow_refuses_when_there_is_no_reachable_base` pins; got: {err:?}"
+    );
+    assert!(
+        err.contains("multi-behavior"),
+        "`rigger run --driver workflow <spec>` must surface the SAME `multi-behavior` \
+         spec-lint advisory `rigger validate <spec>` emits pre-launch, proving `run_workflow` \
+         - the third `load_criteria` call site, and the one `rigger serve <spec>` shares - \
+         reaches the same shared implementation, not a fourth parallel parser; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("one observable behavior per criterion"),
+        "the in-run advisory must carry the SAME recommendation wording as the pre-launch \
+         one; stderr:\n{err}"
+    );
+
+    // A clean, single-behavior spec: no spec-lint advisory at all, even though the run
+    // still refuses for the unrelated no-reachable-base reason.
+    let clean_spec = "# 43 widgets\n\n## Done when\n\n- [ ] the store passes the contract suite\n";
+    std::fs::write(root.join("specs/43-widgets.md"), clean_spec).unwrap();
+    let (_out, err, ok) = run_rigger(
+        root,
+        &[
+            "run",
+            "--driver",
+            "workflow",
+            "specs/43-widgets.md",
+            "--base",
+            "origin/does-not-exist",
+        ],
+    );
+    assert!(!ok, "clean-spec run must still refuse on no-reachable-base");
+    assert!(
+        !err.contains("warning: spec "),
+        "a clean single-behavior spec must yield no spec-lint advisory on the `run_workflow` \
+         in-run call site either; stderr:\n{err}"
+    );
+}
