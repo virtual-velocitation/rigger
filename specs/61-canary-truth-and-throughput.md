@@ -102,17 +102,35 @@ takes (issues #24 and #22). Three defects:
   catch test.
 - [ ] a test proves NO FAKE ZEROS: a scorecard whose items were correctly rejected but carry
   empty attribution renders the per-tier line as `n/a` with a reason, never `0/N (0.0%)`.
+  This criterion OWNS the per-tier catch-rate render branch (n/a vs `0/N`), computed from
+  `CanaryOutcome`'s EXISTING `caught_by`/`verdict_correct` fields; it adds no new
+  `CanaryOutcome` field and does not touch the FINDINGS VOLUME criterion's finding-count
+  field/aggregate or the FALSE POSITIVES criterion's control line.
 - [ ] a test proves FALSE POSITIVES ARE FIRST-CLASS: a corpus with a rejected known-good
-  control renders a control/false-positive line reporting it directly on the summary.
+  control renders a control/false-positive line reporting it directly on the summary. This
+  criterion OWNS the control/false-positive summary line, computed from `CanaryOutcome`'s
+  EXISTING `planted`/`verdict_approved` fields (no new field needed); it does not touch the
+  NO FAKE ZEROS criterion's per-tier n/a branch or the FINDINGS VOLUME criterion's
+  finding-count field/aggregate.
 - [ ] a test proves LENS FAN-OUT: within one item the tier-1 lenses run concurrently while the
   adversary observes all lens findings and the adjudicator observes the adversary's - pinned
   at the scheduling seam with the deterministic test driver, scored outcomes identical to the
-  serial order's.
+  serial order's. This criterion OWNS restructuring `score_item`'s inner tier-1 lens loop onto
+  `crate::parallel`, keeping the adversary and adjudicator sequential after it; it does not
+  touch `run_canary`'s outer per-item loop or the `--jobs` cap, both the ITEM SHARDING
+  criterion's.
 - [ ] a test proves ITEM SHARDING AND THE JOBS CAP: independent corpus items run concurrently,
   `--jobs <n>` bounds total concurrent spawns (with a default greater than 1), and the single
-  aggregated scorecard is identical to a serial run's.
+  aggregated scorecard is identical to a serial run's. This criterion OWNS restructuring
+  `run_canary`'s outer per-item loop onto `crate::parallel` AND the `--jobs` total-concurrent-
+  spawn cap/budget that bounds BOTH this outer sharding and the LENS FAN-OUT criterion's inner
+  lens fan-out together; it is the LENS FAN-OUT criterion's CONSUMER of the already-built inner
+  concurrency, not a second implementer of `score_item`'s lens loop.
 - [ ] a test proves PROGRESS: each completed item emits a per-item stdout line (id, verdict
-  correctness, caught tiers, elapsed) before the final scorecard.
+  correctness, caught tiers, elapsed) before the final scorecard. This criterion OWNS the
+  per-item stdout progress line, hooked at the per-item completion point the ITEM SHARDING
+  criterion's restructuring produces; it does not touch the sharding mechanism or the `--jobs`
+  cap itself.
 - [ ] a test proves MODEL PINNING: `--model lens=<id>` resolves the lens tier's agents to the
   pinned id for the run (other tiers untouched, config file unmodified), and the scorecard
   header records binary build, corpus hash, and every tier's resolved model id. The header's
@@ -120,7 +138,10 @@ takes (issues #24 and #22). Three defects:
   criterion is the AUTHORITATIVE MODEL IDENTITY criterion's CONSUMER for that value, NOT a
   second implementer of resolved-model recording.
 - [ ] a test proves FINDINGS VOLUME: each per-item record carries the count of findings each
-  tier raised, and the scorecard aggregates it per tier.
+  tier raised, and the scorecard aggregates it per tier. This criterion OWNS the per-tier
+  finding-count field on `CanaryOutcome` and the findings-volume aggregate line in the
+  scorecard render; the NO FAKE ZEROS criterion's n/a branch and the FALSE POSITIVES
+  criterion's control line are each the OTHER's, not this one's.
 - [ ] a test proves SPAWN TIMING: `rigger stats` reports per-agent duration aggregates derived
   by pairing recorded spawn requests with their results by spawn id, excludes unpaired
   requests from every aggregate while reporting their count, with no new event type.
