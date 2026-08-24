@@ -332,10 +332,29 @@ struct Finding {
 }
 
 impl Finding {
-    /// Whether this finding names `item`'s planted-defect file - the catch signal.
+    /// Whether this finding names `item`'s planted-defect file - the catch signal. Matching
+    /// is TOLERANT of how a live reviewer spells the same file (see [`paths_match`]).
     fn catches(&self, item: &CanaryItem) -> bool {
-        !item.anchor.is_empty() && self.about.iter().any(|f| f == &item.anchor)
+        !item.anchor.is_empty() && self.about.iter().any(|f| paths_match(f, &item.anchor))
     }
+}
+
+/// Whether `about` (a reviewer's free-form file reference) and `anchor` (the corpus item's
+/// planted-defect file) name the same file under TOLERANT spelling: exact equality, or one
+/// is a path-segment-boundary SUFFIX of the other. This covers an absolute path naming a
+/// repo-relative anchor's tail (`/home/dev/repo/src/sum.rs` vs `src/sum.rs`) and a shorter
+/// relative/basename spelling naming the anchor's tail in reverse (`a.rs` vs
+/// `corpus/a.rs`). The tolerance is BOUNDED at segment boundaries, never raw substring:
+/// `extra.rs` is not a match for anchor `a.rs` even though it ends with that text, because
+/// the byte immediately before the shared tail is not `/`.
+fn paths_match(about: &str, anchor: &str) -> bool {
+    about == anchor
+        || about
+            .strip_suffix(anchor)
+            .is_some_and(|prefix| prefix.ends_with('/'))
+        || anchor
+            .strip_suffix(about)
+            .is_some_and(|prefix| prefix.ends_with('/'))
 }
 
 /// Score one canary item: run the lenses (tier 1) and the adversary (tier 2) collecting
@@ -684,6 +703,59 @@ mod tests {
             expected_tier: tier.into(),
             review: format!("fn {id}() {{}}"),
         }
+    }
+
+    fn with_anchor(anchor: &str) -> CanaryItem {
+        CanaryItem {
+            anchor: anchor.into(),
+            ..Default::default()
+        }
+    }
+
+    fn finding(about: &[&str]) -> Finding {
+        Finding {
+            about: about.iter().map(|s| s.to_string()).collect(),
+            summary: String::new(),
+        }
+    }
+
+    #[test]
+    fn catches_matches_an_absolute_path_spelling_of_a_repo_relative_anchor() {
+        let it = with_anchor("src/sum.rs");
+        assert!(
+            finding(&["/home/dev/repo/src/sum.rs"]).catches(&it),
+            "an absolute path ending in the anchor at a segment boundary must catch"
+        );
+    }
+
+    #[test]
+    fn catches_matches_a_segment_boundary_path_suffix_in_either_direction() {
+        // The finding names a shorter suffix spelling of a longer anchor.
+        let it = with_anchor("corpus/a.rs");
+        assert!(
+            finding(&["a.rs"]).catches(&it),
+            "a basename spelling that is the anchor's own segment-boundary suffix must catch"
+        );
+
+        // The anchor is itself the shorter suffix spelling of a longer `about` entry.
+        let it2 = with_anchor("a.rs");
+        assert!(
+            finding(&["corpus/a.rs"]).catches(&it2),
+            "corpus/a.rs is a.rs's segment-boundary suffix spelling and must catch"
+        );
+    }
+
+    #[test]
+    fn catches_rejects_a_name_that_merely_ends_with_the_anchors_text() {
+        let it = with_anchor("a.rs");
+        assert!(
+            !finding(&["extra.rs"]).catches(&it),
+            "extra.rs ends with a.rs's text but not at a path-segment boundary - must not catch"
+        );
+        assert!(
+            !finding(&["other.rs"]).catches(&it),
+            "an unrelated file must not catch"
+        );
     }
 
     #[test]
