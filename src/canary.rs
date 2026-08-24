@@ -308,7 +308,10 @@ pub fn run_canary(
     )?;
     let mut outcomes = Vec::new();
     for item in corpus {
-        let outcome = score_item(driver, cfg, panel, item)?;
+        // The lens tier fans out within the item over the crate-wide default worker
+        // width; the ITEM SHARDING criterion (this loop, and the --jobs total-spawn cap
+        // that must bound both dimensions together) is a distinct, later concern.
+        let outcome = score_item(driver, cfg, panel, item, crate::parallel::default_workers())?;
         append(store, outcome.to_event(&batch))?;
         outcomes.push(outcome);
     }
@@ -341,19 +344,35 @@ impl Finding {
 /// Score one canary item: run the lenses (tier 1) and the adversary (tier 2) collecting
 /// their findings, then the adjudicator (tier 3) twice - once with the findings in
 /// natural order and once reversed - to judge the verdict AND probe it for position bias.
+///
+/// `lens_workers` is the pool width `crate::parallel::map_ordered` fans the tier-1 lenses
+/// out over - the scheduling seam the LENS FAN-OUT criterion pins with a barrier-gated
+/// test driver. It is index-preserving (chunk-order concatenation), so the aggregation
+/// below reads in the SAME order the serial walk it replaces would have produced, and a
+/// caller passing `1` gets that exact serial walk back (the seam's own oracle). The
+/// ITEM SHARDING criterion is the one caller that turns this into the shared `--jobs`
+/// total-concurrent-spawn budget; this function only accepts whatever width it is given.
 fn score_item(
     driver: &dyn AgentDriver,
     cfg: &Config,
     panel: &ReviewPanel,
     item: &CanaryItem,
+    lens_workers: usize,
 ) -> Result<CanaryOutcome, Error> {
     let mut caught = BTreeSet::new();
     let mut findings: Vec<Finding> = Vec::new();
 
-    // TIER 1: the expert lenses, collectively one tier. Any lens raising a finding about
-    // the anchor catches the defect for the lens tier.
-    for lens in &panel.lenses {
-        let raised = run_review_tier(driver, cfg, item, lens, &lens_role(lens))?;
+    // TIER 1: the expert lenses, collectively one tier, run CONCURRENTLY over
+    // lens_workers. Any lens raising a finding about the anchor catches the defect for
+    // the lens tier; aggregation reads the (order-preserved) results in the same order
+    // the serial for-loop it replaces did, so the scored outcome cannot depend on which
+    // lens spawn happened to finish first.
+    let (lens_results, _engaged) =
+        crate::parallel::map_ordered(&panel.lenses, lens_workers, |lens| {
+            run_review_tier(driver, cfg, item, lens, &lens_role(lens))
+        });
+    for raised in lens_results {
+        let raised = raised?;
         if raised.iter().any(|f| f.catches(item)) {
             caught.insert(TIER_LENS.to_string());
         }
@@ -715,7 +734,7 @@ mod tests {
             adjudicator_order_sensitive: false,
         };
         let it = item("leak", "resource-leak", true, "reject", "adversary");
-        let outcome = score_item(&driver, &cfg(), &panel(), &it).unwrap();
+        let outcome = score_item(&driver, &cfg(), &panel(), &it, 1).unwrap();
         assert_eq!(outcome.caught_by, vec![TIER_ADVERSARY.to_string()]);
         assert!(
             !outcome.verdict_approved,
@@ -738,7 +757,7 @@ mod tests {
             adjudicator_order_sensitive: false,
         };
         let it = item("clean", "none", false, "approve", "");
-        let outcome = score_item(&driver, &cfg(), &panel(), &it).unwrap();
+        let outcome = score_item(&driver, &cfg(), &panel(), &it, 1).unwrap();
         assert!(
             outcome.caught_by.is_empty(),
             "a known-good unit catches nothing"
@@ -762,10 +781,109 @@ mod tests {
             adjudicator_order_sensitive: true,
         };
         let it = item("offbyone", "off-by-one", true, "reject", "adversary");
-        let outcome = score_item(&driver, &cfg(), &panel(), &it).unwrap();
+        let outcome = score_item(&driver, &cfg(), &panel(), &it, 1).unwrap();
         assert!(
             !outcome.stable,
             "a verdict that flips on finding order must be scored unstable"
+        );
+    }
+
+    /// A driver that blocks every LENS spawn (any agent id that is not the adversary or
+    /// the adjudicator) on a shared barrier before delegating to a real `Scripted` driver's
+    /// scoring logic. If the lens tier still ran one spawn at a time, the first lens's
+    /// `wait()` would never see its siblings arrive and the test would hang - reaching the
+    /// assertions below at all is the proof that the lenses were in flight together,
+    /// mirroring `map_ordered_engages_every_worker_deterministically`'s barrier proof.
+    struct BarrierGatedLenses {
+        barrier: std::sync::Barrier,
+        inner: Scripted,
+    }
+
+    impl AgentDriver for BarrierGatedLenses {
+        fn spawn(
+            &self,
+            a: &AgentDef,
+            prompt: &str,
+            opts: &SpawnOpts,
+            emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            if a.id != "adv" && a.id != "adj" {
+                self.barrier.wait();
+            }
+            self.inner.spawn(a, prompt, opts, emit)
+        }
+    }
+
+    fn cfg_for(ids: &[&str]) -> Config {
+        let mut c = Config::default();
+        for id in ids {
+            c.agents.insert((*id).to_string(), agent(id));
+        }
+        c
+    }
+
+    fn panel_with_lenses(lenses: &[&str]) -> ReviewPanel {
+        ReviewPanel {
+            lenses: lenses.iter().map(|s| (*s).to_string()).collect(),
+            adversary: "adv".into(),
+            adjudicator: "adj".into(),
+            tiers: None,
+        }
+    }
+
+    #[test]
+    fn lens_tier_fans_out_concurrently_at_the_scheduling_seam() {
+        // Three lenses, a barrier of three: score_item must have all three lens spawns
+        // in flight simultaneously or this deadlocks. lens_workers pins the seam so the
+        // proof does not depend on how many cores the test host happens to have.
+        let lenses = ["lens-a", "lens-b", "lens-c"];
+        let driver = BarrierGatedLenses {
+            barrier: std::sync::Barrier::new(lenses.len()),
+            inner: Scripted {
+                catching_tier: TIER_LENS,
+                planted_anchors: vec!["fanout.rs".into()],
+                adjudicator_order_sensitive: false,
+            },
+        };
+        let mut ids: Vec<&str> = lenses.to_vec();
+        ids.extend(["adv", "adj"]);
+        let c = cfg_for(&ids);
+        let p = panel_with_lenses(&lenses);
+        let it = item("fanout", "off-by-one", true, "reject", "lens");
+
+        let outcome = score_item(&driver, &c, &p, &it, lenses.len()).unwrap();
+        assert_eq!(
+            outcome.caught_by,
+            vec![TIER_LENS.to_string()],
+            "the fanned-out lens tier still scores the catch"
+        );
+        assert!(!outcome.verdict_approved, "a planted defect is rejected");
+        assert!(outcome.verdict_correct);
+    }
+
+    #[test]
+    fn lens_tier_scores_identically_serial_or_parallel() {
+        // The adversary and adjudicator run exactly as before (sequential, after the lens
+        // tier); only the lens loop's scheduling changes. lens_workers=1 is the serial walk
+        // map_ordered itself runs inline at width one - the oracle the parallel width is
+        // compared against.
+        let lenses = ["lens-a", "lens-b", "lens-c", "lens-d"];
+        let mut ids: Vec<&str> = lenses.to_vec();
+        ids.extend(["adv", "adj"]);
+        let c = cfg_for(&ids);
+        let p = panel_with_lenses(&lenses);
+        let it = item("det", "resource-leak", true, "reject", "lens");
+        let driver = Scripted {
+            catching_tier: TIER_LENS,
+            planted_anchors: vec!["det.rs".into()],
+            adjudicator_order_sensitive: false,
+        };
+
+        let serial = score_item(&driver, &c, &p, &it, 1).unwrap();
+        let parallel = score_item(&driver, &c, &p, &it, lenses.len()).unwrap();
+        assert_eq!(
+            serial, parallel,
+            "the parallel lens fan-out scores identically to the serial order"
         );
     }
 
