@@ -3122,6 +3122,20 @@ fn fresh_run_if_requested(
 /// the per-project namespace decorator before it is injected into BOTH the
 /// conductor and the side-car (§5.1.1, R9).
 fn run_workflow(parsed: &RunArgs) -> Res {
+    // DISCOVERABILITY (spec 66, criterion 5): `rigger serve <spec>` / the shim-driven
+    // workflow path is a REAL pre-launch surface holding the spec path - the one the
+    // /rigger workflow itself runs through, and the omission this unit was rejected for
+    // twice (adj-u66c5r6-reject-run-workflow-gap, adj-u66c5-rebuild-verdict-reject-dead-
+    // consumer). Printed FIRST, before any config load or base check, so the reminder
+    // survives every downstream refusal path; on stderr so the shim-captured stdout
+    // protocol stream stays clean. Gated on `spec_lint_reminder_should_print` (REMINDER
+    // DEDUP): the shim's validated pass-through suppresses a genuinely nested surface,
+    // ambient pollution from an unrelated tree still prints.
+    if let Some(spec) = &parsed.spec {
+        if spec_lint_reminder_should_print() {
+            eprintln!("{}", spec_lint_next_step(spec));
+        }
+    }
     // Refuse before starting if a gating persona would stall the integration gate (spec 18,
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
     let cfg = load_run_config(".")?;
@@ -10437,8 +10451,8 @@ fn spec_lint_reminder_suppressed(env_value: Option<&str>, parent_pid: u32) -> bo
 
 /// The real-environment, real-process wrapper around [`spec_lint_reminder_suppressed`]: reads
 /// [`SPEC_LINT_REMINDER_PID_ENV`] and this process's real direct parent id, so every
-/// reminder-printing call site (`run_cli`, `cmd_workflow`, `cmd_step`) shares ONE decision
-/// rather than three copies that could drift. `parent_id()` is Unix-only in `std`; a
+/// reminder-printing call site (`run_cli`, `run_workflow`, `cmd_workflow`, `cmd_step`)
+/// shares ONE decision rather than per-site copies that could drift. `parent_id()` is Unix-only in `std`; a
 /// non-Unix build has no parent-pid seam to check, so it always prints (never silently
 /// suppresses on a platform this contract cannot verify).
 fn spec_lint_reminder_should_print() -> bool {
