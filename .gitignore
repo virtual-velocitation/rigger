@@ -51,3 +51,11 @@ shim/node_modules/
 # `cargo mutants --in-diff`. Never a Done-when deliverable - ignore it wherever it
 # lands so it can never be swept into a unit's commit again.
 /unit.diff
+
+# cargo-mutants' own output directory - and its `.old`-suffixed rotation, which
+# cargo-mutants renames the previous run's directory to before writing a fresh
+# one (spec 66 u66c3 fresh-r1: mutants.out.old/ leaked into a unit commit as
+# 27 files / 22236 lines, the same scratch-leak class as /unit.diff above).
+# Glob covers both today and any future cargo-mutants rotation suffix so this
+# class cannot recur a third time in a different shape.
+mutants.out*/
