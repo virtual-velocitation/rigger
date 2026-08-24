@@ -20171,3 +20171,70 @@ fn run_driver_workflow_prints_the_spec_lint_reminder_and_honors_the_pid_scoped_d
          this surface exactly as on the other three; stderr:\n{err}"
     );
 }
+
+/// Companion to `run_driver_workflow_prints_the_spec_lint_reminder_and_honors_the_pid_scoped_dedup`,
+/// pinning the half that test's `(_out, ..)` destructuring never inspects: `run_workflow`'s own
+/// doc comment names stdout as "the shim-captured stdout protocol stream" the reminder must
+/// never touch, so an `eprintln!` -> `println!` typo on this call site - the exact class this
+/// unit has shipped twice before, `fresh_run_if_requested`'s `--fresh` stdout leak and the
+/// workflow-chain double-print regression (`arch-u66c5r8-workflow-chain-double-prints-the-
+/// reminder`) - would ship silently through the sibling test alone. Checked across all three
+/// pid-sentinel directions: printing (bare and foreign-sentinel) must land on stderr only, and
+/// a suppressed reminder must be absent from both streams, not merely relocated to stdout.
+#[test]
+fn run_driver_workflow_reminder_never_reaches_stdout_in_any_pid_sentinel_direction() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    std::fs::create_dir_all(root.join("specs")).unwrap();
+    std::fs::write(
+        root.join("specs/42-widgets.md"),
+        "# 42 widgets\n\n## Done when\n\n- [ ] the daemon starts on boot\n",
+    )
+    .unwrap();
+    let args = [
+        "run",
+        "--driver",
+        "workflow",
+        "specs/42-widgets.md",
+        "--base",
+        "origin/does-not-exist",
+    ];
+
+    // No sentinel: the reminder prints, but must never appear on stdout.
+    let (out, err, _ok) = run_rigger(root, &args);
+    assert!(
+        err.contains("next: `rigger validate specs/42-widgets.md`"),
+        "sanity: the reminder must still print on stderr; stderr:\n{err}"
+    );
+    assert!(
+        !out.contains("rigger validate"),
+        "run_workflow's reminder must never reach stdout - that stream is the live MCP \
+         stdio transport a stray human-readable line would corrupt; stdout:\n{out}"
+    );
+
+    // Foreign sentinel: still prints, still must stay off stdout.
+    let (out, err, _ok) =
+        run_rigger_envs(root, &args, &[("RIGGER_SPEC_LINT_REMINDER_PID", "999999")]);
+    assert!(
+        err.contains("next: `rigger validate specs/42-widgets.md`"),
+        "sanity: an ambient/foreign sentinel must not suppress the reminder; stderr:\n{err}"
+    );
+    assert!(
+        !out.contains("rigger validate"),
+        "a foreign sentinel must not push the reminder onto stdout either; stdout:\n{out}"
+    );
+
+    // Genuine parent sentinel: suppressed entirely - confirm it is absent from BOTH streams,
+    // not merely relocated to stdout instead of dropped.
+    let parent = std::process::id().to_string();
+    let (out, err, _ok) = run_rigger_envs(
+        root,
+        &args,
+        &[("RIGGER_SPEC_LINT_REMINDER_PID", parent.as_str())],
+    );
+    assert!(
+        !out.contains("rigger validate") && !err.contains("rigger validate"),
+        "a suppressed reminder must be absent from both streams; stdout:\n{out}\nstderr:\n{err}"
+    );
+}
