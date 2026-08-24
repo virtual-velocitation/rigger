@@ -15916,6 +15916,108 @@ mod tests {
         );
     }
 
+    /// Spec 66, criterion 1 (SKILL IS A REGISTRY ENTRY): `planning-a-spec` is enumerated by
+    /// [`rigger::docs::skill_registry`] exactly once, and it travels through the
+    /// registry's OWN generic surfaces - [`install_skills`] and [`write_docs`] - the SAME
+    /// two calls that install and render every other entry, with no planning-specific
+    /// install code anywhere: neither function has a `planning`-named branch, arm, or
+    /// helper (each loops `for entry in rigger::docs::skill_registry()`, see their doc
+    /// comments), and no `install_planning_a_spec`-shaped function exists in this crate.
+    /// This test's claim is narrower than the sibling `using-rigger` coverage above (whose
+    /// job is proving the generic install/render contract exists at all - registry
+    /// mechanics are spec 68's, not this spec's): here the claim is only that
+    /// planning-a-spec RIDES that contract - its installed bytes, its rendered bytes, and
+    /// its install/rerun semantics (Installed -> AlreadyCurrent, drift -> Refreshed) are
+    /// byte-for-byte and behaviorally identical to going through
+    /// [`registry_entry`]`("planning-a-spec").render(&docs_context())`, the exact generic
+    /// per-entry render path.
+    #[test]
+    fn planning_a_spec_installs_and_renders_through_the_registry_with_no_planning_specific_code() {
+        let registry = rigger::docs::skill_registry();
+        assert_eq!(
+            registry
+                .iter()
+                .filter(|e| e.name == "planning-a-spec")
+                .count(),
+            1,
+            "planning-a-spec must be enumerated by the skill registry exactly once"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let expected_render = registry_entry("planning-a-spec").render(&docs_context());
+
+        // `rigger setup` (install_skills) installs it at the registry's OWN generic path -
+        // the same loop iteration that installs using-rigger and every other entry, with no
+        // separate call or branch for planning-a-spec.
+        let install_path = skill_install_path(root, "planning-a-spec");
+        let outcomes = install_skills(root).expect("installing writes every skill file");
+        assert_eq!(
+            *outcome_for(&outcomes, "planning-a-spec"),
+            InstallOutcome::Installed,
+            "the first install reports a fresh install"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&install_path).unwrap(),
+            expected_render,
+            "the installed planning-a-spec skill must be the registry's own generic render, \
+             not a planning-specific rendering path"
+        );
+
+        // Non-destructive rerun: the same no-op contract as every other entry - a rerun does
+        // not even move the mtime, proving there is no separate planning-specific install
+        // path with its own (possibly divergent) rerun behavior.
+        let before = std::fs::metadata(&install_path)
+            .unwrap()
+            .modified()
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let outcomes = install_skills(root).expect("a no-op rerun must succeed");
+        assert_eq!(
+            *outcome_for(&outcomes, "planning-a-spec"),
+            InstallOutcome::AlreadyCurrent,
+            "an up-to-date planning-a-spec skill must be detected as current"
+        );
+        assert_eq!(
+            std::fs::metadata(&install_path)
+                .unwrap()
+                .modified()
+                .unwrap(),
+            before,
+            "an up-to-date planning-a-spec skill must NOT be rewritten"
+        );
+
+        // Drifted -> refreshed to the registry's own render, same as every other entry.
+        std::fs::write(&install_path, "stale hand-edit\n").unwrap();
+        let outcomes = install_skills(root).expect("re-install must succeed");
+        assert_eq!(
+            *outcome_for(&outcomes, "planning-a-spec"),
+            InstallOutcome::Refreshed,
+            "a drifted planning-a-spec skill must be refreshed"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&install_path).unwrap(),
+            expected_render,
+            "refreshing must overwrite the drift with the registry's own render"
+        );
+
+        // `rigger docs` (write_docs) renders it at the registry's OWN committed path -
+        // skill_source_rel, the same naming convention every entry shares - byte-identical
+        // to what `rigger setup` installed.
+        let written = write_docs(root).expect("write_docs must render every registry entry");
+        let source_path = root.join(skill_source_rel("planning-a-spec"));
+        assert!(
+            written.contains(&source_path),
+            "write_docs must render planning-a-spec at the registry's own committed path"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&source_path).unwrap(),
+            expected_render,
+            "rigger docs must render planning-a-spec through the registry's own generic \
+             render, identical to what rigger setup installed"
+        );
+    }
+
     /// Spec 20, unit 3; spec 68, criterion 1 (overlay honored per entry): a project
     /// overlay adds this repo's specifics - the base branch and where specs live - into
     /// EVERY installed skill WITHOUT editing the shared discipline source.
