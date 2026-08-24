@@ -19822,11 +19822,11 @@ fn step_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site() 
 /// (no-Node-shim) workflow dispatch with a spec path in play, proving the SAME advisory
 /// `rigger validate <spec>` prints pre-launch also surfaces here, from the identical
 /// `spec::spec_lint_advisories` implementation - not a fourth, parallel parser - and stays
-/// silent on a clean spec. Unlike the `cmd_step` sibling test, `run_workflow` never calls
-/// `spec_lint_next_step` (criterion 5's reminder) itself - only `cmd_step`, `run_cli`, and
-/// `cmd_workflow` do - so there is no generic-reminder text already containing
-/// "multi-behavior" to make a bare substring match tautological here; the plain assertion
-/// is already discriminating.
+/// silent on a clean spec. `run_workflow` now ALSO prints criterion 5's generic reminder
+/// (the escalation remedy for adj-u66c5-rebuild-verdict-reject-dead-consumer), whose text
+/// itself contains "multi-behavior" - so the in-run-lint assertion below matches on the
+/// advisory's own class label ("F2 bundling"), which the reminder never carries, keeping
+/// the assertion discriminating.
 #[test]
 fn run_driver_workflow_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site() {
     let dir = temp_project();
@@ -19861,11 +19861,12 @@ fn run_driver_workflow_surfaces_the_same_spec_lint_advisory_as_validate_the_in_r
          `run_workflow_refuses_when_there_is_no_reachable_base` pins; got: {err:?}"
     );
     assert!(
-        err.contains("multi-behavior"),
-        "`rigger run --driver workflow <spec>` must surface the SAME `multi-behavior` \
+        err.contains("F2 bundling"),
+        "`rigger run --driver workflow <spec>` must surface the SAME `F2 bundling` \
          spec-lint advisory `rigger validate <spec>` emits pre-launch, proving `run_workflow` \
          - the third `load_criteria` call site, and the one `rigger serve <spec>` shares - \
-         reaches the same shared implementation, not a fourth parallel parser; stderr:\n{err}"
+         reaches the same shared implementation, not a fourth parallel parser (asserted on \
+         the class label, which criterion 5's reminder text never carries); stderr:\n{err}"
     );
     assert!(
         err.contains("one observable behavior per criterion"),
@@ -20109,5 +20110,64 @@ fn workflow_reminder_prints_despite_env_naming_a_foreign_pid() {
         out.contains("rigger validate specs/42-widgets.md"),
         "ambient env pollution naming a foreign pid must never suppress the reminder; got \
          stdout:\n{out}"
+    );
+}
+
+/// The escalation remedy's own regression guard (adj-u66c5-rebuild-verdict-reject-dead-
+/// consumer, sdet-u66c5-no-regression-test-guards-run-workflow-reminder-silence):
+/// `run_workflow` - the surface the /rigger workflow itself launches through - prints
+/// criterion 5's reminder when a spec path is in play, and the pid-scoped REMINDER DEDUP
+/// contract holds on this surface in both directions: a foreign/ambient sentinel value
+/// still prints, and a value naming this process's real direct parent (the test process,
+/// which spawns the binary as its direct OS child) suppresses.
+#[test]
+fn run_driver_workflow_prints_the_spec_lint_reminder_and_honors_the_pid_scoped_dedup() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    std::fs::create_dir_all(root.join("specs")).unwrap();
+    std::fs::write(
+        root.join("specs/42-widgets.md"),
+        "# 42 widgets\n\n## Done when\n\n- [ ] the daemon starts on boot\n",
+    )
+    .unwrap();
+    let args = [
+        "run",
+        "--driver",
+        "workflow",
+        "specs/42-widgets.md",
+        "--base",
+        "origin/does-not-exist",
+    ];
+
+    // No sentinel: the reminder prints (on stderr, keeping the shim's stdout clean).
+    let (_out, err, _ok) = run_rigger(root, &args);
+    assert!(
+        err.contains("next: `rigger validate specs/42-widgets.md`"),
+        "run_workflow must print criterion 5's reminder when a spec path is in play - the \
+         omission this unit was rejected for twice; stderr:\n{err}"
+    );
+
+    // Foreign sentinel (a pid that is not this binary's direct parent): still prints.
+    let (_out, err, _ok) =
+        run_rigger_envs(root, &args, &[("RIGGER_SPEC_LINT_REMINDER_PID", "999999")]);
+    assert!(
+        err.contains("next: `rigger validate specs/42-widgets.md`"),
+        "an ambient/foreign sentinel value must not suppress run_workflow's reminder; \
+         stderr:\n{err}"
+    );
+
+    // Genuine parent sentinel: this test process spawns the binary as its direct OS
+    // child, so naming our own pid is the real nested-invocation shape - suppressed.
+    let parent = std::process::id().to_string();
+    let (_out, err, _ok) = run_rigger_envs(
+        root,
+        &args,
+        &[("RIGGER_SPEC_LINT_REMINDER_PID", parent.as_str())],
+    );
+    assert!(
+        !err.contains("next: `rigger validate"),
+        "a sentinel naming the binary's real direct parent must suppress the reminder on \
+         this surface exactly as on the other three; stderr:\n{err}"
     );
 }
