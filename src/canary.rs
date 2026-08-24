@@ -32,7 +32,7 @@
 //! that could drift from the one it is meant to measure.
 
 use std::cell::RefCell;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use serde::Deserialize;
@@ -195,6 +195,14 @@ pub struct CanaryOutcome {
     /// in a shuffled order (the position-bias probe). Trivially `true` when there are
     /// fewer than two findings to reorder.
     pub stable: bool,
+    /// The count of findings each tier RAISED for this item - regardless of whether any
+    /// of them caught the planted defect - keyed by tier label ([`TIER_LENS`],
+    /// [`TIER_ADVERSARY`]). This is the over-flagging / findings-volume measure: a tier
+    /// that raises many findings but catches nothing is scored honestly on both axes. A
+    /// tier that ran (the adversary is optional per panel) but raised nothing records `0`,
+    /// never an absent key - the same "seed every known tier" discipline `tier_catch`
+    /// follows, so a silent key omission never reads as "not measured".
+    pub findings_raised: BTreeMap<String, u64>,
 }
 
 impl CanaryOutcome {
@@ -213,6 +221,7 @@ impl CanaryOutcome {
             "verdict_approved": self.verdict_approved,
             "verdict_correct": self.verdict_correct,
             "stable": self.stable,
+            "findings_raised": self.findings_raised,
         });
         Event::new(
             TYPE_UNIT_STATUS,
@@ -251,6 +260,15 @@ impl CanaryOutcome {
             verdict_approved: bool_field(&v, "verdict_approved"),
             verdict_correct: bool_field(&v, "verdict_correct"),
             stable: bool_field(&v, "stable"),
+            findings_raised: v
+                .get("findings_raised")
+                .and_then(Value::as_object)
+                .map(|obj| {
+                    obj.iter()
+                        .map(|(k, val)| (k.clone(), val.as_u64().unwrap_or(0)))
+                        .collect()
+                })
+                .unwrap_or_default(),
         })
     }
 }
@@ -380,6 +398,13 @@ fn score_item(
 ) -> Result<CanaryOutcome, Error> {
     let mut caught = BTreeSet::new();
     let mut findings: Vec<Finding> = Vec::new();
+    // The findings-volume measure (FINDINGS VOLUME criterion): how many findings each tier
+    // RAISED this item, regardless of catch. Seeded at 0 for both known tiers up front - the
+    // same "seed every known tier" discipline `project_canary`'s `tier_catch` seeding follows
+    // - so a tier that ran and raised nothing records an honest 0, never an absent key.
+    let mut findings_raised: BTreeMap<String, u64> = BTreeMap::new();
+    findings_raised.insert(TIER_LENS.to_string(), 0);
+    findings_raised.insert(TIER_ADVERSARY.to_string(), 0);
 
     // TIER 1: the expert lenses, collectively one tier, run CONCURRENTLY over
     // lens_workers. Any lens raising a finding about the anchor catches the defect for
@@ -395,6 +420,7 @@ fn score_item(
         if raised.iter().any(|f| f.catches(item)) {
             caught.insert(TIER_LENS.to_string());
         }
+        *findings_raised.entry(TIER_LENS.to_string()).or_insert(0) += raised.len() as u64;
         findings.extend(raised);
     }
 
@@ -404,6 +430,9 @@ fn score_item(
         if raised.iter().any(|f| f.catches(item)) {
             caught.insert(TIER_ADVERSARY.to_string());
         }
+        *findings_raised
+            .entry(TIER_ADVERSARY.to_string())
+            .or_insert(0) += raised.len() as u64;
         findings.extend(raised);
     }
 
@@ -437,6 +466,7 @@ fn score_item(
         verdict_approved: approved,
         verdict_correct,
         stable,
+        findings_raised,
     })
 }
 
@@ -960,6 +990,89 @@ mod tests {
     }
 
     #[test]
+    fn score_item_counts_findings_raised_per_tier_regardless_of_catch() {
+        // Three lenses and the adversary each raise exactly one finding (the Scripted
+        // driver always emits one, critical or benign); nobody catches (the anchor is not
+        // in planted_anchors), so caught_by is empty while the raw VOLUME is still counted
+        // per tier - the two measures are independent.
+        let lenses = ["lens-a", "lens-b", "lens-c"];
+        let mut ids: Vec<&str> = lenses.to_vec();
+        ids.extend(["adv", "adj"]);
+        let c = cfg_for(&ids);
+        let p = panel_with_lenses(&lenses);
+        let it = item("noisy", "off-by-one", true, "reject", "lens");
+        let driver = Scripted {
+            catching_tier: "", // nobody catches - every finding raised is a benign nit
+            planted_anchors: vec![],
+            adjudicator_order_sensitive: false,
+        };
+
+        let outcome = score_item(&driver, &c, &p, &it, lenses.len()).unwrap();
+        assert!(
+            outcome.caught_by.is_empty(),
+            "nobody caught this (unplanted-for-this-driver) anchor"
+        );
+        assert_eq!(
+            outcome.findings_raised.get(TIER_LENS),
+            Some(&3),
+            "all three lenses each raised exactly one finding"
+        );
+        assert_eq!(
+            outcome.findings_raised.get(TIER_ADVERSARY),
+            Some(&1),
+            "the adversary raised its one finding too"
+        );
+    }
+
+    #[test]
+    fn score_item_seeds_a_zero_finding_count_for_a_tier_that_never_ran() {
+        // No adversary declared on the panel - the adversary tier never spawns, so its
+        // finding count must read an honest 0, not an absent key (mirrors project_canary's
+        // own tier-seeding discipline for tier_catch).
+        let mut p = panel();
+        p.adversary = String::new();
+        let driver = Scripted {
+            catching_tier: "",
+            planted_anchors: vec![],
+            adjudicator_order_sensitive: false,
+        };
+        let it = item("quiet", "off-by-one", true, "reject", "lens");
+        let outcome = score_item(&driver, &cfg(), &p, &it, 1).unwrap();
+        assert_eq!(
+            outcome.findings_raised.get(TIER_ADVERSARY),
+            Some(&0),
+            "a tier the panel never runs still reports a measured 0, not an absent key"
+        );
+        assert_eq!(outcome.findings_raised.get(TIER_LENS), Some(&1));
+    }
+
+    #[test]
+    fn canary_outcome_round_trips_findings_raised_through_the_wire_event() {
+        let mut findings_raised = BTreeMap::new();
+        findings_raised.insert(TIER_LENS.to_string(), 4);
+        findings_raised.insert(TIER_ADVERSARY.to_string(), 2);
+        let outcome = CanaryOutcome {
+            id: "x".into(),
+            defect_class: "off-by-one".into(),
+            planted: true,
+            expected_reject: true,
+            expected_tier: "lens".into(),
+            caught_by: vec![TIER_LENS.into()],
+            verdict_approved: false,
+            verdict_correct: true,
+            stable: true,
+            findings_raised,
+        };
+        let event = outcome.to_event("batch");
+        let decoded = CanaryOutcome::from_event(&event).expect("a canary outcome decodes back");
+        assert_eq!(
+            decoded, outcome,
+            "findings_raised must round-trip byte-for-byte through the wire event, exactly \
+             like every other CanaryOutcome field"
+        );
+    }
+
+    #[test]
     fn run_canary_records_a_batch_and_one_outcome_per_item_in_the_canary_stream() {
         let store = Store::open(":memory:").unwrap();
         let driver = Scripted {
@@ -1098,6 +1211,7 @@ mod tests {
                 verdict_approved: false,
                 verdict_correct: true,
                 stable: true,
+                findings_raised: BTreeMap::new(),
             }
             .to_event("b")
         };
