@@ -1963,8 +1963,13 @@ fn cmd_step(args: &[String]) -> Res {
     // `cmd_step` prints exactly ONE line of `{wave,done}` JSON on stdout that a driver parses
     // (see this fn's doc comment and `acquire_step_lock`'s), and a stdout `println!` here
     // (mirroring the other two callers verbatim) would corrupt that single-line contract.
+    // Gated on `spec_lint_reminder_should_print` (spec 66, c5 REMINDER DEDUP disposition): a
+    // `rigger step` genuinely nested under a parent that already printed (its real direct
+    // parent pid names it in `SPEC_LINT_REMINDER_PID_ENV`) stays silent; anything else prints.
     if let Some(spec) = &args.spec {
-        eprintln!("{}", spec_lint_next_step(spec));
+        if spec_lint_reminder_should_print() {
+            eprintln!("{}", spec_lint_next_step(spec));
+        }
     }
     // Refuse a doomed run up front: a gating persona that never puts its verdict on the result
     // channel would stall the integration gate (spec 18, unit 2). This reuses unit 1's lint at
@@ -2965,9 +2970,13 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // `rigger prime` hook, which the installed hook always invokes with zero args - see
     // `spec_lint_next_step`'s doc comment). Printed FIRST, before any config load or base
     // check, so the reminder survives every downstream refusal or failure path, not only a
-    // successful run.
+    // successful run. Gated on `spec_lint_reminder_should_print` (REMINDER DEDUP): a genuinely
+    // nested `rigger run` stays silent, ambient env pollution from an unrelated tree still
+    // prints.
     if let Some(spec) = &parsed.spec {
-        println!("{}", spec_lint_next_step(spec));
+        if spec_lint_reminder_should_print() {
+            println!("{}", spec_lint_next_step(spec));
+        }
     }
     // Refuse before starting if a gating persona would stall the integration gate (spec 18,
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
@@ -3281,9 +3290,12 @@ fn cmd_workflow(args: &[String]) -> Res {
     // surface that genuinely holds the spec path in production (unlike the SessionStart-only
     // `rigger prime` hook - see `spec_lint_next_step`'s doc comment). Printed before locating
     // or launching the JS driver, so the reminder survives an un-provisioned shim or any
-    // other launch failure below.
+    // other launch failure below. Gated on `spec_lint_reminder_should_print` (REMINDER DEDUP):
+    // a genuinely nested `rigger workflow` stays silent, ambient env pollution still prints.
     if let Some(spec) = &spec {
-        println!("{}", spec_lint_next_step(spec));
+        if spec_lint_reminder_should_print() {
+            println!("{}", spec_lint_next_step(spec));
+        }
     }
     let shim = locate_shim(Path::new("."))?;
     // The shim spawns `rigger serve` itself; point it at THIS binary so the driver
@@ -3299,6 +3311,14 @@ fn cmd_workflow(args: &[String]) -> Res {
         cmd.arg(spec);
     }
     cmd.env("RIGGER_BIN", &rigger_bin);
+    // REMINDER DEDUP, the nesting-surface half of the pid-scoped contract: this process is
+    // the shim's real direct OS parent, so stamp ITS OWN pid (never a value inherited from
+    // further up) - the shim (an INTERMEDIARY, spec 66 c5) validates it against its own real
+    // parent id before it may re-stamp and pass it on to `rigger serve`. Set unconditionally
+    // (not only when the print above actually fired) so an already-suppressed `rigger
+    // workflow` still hands a genuine, verifiable link to its own child rather than a stale
+    // or absent one.
+    cmd.env(SPEC_LINT_REMINDER_PID_ENV, std::process::id().to_string());
     // Thread --base to the served `rigger serve` the shim spawns: the shim inherits this
     // process's environment (the same channel it uses for RIGGER_BIN), so RIGGER_BASE reaches
     // `run_workflow`'s run-branch anchor, where `resolve_run_base` reads it. Set only when the
@@ -10390,6 +10410,51 @@ fn spec_lint_next_step(spec_path: &str) -> String {
     )
 }
 
+/// The pid-scoped parent-to-child contract's env var name (spec 66, criterion 5 disposition,
+/// closing the ad-hoc-mechanism class two earlier rounds tried and a reviewer rejected: a
+/// bare presence sentinel leaks across unrelated process trees, an in-process static leaks
+/// across in-process calls but not across a real process boundary). A nesting surface that
+/// has already printed [`spec_lint_next_step`]'s reminder sets this to ITS OWN process id
+/// before spawning a child; a genuinely nested child then suppresses its own reminder. An
+/// INTERMEDIARY (a non-rigger wrapper such as `shim/shim.mjs` that spawns rigger as its own
+/// OS child) passes the contract through in the same pass-through form: see `shim.mjs`'s
+/// mirror of this name and [`spec_lint_reminder_suppressed`]'s doc comment.
+const SPEC_LINT_REMINDER_PID_ENV: &str = "RIGGER_SPEC_LINT_REMINDER_PID";
+
+/// Whether the spec-lint discoverability reminder is suppressed for THIS process, per the
+/// [`SPEC_LINT_REMINDER_PID_ENV`] contract (spec 66, criterion 5): suppressed ONLY when
+/// `env_value` parses as a `u32` AND equals `parent_pid` (the real direct OS parent, e.g.
+/// `std::os::unix::process::parent_id()`) - an absent, foreign (parses but names some other
+/// process), stale, or malformed value always means "print". Pure over its inputs (no env or
+/// process reads inside) so both directions - nested invocation suppressed, ambient pollution
+/// from an unrelated process tree still prints - are unit-testable without a real process
+/// tree; [`spec_lint_reminder_should_print`] is the impure wrapper real call sites use.
+fn spec_lint_reminder_suppressed(env_value: Option<&str>, parent_pid: u32) -> bool {
+    env_value
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .is_some_and(|seen_pid| seen_pid == parent_pid)
+}
+
+/// The real-environment, real-process wrapper around [`spec_lint_reminder_suppressed`]: reads
+/// [`SPEC_LINT_REMINDER_PID_ENV`] and this process's real direct parent id, so every
+/// reminder-printing call site (`run_cli`, `cmd_workflow`, `cmd_step`) shares ONE decision
+/// rather than three copies that could drift. `parent_id()` is Unix-only in `std`; a
+/// non-Unix build has no parent-pid seam to check, so it always prints (never silently
+/// suppresses on a platform this contract cannot verify).
+fn spec_lint_reminder_should_print() -> bool {
+    #[cfg(unix)]
+    {
+        !spec_lint_reminder_suppressed(
+            std::env::var(SPEC_LINT_REMINDER_PID_ENV).ok().as_deref(),
+            std::os::unix::process::parent_id(),
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
 /// `rigger prime [<spec>]` - print recent decisions (what the SessionStart hook runs), and,
 /// when a spec path is given, the DISCOVERABILITY next step naming the spec lint (spec 66,
 /// criterion 5) so an operator or agent about to drive `/rigger <spec>` finds `rigger
@@ -10718,6 +10783,43 @@ mod tests {
             line.contains("rigger validate specs/42-widgets.md"),
             "must name the exact pre-launch lint command against the given spec path; got: \
              {line:?}"
+        );
+    }
+
+    // --- Spec 66, criterion 5: REMINDER DEDUP - the pid-scoped parent-to-child contract ---
+
+    /// The nested-invocation direction: a child whose env names EXACTLY its own real direct
+    /// parent pid is suppressed (the nesting surface just printed and passed its own pid
+    /// down).
+    #[test]
+    fn spec_lint_reminder_suppressed_when_env_names_the_real_direct_parent_pid() {
+        assert!(spec_lint_reminder_suppressed(Some("4242"), 4242));
+    }
+
+    /// The ambient-pollution direction: absent, foreign (a pid that is not the real direct
+    /// parent), stale, or malformed values must never suppress - state lives ONLY in the
+    /// explicit parent-to-child contract, never ambient env presence.
+    #[test]
+    fn spec_lint_reminder_prints_on_absent_foreign_stale_or_malformed_env() {
+        assert!(
+            !spec_lint_reminder_suppressed(None, 4242),
+            "an absent value must print"
+        );
+        assert!(
+            !spec_lint_reminder_suppressed(Some("1"), 4242),
+            "a foreign pid (not the real direct parent) must print"
+        );
+        assert!(
+            !spec_lint_reminder_suppressed(Some("not-a-pid"), 4242),
+            "a malformed value must print"
+        );
+        assert!(
+            !spec_lint_reminder_suppressed(Some(""), 4242),
+            "a stale/empty value must print"
+        );
+        assert!(
+            !spec_lint_reminder_suppressed(Some(" 4242 "), 4243),
+            "a value that parses but does not equal the real direct parent must print"
         );
     }
 
