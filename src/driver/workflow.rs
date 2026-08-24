@@ -115,20 +115,28 @@ impl Driver {
 
     /// Deliver an agent's result to the waiting spawn. A blank `err` means success.
     ///
+    /// `resolved_model` is the AUTHORITATIVE model id the shim's `rigger_result` call
+    /// carried in `meta.resolved_model` (spec 61 c10 round 2), sourced end to end from
+    /// the Agent SDK's own structured terminal metadata
+    /// ([`resolvedModelFromUsage`](shim/shim.mjs)) - `mcpserver.rs::tool_result` reads it
+    /// off the wire and passes it straight through here, never the agent's own output
+    /// text. Empty when the shim observed no single authoritative id (never a guess or
+    /// default). The stepwise `rigger step` path already surfaced this field via
+    /// [`SpawnResult::resolved_model`](crate::spawn::SpawnResult::resolved_model); the
+    /// in-process workflow path now matches it instead of hardcoding it empty.
+    ///
     /// Returns `true` if `id` named a pending spawn and the result was delivered,
     /// `false` if the id was unknown or stale. A `false` must be surfaced to the
     /// caller (not swallowed): a shim reporting a result for a wrong/stale id
     /// otherwise gets silent success while the real spawn blocks forever.
     #[must_use]
-    pub fn result(&self, id: &str, output: String, err: String) -> bool {
+    pub fn result(&self, id: &str, output: String, err: String, resolved_model: String) -> bool {
         let inner = self.inner.lock().unwrap();
         if let Some(call) = inner.pending.get(id) {
             let r = if err.is_empty() {
-                // The in-process MCP result carries no resolved model id (spec 05 line 52
-                // sources it from the stepwise `rigger result --meta` path), so it is empty.
                 Ok(AgentResult {
                     output,
-                    resolved_model: String::new(),
+                    resolved_model,
                 })
             } else {
                 Err(Error(err))
@@ -253,18 +261,29 @@ mod tests {
         );
 
         assert!(
-            driver.result(&req.id, "done".into(), String::new()),
+            driver.result(
+                &req.id,
+                "done".into(),
+                String::new(),
+                "claude-opus-4-8-20260101".into()
+            ),
             "a result for a known spawn id must report it was delivered"
         );
         let res = handle.join().unwrap().unwrap();
         assert_eq!(res.output, "done");
+        // Reject-fix (spec 61 c10 round 2): the resolved model id the shim reports on
+        // `rigger_result` must reach the conductor's AgentResult, not be dropped.
+        assert_eq!(
+            res.resolved_model, "claude-opus-4-8-20260101",
+            "the resolved model id delivered to result() must reach AgentResult"
+        );
     }
 
     #[test]
     fn result_reports_an_unknown_id() {
         let driver = Driver::new();
         assert!(
-            !driver.result("does-not-exist", "out".into(), String::new()),
+            !driver.result("does-not-exist", "out".into(), String::new(), String::new()),
             "a result for an id that names no pending spawn must report unknown"
         );
     }
@@ -331,7 +350,7 @@ mod tests {
 
         // Drain it; now the run is finished.
         let req = driver.next().expect("the pending spawn is still served");
-        assert!(driver.result(&req.id, "done".into(), String::new()));
+        assert!(driver.result(&req.id, "done".into(), String::new(), String::new()));
         handle.join().unwrap().unwrap();
         assert!(
             driver.is_finished(),
@@ -375,7 +394,7 @@ mod tests {
         };
         assert_eq!(req.tools, ["Read"]);
         assert!(!req.tools.contains(&"Agent".to_string()));
-        assert!(driver.result(&req.id, "done".into(), String::new()));
+        assert!(driver.result(&req.id, "done".into(), String::new(), String::new()));
         handle.join().unwrap().unwrap();
     }
 }

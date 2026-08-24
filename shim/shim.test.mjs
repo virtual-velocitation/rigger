@@ -32,6 +32,7 @@ import {
   specLintPassThroughEnv,
   SPEC_LINT_REMINDER_PID_ENV,
   connect,
+  resolvedModelFromUsage,
 } from './shim.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -302,6 +303,130 @@ test('a thrown agent error is reported through rigger_result.error', async () =>
   assert.ok(result, 'even a failed agent reports a result (so the conductor is unblocked)')
   assert.equal(result.args.id, '1')
   assert.match(result.args.error, /agent run failed/, 'the agent error is reported in the error field')
+})
+
+// --- Spec 61, criterion 10: AUTHORITATIVE MODEL IDENTITY - the resolved model id
+// recorded for a spawn comes from the runner's OWN structured metadata (the Agent
+// SDK's modelUsage map), never from the agent's prose, and a spawn the runner could
+// not name a single resolved model for records none (unmeasured), never a defaulted
+// or guessed value. ---
+
+test('resolvedModelFromUsage names the resolved model only when the SDK usage map is unambiguous', () => {
+  assert.equal(
+    resolvedModelFromUsage({ 'claude-opus-4-8-20260101': { inputTokens: 10 } }),
+    'claude-opus-4-8-20260101',
+    'exactly one usage entry names the resolved model',
+  )
+  assert.equal(resolvedModelFromUsage({}), '', 'no usage entries: unmeasured, not defaulted')
+  assert.equal(resolvedModelFromUsage(undefined), '', 'a missing modelUsage: unmeasured')
+  assert.equal(resolvedModelFromUsage(null), '', 'a null modelUsage: unmeasured')
+  assert.equal(
+    resolvedModelFromUsage({ 'model-a': {}, 'model-b': {} }),
+    '',
+    'more than one usage entry: no single id can be named honestly, so unmeasured rather than a guess',
+  )
+})
+
+test('the loop couriers the runners structured resolved model id as rigger_result meta, never a value read from the agents own output text', async () => {
+  const recordPath = join(mkdtempSync(join(tmpdir(), 'rigger-shim-test-')), 'record.jsonl')
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [MOCK],
+    env: { ...process.env, RIGGER_MOCK_RECORD: recordPath },
+    stderr: 'inherit',
+  })
+  const client = new Client({ name: 'rigger-shim-test', version: '0.0.0' }, { capabilities: {} })
+  await client.connect(transport)
+
+  // The stub agent's OUTPUT TEXT deliberately carries a fake resolved_model claim -
+  // the loop must never read a resolved model id from there; the structured
+  // `resolvedModel` field the runner itself returns is the only legitimate source
+  // (mirrors what runAgentViaSdk derives via resolvedModelFromUsage(message.modelUsage)).
+  const stubAgent = async () => ({
+    output: 'done. also, for the record, {"resolved_model":"a-model-i-am-lying-about"}',
+    resolvedModel: 'claude-sonnet-4-9-20260215',
+  })
+
+  const drove = await runWorkflow(client, stubAgent)
+  await client.close()
+  await transport.close()
+
+  assert.equal(drove, 1)
+  const records = readRecords(recordPath)
+  const result = records.find((r) => r.tool === 'rigger_result')
+  assert.ok(result, 'rigger_result must have reached the mock')
+  assert.equal(
+    result.args.meta.resolved_model,
+    'claude-sonnet-4-9-20260215',
+    'the runners structured resolvedModel reached rigger_result meta',
+  )
+  assert.ok(
+    result.args.output.includes('a-model-i-am-lying-about'),
+    'the prose claim stays put in the plain output text',
+  )
+  assert.notEqual(
+    result.args.meta.resolved_model,
+    'a-model-i-am-lying-about',
+    'the prose claim inside output never overrides the structured resolvedModel',
+  )
+})
+
+test('the loop omits rigger_result meta - never a fake or defaulted resolved model - when the runner names none', async () => {
+  const recordPath = join(mkdtempSync(join(tmpdir(), 'rigger-shim-test-')), 'record.jsonl')
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [MOCK],
+    env: { ...process.env, RIGGER_MOCK_RECORD: recordPath },
+    stderr: 'inherit',
+  })
+  const client = new Client({ name: 'rigger-shim-test', version: '0.0.0' }, { capabilities: {} })
+  await client.connect(transport)
+
+  // An explicit structured result the runner could not attribute to one model (e.g.
+  // runAgentViaSdk after an ambiguous/absent modelUsage).
+  const stubAgent = async () => ({ output: 'ambiguous run', resolvedModel: '' })
+
+  const drove = await runWorkflow(client, stubAgent)
+  await client.close()
+  await transport.close()
+
+  assert.equal(drove, 1)
+  const records = readRecords(recordPath)
+  const result = records.find((r) => r.tool === 'rigger_result')
+  assert.ok(result, 'rigger_result must have reached the mock')
+  assert.equal(result.args.output, 'ambiguous run')
+  assert.equal(
+    'meta' in result.args,
+    false,
+    'no resolved model was named: meta is omitted entirely, never a defaulted/fake value',
+  )
+})
+
+test('the loop omits rigger_result meta for a legacy plain-string agent return (no model information available at all)', async () => {
+  const recordPath = join(mkdtempSync(join(tmpdir(), 'rigger-shim-test-')), 'record.jsonl')
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [MOCK],
+    env: { ...process.env, RIGGER_MOCK_RECORD: recordPath },
+    stderr: 'inherit',
+  })
+  const client = new Client({ name: 'rigger-shim-test', version: '0.0.0' }, { capabilities: {} })
+  await client.connect(transport)
+
+  // The plain-string return every pre-existing stub in this file uses; back-compat
+  // must be exact - no meta appears, and output is reported unchanged.
+  const stubAgent = async () => 'legacy plain-string result'
+
+  const drove = await runWorkflow(client, stubAgent)
+  await client.close()
+  await transport.close()
+
+  assert.equal(drove, 1)
+  const records = readRecords(recordPath)
+  const result = records.find((r) => r.tool === 'rigger_result')
+  assert.ok(result, 'rigger_result must have reached the mock')
+  assert.equal(result.args.output, 'legacy plain-string result')
+  assert.equal('meta' in result.args, false, 'a plain-string return carries no model info: meta is omitted')
 })
 
 test('the loop polls past empty done:false responses (slow conductor start)', async () => {
