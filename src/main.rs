@@ -4194,8 +4194,10 @@ fn format_stats(m: &Metrics) -> Vec<String> {
 
 /// Render the spec-61 SPAWN TIMING panel: per-agent (spawn-role) wall-clock duration
 /// aggregates - count, total, and mean - derived from pairing each recorded spawn request
-/// with its result by spawn id, plus how many recorded requests were left unanswered (a
-/// dead worker, excluded from every aggregate above and reported here as its own count).
+/// with its result by `(run window, spawn id)`, plus how many recorded requests were
+/// excluded: a dead worker (no same-window result), or a paired result whose duration was
+/// non-positive (suspect - a same-batch append or clock skew) - either way excluded from
+/// every aggregate above and reported here as its own count.
 fn append_spawn_timing(lines: &mut Vec<String>, m: &Metrics) {
     if m.spawn_timing.is_empty() && m.unpaired_spawns == 0 {
         lines.push("  spawn timing       (no recorded spawns)".to_string());
@@ -4212,7 +4214,8 @@ fn append_spawn_timing(lines: &mut Vec<String>, m: &Metrics) {
     }
     if m.unpaired_spawns > 0 {
         lines.push(format!(
-            "    ({} unpaired spawn request(s) excluded above - no recorded result (dead worker))",
+            "    ({} unpaired spawn request(s) excluded above - no recorded result (dead \
+             worker), or a paired result with a suspect non-positive duration)",
             m.unpaired_spawns,
         ));
     }
@@ -19038,26 +19041,61 @@ mod tests {
         );
     }
 
-    /// spec 61 SPAWN TIMING end to end: a recorded `SpawnRequested` PAIRED with its
-    /// `SpawnResult` (by spawn id, through the real sqlite store's namespaced run stream -
-    /// exactly the events `spawn::park`/`spawn::record_result` write) reaches `rigger stats`
-    /// as a per-agent duration row, and an UNANSWERED park (no matching result) reaches it as
-    /// a disclosed unpaired count - proving the fold in `metrics::project` and its rendering
-    /// in `format_stats` are wired together on the real read path, not just unit-tested apart.
+    /// spec 61 SPAWN TIMING end to end, through the REAL sqlite store's `recorded_at` stamping
+    /// (`eventstore::sqlite`: "the store stamps recorded_at on ingest, one clock per batch") -
+    /// proving the fold in `metrics::project` and its rendering in `format_stats` are wired
+    /// together on the real read path, not just unit-tested apart, for BOTH outcomes the
+    /// truthfulness guard must distinguish:
+    ///
+    ///   - a request and its result landing in the SAME append batch (`seed_run`'s one call)
+    ///     get the SAME store-stamped `recorded_at` - a deterministic, non-flaky way to drive
+    ///     the real store through the exact SUSPECT same-batch-zero-duration path (finding
+    ///     adv-u61c9-same-batch-append-yields-silent-zero-duration) and prove it is excluded,
+    ///     not silently folded in as a fabricated zero. This is the gap the shipped test
+    ///     previously missed: it seeded exactly this same-batch shape but never asserted
+    ///     whether the resulting duration was real or suspect.
+    ///   - a request and its result landing in SEPARATE batches get their OWN store-stamped
+    ///     `recorded_at`, a genuine (if real-clock-small) elapsed duration that pairs and
+    ///     counts normally - proving the guard does not over-exclude an ordinary cross-batch
+    ///     pairing, the common case in production.
+    ///
+    /// A wholly unanswered park (no matching result at all) reaches `rigger stats` as a
+    /// disclosed unpaired count in both cases.
     #[test]
     fn stats_lines_pairs_recorded_spawn_request_and_result_into_spawn_timing() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("events.db");
         let path_str = path.to_str().unwrap();
 
-        let answered = spawn::SpawnRequest::new("u1", "impl", "implementer", 0, "do it");
-        let dead = spawn::SpawnRequest::new("u2", "impl", "implementer", 0, "never answered");
+        let same_batch = spawn::SpawnRequest::new("u1", "impl", "implementer", 0, "same batch");
+        let cross_batch = spawn::SpawnRequest::new("u2", "review", "adversary", 0, "cross batch");
+        let dead = spawn::SpawnRequest::new("u3", "impl", "implementer", 0, "never answered");
+
+        // u1's request+result share ONE append call, so the real store stamps them with the
+        // SAME recorded_at - the deterministic same-batch-suspect shape.
         seed_run(
             path_str,
             "proj-me",
             &[
-                answered.to_event().unwrap(),
-                spawn::SpawnResult::ok(answered.id.clone(), "done")
+                same_batch.to_event().unwrap(),
+                spawn::SpawnResult::ok(same_batch.id.clone(), "done")
+                    .to_event()
+                    .unwrap(),
+            ],
+        );
+        // u2's request lands in its own batch; its result and u3's dead park land in a LATER,
+        // separate batch, so the real store stamps u2's pair with two DIFFERENT recorded_at
+        // values - a genuine cross-batch pairing. A short, real sleep guarantees the two
+        // batches' store-stamped clocks are measurably distinct even under a loaded/parallel
+        // test run (mirrors `spawn_timing_pairs_real_writer_events_through_a_real_store_by_role`
+        // in tests/spawn_timing_periphery.rs).
+        seed_run(path_str, "proj-me", &[cross_batch.to_event().unwrap()]);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        seed_run(
+            path_str,
+            "proj-me",
+            &[
+                spawn::SpawnResult::ok(cross_batch.id.clone(), "done")
                     .to_event()
                     .unwrap(),
                 dead.to_event().unwrap(),
@@ -19069,12 +19107,29 @@ mod tests {
             .expect("a populated run must render lines, not None");
         let out = lines.join("\n");
         assert!(
-            out.contains("implementer"),
-            "the answered spawn must fold into an implementer spawn-timing row:\n{out}"
+            !out.contains("implementer"),
+            "the SAME-BATCH pair must NOT fold into an implementer spawn-timing row - a \
+             same-batch zero duration is suspect, not a real measurement:\n{out}"
+        );
+        let adversary = out
+            .lines()
+            // "avg /" is unique to a spawn-timing aggregate row - "adversary" alone also
+            // matches the (unrelated) "adversary precision" review-quality line above it.
+            .find(|l| l.contains("adversary") && l.contains("avg /"))
+            .unwrap_or_else(|| {
+                panic!("the CROSS-BATCH pair must fold into an adversary spawn-timing row:\n{out}")
+            });
+        assert!(
+            adversary.contains("1 spawns"),
+            "the cross-batch pairing must be COUNTED, not excluded as suspect - its very \
+             presence here (unlike u1's same-batch pair above) proves the production fold saw \
+             a positive duration, since a non-positive one can only ever land in \
+             unpaired_spawns: {adversary}"
         );
         assert!(
-            out.contains("1 unpaired spawn request"),
-            "the never-answered park must surface as one unpaired request:\n{out}"
+            out.contains("2 unpaired spawn request"),
+            "the same-batch suspect pair AND the never-answered u3 park must both surface as \
+             unpaired, disclosed together:\n{out}"
         );
     }
 

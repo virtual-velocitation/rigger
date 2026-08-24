@@ -7451,7 +7451,8 @@ fn stats_cli_renders_exact_per_role_spawn_timing_and_unpaired_disclosure() {
     );
     assert!(
         out.contains(
-            "(1 unpaired spawn request(s) excluded above - no recorded result (dead worker))"
+            "(1 unpaired spawn request(s) excluded above - no recorded result (dead worker), \
+             or a paired result with a suspect non-positive duration)"
         ),
         "the never-answered request must be disclosed as unpaired; got:\n{out}"
     );
