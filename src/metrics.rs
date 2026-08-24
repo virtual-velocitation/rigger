@@ -951,6 +951,12 @@ pub struct CanaryMetrics {
     /// The distinct planted defect classes the run cataloged (spec 13 unit 5 requires
     /// at least three).
     pub defect_classes: BTreeSet<String>,
+    /// The total count of findings each review tier RAISED across every scored item
+    /// (planted and known-good alike) - the findings-VOLUME measure, distinct from this
+    /// struct's own `tier_catch` catch tally: a tier that over-flags (many findings, few
+    /// catches) is visible here even though its catch rate looks fine. Summed from each
+    /// item's [`crate::canary::CanaryOutcome`] `findings_raised` field.
+    pub findings_raised: BTreeMap<String, u64>,
 }
 
 impl CanaryMetrics {
@@ -981,9 +987,11 @@ impl CanaryMetrics {
 pub fn project_canary(events: &[Event]) -> CanaryMetrics {
     let mut m = CanaryMetrics::default();
     // Seed both tiers so a run reports a `0/0` for a tier that never caught, rather than
-    // omitting it (a silent absence reads as "not measured", not "caught nothing").
+    // omitting it (a silent absence reads as "not measured", not "caught nothing"). The
+    // findings-volume total is seeded the same way, for the same reason.
     for tier in [crate::canary::TIER_LENS, crate::canary::TIER_ADVERSARY] {
         m.tier_catch.insert(tier.to_string(), TierCatch::default());
+        m.findings_raised.insert(tier.to_string(), 0);
     }
     for e in crate::canary::latest_run(events) {
         let Some(o) = crate::canary::CanaryOutcome::from_event(e) else {
@@ -995,6 +1003,15 @@ pub fn project_canary(events: &[Event]) -> CanaryMetrics {
         }
         if o.stable {
             m.stable += 1;
+        }
+        // Findings volume aggregates over EVERY item (planted and known-good alike) - a
+        // tier's over-flagging shows up on a known-good control just as much as on a
+        // planted defect it was supposed to catch. Only the two known tiers are scored,
+        // matching the tier_catch discipline just below.
+        for (tier, count) in &o.findings_raised {
+            if let Some(total) = m.findings_raised.get_mut(tier) {
+                *total += count;
+            }
         }
         if o.planted {
             m.planted += 1;
@@ -2098,6 +2115,99 @@ mod tests {
                 !expected_reject
             ),
         )
+    }
+
+    /// Like [`canary_outcome`] but also carries a `findings_raised` per-tier map (the
+    /// FINDINGS VOLUME criterion's field), for the tests that fold that measure.
+    #[allow(clippy::too_many_arguments)]
+    fn canary_outcome_with_findings(
+        id: &str,
+        class: &str,
+        planted: bool,
+        expected_reject: bool,
+        caught_by: &[&str],
+        verdict_correct: bool,
+        stable: bool,
+        findings_raised: &[(&str, u64)],
+    ) -> Event {
+        let caught: String = caught_by
+            .iter()
+            .map(|t| format!("\"{t}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        let findings: String = findings_raised
+            .iter()
+            .map(|(tier, n)| format!("\"{tier}\":{n}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        ev(
+            TYPE_UNIT_STATUS,
+            &format!(
+                r#"{{"id":"{id}","status":"canary","defect_class":"{class}","planted":{planted},"expected_reject":{expected_reject},"expected_tier":"","caught_by":[{caught}],"verdict_approved":{},"verdict_correct":{verdict_correct},"stable":{stable},"findings_raised":{{{findings}}}}}"#,
+                !expected_reject
+            ),
+        )
+    }
+
+    #[test]
+    fn project_canary_aggregates_findings_raised_per_tier_across_items() {
+        // Two planted items; each tier raised a different count on each - the aggregate
+        // must be the SUM per tier across the run, not the last item's count or a max.
+        let events = vec![
+            canary_run_marker(),
+            canary_outcome_with_findings(
+                "a",
+                "off-by-one",
+                true,
+                true,
+                &["lens"],
+                true,
+                true,
+                &[("lens", 2), ("adversary", 1)],
+            ),
+            canary_outcome_with_findings(
+                "b",
+                "resource-leak",
+                true,
+                true,
+                &["adversary"],
+                true,
+                true,
+                &[("lens", 1), ("adversary", 3)],
+            ),
+            // A known-good control still contributes to the volume total - findings
+            // volume is not restricted to planted items the way tier_catch is.
+            canary_outcome_with_findings(
+                "c",
+                "none",
+                false,
+                false,
+                &[],
+                true,
+                true,
+                &[("lens", 4), ("adversary", 0)],
+            ),
+        ];
+        let m = project_canary(&events);
+        assert_eq!(
+            m.findings_raised["lens"], 7,
+            "2 + 1 + 4 across the three items"
+        );
+        assert_eq!(
+            m.findings_raised["adversary"], 4,
+            "1 + 3 + 0 across the three items"
+        );
+    }
+
+    #[test]
+    fn project_canary_seeds_zero_findings_raised_for_both_tiers_on_an_empty_stream() {
+        let m = project_canary(&[]);
+        assert_eq!(
+            m.findings_raised.get("lens"),
+            Some(&0),
+            "an unmeasured tier reports an honest 0, not an absent key"
+        );
+        assert_eq!(m.findings_raised.get("adversary"), Some(&0));
     }
 
     #[test]

@@ -4381,6 +4381,12 @@ fn format_canary_stats(m: &metrics::CanaryMetrics) -> Vec<String> {
         m.items,
         m.stability_rate() * 100.0,
     ));
+    if !m.findings_raised.is_empty() {
+        lines.push("  findings raised by tier (volume, informational):".to_string());
+        for (tier, count) in &m.findings_raised {
+            lines.push(format!("    {tier:<16} {count}"));
+        }
+    }
     if !m.defect_classes.is_empty() {
         lines.push(format!(
             "  defect classes     {}",
@@ -18040,6 +18046,56 @@ mod tests {
         assert!(
             !out.to_lowercase().contains("nan"),
             "rates must be guarded, never NaN:\n{out}"
+        );
+    }
+
+    /// spec 61, FINDINGS VOLUME criterion: the per-tier finding count `project_canary`
+    /// aggregates onto `CanaryMetrics::findings_raised` must reach the printed scorecard,
+    /// exactly like every other canary measure `format_canary_stats` renders.
+    #[test]
+    fn format_canary_stats_reports_findings_raised_by_tier() {
+        let mut m = metrics::CanaryMetrics::default();
+        m.findings_raised.insert("lens".to_string(), 7);
+        m.findings_raised.insert("adversary".to_string(), 4);
+        let out = format_canary_stats(&m).join("\n");
+        assert!(
+            out.contains("findings raised by tier"),
+            "the findings-volume section must appear:\n{out}"
+        );
+        assert!(
+            out.contains(&format!("{:<16} 7", "lens")),
+            "lens's aggregated finding count must appear:\n{out}"
+        );
+        assert!(
+            out.contains(&format!("{:<16} 4", "adversary")),
+            "adversary's aggregated finding count must appear:\n{out}"
+        );
+    }
+
+    /// A tier that raised nothing this run still renders its honest `0` (mirrors the
+    /// catch-rate section's own `0/N` discipline) rather than a blank or omitted line.
+    #[test]
+    fn format_canary_stats_reports_a_zero_findings_count_honestly() {
+        let mut m = metrics::CanaryMetrics::default();
+        m.findings_raised.insert("lens".to_string(), 0);
+        m.findings_raised.insert("adversary".to_string(), 0);
+        let out = format_canary_stats(&m).join("\n");
+        assert!(
+            out.contains(&format!("{:<16} 0", "lens"))
+                && out.contains(&format!("{:<16} 0", "adversary")),
+            "an unmeasured tier's finding count must render an honest 0:\n{out}"
+        );
+    }
+
+    /// No findings-volume section at all when the metrics carry none - a caller that never
+    /// populated the map (e.g. an older/foreign scorecard) gets the pre-existing render
+    /// unchanged rather than an empty header with nothing under it.
+    #[test]
+    fn format_canary_stats_omits_the_findings_volume_section_when_empty() {
+        let out = format_canary_stats(&metrics::CanaryMetrics::default()).join("\n");
+        assert!(
+            !out.contains("findings raised by tier"),
+            "an empty findings_raised map must not print a bare header:\n{out}"
         );
     }
 
