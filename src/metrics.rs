@@ -99,6 +99,7 @@
 //! upheld nothing" when the truth is "the upheld findings were unattributed here".
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::{Duration, SystemTime};
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -114,7 +115,10 @@ use crate::ledger::{
     TYPE_UNIT_STATUS,
 };
 use crate::run::META_RUN_ID;
-use crate::spawn::{spawn_role, SpawnResult, ROLE_ADJUDICATOR, ROLE_ADVERSARY, TYPE_SPAWN_RESULT};
+use crate::spawn::{
+    spawn_role, SpawnRequest, SpawnResult, ROLE_ADJUDICATOR, ROLE_ADVERSARY, TYPE_SPAWN_REQUESTED,
+    TYPE_SPAWN_RESULT,
+};
 
 /// The tier a review spawn belongs to, recovered from its deterministic
 /// [`spawn_id`](crate::spawn::spawn_id) `{unit}/{role}#{attempt}` (a retry id may add a
@@ -216,6 +220,45 @@ pub struct Metrics {
     /// [`parallelism_retention_warns`](Metrics::parallelism_retention_warns) surfaces so it is
     /// visible in production.
     pub parallelism_retention: Option<f64>,
+    /// Per-agent wall-clock duration aggregates (spec 61, SPAWN TIMING), keyed by the spawn's
+    /// ROLE token ([`spawn_role`], e.g. `"implementer"`, `"adversary"`, `"lens:sdet"`) - the SAME
+    /// per-agent breakdown the review-tier cost fold uses, but covering EVERY recorded spawn
+    /// role, not only the review tiers. Each recorded [`TYPE_SPAWN_REQUESTED`] is paired with its
+    /// [`TYPE_SPAWN_RESULT`] by spawn id; a request with no recorded result (a dead worker)
+    /// contributes to no entry here and is counted in [`unpaired_spawns`](Metrics::unpaired_spawns)
+    /// instead - a fabricated or zero duration never enters a mean. Sorted by role for stable
+    /// reporting.
+    pub spawn_timing: BTreeMap<String, SpawnTiming>,
+    /// Recorded spawn requests with NO matching result on this slice (spec 61, SPAWN TIMING) - a
+    /// dead/unanswered worker. Excluded from every [`spawn_timing`](Metrics::spawn_timing)
+    /// aggregate and reported here as its own count, so a stalled spawn can never masquerade as a
+    /// zero-duration measurement.
+    pub unpaired_spawns: u64,
+}
+
+/// One spawn role's wall-clock duration aggregate (spec 61, SPAWN TIMING): how many recorded
+/// spawns paired a [`TYPE_SPAWN_REQUESTED`] to its [`TYPE_SPAWN_RESULT`] by id under this role,
+/// and their summed duration. The mean is derived on demand ([`SpawnTiming::mean`]), never
+/// stored, mirroring how the rest of [`Metrics`] derives its rates rather than persisting them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SpawnTiming {
+    /// Paired request/result spawns folded under this role.
+    pub count: u64,
+    /// Their summed wall-clock duration: each pair's
+    /// `SpawnResult event's recorded_at - SpawnRequested event's recorded_at`.
+    pub total: Duration,
+}
+
+impl SpawnTiming {
+    /// The mean duration per spawn, or [`Duration::ZERO`] when `count == 0` (never a division by
+    /// zero).
+    pub fn mean(&self) -> Duration {
+        if self.count == 0 {
+            Duration::ZERO
+        } else {
+            self.total / self.count as u32
+        }
+    }
 }
 
 /// The parallelism-retention floor below which [`Metrics::parallelism_retention_warns`] fires
@@ -532,6 +575,12 @@ pub fn project(events: &[Event]) -> Metrics {
     // runtime parallelism-retention metric. Latest-per-unit so a remediation attempt's re-record
     // supersedes the prior attempt's radius rather than double-counting the same unit.
     let mut blast_radii: BTreeMap<String, (Vec<String>, bool)> = BTreeMap::new();
+    // spec 61 SPAWN TIMING: spawn id -> its SpawnRequested park time (first sighting - the true
+    // request moment; a re-park is an idempotency violation the replay driver prevents) and its
+    // LATEST recorded SpawnResult time (mirroring spawn::result_of's last-write-wins semantics -
+    // a corrected re-record supersedes the earlier one). Paired by id after the pass.
+    let mut spawn_requested_at: BTreeMap<String, SystemTime> = BTreeMap::new();
+    let mut spawn_result_at: BTreeMap<String, SystemTime> = BTreeMap::new();
 
     for e in events {
         match e.type_.as_str() {
@@ -708,6 +757,16 @@ pub fn project(events: &[Event]) -> Metrics {
                 finding_about.insert(id.clone(), about);
                 finding_actor.insert(id, actor);
             }
+            TYPE_SPAWN_REQUESTED => {
+                // spec 61 SPAWN TIMING: the park time of a recorded spawn request. First
+                // sighting wins - the true request moment - so a malformed re-park (an
+                // idempotency violation the replay driver is responsible for preventing)
+                // cannot silently shift an already-folded spawn's start time.
+                let Ok(req) = SpawnRequest::from_event(e) else {
+                    continue;
+                };
+                spawn_requested_at.entry(req.id).or_insert(e.recorded_at);
+            }
             TYPE_SPAWN_RESULT => {
                 // A recorded review spawn: count it under its tier (cost side), and - for
                 // the adjudicator - parse the grown verdict JSON for the findings it upheld
@@ -715,6 +774,10 @@ pub fn project(events: &[Event]) -> Metrics {
                 let Ok(res) = SpawnResult::from_event(e) else {
                     continue;
                 };
+                // spec 61 SPAWN TIMING: record every spawn's LATEST result time regardless of
+                // role, before the review-tier-only early continue below - SPAWN TIMING covers
+                // every recorded spawn (the implementer included), not just the review tiers.
+                spawn_result_at.insert(res.id.clone(), e.recorded_at);
                 let Some(tier) = review_tier(&res.id) else {
                     continue;
                 };
@@ -758,6 +821,26 @@ pub fn project(events: &[Event]) -> Metrics {
     // grounding reports no retention rather than a spurious full-parallelism reading.
     let radii: Vec<(Vec<String>, bool)> = blast_radii.into_values().collect();
     metrics.parallelism_retention = parallelism_retention_of(&radii);
+
+    // ---- Finalize the spec-61 SPAWN TIMING fold: pair each recorded request with its
+    // result by id, bucketed per spawn ROLE. An unanswered request (dead worker) enters no
+    // aggregate and is counted once as unpaired instead. ----
+    for (id, requested_at) in &spawn_requested_at {
+        match spawn_result_at.get(id) {
+            Some(result_at) => {
+                let duration = result_at
+                    .duration_since(*requested_at)
+                    .unwrap_or(Duration::ZERO);
+                let t = metrics
+                    .spawn_timing
+                    .entry(spawn_role(id).to_string())
+                    .or_default();
+                t.count += 1;
+                t.total += duration;
+            }
+            None => metrics.unpaired_spawns += 1,
+        }
+    }
 
     // ---- Finalize the review-quality folds from the accumulated findings/verdicts ----
     metrics.review_quality.rejections_by_cause = rejections_by_cause;
@@ -1444,6 +1527,10 @@ mod tests {
             review_quality: ReviewQuality::default(),
             // No BlastRadiusComputed events in this slice, so the retention metric is absent.
             parallelism_retention: None,
+            // No SpawnRequested/SpawnResult events in this slice, so the spec-61 spawn-timing
+            // fold is empty too - the new fields never disturb the existing ones.
+            spawn_timing: BTreeMap::new(),
+            unpaired_spawns: 0,
         };
 
         let m = project(&events);
@@ -1727,6 +1814,119 @@ mod tests {
         SpawnResult::ok(format!("{unit}/{role}#{attempt}"), "")
             .to_event()
             .unwrap()
+    }
+
+    // ---- spec-61 SPAWN TIMING helpers ----
+
+    /// An arbitrary but fixed instant `secs` after `SystemTime::UNIX_EPOCH`, for building
+    /// spawn events with a CONTROLLED `recorded_at` (the field the store stamps on ingest;
+    /// these pure-fold tests set it directly, never touching a real store).
+    fn at(secs: u64) -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(secs)
+    }
+
+    /// A well-formed `SpawnRequested` event for `id`, recorded at `secs`. Rebuilds `id`'s
+    /// unit/role/attempt coordinates via [`SpawnRequest::new`] (the same deterministic
+    /// [`crate::spawn::spawn_id`] construction production code uses) so the event's `id`
+    /// matches exactly; `stage`/`prompt` are irrelevant to the timing fold, so placeholders.
+    fn spawn_requested(id: &str, secs: u64) -> Event {
+        let unit = crate::spawn::unit_of(id).unwrap_or(id);
+        let role = crate::spawn::spawn_role(id);
+        let attempt = crate::spawn::attempt_of(id);
+        let req = SpawnRequest::new(unit, "s", role, attempt, "p");
+        debug_assert_eq!(req.id, id, "helper must reproduce the exact spawn id");
+        let mut e = req.to_event().unwrap();
+        e.recorded_at = at(secs);
+        e
+    }
+
+    /// A `SpawnResult` event answering `id`, recorded at `secs`.
+    fn spawn_result_at(id: &str, secs: u64) -> Event {
+        let mut e = SpawnResult::ok(id, "done").to_event().unwrap();
+        e.recorded_at = at(secs);
+        e
+    }
+
+    #[test]
+    fn spawn_timing_mean_is_zero_when_no_spawns_are_folded() {
+        assert_eq!(SpawnTiming::default().mean(), Duration::ZERO);
+    }
+
+    /// `project` pairs each recorded `SpawnRequested` with its `SpawnResult` by spawn id and
+    /// buckets the duration under the spawn's ROLE token - covering every role, not only the
+    /// review tiers (the implementer's own spawn folds too). An unanswered request (a dead
+    /// worker, parked with no recorded result) contributes to NO per-role aggregate and is
+    /// counted once in `unpaired_spawns` instead.
+    #[test]
+    fn project_pairs_spawn_requests_with_results_by_id_into_per_role_timing() {
+        let events = vec![
+            spawn_requested("u1/implementer#0", 0),
+            spawn_result_at("u1/implementer#0", 10),
+            spawn_requested("u1/adversary#0", 0),
+            spawn_result_at("u1/adversary#0", 4),
+            spawn_requested("u2/adversary#0", 100),
+            spawn_result_at("u2/adversary#0", 106),
+            // Parked, never resulted - a dead worker; must not enter any aggregate.
+            spawn_requested("u3/implementer#0", 0),
+        ];
+        let m = project(&events);
+
+        let implementer = m
+            .spawn_timing
+            .get("implementer")
+            .expect("implementer timing folded");
+        assert_eq!(implementer.count, 1);
+        assert_eq!(implementer.total, Duration::from_secs(10));
+        assert_eq!(implementer.mean(), Duration::from_secs(10));
+
+        let adversary = m
+            .spawn_timing
+            .get("adversary")
+            .expect("adversary timing folded");
+        assert_eq!(adversary.count, 2);
+        assert_eq!(adversary.total, Duration::from_secs(4 + 6));
+        assert_eq!(adversary.mean(), Duration::from_secs(5));
+
+        assert_eq!(
+            m.unpaired_spawns, 1,
+            "the unanswered u3 request must be counted as unpaired, not silently dropped"
+        );
+        let total_paired: u64 = m.spawn_timing.values().map(|t| t.count).sum();
+        assert_eq!(
+            total_paired, 3,
+            "the unpaired request must not enter any per-role count/total"
+        );
+    }
+
+    /// A spawn id can carry more than one recorded `SpawnResult` (a corrected re-record); the
+    /// LATEST one pairs with the request, mirroring `spawn::result_of`'s last-write-wins
+    /// semantics so the timing fold never disagrees with which result the replay driver treats
+    /// as authoritative.
+    #[test]
+    fn spawn_timing_pairs_the_latest_recorded_result_for_a_replayed_spawn() {
+        let events = vec![
+            spawn_requested("u1/lens:sdet#0", 0),
+            spawn_result_at("u1/lens:sdet#0", 5),
+            spawn_result_at("u1/lens:sdet#0", 20), // a later, corrected re-record
+        ];
+        let m = project(&events);
+        let lens = m.spawn_timing.get("lens:sdet").expect("lens timing folded");
+        assert_eq!(lens.count, 1);
+        assert_eq!(
+            lens.total,
+            Duration::from_secs(20),
+            "the LATEST recorded result must pair, not the first"
+        );
+    }
+
+    /// A `SpawnResult` with no matching `SpawnRequested` on this slice (e.g. the request fell
+    /// outside a scoped/truncated read) pairs with nothing and is silently ignored - it is not
+    /// double-counted as unpaired, since `unpaired_spawns` counts unanswered REQUESTS only.
+    #[test]
+    fn spawn_timing_ignores_a_result_with_no_matching_request() {
+        let m = project(&[spawn_result_at("orphan/implementer#0", 5)]);
+        assert!(m.spawn_timing.is_empty());
+        assert_eq!(m.unpaired_spawns, 0);
     }
 
     #[test]
