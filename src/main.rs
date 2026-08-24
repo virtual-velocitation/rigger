@@ -4188,7 +4188,44 @@ fn format_stats(m: &Metrics) -> Vec<String> {
         }
     }
     append_review_quality(&mut lines, m);
+    append_spawn_timing(&mut lines, m);
     lines
+}
+
+/// Render the spec-61 SPAWN TIMING panel: per-agent (spawn-role) wall-clock duration
+/// aggregates - count, total, and mean - derived from pairing each recorded spawn request
+/// with its result by `(run window, spawn id)`, plus how many recorded requests were
+/// excluded: a dead worker (no same-window result), or a paired result whose duration was
+/// non-positive (suspect - a same-batch append or clock skew) - either way excluded from
+/// every aggregate above and reported here as its own count.
+fn append_spawn_timing(lines: &mut Vec<String>, m: &Metrics) {
+    if m.spawn_timing.is_empty() && m.unpaired_spawns == 0 {
+        lines.push("  spawn timing       (no recorded spawns)".to_string());
+        return;
+    }
+    lines.push("  spawn timing per agent (mean / count / total):".to_string());
+    for (role, t) in &m.spawn_timing {
+        lines.push(format!(
+            "    {role:<20} {} avg / {} spawns / {} total",
+            fmt_duration(t.mean()),
+            t.count,
+            fmt_duration(t.total),
+        ));
+    }
+    if m.unpaired_spawns > 0 {
+        lines.push(format!(
+            "    ({} unpaired spawn request(s) excluded above - no recorded result (dead \
+             worker), or a paired result with a suspect non-positive duration)",
+            m.unpaired_spawns,
+        ));
+    }
+}
+
+/// Render a [`std::time::Duration`] as whole seconds with one decimal place (e.g.
+/// `"12.3s"`), the single formatting authority the spawn-timing panel uses so a duration
+/// never renders two different ways.
+fn fmt_duration(d: std::time::Duration) -> String {
+    format!("{:.1}s", d.as_secs_f64())
 }
 
 fn append_review_quality(lines: &mut Vec<String>, m: &Metrics) {
@@ -17973,7 +18010,7 @@ mod tests {
             .unwrap_or(false)
     }
 
-    use rigger::metrics::GateCounts;
+    use rigger::metrics::{GateCounts, SpawnTiming};
     use std::collections::BTreeMap;
 
     /// `format_stats` must surface ALL FOUR required metrics - first-pass yield,
@@ -18148,6 +18185,121 @@ mod tests {
             !out.contains("parallelism"),
             "an unmeasured retention (default lane) must omit the row, keeping default stats \
              output unchanged:\n{out}"
+        );
+    }
+
+    /// spec 61 SPAWN TIMING: `rigger stats` renders the per-agent (spawn-role) duration
+    /// aggregate - mean/count/total - and separately discloses how many recorded requests
+    /// went unanswered (excluded from every aggregate above, reported as its own count so a
+    /// dead worker never masquerades as a zero-duration measurement).
+    #[test]
+    fn format_stats_surfaces_spawn_timing_and_reports_unpaired_separately() {
+        let mut spawn_timing = BTreeMap::new();
+        spawn_timing.insert(
+            "implementer".to_string(),
+            SpawnTiming {
+                count: 1,
+                total: std::time::Duration::from_secs(10),
+            },
+        );
+        spawn_timing.insert(
+            "adversary".to_string(),
+            SpawnTiming {
+                count: 2,
+                total: std::time::Duration::from_secs(10),
+            },
+        );
+        let m = Metrics {
+            spawn_timing,
+            unpaired_spawns: 1,
+            ..Default::default()
+        };
+        let out = format_stats(&m).join("\n");
+        assert!(
+            out.contains("implementer          10.0s avg / 1 spawns / 10.0s total"),
+            "implementer spawn-timing row missing/wrong:\n{out}"
+        );
+        assert!(
+            out.contains("adversary            5.0s avg / 2 spawns / 10.0s total"),
+            "adversary spawn-timing row (mean=5.0s) missing/wrong:\n{out}"
+        );
+        assert!(
+            out.contains("1 unpaired spawn request"),
+            "the unpaired count must be disclosed on its own:\n{out}"
+        );
+        let implementer_at = out.find("implementer ").expect("implementer row present");
+        let unpaired_at = out.find("unpaired").expect("unpaired disclosure present");
+        assert!(
+            implementer_at < unpaired_at,
+            "aggregates must render before the unpaired disclosure:\n{out}"
+        );
+    }
+
+    /// A run with no recorded spawn requests at all (the pre-stepwise / cli-driver-only
+    /// shape) renders a clear "no recorded spawns" line rather than an empty section or a
+    /// spurious unpaired count.
+    #[test]
+    fn format_stats_spawn_timing_reports_no_spawns_when_none_recorded() {
+        let out = format_stats(&Metrics::default()).join("\n");
+        assert!(
+            out.contains("spawn timing       (no recorded spawns)"),
+            "a run with no spawn requests must say so plainly, not print a blank section:\n{out}"
+        );
+    }
+
+    /// The "no recorded spawns" line is gated on BOTH `spawn_timing` being empty AND
+    /// `unpaired_spawns == 0` (an AND, not an OR): a run with a paired aggregate but zero
+    /// unpaired requests must still render the aggregate (not the "no recorded spawns"
+    /// line), and must NOT render the unpaired disclosure either.
+    #[test]
+    fn format_stats_spawn_timing_no_spawns_line_requires_both_empty_and_zero_unpaired() {
+        let mut spawn_timing = BTreeMap::new();
+        spawn_timing.insert(
+            "implementer".to_string(),
+            SpawnTiming {
+                count: 1,
+                total: std::time::Duration::from_secs(3),
+            },
+        );
+        let m = Metrics {
+            spawn_timing,
+            unpaired_spawns: 0,
+            ..Default::default()
+        };
+        let out = format_stats(&m).join("\n");
+        assert!(
+            !out.contains("(no recorded spawns)"),
+            "a run with a real paired aggregate must not say nothing was recorded:\n{out}"
+        );
+        assert!(
+            out.contains("implementer          3.0s avg / 1 spawns / 3.0s total"),
+            "the aggregate must still render:\n{out}"
+        );
+        assert!(
+            !out.contains("unpaired spawn request"),
+            "zero unpaired requests must not render an unpaired disclosure:\n{out}"
+        );
+    }
+
+    /// The "no recorded spawns" line is gated on `unpaired_spawns == 0`, not merely on
+    /// `spawn_timing` being empty: a run where every recorded request went unanswered
+    /// (spawn_timing empty, unpaired_spawns > 0) must NOT claim nothing was recorded - it
+    /// must render the (empty) aggregate header plus the unpaired disclosure.
+    #[test]
+    fn format_stats_spawn_timing_all_unpaired_is_not_reported_as_no_spawns() {
+        let m = Metrics {
+            spawn_timing: BTreeMap::new(),
+            unpaired_spawns: 2,
+            ..Default::default()
+        };
+        let out = format_stats(&m).join("\n");
+        assert!(
+            !out.contains("(no recorded spawns)"),
+            "an all-unpaired run must not claim nothing was recorded:\n{out}"
+        );
+        assert!(
+            out.contains("2 unpaired spawn request"),
+            "the 2 unanswered requests must be disclosed:\n{out}"
         );
     }
 
@@ -18942,6 +19094,98 @@ mod tests {
         assert!(
             out != NO_RUNS_MESSAGE,
             "a populated run must not print the no-runs message"
+        );
+    }
+
+    /// spec 61 SPAWN TIMING end to end, through the REAL sqlite store's `recorded_at` stamping
+    /// (`eventstore::sqlite`: "the store stamps recorded_at on ingest, one clock per batch") -
+    /// proving the fold in `metrics::project` and its rendering in `format_stats` are wired
+    /// together on the real read path, not just unit-tested apart, for BOTH outcomes the
+    /// truthfulness guard must distinguish:
+    ///
+    ///   - a request and its result landing in the SAME append batch (`seed_run`'s one call)
+    ///     get the SAME store-stamped `recorded_at` - a deterministic, non-flaky way to drive
+    ///     the real store through the exact SUSPECT same-batch-zero-duration path (finding
+    ///     adv-u61c9-same-batch-append-yields-silent-zero-duration) and prove it is excluded,
+    ///     not silently folded in as a fabricated zero. This is the gap the shipped test
+    ///     previously missed: it seeded exactly this same-batch shape but never asserted
+    ///     whether the resulting duration was real or suspect.
+    ///   - a request and its result landing in SEPARATE batches get their OWN store-stamped
+    ///     `recorded_at`, a genuine (if real-clock-small) elapsed duration that pairs and
+    ///     counts normally - proving the guard does not over-exclude an ordinary cross-batch
+    ///     pairing, the common case in production.
+    ///
+    /// A wholly unanswered park (no matching result at all) reaches `rigger stats` as a
+    /// disclosed unpaired count in both cases.
+    #[test]
+    fn stats_lines_pairs_recorded_spawn_request_and_result_into_spawn_timing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path_str = path.to_str().unwrap();
+
+        let same_batch = spawn::SpawnRequest::new("u1", "impl", "implementer", 0, "same batch");
+        let cross_batch = spawn::SpawnRequest::new("u2", "review", "adversary", 0, "cross batch");
+        let dead = spawn::SpawnRequest::new("u3", "impl", "implementer", 0, "never answered");
+
+        // u1's request+result share ONE append call, so the real store stamps them with the
+        // SAME recorded_at - the deterministic same-batch-suspect shape.
+        seed_run(
+            path_str,
+            "proj-me",
+            &[
+                same_batch.to_event().unwrap(),
+                spawn::SpawnResult::ok(same_batch.id.clone(), "done")
+                    .to_event()
+                    .unwrap(),
+            ],
+        );
+        // u2's request lands in its own batch; its result and u3's dead park land in a LATER,
+        // separate batch, so the real store stamps u2's pair with two DIFFERENT recorded_at
+        // values - a genuine cross-batch pairing. A short, real sleep guarantees the two
+        // batches' store-stamped clocks are measurably distinct even under a loaded/parallel
+        // test run (mirrors `spawn_timing_pairs_real_writer_events_through_a_real_store_by_role`
+        // in tests/spawn_timing_periphery.rs).
+        seed_run(path_str, "proj-me", &[cross_batch.to_event().unwrap()]);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        seed_run(
+            path_str,
+            "proj-me",
+            &[
+                spawn::SpawnResult::ok(cross_batch.id.clone(), "done")
+                    .to_event()
+                    .unwrap(),
+                dead.to_event().unwrap(),
+            ],
+        );
+
+        let lines = stats_lines(path_str, "proj-me", false, &StoreSelection::Sqlite)
+            .expect("read is not an error")
+            .expect("a populated run must render lines, not None");
+        let out = lines.join("\n");
+        assert!(
+            !out.contains("implementer"),
+            "the SAME-BATCH pair must NOT fold into an implementer spawn-timing row - a \
+             same-batch zero duration is suspect, not a real measurement:\n{out}"
+        );
+        let adversary = out
+            .lines()
+            // "avg /" is unique to a spawn-timing aggregate row - "adversary" alone also
+            // matches the (unrelated) "adversary precision" review-quality line above it.
+            .find(|l| l.contains("adversary") && l.contains("avg /"))
+            .unwrap_or_else(|| {
+                panic!("the CROSS-BATCH pair must fold into an adversary spawn-timing row:\n{out}")
+            });
+        assert!(
+            adversary.contains("1 spawns"),
+            "the cross-batch pairing must be COUNTED, not excluded as suspect - its very \
+             presence here (unlike u1's same-batch pair above) proves the production fold saw \
+             a positive duration, since a non-positive one can only ever land in \
+             unpaired_spawns: {adversary}"
+        );
+        assert!(
+            out.contains("2 unpaired spawn request"),
+            "the same-batch suspect pair AND the never-answered u3 park must both surface as \
+             unpaired, disclosed together:\n{out}"
         );
     }
 
