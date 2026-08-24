@@ -20238,3 +20238,84 @@ fn run_driver_workflow_reminder_never_reaches_stdout_in_any_pid_sentinel_directi
         "a suppressed reminder must be absent from both streams; stdout:\n{out}\nstderr:\n{err}"
     );
 }
+
+/// The adjudicator's escalation-remedy verdict (adj-u66c5-escalation-remedy-verdict-reject-
+/// adjacent-fresh-leak, UPHOLDING adv-u66c5-escalation-remedy-fresh-println-still-leaks-
+/// stdout): `fresh_run_if_requested`'s own `--fresh` notice was STILL an unconditional
+/// `println!` even after `run_workflow` learned to keep its reminder off stdout three lines
+/// above it - the same MCP-stdio-corruption invariant this unit's own doc comments assert,
+/// violated by the one line the sibling test above never inspects. Reproduced here through
+/// the real compiled binary exactly as the adjudicator did: `rigger run --driver workflow
+/// --base HEAD --fresh` with a genuinely reachable base (so the run gets PAST the refuse
+/// checks and actually reaches `fresh_run_if_requested`) and a deliberately-unknown grounder
+/// name (so `select_grounder`, called immediately after, fails fast and deterministically -
+/// no reliance on the MCP loop's stdin-EOF timing to end the process). No spec positional is
+/// passed, so the DISCOVERABILITY reminder itself never fires and cannot be confused with the
+/// `--fresh` notice under test.
+#[test]
+fn run_driver_workflow_fresh_notice_never_reaches_stdout() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    // Swap the working grounder for one `select_grounder` rejects, so the run fails fast and
+    // deterministically right after `fresh_run_if_requested` returns - never entering the
+    // MCP-serving loop at all, so this test can never hang on stdin.
+    std::fs::write(
+        root.join(".rigger").join("workflow.yml"),
+        "name: steptest\ndefaults:\n  grounder: totally-bogus-grounder-xyz\n  budget: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n  b:\n    agent: worker\n    on_pass: none\n",
+    )
+    .unwrap();
+
+    let (out, err, ok) = run_rigger(
+        root,
+        &["run", "--driver", "workflow", "--base", "HEAD", "--fresh"],
+    );
+    assert!(
+        !ok,
+        "the bogus grounder makes the served run fail right after the --fresh notice \
+         (expected); stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        err.contains("began a new run"),
+        "sanity: the --fresh notice must still fire (on stderr) even though the run then \
+         fails at grounder selection; stderr:\n{err}"
+    );
+    assert!(
+        !out.contains("began a new run"),
+        "run_workflow's own --fresh notice must never reach stdout - that stream is the live \
+         MCP stdio transport this unit's own doc comments say a stray human-readable line \
+         would corrupt, exactly as already enforced for the reminder three lines above it; \
+         stdout:\n{out}"
+    );
+}
+
+/// Sibling of [`run_driver_workflow_fresh_notice_never_reaches_stdout`], pinning the OTHER
+/// half so the fix does not overcorrect: `rigger run --driver cli --fresh` is the normal
+/// human-facing standalone path, so its `--fresh` notice must keep printing on stdout exactly
+/// as before this fix - never regressed to stderr just because the sibling driver moved.
+#[test]
+fn run_driver_cli_fresh_notice_still_prints_on_stdout() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    std::fs::write(
+        root.join(".rigger").join("workflow.yml"),
+        "name: steptest\ndefaults:\n  grounder: totally-bogus-grounder-xyz\n  budget: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n  b:\n    agent: worker\n    on_pass: none\n",
+    )
+    .unwrap();
+
+    let (out, err, ok) = run_rigger(
+        root,
+        &["run", "--driver", "cli", "--base", "HEAD", "--fresh"],
+    );
+    assert!(
+        !ok,
+        "the bogus grounder makes the run fail right after the --fresh notice (expected); \
+         stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        out.contains("began a new run"),
+        "`rigger run --driver cli --fresh`'s notice is normal human-facing output and must \
+         keep printing on stdout, unchanged by the workflow-driver stdout fix; stdout:\n{out}"
+    );
+}

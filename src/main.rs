@@ -3028,8 +3028,9 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // `--fresh`: begin a NEW run before driving, so the conductor's own `ensure_started`
     // adopts this just-minted boundary instead of the (possibly wedged) latest run. See
     // `runscope::start_fresh` - the evented restart for a terminal escalation on an
-    // unchanged spec.
-    fresh_run_if_requested(parsed, &store, &criteria)?;
+    // unchanged spec. `false`: this is the standalone CLI path, so stdout is the normal
+    // human-facing channel and the `--fresh` notice belongs there, unchanged.
+    fresh_run_if_requested(parsed, &store, &criteria, false)?;
     let graph = Projector::open(&db_path("graph.db"), &project_identity())?;
     let driver = cli::Driver::default();
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
@@ -3087,10 +3088,21 @@ fn run_cli(parsed: &RunArgs) -> Res {
 /// printing the new run id. It then enforces the definition pin ([`enforce_definition_pin`]):
 /// a drifted live-run definition HALTS loudly unless `--rebase-definition` records the
 /// supersession and continues. A fresh or unchanged run continues silently.
+///
+/// `fresh_notice_to_stderr` names which stream the `--fresh` notice is safe to land on for
+/// THIS caller (spec 66, criterion 5 escalation remedy round 2: adj-u66c5-escalation-remedy-
+/// verdict-reject-adjacent-fresh-leak upheld adv-u66c5-escalation-remedy-fresh-println-still-
+/// leaks-stdout - this notice was a bare, unconditional `println!` that corrupted
+/// `run_workflow`'s stdout, the live MCP JSON-RPC transport, even after that same round taught
+/// the DISCOVERABILITY reminder three lines above it to respect that invariant). `run_cli`
+/// passes `false`: stdout is the normal human-facing channel there and must keep printing.
+/// `run_workflow` passes `true`, mirroring the reminder's own `eprintln!` three lines above its
+/// call site - ONE shared implementation, not a second parallel copy per caller.
 fn fresh_run_if_requested(
     parsed: &RunArgs,
     store: &dyn EventStore,
     criteria: &[String],
+    fresh_notice_to_stderr: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let definition = definition_hash(".")?;
     // The resolved run-branch base to persist on the RunStarted this mints (spec 38, criterion
@@ -3104,7 +3116,13 @@ fn fresh_run_if_requested(
     );
     if parsed.fresh {
         let run = runscope::start_fresh(store, criteria, &definition, &base)?;
-        println!("rigger: --fresh: began a new run {run} (the prior run stays in the log)");
+        let notice =
+            format!("rigger: --fresh: began a new run {run} (the prior run stays in the log)");
+        if fresh_notice_to_stderr {
+            eprintln!("{notice}");
+        } else {
+            println!("{notice}");
+        }
     }
     enforce_definition_pin(
         store,
@@ -3180,8 +3198,10 @@ fn run_workflow(parsed: &RunArgs) -> Res {
     let backend = resolve_store(&selection, &db_path("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &project_identity());
     // `--fresh`: begin a NEW run before the conductor thread starts, so its `ensure_started`
-    // adopts this boundary rather than the latest (possibly wedged) run.
-    fresh_run_if_requested(parsed, &store, &criteria)?;
+    // adopts this boundary rather than the latest (possibly wedged) run. `true`: this is the
+    // MCP-serving path, so the notice must land on stderr, mirroring the reminder three lines
+    // above (spec 66, criterion 5 escalation remedy round 2) - stdout stays the pure MCP wire.
+    fresh_run_if_requested(parsed, &store, &criteria, true)?;
     let graph = Projector::open(&db_path("graph.db"), &project_identity())?;
     let driver = rigger::driver::workflow::Driver::new();
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
