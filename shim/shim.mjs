@@ -77,6 +77,47 @@ export function unwrap(result) {
   return {}
 }
 
+// The pid-scoped parent-to-child contract's env var name (spec 66, criterion 5 disposition;
+// mirrors the Rust side's SPEC_LINT_REMINDER_PID_ENV constant in src/main.rs verbatim - ONE
+// contract, two processes). A nesting `rigger` surface (e.g. `rigger workflow`) that already
+// printed the spec-lint discoverability reminder sets this to ITS OWN pid before spawning us.
+export const SPEC_LINT_REMINDER_PID_ENV = 'RIGGER_SPEC_LINT_REMINDER_PID'
+
+// parsePid returns the pid an env value names, or null when it does not name one cleanly -
+// strict: trims surrounding whitespace but rejects anything else non-digit (so "111x" or
+// "abc" are malformed, not "111" with garbage silently ignored, matching the Rust side's
+// `str::parse::<u32>` semantics exactly).
+function parsePid(raw) {
+  if (typeof raw !== 'string') return null
+  const trimmed = raw.trim()
+  if (!/^\d+$/.test(trimmed)) return null
+  const n = Number(trimmed)
+  return Number.isSafeInteger(n) ? n : null
+}
+
+// specLintPassThroughEnv computes the env to hand a child we spawn, implementing the
+// INTERMEDIARY half of the pid-scoped parent-to-child contract (spec 66, criterion 5 -
+// "intermediaries pass the dedup contract through, never launder"): we are not ourselves a
+// reminder-printing rigger surface, but `rigger serve` down the chain may be one day, so we
+// must not blindly forward whatever we inherited. Re-stamp the sentinel with OUR OWN pid
+// ONLY when the inherited value parses and equals OUR real direct parent pid (`ownParentPid`,
+// i.e. we are genuinely the process the nesting surface just spawned) - that is the ONE case
+// where the value is verified, not merely present. Any other case (absent, foreign, stale, or
+// malformed) DROPS the variable entirely rather than forwarding it unchanged: forwarding an
+// unverified value on bare presence launders it into something a downstream check would
+// wrongly treat as a genuine match, reintroducing the leak one hop upstream. Pure over its
+// inputs so both directions are unit-testable without a real process tree.
+export function specLintPassThroughEnv(env, ownParentPid, ownPid) {
+  const out = { ...env }
+  const seen = parsePid(out[SPEC_LINT_REMINDER_PID_ENV])
+  if (seen !== null && seen === ownParentPid) {
+    out[SPEC_LINT_REMINDER_PID_ENV] = String(ownPid)
+  } else {
+    delete out[SPEC_LINT_REMINDER_PID_ENV]
+  }
+  return out
+}
+
 // call invokes a rigger MCP tool over the shared client connection and unwraps
 // the structuredContent payload. A tool that returns an MCP error (isError) is
 // surfaced as a thrown Error so the loop fails loudly instead of silently acting
@@ -313,9 +354,14 @@ export async function connect(specPath) {
   const transport = new StdioClientTransport({
     command: bin,
     args,
-    // Inherit the parent env so the child rigger finds the repo, PATH, etc. The
-    // child's stderr is forwarded to ours so a conductor error is visible.
-    env: process.env,
+    // Inherit the parent env so the child rigger finds the repo, PATH, etc. - except the
+    // spec-lint reminder sentinel, which is passed through the INTERMEDIARY contract
+    // (spec 66, criterion 5) rather than forwarded as-is: `process.ppid` is our own real
+    // direct parent pid (whatever spawned THIS shim process, e.g. `rigger workflow`), so
+    // `specLintPassThroughEnv` re-stamps the sentinel with OUR pid only when it genuinely
+    // names that parent, and drops it otherwise. The child's stderr is forwarded to ours
+    // so a conductor error is visible.
+    env: specLintPassThroughEnv(process.env, process.ppid, process.pid),
     stderr: 'inherit',
   })
   const client = new Client({ name: 'rigger-shim', version: '0.1.0' }, { capabilities: {} })

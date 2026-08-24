@@ -19895,3 +19895,219 @@ fn run_driver_workflow_surfaces_the_same_spec_lint_advisory_as_validate_the_in_r
          in-run call site either; stderr:\n{err}"
     );
 }
+
+// --- Spec 66, criterion 5: REMINDER DEDUP - the pid-scoped parent-to-child contract ---
+//
+// `spec_lint_reminder_should_print`/`spec_lint_reminder_suppressed` (src/main.rs) gate every
+// reminder print above on `RIGGER_SPEC_LINT_REMINDER_PID`: suppressed ONLY when the value
+// parses and equals the process's REAL direct OS parent id
+// (`std::os::unix::process::parent_id`). Spawning the compiled binary as a child of THIS test
+// process (via `run_rigger_envs`, which builds `Command::new` directly - no shell in between)
+// makes that real parent id exactly `std::process::id()` read right here, so these tests
+// exercise the real seam, not a mock of it. Each of the three reminder-printing surfaces gets
+// both directions: a genuinely nested invocation (the sentinel names OUR pid) stays silent,
+// and ambient pollution from an unrelated tree (the sentinel is present but names some OTHER
+// pid) still prints - a bare presence check would wrongly suppress the second case, which is
+// exactly the class two earlier rounds tried and a reviewer rejected (see this repo's spec 66
+// Design section).
+
+/// A genuinely nested `rigger step` - its real direct OS parent (this test process) already
+/// printed and passed its own pid down - stays silent on both stdout and stderr.
+#[test]
+fn step_reminder_is_suppressed_when_env_names_the_real_direct_parent_pid() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    std::fs::create_dir_all(root.join("specs")).unwrap();
+    std::fs::write(
+        root.join("specs/42-widgets.md"),
+        "# 42 widgets\n\n## Done when\n\n- [ ] a test proves widgets work\n",
+    )
+    .unwrap();
+
+    let own_pid = std::process::id().to_string();
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &[
+            "step",
+            "--spec",
+            "specs/42-widgets.md",
+            "--base",
+            "origin/does-not-exist",
+        ],
+        &[("RIGGER_SPEC_LINT_REMINDER_PID", own_pid.as_str())],
+    );
+    assert!(
+        !ok,
+        "the no-reachable-base refusal must still fire; stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        err.contains("no reachable base"),
+        "sanity: same no-reachable-base refusal the base test pins; got: {err:?}"
+    );
+    assert!(
+        !out.contains("rigger validate") && !err.contains("rigger validate"),
+        "a `step` genuinely nested under this test process must stay silent when the sentinel \
+         names our real pid; got stdout:\n{out}\nstderr:\n{err}"
+    );
+}
+
+/// Ambient env pollution from an unrelated process tree - the sentinel is present but names
+/// some OTHER pid, not this test's own real direct parent id - must never suppress.
+#[test]
+fn step_reminder_prints_despite_env_naming_a_foreign_pid() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    std::fs::create_dir_all(root.join("specs")).unwrap();
+    std::fs::write(
+        root.join("specs/42-widgets.md"),
+        "# 42 widgets\n\n## Done when\n\n- [ ] a test proves widgets work\n",
+    )
+    .unwrap();
+
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &[
+            "step",
+            "--spec",
+            "specs/42-widgets.md",
+            "--base",
+            "origin/does-not-exist",
+        ],
+        &[("RIGGER_SPEC_LINT_REMINDER_PID", "1")],
+    );
+    assert!(
+        !ok,
+        "the no-reachable-base refusal must still fire; stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        err.contains("rigger validate specs/42-widgets.md"),
+        "ambient env pollution naming a foreign pid must never suppress the reminder; got \
+         stderr:\n{err}"
+    );
+}
+
+/// A genuinely nested `rigger run <spec>` stays silent when the sentinel names our real pid.
+#[test]
+fn run_reminder_is_suppressed_when_env_names_the_real_direct_parent_pid() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    std::fs::create_dir_all(root.join("specs")).unwrap();
+    std::fs::write(
+        root.join("specs/42-widgets.md"),
+        "# 42 widgets\n\n## Done when\n\n- [ ] a test proves widgets work\n",
+    )
+    .unwrap();
+
+    let own_pid = std::process::id().to_string();
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &[
+            "run",
+            "specs/42-widgets.md",
+            "--base",
+            "origin/does-not-exist",
+        ],
+        &[("RIGGER_SPEC_LINT_REMINDER_PID", own_pid.as_str())],
+    );
+    assert!(
+        !ok,
+        "the no-reachable-base refusal must still fire; stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        err.contains("no reachable base"),
+        "sanity: same no-reachable-base refusal the base test pins; got: {err:?}"
+    );
+    assert!(
+        !out.contains("rigger validate"),
+        "a `run` genuinely nested under this test process must stay silent when the sentinel \
+         names our real pid; got stdout:\n{out}"
+    );
+}
+
+/// Ambient env pollution naming a foreign pid must never suppress `rigger run <spec>`'s
+/// reminder.
+#[test]
+fn run_reminder_prints_despite_env_naming_a_foreign_pid() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    std::fs::create_dir_all(root.join("specs")).unwrap();
+    std::fs::write(
+        root.join("specs/42-widgets.md"),
+        "# 42 widgets\n\n## Done when\n\n- [ ] a test proves widgets work\n",
+    )
+    .unwrap();
+
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &[
+            "run",
+            "specs/42-widgets.md",
+            "--base",
+            "origin/does-not-exist",
+        ],
+        &[("RIGGER_SPEC_LINT_REMINDER_PID", "1")],
+    );
+    assert!(
+        !ok,
+        "the no-reachable-base refusal must still fire; stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        out.contains("rigger validate specs/42-widgets.md"),
+        "ambient env pollution naming a foreign pid must never suppress the reminder; got \
+         stdout:\n{out}"
+    );
+}
+
+/// A genuinely nested `rigger workflow <spec>` stays silent when the sentinel names our real
+/// pid - `cmd_workflow` prints (or stays silent) before `locate_shim`, so no shim need be
+/// provisioned in this temp project for the reminder check itself to be exercised; the launch
+/// still fails right after (no shim), proving the reminder ran on the real pre-launch path.
+#[test]
+fn workflow_reminder_is_suppressed_when_env_names_the_real_direct_parent_pid() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let own_pid = std::process::id().to_string();
+    let (out, _err, ok) = run_rigger_envs(
+        root,
+        &["workflow", "specs/42-widgets.md"],
+        &[("RIGGER_SPEC_LINT_REMINDER_PID", own_pid.as_str())],
+    );
+    assert!(
+        !ok,
+        "no shim is provisioned in this temp project, so the workflow launch must still fail \
+         (locate_shim) after the reminder check runs"
+    );
+    assert!(
+        !out.contains("rigger validate"),
+        "a `workflow` genuinely nested under this test process must stay silent when the \
+         sentinel names our real pid; got stdout:\n{out}"
+    );
+}
+
+/// Ambient env pollution naming a foreign pid must never suppress `rigger workflow <spec>`'s
+/// reminder.
+#[test]
+fn workflow_reminder_prints_despite_env_naming_a_foreign_pid() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (out, _err, ok) = run_rigger_envs(
+        root,
+        &["workflow", "specs/42-widgets.md"],
+        &[("RIGGER_SPEC_LINT_REMINDER_PID", "1")],
+    );
+    assert!(
+        !ok,
+        "no shim is provisioned, so the workflow launch must still fail"
+    );
+    assert!(
+        out.contains("rigger validate specs/42-widgets.md"),
+        "ambient env pollution naming a foreign pid must never suppress the reminder; got \
+         stdout:\n{out}"
+    );
+}

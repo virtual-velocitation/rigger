@@ -23,7 +23,15 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 
-import { runWorkflow, unwrap, renderPeers, buildProxyServer, buildAgentOptions } from './shim.mjs'
+import {
+  runWorkflow,
+  unwrap,
+  renderPeers,
+  buildProxyServer,
+  buildAgentOptions,
+  specLintPassThroughEnv,
+  SPEC_LINT_REMINDER_PID_ENV,
+} from './shim.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const MOCK = join(here, 'mock-rigger-server.mjs')
@@ -48,6 +56,34 @@ test('renderPeers injects scoped peer decisions, empty when none', () => {
   const out = renderPeers({ decisions: [{ id: 'p1', summary: 'use the buffer', governs: ['a.rs'] }] })
   assert.match(out, /PEERS CONTEXT REFRESH/)
   assert.match(out, /p1: use the buffer \[governs: a\.rs\]/)
+})
+
+// --- Spec 66, criterion 5: REMINDER DEDUP - the shim is an INTERMEDIARY that must pass
+// the pid-scoped parent-to-child contract through, never launder an unverified value ---
+
+test('specLintPassThroughEnv re-stamps with our own pid only when the inherited value ' +
+  'names our real direct parent', () => {
+  const env = { PATH: '/bin', [SPEC_LINT_REMINDER_PID_ENV]: '111' }
+  const out = specLintPassThroughEnv(env, /* ownParentPid */ 111, /* ownPid */ 222)
+  assert.equal(out[SPEC_LINT_REMINDER_PID_ENV], '222', 're-stamped with our own pid')
+  assert.equal(out.PATH, '/bin', 'the rest of the env passes through untouched')
+})
+
+test('specLintPassThroughEnv drops the sentinel on absent, foreign, stale, or malformed ' +
+  'values - never forwards an unverified value, and never launders it by re-stamping on ' +
+  'bare presence', () => {
+  const cases = [
+    ['absent', {}],
+    ['foreign (not our real direct parent)', { [SPEC_LINT_REMINDER_PID_ENV]: '999' }],
+    ['malformed', { [SPEC_LINT_REMINDER_PID_ENV]: 'not-a-pid' }],
+    ['stale/empty', { [SPEC_LINT_REMINDER_PID_ENV]: '' }],
+    ['trailing garbage', { [SPEC_LINT_REMINDER_PID_ENV]: '111x' }],
+  ]
+  for (const [label, env] of cases) {
+    const out = specLintPassThroughEnv({ PATH: '/bin', ...env }, /* ownParentPid */ 111, /* ownPid */ 222)
+    assert.equal(out[SPEC_LINT_REMINDER_PID_ENV], undefined, `${label}: must be dropped, not forwarded`)
+    assert.equal(out.PATH, '/bin', `${label}: the rest of the env still passes through`)
+  }
 })
 
 test('the loop drives one spawn end-to-end and the proxied rigger_emit reaches the mock', async () => {
