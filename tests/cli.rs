@@ -11537,6 +11537,83 @@ fn stats_canary_reports_the_per_tier_scorecard_from_the_canary_stream() {
     );
 }
 
+/// FINDINGS VOLUME criterion (spec 61, unit u61c8): `CanaryOutcome` carries a per-tier
+/// findings-raised count distinct from `caught_by`, and `format_canary_stats` - the render
+/// function shared by `rigger stats --canary` and `rigger canary`'s own post-run summary -
+/// prints a findings-raised-by-tier section computed from `metrics::project_canary`'s fold
+/// over it. `format_canary_stats` is private to the binary crate, so it is reachable ONLY by
+/// driving the compiled binary (the implementer's own render tests, in `src/main.rs`, call
+/// it directly against a hand-built `CanaryMetrics` that was never produced by
+/// `project_canary` itself). This test seeds real per-item `findings_raised` maps into the
+/// namespaced canary stream - mirroring exactly how `CanaryOutcome::to_event` shapes them -
+/// and drives `rigger stats --canary`, proving the SUMMED total actually reaches stdout
+/// through the full decode -> fold -> render chain, not each seam's own isolated fixture.
+///
+/// One item (`"c"`) is seeded with the PRE-u61c8 wire shape - no `findings_raised` key at
+/// all, the same legacy payload `canary_findings_volume_periphery.rs` proves decodes on its
+/// own - mixed in alongside two items that do carry it, proving a decode-defaulted item
+/// contributes nothing rather than crashing the aggregate or corrupting the other items'
+/// contribution when they are folded together through the real binary.
+#[test]
+fn stats_canary_reports_the_findings_raised_total_summed_across_items() {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Event, EventStore, ExpectedRevision};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(&rigger).unwrap();
+    std::fs::write(rigger.join("project.id"), "findings-volume-proj\n").unwrap();
+
+    let backend = Store::open(rigger.join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, "findings-volume-proj");
+    let ty = rigger::ledger::TYPE_UNIT_STATUS;
+    let ev = |json: String| Event::new(ty, json.into_bytes());
+    let marker = ev(r#"{"id":"batch-1","status":"canary-run"}"#.to_string());
+    // Two items carrying the current wire shape (with `findings_raised`)...
+    let a = ev(
+        r#"{"id":"a","status":"canary","defect_class":"off-by-one","planted":true,"expected_reject":true,"expected_tier":"lens","caught_by":["lens"],"verdict_approved":false,"verdict_correct":true,"stable":true,"findings_raised":{"lens":2,"adversary":1}}"#
+            .to_string(),
+    );
+    let b = ev(
+        r#"{"id":"b","status":"canary","defect_class":"none","planted":false,"expected_reject":false,"expected_tier":"","caught_by":[],"verdict_approved":true,"verdict_correct":true,"stable":true,"findings_raised":{"lens":3,"adversary":0}}"#
+            .to_string(),
+    );
+    // ...and one item carrying the PRE-u61c8 shape (no findings_raised key at all), proving
+    // a legacy record folds in harmlessly rather than breaking the aggregate.
+    let c = ev(
+        r#"{"id":"c","status":"canary","defect_class":"resource-leak","planted":true,"expected_reject":true,"expected_tier":"adversary","caught_by":["adversary"],"verdict_approved":false,"verdict_correct":true,"stable":true}"#
+            .to_string(),
+    );
+    store
+        .append("canary", ExpectedRevision::Any, &[marker, a, b, c])
+        .unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["stats", "--canary"]);
+    assert!(ok, "stats --canary must succeed; stderr: {err}");
+    assert!(
+        out.contains("findings raised by tier (volume, informational):"),
+        "the findings-volume section must appear; got:\n{out}"
+    );
+    // lens: 2 (a) + 3 (b) + 0 (c, legacy/undecoded) = 5.
+    assert!(
+        out.contains(&format!("{:<16} 5", "lens")),
+        "lens's summed finding count across all three items; got:\n{out}"
+    );
+    // adversary: 1 (a) + 0 (b) + 0 (c, legacy/undecoded) = 1.
+    assert!(
+        out.contains(&format!("{:<16} 1", "adversary")),
+        "adversary's summed finding count across all three items; got:\n{out}"
+    );
+    // The legacy item's OTHER fields still fold correctly alongside the current-shape
+    // items - the missing findings_raised key does not corrupt the rest of the scorecard.
+    assert!(
+        out.contains("items scored       3 (2 planted, 2 defect class(es) cataloged)"),
+        "all three items, legacy shape included, are still scored; got:\n{out}"
+    );
+}
+
 /// `rigger stats --canary` on a project that has never run a canary says so clearly,
 /// rather than printing an empty/zero scorecard, and creates no false impression of a run.
 #[test]
