@@ -42,10 +42,12 @@ takes (issues #24 and #22). Three defects:
 - **Per-tier model pinning** (`src/canary.rs`, `src/main.rs`): repeatable `--model <tier>=<id>`
   (tiers: `lens`, `adversary`, `adjudicator`) overrides the named tier's model for THIS run
   only - config untouched, ids passed through verbatim. The scorecard header records binary
-  build, corpus content hash, and each tier's RESOLVED model id (the `model_for_attempt`
-  authority), so an A/B arm is auditable from its scorecard alone (the instrument
-  `docs/experiments/2026-08-11-lens-model-ab-protocol.md` pre-registers). Per-item records
-  also carry each tier's finding count (the over-flagging measure).
+  build, corpus content hash, and each tier's RESOLVED model id - sourced from the
+  AUTHORITATIVE MODEL IDENTITY criterion's structured `AgentResult::resolved_model`, never
+  the pre-spawn configured `model_for_attempt` alias - so an A/B arm is auditable from its
+  scorecard alone (the instrument `docs/experiments/2026-08-11-lens-model-ab-protocol.md`
+  pre-registers). Per-item records also carry each tier's finding count (the over-flagging
+  measure).
 - **Drift severity, decided here** (`src/canary.rs`, and the validate warning text): the
   resolved-id comparison splits an id at its trailing date suffix (`-YYYYMMDD`). Same base
   with a differing date is SNAPSHOT drift: `--if-model-changed` reports it on stdout and
@@ -113,7 +115,10 @@ takes (issues #24 and #22). Three defects:
   correctness, caught tiers, elapsed) before the final scorecard.
 - [ ] a test proves MODEL PINNING: `--model lens=<id>` resolves the lens tier's agents to the
   pinned id for the run (other tiers untouched, config file unmodified), and the scorecard
-  header records binary build, corpus hash, and every tier's resolved model id.
+  header records binary build, corpus hash, and every tier's resolved model id. The header's
+  resolved-model-id source is `AgentResult::resolved_model`, never `model_for_attempt` - this
+  criterion is the AUTHORITATIVE MODEL IDENTITY criterion's CONSUMER for that value, NOT a
+  second implementer of resolved-model recording.
 - [ ] a test proves FINDINGS VOLUME: each per-item record carries the count of findings each
   tier raised, and the scorecard aggregates it per tier.
 - [ ] a test proves SPAWN TIMING: `rigger stats` reports per-agent duration aggregates derived
@@ -123,7 +128,9 @@ takes (issues #24 and #22). Three defects:
   spawn comes from the runner's structured metadata, a conflicting agent-prose claim never
   enters the record, and a spawn with no metadata id records none and reports as
   unmeasured rather than defaulted. This criterion OWNS resolved-model recording; the
-  `--if-model-changed` gate is the DRIFT SEVERITY criterion's, NOT this one's.
+  `--if-model-changed` gate is the DRIFT SEVERITY criterion's, NOT this one's, and the
+  MODEL PINNING criterion's scorecard header is this criterion's CONSUMER of the resolved
+  id, never a second producer of it.
 - [ ] a test proves DRIFT SEVERITY: a resolved-id change differing only in the trailing date
   suffix is classified as snapshot drift - `--if-model-changed` reports it and exits
   successfully without running the panel - while a change in the id's base still runs the
