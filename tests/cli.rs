@@ -7347,6 +7347,274 @@ fn stats_reports_the_latest_run_by_default_and_all_for_the_aggregate() {
     assert!(!ok, "an unknown stats argument must be rejected");
 }
 
+/// Seed spawn-timing events (`SpawnRequested`/`SpawnResult`, built through the real
+/// `rigger::spawn` writer so the persisted bytes match production exactly) directly into the
+/// namespaced run stream, each row carrying an EXPLICIT, caller-controlled `recorded_at`
+/// (whole seconds since the epoch) - inserted via a direct rusqlite row, the same raw-SQL
+/// technique `seed_order_signature` uses for `revision`, applied here to `recorded_at`
+/// instead. `seed_run_events` (`Event::new`) always stamps the real wall clock, which can
+/// never produce a deterministic, assertable duration; this gives spec 61's SPAWN TIMING
+/// contract test (`rigger stats`'s rendered "X.Ys avg" text) a reproducible clock to render
+/// through the real compiled binary.
+fn seed_spawn_events_at(root: &Path, project: &str, rows: &[(rigger::eventstore::Event, i64)]) {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+
+    let rigger_dir = root.join(".rigger");
+    std::fs::create_dir_all(&rigger_dir).unwrap();
+    std::fs::write(rigger_dir.join("project.id"), format!("{project}\n")).unwrap();
+    let db = rigger_dir.join("events.db");
+    // Open through the real store first, so the schema is laid down exactly as the binary
+    // itself would lay it down (mirrors seed_order_signature).
+    Store::open(db.to_str().unwrap()).unwrap();
+    let stream = format!("{}run", Namespaced::prefix_for(project));
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    for (i, (event, recorded_at_secs)) in rows.iter().enumerate() {
+        let revision = (i + 1) as i64;
+        let nanos = recorded_at_secs * 1_000_000_000;
+        conn.execute(
+            "INSERT INTO events (stream, type, id, data, meta, valid_from, recorded_at, revision)
+             VALUES (?1, ?2, ?3, ?4, '{}', ?5, ?5, ?6)",
+            rusqlite::params![stream, event.type_, event.id, event.data, nanos, revision],
+        )
+        .unwrap();
+    }
+}
+
+/// Spec 61 c9, SPAWN TIMING, at the REAL compiled-binary boundary: `rigger stats` pairs each
+/// recorded spawn request with its result by spawn id and reports duration aggregates per
+/// role (count, total, mean), covering a role outside the review tiers (`implementer`) exactly
+/// as much as one inside them (`adversary`) - the tier-independent recording the implementer's
+/// own in-process test (`src/main.rs`'s
+/// `stats_lines_pairs_recorded_spawn_request_and_result_into_spawn_timing`, which calls
+/// `stats_lines` directly in the SAME crate, never spawning the product, and cannot assert
+/// exact durations since it relies on the real wall clock) does not reach: this drives the
+/// actual `rigger` PROCESS end to end, from raw persisted rows under a CONTROLLED clock, so the
+/// exact rendered "X.Ys avg / N spawns / X.Ys total" text is asserted byte-for-byte.
+#[test]
+fn stats_cli_renders_exact_per_role_spawn_timing_and_unpaired_disclosure() {
+    use rigger::spawn::{SpawnRequest, SpawnResult};
+
+    let dir = temp_project();
+    let root = dir.path();
+
+    let implementer_req = SpawnRequest::new("u1", "impl", "implementer", 0, "do it");
+    let adversary_req_a = SpawnRequest::new("u2", "review", "adversary", 0, "review it");
+    let adversary_req_b = SpawnRequest::new("u3", "review", "adversary", 0, "review it too");
+    let dead_req = SpawnRequest::new("u4", "impl", "implementer", 1, "never answered");
+
+    seed_spawn_events_at(
+        root,
+        "spawn-timing-proj",
+        &[
+            (implementer_req.to_event().unwrap(), 0),
+            (
+                SpawnResult::ok(&implementer_req.id, "done")
+                    .to_event()
+                    .unwrap(),
+                12,
+            ),
+            (adversary_req_a.to_event().unwrap(), 100),
+            (
+                SpawnResult::ok(&adversary_req_a.id, "done")
+                    .to_event()
+                    .unwrap(),
+                103,
+            ),
+            (adversary_req_b.to_event().unwrap(), 200),
+            (
+                SpawnResult::ok(&adversary_req_b.id, "done")
+                    .to_event()
+                    .unwrap(),
+                205,
+            ),
+            (dead_req.to_event().unwrap(), 300),
+        ],
+    );
+
+    let (out, err, ok) = run_rigger(root, &["stats"]);
+    assert!(
+        ok,
+        "stats must succeed over a store with only spawn events; stderr: {err}"
+    );
+
+    let implementer_line = format!("{:<20} 12.0s avg / 1 spawns / 12.0s total", "implementer");
+    assert!(
+        out.contains(&implementer_line),
+        "the non-review-tier role must render its exact aggregate; got:\n{out}"
+    );
+    let adversary_line = format!("{:<20} 4.0s avg / 2 spawns / 8.0s total", "adversary");
+    assert!(
+        out.contains(&adversary_line),
+        "the review-tier role must render its exact aggregate (3s+5s over 2 spawns = 4.0s \
+         mean); got:\n{out}"
+    );
+    assert!(
+        out.contains(
+            "(1 unpaired spawn request(s) excluded above - no recorded result (dead worker), \
+             or a paired result with a suspect non-positive duration)"
+        ),
+        "the never-answered request must be disclosed as unpaired; got:\n{out}"
+    );
+
+    let header_at = out
+        .find("spawn timing per agent")
+        .expect("aggregate header present");
+    let implementer_at = out.find(&implementer_line).unwrap();
+    let unpaired_at = out.find("unpaired spawn request").unwrap();
+    assert!(
+        header_at < implementer_at && implementer_at < unpaired_at,
+        "the header must precede the aggregates, which must precede the unpaired disclosure:\n{out}"
+    );
+}
+
+/// Round-3 regression (closes `adj-u61c9-verdict-reject-untruthful-duration-aggregates` /
+/// `adv-u61c9-all-mode-cross-run-id-collision-synthesizes-bogus-duration`) at the EXACT
+/// boundary the adversary used to reproduce the defect live: `rigger stats --all` folding a
+/// whole store spanning two runs. A textual spawn id is reused across two `RunStarted`
+/// boundaries - a re-proposed/relaunched unit reusing its auto-slugged id - with run 1's
+/// request never answered inside run 1, and run 2 genuinely reusing the same id with its own
+/// short-lived request/result pair. Before the run-windowed pairing key, this synthesized an
+/// ~11.6-day bogus duration (run 1's earliest request paired against run 2's latest result);
+/// the fixed binary must show run 2's genuine 5s pairing and disclose run 1's dangling
+/// request as unpaired, never a fabricated multi-day figure.
+#[test]
+fn stats_all_flag_never_pairs_a_cross_run_spawn_id_collision_into_a_bogus_duration() {
+    use rigger::spawn::{SpawnRequest, SpawnResult};
+
+    let dir = temp_project();
+    let root = dir.path();
+
+    // The SAME textual id in both runs.
+    let req = SpawnRequest::new("u1", "impl", "implementer", 0, "do it");
+    let run_started = |run: &str| {
+        rigger::eventstore::Event::new(
+            rigger::run::TYPE_RUN_STARTED,
+            format!(r#"{{"run":"{run}"}}"#).into_bytes(),
+        )
+    };
+
+    seed_spawn_events_at(
+        root,
+        "spawn-timing-crossrun-proj",
+        &[
+            (run_started("run-a"), 0),
+            // run-a's request is never answered inside run-a.
+            (req.to_event().unwrap(), 1),
+            (run_started("run-b"), 1_000_000),
+            // run-b reuses the id and genuinely answers it 5s later, inside run-b.
+            (req.to_event().unwrap(), 1_000_100),
+            (
+                SpawnResult::ok(&req.id, "done").to_event().unwrap(),
+                1_000_105,
+            ),
+        ],
+    );
+
+    let (out, err, ok) = run_rigger(root, &["stats", "--all"]);
+    assert!(ok, "stats --all must succeed; stderr: {err}");
+
+    assert!(
+        !out.contains("1000104.0s"),
+        "no bogus ~11.6-day duration (the pre-fix pairing of run-a's t=1 request against \
+         run-b's t=1,000,105 result, 1000104.0s) may ever render:\n{out}"
+    );
+    let implementer_line = format!("{:<20} 5.0s avg / 1 spawns / 5.0s total", "implementer");
+    assert!(
+        out.contains(&implementer_line),
+        "run-b's genuine, same-window 5s pairing must render exactly; got:\n{out}"
+    );
+    assert!(
+        out.contains("(1 unpaired spawn request(s) excluded above"),
+        "run-a's request, never answered WITHIN run-a, must be disclosed as unpaired - not \
+         silently absorbed by run-b's unrelated result; got:\n{out}"
+    );
+}
+
+/// Round-3 regression: the SUSPECT non-positive-duration guard, at the compiled-binary
+/// boundary, under BOTH shapes the fix guards against - a same-timestamp (same-batch) zero
+/// duration AND a clock-skew negative duration (a result recorded BEFORE its request) - each
+/// alongside a genuine positive-duration pair in the SAME role bucket. No existing CLI test
+/// ever seeds a genuinely suspect pair: the sibling test above only ever exercises the
+/// dead-worker (no result at all) unpaired path, so the "or a paired result with a suspect
+/// non-positive duration" clause of the rendered disclosure had no test actually triggering
+/// it through the real binary before this one.
+#[test]
+fn stats_cli_excludes_suspect_non_positive_duration_pairs_as_unpaired_not_zero() {
+    use rigger::spawn::{SpawnRequest, SpawnResult};
+
+    let dir = temp_project();
+    let root = dir.path();
+
+    let same_batch = SpawnRequest::new("u1", "impl", "implementer", 0, "same batch");
+    let skewed = SpawnRequest::new("u2", "impl", "implementer", 1, "skewed");
+    let genuine = SpawnRequest::new("u3", "impl", "implementer", 2, "genuine");
+
+    seed_spawn_events_at(
+        root,
+        "spawn-timing-suspect-proj",
+        &[
+            // Same timestamp: an exact, error-free zero duration.
+            (same_batch.to_event().unwrap(), 100),
+            (
+                SpawnResult::ok(&same_batch.id, "done").to_event().unwrap(),
+                100,
+            ),
+            // Result recorded BEFORE its request: clock skew, a negative duration.
+            (skewed.to_event().unwrap(), 200),
+            (SpawnResult::ok(&skewed.id, "done").to_event().unwrap(), 190),
+            // A genuine, measurably positive pair in the SAME role bucket.
+            (genuine.to_event().unwrap(), 300),
+            (
+                SpawnResult::ok(&genuine.id, "done").to_event().unwrap(),
+                307,
+            ),
+        ],
+    );
+
+    let (out, err, ok) = run_rigger(root, &["stats"]);
+    assert!(ok, "stats must succeed; stderr: {err}");
+
+    let implementer_line = format!("{:<20} 7.0s avg / 1 spawns / 7.0s total", "implementer");
+    assert!(
+        out.contains(&implementer_line),
+        "ONLY the genuine 7s pair may fold into the implementer aggregate - neither suspect \
+         pair may contribute a fabricated zero (or worse, a negative) to the count/mean; \
+         got:\n{out}"
+    );
+    assert!(
+        out.contains(
+            "(2 unpaired spawn request(s) excluded above - no recorded result (dead worker), \
+             or a paired result with a suspect non-positive duration)"
+        ),
+        "both suspect pairs (same-batch zero AND clock-skew negative) must be disclosed \
+         together as unpaired, exercising the clause a dead-worker-only seed never reaches; \
+         got:\n{out}"
+    );
+}
+
+/// The default "no recorded spawns" line renders through the real binary too, on a run whose
+/// stream holds ordinary events but no `SpawnRequested`/`SpawnResult` at all - the CLI-level
+/// counterpart of `format_stats_spawn_timing_reports_no_spawns_when_none_recorded`, which only
+/// exercises the pure formatter in-process, never a real store or the compiled binary.
+#[test]
+fn stats_cli_reports_no_recorded_spawns_when_the_run_has_none() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    seed_run_events(
+        root,
+        &[("RunStarted", r#"{"run":"r1","criteria":["spec"]}"#)],
+    );
+
+    let (out, err, ok) = run_rigger(root, &["stats"]);
+    assert!(ok, "stats must succeed; stderr: {err}");
+    assert!(
+        out.contains("spawn timing       (no recorded spawns)"),
+        "a run with ordinary events but zero spawns must say so plainly; got:\n{out}"
+    );
+}
+
 /// Every event the conductor emits carries the current run id in its metadata, and the
 /// run opens with a `RunStarted` carrying a fresh run id (spec 06, unit 1). Drives a real
 /// `rigger step`, then reads the store back and asserts the RunStarted, the parked spawn
