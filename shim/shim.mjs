@@ -253,9 +253,15 @@ export async function runWorkflow(client, runAgent, opts = {}) {
     debug(`spawn ${next.id} prompt:\n${prompt}`)
 
     let output
+    // AUTHORITATIVE MODEL IDENTITY (spec 61 c10): the resolved model id the runner
+    // itself observed for this spawn - sourced ONLY from runAgent's structured return
+    // (see resolvedModelFromUsage), never parsed from the agent's own output text.
+    // Stays '' (never defaulted/guessed) on any path that does not yield exactly one
+    // authoritative id, including the error path below.
+    let resolvedModel = ''
     let error = ''
     try {
-      output = await runAgent({
+      const agentResult = await runAgent({
         prompt,
         // The agent's persona (its role) - the conductor's single persona source,
         // threaded through SpawnRequest.system_prompt - is passed to query() as the
@@ -266,6 +272,15 @@ export async function runWorkflow(client, runAgent, opts = {}) {
         dir: next.dir || undefined,
         proxyServer,
       })
+      // runAgent returns either the plain output string (legacy/stub shape) or the
+      // structured { output, resolvedModel } shape runAgentViaSdk produces; either is
+      // accepted so a test stub that only cares about output need not change.
+      if (agentResult && typeof agentResult === 'object' && !Array.isArray(agentResult)) {
+        output = agentResult.output
+        resolvedModel = agentResult.resolvedModel || ''
+      } else {
+        output = agentResult
+      }
     } catch (e) {
       error = e?.message || String(e)
       output = ''
@@ -274,6 +289,12 @@ export async function runWorkflow(client, runAgent, opts = {}) {
 
     const resultArgs = { id: next.id, output: typeof output === 'string' ? output : JSON.stringify(output) }
     if (error) resultArgs.error = error
+    // Courier the resolved model id as meta, exactly like the stepwise `rigger result
+    // --meta '{"resolved_model": ..}'` convention (spawn::META_RESOLVED_MODEL) - but
+    // sourced here from the runner's own structured metadata, never agent prose.
+    // Omitted (not defaulted) when no single authoritative id was observed, so the
+    // record reads honestly as unmeasured.
+    if (resolvedModel) resultArgs.meta = { resolved_model: resolvedModel }
     await call(client, 'rigger_result', resultArgs)
     drove += 1
   }
@@ -318,19 +339,39 @@ export function buildAgentOptions({ systemPrompt, model, tools, dir, proxyServer
   return options
 }
 
+// resolvedModelFromUsage extracts the single AUTHORITATIVE resolved model id from the
+// Agent SDK's own structured `modelUsage` map (the terminal `result` message's
+// `modelUsage: Record<modelId, ModelUsage>` - the model id(s) that actually served the
+// query, reported by the runner itself, never the agent's own prose claim about what
+// model it thinks it is). Spec 61 c10 (AUTHORITATIVE MODEL IDENTITY): a spawn records a
+// resolved model id ONLY when the runner's structured metadata names exactly one
+// unambiguously - zero keys (no usage recorded) or more than one (no single id can be
+// named honestly) both yield '' so the caller reports the spawn as UNMEASURED rather
+// than guessing or defaulting to some arbitrary key.
+export function resolvedModelFromUsage(modelUsage) {
+  if (!modelUsage || typeof modelUsage !== 'object') return ''
+  const ids = Object.keys(modelUsage)
+  return ids.length === 1 ? ids[0] : ''
+}
+
 // runAgentViaSdk is the real runAgent: it runs one agent via the Agent SDK's
 // query(), giving it the in-process proxy server (so its rigger_emit/rigger_peers
 // reach the shared connection) plus the spawn's persona (its role, as the system
 // prompt), model, allowed tools, and dir (its worktree, as cwd). It returns the
-// agent's final result text.
+// agent's final result text AND the resolved model id the SDK's own structured
+// metadata reported (spec 61 c10) - never a value read from the agent's own output.
 export async function runAgentViaSdk({ prompt, systemPrompt, model, tools, dir, proxyServer }) {
   const options = buildAgentOptions({ systemPrompt, model, tools, dir, proxyServer })
 
   let result = ''
+  let resolvedModel = ''
   for await (const message of query({ prompt, options })) {
     if (message.type === 'result') {
       if (message.subtype === 'success') {
         result = message.result
+        // The ONLY source for resolvedModel: the SDK's own structured modelUsage on
+        // this same message, never `result` (the agent's free-text output).
+        resolvedModel = resolvedModelFromUsage(message.modelUsage)
       } else {
         // An error result (max turns, execution error, ...) surfaces as a thrown
         // Error so the loop reports it via rigger_result's `error` field.
@@ -339,7 +380,7 @@ export async function runAgentViaSdk({ prompt, systemPrompt, model, tools, dir, 
       }
     }
   }
-  return result
+  return { output: result, resolvedModel }
 }
 
 // connect spawns `rigger serve <spec>` and connects an MCP client to it over the
