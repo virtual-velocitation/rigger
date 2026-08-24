@@ -801,12 +801,20 @@ pub fn project(events: &[Event]) -> Metrics {
                 finding_about.insert(id.clone(), about);
                 finding_actor.insert(id, actor);
             }
-            crate::run::TYPE_RUN_STARTED => {
+            crate::run::TYPE_RUN_STARTED
+                if serde_json::from_slice::<crate::run::RunStarted>(&e.data).is_ok() =>
+            {
                 // spec 61 SPAWN TIMING: advance the run WINDOW every fold in this module keys
                 // its spawn-pairing state by (see the declaration above) - every event from
                 // here onward, until the next boundary, belongs to this new window. Mirrors
                 // `crate::run::run_attribution`'s identical forward fold over the same event
-                // type, so both derivations agree on where one run ends and the next begins.
+                // type, so both derivations agree on where one run ends and the next begins -
+                // which requires gating the advance on a SUCCESSFUL decode of the body, exactly
+                // as `run_attribution` does (`RunStarted::from_event` is module-private to
+                // `run.rs`, so the decode is reproduced here via the same `pub` struct rather
+                // than duplicating its logic under a different name). A malformed/legacy body
+                // is simply ignored, like every other fold here, so the two derivations of
+                // "where one run ends and the next begins" can never silently disagree.
                 run_generation += 1;
             }
             TYPE_SPAWN_REQUESTED => {
@@ -2079,6 +2087,41 @@ mod tests {
         assert_eq!(implementer.count, 1);
         assert_eq!(implementer.total, Duration::from_secs(10));
         assert_eq!(m.unpaired_spawns, 0);
+    }
+
+    /// REGRESSION (arch-u61c9-r2-runstarted-window-diverges-from-run-attribution): the window
+    /// boundary this fold advances on MUST agree with `crate::run::run_attribution`'s identical
+    /// forward fold over the same `TYPE_RUN_STARTED` events, since both derive "where one run
+    /// ends and the next begins" from the same stream. `run_attribution` only advances its
+    /// window when `RunStarted::from_event` successfully decodes the body (`src/run.rs:220`,
+    /// `if let Some(rs) = ...`) - a malformed/legacy-shaped body is simply ignored, like every
+    /// other fold in this crate. A boundary-advance keyed on the event TYPE alone, without
+    /// attempting the decode, would silently split a request/result pair that
+    /// `run_attribution` (and every other run-scoped reader) still treats as one run - exactly
+    /// the class of silent cross-window misattribution this criterion was already rejected
+    /// once for (`adj-u61c9-verdict-reject-untruthful-duration-aggregates`).
+    #[test]
+    fn spawn_timing_window_ignores_a_malformed_run_started_like_run_attribution_does() {
+        let events = vec![
+            run_started("run-a"),
+            spawn_requested("u1/implementer#0", 0),
+            // A malformed RunStarted body (missing the required `run` field) - `from_event`
+            // returns `None` for this, so `run_attribution` does NOT advance its window here.
+            ev(crate::run::TYPE_RUN_STARTED, "{}"),
+            spawn_result_at("u1/implementer#0", 10),
+        ];
+        let m = project(&events);
+        let implementer = m.spawn_timing.get("implementer").expect(
+            "a malformed RunStarted must not split the request/result into different windows - \
+             the pair still belongs to the SAME run run_attribution sees, so it must fold",
+        );
+        assert_eq!(implementer.count, 1);
+        assert_eq!(implementer.total, Duration::from_secs(10));
+        assert_eq!(
+            m.unpaired_spawns, 0,
+            "the request must not be reported unpaired due to a window split \
+             run_attribution itself never makes"
+        );
     }
 
     /// SECONDARY regression (adv-u61c9-same-batch-append-yields-silent-zero-duration): a

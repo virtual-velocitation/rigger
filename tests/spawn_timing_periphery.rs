@@ -194,7 +194,18 @@ fn spawn_timing_never_pairs_a_request_and_result_from_different_run_windows() {
     let db = dir.path().join("events.db");
     let store = Store::open(db.to_str().unwrap()).expect("open a real sqlite store");
 
-    let run_started = || rigger::eventstore::Event::new(rigger::run::TYPE_RUN_STARTED, Vec::new());
+    // A well-formed body (matching what `crate::run::RunStarted::to_event` actually
+    // serializes in production), NOT an empty placeholder - `metrics::project`'s window
+    // advance now decodes this body (mirroring `crate::run::run_attribution`, see
+    // `arch-u61c9-r2-runstarted-window-diverges-from-run-attribution`), so a marker event
+    // must be genuinely well-formed for the window to advance, exactly as it must be in
+    // real production data.
+    let run_started = |run: &str| {
+        rigger::eventstore::Event::new(
+            rigger::run::TYPE_RUN_STARTED,
+            format!(r#"{{"run":"{run}"}}"#).into_bytes(),
+        )
+    };
     // The SAME textual spawn id is reused in both windows - a re-proposed/relaunched unit
     // reusing its auto-slugged id, the realistic collision this fix closes.
     let req = SpawnRequest::new("u1", "impl", "implementer", 0, "do it");
@@ -204,7 +215,7 @@ fn spawn_timing_never_pairs_a_request_and_result_from_different_run_windows() {
         .append(
             "run",
             ExpectedRevision::Any,
-            &[run_started(), req.to_event().unwrap()],
+            &[run_started("run-a"), req.to_event().unwrap()],
         )
         .expect("append window 1's RunStarted + the never-answered-in-window request");
 
@@ -215,7 +226,7 @@ fn spawn_timing_never_pairs_a_request_and_result_from_different_run_windows() {
         .append(
             "run",
             ExpectedRevision::Any,
-            &[run_started(), req.to_event().unwrap()],
+            &[run_started("run-b"), req.to_event().unwrap()],
         )
         .expect("append window 2's RunStarted + the reused-id request");
     std::thread::sleep(Duration::from_millis(20));
