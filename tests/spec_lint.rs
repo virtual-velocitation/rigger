@@ -949,27 +949,39 @@ fn spec_lint_self_clean_over_the_committed_corpus() {
     // A regression SNAPSHOT, not a zero-false-positive claim (the spec's own Design:
     // historical specs are advisory output, never a test failure). specs/57 is the one
     // known-GENUINE hedge ("either retires or re-points ... whichever the surviving
-    // command surface makes honest" - an explicitly open question). specs/18, 73, and 74
+    // command surface makes honest" - an explicitly open question). specs/18 and 73
     // are decided ENUMERATIONS ("each fix either refuses ... or makes visible", "is
-    // either KILLED ... or JUSTIFIED", "either side is unversioned" beside a faraway
-    // "or") that became visible when F4 gained the cross-line paragraph join
-    // (adv-u66c3-r6-crossline-hedge-invisible-to-f4): mechanically hedge-shaped,
-    // semantically decided - tolerated advisory noise on historical prose by the
-    // Design's own rule. The snapshot keeps the net taut both ways: a NEW name here is
-    // a false-positive regression to investigate, and 57 vanishing is a recall
-    // regression - either way this assertion fails loudly rather than drifting.
+    // either KILLED ... or JUSTIFIED") that became visible when F4 gained the cross-line
+    // paragraph join (adv-u66c3-r6-crossline-hedge-invisible-to-f4): mechanically
+    // hedge-shaped, semantically decided - tolerated advisory noise on historical prose
+    // by the Design's own rule. specs/74 DROPPED from this snapshot this round
+    // (`impl-u66c3-r14-mask-to-last-occurrence`): its lone hedge-shaped phrase ("either
+    // side is `+unversioned`" beside a faraway "or") sits between two independent
+    // backtick-delimited code spans in the same paragraph (`` `rigger validate` `` earlier,
+    // `` `+unversioned` `` right at the hedge itself); the round-14 mask-to-last-occurrence
+    // closer fix (mandated by `adv-u66c3-r13-standing-remedy-direction-unsound` to close
+    // the 8th recurrence of the quoted-text-can-never-false-positive class) now pairs the
+    // FIRST backtick with the LAST remaining backtick in the paragraph, fusing those two
+    // independent spans into one and masking the enclosed hedge along with them - an
+    // accepted, deliberate RECALL loss (over-masking can only ever mask MORE, never
+    // produce a false positive; the spec's own invariant is recall is expendable, a false
+    // positive is not), not a heuristic regression. The snapshot keeps the net taut both
+    // ways: a NEW name here is a false-positive regression to investigate, and 57
+    // vanishing is a recall regression on the one KNOWN-genuine hedge - either way this
+    // assertion fails loudly rather than drifting.
     assert_eq!(
         f4_hits,
         vec![
             "18-fail-fast-validation.md".to_string(),
             "57-retire-turbovec.md".to_string(),
             "73-mutation-testing-implementer-efficacy.md".to_string(),
-            "74-version-increments-with-the-tree.md".to_string(),
         ],
         "F4's committed-corpus fire set must match the reviewed snapshot (57 genuine; \
-         18/73/74 decided-enumeration advisory noise per the Design's \
-         historical-specs-are-advisory rule); a new name is a false-positive regression, \
-         a missing one a recall regression; got: {f4_hits:?}"
+         18/73 decided-enumeration advisory noise per the Design's \
+         historical-specs-are-advisory rule; 74 dropped this round by the accepted \
+         mask-to-last-occurrence over-masking trade-off, see comment above); a new name is \
+         a false-positive regression, a missing one (other than 74, already accounted for) \
+         a recall regression; got: {f4_hits:?}"
     );
     assert_eq!(
         f1_total, 191,
@@ -1250,6 +1262,543 @@ fn validate_does_not_fuse_a_hedge_across_a_table_row_boundary() {
         !err.contains("F4 disposition"),
         "a table row between an \"either\" fragment and an unrelated \"or\" fragment must \
          stop the paragraph join - the two must never read as one fused hedge; \
+         stderr:\n{err}"
+    );
+}
+
+/// Round-10 fix (`impl-u66c3-r10-cross-paragraph-mask-fix`) for the round-9 REJECT
+/// (`adj-u66c3-run3-reject-crossline-quote-falsifies-design-claim`,
+/// `adv-u66c3-r9-strip-inline-code-resets-per-line-crossline-quote-false-fires`): the
+/// paragraph joiner used to mask inline-code/quoted spans PER PHYSICAL LINE before joining,
+/// so a double-quoted span whose closing `"` fell on a hard-wrapped continuation line lost
+/// its exemption partway through and the smell phrase inside it (here, "could instead")
+/// false-fired F4. The fix joins the paragraph's raw lines first and masks once over the
+/// whole joined string, so the open-quote state carries across the line boundary. Drives
+/// the real binary (the implementer's own regression test in `src/spec.rs` only proves the
+/// library function directly - the adjudicator's remedy asked for this proof "alongside the
+/// existing spec_lint.rs boundary-gap tests").
+#[test]
+fn validate_ignores_a_double_quoted_span_that_crosses_a_hard_wrapped_line() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Design\n\n\
+         The plan states: \"we\n\
+         could instead retry\" as the documented phrasing.\n\n\
+         ## Done when\n\n- [ ] the daemon retries on failure. This criterion OWNS retry.\n";
+    let spec_path = root.join("spec.md");
+    std::fs::write(&spec_path, spec).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["validate", spec_path.to_str().unwrap()]);
+    assert!(ok, "validate must succeed; stderr:\n{err}");
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        !err.contains("F4 disposition"),
+        "a double-quoted span split across a hard-wrapped line must stay exempt for its \
+         whole span, including the continuation line's content up to the close - the \
+         quote-open state must carry across the line boundary, not reset at it; \
+         stderr:\n{err}"
+    );
+}
+
+/// The backtick twin of the double-quote case above: `strip_inline_code` shares ONE
+/// open-delimiter toggle between `` ` `` and `"` (keyed on whichever delimiter opened the
+/// current span), so the round-10 fix that carries quote state across a hard-wrapped line
+/// carries backtick state the same way - but had no coverage at any layer (unit or
+/// periphery) proving it, since the implementer's own regression test exercises only the
+/// double-quote fixture. Proves the fix is not an accident of the one fixture it was
+/// written against.
+#[test]
+fn validate_ignores_a_backtick_span_that_crosses_a_hard_wrapped_line() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Design\n\n\
+         The plan states: `we\n\
+         could instead retry` as the documented phrasing.\n\n\
+         ## Done when\n\n- [ ] the daemon retries on failure. This criterion OWNS retry.\n";
+    let spec_path = root.join("spec.md");
+    std::fs::write(&spec_path, spec).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["validate", spec_path.to_str().unwrap()]);
+    assert!(ok, "validate must succeed; stderr:\n{err}");
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        !err.contains("F4 disposition"),
+        "a backtick-delimited span split across a hard-wrapped line must stay exempt for \
+         its whole span the same as a double-quoted span does - both share one \
+         open-delimiter toggle in strip_inline_code; stderr:\n{err}"
+    );
+}
+
+/// The ODD-count fail-closed arm at the CLI seam (specs/66 Design,
+/// `d66-mask-one-span-per-kind`, SUPERSEDING round-10's closed-span-only disposition):
+/// a stray unmatched delimiter makes the paragraph's quote state unknowable, and the
+/// invariant (quoted text can NEVER false-positive) outranks advisory recall, so the
+/// masker blanks from the first mark to the paragraph end and the later unquoted smell
+/// is deliberately NOT reported. The balanced-pair test above proves recall survives
+/// wherever the invariant permits it.
+#[test]
+fn validate_fails_closed_after_a_stray_unmatched_quote_earlier_in_the_paragraph() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Design\n\n\
+         The gap measured 6\" today, well within tolerance for the current\n\
+         build, and unrelated to the next point entirely, but the team\n\
+         could instead retry the whole approach if this keeps recurring.\n\n\
+         ## Done when\n\n- [ ] the daemon retries on failure. This criterion OWNS retry.\n";
+    let spec_path = root.join("spec.md");
+    std::fs::write(&spec_path, spec).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["validate", spec_path.to_str().unwrap()]);
+    assert!(ok, "validate must succeed; stderr:\n{err}");
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        !err.contains("F4 disposition"),
+        "an odd quote count fails closed: the masker blanks from the first mark to the \
+         paragraph end, so the later smell is deliberately unreported - the invariant \
+         outranks recall; stderr:\n{err}"
+    );
+}
+
+/// The backtick twin of the fail-closed case above: each delimiter kind computes its own
+/// span independently under the one-span-per-kind rule, so an odd backtick count fails
+/// closed exactly as an odd quote count does - proven at the CLI seam so the rule is not
+/// an accident of the one double-quote fixture it was written against.
+#[test]
+fn validate_fails_closed_after_a_stray_unmatched_backtick_earlier_in_the_paragraph() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Design\n\n\
+         The gap measured `6 today, well within tolerance for the current\n\
+         build, and unrelated to the next point entirely, but the team\n\
+         could instead retry the whole approach if this keeps recurring.\n\n\
+         ## Done when\n\n- [ ] the daemon retries on failure. This criterion OWNS retry.\n";
+    let spec_path = root.join("spec.md");
+    std::fs::write(&spec_path, spec).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["validate", spec_path.to_str().unwrap()]);
+    assert!(ok, "validate must succeed; stderr:\n{err}");
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        !err.contains("F4 disposition"),
+        "an odd backtick count fails closed to the paragraph end, independently of the \
+         quote kind - the invariant outranks recall; stderr:\n{err}"
+    );
+}
+
+/// Round-11 REJECT remedy (`adj-u66c3-r11-reject-stray-mark-steals-real-quote`,
+/// `sdet-u66c3-r11-stray-mark-unmasks-a-later-real-quote`): the MIRROR of the two
+/// stray-mark-still-fires tests above. Those prove a real, UNQUOTED smell phrase still
+/// fires after an earlier stray mark; this proves a real, GENUINELY QUOTED smell phrase
+/// still stays EXEMPT after that same earlier stray mark - the forward-greedy pairing
+/// `strip_inline_code` used before this round's fix had no notion of which quote in the
+/// paragraph a given mark was meant to close, so the earlier stray inches-mark quote
+/// would consume the later real span's own opening delimiter as its "close", leaving the
+/// real quoted hedge phrase unmasked and F4 false-firing on it - the exact
+/// quoted-or-named-text-can-never-false-positive intent (specs/66 Design;
+/// `disposition_advisories`'s own doc comment) this unit was rejected for at rounds 4, 5,
+/// 6, 9, 10, and 11. Drives the real compiled binary, same fixture shape as the
+/// adjudicator's own round-11 reproduction probe.
+#[test]
+fn validate_a_stray_unmatched_quote_does_not_unmask_a_later_real_quoted_disposition_phrase() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Design\n\n\
+         The gap measured 6\" today, well within tolerance for the current\n\
+         build, and the plan states \"we could instead retry\" as the\n\
+         documented phrasing, unrelated to the rest of this paragraph.\n\n\
+         ## Done when\n\n- [ ] the daemon retries on failure. This criterion OWNS retry.\n";
+    let spec_path = root.join("spec.md");
+    std::fs::write(&spec_path, spec).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["validate", spec_path.to_str().unwrap()]);
+    assert!(ok, "validate must succeed; stderr:\n{err}");
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        !err.contains("F4 disposition"),
+        "a real double-quoted \"could instead\" phrase must stay exempt even after an \
+         earlier stray unmatched quote mark in the same paragraph - only the stray mark is \
+         spurious, the later span is genuinely quoted; stderr:\n{err}"
+    );
+}
+
+/// Round-12 fix (`impl-u66c3-r12-candidate-delimiter-exclusion-fix`) excludes a `"`
+/// immediately preceded by a digit from delimiter candidacy, but DELIBERATELY scopes the
+/// exclusion to `"` only - `is_candidate` (`src/spec.rs`) guards it with `ch == '"'`, so a
+/// backtick keeps its old unconditional candidacy regardless of what precedes it. The
+/// commit's own stated reason is that this repo's corpus routinely closes real inline-code
+/// spans immediately after a digit (an IP address, a version number), so a digit-adjacent
+/// CLOSING backtick must keep pairing. Nothing at any layer proved that: the implementer's
+/// own round-12 tests (`disposition_check_a_stray_unmatched_quote_does_not_unmask_a_later_
+/// real_quoted_phrase`, `validate_a_stray_unmatched_quote_does_not_unmask_a_later_real_
+/// quoted_disposition_phrase`, this file above) exercise only the `"` fixture, so a future
+/// slip that widened the `ch == '"'` guard to cover both delimiters (e.g. dropping it, or
+/// copying the digit check onto the shared `is_candidate` prefix) would silently break
+/// backtick-masked code spans and reopen the same quoted-or-named-text-can-never-
+/// false-positive class this unit has been REJECTed for six times (rounds 4, 5, 6, 9, 10,
+/// 11) - just for the sibling delimiter. Drives the real compiled binary; the fixture's
+/// closing backtick sits immediately after `127`, a digit, with no separating whitespace,
+/// the same shape the commit message names.
+#[test]
+fn validate_ignores_a_backtick_span_whose_closing_mark_is_immediately_after_a_digit() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Design\n\n\
+         The plan states `we could instead retry 127` as the documented approach.\n\n\
+         ## Done when\n\n- [ ] the daemon retries on failure. This criterion OWNS retry.\n";
+    let spec_path = root.join("spec.md");
+    std::fs::write(&spec_path, spec).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["validate", spec_path.to_str().unwrap()]);
+    assert!(ok, "validate must succeed; stderr:\n{err}");
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        !err.contains("F4 disposition"),
+        "a real backtick-delimited \"could instead\" phrase must stay exempt even though \
+         its closing backtick sits immediately after a digit with no separating whitespace \
+         - the round-12 digit-adjacency exclusion is scoped to double quotes only, a \
+         backtick must keep pairing regardless of what precedes it; stderr:\n{err}"
+    );
+}
+
+/// Round-13 REJECT remedy (`adj-u66c3-r13-role-based-digit-adjacency`,
+/// `sdet-u66c3-r12-closing-quote-digit-adjacency-false-positive`,
+/// `adv-u66c3-r12-confirmed-closing-quote-digit-adjacency-live-repro`): the mirror defect
+/// the round-12 opener-only fix left open on the CLOSER side. `is_candidate` (renamed
+/// `is_opener_candidate` this round, `src/spec.rs`) gated BOTH ends of the forward search
+/// with the same digit-adjacency check, so a genuinely quoted span whose own closing `"`
+/// happened to sit immediately after a digit could never close - the opener was left
+/// unmatched-to-end and, per this unit's closed-span-only masking design, left completely
+/// unmasked, so F4 false-fired on content that is genuinely double-quoted in the source.
+/// Drives the real compiled binary; same fixture shape as the adjudicator's own round-12
+/// live reproduction probe (`"...retry 10"`, closing quote immediately after the digit
+/// `10`). Paired with the opener-exclusion test immediately below so both directions of
+/// the role-based predicate are proven together in this round's diff, per the
+/// adjudicator's explicit instruction not to fix and ship one side at a time again.
+#[test]
+fn validate_ignores_a_quoted_span_whose_closing_quote_is_immediately_after_a_digit() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Design\n\n\
+         The plan states \"we could instead retry 10\" as documented, unrelated\n\
+         to the rest of this paragraph.\n\n\
+         ## Done when\n\n- [ ] the daemon retries on failure. This criterion OWNS retry.\n";
+    let spec_path = root.join("spec.md");
+    std::fs::write(&spec_path, spec).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["validate", spec_path.to_str().unwrap()]);
+    assert!(ok, "validate must succeed; stderr:\n{err}");
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        !err.contains("F4 disposition"),
+        "a real double-quoted \"could instead\" phrase must stay exempt even when its own \
+         closing quote sits immediately after a digit with no separating whitespace - the \
+         digit-adjacency exclusion is opener-only, a closer must keep pairing regardless \
+         of what precedes it; stderr:\n{err}"
+    );
+}
+
+/// Round-13 remedy (`adj-u66c3-r13-role-based-digit-adjacency`): the OPENER direction,
+/// paired with the closer-direction test immediately above through the real compiled
+/// binary. A `"` immediately after a digit must stay excluded from OPENER candidacy -
+/// unchanged from round-12 - so a stray inches-mark quote can never itself start a span
+/// and thereby steal a later real span's own opening delimiter. Scanned together with the
+/// test above so this round's diff proves the new role-based predicate holds in both
+/// directions at once, not just the direction this round happened to fix.
+#[test]
+fn validate_a_digit_adjacent_quote_stays_excluded_as_an_opener() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Design\n\n\
+         The gap measured 6\" today, and the plan states \"we could instead\n\
+         retry\" as documented, unrelated to the rest of this paragraph.\n\n\
+         ## Done when\n\n- [ ] the daemon retries on failure. This criterion OWNS retry.\n";
+    let spec_path = root.join("spec.md");
+    std::fs::write(&spec_path, spec).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["validate", spec_path.to_str().unwrap()]);
+    assert!(ok, "validate must succeed; stderr:\n{err}");
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        !err.contains("F4 disposition"),
+        "a stray digit-adjacent quote must stay excluded as an opener - if it wrongly \
+         opened, it would forward-pair with the real span's own opening quote as its \
+         \"close\", leaving the real quoted hedge phrase unmasked; stderr:\n{err}"
+    );
+}
+
+/// Mutation-efficacy gap (round-13 accounting, `mutants.out/outcomes.json`): a mutant
+/// replacing the `i > 0` bounds guard in `is_opener_candidate` (`src/spec.rs`) with
+/// `i >= 0` survived the suite untouched by every test above - `i >= 0` is vacuously true
+/// for a `usize`, so the mutant only diverges from the real guard when `i == 0` AND the
+/// character there is a `"`, a case no prior fixture in this file (or `src/spec.rs`'s own
+/// `mod tests`, before this round) exercised: every quote in every existing fixture is
+/// preceded by at least one other character. Drives the real compiled binary with a
+/// paragraph whose very first character is a genuine opening `"` - proving `validate`
+/// treats it as a valid opener rather than panicking on an out-of-bounds look-back one
+/// character before the paragraph starts. Same fixture shape as the colocated unit test
+/// `disposition_check_a_quote_at_the_very_start_of_a_paragraph_is_a_valid_opener`
+/// (`src/spec.rs`), which independently proves the RED/GREEN pair against the mutant
+/// itself (temporarily applied, reverted).
+#[test]
+fn validate_a_quote_at_the_very_start_of_a_paragraph_is_a_valid_opener() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Design\n\n\
+         \"we could instead retry\" is the documented approach, unrelated to \
+         anything else.\n\n\
+         ## Done when\n\n- [ ] the daemon retries on failure. This criterion OWNS retry.\n";
+    let spec_path = root.join("spec.md");
+    std::fs::write(&spec_path, spec).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["validate", spec_path.to_str().unwrap()]);
+    assert!(ok, "validate must succeed; stderr:\n{err}");
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        !err.contains("F4 disposition"),
+        "a paragraph that opens with a genuine double quote as its very first character \
+         must treat that quote as a valid opener, not panic on an out-of-bounds look-back; \
+         stderr:\n{err}"
+    );
+}
+
+/// Round-13 REGRESSION (`sdet-u66c3-r13-embedded-digit-mark-premature-close`), the mirror
+/// cost of this same round's own closer-matches-on-delimiter-alone fix (the diff directly
+/// above this test in `src/spec.rs`). Round-12 excluded a digit-adjacent `"` from
+/// candidacy on BOTH ends, so the forward closer search SKIPPED PAST a spurious
+/// digit-adjacent mark and kept looking for the next candidate - which incidentally made
+/// an embedded units mark inside a still-open real span transparent to the scan (verified
+/// by re-running this exact fixture's spec text against the round-12 binary, `03ac0a8`:
+/// zero F4 hits there). Round-13's closer search now matches on the delimiter character
+/// ALONE with no digit-adjacency check, so a digit-adjacent mark sitting INSIDE a
+/// genuinely quoted span - a realistic technical-prose shape, e.g. a quoted passage that
+/// itself uses a `6"` inches-style unit notation before its own real closing quote - now
+/// closes the span too early, leaving everything after it (up to the true closing quote)
+/// unmasked. The genuinely double-quoted "could instead" phrase in this fixture sits in
+/// that unmasked tail and false-fires F4 - the SAME documented-intent violation ("quoted
+/// or named text can never false-positive", `src/spec.rs` doc comment above
+/// `disposition_advisories`) this unit has been REJECTed for at rounds 4, 5, 6, 9, 10, 11
+/// and 12 - an eighth instance, this time reintroduced by the very fix that closed the
+/// seventh. Per this unit's own author charter, a boundary bug drives remediation of the
+/// CODE, never a weakened test: this assertion states the CORRECT behavior. Round-14 fixes
+/// it by pairing the opener with the LAST remaining occurrence of the delimiter in the
+/// paragraph, not the nearest non-digit-adjacent one - the adjudicator proved the tempting
+/// "prefer nearest non-digit-adjacent" remedy unsound on a further shape (`adj-u66c3-r13-
+/// standing-remedy-direction-unsound`) - see `strip_inline_code`'s doc comment in
+/// `src/spec.rs` and `impl-u66c3-r14-mask-to-last-occurrence`.
+#[test]
+fn validate_an_embedded_digit_adjacent_mark_does_not_prematurely_close_a_real_quoted_span() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Design\n\n\
+         The report states \"we measured a 6\" gap between the brackets and could\n\
+         instead retry the weld\" as documented, unrelated to the rest of this\n\
+         paragraph.\n\n\
+         ## Done when\n\n- [ ] the daemon retries on failure. This criterion OWNS retry.\n";
+    let spec_path = root.join("spec.md");
+    std::fs::write(&spec_path, spec).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["validate", spec_path.to_str().unwrap()]);
+    assert!(ok, "validate must succeed; stderr:\n{err}");
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        !err.contains("F4 disposition"),
+        "a real double-quoted phrase must stay exempt even when the same quoted span \
+         contains an embedded digit-adjacent mark (a units notation like 6\") before its \
+         own true closing quote - the closer search must not stop at the embedded mark \
+         when a later, non-digit-adjacent closer exists for the same open span; \
+         stderr:\n{err}"
+    );
+}
+
+/// COMBINATORIAL FIXTURE (round-14 remedy, `adj-u66c3-r13-standing-remedy-direction-
+/// unsound`): the quoted-or-named-text-can-never-false-positive class has now been
+/// REJECTed 8 times (rounds 4, 5, 6, 9, 10, 11, 12, 13), each round's fix proven only
+/// against the ONE shape a lens happened to construct that round, leaving the next shape
+/// free to reopen the class again next round. Rather than a 9th single-shape fixture, this
+/// test drives all four known digit-adjacency trigger shapes at once, through the real
+/// compiled binary, in one Design section: each is its own bullet (`starts_new_element`
+/// makes every `- ` line its own paragraph, so the four shapes cannot mask into or shield
+/// each other - each stands or falls on its own):
+/// - Bullet 1, mark-before-open: a stray digit-adjacent `"` (`6" today`) precedes a real
+///   quoted span (round-11 shape, `adv-u66c3-r11-reject-stray-mark-steals-real-quote`).
+/// - Bullet 2, mark-as-true-closer: a real quoted span's own closing `"` sits immediately
+///   after a digit (`retry 10"`, round-12 shape,
+///   `adv-u66c3-r12-confirmed-closing-quote-digit-adjacency-live-repro`).
+/// - Bullet 3, mark-embedded-inside-open-span: a digit-adjacent `"` (`a 6" gap`) sits
+///   INSIDE an already-open real span, before its own true close (round-13 shape,
+///   `sdet-u66c3-r13-review-both-lanes-red-embedded-digit-mark`, the test immediately
+///   above).
+/// - Bullet 4, two-independent-spans-first-closer-digit-adjacent: two separate genuine
+///   quoted spans in one paragraph, where the FIRST span's own true closer is
+///   digit-adjacent (`defaults to 10"` immediately followed by `"worth considering"`) -
+///   the shape that refuted the tempting "prefer nearest non-digit-adjacent closer" remedy
+///   (`adv-u66c3-r13-standing-remedy-direction-unsound`'s own counter-example probe,
+///   reproduced verbatim here). Mask-to-last-occurrence deliberately FUSES this bullet's
+///   two spans into one (an accepted over-masking recall loss, never a false positive -
+///   see `strip_inline_code`'s doc comment in `src/spec.rs`), so `"worth considering"`
+///   ends up masked too, alongside the text between the two spans.
+///
+/// None of the four bullets' genuinely-quoted disposition-smell phrases may fire F4; a
+/// single assertion over the whole `validate` run proves all four survive together, not
+/// just individually.
+#[test]
+fn validate_all_four_digit_adjacency_shapes_together_never_false_positive() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Design\n\n\
+         - The gap measured 6\" today, and the plan states \"we could instead retry\" \
+         as documented.\n\
+         - The plan states \"we could instead retry 10\" as documented, unrelated to \
+         anything else.\n\
+         - The report states \"we measured a 6\" gap between the brackets and could \
+         instead retry the weld\" as documented.\n\
+         - The report states \"the field defaults to 10\" and separately \"worth \
+         considering\" is deferred.\n\n\
+         ## Done when\n\n- [ ] the daemon retries on failure. This criterion OWNS retry.\n";
+    let spec_path = root.join("spec.md");
+    std::fs::write(&spec_path, spec).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["validate", spec_path.to_str().unwrap()]);
+    assert!(ok, "validate must succeed; stderr:\n{err}");
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        !err.contains("F4 disposition"),
+        "all four digit-adjacency trigger shapes (mark-before-open, mark-as-true-closer, \
+         mark-embedded-inside-open-span, two-independent-spans-first-closer-digit-adjacent) \
+         must stay exempt SIMULTANEOUSLY - a real quoted disposition-smell phrase can \
+         never false-positive regardless of which digit-adjacency shape surrounds it; \
+         stderr:\n{err}"
+    );
+}
+
+/// NEW GAP FOUND THIS ROUND (`sdet-u66c3-r14-digit-glued-real-opener-excluded`), pre-existing
+/// since round 12's digit-exclusion fix (`impl-u66c3-r12-candidate-delimiter-exclusion-fix`)
+/// and never independently found across rounds 12, 13, or 14: `is_opener_candidate` excludes
+/// ANY double quote immediately preceded by a digit with no separating whitespace from
+/// opener candidacy, on the theory that such a mark is always a spurious units notation
+/// (`6"`) rather than a real quotation delimiter. That theory does not hold when the digit
+/// happens to sit directly against the quote that IS a real quotation's own opening mark (no
+/// space between a preceding number and the quote): the exclusion still fires, so the scan
+/// never treats that position as an opener. The scan then reaches the span's own true
+/// CLOSING quote (not digit-adjacent, so it passes `is_opener_candidate`) and misreads IT as
+/// a fresh opener instead; since no further same-char occurrence remains in the paragraph
+/// for it to pair with, `close` is `None` and nothing is masked at all - the entire quoted
+/// phrase, opener through closer, is left as ordinary visible prose. Reproduced live on BOTH
+/// the round-13 (`cca7e3b`) and round-14 (`cceb93a`) compiled binaries with the identical
+/// fixture below, confirming this predates round-14's mask-to-last-occurrence change (which
+/// only alters closer SELECTION among multiple already-candidate occurrences and cannot
+/// affect a case where the true opener was never recognized as a candidate in the first
+/// place) and has been latent since round 12. This is the SAME quoted-or-named-text-can-
+/// never-false-positive class this unit has been REJECTed for at rounds 4, 5, 6, 9, 10, 11,
+/// 12, and 13 - a 9th instance, via a mechanism ("the exclusion eats the real opener itself")
+/// none of those eight prior rounds' fixtures exercised (all eight glued the digit to a
+/// SPURIOUS mark, never to the real span's own genuine opening delimiter). Per this unit's
+/// author charter, captured as a FAILING periphery test rather than a weakened assertion or
+/// a silent exemption, since it lands squarely on the boundary surface this round's
+/// accounting is required to cover.
+#[test]
+fn validate_a_digit_glued_to_a_quotes_own_opening_mark_still_masks_the_real_span() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Design\n\n\
+         The report cites section 5\"we could instead retry the weld\" per the review, \
+         unrelated to anything else.\n\n\
+         ## Done when\n\n- [ ] the daemon retries on failure. This criterion OWNS retry.\n";
+    let spec_path = root.join("spec.md");
+    std::fs::write(&spec_path, spec).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["validate", spec_path.to_str().unwrap()]);
+    assert!(ok, "validate must succeed; stderr:\n{err}");
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        !err.contains("F4 disposition"),
+        "a real double-quoted phrase must stay exempt even when a digit sits directly \
+         against its own OPENING quote with no separating whitespace - the digit-adjacency \
+         exclusion must not eat the genuine opener itself and leave the whole span unmasked; \
          stderr:\n{err}"
     );
 }
