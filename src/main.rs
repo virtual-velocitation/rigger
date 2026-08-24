@@ -3356,12 +3356,27 @@ fn locate_shim(root: &Path) -> Result<String, Box<dyn std::error::Error>> {
 /// Extract the spec's acceptance criteria, enforcing the loop-ready gate (§8): a
 /// spec with no enumerable Done-when criteria blocks until a human adds them; no
 /// spec path means an unconstrained run (empty criteria).
+///
+/// The ONE in-run spec-lint call site (spec 66, criterion 4 - ONE LINT AUTHORITY): every
+/// real live-run entry (`rigger run` via `run_cli`, `rigger step` via `cmd_step` - the ONE
+/// command the documented primary native `/rigger <spec>` workflow ever invokes - and
+/// `rigger serve`/`rigger workflow` via `run_workflow`) calls this SAME function to load a
+/// spec's criteria, so wiring the lint here reaches all three without a bespoke call site
+/// per entry. Prints via `spec_lint_warning_lines` - the identical formatter `cmd_validate`
+/// (the pre-launch, standalone `rigger validate <spec>`) uses, itself built on
+/// `spec::spec_lint_advisories` (criterion 3's untouched classification) - so an operator
+/// who launches straight into a run without a separate `rigger validate` pass still sees
+/// the same advisories. Advisory only, exactly like the pre-launch surface: never refuses
+/// the run.
 fn load_criteria(spec_path: Option<&str>) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let Some(spec_path) = spec_path else {
         return Ok(Vec::new());
     };
     let text =
         std::fs::read_to_string(spec_path).map_err(|e| format!("read spec {spec_path}: {e}"))?;
+    for line in spec_lint_warning_lines(spec_path, &text) {
+        eprintln!("{line}");
+    }
     let criteria = spec::extract_criteria(&text);
     if criteria.is_empty() {
         return Err(format!(
@@ -7769,6 +7784,22 @@ fn fold_recorded_result_into_graph(
     }
 }
 
+/// Format `spec::spec_lint_advisories`' output (spec 18 Unit 4 / spec 66 criterion 3's
+/// classification, untouched here) as the `"warning: spec {path}: {advisory}"` lines
+/// `rigger validate` prints. The ONE formatter both the pre-launch `cmd_validate` below
+/// AND the in-run `load_criteria` call site (spec 66 criterion 4 - reached by `rigger
+/// run`, `rigger step`, and `rigger serve`/`rigger workflow` alike, since all three route
+/// through that one function) build their warning lines from - never a second, parallel
+/// aggregation or a re-derived wording, so the two lint surfaces cannot silently diverge.
+/// Pure (no I/O), so the sharing is pinned by a direct unit test on this function, not
+/// only inferred from a subprocess capture of either call site.
+fn spec_lint_warning_lines(spec_path: &str, text: &str) -> Vec<String> {
+    spec::spec_lint_advisories(text)
+        .into_iter()
+        .map(|advisory| format!("warning: spec {spec_path}: {advisory}"))
+        .collect()
+}
+
 fn cmd_validate(args: &[String]) -> Res {
     let root = Path::new(".");
     // Optional `<spec>` path (spec 18, Unit 4; spec 66, unit c3): emit heuristic spec-lint
@@ -7780,12 +7811,13 @@ fn cmd_validate(args: &[String]) -> Res {
     // config is not yet valid; an unreadable spec path is still an input error (the lint is
     // heuristic, but "you named a spec that does not exist" is not). `spec_lint_advisories`
     // is the ONE combined lint surface (it internally reuses `spec_shape_advisories`),
-    // never a second, parallel aggregation.
+    // never a second, parallel aggregation - and `spec_lint_warning_lines` above is the ONE
+    // formatter this and the in-run call site (`load_criteria`, spec 66 criterion 4) share.
     if let Some(spec_path) = args.first() {
         let text = std::fs::read_to_string(spec_path)
             .map_err(|e| format!("read spec {spec_path}: {e}"))?;
-        for advisory in spec::spec_lint_advisories(&text) {
-            eprintln!("warning: spec {spec_path}: {advisory}");
+        for line in spec_lint_warning_lines(spec_path, &text) {
+            eprintln!("{line}");
         }
     }
     let cfg = config::load(".")?;
@@ -10687,6 +10719,53 @@ mod tests {
             "must name the exact pre-launch lint command against the given spec path; got: \
              {line:?}"
         );
+    }
+
+    // --- Spec 66, criterion 4: ONE LINT AUTHORITY - the shared pure formatter ---
+
+    /// [`spec_lint_warning_lines`] is the ONE formatter both the pre-launch `cmd_validate`
+    /// and the in-run `load_criteria` call site build their warning lines from - it just
+    /// maps `spec::spec_lint_advisories` (criterion 3's untouched classification) through
+    /// the `"warning: spec {path}: {advisory}"` convention `cmd_validate` already used.
+    /// Pinning this pure function directly (no process capture needed) proves the exact
+    /// count and wording either call site would print for a given spec, independent of
+    /// which one actually calls it - the CLI tests in tests/cli.rs pin THAT wiring. This is
+    /// the runtime pin criterion 4's Done-when names ("a divergence cannot compile or
+    /// cannot pass"): both call sites route through this SAME function, so a divergence
+    /// would mean editing this function itself, and any change to what it returns is
+    /// caught here and by the CLI tests that pin its output verbatim - never a second,
+    /// parallel formatter either call site could drift against.
+    #[test]
+    fn spec_lint_warning_lines_formats_every_advisory_with_the_spec_path() {
+        let text = "# W\n\n## Done when\n\n\
+                     - [ ] the daemon starts on boot, and it writes a pidfile, and it \
+                     rotates the log nightly\n";
+        let lines = spec_lint_warning_lines("specs/x.md", text);
+        assert_eq!(
+            lines.len(),
+            spec::spec_lint_advisories(text).len(),
+            "must format exactly the advisories spec_lint_advisories returns, no more, no \
+             fewer; got: {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .all(|l| l.starts_with("warning: spec specs/x.md: ")),
+            "every line must be prefixed with the spec path, matching cmd_validate's own \
+             convention; got: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("multi-behavior")),
+            "the multi-behavior advisory must be present verbatim; got: {lines:?}"
+        );
+    }
+
+    /// A clean spec yields no warning lines at all - the formatter is advisory, never
+    /// fabricates a finding.
+    #[test]
+    fn spec_lint_warning_lines_is_empty_on_a_clean_spec() {
+        let text = "# W\n\n## Done when\n\n- [ ] the store passes the contract suite\n";
+        assert!(spec_lint_warning_lines("specs/x.md", text).is_empty());
     }
 
     // --- Spec 39, criterion 1: idempotent start of the run dashboard on the step path ---

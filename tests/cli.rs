@@ -19683,3 +19683,131 @@ fn step_given_a_spec_path_names_the_spec_lint_even_when_the_step_then_refuses_fo
          stderr:\n{err}"
     );
 }
+
+// --- Spec 66, criterion 4: ONE LINT AUTHORITY - the in-run call site ---
+//
+// Criterion 3 wired the spec-lint into `cmd_validate` (the standalone, PRE-LAUNCH `rigger
+// validate <spec>` command) only. These tests drive the compiled binary through the real
+// IN-RUN entries instead - `rigger run` and `rigger step`, which both call the shared
+// `load_criteria` - proving the same advisories surface there too, from the identical
+// `spec::spec_lint_advisories` implementation (never a second, parallel parser). Both use
+// the established `--base origin/does-not-exist` trick: a fresh repo has an unborn HEAD,
+// so the no-reachable-base refusal fires deterministically, with no agent ever spawned -
+// but ONLY after `load_criteria` has already run and printed its advisories, so the
+// refusal proves nothing about the lint firing FIRST while still keeping the test fast
+// and hermetic.
+
+/// `rigger run <spec>` surfaces the SAME `multi-behavior` advisory (with the same
+/// recommendation wording) that `rigger validate <spec>` prints pre-launch - proving the
+/// in-run call site shares `cmd_validate`'s implementation rather than re-deriving it -
+/// and stays silent on a clean spec, exactly like the pre-launch surface.
+#[test]
+fn run_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    std::fs::create_dir_all(root.join("specs")).unwrap();
+
+    let bad_spec = "# 42 widgets\n\n## Done when\n\n\
+         - [ ] the daemon starts on boot, and it writes a pidfile, and it rotates the log \
+         nightly\n";
+    std::fs::write(root.join("specs/42-widgets.md"), bad_spec).unwrap();
+
+    let (_out, err, ok) = run_rigger(
+        root,
+        &[
+            "run",
+            "specs/42-widgets.md",
+            "--base",
+            "origin/does-not-exist",
+        ],
+    );
+    assert!(
+        !ok,
+        "the no-reachable-base refusal must still fire after the in-run lint prints; \
+         stderr:\n{err}"
+    );
+    assert!(
+        err.contains("no reachable base"),
+        "sanity: this must be the same no-reachable-base refusal the base test pins; got: {err:?}"
+    );
+    assert!(
+        err.contains("multi-behavior"),
+        "`rigger run <spec>` must surface the SAME `multi-behavior` spec-lint advisory \
+         `rigger validate <spec>` emits pre-launch, proving the in-run call site shares the \
+         one implementation, not a second parallel parser; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("one observable behavior per criterion"),
+        "the in-run advisory must carry the SAME recommendation wording as the pre-launch \
+         one; stderr:\n{err}"
+    );
+
+    // A clean, single-behavior spec: no spec-lint advisory at all, even though the run
+    // still refuses for the unrelated no-reachable-base reason.
+    let clean_spec = "# 43 widgets\n\n## Done when\n\n- [ ] the store passes the contract suite\n";
+    std::fs::write(root.join("specs/43-widgets.md"), clean_spec).unwrap();
+    let (_out, err, ok) = run_rigger(
+        root,
+        &[
+            "run",
+            "specs/43-widgets.md",
+            "--base",
+            "origin/does-not-exist",
+        ],
+    );
+    assert!(!ok, "clean-spec run must still refuse on no-reachable-base");
+    assert!(
+        !err.contains("warning: spec "),
+        "a clean single-behavior spec must yield no spec-lint advisory on the in-run call \
+         site either; stderr:\n{err}"
+    );
+}
+
+/// `rigger step --spec <path>` - the ONE command the documented primary native `/rigger
+/// <spec>` workflow ever actually invokes - reaches the same in-run call site as `rigger
+/// run`, since both route through the shared `load_criteria`. Proves the wiring reaches
+/// the real primary path, not only the standalone CLI's `rigger run`, and that the
+/// advisory lands ALONGSIDE (not instead of) criterion 5's own "go run rigger validate"
+/// reminder already pinned above.
+#[test]
+fn step_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    std::fs::create_dir_all(root.join("specs")).unwrap();
+
+    let bad_spec = "# 42 widgets\n\n## Done when\n\n\
+         - [ ] the daemon starts on boot, and it writes a pidfile, and it rotates the log \
+         nightly\n";
+    std::fs::write(root.join("specs/42-widgets.md"), bad_spec).unwrap();
+
+    let (_out, err, ok) = run_rigger(
+        root,
+        &[
+            "step",
+            "--spec",
+            "specs/42-widgets.md",
+            "--base",
+            "origin/does-not-exist",
+        ],
+    );
+    assert!(
+        !ok,
+        "the no-reachable-base refusal must still fire after the in-run lint prints; \
+         stderr:\n{err}"
+    );
+    // `cmd_step` already prints a generic reminder line (criterion 5) that itself names
+    // "multi-behavior" as a lint CATEGORY, so asserting on that substring alone would pass
+    // even if the in-run advisory below were never wired - a tautology, not a proof. The
+    // recommendation wording is what only a FIRED advisory carries; it is absent from the
+    // generic reminder, so this is the discriminating check (mirrors the `rigger run`
+    // sibling test's own second assertion above).
+    assert!(
+        err.contains("one observable behavior per criterion"),
+        "`rigger step --spec <path>` - the primary native-workflow entry - must surface the \
+         SAME multi-behavior spec-lint advisory (with its recommendation wording, not just \
+         the generic reminder's category name) that `rigger validate` emits pre-launch; \
+         stderr:\n{err}"
+    );
+}
