@@ -224,15 +224,31 @@ pub struct Metrics {
     /// ROLE token ([`spawn_role`], e.g. `"implementer"`, `"adversary"`, `"lens:sdet"`) - the SAME
     /// per-agent breakdown the review-tier cost fold uses, but covering EVERY recorded spawn
     /// role, not only the review tiers. Each recorded [`TYPE_SPAWN_REQUESTED`] is paired with its
-    /// [`TYPE_SPAWN_RESULT`] by spawn id; a request with no recorded result (a dead worker)
-    /// contributes to no entry here and is counted in [`unpaired_spawns`](Metrics::unpaired_spawns)
-    /// instead - a fabricated or zero duration never enters a mean. Sorted by role for stable
-    /// reporting.
+    /// [`TYPE_SPAWN_RESULT`] by `(run WINDOW, spawn id)` - NEVER by the bare spawn id, since
+    /// [`crate::spawn::spawn_id`] carries no run component and this project namespace routinely
+    /// reuses spawn ids across independent runs (a re-proposed or relaunched unit). The window is
+    /// the run each event falls into by STREAM POSITION (which [`crate::run::TYPE_RUN_STARTED`]
+    /// boundary precedes it), not event metadata - so the key works whether or not either event
+    /// carries a run-id stamp. A request with no same-window recorded result (a dead worker) - or
+    /// whose paired result yields a non-positive duration (see
+    /// [`unpaired_spawns`](Metrics::unpaired_spawns)) - contributes to no entry here and is
+    /// counted there instead: a fabricated, cross-run, or zero-or-negative duration never enters a
+    /// mean. Sorted by role for stable reporting.
     pub spawn_timing: BTreeMap<String, SpawnTiming>,
-    /// Recorded spawn requests with NO matching result on this slice (spec 61, SPAWN TIMING) - a
-    /// dead/unanswered worker. Excluded from every [`spawn_timing`](Metrics::spawn_timing)
-    /// aggregate and reported here as its own count, so a stalled spawn can never masquerade as a
-    /// zero-duration measurement.
+    /// Recorded spawn requests excluded from every [`spawn_timing`](Metrics::spawn_timing)
+    /// aggregate (spec 61, SPAWN TIMING), for either of two reasons:
+    ///   - **no matching result** on this slice in the SAME run window - a dead/unanswered
+    ///     worker (or a request whose only same-id result belongs to a DIFFERENT window, which
+    ///     the `(run window, spawn id)` pairing key makes unpairable by construction - a
+    ///     cross-run id collision can never synthesize a bogus duration under `rigger stats
+    ///     --all`);
+    ///   - **a paired result with a non-positive duration** - SUSPECT, not a real measurement:
+    ///     either the request and result landed in the same store-append batch (an exact zero,
+    ///     since the store stamps one `recorded_at` per batch) or the result was recorded before
+    ///     its request (clock skew / a replayed re-record).
+    ///
+    /// Reported here as its own count, so neither a stalled spawn, a cross-run collision, nor a
+    /// suspect zero-or-negative reading can masquerade as a real duration measurement.
     pub unpaired_spawns: u64,
 }
 
@@ -575,12 +591,40 @@ pub fn project(events: &[Event]) -> Metrics {
     // runtime parallelism-retention metric. Latest-per-unit so a remediation attempt's re-record
     // supersedes the prior attempt's radius rather than double-counting the same unit.
     let mut blast_radii: BTreeMap<String, (Vec<String>, bool)> = BTreeMap::new();
-    // spec 61 SPAWN TIMING: spawn id -> its SpawnRequested park time (first sighting - the true
-    // request moment; a re-park is an idempotency violation the replay driver prevents) and its
-    // LATEST recorded SpawnResult time (mirroring spawn::result_of's last-write-wins semantics -
-    // a corrected re-record supersedes the earlier one). Paired by id after the pass.
-    let mut spawn_requested_at: BTreeMap<String, SystemTime> = BTreeMap::new();
-    let mut spawn_result_at: BTreeMap<String, SystemTime> = BTreeMap::new();
+    // spec 61 SPAWN TIMING: keyed by (run WINDOW, spawn id) - NEVER by spawn id alone.
+    // spawn::spawn_id ("{unit}/{role}#{attempt}") carries no run component, and this project
+    // namespace routinely reuses spawn ids across independent runs (a re-proposed/relaunched
+    // unit); folding the WHOLE stream (`rigger stats --all`) over a bare-id key would let an
+    // unrelated run-A request pair with an unrelated run-B result and synthesize a fabricated
+    // duration (adv-u61c9-all-mode-cross-run-id-collision-synthesizes-bogus-duration).
+    //
+    // The window is derived STRUCTURALLY from `events`' own [`crate::run::TYPE_RUN_STARTED`]
+    // boundaries (`run_generation` below), mirroring [`crate::run::run_attribution`]'s window
+    // fold - NOT from each event's own META_RUN_ID metadata. That distinction is load-bearing:
+    // a TYPE_SPAWN_REQUESTED gets META_RUN_ID from TWO production writers (RunCtx's append
+    // chokepoint, and `spawn::park_in_run`), but a TYPE_SPAWN_RESULT is recorded by `rigger
+    // result` (`spawn::record_result`/`record_result_if_absent`) from a SEPARATE process (the
+    // worker or courier self-reporting) that stamps NO run-id metadata at all - keying on
+    // metadata would make every request's real run id fail to match its own result's empty
+    // one, silently reporting every genuinely-answered spawn as unpaired in production. Keying
+    // on stream POSITION instead needs no metadata on either side: it groups every event -
+    // request or result, stamped or not - by which `RunStarted` most recently preceded it in
+    // THIS slice, so a same-id collision across two runs is still unpairable by construction
+    // (their windows differ) while an ordinary same-run pairing (the common case) is unaffected
+    // regardless of which writer produced either event. A store with no `RunStarted` at all (a
+    // legacy store, or this fold's own pure unit tests) has exactly one window (generation 0),
+    // so it folds exactly as before this feature; the default (non-`--all`) `rigger stats` path
+    // is unaffected either way, since its scoped slice ([`crate::run::current_run`]) opens with
+    // at most one `RunStarted` and so never crosses a second window.
+    //
+    // Value semantics per key: the request's FIRST sighting wins (the true request moment; a
+    // re-park is an idempotency violation the replay driver prevents) and the result's LATEST
+    // recorded time wins (mirroring spawn::result_of's last-write-wins semantics - a corrected
+    // re-record supersedes the earlier one). Paired by key after the pass.
+    type SpawnKey = (u64, String); // (run generation/window, spawn id)
+    let mut run_generation: u64 = 0;
+    let mut spawn_requested_at: BTreeMap<SpawnKey, SystemTime> = BTreeMap::new();
+    let mut spawn_result_at: BTreeMap<SpawnKey, SystemTime> = BTreeMap::new();
 
     for e in events {
         match e.type_.as_str() {
@@ -757,15 +801,27 @@ pub fn project(events: &[Event]) -> Metrics {
                 finding_about.insert(id.clone(), about);
                 finding_actor.insert(id, actor);
             }
+            crate::run::TYPE_RUN_STARTED => {
+                // spec 61 SPAWN TIMING: advance the run WINDOW every fold in this module keys
+                // its spawn-pairing state by (see the declaration above) - every event from
+                // here onward, until the next boundary, belongs to this new window. Mirrors
+                // `crate::run::run_attribution`'s identical forward fold over the same event
+                // type, so both derivations agree on where one run ends and the next begins.
+                run_generation += 1;
+            }
             TYPE_SPAWN_REQUESTED => {
                 // spec 61 SPAWN TIMING: the park time of a recorded spawn request. First
                 // sighting wins - the true request moment - so a malformed re-park (an
                 // idempotency violation the replay driver is responsible for preventing)
-                // cannot silently shift an already-folded spawn's start time.
+                // cannot silently shift an already-folded spawn's start time. Keyed by
+                // (run window, spawn id) - see the declaration above - so this request can
+                // only ever pair with a result recorded in the SAME window.
                 let Ok(req) = SpawnRequest::from_event(e) else {
                     continue;
                 };
-                spawn_requested_at.entry(req.id).or_insert(e.recorded_at);
+                spawn_requested_at
+                    .entry((run_generation, req.id))
+                    .or_insert(e.recorded_at);
             }
             TYPE_SPAWN_RESULT => {
                 // A recorded review spawn: count it under its tier (cost side), and - for
@@ -777,7 +833,9 @@ pub fn project(events: &[Event]) -> Metrics {
                 // spec 61 SPAWN TIMING: record every spawn's LATEST result time regardless of
                 // role, before the review-tier-only early continue below - SPAWN TIMING covers
                 // every recorded spawn (the implementer included), not just the review tiers.
-                spawn_result_at.insert(res.id.clone(), e.recorded_at);
+                // Keyed by (run window, spawn id) - see the declaration above - so this result
+                // can only ever pair with a request recorded in the SAME window.
+                spawn_result_at.insert((run_generation, res.id.clone()), e.recorded_at);
                 let Some(tier) = review_tier(&res.id) else {
                     continue;
                 };
@@ -822,18 +880,26 @@ pub fn project(events: &[Event]) -> Metrics {
     let radii: Vec<(Vec<String>, bool)> = blast_radii.into_values().collect();
     metrics.parallelism_retention = parallelism_retention_of(&radii);
 
-    // ---- Finalize the spec-61 SPAWN TIMING fold: pair each recorded request with its
-    // result by id, bucketed per spawn ROLE. An unanswered request (dead worker) enters no
-    // aggregate and is counted once as unpaired instead. ----
-    for (id, requested_at) in &spawn_requested_at {
-        match spawn_result_at.get(id) {
-            Some(result_at) => {
-                let duration = result_at
-                    .duration_since(*requested_at)
-                    .unwrap_or(Duration::ZERO);
+    // ---- Finalize the spec-61 SPAWN TIMING fold: pair each recorded request with its result by
+    // (run window, spawn id), bucketed per spawn ROLE. Two cases fall through to `unpaired_spawns`
+    // rather than a real aggregate entry, both SUSPECT rather than a genuine measurement:
+    //   - no same-window result at all (dead worker, OR the only same-id result belongs to a
+    //     different window - a cross-run collision the composite key already made unpairable);
+    //   - a same-window result whose `duration_since` is non-positive: either an EXACT zero (the
+    //     request and result landed in the same store-append batch, which stamps one
+    //     `recorded_at` per batch) or an `Err` (the result recorded BEFORE its request - clock
+    //     skew / a replayed re-record). Neither is a real wall-clock duration, so neither may
+    //     silently enter a mean as a fabricated zero.
+    for (key, requested_at) in &spawn_requested_at {
+        let paired_duration = spawn_result_at
+            .get(key)
+            .and_then(|result_at| result_at.duration_since(*requested_at).ok())
+            .filter(|d| *d > Duration::ZERO);
+        match paired_duration {
+            Some(duration) => {
                 let t = metrics
                     .spawn_timing
-                    .entry(spawn_role(id).to_string())
+                    .entry(spawn_role(&key.1).to_string())
                     .or_default();
                 t.count += 1;
                 t.total += duration;
@@ -1927,6 +1993,130 @@ mod tests {
         let m = project(&[spawn_result_at("orphan/implementer#0", 5)]);
         assert!(m.spawn_timing.is_empty());
         assert_eq!(m.unpaired_spawns, 0);
+    }
+
+    /// PRIMARY BLOCKER regression (adv-u61c9-all-mode-cross-run-id-collision-synthesizes-bogus-duration):
+    /// `spawn::spawn_id` carries no run component, and `rigger stats --all` folds the WHOLE
+    /// event stream unscoped by any `RunStarted` boundary - so a textual spawn id can be
+    /// reused across two independent runs (a re-proposed/relaunched unit is the ordinary shape
+    /// of this system, not a contrived edge case). Before the run-windowed pairing key, an
+    /// unanswered run-A request would pair with an unrelated run-B result sharing the same id
+    /// and synthesize a fabricated duration with no relation to any real spawn. Neither event
+    /// carries any run-id METADATA here - proving the window is derived from the stream's OWN
+    /// `RunStarted` boundaries, not from a stamp a real `SpawnResult` (recorded via `rigger
+    /// result`, a separate process) never carries in production.
+    #[test]
+    fn spawn_timing_never_pairs_a_cross_run_id_collision() {
+        let events = vec![
+            run_started("run-a"),
+            // run-a's request is never answered WITHIN run-a.
+            spawn_requested("u1/implementer#0", 0),
+            run_started("run-b"),
+            // run-b reuses the SAME textual spawn id for an unrelated result, far later.
+            spawn_result_at("u1/implementer#0", 1_000_010),
+        ];
+        let m = project(&events);
+        assert!(
+            m.spawn_timing.is_empty(),
+            "the unrelated run-b result must never pair with run-a's request and synthesize a \
+             bogus duration"
+        );
+        assert_eq!(
+            m.unpaired_spawns, 1,
+            "run-a's request has no SAME-WINDOW result, so it is reported unpaired - never \
+             silently dropped nor fabricated"
+        );
+    }
+
+    /// A spawn id legitimately reused across two INDEPENDENT runs (the exact scenario the
+    /// collision guard above must not over-exclude) still measures each run's OWN duration
+    /// correctly - the run-windowed key excludes only a MISMATCHED cross-run pairing, never a
+    /// same id recurring validly within its own run. Again, no event here carries any run-id
+    /// metadata - the window comes purely from the `RunStarted` boundaries in the stream.
+    #[test]
+    fn spawn_timing_pairs_a_reused_spawn_id_independently_per_run() {
+        let events = vec![
+            run_started("run-a"),
+            spawn_requested("u1/implementer#0", 0),
+            spawn_result_at("u1/implementer#0", 10),
+            run_started("run-b"),
+            spawn_requested("u1/implementer#0", 100),
+            spawn_result_at("u1/implementer#0", 108),
+        ];
+        let m = project(&events);
+        let implementer = m
+            .spawn_timing
+            .get("implementer")
+            .expect("implementer timing folded");
+        assert_eq!(
+            implementer.count, 2,
+            "both runs' own request+result pair independently"
+        );
+        assert_eq!(implementer.total, Duration::from_secs(10 + 8));
+        assert_eq!(m.unpaired_spawns, 0);
+    }
+
+    /// PRODUCTION-SHAPE regression: a `TYPE_SPAWN_REQUESTED` carries `META_RUN_ID` (stamped by
+    /// RunCtx's append chokepoint or `spawn::park_in_run`) but its `TYPE_SPAWN_RESULT` carries
+    /// NONE - exactly what a real `rigger result <id>` self-report produces, since
+    /// `spawn::record_result`/`record_result_if_absent` (a SEPARATE process from the
+    /// conductor) never stamp a run id. Keying the pairing fold on event METADATA instead of
+    /// stream position would make this ordinary, universal production shape unpairable - every
+    /// genuinely-answered spawn would misreport as a dead worker. The window-based key must
+    /// still pair them, since it never reads either event's own metadata.
+    #[test]
+    fn spawn_timing_pairs_a_request_with_run_id_metadata_against_a_result_with_none() {
+        let events = vec![
+            run_started("run-a"),
+            spawn_requested("u1/implementer#0", 0).with_meta(META_RUN_ID, "run-a"),
+            spawn_result_at("u1/implementer#0", 10), // no META_RUN_ID at all - the real shape
+        ];
+        let m = project(&events);
+        let implementer = m
+            .spawn_timing
+            .get("implementer")
+            .expect("the request/result pair must fold despite the metadata asymmetry");
+        assert_eq!(implementer.count, 1);
+        assert_eq!(implementer.total, Duration::from_secs(10));
+        assert_eq!(m.unpaired_spawns, 0);
+    }
+
+    /// SECONDARY regression (adv-u61c9-same-batch-append-yields-silent-zero-duration): a
+    /// request and its result landing in the SAME store-append batch share one stamped
+    /// `recorded_at` (the store stamps one clock per batch, `sqlite.rs`), producing an EXACT,
+    /// error-free `Duration::ZERO` for a genuinely paired same-spawn request/result. This must
+    /// be treated as SUSPECT (folded into `unpaired_spawns`), never a silently-valid zero that
+    /// enters a mean.
+    #[test]
+    fn spawn_timing_excludes_a_same_batch_zero_duration_pair_as_suspect() {
+        let events = vec![
+            spawn_requested("u1/implementer#0", 5),
+            spawn_result_at("u1/implementer#0", 5),
+        ];
+        let m = project(&events);
+        assert!(
+            m.spawn_timing.is_empty(),
+            "a same-batch zero-duration pair must not enter any per-role aggregate"
+        );
+        assert_eq!(
+            m.unpaired_spawns, 1,
+            "a suspect (non-positive) duration is folded into unpaired_spawns, not silently \
+             zeroed into a mean"
+        );
+    }
+
+    /// SECONDARY regression (sdet-u61c9-clockskew-duration-sentinel-untested): a `SpawnResult`
+    /// recorded BEFORE its `SpawnRequested` (clock skew, or a replayed re-record) must fold the
+    /// same way as the same-batch zero case above - suspect, not a fabricated/silent zero.
+    #[test]
+    fn spawn_timing_excludes_a_clock_skew_negative_duration_pair_as_suspect() {
+        let events = vec![
+            spawn_requested("u1/implementer#0", 10),
+            spawn_result_at("u1/implementer#0", 4),
+        ];
+        let m = project(&events);
+        assert!(m.spawn_timing.is_empty());
+        assert_eq!(m.unpaired_spawns, 1);
     }
 
     #[test]
