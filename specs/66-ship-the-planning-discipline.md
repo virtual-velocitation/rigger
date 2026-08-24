@@ -66,7 +66,13 @@ page humans read, and the mechanical subset of the recipe as a pre-launch spec l
   (`std::os::unix::process::parent_id`); any absent, foreign, stale, or malformed value
   means the surface prints. State lives in the explicit parent-to-child contract, never
   ambient presence - a test pins both directions (nested invocation suppressed, ambient
-  pollution from an unrelated tree still prints).
+  pollution from an unrelated tree still prints). INTERMEDIARY surfaces (the shim, any
+  wrapper that spawns rigger as its own OS child) obey the same rule in pass-through
+  form: re-stamp the sentinel with their OWN pid ONLY when the inherited value parses
+  and equals THEIR direct parent pid, and otherwise DROP the variable so the downstream
+  surface prints - re-stamping on bare presence launders an ambient value into a
+  genuinely-matching pid and reintroduces the leak one hop upstream. A test pins the
+  intermediary in both directions too.
 
 ## Notes (non-criteria)
 
