@@ -34,6 +34,23 @@
 //!    the new recording back below the tier gate reddens here, not just in a unit test that
 //!    already assumes the ordering is correct.
 //!
+//! A second cross-module seam landed after a review reject on the first cut of this
+//! criterion (adjudication `adj-u61c9-verdict-reject-untruthful-duration-aggregates`):
+//! pairing now keys on `(run WINDOW, spawn id)`, where the window advances on every
+//! `crate::run::TYPE_RUN_STARTED` this fold observes - a genuinely NEW cross-module seam
+//! `metrics::project` did not consume before that fix. The implementer's own regression
+//! tests for it (`src/metrics.rs mod tests::spawn_timing_never_pairs_a_cross_run_id_collision`
+//! and neighbors) are pure in-memory folds with hand-set `recorded_at` and a hand-built
+//! `RunStarted`, same blind spot as above; `spawn_timing_never_pairs_a_request_and_result_
+//! from_different_run_windows` below re-proves it through a real store round trip instead.
+//! The paired same-batch/negative-duration SUSPECT guard the same fix added is covered at
+//! the compiled-binary boundary in `tests/cli.rs` (raw-SQL-controlled `recorded_at` is
+//! needed to produce a genuine clock-skew negative duration, which a real store's
+//! forward-only clock cannot); `spawn_timing_excludes_a_real_same_batch_pair_as_suspect_
+//! not_a_silent_zero` below covers the same-batch half of it here too, since that half
+//! (unlike clock skew) a real store CAN produce deterministically - one `store.append`
+//! call stamps every event in the batch with the identical `recorded_at`.
+//!
 //! `metrics` and `eventstore::sqlite` are not feature-gated, so every test here runs
 //! identically on both the default and the `--no-default-features` lane.
 
@@ -162,5 +179,146 @@ fn spawn_timing_pairs_real_writer_events_through_a_real_store_by_role() {
     assert_eq!(
         m.unpaired_spawns, 1,
         "the never-answered u3 request must be counted as unpaired, not silently dropped"
+    );
+}
+
+/// The run-windowed pairing key (`adj-u61c9-verdict-reject-untruthful-duration-aggregates`'s
+/// fix) through a REAL store: a spawn id reused across two `TYPE_RUN_STARTED` boundaries must
+/// never let a later window's result pair with an earlier window's dangling request. Asserted
+/// STRUCTURALLY (which bucket each event lands in), not by duration magnitude, so the test is
+/// immune to timing flakiness - the pre-fix bug would have folded window 1's request into
+/// `unpaired_spawns == 0` (silently absorbed by window 2's result) instead of `1`.
+#[test]
+fn spawn_timing_never_pairs_a_request_and_result_from_different_run_windows() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("events.db");
+    let store = Store::open(db.to_str().unwrap()).expect("open a real sqlite store");
+
+    let run_started = || rigger::eventstore::Event::new(rigger::run::TYPE_RUN_STARTED, Vec::new());
+    // The SAME textual spawn id is reused in both windows - a re-proposed/relaunched unit
+    // reusing its auto-slugged id, the realistic collision this fix closes.
+    let req = SpawnRequest::new("u1", "impl", "implementer", 0, "do it");
+
+    // Window 1: parked, but never answered before window 2 begins.
+    store
+        .append(
+            "run",
+            ExpectedRevision::Any,
+            &[run_started(), req.to_event().unwrap()],
+        )
+        .expect("append window 1's RunStarted + the never-answered-in-window request");
+
+    std::thread::sleep(Duration::from_millis(20));
+
+    // Window 2: the same id is re-requested and genuinely answered inside this window.
+    store
+        .append(
+            "run",
+            ExpectedRevision::Any,
+            &[run_started(), req.to_event().unwrap()],
+        )
+        .expect("append window 2's RunStarted + the reused-id request");
+    std::thread::sleep(Duration::from_millis(20));
+    store
+        .append(
+            "run",
+            ExpectedRevision::Any,
+            &[SpawnResult::ok(&req.id, "done").to_event().unwrap()],
+        )
+        .expect("append window 2's result");
+
+    let events = store
+        .read_stream("run", 0, Direction::Forward)
+        .expect("read the stream back");
+    assert_eq!(
+        events.len(),
+        5,
+        "both RunStarted markers and all three spawn events (2 requests + 1 result) must read \
+         back"
+    );
+
+    let m = project(&events);
+
+    let implementer = m
+        .spawn_timing
+        .get("implementer")
+        .expect("window 2's genuine pair must fold");
+    assert_eq!(
+        implementer.count, 1,
+        "exactly ONE pair may fold - window 1's dangling request must never absorb window 2's \
+         result (that would either double the count or synthesize a bogus cross-window \
+         duration spanning both windows)"
+    );
+    assert_eq!(
+        m.unpaired_spawns, 1,
+        "window 1's request, never answered WITHIN its own window, must surface as its own \
+         unpaired spawn - not silently paired with a result from a later, unrelated window"
+    );
+}
+
+/// The truthfulness guard the same fix added, through a REAL store: a request and its result
+/// appended together in ONE `store.append` call share the store's single per-batch
+/// `recorded_at` clock (`src/eventstore/sqlite.rs`: "the store stamps recorded_at on ingest,
+/// one clock per batch"), so their real, store-stamped duration is an exact
+/// `Duration::ZERO` - a genuine same-batch collision, not a hand-set one. It must fold into
+/// `unpaired_spawns` as SUSPECT, never silently enter a role's mean as a fabricated zero.
+/// A genuine, measurably-separate pair in the SAME role bucket rides alongside it, so a
+/// regression that excludes the WHOLE role (rather than just the suspect pair) is visible
+/// too.
+#[test]
+fn spawn_timing_excludes_a_real_same_batch_pair_as_suspect_not_a_silent_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("events.db");
+    let store = Store::open(db.to_str().unwrap()).expect("open a real sqlite store");
+
+    let same_batch = SpawnRequest::new("u1", "impl", "implementer", 0, "same batch");
+    let genuine = SpawnRequest::new("u2", "impl", "implementer", 0, "genuine");
+
+    store
+        .append(
+            "run",
+            ExpectedRevision::Any,
+            &[
+                same_batch.to_event().unwrap(),
+                SpawnResult::ok(&same_batch.id, "done").to_event().unwrap(),
+            ],
+        )
+        .expect("append the same-batch pair in ONE call");
+
+    store
+        .append("run", ExpectedRevision::Any, &[genuine.to_event().unwrap()])
+        .expect("append the genuine request in its own batch");
+    std::thread::sleep(Duration::from_millis(20));
+    store
+        .append(
+            "run",
+            ExpectedRevision::Any,
+            &[SpawnResult::ok(&genuine.id, "done").to_event().unwrap()],
+        )
+        .expect("append the genuine result in a LATER, separate batch");
+
+    let events = store
+        .read_stream("run", 0, Direction::Forward)
+        .expect("read the stream back");
+
+    let m = project(&events);
+
+    let implementer = m
+        .spawn_timing
+        .get("implementer")
+        .expect("the genuine cross-batch pair must still fold");
+    assert_eq!(
+        implementer.count, 1,
+        "ONLY the genuine cross-batch pair may fold - the same-batch zero-duration pair must \
+         never enter the aggregate as a fabricated zero"
+    );
+    assert!(
+        implementer.total > Duration::ZERO,
+        "the folded pair's duration must be the genuine one, not the suspect zero"
+    );
+    assert_eq!(
+        m.unpaired_spawns, 1,
+        "the same-batch pair's non-positive duration must fold into unpaired_spawns as \
+         SUSPECT, not vanish or silently enter the mean as a real zero"
     );
 }

@@ -7468,6 +7468,131 @@ fn stats_cli_renders_exact_per_role_spawn_timing_and_unpaired_disclosure() {
     );
 }
 
+/// Round-3 regression (closes `adj-u61c9-verdict-reject-untruthful-duration-aggregates` /
+/// `adv-u61c9-all-mode-cross-run-id-collision-synthesizes-bogus-duration`) at the EXACT
+/// boundary the adversary used to reproduce the defect live: `rigger stats --all` folding a
+/// whole store spanning two runs. A textual spawn id is reused across two `RunStarted`
+/// boundaries - a re-proposed/relaunched unit reusing its auto-slugged id - with run 1's
+/// request never answered inside run 1, and run 2 genuinely reusing the same id with its own
+/// short-lived request/result pair. Before the run-windowed pairing key, this synthesized an
+/// ~11.6-day bogus duration (run 1's earliest request paired against run 2's latest result);
+/// the fixed binary must show run 2's genuine 5s pairing and disclose run 1's dangling
+/// request as unpaired, never a fabricated multi-day figure.
+#[test]
+fn stats_all_flag_never_pairs_a_cross_run_spawn_id_collision_into_a_bogus_duration() {
+    use rigger::spawn::{SpawnRequest, SpawnResult};
+
+    let dir = temp_project();
+    let root = dir.path();
+
+    // The SAME textual id in both runs.
+    let req = SpawnRequest::new("u1", "impl", "implementer", 0, "do it");
+    let run_started = |run: &str| {
+        rigger::eventstore::Event::new(
+            rigger::run::TYPE_RUN_STARTED,
+            format!(r#"{{"run":"{run}"}}"#).into_bytes(),
+        )
+    };
+
+    seed_spawn_events_at(
+        root,
+        "spawn-timing-crossrun-proj",
+        &[
+            (run_started("run-a"), 0),
+            // run-a's request is never answered inside run-a.
+            (req.to_event().unwrap(), 1),
+            (run_started("run-b"), 1_000_000),
+            // run-b reuses the id and genuinely answers it 5s later, inside run-b.
+            (req.to_event().unwrap(), 1_000_100),
+            (
+                SpawnResult::ok(&req.id, "done").to_event().unwrap(),
+                1_000_105,
+            ),
+        ],
+    );
+
+    let (out, err, ok) = run_rigger(root, &["stats", "--all"]);
+    assert!(ok, "stats --all must succeed; stderr: {err}");
+
+    assert!(
+        !out.contains("1000104.0s"),
+        "no bogus ~11.6-day duration (the pre-fix pairing of run-a's t=1 request against \
+         run-b's t=1,000,105 result, 1000104.0s) may ever render:\n{out}"
+    );
+    let implementer_line = format!("{:<20} 5.0s avg / 1 spawns / 5.0s total", "implementer");
+    assert!(
+        out.contains(&implementer_line),
+        "run-b's genuine, same-window 5s pairing must render exactly; got:\n{out}"
+    );
+    assert!(
+        out.contains("(1 unpaired spawn request(s) excluded above"),
+        "run-a's request, never answered WITHIN run-a, must be disclosed as unpaired - not \
+         silently absorbed by run-b's unrelated result; got:\n{out}"
+    );
+}
+
+/// Round-3 regression: the SUSPECT non-positive-duration guard, at the compiled-binary
+/// boundary, under BOTH shapes the fix guards against - a same-timestamp (same-batch) zero
+/// duration AND a clock-skew negative duration (a result recorded BEFORE its request) - each
+/// alongside a genuine positive-duration pair in the SAME role bucket. No existing CLI test
+/// ever seeds a genuinely suspect pair: the sibling test above only ever exercises the
+/// dead-worker (no result at all) unpaired path, so the "or a paired result with a suspect
+/// non-positive duration" clause of the rendered disclosure had no test actually triggering
+/// it through the real binary before this one.
+#[test]
+fn stats_cli_excludes_suspect_non_positive_duration_pairs_as_unpaired_not_zero() {
+    use rigger::spawn::{SpawnRequest, SpawnResult};
+
+    let dir = temp_project();
+    let root = dir.path();
+
+    let same_batch = SpawnRequest::new("u1", "impl", "implementer", 0, "same batch");
+    let skewed = SpawnRequest::new("u2", "impl", "implementer", 1, "skewed");
+    let genuine = SpawnRequest::new("u3", "impl", "implementer", 2, "genuine");
+
+    seed_spawn_events_at(
+        root,
+        "spawn-timing-suspect-proj",
+        &[
+            // Same timestamp: an exact, error-free zero duration.
+            (same_batch.to_event().unwrap(), 100),
+            (
+                SpawnResult::ok(&same_batch.id, "done").to_event().unwrap(),
+                100,
+            ),
+            // Result recorded BEFORE its request: clock skew, a negative duration.
+            (skewed.to_event().unwrap(), 200),
+            (SpawnResult::ok(&skewed.id, "done").to_event().unwrap(), 190),
+            // A genuine, measurably positive pair in the SAME role bucket.
+            (genuine.to_event().unwrap(), 300),
+            (
+                SpawnResult::ok(&genuine.id, "done").to_event().unwrap(),
+                307,
+            ),
+        ],
+    );
+
+    let (out, err, ok) = run_rigger(root, &["stats"]);
+    assert!(ok, "stats must succeed; stderr: {err}");
+
+    let implementer_line = format!("{:<20} 7.0s avg / 1 spawns / 7.0s total", "implementer");
+    assert!(
+        out.contains(&implementer_line),
+        "ONLY the genuine 7s pair may fold into the implementer aggregate - neither suspect \
+         pair may contribute a fabricated zero (or worse, a negative) to the count/mean; \
+         got:\n{out}"
+    );
+    assert!(
+        out.contains(
+            "(2 unpaired spawn request(s) excluded above - no recorded result (dead worker), \
+             or a paired result with a suspect non-positive duration)"
+        ),
+        "both suspect pairs (same-batch zero AND clock-skew negative) must be disclosed \
+         together as unpaired, exercising the clause a dead-worker-only seed never reaches; \
+         got:\n{out}"
+    );
+}
+
 /// The default "no recorded spawns" line renders through the real binary too, on a run whose
 /// stream holds ordinary events but no `SpawnRequested`/`SpawnResult` at all - the CLI-level
 /// counterpart of `format_stats_spawn_timing_reports_no_spawns_when_none_recorded`, which only
