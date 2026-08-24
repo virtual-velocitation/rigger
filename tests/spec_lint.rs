@@ -1343,6 +1343,79 @@ fn validate_ignores_a_backtick_span_that_crosses_a_hard_wrapped_line() {
     );
 }
 
+/// The EVEN-count (balanced) recall arm at the CLI seam (specs/66 Design,
+/// `d66-mask-one-span-per-kind`): the periphery twin of `disposition_check_still_fires_
+/// outside_a_balanced_quote_pair` (`src/spec.rs`) - an sdet-author gap closed this round.
+/// The two fail-closed tests below this one both cite "the balanced-pair test above" as
+/// proof that recall survives wherever the invariant permits it, but no such test existed
+/// anywhere in this file (confirmed: neither this commit nor the archived, previously
+/// rebuilt tip `archive/u66c3-escalation-remedy-c533796` ever carried a CLI-level
+/// balanced-pair-recall test, despite the unit-level test existing since round 14) - a
+/// dangling reference, not a covered boundary. With an EVEN double-quote count the mask
+/// covers first-through-last mark only, so a genuine, unquoted F4 smell OUTSIDE the pair
+/// must still fire on the real binary, not just in the library call `disposition_check_
+/// still_fires_outside_a_balanced_quote_pair` already proves directly.
+#[test]
+fn validate_still_flags_a_smell_outside_a_balanced_quote_pair() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Design\n\n\
+         The report labels this \"a tolerance issue\" in passing, but the team\n\
+         could instead retry the whole approach if this keeps recurring.\n\n\
+         ## Done when\n\n- [ ] the daemon retries on failure. This criterion OWNS retry.\n";
+    let spec_path = root.join("spec.md");
+    std::fs::write(&spec_path, spec).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["validate", spec_path.to_str().unwrap()]);
+    assert!(ok, "validate must succeed; stderr:\n{err}");
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        err.contains("F4 disposition"),
+        "an unquoted smell after a balanced double-quote pair must still fire on the real \
+         binary - recall survives wherever the invariant permits it; stderr:\n{err}"
+    );
+}
+
+/// The backtick twin of the test above, for the same reason
+/// `validate_ignores_a_backtick_span_that_crosses_a_hard_wrapped_line` exists beside its
+/// double-quote sibling: `strip_inline_code` runs the identical even/odd rule per kind
+/// (`for kind in ['`', '"']`), so proving balanced-pair recall for `"` alone would leave the
+/// backtick arm an accident of the one fixture it was never written against.
+#[test]
+fn validate_still_flags_a_smell_outside_a_balanced_backtick_pair() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Design\n\n\
+         The report labels this `a tolerance issue` in passing, but the team\n\
+         could instead retry the whole approach if this keeps recurring.\n\n\
+         ## Done when\n\n- [ ] the daemon retries on failure. This criterion OWNS retry.\n";
+    let spec_path = root.join("spec.md");
+    std::fs::write(&spec_path, spec).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["validate", spec_path.to_str().unwrap()]);
+    assert!(ok, "validate must succeed; stderr:\n{err}");
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        err.contains("F4 disposition"),
+        "an unquoted smell after a balanced backtick pair must still fire on the real \
+         binary, independently of the quote kind; stderr:\n{err}"
+    );
+}
+
 /// The ODD-count fail-closed arm at the CLI seam (specs/66 Design,
 /// `d66-mask-one-span-per-kind`, SUPERSEDING round-10's closed-span-only disposition):
 /// a stray unmatched delimiter makes the paragraph's quote state unknowable, and the
