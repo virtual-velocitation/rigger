@@ -12894,6 +12894,144 @@ fn canary_if_model_changed_skips_a_snapshot_only_date_suffix_bump_without_runnin
     );
 }
 
+/// The general form of `seed_two_runs_with_models` above, needed only when a test cares about
+/// MORE THAN ONE tier changing within the same drift - `seed_two_runs_with_models` hardcodes a
+/// single `opus` alias, which can never express DRIFT SEVERITY's "one real re-point disqualifies
+/// an otherwise-all-snapshot drift" rule (that rule only has a decision to make once at least
+/// two changes can disagree on shape). `changes` lists `(alias, prev_model, curr_model)` triples,
+/// one resolved-model event pair per tier per run, mirroring the same conductor stamps
+/// (`META_RUN_ID` + `META_MODEL_ALIAS` + `META_MODEL_RESOLVED` on a `green` `UnitStatus`).
+fn seed_two_runs_with_model_changes(root: &Path, project: &str, changes: &[(&str, &str, &str)]) {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Event, EventStore, ExpectedRevision};
+
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(&rigger).unwrap();
+    std::fs::write(rigger.join("project.id"), format!("{project}\n")).unwrap();
+
+    let backend = Store::open(rigger.join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, project);
+    let run_id = rigger::run::META_RUN_ID;
+    let alias_key = rigger::conductor::META_MODEL_ALIAS;
+    let resolved_key = rigger::conductor::META_MODEL_RESOLVED;
+    let started = |run: &str| {
+        Event::new(
+            rigger::run::TYPE_RUN_STARTED,
+            format!(r#"{{"run":"{run}"}}"#).into_bytes(),
+        )
+        .with_meta(run_id, run)
+    };
+    let green = |run: &str, alias: &str, model: &str| {
+        Event::new(
+            rigger::ledger::TYPE_UNIT_STATUS,
+            format!(r#"{{"id":"u-{alias}","status":"green"}}"#).into_bytes(),
+        )
+        .with_meta(run_id, run)
+        .with_meta(alias_key, alias)
+        .with_meta(resolved_key, model)
+    };
+
+    let mut events = vec![started("r1")];
+    for (alias, prev, _curr) in changes {
+        events.push(green("r1", alias, prev));
+    }
+    events.push(started("r2"));
+    for (alias, _prev, curr) in changes {
+        events.push(green("r2", alias, curr));
+    }
+
+    store
+        .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
+        .unwrap();
+}
+
+/// Spec 61, DRIFT SEVERITY (c11): a drift with TWO tiers - one a snapshot-only date-suffix
+/// bump, the other a real model-base re-point - runs the FULL mandate-style warning/panel path
+/// through the real `rigger validate` / `rigger canary --if-model-changed` binary, never the
+/// soft-advisory/skip path, because `ModelDrift::snapshot_only` disqualifies the whole drift
+/// the moment even one change carries a differing base. Neither existing CLI test proves this:
+/// `validate_advises_softly_on_a_snapshot_only_date_suffix_bump` and
+/// `canary_if_model_changed_skips_a_snapshot_only_date_suffix_bump_without_running_the_panel`
+/// each seed only ONE tier's drift (`seed_two_runs_with_models` cannot express a second,
+/// differently-shaped change), so a regression that classified snapshot-only as "at least one
+/// change looks like a snapshot bump" instead of "every change does" would pass every other
+/// test in this file while still misclassifying this exact case.
+#[test]
+fn validate_and_canary_run_the_full_warning_path_when_drift_mixes_a_snapshot_bump_with_a_real_repoint(
+) {
+    let changes: &[(&str, &str, &str)] = &[
+        (
+            "lens",
+            "claude-sonnet-4-5-20250929",
+            "claude-sonnet-4-5-20260210",
+        ),
+        ("opus", "claude-opus-4-1", "claude-opus-4-8"),
+    ];
+
+    let dir = temp_project();
+    let root = dir.path();
+    let (_o, err, ok) = run_rigger(root, &["init"]);
+    assert!(
+        ok,
+        "rigger init must scaffold a valid config; stderr:\n{err}"
+    );
+    seed_two_runs_with_model_changes(root, "drift-mixed", changes);
+
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "validate WARNS but still exits 0 on mixed drift; stderr:\n{err}"
+    );
+    assert!(
+        err.to_lowercase().contains("resolved model id changed") && err.contains("re-point"),
+        "one real repoint keeps the mandate-style warning even though the drift also carries a \
+         snapshot bump; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("lens")
+            && err.contains("claude-sonnet-4-5-20250929")
+            && err.contains("claude-sonnet-4-5-20260210"),
+        "the mixed warning still names the snapshot-bumped tier and both its ids; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("opus") && err.contains("claude-opus-4-1") && err.contains("claude-opus-4-8"),
+        "the mixed warning still names the re-pointed tier and both its ids; stderr:\n{err}"
+    );
+    assert!(
+        !err.to_lowercase().contains("advisory:") && !err.to_lowercase().contains("newer snapshot"),
+        "a mixed drift never takes the soft-advisory wording; stderr:\n{err}"
+    );
+
+    let (out, err, ok) = run_rigger(
+        root,
+        &["canary", "--if-model-changed", "--corpus", "no-such-dir"],
+    );
+    assert!(
+        out.contains("resolved model changed for lens")
+            && out.contains("resolved model changed for opus"),
+        "the gate opens and names both changed tiers even though one is only a snapshot bump; \
+         stdout:\n{out}"
+    );
+    assert!(
+        out.contains("running the panel"),
+        "one real repoint opens the gate even though the drift also carries a snapshot bump; \
+         stdout:\n{out}"
+    );
+    assert!(
+        !out.contains("skipping") && !out.contains("newer snapshot"),
+        "a mixed drift is never treated as a snapshot-only skip; stdout:\n{out}"
+    );
+    // Having opened the gate, the run proceeds into corpus loading (the missing `--corpus` is
+    // now consulted and fails), the same short-circuit proof
+    // `canary_if_model_changed_runs_when_a_tier_resolved_model_repointed` uses for a single
+    // real repoint.
+    assert!(
+        !ok && err.contains("canary"),
+        "the gate opened and the run reached corpus loading; stderr:\n{err}"
+    );
+}
+
 /// Spec 18, criterion 8 (build provenance), updated for spec 74: `rigger version` and
 /// `rigger --version` must each report the go-gitsemver-derived version AND a
 /// build-provenance identifier - a git commit/describe id embedded at build time by
