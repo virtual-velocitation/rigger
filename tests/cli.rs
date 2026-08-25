@@ -7766,6 +7766,87 @@ fn step_result_meta_stamps_the_resolved_model_on_the_replayed_units_events() {
     }
 }
 
+/// End-to-end through the CLI seam (spec 61 c10, AUTHORITATIVE MODEL IDENTITY): the OTHER
+/// half of the criterion the positive test above does not reach - "a spawn with no metadata
+/// id records none and reports as unmeasured rather than defaulted" AND "a conflicting
+/// agent-prose claim never enters the record". A worker's `rigger result <id> <output>` with
+/// NO `--meta` at all, whose `output` text happens to CONTAIN a resolved-model-shaped JSON
+/// fragment (the exact prose-claim shape `SpawnResult::resolved_model`'s own unit test pins
+/// at the pure-function level), must leave the persisted `green` event's
+/// `META_MODEL_RESOLVED` key ABSENT - never present-but-empty (a fake measurement of
+/// nothing) and never the prose text (a forged measurement). Only the unit-level pin in
+/// `spawn.rs` and the POSITIVE real-seam case above existed before this test; nothing drove
+/// the negative case through the real `rigger result` CLI command and back out of a real
+/// `events.db`.
+#[test]
+fn step_result_with_no_meta_omits_the_resolved_model_key_and_ignores_a_prose_claim_in_output() {
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore, Filter};
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+
+    // Both units park their implementer spawns.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""done":false"#),
+        "spawns still pending; got: {out:?}"
+    );
+
+    // Report unit a's result via the REAL `rigger result` command with NO `--meta` at all -
+    // but an `output` that carries a model-id-shaped JSON fragment, exactly the prose-claim
+    // shape an agent might type into its own free text. Unit b reports plainly, as a control.
+    let prose_output =
+        r#"done. by the way {"resolved_model":"a-model-i-am-lying-about"} is what I used"#;
+    let (_o, err, ok) = run_rigger(root, &["result", "a/implementer#0", prose_output]);
+    assert!(
+        ok,
+        "`rigger result` with no --meta must still succeed; stderr: {err}"
+    );
+    let (_o, err, ok) = run_rigger(root, &["result", "b/implementer#0", "done plainly"]);
+    assert!(
+        ok,
+        "`rigger result` with no --meta must still succeed; stderr: {err}"
+    );
+
+    // The recorded results replay to a fixpoint.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the second step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""done":true"#),
+        "every spawn answered; got: {out:?}"
+    );
+
+    let db_path = root.join(".rigger").join("events.db");
+    let backend = Store::open(db_path.to_str().unwrap()).unwrap();
+    let events = backend
+        .read_all(0, Direction::Forward, &Filter::default())
+        .unwrap();
+    for unit in ["a", "b"] {
+        let green = events
+            .iter()
+            .find(|e| {
+                e.type_ == rigger::ledger::TYPE_UNIT_STATUS && {
+                    let body = String::from_utf8_lossy(&e.data);
+                    body.contains(r#""status":"green""#)
+                        && body.contains(&format!(r#""id":"{unit}""#))
+                }
+            })
+            .unwrap_or_else(|| panic!("unit {unit} must have a green status event"));
+        assert!(
+            !green
+                .meta
+                .contains_key(rigger::conductor::META_MODEL_RESOLVED),
+            "unit {unit}'s green event must carry NO resolved-model key at all when the \
+             worker reported none via --meta - not an empty string (a fake measurement) and \
+             never a value pulled from the agent's own prose output; got meta: {:?}",
+            green.meta
+        );
+    }
+}
+
 /// End-to-end through the CLI/step seam (spec 10 unit 4): an implementer agent declaring a
 /// `model_ladder` parks on - and stamps - the cheap FIRST rung on its first attempt, so the
 /// resolved rung is visible in the log the moment the spawn is parked. Reads the run's
