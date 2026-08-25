@@ -4429,6 +4429,18 @@ fn format_canary_stats(m: &metrics::CanaryMetrics) -> Vec<String> {
             ));
         }
     }
+    // FALSE POSITIVES ARE FIRST-CLASS (spec 61): the summary reports control items as
+    // their own line - approved vs rejected - visible at the same glance as the per-tier
+    // catch rate above. Rejecting a known-good control burns a remediation cycle and,
+    // repeated, escalates a correct unit, so a zero false-positive count still renders
+    // (honestly, like the findings-volume section's own unmeasured-tier zero) rather than
+    // being folded silently into the adjudicator's overall accuracy line below.
+    lines.push(format!(
+        "  control items      {}/{} approved ({} false positive(s): known-good rejected)",
+        m.controls - m.control_false_positives,
+        m.controls,
+        m.control_false_positives,
+    ));
     lines.push(format!(
         "  adjudicator        {}/{} correct ({:.1}%)",
         m.adjudicator_correct,
@@ -18357,6 +18369,57 @@ mod tests {
         assert!(
             !out.to_lowercase().contains("n/a"),
             "n/a must not appear when every item's attribution was measured:\n{out}"
+        );
+    }
+
+    /// spec 61, FALSE POSITIVES criterion: a rejected known-good control must render its own
+    /// control/false-positive line on the summary, visible at the same glance as the catch
+    /// rate - computed purely from `CanaryMetrics::controls`/`control_false_positives`
+    /// (themselves folded from `CanaryOutcome`'s existing `planted`/`verdict_approved`
+    /// fields; no new `CanaryOutcome` field). Distinct from the NO FAKE ZEROS criterion's
+    /// per-tier n/a branch and the FINDINGS VOLUME criterion's finding-count aggregate.
+    #[test]
+    fn format_canary_stats_reports_control_items_and_false_positives() {
+        let m = metrics::CanaryMetrics {
+            controls: 3,
+            control_false_positives: 2,
+            ..Default::default()
+        };
+        let out = format_canary_stats(&m).join("\n");
+        assert!(
+            out.contains("control items") && out.contains("false positive"),
+            "the control/false-positive line must appear on the summary:\n{out}"
+        );
+        assert!(
+            out.contains("1/3 approved"),
+            "one of the three controls was correctly approved:\n{out}"
+        );
+        assert!(
+            out.contains("2 false positive"),
+            "the two wrongly-rejected controls must be counted as false positives:\n{out}"
+        );
+    }
+
+    /// A run with no false positives still renders the control line, with an honest `0` -
+    /// mirroring the findings-volume section's own "unmeasured tier reports an honest 0, not
+    /// an absent key" discipline. Not the NO FAKE ZEROS n/a case: a control's approve/reject
+    /// verdict is always recorded by the adjudicator, never subject to a missing-attribution
+    /// failure the way tier catch counts are.
+    #[test]
+    fn format_canary_stats_reports_zero_false_positives_honestly() {
+        let m = metrics::CanaryMetrics {
+            controls: 4,
+            control_false_positives: 0,
+            ..Default::default()
+        };
+        let out = format_canary_stats(&m).join("\n");
+        assert!(
+            out.contains("4/4 approved"),
+            "every control was correctly approved:\n{out}"
+        );
+        assert!(
+            out.contains("0 false positive"),
+            "zero false positives must render honestly, not be omitted:\n{out}"
         );
     }
 

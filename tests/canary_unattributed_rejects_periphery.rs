@@ -26,7 +26,7 @@
 //! real wire round trip over four independently-varying items, not just a fixture typed
 //! to match it.
 
-use rigger::canary::{run_canary, CanaryItem, CanaryOutcome, STREAM, TIER_LENS};
+use rigger::canary::{default_jobs, run_canary, CanaryItem, CanaryOutcome, STREAM, TIER_LENS};
 use rigger::conductor::{AgentDriver, AgentResult, Error, SpawnOpts};
 use rigger::config::{AgentDef, Config, ReviewPanel};
 use rigger::contextgraph::TYPE_REVIEW_FINDING;
@@ -191,8 +191,19 @@ fn run_canary_scores_an_unattributed_correct_reject_and_project_canary_counts_on
     ];
 
     let store = Store::open(":memory:").expect("an in-memory store opens");
-    let report = run_canary(&store, &UnattributedDriver, &cfg, &panel, &corpus)
-        .expect("run_canary succeeds through the public entry");
+    // This suite pins the NO FAKE ZEROS wire round trip, not the ITEM SHARDING/LENS
+    // FAN-OUT jobs-cap concurrency itself (already pinned by run_canary's own
+    // `run_canary_scores_identically_regardless_of_the_jobs_width`), so it takes the
+    // ordinary default budget rather than asserting a specific width.
+    let report = run_canary(
+        &store,
+        &UnattributedDriver,
+        &cfg,
+        &panel,
+        &corpus,
+        default_jobs(),
+    )
+    .expect("run_canary succeeds through the public entry");
 
     assert_eq!(report.outcomes.len(), 4, "one outcome per corpus item");
     let by_id = |id: &str| -> &CanaryOutcome {
