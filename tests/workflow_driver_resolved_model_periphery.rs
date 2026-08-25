@@ -26,6 +26,15 @@
 //! `UnitStatus` event - not merely on an in-process `AgentResult` a test harness can see but a
 //! real shim never could.
 //!
+//! A SECOND test in this file proves the OTHER half of the criterion at the same real wire:
+//! "a spawn with no metadata id records none ... rather than defaulted" and "a conflicting
+//! agent-prose claim never enters the record". Only the positive case (a real id reaches the
+//! record) was ever driven through the real wire before; the negative case was pinned only at
+//! the pure-function level (`src/spawn.rs`'s `resolved_model_never_reads_a_conflicting_claim_
+//! from_the_agents_own_output`) and the shim's own JS unit level (`shim.test.mjs`), never
+//! through `mcpserver.rs::tool_result` -> `workflow::Driver::result` -> `conductor.rs`'s
+//! `emit_keyed_meta` omission end to end.
+//!
 //! NOT OWNED HERE: `resolvedModelFromUsage`'s extraction logic (JS, `shim/shim.test.mjs`'s own
 //! layer) and the driver/replay.rs CLI-seam equivalent (already covered by
 //! `step_result_meta_stamps_the_resolved_model_on_the_replayed_units_events`). This file only
@@ -303,6 +312,160 @@ fn workflow_driven_rigger_result_meta_resolved_model_reaches_the_persisted_green
          already proves in tests/cli.rs's \
          step_result_meta_stamps_the_resolved_model_on_the_replayed_units_events, now true \
          for the workflow driver too"
+    );
+
+    drop(stdin);
+    let _ = child.wait();
+}
+
+/// The OTHER half of AUTHORITATIVE MODEL IDENTITY, at the same real MCP wire the test above
+/// proves the positive half at - "a spawn with no metadata id records none and reports as
+/// unmeasured rather than defaulted" AND "a conflicting agent-prose claim never enters the
+/// record". `rigger_result` carries NO `meta` object at all (the exact shape `runWorkflow`
+/// sends when `resolvedModelFromUsage` observed zero or more than one model id and left
+/// `resolvedModel` `''`, so `shim.mjs` never sets `resultArgs.meta`), and `output` itself
+/// contains a resolved-model-shaped JSON fragment - the prose-claim shape
+/// `SpawnResult::resolved_model`'s own pure-function unit test pins, never before driven
+/// through the real wire. The persisted `green` event's `META_MODEL_RESOLVED` key must be
+/// ABSENT - not present-but-empty, and never the prose text - proving the omission survives
+/// the full `mcpserver.rs::tool_result` -> `workflow::Driver::result` -> `conductor.rs` path,
+/// not merely the pure function in isolation.
+#[test]
+fn workflow_driven_rigger_result_with_no_meta_omits_the_resolved_model_key_and_ignores_a_prose_claim(
+) {
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    write_one_stage_workflow(root);
+
+    let mut child = common::rigger_courier()
+        .args(["serve", "--base", "HEAD"])
+        .current_dir(root)
+        .env("XDG_STATE_HOME", root)
+        .env("RIGGER_NO_DASH", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn `rigger serve`");
+
+    let mut stdin = child
+        .stdin
+        .take()
+        .expect("rigger serve's stdin must be piped");
+    let mut stdout = BufReader::new(
+        child
+            .stdout
+            .take()
+            .expect("rigger serve's stdout must be piped"),
+    );
+
+    let init = call(
+        &mut stdin,
+        &mut stdout,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "workflow-driver-periphery-test", "version": "0.0.0"},
+            },
+        }),
+    );
+    assert!(
+        init.get("result").is_some(),
+        "initialize must succeed; got {init}"
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut next_call_id = 2i64;
+    let spawn_id = loop {
+        let next = call_tool(
+            &mut stdin,
+            &mut stdout,
+            next_call_id,
+            "rigger_next",
+            json!({}),
+        );
+        next_call_id += 1;
+        let id = next.get("id").and_then(Value::as_str).unwrap_or_default();
+        if !id.is_empty() {
+            break id.to_string();
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let err = drain_stderr(child.stderr.take());
+            panic!(
+                "unit a's implementer spawn was never queued within the deadline; stderr:\n{err}"
+            );
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert!(
+        spawn_id.starts_with("a/implementer#"),
+        "the queued spawn must be unit a's implementer; got {spawn_id:?}"
+    );
+
+    // No `meta` field at all - exactly what `shim.mjs`'s `runWorkflow` sends when it observed
+    // no single authoritative id - and `output` carries a model-id-shaped prose claim that
+    // must never be mistaken for the real thing.
+    let result_resp = call(
+        &mut stdin,
+        &mut stdout,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": next_call_id,
+            "method": "tools/call",
+            "params": {
+                "name": "rigger_result",
+                "arguments": {
+                    "id": spawn_id,
+                    "output": "done. {\"resolved_model\":\"a-model-i-am-lying-about\"}",
+                },
+            },
+        }),
+    );
+    assert!(
+        result_resp.get("result").is_some(),
+        "rigger_result must succeed for the queued spawn id; got {result_resp}"
+    );
+
+    let db_path = root.join(".rigger").join("events.db");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let green = loop {
+        if db_path.exists() {
+            let backend = Store::open(db_path.to_str().unwrap()).unwrap();
+            let events = backend
+                .read_all(0, Direction::Forward, &Filter::default())
+                .unwrap();
+            let found = events.iter().find(|e| {
+                e.type_ == rigger::ledger::TYPE_UNIT_STATUS && {
+                    let body = String::from_utf8_lossy(&e.data);
+                    body.contains(r#""status":"green""#) && body.contains(r#""id":"a""#)
+                }
+            });
+            if let Some(e) = found {
+                break e.clone();
+            }
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let err = drain_stderr(child.stderr.take());
+            panic!("unit a's green status event was never recorded within the deadline; stderr:\n{err}");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+
+    assert!(
+        !green
+            .meta
+            .contains_key(rigger::conductor::META_MODEL_RESOLVED),
+        "a `rigger_result` with no meta.resolved_model, sent over the REAL MCP wire, must \
+         leave the persisted green event with NO resolved-model key at all - not an empty \
+         string (a fake measurement) and never a value pulled from the agent's own prose \
+         output; got meta: {:?}",
+        green.meta
     );
 
     drop(stdin);
