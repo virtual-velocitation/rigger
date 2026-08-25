@@ -4399,12 +4399,26 @@ fn format_canary_stats(m: &metrics::CanaryMetrics) -> Vec<String> {
     ));
     lines.push("  catch rate by tier (planted defects each tier caught):".to_string());
     for (tier, tc) in &m.tier_catch {
-        lines.push(format!(
-            "    {tier:<16} {}/{} ({:.1}%)",
-            tc.caught,
-            tc.planted,
-            tc.rate() * 100.0,
-        ));
+        // NO FAKE ZEROS (spec 61): a tier's `0` catch count is a REAL measurement only
+        // when every planted item's attribution was actually captured. When the run also
+        // recorded a correctly-rejected item with an empty caught_by, that zero cannot be
+        // trusted - it may be a rejection this tier truly earned but the attribution
+        // mechanism failed to record, not a genuine miss - so print n/a with a reason
+        // instead of the misleading 0/N (0.0%).
+        if tc.caught == 0 && m.unattributed_correct_rejects > 0 {
+            lines.push(format!(
+                "    {tier:<16} n/a ({} correctly-rejected item(s) with no measured tier \
+                 attribution)",
+                m.unattributed_correct_rejects,
+            ));
+        } else {
+            lines.push(format!(
+                "    {tier:<16} {}/{} ({:.1}%)",
+                tc.caught,
+                tc.planted,
+                tc.rate() * 100.0,
+            ));
+        }
     }
     lines.push(format!(
         "  adjudicator        {}/{} correct ({:.1}%)",
@@ -18133,6 +18147,71 @@ mod tests {
         assert!(
             !out.contains("findings raised by tier"),
             "an empty findings_raised map must not print a bare header:\n{out}"
+        );
+    }
+
+    /// spec 61, NO FAKE ZEROS criterion: a tier whose catch count is 0 AND the run
+    /// recorded at least one correctly-rejected item with no measured attribution must
+    /// render `n/a` with a reason, NEVER a fake `0/N (0.0%)` - the exact real-run
+    /// misdiagnosis the spec's bug report names. A sibling tier that DID measure a catch
+    /// (caught > 0) still renders its real percentage even in the same scorecard.
+    #[test]
+    fn format_canary_stats_renders_na_for_a_tier_with_unattributed_correct_rejects() {
+        let mut m = metrics::CanaryMetrics::default();
+        m.tier_catch.insert(
+            "lens".to_string(),
+            metrics::TierCatch {
+                caught: 0,
+                planted: 3,
+            },
+        );
+        m.tier_catch.insert(
+            "adversary".to_string(),
+            metrics::TierCatch {
+                caught: 2,
+                planted: 3,
+            },
+        );
+        m.unattributed_correct_rejects = 2;
+        let out = format_canary_stats(&m).join("\n");
+        assert!(
+            out.contains(&format!("{:<16} n/a", "lens"))
+                && out.to_lowercase().contains("no measured tier attribution"),
+            "an unmeasured tier catch rate must render n/a with a reason, not 0/N:\n{out}"
+        );
+        assert!(
+            !out.contains("0/3 (0.0%)"),
+            "the fake-zero percentage must never appear for the unmeasured tier:\n{out}"
+        );
+        assert!(
+            out.contains(&format!("{:<16} 2/3 (66.7%)", "adversary")),
+            "a tier with a real measured catch still renders its true rate:\n{out}"
+        );
+    }
+
+    /// A genuine `0/N (0.0%)` - no unattributed correct rejections anywhere in the run -
+    /// is a REAL measurement (the tier looked and truly caught nothing) and must keep
+    /// rendering the honest percentage, not n/a. This is the regression guard that keeps
+    /// the n/a branch from swallowing every zero.
+    #[test]
+    fn format_canary_stats_renders_the_real_zero_when_attribution_was_fully_measured() {
+        let mut m = metrics::CanaryMetrics::default();
+        m.tier_catch.insert(
+            "lens".to_string(),
+            metrics::TierCatch {
+                caught: 0,
+                planted: 2,
+            },
+        );
+        // unattributed_correct_rejects left at its Default of 0.
+        let out = format_canary_stats(&m).join("\n");
+        assert!(
+            out.contains(&format!("{:<16} 0/2 (0.0%)", "lens")),
+            "a genuinely-measured zero catch rate must still print 0/N (0.0%):\n{out}"
+        );
+        assert!(
+            !out.to_lowercase().contains("n/a"),
+            "n/a must not appear when every item's attribution was measured:\n{out}"
         );
     }
 
