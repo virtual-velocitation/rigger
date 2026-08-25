@@ -31,7 +31,9 @@ use std::collections::BTreeMap;
 
 use serde_json::{json, Value};
 
-use rigger::canary::{run_canary, CanaryItem, CanaryOutcome, STREAM, TIER_ADVERSARY, TIER_LENS};
+use rigger::canary::{
+    default_jobs, run_canary, CanaryItem, CanaryOutcome, STREAM, TIER_ADVERSARY, TIER_LENS,
+};
 use rigger::conductor::{AgentDriver, AgentResult, Error, SpawnOpts};
 use rigger::config::{AgentDef, Config, ReviewPanel};
 use rigger::contextgraph::TYPE_REVIEW_FINDING;
@@ -180,7 +182,7 @@ fn run_canary_scores_findings_volume_independent_of_catch_and_project_canary_sum
     ];
 
     let store = Store::open(":memory:").expect("an in-memory store opens");
-    let report = run_canary(&store, &VolumeDriver, &cfg, &panel, &corpus)
+    let report = run_canary(&store, &VolumeDriver, &cfg, &panel, &corpus, default_jobs())
         .expect("run_canary succeeds through the public entry");
 
     assert_eq!(report.outcomes.len(), 2, "one outcome per corpus item");
