@@ -195,6 +195,7 @@ fn run_canary_fans_out_the_lens_tier_at_the_real_default_width_through_the_publi
         &panel,
         &corpus,
         rigger::canary::default_jobs(),
+        &|_, _| {},
     )
     .expect("run_canary succeeds through the public entry");
 

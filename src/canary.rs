@@ -34,6 +34,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -305,6 +306,15 @@ pub struct CanaryReport {
 /// LENS FAN-OUT criterion's already-built INNER `score_item` fan-out, so their PRODUCT -
 /// the worst-case number of review-panel spawns in flight at once - never exceeds it. A
 /// caller that does not want to choose passes [`default_jobs`].
+///
+/// `on_item` is called once per corpus item, the INSTANT that item's own score completes -
+/// possibly from a worker thread other than the caller's, and possibly while a sibling
+/// item's score is still in flight (spec 61, PROGRESS). This is a genuine per-item
+/// STREAMING hook, not a batched one: it fires from inside the `map_ordered` closure below,
+/// before `map_ordered` has joined every worker, so a caller observing it sees each item as
+/// it actually finishes rather than every item's outcome arriving in one simultaneous burst
+/// once the whole corpus is done. `rigger canary` (`cmd_canary`) wires this to a stdout
+/// print; a caller with nothing to report passes a no-op.
 pub fn run_canary(
     store: &dyn EventStore,
     driver: &dyn AgentDriver,
@@ -312,6 +322,7 @@ pub fn run_canary(
     panel: &ReviewPanel,
     corpus: &[CanaryItem],
     jobs: usize,
+    on_item: &(dyn Fn(&CanaryOutcome, Duration) + Sync),
 ) -> Result<CanaryReport, Error> {
     if panel.adjudicator.is_empty() {
         return Err(Error(
@@ -344,7 +355,19 @@ pub fn run_canary(
     // is surfaced by the `?` below only after every item has been scored, never mid-flight.
     let (item_workers, lens_workers) = spawn_budget(jobs, corpus.len());
     let (scored, _engaged) = crate::parallel::map_ordered(corpus, item_workers, |item| {
-        score_item(driver, cfg, panel, item, lens_workers)
+        let start = Instant::now();
+        let outcome = score_item(driver, cfg, panel, item, lens_workers);
+        // Fire the progress hook the INSTANT this item's own score completes, on
+        // whichever worker thread just finished it - NOT after map_ordered has joined
+        // every item_workers thread. The aggregation loop below only ever sees the
+        // full, ordered Vec once every worker has returned, so hooking there would
+        // bunch every item's line into one simultaneous end-of-run burst instead of
+        // streaming them as they genuinely finish (the defect PROGRESS exists to fix,
+        // spec 61 Goal #3). A scoring error is not a completed item - nothing to report.
+        if let Ok(o) = &outcome {
+            on_item(o, start.elapsed());
+        }
+        outcome
     });
     let mut outcomes = Vec::with_capacity(scored.len());
     for outcome in scored {
@@ -1142,7 +1165,7 @@ mod tests {
             item("leak", "resource-leak", true, "reject", "adversary"),
             item("clean", "none", false, "approve", ""),
         ];
-        let report = run_canary(&store, &driver, &cfg(), &panel(), &corpus, 2).unwrap();
+        let report = run_canary(&store, &driver, &cfg(), &panel(), &corpus, 2, &|_, _| {}).unwrap();
         assert_eq!(report.outcomes.len(), 2);
 
         // The canary stream carries the batch marker + one outcome per item.
@@ -1181,7 +1204,7 @@ mod tests {
         let mut p = panel();
         p.adjudicator = String::new();
         let corpus = vec![item("x", "off-by-one", true, "reject", "lens")];
-        assert!(run_canary(&store, &driver, &cfg(), &p, &corpus, 1).is_err());
+        assert!(run_canary(&store, &driver, &cfg(), &p, &corpus, 1, &|_, _| {}).is_err());
     }
 
     #[test]
@@ -1396,7 +1419,7 @@ mod tests {
             },
         };
         let store = Store::open(":memory:").unwrap();
-        let report = run_canary(&store, &driver, &c, &p, &corpus, 3).unwrap();
+        let report = run_canary(&store, &driver, &c, &p, &corpus, 3, &|_, _| {}).unwrap();
         assert_eq!(report.outcomes.len(), 3);
         for outcome in &report.outcomes {
             assert_eq!(outcome.caught_by, vec![TIER_LENS.to_string()]);
@@ -1431,7 +1454,7 @@ mod tests {
             },
         };
         let store = Store::open(":memory:").unwrap();
-        let report = run_canary(&store, &driver, &c, &p, &corpus, 6).unwrap();
+        let report = run_canary(&store, &driver, &c, &p, &corpus, 6, &|_, _| {}).unwrap();
         assert_eq!(report.outcomes.len(), 3);
         for outcome in &report.outcomes {
             assert_eq!(outcome.caught_by, vec![TIER_LENS.to_string()]);
@@ -1464,13 +1487,184 @@ mod tests {
         };
 
         let serial_store = Store::open(":memory:").unwrap();
-        let serial = run_canary(&serial_store, &driver, &c, &p, &corpus, 1).unwrap();
+        let serial_progress: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        let serial = run_canary(&serial_store, &driver, &c, &p, &corpus, 1, &|o, _| {
+            serial_progress.lock().unwrap().push(o.id.clone());
+        })
+        .unwrap();
         let parallel_store = Store::open(":memory:").unwrap();
-        let parallel = run_canary(&parallel_store, &driver, &c, &p, &corpus, 12).unwrap();
+        let parallel_progress: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        let parallel = run_canary(&parallel_store, &driver, &c, &p, &corpus, 12, &|o, _| {
+            parallel_progress.lock().unwrap().push(o.id.clone());
+        })
+        .unwrap();
 
         assert_eq!(
             serial.outcomes, parallel.outcomes,
             "sharded/fanned-out scoring must match the serial walk exactly, in order"
+        );
+        // The on_item hook must fire exactly once per item at BOTH widths - not zero
+        // (dropped), not doubled (a stray second call site) - regardless of whether
+        // map_ordered took its serial or its threaded path.
+        let mut serial_ids = serial_progress.into_inner().unwrap();
+        let mut parallel_ids = parallel_progress.into_inner().unwrap();
+        serial_ids.sort();
+        parallel_ids.sort();
+        let mut expected: Vec<String> = corpus.iter().map(|i| i.id.clone()).collect();
+        expected.sort();
+        assert_eq!(
+            serial_ids, expected,
+            "the serial (jobs=1) walk must call on_item exactly once per item"
+        );
+        assert_eq!(
+            parallel_ids, expected,
+            "the sharded (jobs=12) walk must call on_item exactly once per item"
+        );
+    }
+
+    /// A driver that blocks any non-adjudicator spawn naming `slow.rs` on a shared
+    /// gate before delegating to a real `Scripted` driver - the synchronization
+    /// primitive [`on_item_fires_the_instant_a_fast_items_score_completes_while_a_slower_sibling_is_still_scoring`]
+    /// uses to prove the progress hook streams rather than bunches.
+    struct GateSlowOnFastsProgress {
+        released: std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+        inner: Scripted,
+    }
+
+    impl AgentDriver for GateSlowOnFastsProgress {
+        fn spawn(
+            &self,
+            a: &AgentDef,
+            prompt: &str,
+            opts: &SpawnOpts,
+            emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            if a.id != "adj" && prompt.contains("`slow.rs`") {
+                let (lock, cvar) = &*self.released;
+                let guard = lock.lock().unwrap();
+                let (_guard, result) = cvar
+                    .wait_timeout_while(guard, Duration::from_secs(2), |released| !*released)
+                    .unwrap();
+                assert!(
+                    !result.timed_out(),
+                    "the slow item's spawn ran without ever observing the fast item's \
+                     on_item progress callback fire - the hook is bunched at the \
+                     aggregation loop (after map_ordered joins every worker), not \
+                     streamed per item as each one genuinely completes"
+                );
+            }
+            self.inner.spawn(a, prompt, opts, emit)
+        }
+    }
+
+    #[test]
+    fn on_item_fires_the_instant_a_fast_items_score_completes_while_a_slower_sibling_is_still_scoring(
+    ) {
+        // Two items sharded onto two threads (item_workers=2 at jobs=2, corpus len 2).
+        // "fast" has nothing gating it and scores immediately. EVERY one of "slow"'s own
+        // spawns blocks until on_item has already fired for "fast" - so "slow"'s
+        // score_item provably cannot return before that callback ran. If the hook were
+        // instead placed after map_ordered joins ALL workers (the exact regression this
+        // criterion exists to close - see the sdet finding this closes,
+        // sdet-u61c5-progress-hook-is-bunched-not-streaming), on_item(fast) could never
+        // fire before "slow" needs it (both threads are still inside map_ordered at that
+        // point), so the wait below would exhaust its bound and fail loudly instead of
+        // silently passing.
+        let released =
+            std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let ids = ["lens-a", "adv", "adj"];
+        let c = cfg_for(&ids);
+        let p = panel_with_lenses(&["lens-a"]);
+        let corpus = vec![
+            item("fast", "off-by-one", true, "reject", "lens"),
+            item("slow", "off-by-one", true, "reject", "lens"),
+        ];
+        let driver = GateSlowOnFastsProgress {
+            released: released.clone(),
+            inner: Scripted {
+                catching_tier: TIER_LENS,
+                planted_anchors: vec!["fast.rs".into(), "slow.rs".into()],
+                adjudicator_order_sensitive: false,
+            },
+        };
+        let store = Store::open(":memory:").unwrap();
+        let report = run_canary(&store, &driver, &c, &p, &corpus, 2, &|o, _| {
+            if o.id == "fast" {
+                let (lock, cvar) = &*released;
+                *lock.lock().unwrap() = true;
+                cvar.notify_all();
+            }
+        })
+        .unwrap();
+        assert_eq!(
+            report.outcomes.len(),
+            2,
+            "both items still score to completion"
+        );
+    }
+
+    #[test]
+    fn on_item_receives_the_same_outcome_content_it_records_and_a_real_elapsed_duration() {
+        // A single item whose lens spawn sleeps a known amount mid-score: the elapsed
+        // duration on_item receives must reflect that real wall-clock time, not a
+        // zero/fixed placeholder - and the (id, verdict_correct, caught_by) it carries
+        // must be the SAME values the returned report records, not a second,
+        // independently-derived copy that could silently drift from it.
+        struct SleepsOnTheLensSpawn {
+            inner: Scripted,
+        }
+        impl AgentDriver for SleepsOnTheLensSpawn {
+            fn spawn(
+                &self,
+                a: &AgentDef,
+                prompt: &str,
+                opts: &SpawnOpts,
+                emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+            ) -> Result<AgentResult, Error> {
+                if a.id == "lens-a" {
+                    std::thread::sleep(Duration::from_millis(30));
+                }
+                self.inner.spawn(a, prompt, opts, emit)
+            }
+        }
+
+        let ids = ["lens-a", "adv", "adj"];
+        let c = cfg_for(&ids);
+        let p = panel_with_lenses(&["lens-a"]);
+        let corpus = vec![item("hot", "off-by-one", true, "reject", "lens")];
+        let driver = SleepsOnTheLensSpawn {
+            inner: Scripted {
+                catching_tier: TIER_LENS,
+                planted_anchors: vec!["hot.rs".into()],
+                adjudicator_order_sensitive: false,
+            },
+        };
+        // (id, verdict_correct, caught_by, elapsed) - what on_item is asked to carry.
+        type Seen = (String, bool, Vec<String>, Duration);
+
+        let store = Store::open(":memory:").unwrap();
+        let seen: std::sync::Mutex<Vec<Seen>> = std::sync::Mutex::new(Vec::new());
+        let report = run_canary(&store, &driver, &c, &p, &corpus, 1, &|o, elapsed| {
+            seen.lock().unwrap().push((
+                o.id.clone(),
+                o.verdict_correct,
+                o.caught_by.clone(),
+                elapsed,
+            ));
+        })
+        .unwrap();
+
+        let seen = seen.into_inner().unwrap();
+        assert_eq!(seen.len(), 1, "on_item fires exactly once for the one item");
+        let (id, correct, caught, elapsed) = &seen[0];
+        let recorded = &report.outcomes[0];
+        assert_eq!(id, &recorded.id);
+        assert_eq!(*correct, recorded.verdict_correct);
+        assert_eq!(caught, &recorded.caught_by);
+        assert!(
+            *elapsed >= Duration::from_millis(25),
+            "elapsed must be the item's real measured scoring duration, not a zero/fake \
+             value - the driver slept 30ms mid-score; got {elapsed:?}"
         );
     }
 
