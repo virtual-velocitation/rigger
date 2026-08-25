@@ -1389,9 +1389,12 @@ fn main() {
     std::process::exit(code);
 }
 
-fn usage() {
-    eprint!(
-        "rigger - a config-driven, event-sourced multi-agent dev-loop harness\n\n\
+/// The full `rigger --help` / bare-`rigger` text, single-sourced so a test can pin its
+/// shape (spec 61, ITEM SHARDING AND THE JOBS CAP: a flag tag spliced into the middle of
+/// an unrelated sentence is exactly the regression class
+/// `usage_text_gives_the_jobs_flag_its_own_description_line` guards against).
+const USAGE_TEXT: &str =
+    "rigger - a config-driven, event-sourced multi-agent dev-loop harness\n\n\
 usage:\n  \
 rigger run [spec] [opts]    run the workflow (opts below)\n  \
 rigger step [--spec <path>]      advance the run one frontier via the replay driver\n            \
@@ -1432,7 +1435,11 @@ rigger canary               run the review panel against the seeded-defect corpu
 [--corpus <dir>]         (default ./canaries) and score per-tier catch rate,\n                              \
 adjudicator correctness, and verdict stability under\n                              \
 finding-order shuffle, into the project's canary stream\n                              \
-(read back with `rigger stats --canary`)\n  \
+(read back with `rigger stats --canary`)\n            \
+[--jobs <n>]              caps the total concurrent review-panel spawns\n                              \
+across sharded items and each item's lens fan-out\n                              \
+together (default: the crate's default worker\n                              \
+width, floored at 2)\n  \
 rigger playbooks --rebuild  reconstruct the distilled playbook pool under\n                              \
 .rigger/playbooks/ from the recorded LessonLearned\n                              \
 stream: deduplicated, trigger-scoped agent-files the\n                              \
@@ -1536,8 +1543,10 @@ start: record the supersession and continue instead of\n                        
 halting. The explicit mid-campaign-edit escape (a live\n                                   \
 run otherwise HALTS loudly on definition drift)\n\n\
 storage and graph live in ./.rigger/ (per project, like .git/), scoped to the\n\
-project identity so one backend can hold many projects without their data mixing.\n"
-    );
+project identity so one backend can hold many projects without their data mixing.\n";
+
+fn usage() {
+    eprint!("{USAGE_TEXT}");
 }
 
 fn db_path(name: &str) -> String {
@@ -4548,20 +4557,27 @@ fn read_order_signatures(
     Ok(watch::order_signatures(&events))
 }
 
-/// `rigger canary [--corpus <dir>] [--if-model-changed]` (spec 13, unit 5; drift trigger spec
-/// 13b, unit 1): run the review panel against every item in the seeded-defect corpus (default
-/// `./canaries`) and record the scored outcomes to the project's canary stream, then print the
-/// scorecard. This is the loop's only RECALL measurement - it judges the judges against known
-/// ground truth. The scores land in a DISTINCT stream from the run's, so a canary run never
-/// perturbs the project's operator metrics; `rigger stats --canary` re-reports them.
-///
-/// With `--if-model-changed` the run is GATED on model drift: the canary runs ONLY when a
-/// tier's resolved model id re-pointed since the previous run (the same drift `rigger
-/// validate` warns about), and an unchanged model runs no canary - the automatic monitor for
-/// silent alias re-points. Without the flag the canary always runs.
-fn cmd_canary(args: &[String]) -> Res {
+/// The parsed flags for `rigger canary`: which corpus to score, whether the run is
+/// gated on model drift, and the spawn-concurrency budget (spec 61, ITEM SHARDING AND
+/// THE JOBS CAP).
+struct CanaryArgs {
+    corpus_dir: String,
+    if_model_changed: bool,
+    /// `--jobs <n>`: the TOTAL concurrent-spawn budget [`canary::run_canary`] divides
+    /// between its two concurrency dimensions - independent corpus items sharded across
+    /// workers, and each item's tier-1 lens fan-out (the LENS FAN-OUT criterion's
+    /// already-built inner concurrency) - so neither dimension can push the live review
+    /// panel's total concurrent spawns past what the operator asked for. Defaults to
+    /// [`canary::default_jobs`] (always greater than one).
+    jobs: usize,
+}
+
+/// Parse `rigger canary`'s flags: `--corpus <dir>`, `--if-model-changed`, and `--jobs <n>`
+/// (spec 61). Unknown flags are rejected, mirroring [`parse_run_args`]'s discipline.
+fn parse_canary_args(args: &[String]) -> Result<CanaryArgs, Box<dyn std::error::Error>> {
     let mut corpus_dir = "canaries".to_string();
     let mut if_model_changed = false;
+    let mut jobs = canary::default_jobs();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -4576,15 +4592,54 @@ fn cmd_canary(args: &[String]) -> Res {
                 if_model_changed = true;
                 i += 1;
             }
+            "--jobs" => {
+                i += 1;
+                let raw = args.get(i).cloned().unwrap_or_default();
+                jobs = raw
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|n| *n > 0)
+                    .ok_or_else(|| {
+                        format!("canary: --jobs expects a positive integer, got {raw:?}")
+                    })?;
+                i += 1;
+            }
             other => {
                 return Err(format!(
                     "canary: unexpected argument {other:?} (usage: rigger canary [--corpus <dir>] \
-                     [--if-model-changed])"
+                     [--if-model-changed] [--jobs <n>])"
                 )
                 .into())
             }
         }
     }
+    Ok(CanaryArgs {
+        corpus_dir,
+        if_model_changed,
+        jobs,
+    })
+}
+
+/// `rigger canary [--corpus <dir>] [--if-model-changed] [--jobs <n>]` (spec 13, unit 5;
+/// drift trigger spec 13b, unit 1; concurrency spec 61): run the review panel against every
+/// item in the seeded-defect corpus (default `./canaries`) and record the scored outcomes
+/// to the project's canary stream, then print the scorecard. This is the loop's only RECALL
+/// measurement - it judges the judges against known ground truth. The scores land in a
+/// DISTINCT stream from the run's, so a canary run never perturbs the project's operator
+/// metrics; `rigger stats --canary` re-reports them.
+///
+/// With `--if-model-changed` the run is GATED on model drift: the canary runs ONLY when a
+/// tier's resolved model id re-pointed since the previous run (the same drift `rigger
+/// validate` warns about), and an unchanged model runs no canary - the automatic monitor for
+/// silent alias re-points. Without the flag the canary always runs.
+///
+/// `--jobs <n>` bounds the total number of review-panel spawns in flight at once, across
+/// BOTH independent corpus items and each item's tier-1 lens fan-out together (spec 61,
+/// ITEM SHARDING AND THE JOBS CAP); it defaults to [`canary::default_jobs`].
+fn cmd_canary(args: &[String]) -> Res {
+    let args = parse_canary_args(args)?;
+    let corpus_dir = args.corpus_dir;
+    let if_model_changed = args.if_model_changed;
 
     // The drift gate (spec 13b, unit 1): with `--if-model-changed`, run the canary ONLY when a
     // tier's resolved model re-pointed since the previous run; an unchanged model runs no
@@ -4639,7 +4694,7 @@ fn cmd_canary(args: &[String]) -> Res {
     let store = Namespaced::new(backend.as_ref(), &project_identity());
     let driver = cli::Driver::default();
 
-    let report = canary::run_canary(&store, &driver, &cfg, &panel, &corpus)?;
+    let report = canary::run_canary(&store, &driver, &cfg, &panel, &corpus, args.jobs)?;
     println!(
         "canary run {}: scored {} corpus item(s) against the review panel",
         report.batch,
@@ -14739,6 +14794,96 @@ mod tests {
                 cfg.workflow.defaults.budget
             );
         }
+    }
+
+    #[test]
+    fn parse_canary_args_defaults_corpus_and_jobs() {
+        let a = parse_canary_args(&[]).unwrap();
+        assert_eq!(a.corpus_dir, "canaries");
+        assert!(
+            !a.if_model_changed,
+            "--if-model-changed is off unless asked"
+        );
+        assert_eq!(
+            a.jobs,
+            canary::default_jobs(),
+            "an unflagged run uses the production default jobs budget"
+        );
+    }
+
+    #[test]
+    fn parse_canary_args_reads_corpus_if_model_changed_and_jobs() {
+        let args = [
+            "--corpus".to_string(),
+            "my-canaries".to_string(),
+            "--if-model-changed".to_string(),
+            "--jobs".to_string(),
+            "4".to_string(),
+        ];
+        let a = parse_canary_args(&args).unwrap();
+        assert_eq!(a.corpus_dir, "my-canaries");
+        assert!(a.if_model_changed);
+        assert_eq!(a.jobs, 4);
+    }
+
+    #[test]
+    fn parse_canary_args_rejects_a_non_positive_jobs_value() {
+        for bad in ["0", "-1", "not-a-number", ""] {
+            let args = ["--jobs".to_string(), bad.to_string()];
+            let err = match parse_canary_args(&args) {
+                Ok(_) => panic!("--jobs {bad:?} must be rejected"),
+                Err(e) => e.to_string(),
+            };
+            assert!(
+                err.contains("--jobs"),
+                "the error must name --jobs for input {bad:?}: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_canary_args_rejects_unknown_flags() {
+        let args = ["--bogus".to_string()];
+        let err = match parse_canary_args(&args) {
+            Ok(_) => panic!("--bogus must be rejected"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            err.contains("--bogus"),
+            "the error names the bad flag: {err:?}"
+        );
+    }
+
+    #[test]
+    fn usage_text_gives_the_jobs_flag_its_own_description_line() {
+        // Regression guard (spec 61, ITEM SHARDING AND THE JOBS CAP): a flag tag spliced
+        // into the MIDDLE of an unrelated sentence, landing its own description lines away
+        // from its tag, is the exact class of usage-text corruption this pins against for
+        // both halves of the --jobs/--corpus text.
+        let tag = "[--jobs <n>]";
+        let tag_pos = USAGE_TEXT
+            .find(tag)
+            .expect("usage text names the --jobs flag");
+        let after_tag = USAGE_TEXT[tag_pos + tag.len()..].trim_start_matches(' ');
+        assert!(
+            after_tag.starts_with("caps the total concurrent review-panel spawns"),
+            "the --jobs tag must introduce its OWN description, not text describing \
+             something else: found {:?}",
+            &after_tag[..after_tag.len().min(80)]
+        );
+
+        // The pre-existing --corpus sentence must stay intact and unsplit by any flag tag.
+        let corpus_start = USAGE_TEXT
+            .find("(default ./canaries) and score per-tier catch rate")
+            .expect("usage text names the --corpus default");
+        let corpus_end = USAGE_TEXT
+            .find("(read back with `rigger stats --canary`)")
+            .expect("usage text names the canary stats readback");
+        let corpus_sentence = &USAGE_TEXT[corpus_start..corpus_end];
+        assert!(
+            !corpus_sentence.contains('['),
+            "no flag tag may be spliced into the middle of the --corpus sentence: {corpus_sentence:?}"
+        );
     }
 
     #[test]
