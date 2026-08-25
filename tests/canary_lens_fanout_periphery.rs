@@ -1,17 +1,27 @@
 //! Periphery (integration) test for spec 61 criterion 4 (LENS FAN-OUT), unit u61c4:
-//! `score_item`'s tier-1 lens loop now fans out over `crate::parallel::map_ordered`, and
-//! `run_canary`'s production call site threads the REAL `crate::parallel::default_workers()`
-//! width into it.
+//! `score_item`'s tier-1 lens loop now fans out over `crate::parallel::map_ordered`.
 //!
-//! The implementer's own unit tests pin this at the PRIVATE `score_item` seam with an
-//! explicit, test-chosen worker count (`lenses.len()` or `1`) - a barrier proves the lenses
-//! run concurrently and a serial-vs-parallel comparison proves the scored outcome does not
-//! depend on the width. Neither drives the PUBLIC entry `run_canary` the CLI (`cmd_canary`)
-//! actually calls, and neither uses the width production actually resolves -
-//! `crate::parallel::default_workers()`, which `run_canary` never lets a caller override. A
-//! width silently dropped on the floor between `run_canary` and `score_item`, or a lens the
-//! chunking silently skipped, would pass every existing test and only show up out here,
-//! driving the crate's public surface the way the shipped binary does.
+//! Criterion 5 (ITEM SHARDING AND THE JOBS CAP, unit u61c5b) landed after this test was
+//! first written and changed WHAT width `run_canary` threads into the lens tier:
+//! `run_canary` no longer resolves the lens width itself from
+//! `crate::parallel::default_workers()` - it now takes a caller-supplied `jobs` total-
+//! concurrent-spawn budget and splits it, via `canary::spawn_budget`, between its own outer
+//! item-sharding width and this inner lens-fan-out width, so their PRODUCT never exceeds
+//! `jobs`. This test drives the PUBLIC entry with the PRODUCTION default
+//! (`canary::default_jobs()`, never a test-pinned override) exactly as `cmd_canary` does
+//! when the operator passes no `--jobs` flag.
+//!
+//! The implementer's own unit tests pin the fan-out at the PRIVATE `score_item` seam with
+//! an explicit, test-chosen worker count (`lenses.len()` or `1`) - a barrier proves the
+//! lenses run concurrently and a serial-vs-parallel comparison proves the scored outcome
+//! does not depend on the width. Neither drives the PUBLIC entry `run_canary` the CLI
+//! (`cmd_canary`) actually calls. A lens width silently dropped on the floor between
+//! `run_canary` and `score_item`, or a lens the chunking silently skipped, would pass every
+//! existing test and only show up out here, driving the crate's public surface the way the
+//! shipped binary does. These per-lens correctness properties do not depend on the EXACT
+//! worker count `spawn_budget` resolves to (only that every lens is reached exactly once
+//! per item, in the right order) so they hold whether the production budget shards the
+//! five lenses over one worker or five.
 //!
 //! Runs OUTSIDE the crate, over the library's public surface (`rigger::...`), so it also
 //! proves `run_canary`, `CanaryItem`, `ReviewPanel`, and `AgentDriver` stay exported and
@@ -132,7 +142,9 @@ fn item(id: &str, defect_class: &str, planted: bool, verdict: &str, tier: &str) 
 
 /// Drives `run_canary` - the public entry the shipped `rigger canary` command calls - over a
 /// panel of five lenses, an adversary, and an adjudicator, and a three-item corpus, at the
-/// REAL `crate::parallel::default_workers()` width (never overridden by a test). Proves:
+/// REAL production `--jobs` default (`canary::default_jobs()`, never a test-pinned
+/// override) - the same budget `cmd_canary` resolves to when the operator names no
+/// `--jobs`. Proves:
 ///
 ///  - a catch attributed to a LENS OTHER THAN THE FIRST (`lens-c`, the middle of five) still
 ///    scores correctly - the property the fan-out's chunked, index-preserving aggregation
@@ -176,8 +188,15 @@ fn run_canary_fans_out_the_lens_tier_at_the_real_default_width_through_the_publi
     };
 
     let store = Store::open(":memory:").expect("an in-memory store opens");
-    let report = run_canary(&store, &driver, &cfg, &panel, &corpus)
-        .expect("run_canary succeeds through the public entry");
+    let report = run_canary(
+        &store,
+        &driver,
+        &cfg,
+        &panel,
+        &corpus,
+        rigger::canary::default_jobs(),
+    )
+    .expect("run_canary succeeds through the public entry");
 
     assert_eq!(report.outcomes.len(), 3, "one outcome per corpus item");
     let by_id = |id: &str| -> &CanaryOutcome {
@@ -265,10 +284,12 @@ fn run_canary_fans_out_the_lens_tier_at_the_real_default_width_through_the_publi
         );
     }
 
-    // The width production actually resolves - never a test-pinned value - is always
-    // usable; `run_canary`'s call site has nothing to fan the lens tier over otherwise.
+    // The production `--jobs` default - never a test-pinned value - is always usable and
+    // always greater than one (spec 61's Done-when text for ITEM SHARDING AND THE JOBS
+    // CAP), so `run_canary`'s call site always has real budget to shard items and fan the
+    // lens tier out with.
     assert!(
-        rigger::parallel::default_workers() >= 1,
-        "the default lens-tier width is never zero"
+        rigger::canary::default_jobs() > 1,
+        "the default --jobs budget is always greater than one"
     );
 }
