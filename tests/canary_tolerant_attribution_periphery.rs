@@ -21,7 +21,7 @@
 //! exactly like a live reviewer's, proving both boundary cases neither the implementer's
 //! own unit tests nor the periphery layer previously covered.
 
-use rigger::canary::{run_canary, CanaryItem, TIER_LENS};
+use rigger::canary::{default_jobs, run_canary, CanaryItem, TIER_LENS};
 use rigger::conductor::{AgentDriver, AgentResult, Error, SpawnOpts};
 use rigger::config::{AgentDef, Config, ReviewPanel};
 use rigger::contextgraph::TYPE_REVIEW_FINDING;
@@ -131,8 +131,15 @@ fn a_tolerant_match_in_a_later_about_entry_still_scores_the_catch() {
     let store = Store::open(":memory:").expect("an in-memory store opens");
     let corpus = vec![item("multi-about", "src/sum.rs")];
 
-    let report = run_canary(&store, &AttributionDriver, &cfg(), &panel(), &corpus)
-        .expect("run_canary succeeds through the public entry");
+    let report = run_canary(
+        &store,
+        &AttributionDriver,
+        &cfg(),
+        &panel(),
+        &corpus,
+        default_jobs(),
+    )
+    .expect("run_canary succeeds through the public entry");
 
     assert_eq!(report.outcomes.len(), 1);
     let outcome = &report.outcomes[0];
@@ -159,8 +166,15 @@ fn an_empty_about_entry_never_scores_a_catch_even_against_a_trailing_slash_ancho
     let store = Store::open(":memory:").expect("an in-memory store opens");
     let corpus = vec![item("empty-about-trap", "corpus/")];
 
-    let report = run_canary(&store, &AttributionDriver, &cfg(), &panel(), &corpus)
-        .expect("run_canary succeeds through the public entry");
+    let report = run_canary(
+        &store,
+        &AttributionDriver,
+        &cfg(),
+        &panel(),
+        &corpus,
+        default_jobs(),
+    )
+    .expect("run_canary succeeds through the public entry");
 
     assert_eq!(report.outcomes.len(), 1);
     let outcome = &report.outcomes[0];
