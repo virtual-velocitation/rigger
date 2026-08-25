@@ -1,0 +1,71 @@
+# Spec 77: every byte rigger writes has a lifecycle
+
+## Problem
+
+Rigger's disk footprint reached hundreds of gigabytes: mutation-testing tree copies leak
+into the user cache with no owner (47G observed - killed runs never clean up, and the
+reclamation authority only manages `.rigger/tmp`), per-unit cargo target caches (~19G
+each) persist past their unit, and the shared gate build cache (39G observed) grows
+without bound or even a visible total. Cleanup today is operator hygiene, which is not a
+mechanism.
+
+## Design
+
+- ONE REAPER, extended not duplicated: the spec-34 per-spawn reclamation authority
+  (`spawn_scratch_path` / `cmd_result`'s reclaim) gains registered SCRATCH ROOTS beyond
+  `.rigger/tmp` - first registrant the mutation scratch root
+  `${XDG_CACHE_HOME:-$HOME/.cache}/rigger-mutants/<unit>` - so a spawn's mutation copy is
+  deleted the moment its result records, exactly like its agent scratch. The seeded
+  persona invocation moves to that unit-scoped subdir and pre-deletes it before running
+  (bounding a killed run's leak to one tree, reclaimed on retry or result).
+- UNIT-TERMINAL REAP: when a unit reaches a terminal state (integrated or abandoned at a
+  fresh run boundary), its per-unit cargo target cache and any registered scratch of its
+  spawns are deleted by the same teardown that already removes its worktree. A LIVE
+  unit's assets are never touched - the existing sweep-liveness guard is the authority.
+- BOUNDED SHARED CACHE: `rigger reset` gains `--build-cache`, deleting the shared gate
+  build cache (`.rigger/tmp/cargo-target`) - a pure cache, always safe to cold-rebuild -
+  and reporting bytes reclaimed like the other reset modes.
+- FOOTPRINT ACCOUNTING: `rigger validate` reports rigger's total on-disk footprint by
+  category (store, backups, shared build cache, per-unit caches, worktrees, registered
+  scratch roots) and flags any category whose dead share exceeds an advisory threshold,
+  naming the reclaiming command. Advisory tone; never a hard failure.
+
+## Done when
+
+- [ ] A test proves MUTATION SCRATCH IS REAPED: a spawn with a populated registered
+  mutation scratch dir has it deleted the moment its result is recorded, for every
+  outcome, while a sibling spawn with no recorded result keeps its dir - pinned at the
+  same seam as the existing per-spawn reclamation tests. This criterion OWNS scratch-root
+  registration and the persona invocation's unit-scoped subdir text.
+- [ ] A test proves UNIT-TERMINAL REAP: a terminal unit's per-unit cargo target cache is
+  deleted by teardown while a live sibling's survives, gated on the existing
+  sweep-liveness authority. This criterion OWNS the teardown extension; scratch-root
+  registration is criterion 1's, NOT this one's.
+- [ ] A test proves the BOUNDED SHARED CACHE: `rigger reset --build-cache` deletes the
+  shared gate build cache, reports bytes reclaimed, composes with the existing reset
+  modes, and appears in the usage registry. This criterion OWNS the reset mode.
+- [ ] A test proves FOOTPRINT ACCOUNTING: `rigger validate` on a fixture tree with seeded
+  category sizes reports each category's total and flags a dead-share threshold breach
+  naming the reclaiming command, exit 0. This criterion OWNS the accounting surface.
+- [ ] Both feature lanes green: `cargo fmt --check`; `cargo clippy --all-targets -D
+  warnings`; `cargo test` on default features AND `--no-default-features`. This criterion
+  OWNS the whole-diff gates-green audit and claims no lifecycle concept of its own.
+
+## Global constraints
+
+- Hyphens, not em dashes, anywhere the diff touches.
+- No new event type; reap facts ride the existing decision/result surfaces.
+- Fail-safe deletion only: a reaper deletes exactly what a registered root or teardown
+  names, never walks upward, and skips anything a liveness guard claims.
+- The store and its backups are NEVER auto-deleted; accounting reports them, only the
+  operator removes them.
+
+## Notes
+
+- Constraints walk: crash between result and reap -> the next unit-terminal or fresh-run
+  teardown covers the residue (registered roots are enumerable); concurrent units ->
+  unit-scoped paths never collide; cold start -> registration is code, not state;
+  repeated reset --build-cache -> idempotent zero-report; REVERT/re-run of a reaped unit
+  -> caches are pure, cold rebuild is the cost.
+- Persona edit lands with this spec's unit (definition-hash change accepted at this
+  run boundary, not mid-run).
