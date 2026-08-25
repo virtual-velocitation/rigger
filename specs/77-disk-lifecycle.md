@@ -11,6 +11,12 @@ mechanism.
 
 ## Design
 
+- ONE BUILD LOCATION PER UNIT, the biggest leak's root cause: agents running cargo
+  inside their worktree without the shared cache env embed a full ~19G target tree in
+  EVERY worktree (~35G worktrees observed, five at once). The conductor exports
+  `CARGO_TARGET_DIR=<the unit's cache>` in every spawned agent's environment, so a
+  worktree stays source-sized, all of a unit's builds land in the one per-unit cache,
+  and teardown reaps one place.
 - ONE REAPER, extended not duplicated: the spec-34 per-spawn reclamation authority
   (`spawn_scratch_path` / `cmd_result`'s reclaim) gains registered SCRATCH ROOTS beyond
   `.rigger/tmp` - first registrant the mutation scratch root
@@ -32,6 +38,11 @@ mechanism.
 
 ## Done when
 
+- [ ] A test proves ONE BUILD LOCATION: every spawned agent's environment carries
+  `CARGO_TARGET_DIR` naming its unit's cache, pinned at the spawn seam, and a worktree
+  whose agent ran a real cargo build holds no embedded `target/` dir - pinned at the
+  gate/driver seam with a real subprocess. This criterion OWNS the spawn-environment
+  export.
 - [ ] A test proves MUTATION SCRATCH IS REAPED: a spawn with a populated registered
   mutation scratch dir has it deleted the moment its result is recorded, for every
   outcome, while a sibling spawn with no recorded result keeps its dir - pinned at the
