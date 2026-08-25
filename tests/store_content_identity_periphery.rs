@@ -1238,6 +1238,7 @@ fn the_canary_records_nothing_it_cannot_find_afterwards() {
         &rigger::config::Config::default(),
         &panel,
         &[],
+        rigger::canary::default_jobs(),
     );
     let message = match outcome {
         Ok(report) => panic!(
