@@ -1114,6 +1114,12 @@ pub struct CanaryMetrics {
     /// catches) is visible here even though its catch rate looks fine. Summed from each
     /// item's [`crate::canary::CanaryOutcome`] `findings_raised` field.
     pub findings_raised: BTreeMap<String, u64>,
+    /// Planted items the adjudicator correctly rejected whose `caught_by` was empty (spec
+    /// 61, NO FAKE ZEROS criterion) - the catch attribution for these was never actually
+    /// MEASURED, as distinct from a tier that looked and genuinely caught nothing. A
+    /// per-tier catch rate of `0` while this is non-zero is a FAKE zero: `format_canary_stats`
+    /// reads it to render `n/a` with a reason instead of a false `0/N (0.0%)`.
+    pub unattributed_correct_rejects: u64,
 }
 
 impl CanaryMetrics {
@@ -1187,6 +1193,13 @@ pub fn project_canary(events: &[Event]) -> CanaryMetrics {
                 if let Some(tc) = m.tier_catch.get_mut(tier) {
                     tc.caught += 1;
                 }
+            }
+            // NO FAKE ZEROS (spec 61): a planted item the adjudicator correctly rejected
+            // but whose caught_by came back empty was never actually MEASURED by any
+            // tier - as distinct from a tier that looked and genuinely caught nothing.
+            // format_canary_stats reads this count to render n/a instead of a fake 0/N.
+            if o.verdict_correct && o.caught_by.is_empty() {
+                m.unattributed_correct_rejects += 1;
             }
         }
     }
@@ -2732,6 +2745,36 @@ mod tests {
         assert_eq!(m.adjudicator_accuracy(), 0.0);
         assert_eq!(m.stability_rate(), 0.0);
         assert!(m.tier_catch.contains_key("lens") && m.tier_catch.contains_key("adversary"));
+        assert_eq!(m.unattributed_correct_rejects, 0);
+    }
+
+    /// spec 61, NO FAKE ZEROS criterion: a planted item the adjudicator correctly
+    /// rejected but whose `caught_by` came back empty counts toward
+    /// `unattributed_correct_rejects` - the catch attribution for it was never actually
+    /// measured, as distinct from a tier that looked and genuinely caught nothing. A
+    /// correctly-rejected item WITH attribution, and an incorrectly-approved item with
+    /// empty attribution, must NOT count - only the correct-rejection-plus-empty-caught_by
+    /// combination is the fake-zero source `format_canary_stats` needs to detect.
+    #[test]
+    fn project_canary_counts_correctly_rejected_items_with_empty_attribution() {
+        let events = vec![
+            canary_run_marker(),
+            // Correctly rejected, empty attribution - THE case this counts.
+            canary_outcome("a", "off-by-one", true, true, &[], true, true),
+            // Correctly rejected, but attributed to a tier - not a fake zero, excluded.
+            canary_outcome("b", "resource-leak", true, true, &["lens"], true, true),
+            // Adjudicator got it WRONG (approved a planted defect) despite empty
+            // attribution - a real miss, not an unmeasured one, excluded.
+            canary_outcome("c", "fail-open-guard", true, true, &[], false, true),
+            // Known-good control, correctly approved, empty attribution (there is no
+            // anchor to catch) - not a rejection at all, excluded.
+            canary_outcome("d", "none", false, false, &[], true, true),
+        ];
+        let m = project_canary(&events);
+        assert_eq!(
+            m.unattributed_correct_rejects, 1,
+            "only item 'a' is a correct rejection with empty attribution"
+        );
     }
 
     // ---- spec-13b unit-1 model-drift monitor (cross-run resolved-model comparison) ----
