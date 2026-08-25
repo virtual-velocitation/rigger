@@ -110,8 +110,16 @@ fn model_pinning_takes_effect_through_run_canary_and_the_header_round_trips_and_
 
     let corpus = vec![item("only")];
     let store = Store::open(":memory:").expect("an in-memory store opens");
-    let report = run_canary(&store, &EchoModelDriver, &pinned_cfg, &panel, &corpus, 1)
-        .expect("run_canary succeeds through the public entry");
+    let report = run_canary(
+        &store,
+        &EchoModelDriver,
+        &pinned_cfg,
+        &panel,
+        &corpus,
+        1,
+        &|_, _| {},
+    )
+    .expect("run_canary succeeds through the public entry");
 
     assert_eq!(
         report.resolved_models.get(TIER_LENS),

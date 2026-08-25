@@ -519,7 +519,7 @@ pub fn run_canary(
         // bunch every item's line into one simultaneous end-of-run burst instead of
         // streaming them as they genuinely finish (the defect PROGRESS exists to fix,
         // spec 61 Goal #3). A scoring error is not a completed item - nothing to report.
-        if let Ok(o) = &outcome {
+        if let Ok((o, _resolved)) = &outcome {
             on_item(o, start.elapsed());
         }
         outcome
@@ -1793,6 +1793,7 @@ mod tests {
                 catching_tier: TIER_LENS,
                 planted_anchors: vec!["fast.rs".into(), "slow.rs".into()],
                 adjudicator_order_sensitive: false,
+                resolved_model: String::new(),
             },
         };
         let store = Store::open(":memory:").unwrap();
@@ -1845,6 +1846,7 @@ mod tests {
                 catching_tier: TIER_LENS,
                 planted_anchors: vec!["hot.rs".into()],
                 adjudicator_order_sensitive: false,
+                resolved_model: String::new(),
             },
         };
         // (id, verdict_correct, caught_by, elapsed) - what on_item is asked to carry.
@@ -2055,7 +2057,7 @@ mod tests {
             item("leak", "resource-leak", true, "reject", "adversary"),
             item("clean", "none", false, "approve", ""),
         ];
-        let report = run_canary(&store, &driver, &cfg(), &panel(), &corpus, 2).unwrap();
+        let report = run_canary(&store, &driver, &cfg(), &panel(), &corpus, 2, &|_, _| {}).unwrap();
         assert_eq!(
             report.resolved_models.get(TIER_LENS),
             Some(&"run-wide-id".to_string())
@@ -2080,7 +2082,7 @@ mod tests {
             resolved_model: "resolved-y".to_string(),
         };
         let corpus = vec![item("leak", "resource-leak", true, "reject", "adversary")];
-        let report = run_canary(&store, &driver, &cfg(), &panel(), &corpus, 1).unwrap();
+        let report = run_canary(&store, &driver, &cfg(), &panel(), &corpus, 1, &|_, _| {}).unwrap();
 
         let mut resolved_models = BTreeMap::new();
         resolved_models.insert(TIER_LENS.to_string(), "resolved-y".to_string());

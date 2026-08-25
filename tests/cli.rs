@@ -12662,6 +12662,40 @@ fn validate_warns_when_a_tier_resolved_model_repointed_between_runs() {
     );
 }
 
+/// Spec 61, DRIFT SEVERITY: `rigger validate`'s companion to
+/// `validate_warns_when_a_tier_resolved_model_repointed_between_runs` above - a snapshot-only
+/// date-suffix bump draws a soft ADVISORY (no `warning:` prefix, no "re-point" wording),
+/// never the mandate-style warning a real model-base change draws.
+#[test]
+fn validate_advises_softly_on_a_snapshot_only_date_suffix_bump() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_o, err, ok) = run_rigger(root, &["init"]);
+    assert!(
+        ok,
+        "rigger init must scaffold a valid config; stderr:\n{err}"
+    );
+    seed_two_runs_with_models(
+        root,
+        "drift-snapshot-bump",
+        "claude-sonnet-4-5-20250929",
+        "claude-sonnet-4-5-20260210",
+    );
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "validate still exits 0 on a snapshot-only bump; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("claude-sonnet-4-5-20250929") && err.contains("claude-sonnet-4-5-20260210"),
+        "the advisory still names both resolved ids; stderr:\n{err}"
+    );
+    assert!(
+        !err.to_lowercase().contains("resolved model id changed"),
+        "a snapshot bump does NOT draw the mandate-style re-point warning; stderr:\n{err}"
+    );
+}
+
 /// Seed `<root>/.rigger/events.db` with a stream whose position order and revision order
 /// DISAGREE (spec 71's signature `rigger validate` must detect) by inserting rows directly -
 /// bypassing the store's own revision assignment, the only way to reach this shape (a
@@ -12814,6 +12848,49 @@ fn canary_if_model_changed_runs_when_a_tier_resolved_model_repointed() {
     assert!(
         !ok && err.contains("canary"),
         "the gate opened and the run reached corpus loading; stderr:\n{err}"
+    );
+}
+
+/// Spec 61, DRIFT SEVERITY (c11): a resolved-id change that differs ONLY in its trailing
+/// `-YYYYMMDD` date suffix - same model, a fresher snapshot - is classified as SNAPSHOT
+/// drift: `--if-model-changed` reports it on stdout and exits 0 WITHOUT running the panel,
+/// never reaching corpus loading (unlike a real re-point, which the sibling test
+/// `canary_if_model_changed_runs_when_a_tier_resolved_model_repointed` above proves still
+/// runs the panel even though its "claude-opus-4-1" -> "claude-opus-4-8" pair also differs).
+#[test]
+fn canary_if_model_changed_skips_a_snapshot_only_date_suffix_bump_without_running_the_panel() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_two_runs_with_models(
+        root,
+        "canary-snapshot-bump",
+        "claude-sonnet-4-5-20250929",
+        "claude-sonnet-4-5-20260210",
+    );
+    let (out, err, ok) = run_rigger(
+        root,
+        &["canary", "--if-model-changed", "--corpus", "no-such-dir"],
+    );
+    assert!(
+        ok,
+        "a same-model snapshot bump must exit 0 without running the panel; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("newer snapshot")
+            && out.contains("claude-sonnet-4-5-20250929")
+            && out.contains("claude-sonnet-4-5-20260210"),
+        "the skip names the tier and both resolved ids; stdout:\n{out}"
+    );
+    assert!(
+        !out.contains("running the panel"),
+        "no canary runs on a snapshot-only drift; stdout:\n{out}"
+    );
+    // Never reached corpus loading - the missing `--corpus` dir is never even consulted, the
+    // same short-circuit proof `canary_if_model_changed_skips_when_the_model_is_unchanged`
+    // uses for the no-change case.
+    assert!(
+        !err.contains("canary"),
+        "a snapshot-only drift must short-circuit before corpus loading; stderr:\n{err}"
     );
 }
 

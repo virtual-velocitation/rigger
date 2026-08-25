@@ -1276,6 +1276,30 @@ pub struct ModelChange {
     pub current: String,
 }
 
+impl ModelChange {
+    /// DRIFT SEVERITY (spec 61): true when `previous` and `current` share the same BASE and
+    /// differ only in a trailing `-YYYYMMDD` date suffix - the same model re-resolving to a
+    /// fresher dated build, not a re-point to a different model. Splits each id at its
+    /// trailing `-` followed by exactly 8 ASCII digits; an id with no such suffix uses the
+    /// whole id as its base, so two dateless ids that merely look similar (e.g. a trailing
+    /// version number that is not 8 digits) are compared as their full, undivided selves and
+    /// never misclassified as a snapshot bump.
+    pub fn is_snapshot_drift(&self) -> bool {
+        model_id_base(&self.previous) == model_id_base(&self.current)
+    }
+}
+
+/// The BASE of a resolved model id (spec 61, DRIFT SEVERITY): `id` with a trailing
+/// `-YYYYMMDD` date suffix stripped, or `id` unchanged when it carries no such suffix.
+fn model_id_base(id: &str) -> &str {
+    match id.rsplit_once('-') {
+        Some((base, suffix)) if suffix.len() == 8 && suffix.bytes().all(|b| b.is_ascii_digit()) => {
+            base
+        }
+        _ => id,
+    }
+}
+
 /// The cross-run resolved-model drift between the current run and the most recent prior run
 /// (spec 13b, unit 1): the aliases whose resolved model id CHANGED. Unlike [`project`] and
 /// [`project_canary`], which fold a single run's slice, [`model_drift`] reads the WHOLE
@@ -1298,6 +1322,15 @@ impl ModelDrift {
     /// Whether any tier's resolved model changed - the boolean the drift monitor gates on.
     pub fn changed(&self) -> bool {
         !self.changes.is_empty()
+    }
+
+    /// DRIFT SEVERITY (spec 61): true when drift occurred and EVERY change is snapshot drift
+    /// ([`ModelChange::is_snapshot_drift`]) - no tier re-pointed to a different model base. A
+    /// single base-differing change among several is enough to disqualify the whole drift as
+    /// snapshot-only, since one real re-point warrants the panel regardless of what else
+    /// merely bumped a date.
+    pub fn snapshot_only(&self) -> bool {
+        self.changed() && self.changes.iter().all(ModelChange::is_snapshot_drift)
     }
 }
 
@@ -3041,6 +3074,75 @@ mod tests {
         assert_eq!(d.current_run.as_deref(), Some("r3"));
         assert_eq!(d.changes.len(), 1);
         assert_eq!(d.changes[0].alias, "opus");
+    }
+
+    // --- Spec 61, DRIFT SEVERITY: a resolved-id change differing only in its trailing
+    // `-YYYYMMDD` date suffix is SNAPSHOT drift (same model, a fresher build); a change in
+    // the id's base is a real MODEL change. ---
+
+    fn change(previous: &str, current: &str) -> ModelChange {
+        ModelChange {
+            alias: "lens".to_string(),
+            previous: previous.to_string(),
+            current: current.to_string(),
+        }
+    }
+
+    #[test]
+    fn model_change_is_snapshot_drift_when_only_the_date_suffix_differs() {
+        assert!(
+            change("claude-sonnet-4-5-20250929", "claude-sonnet-4-5-20260210").is_snapshot_drift(),
+            "same base, a newer dated snapshot, is snapshot drift"
+        );
+    }
+
+    #[test]
+    fn model_change_is_not_snapshot_drift_when_the_base_differs() {
+        assert!(
+            !change("claude-opus-4-1", "claude-opus-4-8").is_snapshot_drift(),
+            "a differing base (no date suffix on either side) is a real model change"
+        );
+        assert!(
+            !change("claude-opus-4-1-20250929", "claude-sonnet-4-5-20250929").is_snapshot_drift(),
+            "a differing base with the SAME date suffix is still a real model change, not \
+             snapshot drift"
+        );
+    }
+
+    #[test]
+    fn model_change_treats_a_non_date_shaped_trailing_segment_as_part_of_the_base() {
+        // "v41"/"v42" are 3 characters, not 8 digits - not a date suffix - so the whole id is
+        // the base and this is correctly a base (model) change, not a snapshot bump that
+        // merely happens to look like a version bump.
+        assert!(!change("model-v41", "model-v42").is_snapshot_drift());
+    }
+
+    #[test]
+    fn model_drift_snapshot_only_is_true_iff_every_change_is_a_date_suffix_bump() {
+        let mut all_snapshot = ModelDrift {
+            previous_run: Some("r1".to_string()),
+            current_run: Some("r2".to_string()),
+            changes: vec![change(
+                "claude-sonnet-4-5-20250929",
+                "claude-sonnet-4-5-20260210",
+            )],
+        };
+        assert!(all_snapshot.snapshot_only());
+
+        // A second, base-differing change mixed in makes the WHOLE drift a real model
+        // change - one re-pointed tier is enough to warrant the panel.
+        all_snapshot
+            .changes
+            .push(change("claude-opus-4-1", "claude-opus-4-8"));
+        assert!(
+            !all_snapshot.snapshot_only(),
+            "any base-differing change disqualifies snapshot-only"
+        );
+
+        assert!(
+            !ModelDrift::default().snapshot_only(),
+            "no drift at all is not snapshot-only drift"
+        );
     }
 
     fn prog(id: &str, activity: &str) -> Event {

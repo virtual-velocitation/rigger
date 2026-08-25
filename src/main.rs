@@ -4555,6 +4555,29 @@ fn model_drift_advisory(drift: &metrics::ModelDrift) -> Option<String> {
     if !drift.changed() {
         return None;
     }
+    // DRIFT SEVERITY (spec 61, c11): a drift where EVERY change is a same-base date-suffix
+    // bump (the resolved id moved to a fresher snapshot, not a different model) is worded as
+    // a low-urgency advisory rather than the mandate-style warning below - a real re-point
+    // among the changes still gets the full warning, since one is enough to warrant it.
+    if drift.snapshot_only() {
+        let mut msg = String::from(
+            "advisory: a tier's resolved model id moved to a newer snapshot since the previous \
+             run (same model, a date-suffix bump):",
+        );
+        for c in &drift.changes {
+            let alias = if c.alias.is_empty() {
+                "(unnamed tier)"
+            } else {
+                c.alias.as_str()
+            };
+            msg.push_str(&format!("\n  - {alias}: {} -> {}", c.previous, c.current));
+        }
+        msg.push_str(
+            "\nRun `rigger canary --if-model-changed` when convenient to re-measure - same \
+             model, so there is no urgency.",
+        );
+        return Some(msg);
+    }
     let mut msg = String::from(
         "warning: a tier's resolved model id changed since the previous run (a silent alias \
          re-point):",
@@ -4750,6 +4773,26 @@ fn cmd_canary(args: &[String]) -> Res {
                 "canary: no resolved-model change since the previous run - skipping (run \
                  `rigger canary` to force a run)."
             );
+            return Ok(());
+        }
+        // DRIFT SEVERITY (spec 61, c11): a same-base date-suffix bump is a snapshot refresh,
+        // not a model re-point - report it and skip the multi-hour panel. A real base change
+        // among the tiers still opens the gate below; an operator who wants the measurement
+        // anyway just drops the flag (`rigger canary` with no `--if-model-changed`).
+        if drift.snapshot_only() {
+            for c in &drift.changes {
+                let alias = if c.alias.is_empty() {
+                    "(unnamed tier)"
+                } else {
+                    c.alias.as_str()
+                };
+                println!(
+                    "canary: {alias} resolved to a newer snapshot ({} -> {}) since the previous \
+                     run - same model, skipping the panel (run `rigger canary` without \
+                     --if-model-changed to measure anyway).",
+                    c.previous, c.current,
+                );
+            }
             return Ok(());
         }
         for c in &drift.changes {
@@ -19264,6 +19307,77 @@ mod tests {
     #[test]
     fn order_signature_advisories_is_empty_when_no_signatures_are_given() {
         assert!(order_signature_advisories(&[]).is_empty());
+    }
+
+    // --- Spec 61, DRIFT SEVERITY: `model_drift_advisory` words a snapshot-only drift (every
+    // change a same-base date-suffix bump) as a non-urgent advisory, and a drift carrying at
+    // least one real model-base change as today's mandate-style warning. The `--if-model-
+    // changed` gate's matching skip-vs-run behavior is pinned end to end in
+    // `tests/cli.rs`. ---
+
+    fn drift_change(alias: &str, previous: &str, current: &str) -> metrics::ModelChange {
+        metrics::ModelChange {
+            alias: alias.to_string(),
+            previous: previous.to_string(),
+            current: current.to_string(),
+        }
+    }
+
+    /// A snapshot-only drift (same base, a newer dated build) reads as a low-urgency
+    /// advisory: no `warning:` prefix, no "re-point" language, and it still names the
+    /// changed tier and both ids so an operator can see exactly what moved.
+    #[test]
+    fn model_drift_advisory_is_a_soft_note_for_snapshot_only_drift() {
+        let drift = metrics::ModelDrift {
+            previous_run: Some("r1".to_string()),
+            current_run: Some("r2".to_string()),
+            changes: vec![drift_change(
+                "lens",
+                "claude-sonnet-4-5-20250929",
+                "claude-sonnet-4-5-20260210",
+            )],
+        };
+        let msg = model_drift_advisory(&drift).expect("snapshot drift still draws an advisory");
+        assert!(
+            !msg.starts_with("warning:"),
+            "a snapshot bump is not worded as a warning: {msg}"
+        );
+        assert!(
+            !msg.to_lowercase().contains("re-point"),
+            "a same-model snapshot bump is not a re-point: {msg}"
+        );
+        assert!(
+            msg.contains("lens")
+                && msg.contains("claude-sonnet-4-5-20250929")
+                && msg.contains("claude-sonnet-4-5-20260210"),
+            "the advisory still names the tier and both ids: {msg}"
+        );
+        assert!(
+            msg.contains("rigger canary --if-model-changed"),
+            "the advisory still points at the drift-gated canary: {msg}"
+        );
+    }
+
+    /// A drift with at least one real model-base change keeps today's mandate-style
+    /// `warning:` wording naming a re-point, even when it also happens to change dates.
+    #[test]
+    fn model_drift_advisory_stays_a_warning_when_any_change_is_a_real_model_repoint() {
+        let drift = metrics::ModelDrift {
+            previous_run: Some("r1".to_string()),
+            current_run: Some("r2".to_string()),
+            changes: vec![drift_change("opus", "claude-opus-4-1", "claude-opus-4-8")],
+        };
+        let msg = model_drift_advisory(&drift).expect("a repoint draws an advisory");
+        assert!(
+            msg.starts_with("warning:") && msg.to_lowercase().contains("re-point"),
+            "a real model repoint keeps the mandate-style warning: {msg}"
+        );
+    }
+
+    /// No drift at all draws no advisory, snapshot-only or otherwise.
+    #[test]
+    fn model_drift_advisory_is_none_when_nothing_changed() {
+        assert!(model_drift_advisory(&metrics::ModelDrift::default()).is_none());
     }
 
     // --- Spec 68, VALIDATE ADVISORIES: the two pure formatters (INDEX STALENESS, LOG BLOAT) ---
