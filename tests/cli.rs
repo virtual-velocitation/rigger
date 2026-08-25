@@ -11933,6 +11933,95 @@ fn canary_rejects_unknown_arguments_and_a_missing_corpus() {
     );
 }
 
+/// `rigger canary --jobs <n>` (spec 61 criterion 5, ITEM SHARDING AND THE JOBS CAP): the
+/// flag's validation is CLI glue this suite's sibling test above already pins for
+/// `--corpus`/`--if-model-changed`/an unknown flag, exercised here through the real binary
+/// the same way - a positive-integer check the library's `run_canary` never performs itself
+/// (its `jobs: usize` accepts 0 and degrades to a serial width), so this contract is
+/// ENTIRELY the binary's own arg-parsing responsibility and only observable by driving it.
+#[test]
+fn canary_rejects_a_non_positive_or_non_numeric_jobs_value() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    for bad in ["0", "-1", "not-a-number", ""] {
+        let (_o, err, ok) = run_rigger(root, &["canary", "--jobs", bad]);
+        assert!(!ok, "canary --jobs {bad:?} must be rejected");
+        assert!(
+            err.contains("--jobs"),
+            "the error names --jobs for input {bad:?}; stderr: {err}"
+        );
+    }
+}
+
+/// A well-formed `--jobs <n>` is accepted and does not disturb the OTHER flags around it:
+/// combined with a missing corpus dir, the failure is still the corpus error (not a --jobs
+/// error), proving the flag is consumed and validated ahead of corpus loading without
+/// leaking into or swallowing the unrelated corpus failure the sibling test above already
+/// pins for `--corpus` alone.
+#[test]
+fn canary_accepts_a_jobs_flag_alongside_other_flags() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_o, err, ok) = run_rigger(root, &["canary", "--jobs", "4", "--corpus", "no-such-dir"]);
+    assert!(
+        !ok,
+        "a missing corpus dir must still fail with --jobs present"
+    );
+    assert!(
+        err.contains("canary") && !err.contains("--jobs"),
+        "a valid --jobs must not itself be blamed for the (unrelated) corpus failure; \
+         stderr: {err}"
+    );
+}
+
+/// The `--jobs` usage-text shape is pinned as a white-box check against the private
+/// `USAGE_TEXT` string constant inside `src/main.rs`'s own unit tests
+/// (`usage_text_gives_the_jobs_flag_its_own_description_line`). That leaves an outside-in
+/// gap this suite's sibling `--jobs` tests above do not close either (they pin the FLAG's
+/// validation behavior, never the printed help TEXT): nothing proves the text actually
+/// reaches stdout/stderr of the compiled, installed `rigger` binary a real operator runs,
+/// as opposed to a string that merely looks right in the crate but could still be
+/// mis-wired into `usage()`, truncated, or mangled by output buffering. Drive the real
+/// binary's `help` command and assert the same two structural properties the unit test
+/// pins, but read off the actual process output.
+#[test]
+fn rigger_help_gives_the_jobs_flag_its_own_description_line_through_the_real_binary() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_o, err, ok) = run_rigger(root, &["help"]);
+    assert!(ok, "rigger help must succeed; stderr: {err}");
+
+    // The --jobs tag introduces its OWN description, not text describing something else.
+    let tag = "[--jobs <n>]";
+    let tag_pos = err
+        .find(tag)
+        .unwrap_or_else(|| panic!("printed help names the --jobs flag; stderr: {err}"));
+    let after_tag = err[tag_pos + tag.len()..].trim_start_matches(' ');
+    assert!(
+        after_tag.starts_with("caps the total concurrent review-panel spawns"),
+        "the --jobs tag in the real binary's help output must introduce its OWN \
+         description, not text describing something else: found {:?}",
+        &after_tag[..after_tag.len().min(80)]
+    );
+
+    // The pre-existing --corpus sentence is not split by a flag tag spliced into its middle.
+    let corpus_start = err
+        .find("(default ./canaries) and score per-tier catch rate")
+        .unwrap_or_else(|| panic!("printed help names the --corpus default; stderr: {err}"));
+    let corpus_end = err
+        .find("(read back with `rigger stats --canary`)")
+        .unwrap_or_else(|| panic!("printed help names the canary stats readback; stderr: {err}"));
+    let corpus_sentence = &err[corpus_start..corpus_end];
+    assert!(
+        !corpus_sentence.contains('['),
+        "no flag tag may be spliced into the middle of the --corpus sentence in the real \
+         binary's help output: {corpus_sentence:?}"
+    );
+}
+
 /// Seed `<root>/.rigger/events.db` under the pinned identity `project` with TWO runs on the
 /// conductor's run stream, each stamping a tier's resolved model on a unit-lifecycle event
 /// the way the conductor does (spec 05 line 52 / spec 13b unit 1): run `r1` resolves the
