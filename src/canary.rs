@@ -39,7 +39,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::conductor::{
-    build_system_prompt, review_protocol, verdict_approves, AgentDriver, Error, SpawnOpts,
+    build_system_prompt, review_protocol, verdict_approves, AgentDriver, AgentResult, Error,
+    SpawnOpts,
 };
 use crate::config::{split_frontmatter, AgentDef, Config, ReviewPanel};
 use crate::contextgraph::TYPE_REVIEW_FINDING;
@@ -65,6 +66,15 @@ pub const STATUS_CANARY: &str = "canary";
 /// aggregating every historical run - mirroring how [`runscope::current_run`] scopes the
 /// run stream by its opening `RunStarted`.
 pub const STATUS_CANARY_RUN: &str = "canary-run";
+
+/// The status token the run-level HEADER event rides (MODEL PINNING criterion): binary
+/// build, corpus content hash, and every tier's ACTUALLY-resolved model id, recorded once
+/// per batch AFTER every item is scored (so a live-driver resolved id observed mid-run is
+/// captured before it is written). Distinct from [`STATUS_CANARY_RUN`], which only OPENS
+/// the batch and stays byte-for-byte unchanged by this criterion - [`latest_run`] scopes by
+/// that opening marker, and this trailing event still falls inside the scoped slice because
+/// it is appended AFTER it, before the next batch's marker (if any).
+pub const STATUS_CANARY_HEADER: &str = "canary-header";
 
 /// The tier-1 label (the expert lenses, collectively) catch rate is reported for.
 pub const TIER_LENS: &str = "lens";
@@ -172,6 +182,71 @@ pub fn cataloged_classes(corpus: &[CanaryItem]) -> BTreeSet<String> {
         .filter(|c| c.planted && !c.defect_class.trim().is_empty())
         .map(|c| c.defect_class.clone())
         .collect()
+}
+
+/// A deterministic content hash over the loaded corpus (MODEL PINNING criterion's scorecard
+/// header): every item's scored fields, in the corpus's own id-sorted order ([`load_corpus`]
+/// already sorts it), fold through the crate's ONE stable content-hash primitive
+/// ([`crate::grounder::symbols::store::content_hash`]) rather than growing an eighth parallel
+/// FNV-1a copy (the consolidation of the existing seven is separately tracked, out of this
+/// criterion's scope). Any change to any item's content moves the hash; the same corpus
+/// content always hashes the same, across processes and machines.
+pub fn corpus_hash(corpus: &[CanaryItem]) -> String {
+    let mut s = String::new();
+    for item in corpus {
+        s.push_str(&item.id);
+        s.push('\u{0}');
+        s.push_str(&item.defect_class);
+        s.push('\u{0}');
+        s.push(if item.planted { '1' } else { '0' });
+        s.push('\u{0}');
+        s.push_str(&item.anchor);
+        s.push('\u{0}');
+        s.push_str(&item.expected_verdict);
+        s.push('\u{0}');
+        s.push_str(&item.expected_tier);
+        s.push('\u{0}');
+        s.push_str(&item.review);
+        s.push('\n');
+    }
+    crate::grounder::symbols::store::content_hash(&s)
+}
+
+/// A parsed `--model <tier>=<id>` pin set (MODEL PINNING criterion): tier label
+/// ([`TIER_LENS`], [`TIER_ADVERSARY`], or [`ROLE_ADJUDICATOR`]) -> the model id to force
+/// that tier's agent(s) to for this run only.
+pub type ModelPins = BTreeMap<String, String>;
+
+/// Apply `pins` to a CLONE of `cfg`: every agent `panel` names for a pinned tier gets its
+/// `model` forced to the pinned id and `model_ladder` CLEARED (so [`AgentDef::model_for_attempt`]
+/// cannot shadow the pin - canary always spawns at attempt 0, but clearing the ladder keeps the
+/// invariant obvious by construction rather than accidental-by-attempt-number). Every other
+/// tier's agent is untouched, and so is the ORIGINAL `cfg` (and the file it was loaded from) -
+/// the pin exists for THIS run only, never persisted. An unrecognized tier key (arg parsing
+/// already rejects one before this is called) resolves no agent ids and is a no-op.
+pub fn apply_model_pins(cfg: &Config, panel: &ReviewPanel, pins: &ModelPins) -> Config {
+    let mut pinned = cfg.clone();
+    for (tier, model_id) in pins {
+        let ids: Vec<&str> = if tier == TIER_LENS {
+            panel.lenses.iter().map(String::as_str).collect()
+        } else if tier == TIER_ADVERSARY {
+            vec![panel.adversary.as_str()]
+        } else if tier == ROLE_ADJUDICATOR {
+            vec![panel.adjudicator.as_str()]
+        } else {
+            Vec::new()
+        };
+        for id in ids {
+            if id.is_empty() {
+                continue;
+            }
+            if let Some(agent) = pinned.agents.get_mut(id) {
+                agent.model = model_id.clone();
+                agent.model_ladder.clear();
+            }
+        }
+    }
+    pinned
 }
 
 /// The scored outcome of running the review panel against one canary item.
@@ -284,11 +359,91 @@ fn bool_field(v: &Value, key: &str) -> bool {
     v.get(key).and_then(Value::as_bool).unwrap_or(false)
 }
 
-/// The full result of one `rigger canary` invocation: the batch id it recorded under and
-/// the per-item outcomes (for the CLI's summary print; the durable record is the events).
+/// The full result of one `rigger canary` invocation: the batch id it recorded under, the
+/// per-item outcomes, and every tier's resolved model id actually observed this run (for the
+/// CLI's summary print and to build the [`CanaryHeader`] it records; the durable record is
+/// the events).
 pub struct CanaryReport {
     pub batch: String,
     pub outcomes: Vec<CanaryOutcome>,
+    /// Every tier's resolved model id ACTUALLY reported by the driver this run (MODEL
+    /// PINNING criterion), keyed by tier label ([`TIER_LENS`], [`TIER_ADVERSARY`],
+    /// [`ROLE_ADJUDICATOR`]). A tier the driver never reported an id for (the blocking cli
+    /// driver today; spec 61 c10's disclosed follow-up) is simply absent - never a fake or
+    /// defaulted value.
+    pub resolved_models: BTreeMap<String, String>,
+}
+
+/// The run-level facts the MODEL PINNING criterion's scorecard header renders: what built
+/// this binary, what corpus content was scored, and what model id each review tier actually
+/// resolved to (sourced from [`crate::conductor::AgentResult::resolved_model`], never a
+/// configured alias) - so a pinned A/B arm is auditable from the scorecard alone.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CanaryHeader {
+    pub binary_build: String,
+    pub corpus_hash: String,
+    pub resolved_models: BTreeMap<String, String>,
+}
+
+impl CanaryHeader {
+    /// Serialize this header to its canary-stream event: a fold-neutral `UnitStatus` (the
+    /// [`STATUS_CANARY_HEADER`] token), tagged with the batch id like every other canary
+    /// event so `stats --canary`'s scoped read finds it alongside the outcomes it describes.
+    fn to_event(&self, batch: &str) -> Event {
+        let data = json!({
+            "id": batch,
+            "status": STATUS_CANARY_HEADER,
+            "binary_build": self.binary_build,
+            "corpus_hash": self.corpus_hash,
+            "resolved_models": self.resolved_models,
+        });
+        Event::new(
+            TYPE_UNIT_STATUS,
+            serde_json::to_vec(&data).unwrap_or_default(),
+        )
+        .with_meta(META_CANARY_BATCH, batch)
+    }
+
+    /// Decode a header from a canary-stream event, or `None` if it is not a
+    /// [`STATUS_CANARY_HEADER`] `UnitStatus` (an outcome, a batch marker, or a malformed/
+    /// legacy event predating this criterion - which must decode as ABSENT, never a crash or
+    /// a fabricated header).
+    pub fn from_event(e: &Event) -> Option<CanaryHeader> {
+        if e.type_ != TYPE_UNIT_STATUS {
+            return None;
+        }
+        let v: Value = serde_json::from_slice(&e.data).ok()?;
+        if v.get("status").and_then(Value::as_str) != Some(STATUS_CANARY_HEADER) {
+            return None;
+        }
+        Some(CanaryHeader {
+            binary_build: str_field(&v, "binary_build"),
+            corpus_hash: str_field(&v, "corpus_hash"),
+            resolved_models: v
+                .get("resolved_models")
+                .and_then(Value::as_object)
+                .map(|obj| {
+                    obj.iter()
+                        .filter_map(|(k, val)| val.as_str().map(|s| (k.clone(), s.to_string())))
+                        .collect()
+                })
+                .unwrap_or_default(),
+        })
+    }
+}
+
+/// Record the MODEL PINNING criterion's run-level header event for `batch` (spec 61): binary
+/// build, corpus hash, and every tier's actually-resolved model id. Appended by the CALLER
+/// after [`run_canary`] returns (once every item's resolved-model observations are merged
+/// onto [`CanaryReport::resolved_models`]), never from inside `run_canary` itself, so the
+/// OPENING [`STATUS_CANARY_RUN`] marker `run_canary` already writes stays byte-for-byte
+/// unchanged by this criterion.
+pub fn record_header(
+    store: &dyn EventStore,
+    batch: &str,
+    header: &CanaryHeader,
+) -> Result<(), Error> {
+    append(store, header.to_event(batch))
 }
 
 /// Run the review panel against every corpus item and RECORD the scored outcomes to the
@@ -347,12 +502,24 @@ pub fn run_canary(
         score_item(driver, cfg, panel, item, lens_workers)
     });
     let mut outcomes = Vec::with_capacity(scored.len());
+    let mut resolved_models: BTreeMap<String, String> = BTreeMap::new();
     for outcome in scored {
-        let outcome = outcome?;
+        let (outcome, item_resolved) = outcome?;
         append(store, outcome.to_event(&batch))?;
         outcomes.push(outcome);
+        // MODEL PINNING criterion: fold this item's per-tier resolved-model observations
+        // into the run-level header - the last non-empty observation per tier wins (a
+        // homogeneously pinned/config'd tier resolves identically on every spawn in
+        // practice, so which spawn happens to be "last" is not observable).
+        for (tier, id) in item_resolved {
+            resolved_models.insert(tier, id);
+        }
     }
-    Ok(CanaryReport { batch, outcomes })
+    Ok(CanaryReport {
+        batch,
+        outcomes,
+        resolved_models,
+    })
 }
 
 /// The default `--jobs` total concurrent-spawn budget `rigger canary` uses when the
@@ -453,7 +620,7 @@ fn score_item(
     panel: &ReviewPanel,
     item: &CanaryItem,
     lens_workers: usize,
-) -> Result<CanaryOutcome, Error> {
+) -> Result<(CanaryOutcome, BTreeMap<String, String>), Error> {
     let mut caught = BTreeSet::new();
     let mut findings: Vec<Finding> = Vec::new();
     // The findings-volume measure (FINDINGS VOLUME criterion): how many findings each tier
@@ -463,6 +630,13 @@ fn score_item(
     let mut findings_raised: BTreeMap<String, u64> = BTreeMap::new();
     findings_raised.insert(TIER_LENS.to_string(), 0);
     findings_raised.insert(TIER_ADVERSARY.to_string(), 0);
+    // MODEL PINNING criterion: every tier's resolved model id ACTUALLY reported this item
+    // (sourced from `AgentResult::resolved_model`, never a config alias). Unlike
+    // `findings_raised` this is NOT seeded - a driver that reports no id (the blocking cli
+    // driver today) leaves the tier absent rather than fabricating an empty/placeholder
+    // entry, so `run_canary`'s run-level merge can tell "never observed" from "observed
+    // empty" apart cleanly.
+    let mut resolved_models: BTreeMap<String, String> = BTreeMap::new();
 
     // TIER 1: the expert lenses, collectively one tier, run CONCURRENTLY over
     // lens_workers. Any lens raising a finding about the anchor catches the defect for
@@ -474,17 +648,21 @@ fn score_item(
             run_review_tier(driver, cfg, item, lens, &lens_role(lens))
         });
     for raised in lens_results {
-        let raised = raised?;
+        let (raised, resolved) = raised?;
         if raised.iter().any(|f| f.catches(item)) {
             caught.insert(TIER_LENS.to_string());
         }
         *findings_raised.entry(TIER_LENS.to_string()).or_insert(0) += raised.len() as u64;
         findings.extend(raised);
+        if !resolved.is_empty() {
+            resolved_models.insert(TIER_LENS.to_string(), resolved);
+        }
     }
 
     // TIER 2: the adversary, holding the lenses to a higher bar.
     if !panel.adversary.is_empty() {
-        let raised = run_review_tier(driver, cfg, item, &panel.adversary, ROLE_ADVERSARY)?;
+        let (raised, resolved) =
+            run_review_tier(driver, cfg, item, &panel.adversary, ROLE_ADVERSARY)?;
         if raised.iter().any(|f| f.catches(item)) {
             caught.insert(TIER_ADVERSARY.to_string());
         }
@@ -492,13 +670,19 @@ fn score_item(
             .entry(TIER_ADVERSARY.to_string())
             .or_insert(0) += raised.len() as u64;
         findings.extend(raised);
+        if !resolved.is_empty() {
+            resolved_models.insert(TIER_ADVERSARY.to_string(), resolved);
+        }
     }
 
     // TIER 3: the adjudicator renders the gating verdict, judged through the SAME
     // fail-closed authority the live loop uses. Position-bias probe: re-present the same
     // findings reversed - a verdict that flips on order alone is unstable.
     let ordered: Vec<&Finding> = findings.iter().collect();
-    let approved = adjudicate(driver, cfg, panel, item, &ordered, "a")?;
+    let (approved, resolved) = adjudicate(driver, cfg, panel, item, &ordered, "a")?;
+    if !resolved.is_empty() {
+        resolved_models.insert(ROLE_ADJUDICATOR.to_string(), resolved);
+    }
     let stable = if ordered.len() < 2 {
         // Nothing to reorder - position bias is not probeable, so it is trivially stable
         // (and re-running would only re-present the identical single/zero-finding prompt).
@@ -506,7 +690,10 @@ fn score_item(
     } else {
         let mut reversed: Vec<&Finding> = ordered.clone();
         reversed.reverse();
-        let approved_reversed = adjudicate(driver, cfg, panel, item, &reversed, "b")?;
+        let (approved_reversed, resolved) = adjudicate(driver, cfg, panel, item, &reversed, "b")?;
+        if !resolved.is_empty() {
+            resolved_models.insert(ROLE_ADJUDICATOR.to_string(), resolved);
+        }
         approved == approved_reversed
     };
 
@@ -514,42 +701,48 @@ fn score_item(
     // Correct iff the adjudicator's approve/reject matches the expectation: a planted
     // defect (expected_reject) must NOT be approved, a known-good control must be.
     let verdict_correct = approved != expected_reject;
-    Ok(CanaryOutcome {
-        id: item.id.clone(),
-        defect_class: item.defect_class.clone(),
-        planted: item.planted,
-        expected_reject,
-        expected_tier: item.expected_tier.clone(),
-        caught_by: caught.into_iter().collect(),
-        verdict_approved: approved,
-        verdict_correct,
-        stable,
-        findings_raised,
-    })
+    Ok((
+        CanaryOutcome {
+            id: item.id.clone(),
+            defect_class: item.defect_class.clone(),
+            planted: item.planted,
+            expected_reject,
+            expected_tier: item.expected_tier.clone(),
+            caught_by: caught.into_iter().collect(),
+            verdict_approved: approved,
+            verdict_correct,
+            stable,
+            findings_raised,
+        },
+        resolved_models,
+    ))
 }
 
 /// Run one review TIER (a lens or the adversary) against a canary item and collect the
 /// findings it emits. The reviewer receives the item's code under review plus the SAME
 /// [`review_protocol`] the live loop appends, so it attributes each finding by its role
-/// token; the emit callback captures every `ReviewFinding` in process (the cli driver
-/// bridges a subprocess reviewer's stdout findings through the same callback).
+/// token; the emit callback captures every `ReviewFinding` it emits (the cli driver
+/// bridges a subprocess reviewer's stdout findings through the same callback). The second
+/// element of the returned pair is the tier's ACTUALLY-resolved model id (MODEL PINNING
+/// criterion), sourced from `AgentResult::resolved_model`.
 fn run_review_tier(
     driver: &dyn AgentDriver,
     cfg: &Config,
     item: &CanaryItem,
     agent_id: &str,
     role: &str,
-) -> Result<Vec<Finding>, Error> {
+) -> Result<(Vec<Finding>, String), Error> {
     let agent = agent_of(cfg, agent_id, role)?;
     let prompt = format!("{}\n\n{}", review_header(item), review_protocol(role));
     let opts = canary_opts(item, role, agent);
-    let (_output, findings) = spawn_collecting(driver, agent, &prompt, &opts)?;
-    Ok(findings)
+    let (result, findings) = spawn_collecting(driver, agent, &prompt, &opts)?;
+    Ok((findings, result.resolved_model))
 }
 
 /// Run the adjudicator against a canary item with the collected findings presented in the
-/// given order, and return whether it APPROVED (via the fail-closed [`verdict_approves`]).
-/// `ordinal` distinguishes the natural-order and reversed-order probe spawns by id.
+/// given order, and return whether it APPROVED (via the fail-closed [`verdict_approves`])
+/// plus the ACTUALLY-resolved model id (MODEL PINNING criterion). `ordinal` distinguishes
+/// the natural-order and reversed-order probe spawns by id.
 fn adjudicate(
     driver: &dyn AgentDriver,
     cfg: &Config,
@@ -557,14 +750,14 @@ fn adjudicate(
     item: &CanaryItem,
     findings: &[&Finding],
     ordinal: &str,
-) -> Result<bool, Error> {
+) -> Result<(bool, String), Error> {
     let agent = agent_of(cfg, &panel.adjudicator, ROLE_ADJUDICATOR)?;
     let prompt = adjudicator_prompt(item, findings);
     let mut opts = canary_opts(item, ROLE_ADJUDICATOR, agent);
     // Distinguish the two probe spawns (natural vs reversed order) by id.
     opts.id = format!("{}:{ordinal}", opts.id);
-    let (output, _findings) = spawn_collecting(driver, agent, &prompt, &opts)?;
-    Ok(verdict_approves(&output))
+    let (result, _findings) = spawn_collecting(driver, agent, &prompt, &opts)?;
+    Ok((verdict_approves(&result.output), result.resolved_model))
 }
 
 /// Look up a canary reviewer's agent definition, erroring clearly when the panel names an
@@ -613,7 +806,7 @@ fn spawn_collecting(
     agent: &AgentDef,
     prompt: &str,
     opts: &SpawnOpts,
-) -> Result<(String, Vec<Finding>), Error> {
+) -> Result<(AgentResult, Vec<Finding>), Error> {
     let findings = RefCell::new(Vec::new());
     let emit = |t: &str, v: Value| -> Result<(), Error> {
         if t == TYPE_REVIEW_FINDING {
@@ -636,7 +829,7 @@ fn spawn_collecting(
         Ok(())
     };
     let result = driver.spawn(agent, prompt, opts, &emit)?;
-    Ok((result.output, findings.into_inner()))
+    Ok((result, findings.into_inner()))
 }
 
 /// The header presented to every tier: names the file under review (so a reviewer that
@@ -703,7 +896,6 @@ fn is_batch_marker(e: &Event) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::conductor::AgentResult;
     use crate::eventstore::sqlite::Store;
     use crate::eventstore::Direction;
 
@@ -741,6 +933,10 @@ mod tests {
         catching_tier: &'static str, // TIER_LENS | TIER_ADVERSARY | "" (nobody catches)
         planted_anchors: Vec<String>,
         adjudicator_order_sensitive: bool,
+        // The resolved model id EVERY spawn of this driver reports (MODEL PINNING
+        // criterion): empty (the default every pre-existing test uses) means "not
+        // reported", exactly like the real blocking cli driver.
+        resolved_model: String,
     }
 
     impl AgentDriver for Scripted {
@@ -760,7 +956,7 @@ mod tests {
                 let verdict = if reject { "reject" } else { "approve" };
                 return Ok(AgentResult {
                     output: format!("{{\"verdict\":\"{verdict}\"}}"),
-                    resolved_model: String::new(),
+                    resolved_model: self.resolved_model.clone(),
                 });
             }
             // The anchor the review header names, between the first pair of backticks.
@@ -783,7 +979,7 @@ mod tests {
             emit(TYPE_REVIEW_FINDING, finding)?;
             Ok(AgentResult {
                 output: "reviewed".into(),
-                resolved_model: String::new(),
+                resolved_model: self.resolved_model.clone(),
             })
         }
     }
@@ -892,9 +1088,10 @@ mod tests {
             catching_tier: TIER_ADVERSARY,
             planted_anchors: vec!["leak.rs".into()],
             adjudicator_order_sensitive: false,
+            resolved_model: String::new(),
         };
         let it = item("leak", "resource-leak", true, "reject", "adversary");
-        let outcome = score_item(&driver, &cfg(), &panel(), &it, 1).unwrap();
+        let (outcome, _resolved) = score_item(&driver, &cfg(), &panel(), &it, 1).unwrap();
         assert_eq!(outcome.caught_by, vec![TIER_ADVERSARY.to_string()]);
         assert!(
             !outcome.verdict_approved,
@@ -915,9 +1112,10 @@ mod tests {
             catching_tier: TIER_ADVERSARY,
             planted_anchors: vec![], // clean.rs is NOT planted
             adjudicator_order_sensitive: false,
+            resolved_model: String::new(),
         };
         let it = item("clean", "none", false, "approve", "");
-        let outcome = score_item(&driver, &cfg(), &panel(), &it, 1).unwrap();
+        let (outcome, _resolved) = score_item(&driver, &cfg(), &panel(), &it, 1).unwrap();
         assert!(
             outcome.caught_by.is_empty(),
             "a known-good unit catches nothing"
@@ -939,9 +1137,10 @@ mod tests {
             catching_tier: TIER_ADVERSARY,
             planted_anchors: vec!["offbyone.rs".into()],
             adjudicator_order_sensitive: true,
+            resolved_model: String::new(),
         };
         let it = item("offbyone", "off-by-one", true, "reject", "adversary");
-        let outcome = score_item(&driver, &cfg(), &panel(), &it, 1).unwrap();
+        let (outcome, _resolved) = score_item(&driver, &cfg(), &panel(), &it, 1).unwrap();
         assert!(
             !outcome.stable,
             "a verdict that flips on finding order must be scored unstable"
@@ -1003,6 +1202,7 @@ mod tests {
                 catching_tier: TIER_LENS,
                 planted_anchors: vec!["fanout.rs".into()],
                 adjudicator_order_sensitive: false,
+                resolved_model: String::new(),
             },
         };
         let mut ids: Vec<&str> = lenses.to_vec();
@@ -1011,7 +1211,7 @@ mod tests {
         let p = panel_with_lenses(&lenses);
         let it = item("fanout", "off-by-one", true, "reject", "lens");
 
-        let outcome = score_item(&driver, &c, &p, &it, lenses.len()).unwrap();
+        let (outcome, _resolved) = score_item(&driver, &c, &p, &it, lenses.len()).unwrap();
         assert_eq!(
             outcome.caught_by,
             vec![TIER_LENS.to_string()],
@@ -1037,6 +1237,7 @@ mod tests {
             catching_tier: TIER_LENS,
             planted_anchors: vec!["det.rs".into()],
             adjudicator_order_sensitive: false,
+            resolved_model: String::new(),
         };
 
         let serial = score_item(&driver, &c, &p, &it, 1).unwrap();
@@ -1063,9 +1264,10 @@ mod tests {
             catching_tier: "", // nobody catches - every finding raised is a benign nit
             planted_anchors: vec![],
             adjudicator_order_sensitive: false,
+            resolved_model: String::new(),
         };
 
-        let outcome = score_item(&driver, &c, &p, &it, lenses.len()).unwrap();
+        let (outcome, _resolved) = score_item(&driver, &c, &p, &it, lenses.len()).unwrap();
         assert!(
             outcome.caught_by.is_empty(),
             "nobody caught this (unplanted-for-this-driver) anchor"
@@ -1093,9 +1295,10 @@ mod tests {
             catching_tier: "",
             planted_anchors: vec![],
             adjudicator_order_sensitive: false,
+            resolved_model: String::new(),
         };
         let it = item("quiet", "off-by-one", true, "reject", "lens");
-        let outcome = score_item(&driver, &cfg(), &p, &it, 1).unwrap();
+        let (outcome, _resolved) = score_item(&driver, &cfg(), &p, &it, 1).unwrap();
         assert_eq!(
             outcome.findings_raised.get(TIER_ADVERSARY),
             Some(&0),
@@ -1137,6 +1340,7 @@ mod tests {
             catching_tier: TIER_ADVERSARY,
             planted_anchors: vec!["leak.rs".into()],
             adjudicator_order_sensitive: false,
+            resolved_model: String::new(),
         };
         let corpus = vec![
             item("leak", "resource-leak", true, "reject", "adversary"),
@@ -1177,6 +1381,7 @@ mod tests {
             catching_tier: "",
             planted_anchors: vec![],
             adjudicator_order_sensitive: false,
+            resolved_model: String::new(),
         };
         let mut p = panel();
         p.adjudicator = String::new();
@@ -1393,6 +1598,7 @@ mod tests {
                 catching_tier: TIER_LENS,
                 planted_anchors: vec!["i1.rs".into(), "i2.rs".into(), "i3.rs".into()],
                 adjudicator_order_sensitive: false,
+                resolved_model: String::new(),
             },
         };
         let store = Store::open(":memory:").unwrap();
@@ -1428,6 +1634,7 @@ mod tests {
                 catching_tier: TIER_LENS,
                 planted_anchors: vec!["i1.rs".into(), "i2.rs".into(), "i3.rs".into()],
                 adjudicator_order_sensitive: false,
+                resolved_model: String::new(),
             },
         };
         let store = Store::open(":memory:").unwrap();
@@ -1461,6 +1668,7 @@ mod tests {
             catching_tier: TIER_LENS,
             planted_anchors: vec!["i1.rs".into(), "i4.rs".into()],
             adjudicator_order_sensitive: false,
+            resolved_model: String::new(),
         };
 
         let serial_store = Store::open(":memory:").unwrap();
@@ -1496,5 +1704,243 @@ mod tests {
             message.contains(TYPE_UNIT_STATUS),
             "and names the record that was lost: {message}"
         );
+    }
+
+    // -----------------------------------------------------------------------------------
+    // MODEL PINNING (spec 61, c7): `--model <tier>=<id>` resolves the named tier's agents,
+    // other tiers and the config stay untouched, and the scorecard header records binary
+    // build, corpus hash, and every tier's ACTUALLY-resolved model id (never a config alias).
+    // -----------------------------------------------------------------------------------
+
+    #[test]
+    fn apply_model_pins_overrides_only_the_pinned_tiers_agents_and_leaves_cfg_and_other_tiers_untouched(
+    ) {
+        let mut c = cfg_for(&["lens-a", "lens-b", "adv", "adj"]);
+        for id in ["lens-a", "lens-b", "adv", "adj"] {
+            let a = c.agents.get_mut(id).unwrap();
+            a.model = format!("{id}-default");
+            a.model_ladder = vec!["haiku".into(), "opus".into()];
+        }
+        let p = panel_with_lenses(&["lens-a", "lens-b"]);
+
+        let mut pins = ModelPins::new();
+        pins.insert(TIER_LENS.to_string(), "pinned-x".to_string());
+        let pinned = apply_model_pins(&c, &p, &pins);
+
+        for id in ["lens-a", "lens-b"] {
+            let a = &pinned.agents[id];
+            assert_eq!(a.model, "pinned-x", "{id} must resolve to the pinned id");
+            assert!(
+                a.model_ladder.is_empty(),
+                "{id}'s ladder must be cleared so it cannot shadow the pin"
+            );
+        }
+        // Other tiers, not named by the pin, keep their configured model exactly.
+        assert_eq!(pinned.agents["adv"].model, "adv-default");
+        assert_eq!(pinned.agents["adj"].model, "adj-default");
+        // The ORIGINAL config passed in is never mutated - only the returned clone changes.
+        assert_eq!(c.agents["lens-a"].model, "lens-a-default");
+        assert_eq!(
+            c.agents["lens-a"].model_ladder,
+            vec!["haiku".to_string(), "opus".to_string()]
+        );
+    }
+
+    #[test]
+    fn apply_model_pins_with_no_pins_changes_nothing() {
+        let c = cfg();
+        let pinned = apply_model_pins(&c, &panel(), &ModelPins::new());
+        assert_eq!(pinned.agents["sdet"].model, c.agents["sdet"].model);
+        assert_eq!(
+            pinned.agents["sdet"].model_ladder,
+            c.agents["sdet"].model_ladder
+        );
+    }
+
+    #[test]
+    fn apply_model_pins_an_unknown_tier_key_resolves_no_agent_and_does_not_panic() {
+        // Arg parsing (main.rs) rejects an unknown tier before this is ever called; this
+        // pins the function's OWN defensive behavior should it ever be reached anyway - an
+        // unknown tier must resolve NO agent, not spuriously fall into the adversary or
+        // adjudicator branch through a flipped tier-name comparison.
+        let c = cfg();
+        let mut pins = ModelPins::new();
+        pins.insert("bogus-tier".to_string(), "x".to_string());
+        let pinned = apply_model_pins(&c, &panel(), &pins);
+        assert_eq!(pinned.agents["sdet"].model, c.agents["sdet"].model);
+        assert_eq!(pinned.agents["adv"].model, c.agents["adv"].model);
+        assert_eq!(pinned.agents["adj"].model, c.agents["adj"].model);
+    }
+
+    #[test]
+    fn corpus_hash_is_stable_for_the_same_corpus_and_moves_on_any_content_change() {
+        let a = vec![item("x", "off-by-one", true, "reject", "lens")];
+        let b = vec![item("x", "off-by-one", true, "reject", "lens")];
+        assert_eq!(
+            corpus_hash(&a),
+            corpus_hash(&b),
+            "identical corpus content hashes identically"
+        );
+
+        let mut changed_review = a.clone();
+        changed_review[0].review.push_str(" // changed");
+        assert_ne!(
+            corpus_hash(&a),
+            corpus_hash(&changed_review),
+            "a changed review body moves the hash"
+        );
+
+        let mut changed_anchor = a.clone();
+        changed_anchor[0].anchor = "different.rs".to_string();
+        assert_ne!(
+            corpus_hash(&a),
+            corpus_hash(&changed_anchor),
+            "a changed anchor moves the hash"
+        );
+    }
+
+    #[test]
+    fn score_item_reports_the_resolved_model_the_driver_actually_returned_per_tier() {
+        let lenses = ["lens-a"];
+        let mut ids: Vec<&str> = lenses.to_vec();
+        ids.extend(["adv", "adj"]);
+        let c = cfg_for(&ids);
+        let p = panel_with_lenses(&lenses);
+        let it = item("resolved", "off-by-one", true, "reject", "lens");
+        let driver = Scripted {
+            catching_tier: "",
+            planted_anchors: vec![],
+            adjudicator_order_sensitive: false,
+            resolved_model: "resolved-id-x".to_string(),
+        };
+
+        let (_outcome, resolved) = score_item(&driver, &c, &p, &it, 1).unwrap();
+        assert_eq!(
+            resolved.get(TIER_LENS),
+            Some(&"resolved-id-x".to_string()),
+            "the lens tier's resolved id comes from AgentResult, not the config"
+        );
+        assert_eq!(
+            resolved.get(TIER_ADVERSARY),
+            Some(&"resolved-id-x".to_string())
+        );
+        assert_eq!(
+            resolved.get(ROLE_ADJUDICATOR),
+            Some(&"resolved-id-x".to_string())
+        );
+    }
+
+    #[test]
+    fn score_item_reports_no_resolved_model_for_a_tier_whose_driver_leaves_it_empty() {
+        // The real blocking cli driver (spec 61 c10's disclosed scope) always leaves
+        // resolved_model empty - this must read as ABSENT, never a fake/defaulted entry.
+        let driver = Scripted {
+            catching_tier: "",
+            planted_anchors: vec![],
+            adjudicator_order_sensitive: false,
+            resolved_model: String::new(),
+        };
+        let it = item("unmeasured", "off-by-one", true, "reject", "lens");
+        let (_outcome, resolved) = score_item(&driver, &cfg(), &panel(), &it, 1).unwrap();
+        assert!(
+            resolved.is_empty(),
+            "an empty AgentResult::resolved_model must not be recorded as any tier's id: {resolved:?}"
+        );
+    }
+
+    #[test]
+    fn run_canary_merges_every_items_resolved_models_onto_the_report() {
+        let store = Store::open(":memory:").unwrap();
+        let driver = Scripted {
+            catching_tier: TIER_ADVERSARY,
+            planted_anchors: vec!["leak.rs".into()],
+            adjudicator_order_sensitive: false,
+            resolved_model: "run-wide-id".to_string(),
+        };
+        let corpus = vec![
+            item("leak", "resource-leak", true, "reject", "adversary"),
+            item("clean", "none", false, "approve", ""),
+        ];
+        let report = run_canary(&store, &driver, &cfg(), &panel(), &corpus, 2).unwrap();
+        assert_eq!(
+            report.resolved_models.get(TIER_LENS),
+            Some(&"run-wide-id".to_string())
+        );
+        assert_eq!(
+            report.resolved_models.get(TIER_ADVERSARY),
+            Some(&"run-wide-id".to_string())
+        );
+        assert_eq!(
+            report.resolved_models.get(ROLE_ADJUDICATOR),
+            Some(&"run-wide-id".to_string())
+        );
+    }
+
+    #[test]
+    fn canary_header_round_trips_through_the_wire_event_and_is_found_after_the_outcomes() {
+        let store = Store::open(":memory:").unwrap();
+        let driver = Scripted {
+            catching_tier: TIER_ADVERSARY,
+            planted_anchors: vec!["leak.rs".into()],
+            adjudicator_order_sensitive: false,
+            resolved_model: "resolved-y".to_string(),
+        };
+        let corpus = vec![item("leak", "resource-leak", true, "reject", "adversary")];
+        let report = run_canary(&store, &driver, &cfg(), &panel(), &corpus, 1).unwrap();
+
+        let mut resolved_models = BTreeMap::new();
+        resolved_models.insert(TIER_LENS.to_string(), "resolved-y".to_string());
+        let header = CanaryHeader {
+            binary_build: "rigger 9.9.9 (build test-provenance)".to_string(),
+            corpus_hash: corpus_hash(&corpus),
+            resolved_models,
+        };
+        record_header(&store, &report.batch, &header).unwrap();
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        // The header is appended AFTER the opening marker and every outcome, and still
+        // decodes correctly from that trailing position.
+        assert_eq!(events.len(), 3, "marker + one outcome + the header");
+        let decoded = CanaryHeader::from_event(events.last().unwrap())
+            .expect("the last event is the header and decodes back");
+        assert_eq!(decoded, header, "the header round-trips byte-for-byte");
+
+        // The opening marker is untouched: still the minimal batch-open shape, not a
+        // header - proving this criterion never rewrote it.
+        assert!(is_batch_marker(&events[0]));
+        assert!(
+            CanaryHeader::from_event(&events[0]).is_none(),
+            "the opening marker is not itself a header event"
+        );
+
+        // latest_run's scoping still finds the outcome AND the header, since both were
+        // appended after the (only) marker.
+        let scoped = latest_run(&events);
+        assert_eq!(scoped.len(), 3);
+    }
+
+    #[test]
+    fn canary_header_from_event_is_none_for_a_legacy_or_foreign_event() {
+        // A batch marker is not a header.
+        let marker = Event::new(
+            TYPE_UNIT_STATUS,
+            serde_json::to_vec(&json!({"id":"b","status":STATUS_CANARY_RUN})).unwrap(),
+        );
+        assert!(CanaryHeader::from_event(&marker).is_none());
+        // A per-item outcome is not a header either.
+        let outcome_event = CanaryOutcome {
+            id: "x".into(),
+            defect_class: String::new(),
+            planted: false,
+            expected_reject: false,
+            expected_tier: String::new(),
+            caught_by: Vec::new(),
+            verdict_approved: true,
+            verdict_correct: true,
+            stable: true,
+            findings_raised: BTreeMap::new(),
+        }
+        .to_event("b");
+        assert!(CanaryHeader::from_event(&outcome_event).is_none());
     }
 }
