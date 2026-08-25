@@ -12313,6 +12313,178 @@ fn rigger_help_gives_the_jobs_flag_its_own_description_line_through_the_real_bin
     );
 }
 
+/// MODEL PINNING criterion (spec 61 c7): `--model <tier>=<id>` argument validation is CLI
+/// glue exercised through the real binary, mirroring
+/// `canary_rejects_unknown_arguments_and_a_missing_corpus` - the happy-path pin resolution
+/// itself is covered end-to-end by the library runner test (`canary::apply_model_pins` /
+/// `canary::run_canary` with a scripted driver), which needs no live review agent.
+#[test]
+fn canary_rejects_a_malformed_or_unknown_tier_model_pin() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    // Missing the <tier>=<id> value entirely.
+    let (_o, err, ok) = run_rigger(root, &["canary", "--model"]);
+    assert!(!ok, "--model with no value must be rejected");
+    assert!(
+        err.contains("--model"),
+        "the error names the flag; stderr: {err}"
+    );
+
+    // No `=` separator.
+    let (_o, err, ok) = run_rigger(root, &["canary", "--model", "lensopus"]);
+    assert!(!ok, "a pin with no '=' must be rejected");
+    assert!(
+        err.contains("lensopus"),
+        "the error echoes the bad value; stderr: {err}"
+    );
+
+    // An unknown tier name.
+    let (_o, err, ok) = run_rigger(root, &["canary", "--model", "reviewer=opus"]);
+    assert!(!ok, "an unknown tier must be rejected");
+    assert!(
+        err.contains("reviewer") && err.contains("unknown tier"),
+        "the error names the bad tier; stderr: {err}"
+    );
+
+    // A known tier with an empty id.
+    let (_o, err, ok) = run_rigger(root, &["canary", "--model", "lens="]);
+    assert!(!ok, "an empty model id must be rejected");
+    assert!(
+        err.contains("empty"),
+        "the error says the id is empty; stderr: {err}"
+    );
+}
+
+/// A WELL-FORMED `--model <tier>=<id>` must be ACCEPTED - parsing consumes both the flag
+/// and its value and continues on to the next argument, rather than erroring on the flag or
+/// re-reading it. Proven by reaching the LATER empty-corpus error (arg parsing completed),
+/// mirroring how `canary_rejects_unknown_arguments_and_a_missing_corpus` uses that same
+/// error as the "parsing succeeded" signal.
+#[test]
+fn canary_accepts_a_well_formed_model_pin_and_continues_parsing() {
+    let dir = temp_project();
+    let root = dir.path();
+    let empty = root.join("empty-corpus");
+    std::fs::create_dir_all(&empty).unwrap();
+
+    let (_o, err, ok) = run_rigger(
+        root,
+        &[
+            "canary",
+            "--model",
+            "lens=sonnet",
+            "--corpus",
+            "empty-corpus",
+        ],
+    );
+    assert!(
+        !ok,
+        "the empty corpus still fails - this only pins the model"
+    );
+    assert!(
+        err.contains("no items"),
+        "parsing must advance past --model to reach the corpus-load error, not fail on (or \
+         loop on) the flag itself; stderr: {err}"
+    );
+
+    // Two repeated pins (different tiers) are both consumed correctly.
+    let (_o, err, ok) = run_rigger(
+        root,
+        &[
+            "canary",
+            "--model",
+            "lens=sonnet",
+            "--model",
+            "adversary=opus",
+            "--corpus",
+            "empty-corpus",
+        ],
+    );
+    assert!(!ok);
+    assert!(
+        err.contains("no items"),
+        "repeated --model pins must both be consumed; stderr: {err}"
+    );
+}
+
+/// MODEL PINNING criterion (spec 61 c7): the scorecard header - binary build, corpus hash,
+/// and every tier's resolved model id - reaches `rigger stats --canary`'s stdout through
+/// the FULL production chain: a real `CanaryHeader`-shaped wire event, decoded by
+/// `CanaryHeader::from_event`, folded by `metrics::project_canary`, and rendered by the
+/// (private, binary-only) `format_canary_stats`. The implementer's own render tests in
+/// `src/main.rs` call `format_canary_stats` directly against a hand-built `CanaryMetrics`
+/// that `project_canary` never produced; this drives the compiled binary end to end
+/// instead - the only way to reach `format_canary_stats` at all - mirroring
+/// `stats_canary_reports_the_findings_raised_total_summed_across_items`'s proof for the
+/// FINDINGS VOLUME criterion. The adversary tier is deliberately left out of the seeded
+/// header's `resolved_models`, mirroring a driver (the real blocking cli driver today) that
+/// never reported an id for it, so the honest "unmeasured" render is proven through a real
+/// event too, not just the implementer's hand-built fixture.
+#[test]
+fn stats_canary_reports_the_model_pinning_header_through_a_real_wire_event() {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Event, EventStore, ExpectedRevision};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(&rigger).unwrap();
+    std::fs::write(rigger.join("project.id"), "canary-pin-proj\n").unwrap();
+
+    let backend = Store::open(rigger.join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, "canary-pin-proj");
+    let ty = rigger::ledger::TYPE_UNIT_STATUS;
+    let ev = |json: String| Event::new(ty, json.into_bytes());
+
+    let marker = ev(r#"{"id":"batch-1","status":"canary-run"}"#.to_string());
+    let outcome = ev(
+        r#"{"id":"a","status":"canary","defect_class":"off-by-one","planted":true,"expected_reject":true,"expected_tier":"lens","caught_by":["lens"],"verdict_approved":false,"verdict_correct":true,"stable":true}"#
+            .to_string(),
+    );
+    // The exact wire shape `CanaryHeader::to_event` produces.
+    let header = ev(
+        r#"{"id":"batch-1","status":"canary-header","binary_build":"rigger 7.7.7 (build pin-test)","corpus_hash":"cafef00d","resolved_models":{"lens":"resolved-lens-x","adjudicator":"resolved-adj-y"}}"#
+            .to_string(),
+    );
+
+    store
+        .append("canary", ExpectedRevision::Any, &[marker, outcome, header])
+        .unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["stats", "--canary"]);
+    assert!(ok, "stats --canary must succeed; stderr: {err}");
+    assert!(
+        out.contains("binary build       rigger 7.7.7 (build pin-test)"),
+        "the real header event's binary build reaches stdout; got:\n{out}"
+    );
+    assert!(
+        out.contains("corpus hash        cafef00d"),
+        "the real header event's corpus hash reaches stdout; got:\n{out}"
+    );
+    assert!(
+        out.contains(&format!("{:<16} resolved-lens-x", "lens")),
+        "the lens tier's real resolved id reaches stdout; got:\n{out}"
+    );
+    assert!(
+        out.contains(&format!("{:<16} resolved-adj-y", "adjudicator")),
+        "the adjudicator's real resolved id reaches stdout; got:\n{out}"
+    );
+    assert!(
+        out.contains(&format!("{:<16} unmeasured", "adversary")),
+        "a tier the real header event never reported renders honestly as unmeasured, never \
+         fabricated or blank; got:\n{out}"
+    );
+    // A canary header event never perturbs the run stream.
+    let (run_out, _e, run_ok) = run_rigger(root, &["stats"]);
+    assert!(run_ok);
+    assert!(
+        run_out.contains("no runs recorded yet"),
+        "the header event never lands on the run stream either; got:\n{run_out}"
+    );
+}
+
 /// Seed `<root>/.rigger/events.db` under the pinned identity `project` with TWO runs on the
 /// conductor's run stream, each stamping a tier's resolved model on a unit-lifecycle event
 /// the way the conductor does (spec 05 line 52 / spec 13b unit 1): run `r1` resolves the

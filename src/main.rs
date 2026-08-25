@@ -1439,7 +1439,10 @@ finding-order shuffle, into the project's canary stream\n                       
 [--jobs <n>]              caps the total concurrent review-panel spawns\n                              \
 across sharded items and each item's lens fan-out\n                              \
 together (default: the crate's default worker\n                              \
-width, floored at 2)\n  \
+width, floored at 2)\n            \
+[--model <tier>=<id>]    pins a tier's (lens/adversary/adjudicator)\n                              \
+model for this run only, repeatable; the scorecard\n                              \
+header prints its resolved id\n  \
 rigger playbooks --rebuild  reconstruct the distilled playbook pool under\n                              \
 .rigger/playbooks/ from the recorded LessonLearned\n                              \
 stream: deduplicated, trigger-scoped agent-files the\n                              \
@@ -4400,6 +4403,29 @@ fn canary_stats_lines(
 fn format_canary_stats(m: &metrics::CanaryMetrics) -> Vec<String> {
     let mut lines = Vec::new();
     lines.push("canary stats (judge-the-judges recall):".to_string());
+    // MODEL PINNING criterion (spec 61 c7): binary build, corpus hash, and every tier's
+    // resolved model id - so a pinned A/B arm is auditable from the scorecard alone. Only
+    // rendered once a run has actually recorded a header event (a legacy stream, or a
+    // never-run project via `CanaryMetrics::default()`, leaves `binary_build` empty and
+    // this block is silently omitted rather than printing a blank/misleading line).
+    if !m.binary_build.is_empty() {
+        lines.push(format!("  binary build       {}", m.binary_build));
+        lines.push(format!(
+            "  corpus hash        {}",
+            if m.corpus_hash.is_empty() {
+                "(unmeasured)"
+            } else {
+                &m.corpus_hash
+            },
+        ));
+        lines.push("  resolved model by tier (never a configured alias):".to_string());
+        for (tier, id) in &m.resolved_models {
+            lines.push(format!(
+                "    {tier:<16} {}",
+                if id.is_empty() { "unmeasured" } else { id },
+            ));
+        }
+    }
     lines.push(format!(
         "  items scored       {} ({} planted, {} defect class(es) cataloged)",
         m.items,
@@ -4582,14 +4608,20 @@ struct CanaryArgs {
     /// panel's total concurrent spawns past what the operator asked for. Defaults to
     /// [`canary::default_jobs`] (always greater than one).
     jobs: usize,
+    /// `--model <tier>=<id>` pins (repeatable; tiers: `lens`, `adversary`, `adjudicator`,
+    /// spec 61 MODEL PINNING criterion): forces the named tier's agent(s) to `<id>` for
+    /// THIS run only. Empty when the operator names none.
+    model_pins: canary::ModelPins,
 }
 
-/// Parse `rigger canary`'s flags: `--corpus <dir>`, `--if-model-changed`, and `--jobs <n>`
-/// (spec 61). Unknown flags are rejected, mirroring [`parse_run_args`]'s discipline.
+/// Parse `rigger canary`'s flags: `--corpus <dir>`, `--if-model-changed`, `--jobs <n>`, and
+/// `--model <tier>=<id>` (spec 61). Unknown flags are rejected, mirroring
+/// [`parse_run_args`]'s discipline.
 fn parse_canary_args(args: &[String]) -> Result<CanaryArgs, Box<dyn std::error::Error>> {
     let mut corpus_dir = "canaries".to_string();
     let mut if_model_changed = false;
     let mut jobs = canary::default_jobs();
+    let mut model_pins: canary::ModelPins = canary::ModelPins::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -4616,10 +4648,36 @@ fn parse_canary_args(args: &[String]) -> Result<CanaryArgs, Box<dyn std::error::
                     })?;
                 i += 1;
             }
+            "--model" => {
+                let raw = args.get(i + 1).ok_or(
+                    "canary: --model needs <tier>=<id> (tiers: lens, adversary, adjudicator)",
+                )?;
+                let (tier, id) = raw.split_once('=').ok_or_else(|| {
+                    format!(
+                        "canary: --model {raw:?} is not <tier>=<id> (tiers: lens, adversary, \
+                         adjudicator)"
+                    )
+                })?;
+                if !matches!(
+                    tier,
+                    canary::TIER_LENS | canary::TIER_ADVERSARY | spawn::ROLE_ADJUDICATOR
+                ) {
+                    return Err(format!(
+                        "canary: --model names unknown tier {tier:?} (tiers: lens, adversary, \
+                         adjudicator)"
+                    )
+                    .into());
+                }
+                if id.is_empty() {
+                    return Err(format!("canary: --model {raw:?} names an empty model id").into());
+                }
+                model_pins.insert(tier.to_string(), id.to_string());
+                i += 2;
+            }
             other => {
                 return Err(format!(
                     "canary: unexpected argument {other:?} (usage: rigger canary [--corpus <dir>] \
-                     [--if-model-changed] [--jobs <n>])"
+                     [--if-model-changed] [--jobs <n>] [--model <tier>=<id> ...])"
                 )
                 .into())
             }
@@ -4629,6 +4687,7 @@ fn parse_canary_args(args: &[String]) -> Result<CanaryArgs, Box<dyn std::error::
         corpus_dir,
         if_model_changed,
         jobs,
+        model_pins,
     })
 }
 
@@ -4694,6 +4753,10 @@ fn cmd_canary(args: &[String]) -> Res {
     if panel.is_empty() {
         return Err("canary: defaults.review declares no review panel to measure".into());
     }
+    // MODEL PINNING criterion (spec 61 c7): resolve `--model <tier>=<id>` pins against a
+    // CLONE of `cfg` - the loaded config (and the file it came from) is never mutated, and
+    // an un-pinned tier's agent is byte-for-byte what the config declared.
+    let cfg = canary::apply_model_pins(&cfg, &panel, &args.model_pins);
 
     std::fs::create_dir_all(RIGGER_DIR)?;
     // Sqlite is the canary's local measurement store; migrate a pre-spec-09 namespace once
@@ -4712,6 +4775,19 @@ fn cmd_canary(args: &[String]) -> Res {
         report.batch,
         report.outcomes.len(),
     );
+    // MODEL PINNING criterion: record the run-level header (binary build, corpus hash,
+    // every tier's actually-resolved model id) AFTER scoring, once every item's
+    // resolved-model observations are known - never mutating the opening batch marker
+    // `run_canary` already wrote.
+    canary::record_header(
+        &store,
+        &report.batch,
+        &canary::CanaryHeader {
+            binary_build: version_line(),
+            corpus_hash: canary::corpus_hash(&corpus),
+            resolved_models: report.resolved_models,
+        },
+    )?;
     // Re-read and fold from the store so the printed scorecard is exactly what
     // `rigger stats --canary` will report from the same events.
     let events = store.read_stream(canary::STREAM, 0, Direction::Forward)?;
@@ -18420,6 +18496,54 @@ mod tests {
         assert!(
             out.contains("0 false positive"),
             "zero false positives must render honestly, not be omitted:\n{out}"
+        );
+    }
+
+    /// MODEL PINNING criterion (spec 61 c7): the scorecard header names binary build,
+    /// corpus hash, and every tier's resolved model id once a run has recorded one -
+    /// including a tier the header reported no id for, which must render honestly as
+    /// `unmeasured` rather than a blank or a fabricated value.
+    #[test]
+    fn format_canary_stats_reports_the_model_pinning_header_when_present() {
+        let mut resolved_models = BTreeMap::new();
+        resolved_models.insert("lens".to_string(), "resolved-lens".to_string());
+        resolved_models.insert("adversary".to_string(), String::new());
+        resolved_models.insert("adjudicator".to_string(), "resolved-adj".to_string());
+        let m = metrics::CanaryMetrics {
+            binary_build: "rigger 1.2.3 (build abcdef)".to_string(),
+            corpus_hash: "deadbeef".to_string(),
+            resolved_models,
+            ..Default::default()
+        };
+        let out = format_canary_stats(&m).join("\n");
+        assert!(
+            out.contains("binary build       rigger 1.2.3 (build abcdef)"),
+            "{out}"
+        );
+        assert!(out.contains("corpus hash        deadbeef"), "{out}");
+        assert!(
+            out.contains(&format!("{:<16} resolved-lens", "lens")),
+            "{out}"
+        );
+        assert!(
+            out.contains(&format!("{:<16} unmeasured", "adversary")),
+            "an unreported tier renders honestly, never a fake id:\n{out}"
+        );
+        assert!(
+            out.contains(&format!("{:<16} resolved-adj", "adjudicator")),
+            "{out}"
+        );
+    }
+
+    /// A run that never recorded a header event (a legacy stream, or `rigger stats
+    /// --canary` on a never-run project) must not fabricate one - the section is omitted
+    /// entirely, byte-for-byte like the pre-MODEL-PINNING render.
+    #[test]
+    fn format_canary_stats_omits_the_model_pinning_header_when_the_run_never_recorded_one() {
+        let out = format_canary_stats(&metrics::CanaryMetrics::default()).join("\n");
+        assert!(
+            !out.contains("binary build") && !out.contains("resolved model by tier"),
+            "a legacy/never-run scorecard must not fabricate a header:\n{out}"
         );
     }
 
