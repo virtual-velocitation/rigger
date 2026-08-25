@@ -418,14 +418,22 @@ impl Finding {
 /// `corpus/a.rs`). The tolerance is BOUNDED at segment boundaries, never raw substring:
 /// `extra.rs` is not a match for anchor `a.rs` even though it ends with that text, because
 /// the byte immediately before the shared tail is not `/`.
+///
+/// `about` must be non-empty: `str::strip_suffix("")` trivially succeeds on ANY haystack,
+/// so without this guard an empty `about` (a malformed live finding, or an unvalidated
+/// corpus `anchor:` typo landing on a bare directory path) would invert into a spurious
+/// match whenever `anchor` happens to end in `/` - a fake catch bearing zero relation to
+/// what was actually found. Mirrors the same-shaped guard [`Finding::catches`] already
+/// applies to `anchor` being empty.
 fn paths_match(about: &str, anchor: &str) -> bool {
-    about == anchor
-        || about
-            .strip_suffix(anchor)
-            .is_some_and(|prefix| prefix.ends_with('/'))
-        || anchor
-            .strip_suffix(about)
-            .is_some_and(|prefix| prefix.ends_with('/'))
+    !about.is_empty()
+        && (about == anchor
+            || about
+                .strip_suffix(anchor)
+                .is_some_and(|prefix| prefix.ends_with('/'))
+            || anchor
+                .strip_suffix(about)
+                .is_some_and(|prefix| prefix.ends_with('/')))
 }
 
 /// Score one canary item: run the lenses (tier 1) and the adversary (tier 2) collecting
