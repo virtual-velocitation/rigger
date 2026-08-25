@@ -138,6 +138,7 @@ fn a_tolerant_match_in_a_later_about_entry_still_scores_the_catch() {
         &panel(),
         &corpus,
         default_jobs(),
+        &|_, _| {},
     )
     .expect("run_canary succeeds through the public entry");
 
@@ -173,6 +174,7 @@ fn an_empty_about_entry_never_scores_a_catch_even_against_a_trailing_slash_ancho
         &panel(),
         &corpus,
         default_jobs(),
+        &|_, _| {},
     )
     .expect("run_canary succeeds through the public entry");
 

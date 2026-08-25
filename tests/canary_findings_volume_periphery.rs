@@ -182,8 +182,16 @@ fn run_canary_scores_findings_volume_independent_of_catch_and_project_canary_sum
     ];
 
     let store = Store::open(":memory:").expect("an in-memory store opens");
-    let report = run_canary(&store, &VolumeDriver, &cfg, &panel, &corpus, default_jobs())
-        .expect("run_canary succeeds through the public entry");
+    let report = run_canary(
+        &store,
+        &VolumeDriver,
+        &cfg,
+        &panel,
+        &corpus,
+        default_jobs(),
+        &|_, _| {},
+    )
+    .expect("run_canary succeeds through the public entry");
 
     assert_eq!(report.outcomes.len(), 2, "one outcome per corpus item");
     let by_id = |id: &str| -> &CanaryOutcome {
