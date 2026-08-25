@@ -299,12 +299,19 @@ pub struct CanaryReport {
 /// The panel MUST name an adjudicator - the canary measures the gating verdict, so a
 /// panel with none has nothing to judge and is a configuration error (mirroring
 /// `validate_depth`'s mandate that every review tier name an adjudicator).
+///
+/// `jobs` is the TOTAL concurrent-spawn budget (spec 61, ITEM SHARDING AND THE JOBS CAP):
+/// [`spawn_budget`] splits it between this function's own OUTER per-item sharding and the
+/// LENS FAN-OUT criterion's already-built INNER `score_item` fan-out, so their PRODUCT -
+/// the worst-case number of review-panel spawns in flight at once - never exceeds it. A
+/// caller that does not want to choose passes [`default_jobs`].
 pub fn run_canary(
     store: &dyn EventStore,
     driver: &dyn AgentDriver,
     cfg: &Config,
     panel: &ReviewPanel,
     corpus: &[CanaryItem],
+    jobs: usize,
 ) -> Result<CanaryReport, Error> {
     if panel.adjudicator.is_empty() {
         return Err(Error(
@@ -324,16 +331,59 @@ pub fn run_canary(
         )
         .with_meta(META_CANARY_BATCH, &batch),
     )?;
-    let mut outcomes = Vec::new();
-    for item in corpus {
-        // The lens tier fans out within the item over the crate-wide default worker
-        // width; the ITEM SHARDING criterion (this loop, and the --jobs total-spawn cap
-        // that must bound both dimensions together) is a distinct, later concern.
-        let outcome = score_item(driver, cfg, panel, item, crate::parallel::default_workers())?;
+    // Independent corpus items shard across item_workers; each item's tier-1 lens fan-out
+    // (score_item's own, already-built concurrency) gets lens_workers - a CONSUMER
+    // relationship: this call site decides the width, score_item only accepts whatever it
+    // is given. map_ordered is index-preserving (chunk-order concatenation), so `scored`
+    // reads in the SAME order as `corpus` regardless of which item's spawns happened to
+    // finish first - the aggregated report and the events appended below are therefore
+    // identical to a fully serial run's, satisfying the determinism constraint (pinned by
+    // `run_canary_scores_identically_regardless_of_the_jobs_width`). Every item is scored
+    // (map_ordered's documented run-to-completion contract, the same choice the LENS
+    // FAN-OUT criterion already made at its own seam); the FIRST error among them, if any,
+    // is surfaced by the `?` below only after every item has been scored, never mid-flight.
+    let (item_workers, lens_workers) = spawn_budget(jobs, corpus.len());
+    let (scored, _engaged) = crate::parallel::map_ordered(corpus, item_workers, |item| {
+        score_item(driver, cfg, panel, item, lens_workers)
+    });
+    let mut outcomes = Vec::with_capacity(scored.len());
+    for outcome in scored {
+        let outcome = outcome?;
         append(store, outcome.to_event(&batch))?;
         outcomes.push(outcome);
     }
     Ok(CanaryReport { batch, outcomes })
+}
+
+/// The default `--jobs` total concurrent-spawn budget `rigger canary` uses when the
+/// operator does not name one: the crate-wide default worker width
+/// ([`crate::parallel::default_workers`], the ONE default-width authority - reused, not
+/// re-decided here), floored at 2 so the default is ALWAYS greater than one (spec 61's
+/// Done-when text) regardless of what a constrained host's core count reports - unlike
+/// [`crate::parallel::default_workers`] itself, which may honestly report 1.
+pub fn default_jobs() -> usize {
+    crate::parallel::default_workers().max(2)
+}
+
+/// Split a total `jobs` spawn-concurrency budget between [`run_canary`]'s two concurrency
+/// dimensions - `item_workers` (independent corpus items sharded across this function's
+/// caller) and `lens_workers` (each item's tier-1 lens fan-out, the LENS FAN-OUT
+/// criterion's inner `score_item` seam) - so their PRODUCT, the worst-case count of
+/// review-panel spawns ever in flight at once, never exceeds `jobs`.
+///
+/// `item_workers` is `min(jobs, corpus_len)` (never more items sharded than exist - a
+/// `--jobs` value larger than the corpus must not spawn idle item threads, the "sane for
+/// the corpus size" spec text), and `lens_workers` is the REMAINING budget,
+/// `jobs / item_workers` by floor division - which is why the product bound holds for
+/// every input: `item_workers * (jobs / item_workers) <= jobs` always, by the definition
+/// of floor division. `jobs == 0` and `corpus_len == 0` both degrade to a width of 1 (no
+/// caller-visible zero-width pool - `map_ordered` itself already treats `workers <= 1` as
+/// its serial oracle).
+fn spawn_budget(jobs: usize, corpus_len: usize) -> (usize, usize) {
+    let jobs = jobs.max(1);
+    let item_workers = jobs.min(corpus_len.max(1));
+    let lens_workers = (jobs / item_workers).max(1);
+    (item_workers, lens_workers)
 }
 
 fn append(store: &dyn EventStore, event: Event) -> Result<(), Error> {
@@ -1092,7 +1142,7 @@ mod tests {
             item("leak", "resource-leak", true, "reject", "adversary"),
             item("clean", "none", false, "approve", ""),
         ];
-        let report = run_canary(&store, &driver, &cfg(), &panel(), &corpus).unwrap();
+        let report = run_canary(&store, &driver, &cfg(), &panel(), &corpus, 2).unwrap();
         assert_eq!(report.outcomes.len(), 2);
 
         // The canary stream carries the batch marker + one outcome per item.
@@ -1131,7 +1181,7 @@ mod tests {
         let mut p = panel();
         p.adjudicator = String::new();
         let corpus = vec![item("x", "off-by-one", true, "reject", "lens")];
-        assert!(run_canary(&store, &driver, &cfg(), &p, &corpus).is_err());
+        assert!(run_canary(&store, &driver, &cfg(), &p, &corpus, 1).is_err());
     }
 
     #[test]
@@ -1236,6 +1286,194 @@ mod tests {
             "only the latest run is scoped"
         );
     }
+    #[test]
+    fn default_jobs_is_always_greater_than_one() {
+        // Spec 61 (ITEM SHARDING AND THE JOBS CAP) requires the --jobs default to be
+        // greater than 1. default_jobs floors the crate-wide default worker width at 2 so
+        // this holds on every host, including a single-core one where default_workers()
+        // itself returns 1 - the assertion is on the FORMULA, not the live host's core
+        // count, so it can never be host-flaky.
+        assert!(
+            default_jobs() > 1,
+            "the canary --jobs default must always be greater than one"
+        );
+    }
+
+    #[test]
+    fn spawn_budget_never_lets_the_two_dimensions_product_exceed_jobs() {
+        // c5 owns the --jobs total-concurrent-spawn cap spanning BOTH item sharding (this
+        // function's item_workers) and the LENS FAN-OUT criterion's inner fan-out
+        // (lens_workers) together: the two widths multiplied is the worst-case concurrent
+        // spawn count, and it must never exceed the requested budget, for every (jobs,
+        // corpus_len) pair including the degenerate zero cases.
+        for (jobs, corpus_len) in [
+            (0, 0),
+            (0, 5),
+            (1, 1),
+            (1, 10),
+            (6, 3),
+            (4, 10),
+            (10, 4),
+            (100, 1),
+            (7, 7),
+            (usize::MAX, 3),
+        ] {
+            let (item_workers, lens_workers) = spawn_budget(jobs, corpus_len);
+            assert!(item_workers >= 1, "item_workers is never zero");
+            assert!(lens_workers >= 1, "lens_workers is never zero");
+            assert!(
+                item_workers <= corpus_len.max(1),
+                "item_workers ({item_workers}) must not exceed the corpus size ({corpus_len}) \
+                 - a --jobs value larger than the corpus must not spawn idle item threads"
+            );
+            assert!(
+                item_workers.saturating_mul(lens_workers) <= jobs.max(1),
+                "item_workers ({item_workers}) * lens_workers ({lens_workers}) must not \
+                 exceed jobs.max(1) ({}) for jobs={jobs}, corpus_len={corpus_len}",
+                jobs.max(1)
+            );
+        }
+    }
+
+    #[test]
+    fn spawn_budget_uses_the_whole_item_dimension_when_the_corpus_is_the_bottleneck() {
+        // A generous --jobs budget against a small corpus should shard every item
+        // concurrently (item_workers == corpus_len), not leave items queued while jobs
+        // capacity goes unused.
+        let (item_workers, lens_workers) = spawn_budget(20, 4);
+        assert_eq!(item_workers, 4, "every item shards concurrently");
+        assert_eq!(
+            lens_workers, 5,
+            "the remaining budget funds lens fan-out: 20 / 4 = 5"
+        );
+    }
+
+    /// A driver that blocks EVERY spawn it receives on a shared barrier before delegating
+    /// to a real `Scripted` driver's scoring logic - proving TOTAL concurrent spawns
+    /// (summed across every in-flight item's lens fan-out together) reach the barrier's
+    /// size, i.e. that item sharding and lens fan-out are genuinely COMBINED, not each
+    /// bounded independently by the same `jobs` number twice over.
+    struct BarrierGatedEverySpawn {
+        barrier: std::sync::Barrier,
+        inner: Scripted,
+    }
+
+    impl AgentDriver for BarrierGatedEverySpawn {
+        fn spawn(
+            &self,
+            a: &AgentDef,
+            prompt: &str,
+            opts: &SpawnOpts,
+            emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            if a.id != "adv" && a.id != "adj" {
+                self.barrier.wait();
+            }
+            self.inner.spawn(a, prompt, opts, emit)
+        }
+    }
+
+    #[test]
+    fn run_canary_shards_independent_items_concurrently_at_the_scheduling_seam() {
+        // Three items, one lens each, jobs=3 so spawn_budget picks item_workers=3,
+        // lens_workers=1: three items must have their (sole) lens spawn in flight
+        // simultaneously or this deadlocks, proving run_canary's OUTER per-item loop now
+        // shards independent items concurrently (not just the inner lens loop c4 built).
+        let ids = ["lens-a", "adv", "adj"];
+        let c = cfg_for(&ids);
+        let p = panel_with_lenses(&["lens-a"]);
+        let corpus = vec![
+            item("i1", "off-by-one", true, "reject", "lens"),
+            item("i2", "off-by-one", true, "reject", "lens"),
+            item("i3", "off-by-one", true, "reject", "lens"),
+        ];
+        let driver = BarrierGatedEverySpawn {
+            barrier: std::sync::Barrier::new(3),
+            inner: Scripted {
+                catching_tier: TIER_LENS,
+                planted_anchors: vec!["i1.rs".into(), "i2.rs".into(), "i3.rs".into()],
+                adjudicator_order_sensitive: false,
+            },
+        };
+        let store = Store::open(":memory:").unwrap();
+        let report = run_canary(&store, &driver, &c, &p, &corpus, 3).unwrap();
+        assert_eq!(report.outcomes.len(), 3);
+        for outcome in &report.outcomes {
+            assert_eq!(outcome.caught_by, vec![TIER_LENS.to_string()]);
+            assert!(outcome.verdict_correct);
+        }
+    }
+
+    #[test]
+    fn run_canary_jobs_cap_bounds_total_concurrent_spawns_across_both_dimensions() {
+        // Three items x two lenses, jobs=6 (an exact fit: spawn_budget(6,3) = (3,2)).
+        // Every lens spawn across the WHOLE run - all items together - blocks on a
+        // barrier sized to exactly 3*2=6. This can only pass if item sharding (3
+        // concurrent items) and lens fan-out (2 concurrent lenses per item) are truly
+        // COMBINED at the same instant: fewer than 6 simultaneous lens spawns anywhere in
+        // the system (e.g. items serialized, or lenses serialized within an item) hangs.
+        let lenses = ["lens-a", "lens-b"];
+        let mut ids: Vec<&str> = lenses.to_vec();
+        ids.extend(["adv", "adj"]);
+        let c = cfg_for(&ids);
+        let p = panel_with_lenses(&lenses);
+        let corpus = vec![
+            item("i1", "off-by-one", true, "reject", "lens"),
+            item("i2", "off-by-one", true, "reject", "lens"),
+            item("i3", "off-by-one", true, "reject", "lens"),
+        ];
+        let driver = BarrierGatedEverySpawn {
+            barrier: std::sync::Barrier::new(6),
+            inner: Scripted {
+                catching_tier: TIER_LENS,
+                planted_anchors: vec!["i1.rs".into(), "i2.rs".into(), "i3.rs".into()],
+                adjudicator_order_sensitive: false,
+            },
+        };
+        let store = Store::open(":memory:").unwrap();
+        let report = run_canary(&store, &driver, &c, &p, &corpus, 6).unwrap();
+        assert_eq!(report.outcomes.len(), 3);
+        for outcome in &report.outcomes {
+            assert_eq!(outcome.caught_by, vec![TIER_LENS.to_string()]);
+            assert!(outcome.verdict_correct);
+        }
+    }
+
+    #[test]
+    fn run_canary_scores_identically_regardless_of_the_jobs_width() {
+        // The determinism constraint: sharding items and fanning lenses out must not
+        // change any scored outcome. jobs=1 forces the fully serial walk on both
+        // dimensions (spawn_budget(1, n) = (1,1)); a generous jobs engages real
+        // concurrency on both dimensions. The aggregated report must be byte-identical,
+        // in the SAME item order, either way.
+        let lenses = ["lens-a", "lens-b", "lens-c"];
+        let mut ids: Vec<&str> = lenses.to_vec();
+        ids.extend(["adv", "adj"]);
+        let c = cfg_for(&ids);
+        let p = panel_with_lenses(&lenses);
+        let corpus = vec![
+            item("i1", "off-by-one", true, "reject", "lens"),
+            item("i2", "resource-leak", true, "reject", "adversary"),
+            item("i3", "none", false, "approve", ""),
+            item("i4", "off-by-one", true, "reject", "lens"),
+        ];
+        let driver = Scripted {
+            catching_tier: TIER_LENS,
+            planted_anchors: vec!["i1.rs".into(), "i4.rs".into()],
+            adjudicator_order_sensitive: false,
+        };
+
+        let serial_store = Store::open(":memory:").unwrap();
+        let serial = run_canary(&serial_store, &driver, &c, &p, &corpus, 1).unwrap();
+        let parallel_store = Store::open(":memory:").unwrap();
+        let parallel = run_canary(&parallel_store, &driver, &c, &p, &corpus, 12).unwrap();
+
+        assert_eq!(
+            serial.outcomes, parallel.outcomes,
+            "sharded/fanned-out scoring must match the serial walk exactly, in order"
+        );
+    }
+
     /// A CANARY SCORE THE STORE DID NOT WRITE IS NOT A SCORE. The batch marker and every
     /// per-item outcome are the ONLY durable record the canary produces - the returned
     /// report is for the CLI's summary print and is gone at process exit - so a write this
