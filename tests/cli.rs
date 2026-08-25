@@ -12031,6 +12031,82 @@ fn stats_canary_still_renders_a_genuine_zero_when_every_reject_has_attribution()
     );
 }
 
+/// FALSE POSITIVES ARE FIRST-CLASS criterion (spec 61, unit u61c3): `CanaryMetrics` carries
+/// `controls`/`control_false_positives`, and `format_canary_stats` - the render function
+/// shared by `rigger stats --canary` and `rigger canary`'s own post-run summary - prints a
+/// control/false-positive line computed from `metrics::project_canary`'s fold over them.
+/// `format_canary_stats` is private to the binary crate, so it is reachable ONLY by driving
+/// the compiled binary (the implementer's own render tests, in `src/main.rs`, call it
+/// directly against a hand-built `CanaryMetrics` that was never produced by `project_canary`
+/// itself). This test seeds real per-item wire records into the namespaced canary stream -
+/// mirroring exactly how `CanaryOutcome::to_event` shapes them - with one planted item, one
+/// correctly-approved control, and TWO wrongly-rejected controls (proving the count sums
+/// rather than saturating), and drives `rigger stats --canary`, proving the control/false-
+/// positive line actually reaches stdout through the full decode -> fold -> render chain,
+/// not each seam's own isolated fixture.
+///
+/// Assertions match on the EXACT rendered line, not a bare substring - the same discipline
+/// the sibling NO FAKE ZEROS periphery tests use on this same render surface, after a prior
+/// finding showed a short `contains()` check can pass even when the line it was meant to pin
+/// is wrong.
+#[test]
+fn stats_canary_reports_the_control_false_positive_line() {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Event, EventStore, ExpectedRevision};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(&rigger).unwrap();
+    std::fs::write(rigger.join("project.id"), "false-positive-proj\n").unwrap();
+
+    let backend = Store::open(rigger.join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, "false-positive-proj");
+    let ty = rigger::ledger::TYPE_UNIT_STATUS;
+    let ev = |json: String| Event::new(ty, json.into_bytes());
+    let marker = ev(r#"{"id":"batch-1","status":"canary-run"}"#.to_string());
+    // "p1": a planted defect, correctly rejected - not a control at all.
+    let p1 = ev(
+        r#"{"id":"p1","status":"canary","defect_class":"off-by-one","planted":true,"expected_reject":true,"expected_tier":"lens","caught_by":["lens"],"verdict_approved":false,"verdict_correct":true,"stable":true}"#
+            .to_string(),
+    );
+    // "c1": a known-good control the panel gets right - approved, not a false positive.
+    let c1 = ev(
+        r#"{"id":"c1","status":"canary","defect_class":"none","planted":false,"expected_reject":false,"expected_tier":"","caught_by":[],"verdict_approved":true,"verdict_correct":true,"stable":true}"#
+            .to_string(),
+    );
+    // "c2" and "c3": known-good controls the panel WRONGLY rejects - two independent false
+    // positives, proving the render sums them rather than saturating at one.
+    let c2 = ev(
+        r#"{"id":"c2","status":"canary","defect_class":"none","planted":false,"expected_reject":false,"expected_tier":"","caught_by":[],"verdict_approved":false,"verdict_correct":false,"stable":true}"#
+            .to_string(),
+    );
+    let c3 = ev(
+        r#"{"id":"c3","status":"canary","defect_class":"none","planted":false,"expected_reject":false,"expected_tier":"","caught_by":[],"verdict_approved":false,"verdict_correct":false,"stable":true}"#
+            .to_string(),
+    );
+    store
+        .append("canary", ExpectedRevision::Any, &[marker, p1, c1, c2, c3])
+        .unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["stats", "--canary"]);
+    assert!(ok, "stats --canary must succeed; stderr: {err}");
+
+    let control_line =
+        "  control items      1/3 approved (2 false positive(s): known-good rejected)";
+    assert!(
+        out.lines().any(|l| l == control_line),
+        "the control/false-positive line must render with the summed counts (one of three \
+         controls approved, two false positives); got:\n{out}"
+    );
+    assert!(
+        out.contains("items scored       4 (1 planted, 1 defect class(es) cataloged)"),
+        "the planted defect is still scored normally alongside the three controls; \
+         got:\n{out}"
+    );
+}
+
 /// `rigger canary`'s CLI glue (arg parsing + corpus loading) is exercised through the
 /// real binary on the paths that need no live review agent. The panel-spawning happy path
 /// is covered end-to-end by the library runner test (`canary::run_canary`) with a scripted
