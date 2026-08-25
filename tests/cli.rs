@@ -12313,6 +12313,79 @@ fn rigger_help_gives_the_jobs_flag_its_own_description_line_through_the_real_bin
     );
 }
 
+/// MODEL PINNING criterion (spec 61 c7): sibling of
+/// `rigger_help_gives_the_jobs_flag_its_own_description_line_through_the_real_binary` for the
+/// `--model <tier>=<id>` flag it sits directly beside in the same multiline `usage()` format!
+/// literal in `src/main.rs` - the exact literal a prior splice bug corrupted for `--jobs`
+/// (fixed and periphery-locked by `rigger_help_gives_the_jobs_flag_..`). Inserting a new flag
+/// tag immediately after `--jobs`'s description is exactly the edit shape that bug came from,
+/// so this closes the same outside-in gap for `--model`: nothing else proves the flag's help
+/// text reaches the compiled binary's actual `help` output, as opposed to a string that only
+/// looks right in the source. `--model`'s argument VALIDATION and RUNTIME behavior are
+/// covered elsewhere (`canary_rejects_a_malformed_or_unknown_tier_model_pin`,
+/// `canary_accepts_a_well_formed_model_pin_and_continues_parsing`,
+/// `tests/model_pinning_periphery.rs`); this test is solely about the printed help TEXT.
+#[test]
+fn rigger_help_gives_the_model_flag_its_own_description_line_through_the_real_binary() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_o, err, ok) = run_rigger(root, &["help"]);
+    assert!(ok, "rigger help must succeed; stderr: {err}");
+
+    // The --model tag introduces its OWN description, not text describing something else
+    // (in particular, not the --jobs description it is spliced directly after).
+    let tag = "[--model <tier>=<id>]";
+    let tag_pos = err
+        .find(tag)
+        .unwrap_or_else(|| panic!("printed help names the --model flag; stderr: {err}"));
+    let after_tag = err[tag_pos + tag.len()..].trim_start_matches(' ');
+    assert!(
+        after_tag.starts_with("pins a tier's (lens/adversary/adjudicator)"),
+        "the --model tag in the real binary's help output must introduce its OWN \
+         description, not text describing something else: found {:?}",
+        &after_tag[..after_tag.len().min(80)]
+    );
+
+    // The --model sentence itself reaches stdout/stderr whole, in order, with no other flag
+    // tag spliced into its middle.
+    let model_start = tag_pos;
+    let model_end = err
+        .find("header prints its resolved id")
+        .unwrap_or_else(|| panic!("printed help completes the --model sentence; stderr: {err}"));
+    let model_sentence = &err[model_start + tag.len()..model_end];
+    assert!(
+        !model_sentence.contains('['),
+        "no flag tag may be spliced into the middle of the --model sentence in the real \
+         binary's help output: {model_sentence:?}"
+    );
+
+    // The pre-existing --jobs sentence directly above is not truncated or split by the
+    // --model tag spliced in immediately after it.
+    let jobs_start = err
+        .find("caps the total concurrent review-panel spawns")
+        .unwrap_or_else(|| panic!("printed help names the --jobs description; stderr: {err}"));
+    let jobs_sentence = &err[jobs_start..tag_pos];
+    assert!(
+        jobs_sentence.trim_end().ends_with("width, floored at 2)"),
+        "the --jobs sentence must end intact, immediately followed (after only whitespace/\
+         indentation) by the --model tag on its own line, not merged or truncated: \
+         {jobs_sentence:?}"
+    );
+
+    // The following `rigger playbooks --rebuild` entry is not swallowed into the --model
+    // description either.
+    let playbooks_pos = err
+        .find("rigger playbooks --rebuild")
+        .unwrap_or_else(|| panic!("printed help names rigger playbooks; stderr: {err}"));
+    let between = &err[model_end..playbooks_pos];
+    assert!(
+        !between.contains('['),
+        "no stray flag tag may sit between the --model sentence and the next command entry: \
+         {between:?}"
+    );
+}
+
 /// MODEL PINNING criterion (spec 61 c7): `--model <tier>=<id>` argument validation is CLI
 /// glue exercised through the real binary, mirroring
 /// `canary_rejects_unknown_arguments_and_a_missing_corpus` - the happy-path pin resolution
