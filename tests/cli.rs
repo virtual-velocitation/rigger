@@ -11897,6 +11897,140 @@ fn stats_canary_on_a_project_with_no_canary_run_says_so() {
     );
 }
 
+/// NO FAKE ZEROS criterion (spec 61, unit u61c2b): `format_canary_stats` - the render
+/// function shared by `rigger stats --canary` and `rigger canary`'s own post-run summary -
+/// prints `n/a` with a reason instead of a fake `0/N (0.0%)` for a tier whose catch count
+/// is zero AND the run recorded a correctly-rejected planted item with no measured
+/// attribution. `format_canary_stats` is private to the binary crate, so it is reachable
+/// ONLY by driving the compiled binary (the implementer's own render tests, in
+/// `src/main.rs`, call it directly against a hand-built `CanaryMetrics` that was never
+/// produced by `metrics::project_canary` itself). This test seeds the namespaced canary
+/// stream with a correctly-rejected item whose `caught_by` is empty (the "lens" tier's
+/// zero is now suspect) alongside a sibling item a DIFFERENT tier genuinely caught (its
+/// real rate must still render), and drives `rigger stats --canary`, proving the n/a
+/// substitution actually reaches stdout through the full decode -> fold -> render chain.
+///
+/// Assertions match on the EXACT rendered line, not a bare substring: a prior finding on
+/// this same render surface (the findings-raised line) showed that two lines sharing the
+/// same `{tier:<16}` padding prefix can make a short `contains()` check pass even when the
+/// line it was meant to pin is wrong.
+#[test]
+fn stats_canary_renders_na_for_a_tier_with_an_unattributed_correct_reject() {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Event, EventStore, ExpectedRevision};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(&rigger).unwrap();
+    std::fs::write(rigger.join("project.id"), "unattributed-proj\n").unwrap();
+
+    let backend = Store::open(rigger.join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, "unattributed-proj");
+    let ty = rigger::ledger::TYPE_UNIT_STATUS;
+    let ev = |json: String| Event::new(ty, json.into_bytes());
+    let marker = ev(r#"{"id":"batch-1","status":"canary-run"}"#.to_string());
+    // "a": correctly rejected by the lens tier's own account, but caught_by is EMPTY -
+    // the exact unmeasured-attribution shape the criterion exists to catch.
+    let a = ev(
+        r#"{"id":"a","status":"canary","defect_class":"off-by-one","planted":true,"expected_reject":true,"expected_tier":"lens","caught_by":[],"verdict_approved":false,"verdict_correct":true,"stable":true}"#
+            .to_string(),
+    );
+    // "b": correctly rejected, attributed to the adversary tier - a REAL measured catch,
+    // so the adversary tier's rate must still render honestly even in the same run.
+    let b = ev(
+        r#"{"id":"b","status":"canary","defect_class":"resource-leak","planted":true,"expected_reject":true,"expected_tier":"adversary","caught_by":["adversary"],"verdict_approved":false,"verdict_correct":true,"stable":true}"#
+            .to_string(),
+    );
+    store
+        .append("canary", ExpectedRevision::Any, &[marker, a, b])
+        .unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["stats", "--canary"]);
+    assert!(ok, "stats --canary must succeed; stderr: {err}");
+
+    let na_line = format!(
+        "    {:<16} n/a (1 correctly-rejected item(s) with no measured tier attribution)",
+        "lens",
+    );
+    assert!(
+        out.lines().any(|l| l == na_line),
+        "the lens tier's suspect zero must render as this exact n/a line; got:\n{out}"
+    );
+    let fake_zero_line = format!("    {:<16} 0/2 (0.0%)", "lens");
+    assert!(
+        !out.lines().any(|l| l == fake_zero_line),
+        "the fake-zero percentage line must never appear for the unmeasured tier; got:\n{out}"
+    );
+    let adversary_line = format!("    {:<16} 1/2 (50.0%)", "adversary");
+    assert!(
+        out.lines().any(|l| l == adversary_line),
+        "a tier with a real measured catch still renders its true rate in the same run; \
+         got:\n{out}"
+    );
+}
+
+/// The companion regression guard to the previous test, driven through the same compiled-
+/// binary seam: when EVERY correctly-rejected planted item in the run carries real
+/// attribution (no item has an empty `caught_by`), a tier that genuinely caught nothing
+/// must keep rendering the honest `0/N (0.0%)` - `unattributed_correct_rejects` must not
+/// swallow every zero into `n/a`. The implementer's own regression test for this only
+/// calls `format_canary_stats` directly against a hand-built `CanaryMetrics`; this proves
+/// the same guarantee survives the real decode -> fold -> render chain `rigger stats
+/// --canary` actually runs.
+#[test]
+fn stats_canary_still_renders_a_genuine_zero_when_every_reject_has_attribution() {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Event, EventStore, ExpectedRevision};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(&rigger).unwrap();
+    std::fs::write(rigger.join("project.id"), "genuine-zero-proj\n").unwrap();
+
+    let backend = Store::open(rigger.join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, "genuine-zero-proj");
+    let ty = rigger::ledger::TYPE_UNIT_STATUS;
+    let ev = |json: String| Event::new(ty, json.into_bytes());
+    let marker = ev(r#"{"id":"batch-1","status":"canary-run"}"#.to_string());
+    // Both planted items are correctly rejected and attributed to the adversary tier only
+    // - the lens tier genuinely caught nothing, but every correct reject IS attributed
+    // (just never to lens), so unattributed_correct_rejects stays 0.
+    let x = ev(
+        r#"{"id":"x","status":"canary","defect_class":"off-by-one","planted":true,"expected_reject":true,"expected_tier":"adversary","caught_by":["adversary"],"verdict_approved":false,"verdict_correct":true,"stable":true}"#
+            .to_string(),
+    );
+    let y = ev(
+        r#"{"id":"y","status":"canary","defect_class":"resource-leak","planted":true,"expected_reject":true,"expected_tier":"adversary","caught_by":["adversary"],"verdict_approved":false,"verdict_correct":true,"stable":true}"#
+            .to_string(),
+    );
+    store
+        .append("canary", ExpectedRevision::Any, &[marker, x, y])
+        .unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["stats", "--canary"]);
+    assert!(ok, "stats --canary must succeed; stderr: {err}");
+
+    let real_zero_line = format!("    {:<16} 0/2 (0.0%)", "lens");
+    assert!(
+        out.lines().any(|l| l == real_zero_line),
+        "a genuinely-measured zero catch rate must still print 0/N (0.0%); got:\n{out}"
+    );
+    let adversary_line = format!("    {:<16} 2/2 (100.0%)", "adversary");
+    assert!(
+        out.lines().any(|l| l == adversary_line),
+        "the adversary tier's real rate renders too; got:\n{out}"
+    );
+    assert!(
+        !out.to_lowercase().contains("n/a"),
+        "n/a must not appear anywhere when every correct reject carries attribution; \
+         got:\n{out}"
+    );
+}
+
 /// `rigger canary`'s CLI glue (arg parsing + corpus loading) is exercised through the
 /// real binary on the paths that need no live review agent. The panel-spawning happy path
 /// is covered end-to-end by the library runner test (`canary::run_canary`) with a scripted
