@@ -1131,6 +1131,20 @@ pub struct CanaryMetrics {
     /// per-tier catch rate. Folded from [`crate::canary::CanaryOutcome`]'s EXISTING
     /// `verdict_approved` field; no new `CanaryOutcome` field.
     pub control_false_positives: u64,
+    /// What built the binary that ran this canary run (MODEL PINNING criterion, spec 61
+    /// c7), folded from the run's [`crate::canary::CanaryHeader`] event. Empty when the
+    /// latest run predates this criterion (a legacy stream with no header event).
+    pub binary_build: String,
+    /// The content hash of the corpus this run scored, from the same header event. Empty
+    /// under the same legacy condition as `binary_build`.
+    pub corpus_hash: String,
+    /// Every review tier's ACTUALLY-resolved model id this run (`lens`, `adversary`,
+    /// [`crate::spawn::ROLE_ADJUDICATOR`]), sourced from
+    /// [`crate::conductor::AgentResult::resolved_model`] - never a configured alias, never
+    /// fabricated. Seeded empty ("unmeasured") for every known tier so the header always
+    /// names all three; a tier the header event did not report stays empty rather than
+    /// omitted.
+    pub resolved_models: BTreeMap<String, String>,
 }
 
 impl CanaryMetrics {
@@ -1167,7 +1181,26 @@ pub fn project_canary(events: &[Event]) -> CanaryMetrics {
         m.tier_catch.insert(tier.to_string(), TierCatch::default());
         m.findings_raised.insert(tier.to_string(), 0);
     }
+    // MODEL PINNING criterion (spec 61 c7): seed every known tier - including the
+    // adjudicator, which raises no findings/catches but IS a pinnable/reportable tier -
+    // with an empty (unmeasured) resolved id, so the header always names all three rather
+    // than silently omitting one the header event never reported.
+    for tier in [
+        crate::canary::TIER_LENS,
+        crate::canary::TIER_ADVERSARY,
+        crate::spawn::ROLE_ADJUDICATOR,
+    ] {
+        m.resolved_models.insert(tier.to_string(), String::new());
+    }
     for e in crate::canary::latest_run(events) {
+        if let Some(h) = crate::canary::CanaryHeader::from_event(e) {
+            m.binary_build = h.binary_build;
+            m.corpus_hash = h.corpus_hash;
+            for (tier, id) in h.resolved_models {
+                m.resolved_models.insert(tier, id);
+            }
+            continue;
+        }
         let Some(o) = crate::canary::CanaryOutcome::from_event(e) else {
             continue; // a batch marker or a foreign/malformed event
         };
@@ -2837,6 +2870,70 @@ mod tests {
         let m = project_canary(&[]);
         assert_eq!(m.controls, 0);
         assert_eq!(m.control_false_positives, 0);
+    }
+
+    /// A MODEL PINNING criterion header event (spec 61 c7), matching what
+    /// `canary::record_header` writes.
+    fn canary_header_event(
+        binary_build: &str,
+        corpus_hash: &str,
+        resolved: &[(&str, &str)],
+    ) -> Event {
+        let models: String = resolved
+            .iter()
+            .map(|(tier, id)| format!("\"{tier}\":\"{id}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        ev(
+            TYPE_UNIT_STATUS,
+            &format!(
+                r#"{{"id":"b","status":"canary-header","binary_build":"{binary_build}","corpus_hash":"{corpus_hash}","resolved_models":{{{models}}}}}"#
+            ),
+        )
+    }
+
+    #[test]
+    fn project_canary_folds_the_header_events_binary_build_corpus_hash_and_resolved_models() {
+        let events = vec![
+            canary_run_marker(),
+            canary_outcome("a", "off-by-one", true, true, &["lens"], true, true),
+            canary_header_event(
+                "rigger 1.2.3 (build abcdef)",
+                "deadbeef",
+                &[("lens", "resolved-lens"), ("adversary", "resolved-adv")],
+            ),
+        ];
+        let m = project_canary(&events);
+        assert_eq!(m.binary_build, "rigger 1.2.3 (build abcdef)");
+        assert_eq!(m.corpus_hash, "deadbeef");
+        assert_eq!(
+            m.resolved_models.get("lens"),
+            Some(&"resolved-lens".to_string())
+        );
+        assert_eq!(
+            m.resolved_models.get("adversary"),
+            Some(&"resolved-adv".to_string())
+        );
+        // Seeded but never reported by the header this run - stays honestly unmeasured.
+        assert_eq!(
+            m.resolved_models.get(crate::spawn::ROLE_ADJUDICATOR),
+            Some(&String::new())
+        );
+        // The trailing header event is not miscounted as a scored item.
+        assert_eq!(m.items, 1);
+    }
+
+    #[test]
+    fn project_canary_on_a_legacy_stream_with_no_header_event_reports_empty_header_fields() {
+        let events = vec![
+            canary_run_marker(),
+            canary_outcome("a", "off-by-one", true, true, &["lens"], true, true),
+        ];
+        let m = project_canary(&events);
+        assert!(m.binary_build.is_empty());
+        assert!(m.corpus_hash.is_empty());
+        assert_eq!(m.resolved_models.get("lens"), Some(&String::new()));
+        assert_eq!(m.items, 1, "the legacy item still folds correctly");
     }
 
     // ---- spec-13b unit-1 model-drift monitor (cross-run resolved-model comparison) ----
