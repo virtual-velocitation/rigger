@@ -4237,6 +4237,32 @@ fn fmt_duration(d: std::time::Duration) -> String {
     format!("{:.1}s", d.as_secs_f64())
 }
 
+/// Render one corpus item's completion for `rigger canary`'s live per-item progress (spec
+/// 61, PROGRESS): the item id, whether the adjudicator's verdict matched the expectation,
+/// which tier(s) actually caught it (`none` when nobody did), and how long scoring this ONE
+/// item took. Pure so its exact content is unit-tested without a live run; the caller
+/// ([`cmd_canary`], wired through [`canary::run_canary`]'s `on_item` hook) prints it AS EACH
+/// ITEM COMPLETES, never batched into the `format_canary_stats` scorecard rendered after
+/// every item is done. Reuses the crate's ONE duration-format authority ([`fmt_duration`])
+/// rather than a second spelling.
+fn format_progress_line(o: &canary::CanaryOutcome, elapsed: std::time::Duration) -> String {
+    let verdict = if o.verdict_correct {
+        "correct"
+    } else {
+        "WRONG"
+    };
+    let caught = if o.caught_by.is_empty() {
+        "none".to_string()
+    } else {
+        o.caught_by.join(",")
+    };
+    format!(
+        "canary: {} verdict {verdict} caught {caught} in {}",
+        o.id,
+        fmt_duration(elapsed),
+    )
+}
+
 fn append_review_quality(lines: &mut Vec<String>, m: &Metrics) {
     let rq = &m.review_quality;
     lines.push("  review quality:".to_string());
@@ -4706,7 +4732,22 @@ fn cmd_canary(args: &[String]) -> Res {
     let store = Namespaced::new(backend.as_ref(), &project_identity());
     let driver = cli::Driver::default();
 
-    let report = canary::run_canary(&store, &driver, &cfg, &panel, &corpus, args.jobs)?;
+    // Observable progress (spec 61, PROGRESS): stream one line per corpus item the
+    // instant it finishes, rather than nothing on stdout until the whole batch is done -
+    // wired to run_canary's on_item hook, which fires per item as it genuinely
+    // completes (see canary::run_canary's doc comment for why that hook lives inside
+    // the item-sharding closure, not the aggregation loop after it).
+    let report = canary::run_canary(
+        &store,
+        &driver,
+        &cfg,
+        &panel,
+        &corpus,
+        args.jobs,
+        &|o, e| {
+            println!("{}", format_progress_line(o, e));
+        },
+    )?;
     println!(
         "canary run {}: scored {} corpus item(s) against the review panel",
         report.batch,
@@ -18304,6 +18345,70 @@ mod tests {
         assert!(
             !out.contains("findings raised by tier"),
             "an empty findings_raised map must not print a bare header:\n{out}"
+        );
+    }
+
+    /// A minimal `CanaryOutcome` for [`format_progress_line`] tests - only the three
+    /// fields that function reads (`id`, `verdict_correct`, `caught_by`) vary per case;
+    /// every other field is a fixed, irrelevant placeholder.
+    fn progress_outcome(
+        id: &str,
+        verdict_correct: bool,
+        caught_by: &[&str],
+    ) -> canary::CanaryOutcome {
+        canary::CanaryOutcome {
+            id: id.to_string(),
+            defect_class: String::new(),
+            planted: true,
+            expected_reject: true,
+            expected_tier: String::new(),
+            caught_by: caught_by.iter().map(|s| s.to_string()).collect(),
+            verdict_approved: false,
+            verdict_correct,
+            stable: true,
+            findings_raised: std::collections::BTreeMap::new(),
+        }
+    }
+
+    /// spec 61, PROGRESS criterion: the per-item stdout line names the item id, whether
+    /// the adjudicator's verdict was correct, and which tier(s) caught it - `none` when
+    /// nobody did, since an empty `caught_by` (a miss, or a control) must read as an
+    /// explicit "nothing caught this", never a blank/missing field.
+    #[test]
+    fn format_progress_line_names_id_verdict_and_none_when_nothing_caught() {
+        let o = progress_outcome("item-1", true, &[]);
+        let line = format_progress_line(&o, std::time::Duration::from_millis(500));
+        assert!(line.contains("item-1"), "the item id must appear:\n{line}");
+        assert!(
+            line.contains("correct"),
+            "a correct verdict must render as such:\n{line}"
+        );
+        assert!(
+            line.contains("none"),
+            "an empty caught_by must render as an explicit none, not blank:\n{line}"
+        );
+    }
+
+    /// A wrong verdict and multiple catching tiers both render honestly, and the elapsed
+    /// duration reuses the crate's ONE duration-format authority (`fmt_duration`) rather
+    /// than a second, possibly-diverging spelling.
+    #[test]
+    fn format_progress_line_reports_a_wrong_verdict_and_every_catching_tier() {
+        let o = progress_outcome("item-2", false, &["lens", "adversary"]);
+        let elapsed = std::time::Duration::from_secs_f64(12.3);
+        let line = format_progress_line(&o, elapsed);
+        assert!(
+            line.contains("WRONG"),
+            "an incorrect verdict must be visibly flagged, not read as success:\n{line}"
+        );
+        assert!(
+            line.contains("lens") && line.contains("adversary"),
+            "every catching tier must be named, not just the first:\n{line}"
+        );
+        assert!(
+            line.contains(&fmt_duration(elapsed)),
+            "elapsed must render through fmt_duration, the one duration-format authority, \
+             not a second spelling:\n{line}"
         );
     }
 

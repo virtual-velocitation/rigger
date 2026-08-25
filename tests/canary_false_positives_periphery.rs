@@ -212,6 +212,7 @@ fn run_canary_scores_false_positive_controls_and_project_canary_counts_them() {
         &panel,
         &corpus,
         default_jobs(),
+        &|_, _| {},
     )
     .expect("run_canary succeeds through the public entry");
 

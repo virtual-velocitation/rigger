@@ -160,7 +160,7 @@ fn run_canary_with_a_zero_jobs_budget_degrades_to_a_serial_width_without_panicki
     }
 
     let store = Store::open(":memory:").expect("an in-memory store opens");
-    let report = run_canary(&store, &Catches, &c, &p, &corpus, 0)
+    let report = run_canary(&store, &Catches, &c, &p, &corpus, 0, &|_, _| {})
         .expect("jobs=0 must not panic or error - it degrades to a serial width");
     assert_eq!(report.outcomes.len(), 1);
     assert_eq!(report.outcomes[0].caught_by, vec![TIER_LENS.to_string()]);
@@ -240,7 +240,7 @@ fn run_canary_jobs_budget_bounds_total_concurrent_spawns_through_the_public_entr
         barrier: Barrier::new(6),
     };
     let store = Store::open(":memory:").expect("an in-memory store opens");
-    let report = run_canary(&store, &driver, &c, &p, &corpus, 6)
+    let report = run_canary(&store, &driver, &c, &p, &corpus, 6, &|_, _| {})
         .expect("run_canary succeeds through the public entry at jobs=6");
 
     assert_eq!(report.outcomes.len(), 3, "one outcome per corpus item");
@@ -319,10 +319,10 @@ fn run_canary_scores_identically_regardless_of_jobs_width_through_the_public_ent
 
     let driver = Deterministic;
     let serial_store = Store::open(":memory:").expect("an in-memory store opens");
-    let serial = run_canary(&serial_store, &driver, &c, &p, &corpus, 1)
+    let serial = run_canary(&serial_store, &driver, &c, &p, &corpus, 1, &|_, _| {})
         .expect("the serial (jobs=1) walk succeeds");
     let parallel_store = Store::open(":memory:").expect("an in-memory store opens");
-    let parallel = run_canary(&parallel_store, &driver, &c, &p, &corpus, 12)
+    let parallel = run_canary(&parallel_store, &driver, &c, &p, &corpus, 12, &|_, _| {})
         .expect("the sharded/fanned-out (jobs=12) walk succeeds");
 
     assert_eq!(
@@ -400,7 +400,7 @@ fn run_canary_runs_every_item_to_completion_even_when_one_items_spawn_errors() {
     };
     let store = Store::open(":memory:").expect("an in-memory store opens");
     // jobs=3 -> spawn_budget(3, 3) = (3, 1): all three items shard concurrently.
-    let result = run_canary(&store, &driver, &c, &p, &corpus, 3);
+    let result = run_canary(&store, &driver, &c, &p, &corpus, 3, &|_, _| {});
     assert!(
         result.is_err(),
         "an item's reviewer error must surface as run_canary's own error"
