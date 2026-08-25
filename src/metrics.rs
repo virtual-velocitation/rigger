@@ -1120,6 +1120,17 @@ pub struct CanaryMetrics {
     /// per-tier catch rate of `0` while this is non-zero is a FAKE zero: `format_canary_stats`
     /// reads it to render `n/a` with a reason instead of a false `0/N (0.0%)`.
     pub unattributed_correct_rejects: u64,
+    /// Known-good control items scored in the run (`planted == false`) - spec 61, FALSE
+    /// POSITIVES criterion's denominator. Folded from [`crate::canary::CanaryOutcome`]'s
+    /// EXISTING `planted` field; no new `CanaryOutcome` field.
+    pub controls: u64,
+    /// Known-good controls the adjudicator INCORRECTLY rejected (`verdict_approved ==
+    /// false`) - a false positive (spec 61, FALSE POSITIVES criterion). Rejecting a
+    /// known-good control burns a remediation cycle and, repeated, escalates a correct
+    /// unit, so it is reported as its own summary line, visible at the same glance as the
+    /// per-tier catch rate. Folded from [`crate::canary::CanaryOutcome`]'s EXISTING
+    /// `verdict_approved` field; no new `CanaryOutcome` field.
+    pub control_false_positives: u64,
 }
 
 impl CanaryMetrics {
@@ -1200,6 +1211,16 @@ pub fn project_canary(events: &[Event]) -> CanaryMetrics {
             // format_canary_stats reads this count to render n/a instead of a fake 0/N.
             if o.verdict_correct && o.caught_by.is_empty() {
                 m.unattributed_correct_rejects += 1;
+            }
+        } else {
+            // FALSE POSITIVES (spec 61): a known-good control the adjudicator did NOT
+            // approve was incorrectly rejected - the false-positive event the corpus's
+            // control items exist to surface. `verdict_correct` conflates this with the
+            // planted-item miss case above, so it is read straight off `verdict_approved`
+            // here instead.
+            m.controls += 1;
+            if !o.verdict_approved {
+                m.control_false_positives += 1;
             }
         }
     }
@@ -2558,7 +2579,13 @@ mod tests {
             TYPE_UNIT_STATUS,
             &format!(
                 r#"{{"id":"{id}","status":"canary","defect_class":"{class}","planted":{planted},"expected_reject":{expected_reject},"expected_tier":"","caught_by":[{caught}],"verdict_approved":{},"verdict_correct":{verdict_correct},"stable":{stable}}}"#,
-                !expected_reject
+                // `verdict_correct = approved != expected_reject` (src/canary.rs) inverted:
+                // `approved = verdict_correct != expected_reject`. NOT simply
+                // `!expected_reject` - that would silently claim every "wrong verdict" case
+                // approved, which is only true when expected_reject was true (a missed
+                // planted defect); a wrongly-rejected known-good control (expected_reject
+                // false, verdict_correct false) must resolve to approved=false instead.
+                verdict_correct != expected_reject
             ),
         )
     }
@@ -2590,7 +2617,8 @@ mod tests {
             TYPE_UNIT_STATUS,
             &format!(
                 r#"{{"id":"{id}","status":"canary","defect_class":"{class}","planted":{planted},"expected_reject":{expected_reject},"expected_tier":"","caught_by":[{caught}],"verdict_approved":{},"verdict_correct":{verdict_correct},"stable":{stable},"findings_raised":{{{findings}}}}}"#,
-                !expected_reject
+                // See canary_outcome's identical derivation for why this is not `!expected_reject`.
+                verdict_correct != expected_reject
             ),
         )
     }
@@ -2775,6 +2803,40 @@ mod tests {
             m.unattributed_correct_rejects, 1,
             "only item 'a' is a correct rejection with empty attribution"
         );
+    }
+
+    /// spec 61, FALSE POSITIVES criterion: a known-good control (`planted:false`) the
+    /// adjudicator INCORRECTLY rejected (`verdict_approved:false`) is a false positive -
+    /// rejecting a known-good control burns a remediation cycle and, repeated, escalates a
+    /// correct unit. `controls` counts every known-good item in the run (the denominator);
+    /// `control_false_positives` counts only the ones wrongly rejected. A planted item never
+    /// contributes to either, regardless of its own verdict.
+    #[test]
+    fn project_canary_counts_controls_and_false_positives() {
+        let events = vec![
+            canary_run_marker(),
+            // Known-good control, correctly approved - not a false positive.
+            canary_outcome("a", "none", false, false, &[], true, true),
+            // Known-good control, INCORRECTLY rejected - THE false-positive case.
+            canary_outcome("b", "none", false, false, &[], false, true),
+            // Another known-good control, also incorrectly rejected.
+            canary_outcome("c", "none", false, false, &[], false, true),
+            // A planted defect, correctly rejected - must not count as a control at all.
+            canary_outcome("d", "off-by-one", true, true, &["lens"], true, true),
+        ];
+        let m = project_canary(&events);
+        assert_eq!(m.controls, 3, "three known-good control items were scored");
+        assert_eq!(
+            m.control_false_positives, 2,
+            "two of the three controls were wrongly rejected"
+        );
+    }
+
+    #[test]
+    fn project_canary_on_an_empty_stream_has_no_controls_or_false_positives() {
+        let m = project_canary(&[]);
+        assert_eq!(m.controls, 0);
+        assert_eq!(m.control_false_positives, 0);
     }
 
     // ---- spec-13b unit-1 model-drift monitor (cross-run resolved-model comparison) ----
