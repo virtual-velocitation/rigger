@@ -1239,6 +1239,7 @@ fn the_canary_records_nothing_it_cannot_find_afterwards() {
         &panel,
         &[],
         rigger::canary::default_jobs(),
+        &|_, _| {},
     );
     let message = match outcome {
         Ok(report) => panic!(

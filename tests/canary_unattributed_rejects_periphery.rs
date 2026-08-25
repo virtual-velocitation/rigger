@@ -202,6 +202,7 @@ fn run_canary_scores_an_unattributed_correct_reject_and_project_canary_counts_on
         &panel,
         &corpus,
         default_jobs(),
+        &|_, _| {},
     )
     .expect("run_canary succeeds through the public entry");
 
