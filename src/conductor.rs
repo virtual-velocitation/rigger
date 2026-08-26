@@ -3404,6 +3404,23 @@ impl RunCtx<'_> {
         // this independently of which one the swap prioritized (see the comment above).
         let parked_unwind = any_parked.load(Ordering::SeqCst)
             || matches!(&result, Err(e) if is_parked_or_budget_refused(e));
+        if !parked_unwind {
+            // Spec 77, criterion 3 (UNIT-TERMINAL REAP), round 3 fix for
+            // `adv-u77c3-mutation-scratch-reap-only-fires-on-resume-never-on-a-clean-single-
+            // window-integrate` (UPHELD): this fires on the DOMINANT fresh path - every
+            // non-parked attempt boundary this stage reaches, mirroring exactly when `w.remove()`
+            // below tears down the worktree - not only the resume-only `gc_integrated_branches`
+            // call the round-2 build relied on alone (whose ONE production call site runs
+            // against the PRIOR window's state, before this window's own units even exist).
+            // UNCONDITIONAL on `wt` being present: an `isolation: none` unit has no worktree to
+            // hook a reap onto at all, yet its implementer can still populate registered
+            // mutation scratch, so gating this on `wt.is_some()` (mirroring the worktree-only
+            // `reclaim_cache_sibling` shape) would silently miss it - see
+            // `reclaim_terminal_unit_mutation_scratch`'s own doc comment for the single shared
+            // authority every terminal-teardown call site (this one, both speculation exits
+            // below, and the resume-path `gc_integrated_branches`) now drives.
+            self.reclaim_terminal_unit_mutation_scratch(&st.name);
+        }
         if let Some(w) = &wt {
             if !parked_unwind {
                 let _ = w.remove();
@@ -4904,6 +4921,14 @@ impl RunCtx<'_> {
             // exactly as the single-lane path deletes an integrated unit's branch.
             let _ = candidates[i].wt.remove();
             let _ = Worktree::delete_branch(&self.deps.repo, &candidates[i].wt.branch);
+            // Spec 77, criterion 3 (UNIT-TERMINAL REAP), round 3: the unit just reached its
+            // FRESH terminal outcome (a confirmed winner), so reap every REGISTERED
+            // mutation-scratch dir ANY of its K candidates' spawns populated - keyed by `st.name`
+            // (the bare unit id every lane's own spawn id shares as its prefix), never a
+            // lane-worktree-derived slug (see `reclaim_terminal_unit_mutation_scratch`'s own
+            // doc comment for why). ONE call here covers every lane at once: the underlying fn's
+            // unit-prefix match already reaps lane 0..K's own spawn scratch together.
+            self.reclaim_terminal_unit_mutation_scratch(&st.name);
             return Ok(true);
         }
 
@@ -4928,6 +4953,13 @@ impl RunCtx<'_> {
             json!({"id": st.name}),
             &[(META_SPEC_GROUP, &group)],
         )?;
+        // Spec 77, criterion 3 (UNIT-TERMINAL REAP), round 3: the unit just reached its FRESH
+        // terminal outcome (escalation - every candidate lost), so reap every REGISTERED
+        // mutation-scratch dir ANY of its K candidates' spawns populated, exactly like the
+        // winner-integrate exit above. Every candidate already reported its own result (or
+        // crashed) before reaching this point (§ `reclaim_terminal_unit_mutation_scratch`'s own
+        // doc comment), so nothing here is still live.
+        self.reclaim_terminal_unit_mutation_scratch(&st.name);
         Ok(false)
     }
 
@@ -6708,20 +6740,6 @@ impl RunCtx<'_> {
     /// when the worktree is already gone / the branch already deleted), so re-reaching
     /// this on a further resume re-reaches the SAME end state, never an error.
     fn gc_integrated_branches(&self, rs: &ledger::RunState) {
-        // The registered-scratch-root cache home (spec 77, criterion 3: UNIT-TERMINAL REAP),
-        // resolved ONCE for every unit this call reclaims - the SAME env-var precedence
-        // `main.rs::reclaim_spawn_scratch` already uses for the per-spawn reclaim on
-        // `rigger result` (`XDG_CACHE_HOME` else `$HOME/.cache`, `None` in a homeless
-        // environment, where there is nothing to reclaim either). Read here, at the ONE
-        // library-level composition point that already loops every terminal unit, rather than
-        // threaded through `Deps` (which every one of this file's ~250 call sites constructs
-        // as a full struct literal - adding a required field there is a change far outside
-        // this unit's own blast radius for what is, like the branch/worktree reclaim below it,
-        // an established best-effort ambient-env read).
-        let cache_home = crate::driver::replay::cache_home_from(
-            std::env::var_os("XDG_CACHE_HOME"),
-            std::env::var_os("HOME"),
-        );
         for u in rs.units.values() {
             if u.status != ledger::Status::Integrated {
                 continue;
@@ -6738,18 +6756,55 @@ impl RunCtx<'_> {
             // THEN delete the branch. Best-effort exactly like the fresh half's `let _`.
             let _ = worktree::reclaim_worktree_on_branch(&self.deps.repo, &branch);
             let _ = Worktree::delete_branch(&self.deps.repo, &branch);
-            // Spec 77, criterion 3 (UNIT-TERMINAL REAP): the SAME teardown that just reclaimed
-            // this now-terminal unit's worktree/branch above ALSO reaps every REGISTERED
-            // mutation-scratch dir its own spawns populated (spec 77 criterion 2's
-            // `rigger-mutants` root) - the crash-residue backstop for a step process that died
-            // strictly between a spawn's `rigger result` and that per-spawn reclaim. Gated on
-            // the SAME sweep-liveness authority as the branch/worktree reclaim above (only an
-            // `Integrated` unit reaches this line at all), never a second, parallel liveness
-            // notion. A homeless environment (`cache_home` is `None`) has nowhere registered to
-            // reap either, matching the per-spawn reclaim's own no-op there.
-            if let Some(cache_home) = &cache_home {
-                crate::driver::replay::reclaim_unit_mutation_scratch(cache_home, &u.id);
-            }
+            // Spec 77, criterion 3 (UNIT-TERMINAL REAP): the RESUME half - a unit integrated
+            // in an EARLIER window whose fresh-path teardown (`run_stage`'s own call to
+            // `reclaim_terminal_unit_mutation_scratch`, added round 3) never ran because the
+            // process died before reaching it. See that method's own doc comment for the
+            // single shared authority every terminal-teardown call site drives.
+            self.reclaim_terminal_unit_mutation_scratch(&u.id);
+        }
+    }
+
+    /// Reap unit `unit_id`'s own REGISTERED mutation-scratch dirs (spec 77, criterion 3:
+    /// UNIT-TERMINAL REAP) - the ONE composition point every unit-terminal teardown call site
+    /// drives, resolving the registered-scratch-root `cache_home` fresh each call (the SAME
+    /// env-var precedence `main.rs::reclaim_spawn_scratch` already uses for the per-spawn
+    /// reclaim on `rigger result`: `XDG_CACHE_HOME` else `$HOME/.cache`, `None` in a homeless
+    /// environment, where there is nothing to reclaim either) rather than threading it through
+    /// `Deps` (which every one of this file's ~250 call sites constructs as a full struct
+    /// literal - adding a required field there is a change far outside this unit's own blast
+    /// radius for what is an established best-effort ambient-env read, mirrored from the
+    /// branch/worktree reclaim beside it in [`gc_integrated_branches`]).
+    ///
+    /// Round 3 fix for `adv-u77c3-mutation-scratch-reap-only-fires-on-resume-never-on-a-clean-
+    /// single-window-integrate` (UPHELD): round 2 called the underlying pure fn from EXACTLY
+    /// ONE site, [`gc_integrated_branches`] - the RESUME half of branch-GC, whose one
+    /// production call site runs against the PRIOR window's `RunState` at the very top of
+    /// `run()`, before this window's own units even exist. The overwhelming majority of real
+    /// unit-terminal transitions instead go through the FRESH half - `run_stage`'s own
+    /// non-parked teardown, and `run_speculation`'s winner-integrate and escalation-tail exits -
+    /// and NONE of those three ever called it. This method is now the ONE authority all four
+    /// call sites (those three, plus [`gc_integrated_branches`] above) drive, so a future site
+    /// never needs to re-derive the env precedence or re-decide the homeless no-op itself.
+    ///
+    /// Deliberately keyed on the RAW unit id (`st.name`/`u.id`), never a worktree-dir-derived
+    /// slug: an `isolation: none` unit has no worktree AT ALL to hook a reap onto, yet its
+    /// implementer can still populate registered mutation scratch (mutation efficacy is a
+    /// Done-when criterion independent of build isolation), so a purely worktree-teardown-
+    /// triggered reap (the shape `worktree::reclaim_cache_sibling` uses for the analogous
+    /// cargo-target cache) would silently miss it. A speculation LANE's worktree dir also
+    /// carries a `-spec<lane>` suffix its OWN spawn id never does (`speculation_lane_worktree`'s
+    /// doc comment), so reversing a unit id out of that dir shape is unreliable in general -
+    /// calling this with the unit's own `st.name` directly sidesteps that ambiguity entirely,
+    /// and the underlying fn's own unit-PREFIX matching (`marker_filename("<unit_id>/")`,
+    /// commuting with concatenation) already reaps every lane's own spawn scratch in ONE call
+    /// regardless of which lane's worktree happens to be tearing down.
+    fn reclaim_terminal_unit_mutation_scratch(&self, unit_id: &str) {
+        if let Some(cache_home) = crate::driver::replay::cache_home_from(
+            std::env::var_os("XDG_CACHE_HOME"),
+            std::env::var_os("HOME"),
+        ) {
+            crate::driver::replay::reclaim_unit_mutation_scratch(&cache_home, unit_id);
         }
     }
 

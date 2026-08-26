@@ -7759,13 +7759,18 @@ fn run_teardown_reclaims_run_level_scratch_after_a_manual_review_is_integrated()
     );
 }
 
-/// Spec 77, criterion 3 (UNIT-TERMINAL REAP): the SAME teardown that already reclaims a
-/// terminal unit's branch/worktree on the resume path (`gc_integrated_branches`, spec 38
-/// criterion 1 - proven by `branch_gc_reclaims_integrated_units_and_retains_escalated_ones_on_resume`
-/// in `src/conductor.rs`) now ALSO reaps every REGISTERED mutation-scratch dir that unit's
-/// own spawns populated (spec 77 criterion 2's `rigger-mutants` root), while a LIVE sibling
-/// unit's own registered scratch is spared - gated on the EXISTING sweep-liveness authority
-/// (only an `Integrated` unit is touched), never a new liveness notion of its own.
+/// Spec 77, criterion 3 (UNIT-TERMINAL REAP), the RESUME half: `gc_integrated_branches` (spec
+/// 38 criterion 1 - proven by
+/// `branch_gc_reclaims_integrated_units_and_retains_escalated_ones_on_resume` in
+/// `src/conductor.rs`) reclaims a terminal unit's branch/worktree, then (round 3) calls the
+/// SAME `reclaim_terminal_unit_mutation_scratch` helper every fresh-path teardown site now
+/// drives too, reaping every REGISTERED mutation-scratch dir that unit's own spawns populated
+/// (spec 77 criterion 2's `rigger-mutants` root), while a LIVE sibling unit's own registered
+/// scratch is spared - gated on the EXISTING sweep-liveness authority (only an `Integrated`
+/// unit is touched), never a new liveness notion of its own. See
+/// `a_units_registered_mutation_scratch_is_reaped_by_the_real_single_window_integrate_teardown`
+/// below for the DOMINANT fresh-path proof this test structurally cannot give, since "solo"
+/// integrates here via a hand-seeded `UnitIntegrated` event, never a real merge.
 ///
 /// Mirrors `run_teardown_reclaims_run_level_scratch_after_a_manual_review_is_integrated`'s
 /// exact two-step shape (a real `rigger step` pauses "solo" for manual review, then a seeded
@@ -7841,16 +7846,201 @@ fn a_terminal_units_registered_mutation_scratch_is_reaped_while_a_live_siblings_
     );
 }
 
-/// Spec 77, criterion 3 (UNIT-TERMINAL REAP): `gc_integrated_branches` resolves its
-/// registered-scratch-root `cache_home` via `cache_home_from(XDG_CACHE_HOME, HOME)` ONCE per
-/// call, then only enters `reclaim_unit_mutation_scratch` behind `if let Some(cache_home)`
-/// (`src/conductor.rs`) - so a HOMELESS environment (neither var set) takes the `None` arm
-/// for EVERY integrated unit, every step. No test anywhere else drives this arm: the pure-fn
-/// unit tests (`src/driver/replay.rs`) never see an `Option` at all (they call
+/// Spec 77, criterion 3 (UNIT-TERMINAL REAP), the DOMINANT fresh-path proof, round 3 fix for
+/// `adv-u77c3-mutation-scratch-reap-only-fires-on-resume-never-on-a-clean-single-window-
+/// integrate` (UPHELD): the round-2 build wired the reap ONLY into `gc_integrated_branches`,
+/// whose one production call site runs at the very TOP of `run()` against the PRIOR window's
+/// `RunState`, before the current window's own units even exist - the documented REPLAY half
+/// of the branch-GC rule. The overwhelming majority of real unit-terminal transitions instead
+/// go through the FRESH half: `run_stage`'s own non-parked teardown (conductor.rs), and every
+/// speculation winner/loser teardown - NONE of which ever reached the reap, so a unit that
+/// integrated within a single, uninterrupted `rigger run`/`rigger step` window never had its
+/// registered mutation scratch reaped at all. This test proves the round-3 fix closes exactly
+/// that: unlike the sibling test above (which reaches `Integrated` via a hand-seeded
+/// `UnitIntegrated` event, so "solo"'s real teardown path is NEVER driven and the test
+/// structurally cannot see this gap), "solo" here reaches `Ok(true)` for REAL - a real park, a
+/// real `SpawnResult` (seeded directly rather than through `rigger result`, so the per-spawn
+/// reclaim, spec 34 c1, never runs for this spawn either - reproducing exactly the crash
+/// window criterion 3 backstops: "the record landed, the reclaim never ran"), a real pre-gate
+/// commit, a real `ok` gate pass, and a real merge - all within the SAME second `rigger step`
+/// process that also tears down its worktree via the real `run_stage` `Ok(true)` branch.
+///
+/// Mirrors the pre-existing
+/// `step_reclaims_the_units_worktree_and_deletes_its_branch_on_a_clean_integrate`'s exact
+/// real-git-isolated, `on_pass: merge` shape (`write_reviewless_git_unit_workflow`), which
+/// already proves the worktree+branch ARE reclaimed on a clean single-window integrate; this
+/// test adds a registered mutation-scratch dir to that same real teardown and asserts it is
+/// ALSO gone.
+#[test]
+fn a_units_registered_mutation_scratch_is_reaped_by_the_real_single_window_integrate_teardown() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_reviewless_git_unit_workflow(root);
+
+    let scratch = root.join("scratchroot");
+    let tmp = scratch.to_str().unwrap();
+
+    // Step 1: "solo"'s implementer parks - a real, git-backed worktree exists now.
+    let (out, err, ok) = run_rigger_envs(root, &["step"], &[("RIGGER_TMPDIR", tmp)]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/implementer#0""#) && out.contains(r#""done":false"#),
+        "step 1 must park the implementer; got: {out:?}"
+    );
+    let wt_dir = scratch.join("rigger-wt-solo");
+    assert!(
+        wt_dir.exists(),
+        "premise: a parked implementer must already have its unit worktree on disk: {}",
+        wt_dir.display()
+    );
+
+    // The implementer's own diff, written directly into the worktree it was already handed.
+    std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
+
+    // Register the mutation-testing scratch this spawn's OWN `cargo mutants` run would have
+    // populated (spec 77 c2), under a throwaway cache home. The `SpawnResult` is seeded
+    // DIRECTLY into the store (never through the real `rigger result` CLI, mirroring
+    // `step_prints_a_disjoint_two_spawn_wave_then_reports_done`'s own pattern) so the per-spawn
+    // reclaim (`cmd_result`'s own call) never runs for this spawn - the ONLY thing that can
+    // reap this scratch is the unit-terminal teardown this test exists to prove.
+    let cache_home = tempfile::tempdir().unwrap();
+    let mutation_scratch = cache_home
+        .path()
+        .join("rigger-mutants")
+        .join("solo_2fimplementer_230");
+    std::fs::create_dir_all(&mutation_scratch).unwrap();
+    std::fs::write(mutation_scratch.join("mutants-debris.out"), [0u8; 32]).unwrap();
+    seed_run_events(
+        root,
+        &[(
+            "SpawnResult",
+            r#"{"id":"solo/implementer#0","output":"implemented the unit"}"#,
+        )],
+    );
+
+    // Step 2: the seeded result replays, the pre-gate commit lands the written file, the `ok`
+    // gate passes inline, there is no review panel, and with `on_pass: merge` the stage reaches
+    // a genuine TERMINAL `Ok(true)` in THIS SAME process - the REAL `run_stage` teardown, never
+    // a fabricated `UnitIntegrated` event and never a later resume process.
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["step"],
+        &[
+            ("RIGGER_TMPDIR", tmp),
+            ("XDG_CACHE_HOME", cache_home.path().to_str().unwrap()),
+        ],
+    );
+    assert!(ok, "the second step must succeed; stderr:\n{err}");
+    assert!(
+        out.contains(r#""done":true"#),
+        "every spawn now has a result and the stage integrates in this same step; got: {out:?}"
+    );
+
+    assert!(
+        !wt_dir.exists(),
+        "the unit's worktree must be reclaimed after a clean integrate: {}",
+        wt_dir.display()
+    );
+    assert!(
+        !mutation_scratch.exists(),
+        "the unit's own registered mutation-scratch dir must be reaped by the SAME real, \
+         single-window teardown that reclaims its worktree - not only on a later resume \
+         process; {} still exists",
+        mutation_scratch.display()
+    );
+}
+
+/// Spec 77, criterion 3 (UNIT-TERMINAL REAP), an `isolation: none` unit has NO worktree at all
+/// (it runs inline in the project cwd), yet its implementer can still populate registered
+/// mutation scratch (mutation efficacy is independent of build isolation) - proving the round-3
+/// fix's UNCONDITIONAL placement in `run_stage` (never gated on `wt.is_some()`) actually
+/// matters: a worktree-teardown-triggered-only reap (the shape the cargo-target-cache reap
+/// uses) would silently miss this unit entirely, since it never reaches `Worktree::remove` on
+/// ANY path. Real single-window `Ok(true)` integrate, same seeded-`SpawnResult` shape as the
+/// sibling test above.
+#[test]
+fn an_isolation_none_units_registered_mutation_scratch_is_reaped_by_the_real_single_window_integrate_teardown(
+) {
+    let dir = temp_repoless_project();
+    let root = dir.path();
+    // A single `isolation: none` stage, `on_pass: none` (no merge to attempt - there is no
+    // worktree), mirroring `write_two_stage_workflow`'s own stage shape but with only ONE
+    // stage so no spawn-budget contention is in play.
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: isolationnonereaptest
+defaults:
+  grounder: nop
+  budget: 60
+stages:
+  a:
+    agent: worker
+    on_pass: none
+"#,
+    )
+    .unwrap();
+
+    // Step 1: "a" is ready and isolation:none, so its implementer parks with NO worktree.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"a/implementer#0""#),
+        "step 1 must park a's implementer; got: {out:?}"
+    );
+
+    // Register the mutation-testing scratch "a"'s own spawn would have populated, then seed its
+    // result directly (never through `rigger result`, so the per-spawn reclaim never runs).
+    let cache_home = tempfile::tempdir().unwrap();
+    let mutation_scratch = cache_home
+        .path()
+        .join("rigger-mutants")
+        .join("a_2fimplementer_230");
+    std::fs::create_dir_all(&mutation_scratch).unwrap();
+    std::fs::write(mutation_scratch.join("mutants-debris.out"), [0u8; 32]).unwrap();
+    seed_run_events(
+        root,
+        &[(
+            "SpawnResult",
+            r#"{"id":"a/implementer#0","output":"did a"}"#,
+        )],
+    );
+
+    // Step 2: "a" replays to its `on_pass: none` terminal (verified-but-unmerged) state - a
+    // real, single-window terminal outcome with NO worktree ever created for it.
+    let (_out, err, ok) = run_rigger_envs(
+        root,
+        &["step"],
+        &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
+    );
+    assert!(ok, "the second step must succeed; stderr:\n{err}");
+
+    assert!(
+        !mutation_scratch.exists(),
+        "an isolation:none unit's own registered mutation-scratch dir must be reaped on its \
+         real single-window terminal teardown, even though it has no worktree to hook a reap \
+         onto: {}",
+        mutation_scratch.display()
+    );
+}
+
+/// Spec 77, criterion 3 (UNIT-TERMINAL REAP): every terminal-teardown call site (round 3)
+/// drives the ONE shared `reclaim_terminal_unit_mutation_scratch` helper (`src/conductor.rs`),
+/// which resolves the registered-scratch-root `cache_home` via `cache_home_from(XDG_CACHE_
+/// HOME, HOME)` and only enters `reclaim_unit_mutation_scratch` behind `if let Some(cache_
+/// home)` - so a HOMELESS environment (neither var set) takes the `None` arm for EVERY
+/// terminal unit, every step. No test anywhere else drives this arm: the pure-fn unit tests
+/// (`src/driver/replay.rs`) never see an `Option` at all (they call
 /// `reclaim_unit_mutation_scratch` with a real `&Path` directly), the pre-existing
 /// `branch_gc_reclaims_integrated_units_and_retains_escalated_ones_on_resume` unit test
 /// (spec 38) never touches `HOME`/`XDG_CACHE_HOME` so it runs with whatever real home the
-/// test process inherits, and this file's own sibling test above always seeds a resolvable
+/// test process inherits, and this file's own sibling tests above always seed a resolvable
 /// `XDG_CACHE_HOME`. A regression that swapped the `if let Some` guard for an `.unwrap()` (or
 /// any other panic-on-`None` shape) would pass every one of those and only surface here, in
 /// the one homeless environment none of them construct.
@@ -7860,12 +8050,12 @@ fn a_terminal_units_registered_mutation_scratch_is_reaped_while_a_live_siblings_
 /// `.env_remove` on the real spawned binary) rather than mutating process-global env vars
 /// in-process, which would race every other test in this shared test binary.
 ///
-/// Non-vacuous: hand-verified by temporarily replacing the `if let Some(cache_home) =
-/// &cache_home` guard in `src/conductor.rs::gc_integrated_branches` with
-/// `cache_home.as_ref().unwrap()`, confirming THIS test fails with a `None`-unwrap panic
-/// (`ok` false, a panic message on stderr) while every other test in this file's suite that
-/// exercises `gc_integrated_branches` still passes (they all run with a resolvable real
-/// home), then reverting the change.
+/// Non-vacuous: hand-verified by temporarily replacing the `if let Some(cache_home) = ...`
+/// guard in `src/conductor.rs::reclaim_terminal_unit_mutation_scratch` (round 3's shared
+/// helper) with an `.unwrap()`, confirming THIS test fails with a `None`-unwrap panic (`ok`
+/// false, a panic message on stderr) while every other test in this file's suite that reaches
+/// a unit-terminal teardown still passes (they all run with a resolvable real home), then
+/// reverting the change.
 #[test]
 fn a_terminal_units_mutation_scratch_reap_is_a_graceful_noop_in_a_homeless_environment() {
     let dir = temp_git_project_with_commit();

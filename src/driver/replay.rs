@@ -170,8 +170,19 @@ pub fn mutation_scratch_path(cache_home: &Path, spawn_id: &str) -> Option<PathBu
 /// empty prefix would match EVERY entry under the root, so this is refused outright rather
 /// than reaping the whole registered-scratch tree - the same fail-safe-by-construction idiom
 /// [`mutation_scratch_path`] and [`spawn_scratch_path`] already follow for the identical
-/// degenerate shape.
+/// degenerate shape. Round 3 fix for `sdet-u77c3-empty-unit-id-fail-safe-guard-is-illusory`
+/// (UPHELD): the guard checks the RAW `unit_id` itself, BEFORE the `"/"` separator is
+/// appended - the prior round's guard instead checked
+/// `marker_filename(&format!("{unit_id}/"))` directly, which is `Some("_2f")` (the escaped `/`
+/// alone) even for an EMPTY `unit_id`, so it never actually caught the degenerate id it
+/// claimed to: it let an empty id match every entry whose OWN spawn id happens to start with a
+/// literal `/` (reachable via `reclaim_spawn_scratch`'s own `spawn_id.split('/').next()`
+/// unit-extraction, which yields `""` for a leading-slash spawn id) instead of matching
+/// nothing.
 pub fn reclaim_unit_mutation_scratch(cache_home: &Path, unit_id: &str) {
+    if crate::liveness::marker_filename(unit_id).is_none() {
+        return;
+    }
     let Some(prefix) = crate::liveness::marker_filename(&format!("{unit_id}/")) else {
         return;
     };
@@ -586,6 +597,37 @@ mod tests {
         assert!(
             untouched.exists(),
             "an empty unit id must reap nothing - it must never be treated as a match-all prefix"
+        );
+    }
+
+    /// Round-3 fix for `sdet-u77c3-empty-unit-id-fail-safe-guard-is-illusory` (UPHELD): the
+    /// PRIOR round's guard checked `marker_filename(&format!("{unit_id}/"))`, which encodes to
+    /// `Some("_2f")` (the escaped `/` alone) even for an EMPTY `unit_id` - appending the
+    /// separator before encoding means the input handed to `marker_filename` always carries at
+    /// least one byte, so the None-on-empty-input special case was structurally unreachable
+    /// from that call site. An empty `unit_id` therefore computed a LIVE, non-empty prefix (the
+    /// encoded leading slash) and proceeded with real prefix matching, cross-deleting any OTHER
+    /// unit's own registered scratch whose spawn id happens to start with a literal `/`. The
+    /// test above never caught this because its seeded victim (`u1/implementer#0`) does not
+    /// happen to start with a slash, so it passed for the wrong reason. This test seeds the
+    /// EXACT victim shape that DOES collide with the illusory guard's own live prefix and
+    /// proves the FIXED guard (checking the raw `unit_id` itself, before the separator is
+    /// appended) leaves it untouched.
+    #[test]
+    fn reclaim_unit_mutation_scratch_spares_a_leading_slash_spawn_ids_scratch_on_an_empty_unit_id()
+    {
+        let cache_home = tempfile::tempdir().unwrap();
+        let victim = mutation_scratch_path(cache_home.path(), "/weird-unit/implementer#0").unwrap();
+        std::fs::create_dir_all(&victim).unwrap();
+        std::fs::write(victim.join("debris.out"), [0u8; 8]).unwrap();
+
+        reclaim_unit_mutation_scratch(cache_home.path(), "");
+
+        assert!(
+            victim.exists() && victim.join("debris.out").exists(),
+            "an empty unit id must never cross-delete a real spawn whose own id starts with a \
+             literal slash (the exact shape the illusory guard used to match): {}",
+            victim.display()
         );
     }
 
