@@ -1738,17 +1738,20 @@ fn a_spawns_scratch_is_reclaimed_the_moment_its_result_is_recorded_for_every_out
 }
 
 /// Spec 77, criterion 2 (MUTATION SCRATCH IS REAPED): `cmd_result`'s per-spawn reclaim (spec
-/// 34, criterion 1) gains a REGISTERED SCRATCH ROOT beyond `agent-scratch` - the unit-scoped
+/// 34, criterion 1) gains a REGISTERED SCRATCH ROOT beyond `agent-scratch` - the SPAWN-scoped
 /// mutation-testing dir the seeded implementer persona points `cargo mutants`' `TMPDIR` at
-/// (`driver::replay::mutation_scratch_path`: `$XDG_CACHE_HOME/rigger-mutants/<unit>`). The
-/// moment ANY spawn belonging to a unit reports its result - for every outcome, the same four
-/// shapes spec 34's own per-spawn test proves - that UNIT's mutation-scratch dir is deleted,
-/// while a unit with no reported spawn keeps its own mutation-scratch dir untouched. Unlike
-/// `agent-scratch` this root is keyed by UNIT, not by the full spawn id (a retry reuses and
-/// pre-deletes the same dir, per spec 77 Design), so "sibling" here means a DIFFERENT unit,
-/// not a different spawn of the same unit.
+/// (`driver::replay::mutation_scratch_path`: `$XDG_CACHE_HOME/rigger-mutants/<spawn>`, per spec
+/// 77 Design "mutation scratch is spawn-scoped, never unit-scoped"). The moment a spawn reports
+/// its OWN result (for every outcome, the same four shapes spec 34's own per-spawn test proves)
+/// its OWN mutation-scratch dir is deleted, while a sibling spawn with no recorded result keeps
+/// its own dir untouched, exactly like agent-scratch. A different spawn entirely, whether a
+/// different unit or a different lane/attempt/role of the SAME unit, is covered separately
+/// (see `two_speculation_lanes_of_the_same_unit_get_distinct_mutation_scratch_dirs` and
+/// `a_reviewers_result_never_reclaims_the_implementers_mutation_scratch`), since same-unit
+/// same-spawn cross-role/cross-lane sharing is exactly the axis the round-7 review reject found
+/// uncovered.
 #[test]
-fn a_units_mutation_scratch_is_reclaimed_the_moment_a_spawn_of_its_reports_for_every_outcome() {
+fn a_spawns_mutation_scratch_is_reclaimed_the_moment_its_own_result_reports_for_every_outcome() {
     let cases: &[(&str, &[&str])] = &[
         ("success", &["result", "u/implementer#0", "did the work"]),
         (
@@ -1776,17 +1779,24 @@ fn a_units_mutation_scratch_is_reclaimed_the_moment_a_spawn_of_its_reports_for_e
         seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
 
         // A dedicated cache home for this test case, so XDG_CACHE_HOME never points at the
-        // operator's real ~/.cache. Two units' mutation-scratch dirs, each populated with
-        // build debris, keyed only by UNIT (`u`, `v`) - never a spawn id.
+        // operator's real ~/.cache. Two DIFFERENT spawns' mutation-scratch dirs, each
+        // populated with build debris, keyed by their own FULL injectively-encoded spawn id
+        // (`u/implementer#0` and `v/implementer#0`).
         let cache_home = tempfile::tempdir().unwrap();
-        let done_unit_scratch = cache_home.path().join("rigger-mutants").join("u");
-        let live_unit_scratch = cache_home.path().join("rigger-mutants").join("v");
-        for d in [&done_unit_scratch, &live_unit_scratch] {
+        let done_spawn_scratch = cache_home
+            .path()
+            .join("rigger-mutants")
+            .join("u_2fimplementer_230");
+        let live_spawn_scratch = cache_home
+            .path()
+            .join("rigger-mutants")
+            .join("v_2fimplementer_230");
+        for d in [&done_spawn_scratch, &live_spawn_scratch] {
             std::fs::create_dir_all(d).unwrap();
             std::fs::write(d.join("mutants-debris.out"), [0u8; 32]).unwrap();
         }
 
-        // Record the outcome for a spawn of unit `u` through the real courier, with
+        // Record the outcome for spawn `u/implementer#0` through the real courier, with
         // XDG_CACHE_HOME pointed at this case's throwaway cache home.
         let (out, err, ok) = run_rigger_envs(
             root,
@@ -1798,47 +1808,55 @@ fn a_units_mutation_scratch_is_reclaimed_the_moment_a_spawn_of_its_reports_for_e
             "[{label}] recording the result must succeed; stdout: {out:?} stderr: {err}"
         );
 
-        // Unit `u`'s mutation-scratch dir is GONE the moment its spawn's result landed...
+        // The reporting spawn's own mutation-scratch dir is GONE the moment its result
+        // landed...
         assert!(
-            !done_unit_scratch.exists(),
-            "[{label}] a unit's registered mutation-scratch dir must be reclaimed the moment \
-             one of its spawns' results is recorded; {} still exists",
-            done_unit_scratch.display()
+            !done_spawn_scratch.exists(),
+            "[{label}] a spawn's registered mutation-scratch dir must be reclaimed the moment \
+             its own result is recorded; {} still exists",
+            done_spawn_scratch.display()
         );
-        // ...while unit `v`, with no recorded result, keeps its own mutation-scratch untouched.
+        // ...while a DIFFERENT spawn, with no recorded result, keeps its own mutation-scratch
+        // untouched.
         assert!(
-            live_unit_scratch.exists() && live_unit_scratch.join("mutants-debris.out").exists(),
-            "[{label}] a unit with no recorded spawn result must keep its mutation-scratch; {} \
+            live_spawn_scratch.exists() && live_spawn_scratch.join("mutants-debris.out").exists(),
+            "[{label}] a spawn with no recorded result must keep its own mutation-scratch; {} \
              was wrongly reclaimed",
-            live_unit_scratch.display()
+            live_spawn_scratch.display()
         );
     }
 }
 
-/// Sibling of `a_units_mutation_scratch_is_reclaimed_the_moment_a_spawn_of_its_reports_for_every_outcome`
-/// pinning the ONE claim that test's every case leaves untouched: `reclaim_spawn_scratch`'s own
-/// doc comment says the unit-scoped mutation scratch is reclaimed "the moment ANY spawn of the
-/// unit reports - not only the implementer role that actually ran mutants" - but every case in
-/// the sibling test reports as `u/implementer#0`, so a regression that narrowed the unit
-/// extraction to filter on role (e.g. skipping reclaim unless the reporting spawn's role is
-/// literally "implementer") would pass every existing test while breaking this documented
-/// contract. Here the REPORTING spawn is `u/adversary#0` - a role that never runs `cargo
-/// mutants` - and unit `u`'s mutation scratch must still be reclaimed, proving the unit
-/// extraction (`spawn_id.split('/').next()`) is genuinely role-agnostic, not merely untested
-/// with a second role that happens to also start with "u/".
+/// Sibling of `a_spawns_mutation_scratch_is_reclaimed_the_moment_its_own_result_reports_for_every_outcome`,
+/// pinning the property spec 77's shift to SPAWN-scoped keying (Design "mutation scratch is
+/// spawn-scoped, never unit-scoped") introduces: only the IMPLEMENTER role ever populates a
+/// mutation-scratch dir (reviewers never run `cargo mutants`), and only the SAME spawn's own
+/// result reclaims its own leaf - a DIFFERENT role of the SAME unit+attempt must never resolve
+/// to (and so never reclaim) the implementer's leaf. This is the mirror image of the OLD
+/// bare-unit design's "any role reclaims" behavior, which the round-7 review reject found was
+/// exactly what let a fast-finishing sibling spawn's result SIGKILL a slower spawn's live
+/// `cargo mutants` subprocess sharing that one dir - under full-spawn-id keying no two distinct
+/// spawns (whatever their unit, attempt, or role) ever share a leaf, so this can no longer
+/// happen by construction, not merely by luck of test ordering.
 #[test]
-fn a_units_mutation_scratch_is_reclaimed_by_a_non_implementer_roles_spawn_too() {
+fn a_reviewers_result_never_reclaims_the_implementers_mutation_scratch() {
     let dir = temp_project();
     let root = dir.path();
     seed_store(root);
     seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
 
     let cache_home = tempfile::tempdir().unwrap();
-    let unit_scratch = cache_home.path().join("rigger-mutants").join("u");
-    std::fs::create_dir_all(&unit_scratch).unwrap();
-    std::fs::write(unit_scratch.join("mutants-debris.out"), [0u8; 32]).unwrap();
+    // The IMPLEMENTER's own populated mutation-scratch dir, standing in for a real `cargo
+    // mutants` run still in progress underneath it.
+    let implementer_scratch = cache_home
+        .path()
+        .join("rigger-mutants")
+        .join("u_2fimplementer_230");
+    std::fs::create_dir_all(&implementer_scratch).unwrap();
+    std::fs::write(implementer_scratch.join("mutants-debris.out"), [0u8; 32]).unwrap();
 
-    // The ADVERSARY role of unit `u` reports - not the implementer role that ran mutants.
+    // The ADVERSARY role of the SAME unit+attempt reports - not the implementer role that ran
+    // mutants, and not a role that ever populated a mutation-scratch dir of its own.
     let (out, err, ok) = run_rigger_envs(
         root,
         &["result", "u/adversary#0", "no blocking findings"],
@@ -1850,11 +1868,11 @@ fn a_units_mutation_scratch_is_reclaimed_by_a_non_implementer_roles_spawn_too() 
     );
 
     assert!(
-        !unit_scratch.exists(),
-        "a unit's registered mutation-scratch dir must be reclaimed when ANY of its spawns \
-         reports - including a non-implementer role that never touched mutants - not only the \
-         implementer role that ran cargo mutants; {} still exists",
-        unit_scratch.display()
+        implementer_scratch.exists() && implementer_scratch.join("mutants-debris.out").exists(),
+        "a reviewer's result must never reclaim (or SIGKILL a live process under) the \
+         implementer's own mutation-scratch dir for the same unit+attempt; {} was wrongly \
+         reclaimed",
+        implementer_scratch.display()
     );
 }
 
@@ -1979,17 +1997,23 @@ fn a_dotdot_spawn_id_never_escapes_the_pre_existing_agent_scratch_root_either() 
 }
 
 /// Regression for the spec-77 review reject round 4 (ADJUDICATOR VERDICT u77c2 round 4): round
-/// 3's fix only neutralized an all-dots `marker_filename` result; a spawn id starting with `/`
-/// (e.g. `rigger result "/foo" "text"`, directly reachable - the `id` positional carries no
-/// format validation beyond non-empty) makes `reclaim_spawn_scratch`'s own
-/// `unit = spawn_id.split('/').next()` extraction (main.rs) resolve to the EMPTY string, and
-/// round 3's guard explicitly excludes an empty mapped result (`!mapped.is_empty()` short-
-/// circuits it). `mutation_scratch_path(cache_home, "")` then collapsed via the documented
+/// 3's fix only neutralized an all-dots `marker_filename` result; at the time, a spawn id
+/// starting with `/` (e.g. `rigger result "/foo" "text"`, directly reachable - the `id`
+/// positional carries no format validation beyond non-empty) made `reclaim_spawn_scratch`'s
+/// OWN `unit = spawn_id.split('/').next()` extraction (main.rs) resolve to the EMPTY string,
+/// and `mutation_scratch_path(cache_home, "")` then collapsed via the documented
 /// `PathBuf::join("")` no-op to `cache_home/rigger-mutants` - the REGISTERED ROOT ITSELF, not a
 /// per-unit leaf under it - so `reap_then_remove_dir`'s reap-then-`remove_dir_all` wiped every
 /// OTHER unit's mutation scratch (and killed any of their still-running `cargo mutants`
-/// subprocesses) alongside the reporting unit's. Prove the fix holds end to end: a leading-slash
-/// spawn id must reclaim only a distinct `_empty_`-named leaf, never the registered root itself.
+/// subprocesses) alongside the reporting unit's.
+///
+/// Round 8's spawn-scoped redesign (spec 77 Design "mutation scratch is spawn-scoped, never
+/// unit-scoped") removes the whole `unit = ...` extraction step this class of bug lived in:
+/// `reclaim_spawn_scratch` now feeds `mutation_scratch_path` the raw, always-non-empty
+/// `spawn_id` directly (`"/foo"` itself, not a substring extracted from it), so the failure
+/// mode this test regresses is now structurally unreachable through this call site, not merely
+/// guarded. Kept as a live end-to-end pin anyway: a leading-slash spawn id must still reclaim
+/// only its own distinct leaf, never the registered root itself.
 #[test]
 fn a_leading_slash_spawn_id_never_collapses_the_reclaim_to_its_registered_root() {
     let dir = temp_project();
@@ -2036,20 +2060,22 @@ fn a_leading_slash_spawn_id_never_collapses_the_reclaim_to_its_registered_root()
 /// substituted a FIXED placeholder for a degenerate `marker_filename` result (`"_empty_"` for
 /// empty, an all-dots result's own dots mapped to `_` for the walk-upward shape) - both wrong
 /// the same way, since the placeholder was drawn from the map's own reachable output alphabet,
-/// so it could never be proven disjoint from a REAL unit's own mapped output (a real unit
-/// literally named an underscore-run collided with either placeholder). Round 7 replaces the
-/// whole scheme with one INJECTIVE byte-hex encoding (every byte outside `[A-Za-z0-9-]`,
-/// `_` included, becomes `_` plus two lowercase hex digits) - collisions are closed by
-/// construction, not by a case-by-case guard. Prove it end to end through the real binary: a
-/// real unit named `"___"` (three underscores - the exact shape round 5's empty-sentinel and
-/// round 3's all-dots-to-underscore placeholders could each collide with) encodes to its own
-/// unique leaf (`_5f_5f_5f`) and keeps that leaf's live mutation-scratch dir untouched when an
+/// so it could never be proven disjoint from a REAL id's own mapped output (a real id literally
+/// named an underscore-run collided with either placeholder). Round 7 replaces the whole scheme
+/// with one INJECTIVE byte-hex encoding (every byte outside `[A-Za-z0-9-]`, `_` included,
+/// becomes `_` plus two lowercase hex digits) - collisions are closed by construction, not by a
+/// case-by-case guard. Round 8's spawn-scoped redesign feeds this encoding the raw spawn id
+/// directly (no unit/attempt extraction), so this test now drives it with a spawn id rather
+/// than a unit id, unchanged otherwise. Prove it end to end through the real binary: a real
+/// spawn id `"___"` (three underscores - the exact shape round 5's empty-sentinel and round
+/// 3's all-dots-to-underscore placeholders could each collide with) encodes to its own unique
+/// leaf (`_5f_5f_5f`) and keeps that leaf's live mutation-scratch dir untouched when an
 /// UNRELATED spawn reports with a degenerate id - an all-dots id of the identical length
 /// (`"..."`, the round-3 all-dots shape, which now encodes to the DIFFERENT leaf `_2e_2e_2e`)
-/// and, separately, a leading-slash id (the round-4/5 empty-unit shape, which still resolves to
-/// no leaf at all).
+/// and, separately, a leading-slash id (the round-4/5 empty-unit shape, which resolves to its
+/// own distinct leaf rather than colliding with anything real).
 #[test]
-fn a_real_underscore_run_units_mutation_scratch_survives_an_unrelated_degenerate_spawn_id() {
+fn a_real_underscore_run_spawns_mutation_scratch_survives_an_unrelated_degenerate_spawn_id() {
     let cases: &[(&str, &[&str])] = &[
         (
             "all-dots-same-length",
@@ -2067,15 +2093,15 @@ fn a_real_underscore_run_units_mutation_scratch_survives_an_unrelated_degenerate
         seed_store(root);
         seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
 
-        // A real unit literally named three underscores, with a live mutation-scratch dir at
-        // the path `mutation_scratch_path` actually computes for it under the injective
-        // encoding (`_` escapes to `_5f`, so "___" -> "_5f_5f_5f") - exactly the shape round
-        // 5's "_empty_" placeholder and round 3's all-dots-to-underscore placeholder could
-        // each collide with under the OLD scheme.
+        // A real spawn id literally three underscores, with a live mutation-scratch dir at the
+        // path `mutation_scratch_path` actually computes for it under the injective encoding
+        // (`_` escapes to `_5f`, so "___" -> "_5f_5f_5f") - exactly the shape round 5's
+        // "_empty_" placeholder and round 3's all-dots-to-underscore placeholder could each
+        // collide with under the OLD scheme.
         let cache_home = tempfile::tempdir().unwrap();
-        let real_unit_scratch = cache_home.path().join("rigger-mutants").join("_5f_5f_5f");
-        std::fs::create_dir_all(&real_unit_scratch).unwrap();
-        std::fs::write(real_unit_scratch.join("outcomes.json"), b"{}").unwrap();
+        let real_spawn_scratch = cache_home.path().join("rigger-mutants").join("_5f_5f_5f");
+        std::fs::create_dir_all(&real_spawn_scratch).unwrap();
+        std::fs::write(real_spawn_scratch.join("outcomes.json"), b"{}").unwrap();
 
         let (out, err, ok) = run_rigger_envs(
             root,
@@ -2089,13 +2115,82 @@ fn a_real_underscore_run_units_mutation_scratch_survives_an_unrelated_degenerate
         );
 
         assert!(
-            real_unit_scratch.exists() && real_unit_scratch.join("outcomes.json").exists(),
-            "[{label}] a real unit literally named an underscore-run must keep its live \
+            real_spawn_scratch.exists() && real_spawn_scratch.join("outcomes.json").exists(),
+            "[{label}] a real spawn id literally an underscore-run must keep its live \
              mutation-scratch dir untouched by an unrelated degenerate spawn id; {} was \
              wrongly removed",
-            real_unit_scratch.display()
+            real_spawn_scratch.display()
         );
     }
+}
+
+/// Regression for the spec-77 review reject round 7 (ADJUDICATOR VERDICT u77c2 round 7,
+/// upheld sdet-u77c2r7-mutation-scratch-key-collides-across-speculation-lanes and
+/// adv-u77c2r7-shared-lane-reap-sigkills-sibling-mutants-on-any-result), fixed per round 8's
+/// spec 77 Design amendment "mutation scratch is spawn-scoped, never unit-scoped":
+/// `speculation_width > 1` (spec 13, unit 3) runs K implementer candidates of the SAME unit
+/// CONCURRENTLY, each a DIFFERENT spawn `<unit>/implementer#<lane>` in its OWN worktree
+/// (`speculation_lane_worktree` suffixes the worktree `-spec{lane}` for exactly this reason).
+/// Before this fix `mutation_scratch_path` was keyed on the bare unit id alone, so every
+/// lane's `cargo mutants` TMPDIR (and `reclaim_spawn_scratch`'s reap target) collapsed onto
+/// ONE shared directory: the first lane to report its result reclaimed (and
+/// `reap_processes_rooted_under` SIGKILLed) a SIBLING lane's still-running mutation-testing
+/// tree out from under it - no malformed input needed, just two ordinary lanes of one
+/// speculating unit. Prove the fix through the real binary: lane 0 and lane 1 of the SAME
+/// unit `u` get DISTINCT registered mutation-scratch dirs (their own full spawn ids), and
+/// reporting lane 0's result reclaims ONLY lane 0's dir while lane 1's - still populated,
+/// standing in for a lane whose `cargo mutants` subprocess is still mid-build - survives
+/// untouched. This is the literal Done-when text ("a sibling spawn with no recorded result
+/// keeps its dir") for a sibling spawn of the SAME unit, not just a different unit.
+#[test]
+fn two_speculation_lanes_of_the_same_unit_get_distinct_mutation_scratch_dirs() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
+
+    // Two lanes of unit `u` (spawn_id(unit, role, lane) - identical unit, different
+    // attempt/lane, so their FULL spawn ids differ only in the trailing digit), each with a
+    // populated mutation-scratch dir standing in for a real `cargo mutants` run in progress
+    // under this lane's own TMPDIR.
+    let cache_home = tempfile::tempdir().unwrap();
+    let lane0_scratch = cache_home
+        .path()
+        .join("rigger-mutants")
+        .join("u_2fimplementer_230");
+    let lane1_scratch = cache_home
+        .path()
+        .join("rigger-mutants")
+        .join("u_2fimplementer_231");
+    for d in [&lane0_scratch, &lane1_scratch] {
+        std::fs::create_dir_all(d).unwrap();
+        std::fs::write(d.join("mutants-debris.out"), [0u8; 32]).unwrap();
+    }
+
+    // Lane 0 reports first - the fast-finishing candidate in a first-green-wins race.
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["result", "u/implementer#0", "did the work"],
+        &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
+    );
+    assert!(
+        ok,
+        "recording lane 0's result must succeed; stdout: {out:?} stderr: {err}"
+    );
+
+    assert!(
+        !lane0_scratch.exists(),
+        "lane 0's own registered mutation-scratch dir must be reclaimed the moment its \
+         result is recorded; {} still exists",
+        lane0_scratch.display()
+    );
+    assert!(
+        lane1_scratch.exists() && lane1_scratch.join("mutants-debris.out").exists(),
+        "a SIBLING lane of the SAME unit, with no recorded result of its own, must keep its \
+         mutation-scratch dir untouched - reporting lane 0 must never reclaim (or SIGKILL a \
+         live process under) lane 1's still-in-progress scratch; {} was wrongly reclaimed",
+        lane1_scratch.display()
+    );
 }
 
 /// Write a minimal `.rigger/workflow.yml` into `root` pinning `defaults.grounder` to
