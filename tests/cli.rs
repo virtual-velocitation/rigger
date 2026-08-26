@@ -1977,6 +1977,59 @@ fn a_dotdot_spawn_id_never_escapes_the_pre_existing_agent_scratch_root_either() 
     );
 }
 
+/// Regression for the spec-77 review reject round 4 (ADJUDICATOR VERDICT u77c2 round 4): round
+/// 3's fix only neutralized an all-dots `marker_filename` result; a spawn id starting with `/`
+/// (e.g. `rigger result "/foo" "text"`, directly reachable - the `id` positional carries no
+/// format validation beyond non-empty) makes `reclaim_spawn_scratch`'s own
+/// `unit = spawn_id.split('/').next()` extraction (main.rs) resolve to the EMPTY string, and
+/// round 3's guard explicitly excludes an empty mapped result (`!mapped.is_empty()` short-
+/// circuits it). `mutation_scratch_path(cache_home, "")` then collapsed via the documented
+/// `PathBuf::join("")` no-op to `cache_home/rigger-mutants` - the REGISTERED ROOT ITSELF, not a
+/// per-unit leaf under it - so `reap_then_remove_dir`'s reap-then-`remove_dir_all` wiped every
+/// OTHER unit's mutation scratch (and killed any of their still-running `cargo mutants`
+/// subprocesses) alongside the reporting unit's. Prove the fix holds end to end: a leading-slash
+/// spawn id must reclaim only a distinct `_empty_`-named leaf, never the registered root itself.
+#[test]
+fn a_leading_slash_spawn_id_never_collapses_the_reclaim_to_its_registered_root() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
+
+    // A dedicated cache home, standing in for the operator's real ~/.cache. A sibling unit's
+    // LIVE mutation-scratch dir (as a genuine `cargo mutants` run would have left it) stands in
+    // for "every other unit's registered scratch" a collapsed-to-root reclaim would wipe.
+    let cache_home = tempfile::tempdir().unwrap();
+    let mutants_root = cache_home.path().join("rigger-mutants");
+    let sibling = mutants_root.join("v");
+    std::fs::create_dir_all(&sibling).unwrap();
+    std::fs::write(sibling.join("outcomes.json"), b"{}").unwrap();
+
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["result", "/foo", "typo'd or hostile spawn id"],
+        &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
+    );
+    assert!(
+        ok,
+        "recording the result must still succeed (scratch reclaim is best-effort and never \
+         fails a recorded result); stdout: {out:?} stderr: {err}"
+    );
+
+    assert!(
+        mutants_root.exists(),
+        "the registered rigger-mutants root itself must never be deleted by a leading-slash \
+         spawn id's reclaim"
+    );
+    assert!(
+        sibling.exists() && sibling.join("outcomes.json").exists(),
+        "a leading-slash spawn id must never let the empty extracted unit collapse the reclaim \
+         to the registered root and delete a sibling unit's live mutation scratch; {} was \
+         wrongly removed",
+        sibling.display()
+    );
+}
+
 /// Write a minimal `.rigger/workflow.yml` into `root` pinning `defaults.grounder` to
 /// the given name. Tests that exercise the LITERAL grep grounder pin `grep`
 /// explicitly: the structural `symbols` grounder is the default now, so an unconfigured

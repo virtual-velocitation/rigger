@@ -339,6 +339,34 @@ mod tests {
     }
 
     #[test]
+    fn mutation_scratch_path_never_collapses_to_its_registered_root_for_an_empty_unit_id() {
+        // Round-4 review reject (ADJUDICATOR VERDICT u77c2 round 4): round 3's all-dots guard
+        // at `marker_filename` only fires on a NON-EMPTY all-dots result, explicitly excluding
+        // the shape where the mapped result is itself EMPTY. `reclaim_spawn_scratch`'s own
+        // `unit = spawn_id.split('/').next()` extraction (main.rs) yields `""` for any
+        // leading-slash spawn id (e.g. `rigger result "/foo" "text"`, reachable directly - the
+        // id positional carries no format validation beyond non-empty), and `mutation_scratch_path`
+        // feeds that empty unit straight to `marker_filename`. `PathBuf::join("")` is a
+        // documented no-op, so the OLD behavior collapsed this to
+        // `cache_home/rigger-mutants` - the registered root itself, not a per-unit leaf under
+        // it - so `reap_then_remove_dir` would reap every OTHER unit's mutation scratch too.
+        // `marker_filename` now falls back to a fixed non-empty placeholder for an empty
+        // mapped result, so this must resolve to a distinct leaf under the registered root.
+        let p = mutation_scratch_path(Path::new("/home/u/.cache"), "");
+        assert_eq!(p, PathBuf::from("/home/u/.cache/rigger-mutants/_empty_"));
+        assert_ne!(p, PathBuf::from("/home/u/.cache/rigger-mutants"));
+        assert!(p.starts_with("/home/u/.cache/rigger-mutants"));
+
+        // The sibling agent-scratch call site is unaffected by THIS shape (the full spawn id
+        // reaching it is never empty - `cmd_result` already enforces non-empty - only the
+        // separately-extracted `unit` substring can be), but pin it here anyway so the two
+        // registered-root call sites this authority guards stay documented side by side.
+        let p = spawn_scratch_path("/scratch", "r1", "");
+        assert_eq!(p, PathBuf::from("/scratch/agent-scratch/r1/_empty_"));
+        assert_ne!(p, PathBuf::from("/scratch/agent-scratch/r1"));
+    }
+
+    #[test]
     fn parking_a_spawn_assigns_its_dedicated_scratch_dir() {
         // Spec 34, criterion 1: rigger ASSIGNS each spawn a dedicated scratch dir under the
         // run's scratch root the moment it requests (parks) the spawn - so a verify/build
