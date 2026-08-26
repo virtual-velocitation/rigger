@@ -423,7 +423,9 @@ async function runWorker(req, fatal) {
     `Everything it prints (a persona above a \`---\` line when present, then the task) IS your assignment - follow it as if it were this message. Then:\n\n` +
     `--- rigger driver instructions ---\n` +
     `${workdir}\n` +
-    `SCRATCH POLICY (hard rule): any scratch YOU create - probe repos, verification worktrees, test builds, setup rehearsals - lives under ${REPO}/.rigger/tmp/agent-scratch/, NEVER under /tmp or your own session scratchpad (those are on the operator's small OS partition, and a single cargo target or \`rigger setup\` shim install there fills the disk). For any cargo you run outside your assigned worktree, export CARGO_TARGET_DIR=${REPO}/.rigger/tmp/cargo-target first. agent-scratch is swept when the run completes - do not store anything durable there.\n` +
+    `SCRATCH POLICY (hard rule): before creating ANY scratch - probe repos, verification worktrees, test builds, setup rehearsals - fetch YOUR OWN rigger-assigned scratch container, from ${REPO}, using Bash:\n` +
+    `  rigger scratch '${req.id}'\n` +
+    `Everything you create lives INSIDE that one printed path, NEVER under /tmp or your own session scratchpad (those are on the operator's small OS partition, and a single cargo target or \`rigger setup\` shim install there fills the disk). For any cargo you run outside your assigned worktree, export CARGO_TARGET_DIR to a subdir of that same printed path first - never the shared build cache. It is reaped the moment your result records - do not store anything durable there.\n` +
     heartbeat +
     progressNote +
     `The rigger context tools your task refers to (rigger_emit, rigger_peers) are available here as the CLI commands \`rigger emit --spawn '${req.id}' <Type> '<json>'\` and \`rigger peers <file>...\`, run from ${REPO}. The \`--spawn '${req.id}'\` stamps the emit with YOUR spawn id so the conductor attributes it to you exactly (spec 18) - always include it on every \`rigger emit\`.\n` +
