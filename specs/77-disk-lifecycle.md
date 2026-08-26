@@ -20,9 +20,9 @@ mechanism.
 - ONE REAPER, extended not duplicated: the spec-34 per-spawn reclamation authority
   (`spawn_scratch_path` / `cmd_result`'s reclaim) gains registered SCRATCH ROOTS beyond
   `.rigger/tmp` - first registrant the mutation scratch root
-  `${XDG_CACHE_HOME:-$HOME/.cache}/rigger-mutants/<unit>` - so a spawn's mutation copy is
+  `${XDG_CACHE_HOME:-$HOME/.cache}/rigger-mutants/<spawn>` - keyed by the FULL injectively-encoded spawn id, never the bare unit, because speculation lanes run concurrent spawns of one unit and a shared dir lets one lane's reap kill its sibling's live mutation run - so a spawn's mutation copy is
   deleted the moment its result records, exactly like its agent scratch. The seeded
-  persona invocation moves to that unit-scoped subdir and pre-deletes it before running
+  persona invocation moves to its own spawn-scoped subdir and pre-deletes it before running
   (bounding a killed run's leak to one tree, reclaimed on retry or result).
 - UNIT-TERMINAL REAP: when a unit reaches a terminal state (integrated or abandoned at a
   fresh run boundary), its per-unit cargo target cache and any registered scratch of its
@@ -66,7 +66,7 @@ mechanism.
   mutation scratch dir has it deleted the moment its result is recorded, for every
   outcome, while a sibling spawn with no recorded result keeps its dir - pinned at the
   same seam as the existing per-spawn reclamation tests. This criterion OWNS scratch-root
-  registration and the persona invocation's unit-scoped subdir text.
+  registration and the persona invocation's spawn-scoped subdir text.
 - [ ] A test proves UNIT-TERMINAL REAP: a terminal unit's per-unit cargo target cache is
   deleted by teardown while a live sibling's survives, gated on the existing
   sweep-liveness authority. This criterion OWNS the teardown extension; scratch-root
@@ -93,8 +93,8 @@ mechanism.
 ## Notes
 
 - Constraints walk: crash between result and reap -> the next unit-terminal or fresh-run
-  teardown covers the residue (registered roots are enumerable); concurrent units ->
-  unit-scoped paths never collide; cold start -> registration is code, not state;
+  teardown covers the residue (registered roots are enumerable); concurrent units and speculation lanes ->
+  spawn-scoped injective paths never collide; cold start -> registration is code, not state;
   repeated reset --build-cache -> idempotent zero-report; REVERT/re-run of a reaped unit
   -> caches are pure, cold rebuild is the cost.
 - Persona edit lands with this spec's unit (definition-hash change accepted at this
