@@ -8585,6 +8585,150 @@ esac
     );
 }
 
+/// Spec 77, criterion 3 (UNIT-TERMINAL REAP), round 5 fix for
+/// `adj-u77c3r7-verdict-reject-resume-backstop-integrated-only-gap`: `gc_integrated_branches`'s
+/// resume-time reap of registered mutation scratch previously gated its per-unit loop on
+/// `Status::Integrated` alone - the SAME condition the branch/worktree teardown beside it uses -
+/// so it could never reach an ESCALATED unit (terminal, but never `Integrated`) or an
+/// `on_pass: none` speculation winner (settles permanently at `Verified`/`Reviewed` -
+/// `emit_speculation_winner_status` never emits `TYPE_UNIT_INTEGRATED` - so `ledger::RunState::
+/// is_terminal` can never see it either). A process that crashed strictly between either
+/// unit's terminal event durably recording and the FRESH-path exit's own synchronous reclaim
+/// call a few lines later would strand that scratch forever: this resume backstop was the ONLY
+/// thing that could ever revisit it, and it never did. Mirrors
+/// `branch_gc_reclaims_integrated_units_and_retains_escalated_ones_on_resume`'s exact shape
+/// (seed a prior-window unit's terminal event directly, with NO reclaim call ever having run
+/// for it, then assert a resume reaps it) - through the real binary (`seed_run_events`, never a
+/// hand-called helper) and widened to prove both new cases at once, PLUS a third unit proving
+/// the widened predicate is still narrow where it must be: `midflight` carries the workflow's
+/// default `on_pass` (integrates - a merge is still expected) and sits at `verified` too, but
+/// is neither terminal nor `on_pass: none`-settled, so its own registered scratch must survive
+/// the SAME resume step untouched (mutation efficacy round-5, killing the surviving
+/// `replace && with || in mutation_scratch_settled` mutant `outcomes.json` named: without this
+/// unit, nothing in the suite distinguishes the union's `&&` from an over-eager `||`, since
+/// `matches!(status, Verified|Reviewed) || (has a stage && !integrates)` would ALSO happen to
+/// reap both `stuck` and `solo` above - it takes a unit satisfying exactly ONE side of the `&&`
+/// to tell them apart).
+#[test]
+fn a_resumed_run_reaps_an_escalated_and_an_on_pass_none_settled_units_registered_mutation_scratch_not_just_an_integrated_ones(
+) {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: resumereaptest
+defaults:
+  grounder: nop
+  budget: 60
+  autonomy: manual
+gates:
+  human: { run: "true", kind: core }
+stages:
+  solo:
+    agent: worker
+    gates: [human]
+    on_pass: none
+  midflight:
+    agent: worker
+    needs: [solo]
+    gates: [human]
+"#,
+    )
+    .unwrap();
+
+    // Step 1: "solo" (the only READY stage, `on_pass: none`) pauses for manual review - a real
+    // `RunStarted` bootstrap, nothing terminal yet. "midflight" needs `solo` integrated, which
+    // never happens in this test (its `on_pass: none` guarantees it), so it is never scheduled
+    // and never interferes with the seeded state below.
+    let (_out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok,
+        "the first step must pause the sole ready unit for manual review; stderr:\n{err}"
+    );
+
+    // Seed directly, exactly like the in-process `branch_gc_reclaims_...` test's own "stuck"
+    // unit: an ESCALATED unit ("stuck", no matching workflow stage at all - `is_terminal`
+    // needs no stage lookup, so a pure ledger artifact suffices), "solo" ITSELF settled
+    // `verified` (never `UnitIntegrated`) - the `on_pass: none` speculation-winner checkpoint's
+    // own final status, reached here directly rather than by racing real candidates (already
+    // proven reachable for real by
+    // `a_speculation_on_pass_none_winners_registered_mutation_scratch_across_all_lanes_is_reaped_by_the_real_on_pass_none_exit_teardown`
+    // above - this test is about the RESUME backstop, not that exit's own call) - and
+    // "midflight" ALSO at `verified` (a real, ordinary mid-review checkpoint: implemented and
+    // gated, awaiting review/merge) to prove the widened predicate does not over-reach a
+    // same-status unit whose `on_pass` still integrates. None of the three events' own
+    // fresh-path reap ever ran, reproducing exactly the crash window this fix closes.
+    seed_run_events(
+        root,
+        &[
+            ("UnitEscalated", r#"{"id":"stuck"}"#),
+            ("UnitStatus", r#"{"id":"solo","status":"verified"}"#),
+            ("UnitStatus", r#"{"id":"midflight","status":"verified"}"#),
+        ],
+    );
+
+    // Registered mutation-scratch for a spawn of EACH unit, under a throwaway cache home so
+    // `XDG_CACHE_HOME` never points at the operator's real `~/.cache`.
+    let cache_home = tempfile::tempdir().unwrap();
+    let stuck_scratch = cache_home
+        .path()
+        .join("rigger-mutants")
+        .join("stuck_2fimplementer_230");
+    let solo_scratch = cache_home
+        .path()
+        .join("rigger-mutants")
+        .join("solo_2fimplementer_230");
+    let midflight_scratch = cache_home
+        .path()
+        .join("rigger-mutants")
+        .join("midflight_2fimplementer_230");
+    for d in [&stuck_scratch, &solo_scratch, &midflight_scratch] {
+        std::fs::create_dir_all(d).unwrap();
+        std::fs::write(d.join("mutants-debris.out"), [0u8; 32]).unwrap();
+    }
+
+    // Step 2: the resume backstop (`gc_integrated_branches`, run at the top of `run()`,
+    // before any wave) folds the prior log and must reap `stuck` and `solo` - neither is
+    // `Integrated` - while sparing `midflight`, which is neither terminal nor `on_pass: none`-
+    // settled and so is still expected to progress toward a real merge in a later step.
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["step"],
+        &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
+    );
+    assert!(
+        ok,
+        "the resume step must still succeed; stdout: {out:?} stderr:\n{err}"
+    );
+
+    assert!(
+        !stuck_scratch.exists(),
+        "an ESCALATED (terminal, but never Integrated) unit's registered mutation-scratch dir \
+         must be reaped on resume too: {}",
+        stuck_scratch.display()
+    );
+    assert!(
+        !solo_scratch.exists(),
+        "an on_pass:none unit settled at `verified` (never Integrated, never caught by \
+         is_terminal either) must have its registered mutation-scratch dir reaped on resume: {}",
+        solo_scratch.display()
+    );
+    assert!(
+        midflight_scratch.exists() && midflight_scratch.join("mutants-debris.out").exists(),
+        "an ordinary on_pass:merge unit mid-review at `verified` (neither terminal nor \
+         on_pass:none-settled) must have its registered mutation-scratch SPARED by the widened \
+         resume predicate, not just by units that are already Integrated: {}",
+        midflight_scratch.display()
+    );
+}
+
 /// `rigger stats` reports the LATEST run by default and `rigger stats --all` reports the
 /// historical aggregate over every run (spec 06, unit 1). Two runs are seeded through the
 /// real `rigger emit` courier: run 1 lands one clean unit, run 2 escalates one unit. The
