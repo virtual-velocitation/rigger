@@ -1051,13 +1051,18 @@ pub struct SpawnOpts {
     /// Empty for a stage with no criterion (a plan/canary spawn), which then serializes
     /// exactly as before - a purely additive field the blocking drivers ignore.
     pub title: String,
-    /// The resolved build environment (spec 65's ONE build-environment authority,
-    /// [`gate::BuildEnv::vars`]) - `(name, value)` env vars this spawn's agent process
-    /// must carry, so its OWN `cargo test`/`cargo build` invocations hit the same
-    /// wrapper cache under the same settings a gate build gets. Empty when no wrapper
-    /// is configured (today's ambient-environment behavior, unchanged). The blocking
-    /// cli driver applies every pair to its spawned `Command`; a driver with no
-    /// subprocess of its own (a test double) may ignore it.
+    /// The resolved build environment - `(name, value)` env vars this spawn's agent
+    /// process must carry, assembled by the SINGLE `RunCtx::spawn_env` fn from two
+    /// independent facets: spec 65's ONE build-environment authority
+    /// ([`gate::BuildEnv::vars`], empty when no wrapper is configured - today's
+    /// ambient-environment behavior, unchanged), so its OWN `cargo test`/`cargo build`
+    /// invocations hit the same wrapper cache under the same settings a gate build
+    /// gets; PLUS, unconditionally, spec 77 criterion 1's per-unit `CARGO_TARGET_DIR`
+    /// (empty/absent when this spawn's `dir` owns no per-unit cache), so those SAME
+    /// invocations land in the one per-unit cache a gate build for that `dir` gets,
+    /// never an embedded `target/` dir inside the worktree. The blocking cli driver
+    /// applies every pair to its spawned `Command`; a driver with no subprocess of its
+    /// own (a test double) may ignore it.
     pub env: Vec<(String, String)>,
 }
 
@@ -3592,11 +3597,13 @@ impl RunCtx<'_> {
             // construction if a reviewer ever were given a ladder.
             attempt,
             run_id: self.run_id.clone(),
-            // The ONE build-environment authority (spec 65): a reviewer verifying inside
-            // the unit's worktree gets the same wrapper/cache/incremental vars a gate
-            // build and the implementer got, so its own `cargo` invocations share the
-            // cache too.
-            env: build_env.vars().to_vec(),
+            // The ONE build-environment authority (spec 65) PLUS this spawn's own
+            // per-unit CARGO_TARGET_DIR (spec 77 c1, ONE BUILD LOCATION): a reviewer
+            // verifying inside the unit's worktree gets the same wrapper/cache/
+            // incremental vars a gate build and the implementer got, AND the same
+            // per-unit cache a gate build for this `dir` gets, so its own `cargo`
+            // invocations share both.
+            env: Self::spawn_env(&build_env, dir),
         })
     }
 
@@ -4165,10 +4172,14 @@ impl RunCtx<'_> {
                             // unit 4) - the same `attempts` the alias stamp above uses.
                             attempt: attempts,
                             run_id: self.run_id.clone(),
-                            // The ONE build-environment authority (spec 65): the implementer's
-                            // own `cargo build`/`cargo test` invocations get the same
-                            // wrapper/cache/incremental vars a gate build gets.
-                            env: build_env.vars().to_vec(),
+                            // The ONE build-environment authority (spec 65) PLUS this
+                            // spawn's own per-unit CARGO_TARGET_DIR (spec 77 c1, ONE
+                            // BUILD LOCATION): the implementer's own `cargo build`/`cargo
+                            // test` invocations get the same wrapper/cache/incremental
+                            // vars a gate build gets, AND land in the same per-unit
+                            // cache a gate build for this `dir` gets, instead of
+                            // embedding a `target/` dir inside the worktree itself.
+                            env: Self::spawn_env(&build_env, dir),
                         },
                         &emit,
                     )
@@ -4660,9 +4671,12 @@ impl RunCtx<'_> {
                         title: st.coverage.trim().to_string(),
                         attempt: lane,
                         run_id: self.run_id.clone(),
-                        // The ONE build-environment authority (spec 65): every speculation
-                        // candidate's own `cargo` invocations share the same wrapper cache.
-                        env: build_env.vars().to_vec(),
+                        // The ONE build-environment authority (spec 65) PLUS this lane's
+                        // own per-unit CARGO_TARGET_DIR (spec 77 c1, ONE BUILD LOCATION):
+                        // every speculation candidate's own `cargo` invocations share the
+                        // same wrapper cache AND land in its own lane's per-unit cache,
+                        // never a `target/` dir embedded in its own lane worktree.
+                        env: Self::spawn_env(&build_env, &dir),
                     },
                     &emit,
                 )
@@ -6065,8 +6079,11 @@ impl RunCtx<'_> {
                     // The ONE build-environment authority (spec 65): a planner is not
                     // guaranteed to build, but carries the same resolved env uniformly
                     // like every other spawn, so a planner that does explore via cargo
-                    // shares the cache too.
-                    env: build_env.vars().to_vec(),
+                    // shares the cache too. Routed through `spawn_env` for uniformity with
+                    // every other call site (spec 77 c1); the planner's own `dir` is
+                    // always empty (no worktree, `isolation: none`), so `unit_cache_sibling`
+                    // yields `None` and no `CARGO_TARGET_DIR` is added here.
+                    env: Self::spawn_env(&build_env, ""),
                 },
                 &emit,
             )
@@ -6330,6 +6347,37 @@ impl RunCtx<'_> {
             &self.cfg.workflow.build.cache_dir,
             self.cfg.workflow.build.jobs,
         ))
+    }
+
+    /// The env vars a spawn's OWN process must carry (spec 77 criterion 1, ONE BUILD
+    /// LOCATION): `build_env`'s wrapper/cache/incremental/jobs vars (spec 65), PLUS - the
+    /// biggest leak spec 77 exists to close - a per-unit `CARGO_TARGET_DIR` naming the
+    /// SAME `cargo-target-<slug>` cache sibling [`run_gates`](Self::run_gates) already
+    /// points a gate's OWN build at for this exact `dir` (Gap 19,
+    /// [`worktree::unit_cache_sibling`]). Without this, an agent that runs its own `cargo
+    /// build`/`cargo test` - every implementer and reviewer does, un-gated - embeds a
+    /// full multi-gigabyte `target/` tree INSIDE its throwaway worktree instead of the one
+    /// per-unit cache teardown already reclaims when the worktree is removed.
+    ///
+    /// Unconditional, independent of whether a wrapper is configured: a `dir` that owns
+    /// no per-unit cache (empty, or not a `rigger-wt-*` unit worktree - a review/plan spawn
+    /// with no worktree of its own, e.g. `re_plan`'s planner) yields no override, exactly
+    /// mirroring `unit_cache_sibling`'s own `None` case - the ambient/shared
+    /// `CARGO_TARGET_DIR` is inherited untouched, matching `gate::Runner`'s existing
+    /// "target_dir always wins, else inherit" precedence.
+    ///
+    /// The SINGLE place every `SpawnOpts.env` is assembled from `build_env`: the four spawn
+    /// call sites ([`reviewer_spawn_opts`](Self::reviewer_spawn_opts) - and through it
+    /// [`spawn_sdet_author`](Self::spawn_sdet_author) - the single-lane implementer in
+    /// [`run_single_stage`](Self::run_single_stage), each lane in
+    /// [`run_speculation`](Self::run_speculation), and [`re_plan`](Self::re_plan)) each pass
+    /// their own `dir` through this ONE fn so none can ever derive a disagreeing copy.
+    fn spawn_env(build_env: &gate::BuildEnv, dir: &str) -> Vec<(String, String)> {
+        let mut vars = build_env.vars().to_vec();
+        if let Some(cache) = crate::worktree::unit_cache_sibling(dir) {
+            vars.push(("CARGO_TARGET_DIR".to_string(), cache));
+        }
+        vars
     }
 
     /// The resolved machine-wide build budget for this run (spec 65): re-derived from the
@@ -23797,10 +23845,20 @@ mod tests {
         // spec 65 c1's own Done-when, the reason this unit exists: with a wrapper
         // configured, BOTH a gate build and an agent spawn's environment carry the SAME
         // resolved wrapper/cache-dir/incremental-off vars - the ONE authority, never two
-        // independently-derived copies. With the default (no wrapper / `off`), NEITHER
-        // carries anything.
-        fn run_once(build: config::BuildConfig) -> (RecordedEnvs, RecordedEnvs) {
+        // independently-derived copies. With the default (no wrapper / `off`), neither
+        // carries a wrapper var.
+        //
+        // Spec 77 c1 (ONE BUILD LOCATION) extends this: the agent spawn's env ALSO
+        // carries its own per-unit `CARGO_TARGET_DIR` - UNCONDITIONALLY, independent of
+        // whether a wrapper is configured, since it is a separate facet `spawn_env`
+        // assembles alongside the wrapper vars, not a wrapper-cache concern. The gate
+        // build's OWN env (`build_envs`, the `build_env` argument `run_gates` passes) is
+        // deliberately untouched by this: a gate's per-unit `CARGO_TARGET_DIR` rides the
+        // SEPARATE `target_dir` parameter of `gate::Runner::run`, not `BuildEnv`, so this
+        // test's `gate_envs` assertions stay byte-identical to spec 65's own contract.
+        fn run_once(build: config::BuildConfig) -> (RecordedEnvs, RecordedEnvs, String) {
             let repo = init_repo();
+            let repo_path = repo.path().to_str().unwrap().to_string();
             let mut cfg = Config::default();
             cfg.agents.insert("a".into(), agent("a"));
             cfg.workflow.gates.insert("ok".into(), gate_def("true"));
@@ -23822,13 +23880,19 @@ mod tests {
                 store: &store,
                 driver: &driver,
                 gates: &runner,
-                repo: repo.path().to_str().unwrap().to_string(),
+                repo: repo_path.clone(),
                 grounder: None,
                 graph: None,
                 criteria: Vec::new(),
             };
             run(&cfg, &deps).unwrap();
-            (runner.build_envs(), driver.envs())
+            // "solo"'s own per-unit CARGO_TARGET_DIR (spec 77 c1): the SAME single-source
+            // derivation `run_gates`/`unit_cache_sibling` uses, so this test can never
+            // silently drift from the real one `spawn_env` must match.
+            let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+            let target = crate::worktree::unit_cache_sibling(&unit_worktree_dir(&scratch, "solo"))
+                .expect("a unit worktree dir must derive a cache sibling");
+            (runner.build_envs(), driver.envs(), target)
         }
 
         // A real, actually-creatable cache dir (spec 65 unit 2, NO SILENT DEGRADE:
@@ -23850,7 +23914,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        let (gate_envs, spawn_envs) = run_once(configured);
+        let (gate_envs, spawn_envs, target) = run_once(configured);
         assert!(!gate_envs.is_empty(), "the gate must have run");
         for env in &gate_envs {
             let got: HashMap<String, String> = env.iter().cloned().collect();
@@ -23861,15 +23925,26 @@ mod tests {
         }
         assert!(!spawn_envs.is_empty(), "the implementer must have spawned");
         for env in &spawn_envs {
-            let got: HashMap<String, String> = env.iter().cloned().collect();
+            let mut got: HashMap<String, String> = env.iter().cloned().collect();
+            // Asserted and removed separately (spec 77 c1) so the wrapper-vars
+            // comparison right below stays the exact same `want` spec 65 defined.
+            assert_eq!(
+                got.remove("CARGO_TARGET_DIR").as_deref(),
+                Some(target.as_str()),
+                "the agent's own spawned process must carry its unit's per-unit \
+                 CARGO_TARGET_DIR alongside any configured wrapper vars: {env:?}"
+            );
             assert_eq!(
                 got, want,
                 "the SAME configured wrapper must reach the agent spawn: {env:?}"
             );
         }
 
-        // The default (no wrapper configured): neither site carries anything.
-        let (off_gate_envs, off_spawn_envs) = run_once(config::BuildConfig::default());
+        // The default (no wrapper configured): the gate build carries nothing (spec 65's
+        // own contract, untouched). The agent spawn carries NO wrapper var either, but
+        // STILL carries its per-unit CARGO_TARGET_DIR - ONE BUILD LOCATION is
+        // unconditional, not a wrapper-cache concern (spec 77 c1).
+        let (off_gate_envs, off_spawn_envs, off_target) = run_once(config::BuildConfig::default());
         assert!(!off_gate_envs.is_empty(), "the gate must have run");
         assert!(
             off_gate_envs.iter().all(Vec::is_empty),
@@ -23879,9 +23954,66 @@ mod tests {
             !off_spawn_envs.is_empty(),
             "the implementer must have spawned"
         );
+        for env in &off_spawn_envs {
+            let mut got: HashMap<String, String> = env.iter().cloned().collect();
+            assert_eq!(
+                got.remove("CARGO_TARGET_DIR").as_deref(),
+                Some(off_target.as_str()),
+                "the agent spawn must carry its per-unit CARGO_TARGET_DIR even with no \
+                 wrapper configured (ONE BUILD LOCATION is unconditional): {env:?}"
+            );
+            assert!(
+                got.is_empty(),
+                "no wrapper configured must inject no wrapper var into the agent spawn: \
+                 {env:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn spawn_env_adds_the_per_unit_cargo_target_dir_only_for_a_real_unit_worktree() {
+        // Pure unit coverage of `RunCtx::spawn_env` (spec 77 c1) directly: the wrapper
+        // vars always pass through unchanged, and CARGO_TARGET_DIR is appended ONLY when
+        // `dir` derives a per-unit cache sibling (a real `rigger-wt-<slug>` unit
+        // worktree) - never for an empty `dir` or a non-unit-worktree path (a review
+        // worktree, say), mirroring `unit_cache_sibling`'s own `None` semantics exactly.
+        let wrapper_vars = gate::BuildEnv::resolve("sccache", "/some/cache", 0);
+
+        let with_worktree = RunCtx::spawn_env(&wrapper_vars, "/scratch/rigger-wt-unit-a");
+        let want_cache = crate::worktree::unit_cache_sibling("/scratch/rigger-wt-unit-a")
+            .expect("a rigger-wt- dir must derive a cache sibling");
         assert!(
-            off_spawn_envs.iter().all(Vec::is_empty),
-            "no wrapper configured must inject nothing into the agent spawn: {off_spawn_envs:?}"
+            with_worktree.contains(&("CARGO_TARGET_DIR".to_string(), want_cache)),
+            "a real unit worktree dir must add its derived per-unit CARGO_TARGET_DIR: \
+             {with_worktree:?}"
+        );
+        assert_eq!(
+            with_worktree.len(),
+            wrapper_vars.vars().len() + 1,
+            "spawn_env must add EXACTLY one var (CARGO_TARGET_DIR) on top of the wrapper \
+             vars, never drop or duplicate any: {with_worktree:?}"
+        );
+
+        for dir in ["", "/scratch/rigger-review-stage-0"] {
+            let got = RunCtx::spawn_env(&wrapper_vars, dir);
+            assert_eq!(
+                got,
+                wrapper_vars.vars().to_vec(),
+                "a dir with no per-unit cache ({dir:?}) must add nothing beyond the \
+                 wrapper vars: {got:?}"
+            );
+        }
+
+        // No wrapper configured: a real unit worktree dir still gets its
+        // CARGO_TARGET_DIR (unconditional), with nothing else alongside it.
+        let off = RunCtx::spawn_env(&gate::BuildEnv::default(), "/scratch/rigger-wt-unit-b");
+        let want_off_cache = crate::worktree::unit_cache_sibling("/scratch/rigger-wt-unit-b")
+            .expect("a rigger-wt- dir must derive a cache sibling");
+        assert_eq!(
+            off,
+            vec![("CARGO_TARGET_DIR".to_string(), want_off_cache)],
+            "with no wrapper configured, a real unit worktree dir must still get ONLY its \
+             own CARGO_TARGET_DIR: {off:?}"
         );
     }
 
