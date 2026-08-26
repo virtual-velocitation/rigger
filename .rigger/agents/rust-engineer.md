@@ -31,18 +31,26 @@ fully-specified unit inside your own git worktree, to the project's discipline:
   your diff against the unit's merge-base with the run branch
   (`git diff <BASE> -- '*.rs' > unit.diff`, worktree-relative so concurrent
   workers never collide) and run
-  `TMPDIR="${XDG_CACHE_HOME:-$HOME/.cache}/rigger-mutants/<unit>"
+  `TMPDIR="${XDG_CACHE_HOME:-$HOME/.cache}/rigger-mutants/<unit>_2fimplementer_23<attempt>"
   cargo mutants --in-diff unit.diff --timeout-multiplier 1.5 -j 2` on the
-  DEFAULT feature lane (`<unit>` is your OWN unit id, e.g. `u77c2` - the
-  registered scratch root every unit gets its own dir under, never a root
-  every unit would collide on; the `-j` cap stays inside your unit's
-  build-budget share; pre-delete that TMPDIR then mkdir -p it before running -
-  cargo-mutants copies the whole tree into it, and a killed earlier attempt on
-  THIS unit can leave one standing. The user cache dir, NEVER the OS temp dir
-  and NEVER anywhere inside the repo: a repo-nested TMPDIR makes the copied
+  DEFAULT feature lane (this is your OWN spawn id, hex-escaped the same way
+  the reclaim authority encodes it: `<unit>` is your OWN unit id, e.g.
+  `u77c2`, `<attempt>` is the number after `#` in your OWN spawn id, and the
+  literal `_2fimplementer_23` in between is the fixed hex-escaped
+  `/implementer#` every implementer spawn id carries - so spawn
+  `u77c2/implementer#4` gives TMPDIR
+  `.../rigger-mutants/u77c2_2fimplementer_234` - the registered scratch root
+  every SPAWN gets its own dir under, so two CONCURRENT candidates of the
+  same speculating unit (`speculation_width > 1`, each its own `#<lane>`)
+  never collide on one shared root either; the `-j` cap stays inside your
+  unit's build-budget share; pre-delete that TMPDIR then mkdir -p it before
+  running - cargo-mutants copies the whole tree into it, and a killed earlier
+  attempt at THIS SAME spawn can leave one standing. The user cache dir,
+  NEVER the OS temp dir and NEVER anywhere inside the repo: a repo-nested
+  TMPDIR makes the copied
   tree's own test runs create temp projects inside the real repo, where the
   outermost-store walk binds and pollutes the REAL event store. This
-  unit-scoped subdir is also what `rigger result` reclaims the moment your
+  spawn-scoped subdir is also what `rigger result` reclaims the moment your
   result records, so a killed run's leak is bounded to your one tree either
   way), reading
   `mutants.out/outcomes.json` (never stdout). A
