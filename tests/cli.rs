@@ -1913,6 +1913,70 @@ fn a_dotdot_spawn_id_never_escapes_the_registered_scratch_roots() {
     );
 }
 
+/// Sibling of `a_dotdot_spawn_id_never_escapes_the_registered_scratch_roots`, proving the SAME
+/// shared-authority fix (`liveness::marker_filename` neutralizing an all-dots result) also
+/// holds for the OTHER call `reclaim_spawn_scratch` makes on the identical, unvalidated
+/// `spawn_id` two lines earlier: the pre-existing spec-34 per-spawn `agent-scratch` reclaim
+/// (`spawn_scratch_path`). This is not a hypothetical: an independent re-enumeration during the
+/// review that produced the fix reproduced this exact escape live on the UNFIXED code (a `..`
+/// spawn id resolved `spawn_scratch_path` to the PARENT of the run's `agent-scratch` root, and
+/// `reap_then_remove_dir`'s bare `remove_dir_all` wiped every other unit's live scratch
+/// alongside it) - and warned that a fix scoped only to the newly-added mutation-scratch call
+/// site would leave this pre-existing call site equally exploitable by the identical `rigger
+/// result ".."` input. The fix commit's own regression test re-drives the binary for the
+/// mutation-scratch (cache-home) half only; this test closes the matching periphery gap for the
+/// agent-scratch half, proving a sibling unit's live scratch survives the same `..` id through
+/// the real CLI.
+#[test]
+fn a_dotdot_spawn_id_never_escapes_the_pre_existing_agent_scratch_root_either() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
+
+    // The run's agent-scratch root, laid out exactly as spec 34's own test:
+    // `<root>/.rigger/tmp/agent-scratch/<run>/<sanitized id>`. A sibling unit's LIVE scratch
+    // stands in for the "every other unit's scratch" the adversary showed a `..` id could wipe
+    // through this call, one line before the mutation-scratch call the fix's own test covers.
+    let run_scratch = root
+        .join(".rigger")
+        .join("tmp")
+        .join("agent-scratch")
+        .join("r1");
+    let sibling = run_scratch.join("v_implementer_0");
+    std::fs::create_dir_all(&sibling).unwrap();
+    std::fs::write(sibling.join("cargo-target-debris.rlib"), [0u8; 64]).unwrap();
+
+    // A dedicated cache home too, so the SAME call's mutation-scratch half (reclaim_spawn_scratch
+    // always runs both halves) never touches the operator's real ~/.cache while this test drives
+    // the `..` id through both halves of the function at once.
+    let cache_home = tempfile::tempdir().unwrap();
+
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["result", "..", "typo'd or hostile spawn id"],
+        &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
+    );
+    assert!(
+        ok,
+        "recording the result must still succeed (scratch reclaim is best-effort and never \
+         fails a recorded result); stdout: {out:?} stderr: {err}"
+    );
+
+    assert!(
+        run_scratch.exists(),
+        "the run's agent-scratch root itself must never be deleted by a `..`-derived reclaim \
+         path"
+    );
+    assert!(
+        sibling.exists() && sibling.join("cargo-target-debris.rlib").exists(),
+        "a `..` spawn id must never let reclaim_spawn_scratch's pre-existing agent-scratch call \
+         walk up out of the run's agent-scratch root and delete a sibling unit's live scratch; \
+         {} was wrongly removed",
+        sibling.display()
+    );
+}
+
 /// Write a minimal `.rigger/workflow.yml` into `root` pinning `defaults.grounder` to
 /// the given name. Tests that exercise the LITERAL grep grounder pin `grep`
 /// explicitly: the structural `symbols` grounder is the default now, so an unconfigured
