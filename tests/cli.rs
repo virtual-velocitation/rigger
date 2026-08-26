@@ -1388,6 +1388,90 @@ fn prompt_refuses_to_fabricate_a_store_when_none_exists() {
     );
 }
 
+/// Spec 77, criterion 2 (AGENT SCRATCH IS SPAWN-OWNED): `rigger scratch <spawn>` prints
+/// that spawn's own [`driver::replay::spawn_scratch_path`] container - the SAME dir the
+/// per-spawn reclaim (`cmd_result`'s `reclaim_spawn_scratch`) already reaps at the spawn's
+/// terminus (spec 34 criterion 1) - so a worker can discover its own scratch home at
+/// runtime instead of writing into an unbucketed literal. It resolves `scratch_root`/
+/// `run_id` through the IDENTICAL precedence `reclaim_spawn_scratch` uses (config workdir,
+/// then the live run's `RunStarted`), so the printed path can never drift from the one the
+/// reaper targets - proven here against the exact layout
+/// `a_spawns_scratch_is_reclaimed_the_moment_its_result_is_recorded_for_every_outcome`
+/// (spec 34's own reclaim test) hard-codes: `<root>/.rigger/tmp/agent-scratch/<run>/
+/// <injective-hex-encoded id>`.
+#[test]
+fn scratch_prints_the_spawns_own_rigger_assigned_container() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    // A run is live, so the printed container is run-scoped exactly as production reclaim
+    // resolves it - from the store's latest `RunStarted`.
+    seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
+
+    let (out, err, ok) = run_rigger(root, &["scratch", "u/implementer#0"]);
+    assert!(ok, "scratch must succeed for a live run; stderr: {err}");
+
+    let expected = root
+        .join(".rigger")
+        .join("tmp")
+        .join("agent-scratch")
+        .join("r1")
+        .join("u_2fimplementer_230");
+    assert_eq!(
+        out.trim(),
+        expected.display().to_string(),
+        "rigger scratch must print the exact spawn_scratch_path container, byte-identical \
+         to what reclaim_spawn_scratch reaps"
+    );
+}
+
+/// `rigger scratch` is a WORKER-INVOKED store-opening courier exactly like `rigger prompt`
+/// (it must read the live run's `RunStarted` to resolve `run_id`), so from a storeless cwd
+/// it must REFUSE - never fabricate a fresh empty `.rigger/events.db` and then print a
+/// bogus run-less path, stranding the worker's scratch under the wrong root.
+#[test]
+fn scratch_refuses_to_fabricate_a_store_when_none_exists() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["scratch", "u/implementer#0"]);
+    assert!(
+        !ok,
+        "scratch must refuse when there is no existing store; stderr: {err}"
+    );
+    assert!(
+        err.contains("no rigger store found") && err.contains("refusing to fabricate"),
+        "scratch must explain the refusal; got: {err:?}"
+    );
+    assert!(
+        !root.join(".rigger").join("events.db").exists(),
+        "scratch must NOT fabricate a store when it refuses"
+    );
+}
+
+/// `rigger scratch` with the wrong argument count is a usage error, not a panic or a
+/// silent no-op - mirrors the same shape `cmd_prompt`/`cmd_reported` enforce.
+#[test]
+fn scratch_requires_exactly_one_spawn_id() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+
+    let (_out, err, ok) = run_rigger(root, &["scratch"]);
+    assert!(!ok, "scratch with no id must fail");
+    assert!(
+        err.contains("expected exactly one spawn id"),
+        "got: {err:?}"
+    );
+
+    let (_out, err, ok) = run_rigger(root, &["scratch", "a", "b"]);
+    assert!(!ok, "scratch with two ids must fail");
+    assert!(
+        err.contains("expected exactly one spawn id"),
+        "got: {err:?}"
+    );
+}
+
 /// The paradigm defect (adv-result-wrong-cwd-fabricates-store): `rigger result` run from
 /// a unit-worktree-shaped cwd - a tracked `.rigger/workflow.yml` but NO machine-local
 /// `.rigger/events.db` - must REFUSE instead of fabricating a fresh dead store and printing
@@ -3246,6 +3330,78 @@ fn native_driver_enforces_an_outer_wall_clock_that_surfaces_an_unbounded_spawn()
         run_worker.contains("report-hung:") && run_worker.contains("report-death:"),
         "both the outer-wall-clock (report-hung) and the dead-worker (report-death) paths must \
          route through the shared fault courier, not a second parallel implementation"
+    );
+}
+
+/// Spec 77, criterion 2 (AGENT SCRATCH IS SPAWN-OWNED): the SCRATCH POLICY prompt text the
+/// native driver builds for every worker must no longer point at the unbucketed
+/// `agent-scratch/` literal or the shared build-cache literal for a worker's OWN manual
+/// cargo - both produced top-level ad-hoc dirs no run/spawn owned (spec 77 Problem: 39G of
+/// `agent-scratch/u77c4-target`-shaped residue). It must instead direct the worker to
+/// `rigger scratch <spawn>` - the exact verb [`cmd_scratch`] implements - to fetch its OWN
+/// rigger-assigned container at runtime, mirroring how a worker already fetches its own
+/// prompt via `rigger prompt` (the driver cannot pass env to a workflow-driven agent, so a
+/// worker-invoked CLI lookup is the only way to hand it a spawn-scoped path).
+///
+/// A source-fixture drift guard (the driver cannot execute in the Rust test harness - see
+/// `rigger_js_source`'s own doc comment): pins the SCRATCH POLICY sentence's structure so a
+/// future edit cannot silently regress it back to a hardcoded, unbucketed literal.
+#[test]
+fn native_driver_scratch_policy_directs_the_worker_to_its_own_spawn_owned_container() {
+    let src = rigger_js_source();
+
+    let policy_at = src
+        .find("SCRATCH POLICY (hard rule):")
+        .expect("the driver must still build a SCRATCH POLICY sentence");
+    // The SCRATCH POLICY block is one or more concatenated template-literal lines, followed
+    // in the prompt-building chain by the pre-existing `heartbeat +` concatenation (spec 10) -
+    // a stable structural marker unrelated to this criterion. Isolating up to it keeps these
+    // assertions immune to unrelated prompt text elsewhere in the file - notably the step
+    // courier's OWN shared build-cache use at a completely different call site, which this
+    // criterion does not touch - while tolerating the SCRATCH POLICY text itself spanning
+    // however many lines it needs.
+    let policy_end = src[policy_at..]
+        .find("heartbeat +")
+        .map(|off| policy_at + off)
+        .expect("the SCRATCH POLICY block must still be followed by the heartbeat concatenation");
+    let policy = &src[policy_at..policy_end];
+
+    // The fix: the worker is told to fetch its OWN container via the new CLI verb, passing
+    // its OWN spawn id...
+    assert!(
+        policy.contains("rigger scratch"),
+        "SCRATCH POLICY must direct the worker to the `rigger scratch` verb to learn its \
+         own container: {policy}"
+    );
+    assert!(
+        policy.contains("${req.id}"),
+        "SCRATCH POLICY must pass the worker's OWN spawn id to `rigger scratch`: {policy}"
+    );
+    // ...manual CARGO_TARGET_DIR is still directed, now inside that same spawn-owned
+    // container...
+    assert!(
+        policy.contains("CARGO_TARGET_DIR"),
+        "SCRATCH POLICY must still direct manual CARGO_TARGET_DIR: {policy}"
+    );
+    // ...never the old unbucketed `agent-scratch/` literal that produced ad-hoc, no-owner
+    // top-level dirs (spec 77 Problem)...
+    assert!(
+        !policy.contains(".rigger/tmp/agent-scratch/"),
+        "SCRATCH POLICY must no longer point at the unbucketed agent-scratch/ literal: {policy}"
+    );
+    // ...and never the shared gate build-cache literal for a worker's OWN manual cargo (a
+    // different concern from the step courier's shared-cache use at a different call site).
+    assert!(
+        !policy.contains(".rigger/tmp/cargo-target"),
+        "SCRATCH POLICY must no longer point manual cargo at the shared build cache: {policy}"
+    );
+
+    // The shared build-cache literal used for the CONDUCTOR's OWN single `rigger step`
+    // invocation is a DIFFERENT concern (one serialized process, not concurrent workers) and
+    // must survive untouched by this fix.
+    assert!(
+        src.contains("CARGO_TARGET_DIR=${REPO}/.rigger/tmp/cargo-target rigger step"),
+        "the step courier's own shared build-cache invocation must be untouched by this fix"
     );
 }
 

@@ -1306,6 +1306,7 @@ const SUBCOMMANDS: &[&str] = &[
     "step",
     "reported",
     "prompt",
+    "scratch",
     "serve",
     "workflow",
     "graph",
@@ -1344,6 +1345,7 @@ fn main() {
         "step" => cmd_step(&args[2..]),
         "reported" => cmd_reported(&args[2..]),
         "prompt" => cmd_prompt(&args[2..]),
+        "scratch" => cmd_scratch(&args[2..]),
         "serve" => cmd_serve(&args[2..]),
         "workflow" => cmd_workflow(&args[2..]),
         "graph" => cmd_graph(&args[2..]),
@@ -1415,6 +1417,10 @@ atomically instead via `rigger result --if-absent`\n  \
 rigger prompt <id>          print the parked spawn's full prompt (persona + task).\n                              \
 The step wave is a slim manifest; each worker fetches its\n                              \
 own prompt from the log by spawn id (spawn-by-reference)\n  \
+rigger scratch <id>         print spawn <id>'s own rigger-assigned scratch container\n                              \
+(the exact dir the per-spawn reclaim reaps at its terminus);\n                              \
+a worker points agent-created scratch and manual\n                              \
+CARGO_TARGET_DIR there instead of an unbucketed literal\n  \
 rigger workflow [spec]      turn-key: launch the per-project Node driver, which\n                              \
 spawns `rigger serve`, runs each agent via the Agent\n                              \
 SDK, and drives the loop (one command; run `rigger\n                              \
@@ -2719,6 +2725,56 @@ fn cmd_prompt(args: &[String]) -> Res {
             Ok(())
         }
         None => Err(format!("prompt: no spawn request recorded for {id:?}").into()),
+    }
+}
+
+/// `rigger scratch <spawn-id>` - print spawn `<id>`'s own rigger-assigned scratch
+/// container: the exact [`spawn_scratch_path`] the per-spawn reclaim (`cmd_result`'s
+/// [`reclaim_spawn_scratch`]) already reaps at the spawn's terminus (spec 34, criterion 1).
+///
+/// This is the fix spec 77's AGENT SCRATCH IS SPAWN-OWNED design bullet names: the driver
+/// cannot pass env to a workflow-driven agent (`agent()` takes only phase/model/schema/
+/// label), so a worker's own manual scratch and `CARGO_TARGET_DIR` used to be directed by
+/// PROSE at an unbucketed `agent-scratch/` literal and the shared build cache - producing
+/// top-level ad-hoc dirs no run/spawn owns. `rigger scratch <spawn>` lets a worker fetch
+/// its own container at runtime instead, exactly the pattern [`cmd_prompt`] already
+/// established (a worker fetches its own slim data from the log by spawn id).
+///
+/// Resolves `scratch_root`/`run_id` through the IDENTICAL precedence
+/// [`reclaim_spawn_scratch`] uses (the config's `workflow.defaults.workdir`, then the live
+/// run's `RunStarted` via [`runscope::current_run_id`]), so the printed path is
+/// byte-identical to the one path authority the reaper targets - never a second,
+/// independently-derived scratch path that could drift from it.
+///
+/// A store-opening COURIER, invoked BY THE WORKER (mirrors [`cmd_prompt`]/[`cmd_reported`]):
+/// resolves the store by walking UP to the owning root and scoping by that root's identity,
+/// so a worker running this from inside its own unit worktree still reads the real run's
+/// `RunStarted` rather than fabricating a fresh, run-less store.
+fn cmd_scratch(args: &[String]) -> Res {
+    let id = match args {
+        [id] => id.as_str(),
+        _ => return Err("scratch: expected exactly one spawn id: rigger scratch <id>".into()),
+    };
+    let (loc, selection) = require_store_dir()?;
+    let backend = resolve_store(&selection, &loc.file("events.db"))?;
+    let store = Namespaced::new(backend.as_ref(), &loc.identity());
+    let prior = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    let repo = loc
+        .dir
+        .parent()
+        .and_then(|p| p.to_str())
+        .ok_or("scratch: could not resolve the project root")?;
+    let workdir = config::load(repo)
+        .map(|c| c.workflow.defaults.workdir)
+        .unwrap_or_default();
+    let scratch_root = rigger::worktree::scratch_root_path_from_env(repo, &workdir);
+    let run_id = runscope::current_run_id(&prior).unwrap_or_default();
+    match spawn_scratch_path(&scratch_root, &run_id, id) {
+        Some(path) => {
+            println!("{}", path.display());
+            Ok(())
+        }
+        None => Err(format!("scratch: {id:?} does not name a usable scratch path").into()),
     }
 }
 
