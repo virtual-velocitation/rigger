@@ -1697,16 +1697,17 @@ fn a_spawns_scratch_is_reclaimed_the_moment_its_result_is_recorded_for_every_out
 
         // The dedicated scratch rigger assigned each spawn, each populated with build debris.
         // The layout is the single authority `spawn_scratch_path`:
-        // `<root>/.rigger/tmp/agent-scratch/<run>/<sanitized id>` (the `/` and `#` in a spawn
-        // id collapse to `_`). One spawn will report (its scratch must be reclaimed); the
-        // sibling never reports (its scratch must be untouched).
+        // `<root>/.rigger/tmp/agent-scratch/<run>/<encoded id>` (the injective byte-hex
+        // encoding, spec 77 Design `d77-injective-scratch-naming`: `/` -> `_2f`, `#` -> `_23`).
+        // One spawn will report (its scratch must be reclaimed); the sibling never reports
+        // (its scratch must be untouched).
         let run_scratch = root
             .join(".rigger")
             .join("tmp")
             .join("agent-scratch")
             .join("r1");
-        let done = run_scratch.join("u_implementer_0");
-        let live = run_scratch.join("v_implementer_0");
+        let done = run_scratch.join("u_2fimplementer_230");
+        let live = run_scratch.join("v_2fimplementer_230");
         for d in [&done, &live] {
             std::fs::create_dir_all(d).unwrap();
             std::fs::write(d.join("cargo-target-debris.rlib"), [0u8; 64]).unwrap();
@@ -2028,6 +2029,73 @@ fn a_leading_slash_spawn_id_never_collapses_the_reclaim_to_its_registered_root()
          wrongly removed",
         sibling.display()
     );
+}
+
+/// Regression for the spec-77 review reject round 6 (ADJUDICATOR VERDICT u77c2 round 6), fixed
+/// per the round-7 spec Design decision `d77-injective-scratch-naming`: rounds 3 and 5 each
+/// substituted a FIXED placeholder for a degenerate `marker_filename` result (`"_empty_"` for
+/// empty, an all-dots result's own dots mapped to `_` for the walk-upward shape) - both wrong
+/// the same way, since the placeholder was drawn from the map's own reachable output alphabet,
+/// so it could never be proven disjoint from a REAL unit's own mapped output (a real unit
+/// literally named an underscore-run collided with either placeholder). Round 7 replaces the
+/// whole scheme with one INJECTIVE byte-hex encoding (every byte outside `[A-Za-z0-9-]`,
+/// `_` included, becomes `_` plus two lowercase hex digits) - collisions are closed by
+/// construction, not by a case-by-case guard. Prove it end to end through the real binary: a
+/// real unit named `"___"` (three underscores - the exact shape round 5's empty-sentinel and
+/// round 3's all-dots-to-underscore placeholders could each collide with) encodes to its own
+/// unique leaf (`_5f_5f_5f`) and keeps that leaf's live mutation-scratch dir untouched when an
+/// UNRELATED spawn reports with a degenerate id - an all-dots id of the identical length
+/// (`"..."`, the round-3 all-dots shape, which now encodes to the DIFFERENT leaf `_2e_2e_2e`)
+/// and, separately, a leading-slash id (the round-4/5 empty-unit shape, which still resolves to
+/// no leaf at all).
+#[test]
+fn a_real_underscore_run_units_mutation_scratch_survives_an_unrelated_degenerate_spawn_id() {
+    let cases: &[(&str, &[&str])] = &[
+        (
+            "all-dots-same-length",
+            &["result", "...", "typo'd or hostile spawn id"],
+        ),
+        (
+            "leading-slash",
+            &["result", "/foo", "typo'd or hostile spawn id"],
+        ),
+    ];
+
+    for (label, args) in cases {
+        let dir = temp_project();
+        let root = dir.path();
+        seed_store(root);
+        seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
+
+        // A real unit literally named three underscores, with a live mutation-scratch dir at
+        // the path `mutation_scratch_path` actually computes for it under the injective
+        // encoding (`_` escapes to `_5f`, so "___" -> "_5f_5f_5f") - exactly the shape round
+        // 5's "_empty_" placeholder and round 3's all-dots-to-underscore placeholder could
+        // each collide with under the OLD scheme.
+        let cache_home = tempfile::tempdir().unwrap();
+        let real_unit_scratch = cache_home.path().join("rigger-mutants").join("_5f_5f_5f");
+        std::fs::create_dir_all(&real_unit_scratch).unwrap();
+        std::fs::write(real_unit_scratch.join("outcomes.json"), b"{}").unwrap();
+
+        let (out, err, ok) = run_rigger_envs(
+            root,
+            args,
+            &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
+        );
+        assert!(
+            ok,
+            "[{label}] recording the result must still succeed (scratch reclaim is \
+             best-effort and never fails a recorded result); stdout: {out:?} stderr: {err}"
+        );
+
+        assert!(
+            real_unit_scratch.exists() && real_unit_scratch.join("outcomes.json").exists(),
+            "[{label}] a real unit literally named an underscore-run must keep its live \
+             mutation-scratch dir untouched by an unrelated degenerate spawn id; {} was \
+             wrongly removed",
+            real_unit_scratch.display()
+        );
+    }
 }
 
 /// Write a minimal `.rigger/workflow.yml` into `root` pinning `defaults.grounder` to
