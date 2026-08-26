@@ -4859,6 +4859,16 @@ impl RunCtx<'_> {
                     &review,
                 )?;
                 self.cancel_speculation_candidates(st, &group, lane, &candidates)?;
+                // Spec 77, criterion 3 (UNIT-TERMINAL REAP), round 4 fix for
+                // adj-u77c3r6-verdict-reject-onpassnone-speculation-leak: an `on_pass: none`
+                // winner is its own genuine unit-terminal fixpoint - the group settled on a
+                // winner, no later lane is ever attempted, and (unlike the merge exit below)
+                // NO `UnitIntegrated` is ever emitted here, so the `gc_integrated_branches`
+                // resume backstop can never catch this leak either. Reap every REGISTERED
+                // mutation-scratch dir ANY of the K candidates' spawns populated, keyed by
+                // `st.name`, exactly like the winner-integrate and escalation-tail siblings
+                // below.
+                self.reclaim_terminal_unit_mutation_scratch(&st.name);
                 return Ok(false);
             }
             let integration = self.integrate_and_emit(
