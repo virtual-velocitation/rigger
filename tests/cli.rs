@@ -7841,6 +7841,81 @@ fn a_terminal_units_registered_mutation_scratch_is_reaped_while_a_live_siblings_
     );
 }
 
+/// Spec 77, criterion 3 (UNIT-TERMINAL REAP): `gc_integrated_branches` resolves its
+/// registered-scratch-root `cache_home` via `cache_home_from(XDG_CACHE_HOME, HOME)` ONCE per
+/// call, then only enters `reclaim_unit_mutation_scratch` behind `if let Some(cache_home)`
+/// (`src/conductor.rs`) - so a HOMELESS environment (neither var set) takes the `None` arm
+/// for EVERY integrated unit, every step. No test anywhere else drives this arm: the pure-fn
+/// unit tests (`src/driver/replay.rs`) never see an `Option` at all (they call
+/// `reclaim_unit_mutation_scratch` with a real `&Path` directly), the pre-existing
+/// `branch_gc_reclaims_integrated_units_and_retains_escalated_ones_on_resume` unit test
+/// (spec 38) never touches `HOME`/`XDG_CACHE_HOME` so it runs with whatever real home the
+/// test process inherits, and this file's own sibling test above always seeds a resolvable
+/// `XDG_CACHE_HOME`. A regression that swapped the `if let Some` guard for an `.unwrap()` (or
+/// any other panic-on-`None` shape) would pass every one of those and only surface here, in
+/// the one homeless environment none of them construct.
+///
+/// Mirrors the established homeless-environment integration-test shape
+/// (`a_reap_on_idle_singleton_in_a_homeless_environment_serves_without_a_watcher`,
+/// `.env_remove` on the real spawned binary) rather than mutating process-global env vars
+/// in-process, which would race every other test in this shared test binary.
+///
+/// Non-vacuous: hand-verified by temporarily replacing the `if let Some(cache_home) =
+/// &cache_home` guard in `src/conductor.rs::gc_integrated_branches` with
+/// `cache_home.as_ref().unwrap()`, confirming THIS test fails with a `None`-unwrap panic
+/// (`ok` false, a panic message on stderr) while every other test in this file's suite that
+/// exercises `gc_integrated_branches` still passes (they all run with a resolvable real
+/// home), then reverting the change.
+#[test]
+fn a_terminal_units_mutation_scratch_reap_is_a_graceful_noop_in_a_homeless_environment() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_manual_review_workflow(root);
+
+    // Step 1: "solo" pauses for manual review, exactly like the sibling test above - this
+    // step keeps the test process's own real HOME, so seeding the project is unaffected.
+    let (_out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok,
+        "the first step must pause the sole unit for manual review; stderr:\n{err}"
+    );
+
+    // The human approves "solo" (a real UnitIntegrated lands it), matching the sibling test.
+    seed_run_events(
+        root,
+        &[("UnitIntegrated", r#"{"id":"solo","commit":"deadbeef"}"#)],
+    );
+
+    // Step 2: the SAME resolved-manual-review step as the sibling test, but the subprocess
+    // itself is made homeless (no HOME, no XDG_CACHE_HOME) so `gc_integrated_branches`'s own
+    // `cache_home` resolves to `None` for "solo", now Integrated. `XDG_STATE_HOME` is still
+    // redirected to a throwaway dir (matching `run_rigger_envs`'s own default) so the
+    // instance registry never touches the operator's real state home either.
+    let state = tempfile::tempdir().unwrap();
+    let out = common::rigger_courier()
+        .arg("step")
+        .current_dir(root)
+        .env_remove("HOME")
+        .env_remove("XDG_CACHE_HOME")
+        .env("RIGGER_NO_DASH", "1")
+        .env("XDG_STATE_HOME", state.path())
+        .output()
+        .expect("failed to spawn the rigger binary");
+    let ok = out.status.success();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        ok,
+        "a step that reclaims a terminal unit in a HOMELESS environment (no HOME, no \
+         XDG_CACHE_HOME) must still succeed - the registered-scratch reap has nowhere to \
+         look and must no-op, never panic; stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("panicked"),
+        "the homeless registered-scratch reap must never panic even on success exit; \
+         stderr:\n{stderr}"
+    );
+}
+
 /// `rigger stats` reports the LATEST run by default and `rigger stats --all` reports the
 /// historical aggregate over every run (spec 06, unit 1). Two runs are seeded through the
 /// real `rigger emit` courier: run 1 lands one clean unit, run 2 escalates one unit. The
