@@ -8729,6 +8729,141 @@ stages:
     );
 }
 
+/// Spec 77, criterion 3 (UNIT-TERMINAL REAP): `gc_integrated_branches`'s own doc comment
+/// (round 5) claims moving its call site to AFTER the deterministic decomposition baseline
+/// expansion matters specifically because "this repo's own implementer/sdet units are
+/// themselves baseline units" - a SPEC-DRIVEN run (`deps.criteria` non-empty), where
+/// `stages` starts the window with only the fan-out TEMPLATE stage and the real
+/// per-criterion baseline unit (carrying the template's `on_pass` value) is synthesized
+/// into `stages` only once `baseline_units` runs. Every sibling test proving
+/// `mutation_scratch_settled`'s `on_pass:none` arm
+/// (`a_speculation_on_pass_none_winners_registered_mutation_scratch_across_all_lanes_is_reaped_by_the_real_on_pass_none_exit_teardown`
+/// and `a_resumed_run_reaps_an_escalated_and_an_on_pass_none_settled_units_registered_mutation_scratch_not_just_an_integrated_ones`
+/// above) authors its `on_pass: none` unit directly as a hand-written workflow STAGE with
+/// an empty `--spec` (so `deps.criteria` is empty and the baseline-expansion block is a
+/// no-op) - none of them exercises a baseline unit AT ALL, so none of them can tell the
+/// documented call-site reorder apart from a version that never moved it: `stages.get(id)`
+/// would already have resolved either way. This test drives a REAL `--spec`-carrying run
+/// (a fan-out `implement` template, `on_pass: none`, one Done-when criterion) through TWO
+/// real `rigger step --spec ...` invocations - crossing an actual process boundary between
+/// them, exactly like the resume backstop's own production call site - and proves the
+/// SYNTHESIZED baseline unit's registered mutation-scratch is reaped on the second (resume)
+/// step, not silently exempted by `mutation_scratch_settled`'s conservative
+/// `stages.get(&u.id)` miss branch (which resolves a stage-less id's `integrates` to `true`,
+/// i.e. NOT reaped) the way it would be if the call still ran before expansion.
+#[test]
+fn a_resumed_spec_driven_runs_baseline_on_pass_none_unit_has_its_registered_mutation_scratch_reaped_too(
+) {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: baselineOnPassNoneReorderTest
+defaults:
+  grounder: nop
+  budget: 60
+  autonomy: manual
+gates:
+  human: { run: "true", kind: core }
+stages:
+  implement:
+    agent: worker
+    strategy: fan-out
+    gates: [human]
+    on_pass: none
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("spec.md"),
+        "# Spec\n\n## Done when\n\n- [ ] widget\n",
+    )
+    .unwrap();
+
+    // Step 1: `deps.criteria` is non-empty (`--spec spec.md`), so the conductor synthesizes
+    // exactly ONE baseline unit from the fan-out `implement` template for the sole criterion
+    // ("widget" slugs deterministically to `unit-1-widget`, per `unit_slug`), inheriting the
+    // template's `on_pass: none`. `autonomy: manual` means this step never launches a real
+    // agent process for it - it parks the baseline unit as a `ManualReview`, a real bootstrap
+    // through the compiled binary, nothing terminal yet.
+    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
+    assert!(
+        ok,
+        "the first spec-driven step must synthesize and pause the sole baseline unit for \
+         manual review; stderr:\n{err}\nstdout:\n{out}"
+    );
+    {
+        use rigger::eventstore::namespace::Namespaced;
+        use rigger::eventstore::sqlite::Store;
+        use rigger::eventstore::{Direction, EventStore};
+        let backend =
+            Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
+        let store = Namespaced::new(&backend, &run_stream_identity(root));
+        let events = store
+            .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+            .unwrap();
+        assert!(
+            events.iter().any(|e| e.type_ == "UnitStarted"
+                && String::from_utf8_lossy(&e.data).contains(r#""id":"unit-1-widget""#)),
+            "premise: the criterion must decompose to the deterministic baseline id \
+             `unit-1-widget`, or this test proves nothing about a SYNTHESIZED unit \
+             specifically; events: {events:?}"
+        );
+    }
+
+    // Seed the baseline unit's terminal `on_pass:none` checkpoint directly - exactly the
+    // sibling resume test's shape - reproducing a crash strictly between that event durably
+    // recording and the fresh-path exit's own synchronous reclaim call: no reclaim has run
+    // for this unit yet.
+    seed_run_events(
+        root,
+        &[(
+            "UnitStatus",
+            r#"{"id":"unit-1-widget","status":"verified"}"#,
+        )],
+    );
+
+    // Registered mutation-scratch for the baseline unit's own implementer spawn, under a
+    // throwaway cache home so `XDG_CACHE_HOME` never points at the operator's real
+    // `~/.cache`.
+    let cache_home = tempfile::tempdir().unwrap();
+    let scratch = cache_home
+        .path()
+        .join("rigger-mutants")
+        .join("unit-1-widget_2fimplementer_230");
+    std::fs::create_dir_all(&scratch).unwrap();
+    std::fs::write(scratch.join("mutants-debris.out"), [0u8; 32]).unwrap();
+
+    // Step 2: the SAME `--spec spec.md` is supplied again (a real resume re-supplies the
+    // spec exactly as the first step did), so the conductor re-synthesizes the identical
+    // baseline unit into `stages` BEFORE the resume backstop runs - the ordering the round-5
+    // doc comment claims is load-bearing for this exact case.
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["step", "--spec", "spec.md"],
+        &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
+    );
+    assert!(
+        ok,
+        "the resume step must still succeed; stdout: {out:?} stderr:\n{err}"
+    );
+    assert!(
+        !scratch.exists(),
+        "a SPEC-DRIVEN baseline unit's own registered mutation-scratch dir must be reaped on \
+         resume exactly like a hand-authored stage's would - the baseline unit only carries \
+         its real `on_pass: none` into `stages` once `baseline_units` has run, so the resume \
+         backstop must observe `stages` AFTER that expansion, not before: {}",
+        scratch.display()
+    );
+}
+
 /// `rigger stats` reports the LATEST run by default and `rigger stats --all` reports the
 /// historical aggregate over every run (spec 06, unit 1). Two runs are seeded through the
 /// real `rigger emit` courier: run 1 lands one clean unit, run 2 escalates one unit. The
