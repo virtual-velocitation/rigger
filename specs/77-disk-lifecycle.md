@@ -17,6 +17,17 @@ mechanism.
   `CARGO_TARGET_DIR=<the unit's cache>` in every spawned agent's environment, so a
   worktree stays source-sized, all of a unit's builds land in the one per-unit cache,
   and teardown reaps one place.
+- AGENT SCRATCH IS SPAWN-OWNED, decided here (closing the ad-hoc-residue class rounds
+  kept re-finding): the driver cannot pass env to a workflow-driven agent (the `agent()`
+  primitive takes only phase/model/schema/label), so the agent's OWN scratch and manual
+  cargo were directed by PROSE to unbucketed `agent-scratch/` and the shared cache -
+  producing top-level ad-hoc dirs (`agent-scratch/u77c4-target`, 39G) that no run/spawn
+  owns, that the cache-forcing above cannot reach, and that footprint accounting folds
+  into dead-run buckets. Fix: `rigger scratch <spawn>` prints the spawn's own container
+  (`spawn_scratch_path`, the SAME dir the per-spawn reaper already owns); the SCRATCH
+  POLICY prompt directs ALL agent-created scratch there and points manual
+  `CARGO_TARGET_DIR` INSIDE it, so agent output is spawn-owned - reaped at the spawn's
+  terminus, and one accounting unit, not orphan residue.
 - ONE REAPER, extended not duplicated: the spec-34 per-spawn reclamation authority
   (`spawn_scratch_path` / `cmd_result`'s reclaim) gains registered SCRATCH ROOTS beyond
   `.rigger/tmp` - first registrant the mutation scratch root
@@ -68,6 +79,13 @@ mechanism.
   whose agent ran a real cargo build holds no embedded `target/` dir - pinned at the
   gate/driver seam with a real subprocess. This criterion OWNS the spawn-environment
   export.
+- [ ] A test proves AGENT SCRATCH IS SPAWN-OWNED: `rigger scratch <spawn>` prints that
+  spawn's own `spawn_scratch_path` container, and the SCRATCH POLICY prompt the courier
+  builds directs agent-created scratch and manual `CARGO_TARGET_DIR` inside it (no
+  unbucketed `agent-scratch/` literal, no shared-cache literal for manual cargo) - pinned
+  by a `rigger scratch` seam test plus a drift-guard on the prompt text. This criterion
+  OWNS the `rigger scratch` verb and the SCRATCH POLICY prompt content; the reap of that
+  container is criterion 2's and 3's, NOT this one's.
 - [ ] A test proves MUTATION SCRATCH IS REAPED: a spawn with a populated registered
   mutation scratch dir has it deleted the moment its result is recorded, for every
   outcome, while a sibling spawn with no recorded result keeps its dir - pinned at the
@@ -84,7 +102,12 @@ mechanism.
   modes, and appears in the usage registry. This criterion OWNS the reset mode.
 - [ ] A test proves FOOTPRINT ACCOUNTING: `rigger validate` on a fixture tree with seeded
   category sizes reports each category's total and flags a dead-share threshold breach
-  naming the reclaiming command, exit 0. This criterion OWNS the accounting surface.
+  naming the reclaiming command, exit 0; a well-formed per-spawn `agent-scratch/<run>/
+  <spawn>` container of a LIVE spawn is NOT counted dead, and a top-level ad-hoc dir
+  directly under `agent-scratch` (no run/spawn owner) is reported as its own
+  recognized-residue category with a reclaim command, never folded into a dead-run
+  bucket. This criterion OWNS the accounting surface and its agent-scratch
+  classification.
 - [ ] Both feature lanes green: `cargo fmt --check`; `cargo clippy --all-targets -D
   warnings`; `cargo test` on default features AND `--no-default-features`. This criterion
   OWNS the whole-diff gates-green audit and claims no lifecycle concept of its own.
