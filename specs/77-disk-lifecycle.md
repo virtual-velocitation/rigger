@@ -73,10 +73,12 @@ mechanism.
   outcome, while a sibling spawn with no recorded result keeps its dir - pinned at the
   same seam as the existing per-spawn reclamation tests. This criterion OWNS scratch-root
   registration and the persona invocation's spawn-scoped subdir text.
-- [ ] A test proves UNIT-TERMINAL REAP: a terminal unit's per-unit cargo target cache is
-  deleted by teardown while a live sibling's survives, gated on the existing
-  sweep-liveness authority. This criterion OWNS the teardown extension; scratch-root
-  registration is criterion 1's, NOT this one's.
+- [ ] A test proves UNIT-TERMINAL REAP: a terminal unit's per-unit cargo target cache AND
+  the registered scratch dirs of its spawns (including a hung or abandoned spawn's
+  mutation scratch that never self-reported) are deleted by teardown while a live
+  sibling's survive, gated on the existing sweep-liveness authority. This criterion OWNS
+  the teardown extension over both shapes; defining the registration mechanism itself is
+  criterion 2's, NOT this one's.
 - [ ] A test proves the BOUNDED SHARED CACHE: `rigger reset --build-cache` deletes the
   shared gate build cache, reports bytes reclaimed, composes with the existing reset
   modes, and appears in the usage registry. This criterion OWNS the reset mode.
