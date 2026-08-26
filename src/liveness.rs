@@ -68,6 +68,21 @@ pub const MARKER_SUBDIR: &str = "agent-live";
 /// characters. Neutralize exactly that shape (and nothing else - a `.` embedded
 /// beside any other safe character is a normal, harmless filename character) by
 /// mapping every `.` in an all-dots result to `_` too.
+///
+/// A SEPARATE shape needs its own guard: an EMPTY mapped result (only possible when
+/// the input itself is empty, since the char-by-char map above is 1:1 and drops
+/// nothing). `<registered_root>.join(marker_filename(id))` with an empty result is a
+/// documented `PathBuf::join` no-op, so the derived path collapses to the registered
+/// root ITSELF rather than a leaf under it - letting a reaper delete every sibling
+/// leaf alongside it, the same fail-safe-deletion-only violation the all-dots guard
+/// closes, just via a no-op join instead of a `..` traversal. `cmd_result` itself
+/// requires a non-empty spawn id, but `reclaim_spawn_scratch`'s own unit-extraction
+/// (`spawn_id.split('/').next()`) yields `""` for any leading-slash spawn id (e.g.
+/// `rigger result "/foo" "text"`), and that empty unit is exactly what
+/// `mutation_scratch_path` feeds this function. Fall back to a fixed non-empty
+/// placeholder, distinct from any all-dots output above, so an empty mapped result
+/// can never make a caller's `.join` a no-op - mirroring `sanitize_for_path`'s
+/// empty-falls-back-to-a-safe-literal shape (`conductor.rs`).
 pub fn marker_filename(spawn_id: &str) -> String {
     let mapped: String = spawn_id
         .chars()
@@ -79,7 +94,9 @@ pub fn marker_filename(spawn_id: &str) -> String {
             }
         })
         .collect();
-    if !mapped.is_empty() && mapped.chars().all(|c| c == '.') {
+    if mapped.is_empty() {
+        "_empty_".to_string()
+    } else if mapped.chars().all(|c| c == '.') {
         mapped.replace('.', "_")
     } else {
         mapped
@@ -441,6 +458,25 @@ mod tests {
     }
 
     #[test]
+    fn marker_filename_neutralizes_an_empty_mapped_result_so_a_join_can_never_be_a_no_op() {
+        // Round-4 review reject (ADJUDICATOR VERDICT u77c2 round 4): the all-dots guard above
+        // only fires when `!mapped.is_empty()`, so it explicitly excludes the shape where the
+        // INPUT itself is empty (mapped is then also empty, since the char-by-char map is 1:1
+        // and drops nothing). `<registered_root>.join(marker_filename(id))` with an empty
+        // `marker_filename` result is a documented no-op (`PathBuf::join("")` returns the
+        // receiver unchanged) - so every caller's derived path silently collapses to the
+        // REGISTERED ROOT ITSELF, not a leaf under it, and `reap_then_remove_dir` then reaps
+        // every sibling unit's scratch, not just the reporting one. Reachable directly: a spawn
+        // id of `""` cannot reach here (`cmd_result` already requires non-empty), but
+        // `reclaim_spawn_scratch`'s own `unit = spawn_id.split('/').next()` extraction yields
+        // `""` for any LEADING-SLASH spawn id (e.g. `rigger result "/foo" "text"`), and that
+        // empty `unit` is exactly what `mutation_scratch_path` feeds this function. Fall back to
+        // a fixed non-empty placeholder distinct from the all-dots outputs above, so an empty
+        // mapped result can never make a caller's `.join` a no-op.
+        assert_eq!(marker_filename(""), "_empty_");
+    }
+
+    #[test]
     fn marker_path_is_scratch_root_joined_with_the_run_subdir_and_filename() {
         // With a run id: `<scratch>/agent-live/<run>/<sanitized id>` - the run subdir gives
         // the marker RUN IDENTITY, so a slug-colliding re-run never reads a prior mtime.
@@ -477,6 +513,18 @@ mod tests {
         let p = marker_path("/scratch", "run-7", "..");
         assert_eq!(p, std::path::Path::new("/scratch/agent-live/run-7/__"));
         assert!(p.starts_with("/scratch/agent-live/run-7"));
+    }
+
+    #[test]
+    fn marker_path_never_collapses_to_its_registered_root_for_an_empty_spawn_id() {
+        // Round-4 sibling of the dotdot regression above: an EMPTY spawn id (reachable via
+        // `reclaim_spawn_scratch`'s own `unit = spawn_id.split('/').next()` extraction for a
+        // leading-slash spawn id) must not make `<scratch>.join(marker_filename(id))` a no-op
+        // that resolves to `<scratch>` itself - which would let a reaper delete every sibling
+        // leaf under it, not just the reporting one's.
+        let p = marker_path("/scratch", "run-7", "");
+        assert_eq!(p, std::path::Path::new("/scratch/agent-live/run-7/_empty_"));
+        assert_ne!(p, std::path::Path::new("/scratch/agent-live/run-7"));
     }
 
     #[test]
