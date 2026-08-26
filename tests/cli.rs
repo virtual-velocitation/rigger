@@ -6879,6 +6879,105 @@ fn step_surfaces_a_hung_spawn_with_a_stale_marker_as_a_liveness_halt() {
     );
 }
 
+/// Regression for the round-2/3 review reject (ADJUDICATOR VERDICT REJECT u77c2b, spec 77
+/// criterion 2 "MUTATION SCRATCH IS REAPED"): `liveness::sweep` records a hung spawn's fault
+/// via `spawn::record_result_if_absent` DIRECTLY, in-process (`src/liveness.rs`), never
+/// through `cmd_result` - so the ONLY production reclaim call site (`reclaim_spawn_scratch`,
+/// wired solely into `cmd_result`) never ran for it, leaking every hung spawn's registered
+/// mutation-scratch dir. The existing "for every outcome" test
+/// (`a_spawns_mutation_scratch_is_reclaimed_the_moment_its_own_result_reports_for_every_outcome`)
+/// labels one of its four cases "liveness-fault" but drives it via a synthetic
+/// `rigger result ... --error --meta liveness_class:infra` CLI call - structurally identical
+/// to the death-courier path, NOT to the sweep's own in-process record call - so it could
+/// never catch this gap. THIS test drives the REAL sweep path end to end: a genuine stale
+/// marker plus a real second `rigger step` (mirroring
+/// `step_surfaces_a_hung_spawn_with_a_stale_marker_as_a_liveness_halt`'s own shape), proving
+/// the hung spawn's own registered mutation-scratch dir is reclaimed the moment the sweep
+/// records its fault, while an unrelated spawn's own dir is untouched.
+#[test]
+fn step_reclaims_a_hung_spawns_mutation_scratch_the_moment_the_sweep_records_its_fault() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_liveness_workflow(root);
+
+    // A dedicated cache home, so XDG_CACHE_HOME never points at the operator's real ~/.cache.
+    let cache_home = tempfile::tempdir().unwrap();
+    let envs: &[(&str, &str)] = &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())];
+
+    // Step 1: the unit is ready, so its implementer parks in-flight (no result yet). The wave
+    // carries the RESOLVED marker path the worker would touch - the single authority the
+    // sweep also reads, so the test plants the marker exactly where the sweep will look.
+    let (out, err, ok) = run_rigger_envs(root, &["step"], envs);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(r#""id":"a/implementer#0""#),
+        "step 1 parks the implementer in-flight; got: {line:?}"
+    );
+    let marker_str =
+        json_string_field(line, "marker_path").expect("the wave carries the resolved marker path");
+    let marker = std::path::Path::new(&marker_str);
+
+    // Pre-populate the ABOUT-TO-HANG spawn's own registered mutation-scratch dir, standing in
+    // for a real `cargo mutants` run's build debris - and a DIFFERENT spawn's own dir (never
+    // parked by this run), which must stay untouched. Keyed by the injective byte-hex encoding
+    // (`/` -> `_2f`, `#` -> `_23`) `mutation_scratch_path` uses.
+    let hung_scratch = cache_home
+        .path()
+        .join("rigger-mutants")
+        .join("a_2fimplementer_230");
+    let other_scratch = cache_home
+        .path()
+        .join("rigger-mutants")
+        .join("z_2fimplementer_230");
+    for d in [&hung_scratch, &other_scratch] {
+        std::fs::create_dir_all(d).unwrap();
+        std::fs::write(d.join("mutants-debris.out"), [0u8; 32]).unwrap();
+    }
+
+    // Plant the SYNTHETIC STALE MARKER at the wire path (worker-write path == sweep-read path).
+    plant_stale_marker(marker);
+
+    // Step 2: the sweep finds the marker stale beyond the bound, classifies the spawn infra,
+    // and records the fault DIRECTLY via `record_result_if_absent` - never through
+    // `cmd_result` - exactly the path
+    // `step_surfaces_a_hung_spawn_with_a_stale_marker_as_a_liveness_halt` already pins for the
+    // halt surfacing. THIS is also the moment the fix under test reclaims the hung spawn's
+    // own registered mutation-scratch dir.
+    let (out, err, ok) = run_rigger_envs(root, &["step"], envs);
+    assert!(
+        ok,
+        "a liveness-halted step still prints its result and exits 0; stderr: {err}"
+    );
+    let line = out.trim();
+    assert!(
+        line.contains(r#""halted":"#) && line.contains("a/implementer#0"),
+        "the hung spawn must be surfaced as a halt naming it; got: {line:?}"
+    );
+    // The sweep's OWN "liveness swept" notice fires exactly when it found a NON-EMPTY stale
+    // set (never when nothing was stale) - pinning the polarity of that guard directly, not
+    // just its downstream reclaim effect, so a flipped condition there (printing on the WRONG
+    // branch) cannot silently regress unnoticed.
+    assert!(
+        err.contains("liveness swept 1 hung spawn"),
+        "the sweep must report the hung spawn it just found; stderr: {err}"
+    );
+
+    assert!(
+        !hung_scratch.exists(),
+        "the hung spawn's own registered mutation-scratch dir must be reclaimed the moment the \
+         liveness sweep records its fault, exactly like every other outcome that reaches \
+         `cmd_result`; {} still exists",
+        hung_scratch.display()
+    );
+    assert!(
+        other_scratch.exists() && other_scratch.join("mutants-debris.out").exists(),
+        "an unrelated spawn's own mutation-scratch dir must be untouched; {} was wrongly \
+         reclaimed",
+        other_scratch.display()
+    );
+}
+
 /// The single-stage liveness workflow with an UNBOUNDED default (`defaults.max_wall_clock`
 /// absent = 0), so the parked implementer carries NO per-spawn `max_wall_clock` and thus no
 /// marker on the wire - the exact spawn the sweep can never time out and the native driver's

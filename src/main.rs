@@ -2191,12 +2191,27 @@ fn cmd_step(args: &[String]) -> Res {
                     &taxonomy,
                     std::time::SystemTime::now(),
                 ) {
-                    Ok(stale) if !stale.is_empty() => eprintln!(
-                        "rigger step: liveness swept {} hung spawn(s) (classified infra, no attempt charged): {}",
-                        stale.len(),
-                        stale.iter().map(|s| s.id.clone()).collect::<Vec<_>>().join(", ")
-                    ),
-                    Ok(_) => {}
+                    Ok(stale) => {
+                        // Reclaim EACH freshly-recorded hung spawn's registered scratch the
+                        // moment the sweep answers it (spec 77, criterion 2) - `sweep` just
+                        // recorded its liveness fault DIRECTLY via
+                        // `spawn::record_result_if_absent`, never through `cmd_result`, so
+                        // that courier's own reclaim never runs for it; this call site is the
+                        // liveness-fault half of the two-call-site/one-authority shape
+                        // [`reclaim_spawn_registered_scratch`]'s doc comment describes (review
+                        // u77c2b round 2/3 reject: a hung spawn's mutation-scratch used to
+                        // leak until its unit reached a terminal state).
+                        for s in &stale {
+                            reclaim_spawn_registered_scratch(root, &run_id, &s.id);
+                        }
+                        if !stale.is_empty() {
+                            eprintln!(
+                                "rigger step: liveness swept {} hung spawn(s) (classified infra, no attempt charged): {}",
+                                stale.len(),
+                                stale.iter().map(|s| s.id.clone()).collect::<Vec<_>>().join(", ")
+                            );
+                        }
+                    }
                     Err(e) => eprintln!("rigger step: liveness sweep skipped: {e}"),
                 }
             }
@@ -8125,15 +8140,38 @@ fn reclaim_spawn_scratch(loc: &StoreLocation, prior: &[Event], spawn_id: &str) {
         .unwrap_or_default();
     let scratch_root = rigger::worktree::scratch_root_path_from_env(repo, &workdir);
     let run_id = runscope::current_run_id(prior).unwrap_or_default();
-    if let Some(path) = spawn_scratch_path(&scratch_root, &run_id, spawn_id) {
+    reclaim_spawn_registered_scratch(&scratch_root, &run_id, spawn_id);
+}
+
+/// The reclaim ACTION itself: given an already-resolved `scratch_root`/`run_id`, reap spawn
+/// `spawn_id`'s per-spawn `agent-scratch` dir (spec 34, criterion 1) plus its REGISTERED
+/// mutation-testing scratch dir (spec 77, criterion 2), if the ambient environment resolves a
+/// cache home to look under (a homeless environment has nothing there to reclaim either).
+///
+/// The ONE reap authority both production call sites that record a spawn's terminal outcome
+/// converge on, so they can never diverge on what "reclaim a spawn's scratch" means:
+/// [`reclaim_spawn_scratch`] (the `cmd_result` courier path - success/reject/`--error`, and any
+/// outcome an operator or `workflows/rigger.js`'s death courier records through it) resolves
+/// `scratch_root`/`run_id` from its own `StoreLocation`/prior-events context and delegates
+/// here; `cmd_step`'s liveness-sweep call site delegates here directly for each spawn
+/// [`rigger::liveness::sweep`] just recorded a fault for, using the `scratch_root`/`run_id` it
+/// already resolved for the sweep call itself. Before this second call site existed, a hung
+/// spawn's fault - recorded by the sweep via `spawn::record_result_if_absent` DIRECTLY,
+/// in-process, never through `cmd_result` - left its registered mutation-scratch dir
+/// unreclaimed forever unless its owning unit later reached a terminal state (round-2/3 review
+/// reject, spec 77 criterion 2, `adv-u77c2b-liveness-sweep-bypasses-reclaim`): the mechanism
+/// spec 10 exists for (a hung `cargo mutants` implementer) is exactly the workload spec 77's
+/// own Problem statement targets, so this was not a hypothetical corner.
+///
+/// Keyed on the SAME raw `spawn_id` at both call sites - no unit/attempt extraction, so
+/// neither can ever diverge from how `spawn::spawn_id` mints it. Entirely best-effort and
+/// platform-tolerant (see [`reclaim_spawn_scratch`]'s doc comment for the full rationale): a
+/// DEGENERATE id ([`spawn_scratch_path`]/[`mutation_scratch_path`] returning `None`) is a
+/// no-op, never a fabricated path to reap.
+fn reclaim_spawn_registered_scratch(scratch_root: &str, run_id: &str, spawn_id: &str) {
+    if let Some(path) = spawn_scratch_path(scratch_root, run_id, spawn_id) {
         reap_then_remove_dir(&path);
     }
-
-    // Registered scratch root (spec 77, criterion 2): THIS reporting spawn's own mutation-
-    // testing scratch, if the ambient environment resolves a cache home to look under (a
-    // homeless environment has nothing there to reclaim either). Keyed on the SAME raw
-    // `spawn_id` as the agent-scratch call above - no unit/attempt extraction, so this call
-    // site can never diverge from how `spawn::spawn_id` mints it.
     if let Some(cache_home) =
         cache_home_from(std::env::var_os("XDG_CACHE_HOME"), std::env::var_os("HOME"))
     {
