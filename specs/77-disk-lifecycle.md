@@ -30,7 +30,16 @@ mechanism.
   unit's assets are never touched - the existing sweep-liveness guard is the authority.
 - BOUNDED SHARED CACHE: `rigger reset` gains `--build-cache`, deleting the shared gate
   build cache (`.rigger/tmp/cargo-target`) - a pure cache, always safe to cold-rebuild -
-  and reporting bytes reclaimed like the other reset modes.
+  and reporting bytes reclaimed like the other reset modes. EXCLUSION, decided here
+  (three rounds proved any in-cache lock cannot close the race - flock is advisory to
+  lock-takers and never gates unlink, so a queued build resumes into a deleted dir): a
+  reader-writer flock on a guard file BESIDE the cache, never inside it. Every
+  rigger-launched shared-cache build holds it SHARED for the whole cargo invocation;
+  reset takes it EXCLUSIVE and NON-BLOCKING, refusing loudly with a retry-when-idle
+  message when contended - never waiting, so no build can queue behind the delete.
+  While holding it, reset renames the cache to a tombstone (atomic) and deletes the
+  tombstone after release. Builds rigger does not launch are outside the guarantee, by
+  scope.
 - FOOTPRINT ACCOUNTING: `rigger validate` reports rigger's total on-disk footprint by
   category (store, backups, shared build cache, per-unit caches, worktrees, registered
   scratch roots) and flags any category whose dead share exceeds an advisory threshold,
