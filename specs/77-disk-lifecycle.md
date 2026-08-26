@@ -40,6 +40,16 @@ mechanism.
   While holding it, reset renames the cache to a tombstone (atomic) and deletes the
   tombstone after release. Builds rigger does not launch are outside the guarantee, by
   scope.
+- INJECTIVE SCRATCH NAMING, decided here (closing the sanitization-alias class three
+  rounds patched one placeholder at a time: "", ".", ".." each aliased onto a nameable
+  real unit, letting a malformed spawn id delete another unit's live scratch): the
+  id-to-directory-name map used by BOTH creation and reaping is one shared INJECTIVE
+  encoding - every byte outside `[A-Za-z0-9-]` becomes `_` plus two lowercase hex
+  digits, and `_` itself is so escaped - so distinct ids can never share a directory
+  name and no placeholder drawn from the output alphabet exists at all. The empty id
+  encodes to the empty string, which names nothing: both sides refuse it (create
+  nothing, reap nothing) - deletion of a path a degenerate input cannot name is
+  fail-safe by construction, not by guard.
 - FOOTPRINT ACCOUNTING: `rigger validate` reports rigger's total on-disk footprint by
   category (store, backups, shared build cache, per-unit caches, worktrees, registered
   scratch roots) and flags any category whose dead share exceeds an advisory threshold,
