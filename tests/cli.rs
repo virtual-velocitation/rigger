@@ -8106,6 +8106,312 @@ fn a_terminal_units_mutation_scratch_reap_is_a_graceful_noop_in_a_homeless_envir
     );
 }
 
+/// Spec 77, criterion 3 (UNIT-TERMINAL REAP): the round-3 mechanical re-enumeration of the
+/// `reclaim_terminal_unit_mutation_scratch` call sites (`src/conductor.rs`) finds FOUR -
+/// `run_stage`'s fresh-path teardown and `gc_integrated_branches`'s resume path (both proven
+/// by the sibling tests above), plus `run_speculation`'s winner-integrate exit and its
+/// escalation-tail exit, neither of which any existing test drives. This closes the
+/// winner-integrate half: a REAL `speculation_width: 2` group (two real candidate implementer
+/// spawns, an adjudicator that always approves) where lane 0 wins for real - a genuine
+/// `on_pass: merge` merge through the compiled binary, never a hand-seeded `UnitIntegrated`.
+/// Registered mutation-scratch is seeded for BOTH lanes' own spawn ids before the run, proving
+/// the ONE call at the winner-integrate exit (`self.reclaim_terminal_unit_mutation_scratch(&st.
+/// name)`, keyed on the bare unit id every lane's own spawn id shares as its prefix) reaps
+/// every lane's own registered scratch together - not only the winner's.
+#[test]
+fn a_speculation_winners_registered_mutation_scratch_across_all_lanes_is_reaped_by_the_real_winner_integrate_teardown(
+) {
+    use std::os::unix::fs::PermissionsExt;
+
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore};
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nRIGGERTEST_WORKER: do the \
+         unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("agents").join("judge.md"),
+        "---\nid: judge\nmodel: sonnet\ntools: [Read]\n---\nRIGGERTEST_ADJUDICATOR: adjudicate \
+         it.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: specwinnermutationscratchreaptest
+defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok: { run: "true" }
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    on_pass: merge
+    speculation_width: 2
+    review:
+      adjudicator: judge
+"#,
+    )
+    .unwrap();
+
+    let fakebin = tempfile::tempdir().unwrap();
+    let claude_path = fakebin.path().join("claude");
+    std::fs::write(
+        &claude_path,
+        r#"#!/bin/sh
+sp=""
+next=0
+for a in "$@"; do
+  if [ "$next" = "1" ]; then
+    sp="$a"
+    next=0
+  fi
+  if [ "$a" = "--system-prompt" ]; then
+    next=1
+  fi
+done
+case "$sp" in
+  *RIGGERTEST_ADJUDICATOR*)
+    echo '{"verdict":"approve"}'
+    ;;
+  *RIGGERTEST_WORKER*)
+    echo "pub fn work() {}" > work.rs
+    ;;
+  *)
+    echo "fake-claude: unrecognized system prompt: $sp" 1>&2
+    exit 1
+    ;;
+esac
+"#,
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&claude_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&claude_path, perms).unwrap();
+
+    // Registered mutation-scratch for BOTH speculation lanes' own implementer spawns, under a
+    // throwaway cache home so `XDG_CACHE_HOME` never points at the operator's real `~/.cache`.
+    let cache_home = tempfile::tempdir().unwrap();
+    let lane0_scratch = cache_home
+        .path()
+        .join("rigger-mutants")
+        .join("solo_2fimplementer_230");
+    let lane1_scratch = cache_home
+        .path()
+        .join("rigger-mutants")
+        .join("solo_2fimplementer_231");
+    for d in [&lane0_scratch, &lane1_scratch] {
+        std::fs::create_dir_all(d).unwrap();
+        std::fs::write(d.join("mutants-debris.out"), [0u8; 32]).unwrap();
+    }
+
+    let path_env = format!(
+        "{}:{}",
+        fakebin.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["run"],
+        &[
+            ("PATH", &path_env),
+            ("XDG_CACHE_HOME", cache_home.path().to_str().unwrap()),
+        ],
+    );
+    assert!(
+        ok,
+        "a real speculation-width winner-integrate run must succeed; stderr: {err}\nstdout: \
+         {out}"
+    );
+
+    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    let events = store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_INTEGRATED),
+        "premise: the speculation group must reach a REAL winner-integrate, or this test proves \
+         nothing about that exit's own reap call; events: {events:?}"
+    );
+
+    assert!(
+        !lane0_scratch.exists(),
+        "the winning lane's own registered mutation-scratch dir must be reaped by the real \
+         winner-integrate teardown: {}",
+        lane0_scratch.display()
+    );
+    assert!(
+        !lane1_scratch.exists(),
+        "a LOSING lane's own registered mutation-scratch dir must ALSO be reaped by the SAME \
+         call - it is keyed on the shared unit id, covering every lane at once: {}",
+        lane1_scratch.display()
+    );
+}
+
+/// Spec 77, criterion 3 (UNIT-TERMINAL REAP): the escalation-tail half of the same
+/// mechanical re-enumeration (see the winner-integrate sibling test above for the full
+/// account). A REAL `speculation_width: 2` group where an adjudicator that always REJECTS
+/// loses both candidates, so the unit ESCALATES rather than integrating - a legitimate
+/// terminal fixpoint (mirrors
+/// `speculation_reject_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored_end_to_end`'s
+/// own exit-0-on-escalation contract). Registered mutation-scratch is seeded for both lanes
+/// before the run, proving the escalation-tail's own call
+/// (`self.reclaim_terminal_unit_mutation_scratch(&st.name)`, right before `Ok(false)`) reaps a
+/// group's registered scratch even when it NEVER integrates - a group that exhausts every
+/// candidate is still unit-terminal, not merely a group that wins.
+#[test]
+fn a_speculation_escalations_registered_mutation_scratch_across_all_lanes_is_reaped_by_the_real_escalation_tail_teardown(
+) {
+    use std::os::unix::fs::PermissionsExt;
+
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore};
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nRIGGERTEST_WORKER: do the \
+         unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("agents").join("judge.md"),
+        "---\nid: judge\nmodel: sonnet\ntools: [Read]\n---\nRIGGERTEST_ADJUDICATOR_REJECT: \
+         adjudicate it.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: specescalationmutationscratchreaptest
+defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok: { run: "true" }
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    on_pass: merge
+    speculation_width: 2
+    review:
+      adjudicator: judge
+"#,
+    )
+    .unwrap();
+
+    let fakebin = tempfile::tempdir().unwrap();
+    let claude_path = fakebin.path().join("claude");
+    std::fs::write(
+        &claude_path,
+        r#"#!/bin/sh
+sp=""
+next=0
+for a in "$@"; do
+  if [ "$next" = "1" ]; then
+    sp="$a"
+    next=0
+  fi
+  if [ "$a" = "--system-prompt" ]; then
+    next=1
+  fi
+done
+case "$sp" in
+  *RIGGERTEST_ADJUDICATOR_REJECT*)
+    echo '{"verdict":"reject"}'
+    ;;
+  *RIGGERTEST_WORKER*)
+    echo "pub fn work() {}" > work.rs
+    ;;
+  *)
+    echo "fake-claude: unrecognized system prompt: $sp" 1>&2
+    exit 1
+    ;;
+esac
+"#,
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&claude_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&claude_path, perms).unwrap();
+
+    let cache_home = tempfile::tempdir().unwrap();
+    let lane0_scratch = cache_home
+        .path()
+        .join("rigger-mutants")
+        .join("solo_2fimplementer_230");
+    let lane1_scratch = cache_home
+        .path()
+        .join("rigger-mutants")
+        .join("solo_2fimplementer_231");
+    for d in [&lane0_scratch, &lane1_scratch] {
+        std::fs::create_dir_all(d).unwrap();
+        std::fs::write(d.join("mutants-debris.out"), [0u8; 32]).unwrap();
+    }
+
+    let path_env = format!(
+        "{}:{}",
+        fakebin.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["run"],
+        &[
+            ("PATH", &path_env),
+            ("XDG_CACHE_HOME", cache_home.path().to_str().unwrap()),
+        ],
+    );
+    assert!(
+        ok,
+        "an all-candidates-rejected speculation group must still reach a clean escalated \
+         fixpoint (exit 0), not a hard failure; stderr: {err}\nstdout: {out}"
+    );
+
+    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    let events = store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_ESCALATED),
+        "premise: an always-rejecting adjudicator across both speculation candidates must \
+         escalate the unit, or this test proves nothing about the escalation-tail's own reap \
+         call; events: {events:?}"
+    );
+
+    assert!(
+        !lane0_scratch.exists(),
+        "an ESCALATED unit's own registered mutation-scratch (lane 0) must still be reaped by \
+         the escalation-tail teardown - a group that never integrates is still unit-terminal: {}",
+        lane0_scratch.display()
+    );
+    assert!(
+        !lane1_scratch.exists(),
+        "an ESCALATED unit's own registered mutation-scratch (lane 1) must still be reaped by \
+         the escalation-tail teardown: {}",
+        lane1_scratch.display()
+    );
+}
+
 /// `rigger stats` reports the LATEST run by default and `rigger stats --all` reports the
 /// historical aggregate over every run (spec 06, unit 1). Two runs are seeded through the
 /// real `rigger emit` courier: run 1 lands one clean unit, run 2 escalates one unit. The
