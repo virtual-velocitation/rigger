@@ -399,7 +399,10 @@ impl<'a> Server<'a> {
                 .map_err(|e| ToolError::internal(e.to_string()))?
                 .wave;
             for w in &frontier {
-                let path = crate::liveness::marker_path(&self.scratch_root, &run_id, &w.id);
+                let Some(path) = crate::liveness::marker_path(&self.scratch_root, &run_id, &w.id)
+                else {
+                    continue;
+                };
                 if let Ok(age) = std::fs::metadata(&path)
                     .and_then(|md| md.modified())
                     .map(|mtime| now.duration_since(mtime).map(|d| d.as_secs()).unwrap_or(0))

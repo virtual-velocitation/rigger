@@ -2275,11 +2275,11 @@ fn cmd_step(args: &[String]) -> Res {
         let run_id = runscope::current_run_id(&events).unwrap_or_default();
         for item in step.wave.iter_mut() {
             if item.max_wall_clock.is_some() {
-                item.marker_path = Some(
-                    rigger::liveness::marker_path(root, &run_id, &item.id)
-                        .to_string_lossy()
-                        .into_owned(),
-                );
+                // A degenerate id (never a real spawn id rigger itself mints) yields no
+                // marker path at all rather than a fabricated placeholder - the item simply
+                // carries no liveness marker, the same as any other unbounded spawn.
+                item.marker_path = rigger::liveness::marker_path(root, &run_id, &item.id)
+                    .map(|p| p.to_string_lossy().into_owned());
             }
         }
     }
@@ -6125,7 +6125,11 @@ fn dash_read_liveness(
     };
     let now = std::time::SystemTime::now();
     for w in &step.wave {
-        let path = rigger::liveness::marker_path(scratch_root, run_id, &w.id);
+        // A degenerate id (never a real spawn id rigger itself mints) has no marker path at
+        // all - skip it exactly like a marker that is absent for any other reason.
+        let Some(path) = rigger::liveness::marker_path(scratch_root, run_id, &w.id) else {
+            continue;
+        };
         if let Ok(age) = std::fs::metadata(&path)
             .and_then(|md| md.modified())
             .map(|mtime| now.duration_since(mtime).map(|d| d.as_secs()).unwrap_or(0))
@@ -6575,7 +6579,9 @@ fn cmd_status(args: &[String]) -> Res {
     if !repo.is_empty() {
         let root = rigger::worktree::scratch_root_from_env(&repo, &workdir);
         for w in &spawn::step_result(run_events)?.wave {
-            let path = rigger::liveness::marker_path(&root, &run_id, &w.id);
+            let Some(path) = rigger::liveness::marker_path(&root, &run_id, &w.id) else {
+                continue;
+            };
             if let Ok(age) = std::fs::metadata(&path)
                 .and_then(|md| md.modified())
                 .map(|mtime| now.duration_since(mtime).map(|d| d.as_secs()).unwrap_or(0))
@@ -6882,7 +6888,9 @@ fn watch_poll(
     if !repo.is_empty() {
         let root = rigger::worktree::scratch_root_from_env(&repo, &workdir);
         for w in &spawn::step_result(&run_events)?.wave {
-            let path = rigger::liveness::marker_path(&root, &run_id, &w.id);
+            let Some(path) = rigger::liveness::marker_path(&root, &run_id, &w.id) else {
+                continue;
+            };
             if let Ok(age) = std::fs::metadata(&path)
                 .and_then(|md| md.modified())
                 .map(|mtime| now.duration_since(mtime).map(|d| d.as_secs()).unwrap_or(0))
@@ -8085,7 +8093,12 @@ fn cmd_result(args: &[String]) -> Res {
 ///
 /// Entirely best-effort and platform-tolerant: the result already landed durably in
 /// `events.db`, so neither resolving a root nor removing a dir may surface an error that fails
-/// a recorded result, and an already-gone path is a graceful no-op.
+/// a recorded result, and an already-gone path is a graceful no-op. A DEGENERATE id or
+/// unit-extraction (`spawn_scratch_path`/`mutation_scratch_path` returning `None` -
+/// [`crate::liveness::marker_filename`]'s own doc comment) is likewise a no-op, never a
+/// fabricated path to reap: no fixed placeholder drawn from that function's own reachable
+/// alphabet can ever be proven disjoint from a real id's own mapped output (round-6 review
+/// reject), so skipping is the only fail-safe answer.
 /// [`reap_then_remove_dir`] reaps any process still rooted under the scratch (spec 23) before
 /// removing it, so a build a hung worker left running never outlives its now-deleted cwd.
 fn reclaim_spawn_scratch(loc: &StoreLocation, prior: &[Event], spawn_id: &str) {
@@ -8102,7 +8115,9 @@ fn reclaim_spawn_scratch(loc: &StoreLocation, prior: &[Event], spawn_id: &str) {
         .unwrap_or_default();
     let scratch_root = rigger::worktree::scratch_root_path_from_env(repo, &workdir);
     let run_id = runscope::current_run_id(prior).unwrap_or_default();
-    reap_then_remove_dir(&spawn_scratch_path(&scratch_root, &run_id, spawn_id));
+    if let Some(path) = spawn_scratch_path(&scratch_root, &run_id, spawn_id) {
+        reap_then_remove_dir(&path);
+    }
 
     // Registered scratch root (spec 77, criterion 2): the reporting spawn's UNIT's mutation-
     // testing scratch, if the ambient environment resolves a cache home to look under (a
@@ -8111,7 +8126,9 @@ fn reclaim_spawn_scratch(loc: &StoreLocation, prior: &[Event], spawn_id: &str) {
     if let Some(cache_home) =
         cache_home_from(std::env::var_os("XDG_CACHE_HOME"), std::env::var_os("HOME"))
     {
-        reap_then_remove_dir(&mutation_scratch_path(&cache_home, unit));
+        if let Some(path) = mutation_scratch_path(&cache_home, unit) {
+            reap_then_remove_dir(&path);
+        }
     }
 }
 

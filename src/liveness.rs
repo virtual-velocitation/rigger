@@ -46,60 +46,58 @@ use crate::spawn::{self, SpawnResult};
 /// worker instruction (`workflows/rigger.js`) derive the same path.
 pub const MARKER_SUBDIR: &str = "agent-live";
 
-/// The filesystem-safe marker filename for a spawn id: every character that is not
-/// ASCII alphanumeric, `.`, `-`, or `_` becomes `_`. A spawn id is `{unit}/{role}#{n}`,
-/// so the `/` and `#` (which would otherwise create subdirectories or shell-quirky
-/// names) collapse to `_`. This exact rule is mirrored in `workflows/rigger.js` so the
-/// worker touches the SAME file the sweep reads.
+/// The filesystem-safe marker filename for a spawn id: an INJECTIVE byte-for-byte
+/// encoding (spec 77 Design, decision `d77-injective-scratch-naming`) - every BYTE that
+/// is not ASCII alphanumeric or `-` becomes `_` followed by its two-lowercase-hex-digit
+/// value, and `_` itself is escaped the same way (to `_5f`), so a literal `_` never
+/// appears in the output except as the first byte of a 3-byte escape. A spawn id is
+/// `{unit}/{role}#{n}`, so `/` becomes `_2f` and `#` becomes `_23`. `workflows/rigger.js`
+/// never recomputes this rule itself - it receives the fully-resolved absolute path
+/// `rigger step` stamps on the wire (through THIS function, via [`marker_path`]) and just
+/// touches it verbatim, so the worker and the sweep can never compute two different
+/// filenames for the same spawn.
 ///
-/// Every caller of this function derives a filesystem path with
-/// `<registered_root>.join(marker_filename(id))` (this module's own [`marker_path`],
-/// plus [`crate::driver::replay::spawn_scratch_path`] and
+/// INJECTIVE BY CONSTRUCTION, not by guard: every caller of this function derives a
+/// filesystem path with `<registered_root>.join(marker_filename(id))` (this module's own
+/// [`marker_path`], plus [`crate::driver::replay::spawn_scratch_path`] and
 /// [`crate::driver::replay::mutation_scratch_path`]), and several of those roots are
-/// later reaped with a bare `remove_dir_all`. The id these callers key on ultimately
-/// traces back to `rigger result <id>`'s positional CLI argument, which carries NO
-/// format validation beyond non-empty - so an id (or an id fragment another caller
-/// extracts, e.g. a unit token split out of a spawn id) of exactly `"."` or `".."`
-/// must never survive this map unchanged: joined onto a root, `".."` walks the
-/// derived path up to that root's PARENT, letting a reaper delete everything beside
-/// it. Every character this map does NOT already send to `_` is alphanumeric, `-`, or
-/// `_`, each of which breaks an all-dots run just by being present - so an all-dots
-/// mapped RESULT can only arise when the input itself is composed entirely of `.`
-/// characters. Neutralize exactly that shape (and nothing else - a `.` embedded
-/// beside any other safe character is a normal, harmless filename character) by
-/// mapping every `.` in an all-dots result to `_` too.
+/// later reaped with a bare `remove_dir_all` - so two DISTINCT ids must never produce the
+/// SAME encoded name (a same-level collision misattributes a reap to the wrong unit's
+/// live scratch), and no id may encode to `""`, `"."`, or `".."` (a `PathBuf::join`
+/// no-op or an upward walk that lets a reaper delete a sibling or an ancestor). This
+/// encoding is injective: since `_` is NEVER emitted as a bare passthrough byte (it is
+/// always escaped to `_5f`), a decoder scanning left to right can unambiguously tell a
+/// literal allowed byte from the start of a 3-byte escape - so distinct inputs can never
+/// collapse onto the same output, and since only alphanumerics and `-` ever appear bare,
+/// no encoded output can ever consist entirely of `.` characters either. Three earlier
+/// rounds instead tried substituting a FIXED placeholder for each degenerate shape one
+/// at a time (`"_empty_"` for an empty mapped result, mapping an all-dots result's own
+/// dots to `_`) - both wrong the same way: a placeholder drawn from the map's own
+/// non-injective output alphabet can never be proven disjoint from a real id's own
+/// mapped output (a real unit literally named `"_empty_"`, or any underscore-run,
+/// collided with one of them). This encoding has no such alphabet-reuse hazard because
+/// the alphabet itself makes every output unique to its input.
 ///
-/// A SEPARATE shape needs its own guard: an EMPTY mapped result (only possible when
-/// the input itself is empty, since the char-by-char map above is 1:1 and drops
-/// nothing). `<registered_root>.join(marker_filename(id))` with an empty result is a
-/// documented `PathBuf::join` no-op, so the derived path collapses to the registered
-/// root ITSELF rather than a leaf under it - letting a reaper delete every sibling
-/// leaf alongside it, the same fail-safe-deletion-only violation the all-dots guard
-/// closes, just via a no-op join instead of a `..` traversal. `cmd_result` itself
-/// requires a non-empty spawn id, but `reclaim_spawn_scratch`'s own unit-extraction
-/// (`spawn_id.split('/').next()`) yields `""` for any leading-slash spawn id (e.g.
-/// `rigger result "/foo" "text"`), and that empty unit is exactly what
-/// `mutation_scratch_path` feeds this function. Fall back to a fixed non-empty
-/// placeholder, distinct from any all-dots output above, so an empty mapped result
-/// can never make a caller's `.join` a no-op - mirroring `sanitize_for_path`'s
-/// empty-falls-back-to-a-safe-literal shape (`conductor.rs`).
-pub fn marker_filename(spawn_id: &str) -> String {
-    let mapped: String = spawn_id
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if mapped.is_empty() {
-        "_empty_".to_string()
-    } else if mapped.chars().all(|c| c == '.') {
-        mapped.replace('.', "_")
+/// The ONE remaining degenerate shape - the EMPTY input, which encodes to the EMPTY
+/// string (there are no bytes to escape) - still returns `None` rather than `Some("")`:
+/// an empty string still makes a caller's `.join` a no-op. It is reachable via
+/// `reclaim_spawn_scratch`'s own `spawn_id.split('/').next()` unit-extraction, which
+/// yields `""` for any leading-slash spawn id. Every caller skips a `None`, mirroring
+/// this module's own established idiom for uncertainty elsewhere in the same call chain
+/// ([`sweep`]: "a spawn with NO marker is left alone").
+pub fn marker_filename(spawn_id: &str) -> Option<String> {
+    let mut encoded = String::with_capacity(spawn_id.len());
+    for byte in spawn_id.bytes() {
+        if byte.is_ascii_alphanumeric() || byte == b'-' {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("_{byte:02x}"));
+        }
+    }
+    if encoded.is_empty() {
+        None
     } else {
-        mapped
+        Some(encoded)
     }
 }
 
@@ -114,14 +112,20 @@ pub fn marker_filename(spawn_id: &str) -> String {
 /// different subdir, so the sweep never reads a prior run's leftover mtime and records a
 /// bogus multi-hour `silent_for`. An empty `run_id` (a caller outside a run - the pure-fold
 /// tests) omits the run subdir, keeping the path stable for the no-run case.
-pub fn marker_path(scratch_root: &str, run_id: &str, spawn_id: &str) -> std::path::PathBuf {
+///
+/// Returns `None` when `run_id` or `spawn_id` maps to the ONE remaining degenerate
+/// [`marker_filename`] shape (an empty INPUT - never a non-empty one, since the injective
+/// encoding gives every non-empty input its own unique, never-empty output), so every
+/// caller treats a degenerate id exactly like the existing "marker absent" no-op
+/// ([`sweep`]'s own doc comment: "a spawn with NO marker is left alone") instead of
+/// stat-ing or touching a fabricated placeholder path.
+pub fn marker_path(scratch_root: &str, run_id: &str, spawn_id: &str) -> Option<std::path::PathBuf> {
     let dir = std::path::Path::new(scratch_root).join(MARKER_SUBDIR);
-    let dir = if run_id.is_empty() {
-        dir
-    } else {
-        dir.join(marker_filename(run_id))
+    let dir = match marker_filename(run_id) {
+        Some(safe) => dir.join(safe),
+        None => dir,
     };
-    dir.join(marker_filename(spawn_id))
+    marker_filename(spawn_id).map(|safe| dir.join(safe))
 }
 
 /// Whether a spawn last seen alive at `last_seen` is STALE at `now` given its wall-clock
@@ -272,10 +276,13 @@ pub fn sweep(
         // The marker's mtime is the spawn's last proof of life. The path carries the run id
         // ([`marker_path`]), so a prior run's leftover marker for a slug-colliding id lives
         // under a different subdir and is never read here. A MISSING marker is left alone
-        // (conservative - see the fn docs); only a present-but-stale marker is hung.
-        let last_seen = match std::fs::metadata(marker_path(scratch_root, run_id, &req.id))
-            .and_then(|m| m.modified())
-        {
+        // (conservative - see the fn docs); only a present-but-stale marker is hung. A
+        // degenerate id ([`marker_path`] returns `None`) is treated identically - the same
+        // conservative no-op, never a fabricated path to stat.
+        let Some(path) = marker_path(scratch_root, run_id, &req.id) else {
+            continue;
+        };
+        let last_seen = match std::fs::metadata(path).and_then(|m| m.modified()) {
             Ok(mtime) => mtime,
             Err(_) => continue,
         };
@@ -365,13 +372,13 @@ pub fn halt_reason(hung: &[HungSpawn]) -> String {
 /// of what a workflow names its units. Reclaimed with the rest of `agent-live` at run
 /// teardown (the same lifecycle a per-spawn marker already has), so it never outlives the
 /// run it tracks. An empty `run_id` (a caller outside a run) still produces a stable path,
-/// mirroring [`marker_path`]'s own convention for the no-run case.
+/// mirroring [`marker_path`]'s own convention for the no-run case - the only degenerate
+/// [`marker_filename`] shape under the injective encoding.
 pub fn hung_cursor_path(scratch_root: &str, run_id: &str) -> std::path::PathBuf {
     let dir = std::path::Path::new(scratch_root).join(MARKER_SUBDIR);
-    let name = if run_id.is_empty() {
-        ".hung-cursor".to_string()
-    } else {
-        format!("{}.hung-cursor", marker_filename(run_id))
+    let name = match marker_filename(run_id) {
+        Some(safe) => format!("{safe}.hung-cursor"),
+        None => ".hung-cursor".to_string(),
     };
     dir.join(name)
 }
@@ -421,59 +428,101 @@ mod tests {
     use super::*;
 
     #[test]
-    fn marker_filename_collapses_id_separators_to_underscores() {
+    fn marker_filename_hex_escapes_every_byte_outside_alphanumeric_and_hyphen() {
+        // Spec 77 Design, decision `d77-injective-scratch-naming`: `/` and `#` (the
+        // spawn-id-structure characters) each become a 3-byte `_XX` escape.
         assert_eq!(
             marker_filename("unit-3-spawns-a-wall-clock/implementer#1"),
-            "unit-3-spawns-a-wall-clock_implementer_1"
+            Some("unit-3-spawns-a-wall-clock_2fimplementer_231".to_string())
         );
-        // Alphanumerics and . - _ survive; everything else (/, #, spaces, colons) is _.
-        assert_eq!(marker_filename("a b:c/d#e.f-g_h"), "a_b_c_d_e.f-g_h");
+        // Every byte outside [A-Za-z0-9-] escapes - space, colon, `/`, `#`, `.`, and `_`
+        // itself (`_` -> `_5f`, never left bare) - while `-` and alphanumerics survive.
+        assert_eq!(
+            marker_filename("a b:c/d#e.f-g_h"),
+            Some("a_20b_3ac_2fd_23e_2ef-g_5fh".to_string())
+        );
     }
 
     #[test]
-    fn marker_filename_neutralizes_an_all_dots_result_so_it_can_never_be_a_path_traversal_component(
+    fn marker_filename_hex_escapes_dots_so_no_encoded_result_can_ever_be_a_path_traversal_component(
     ) {
         // `cmd_result`'s positional spawn id is otherwise unvalidated (only checked
-        // non-empty), and the char-by-char map above deliberately PRESERVES `.` (a legit
-        // character inside a real id, e.g. `u/implementer#0.retry`). That means a spawn
-        // id of literally ".." (`rigger result ".." "<text>"`, no crafted event needed)
-        // used to pass straight through unchanged, and every caller does
-        // `<registered_root>.join(marker_filename(id))` - so the derived path resolved to
-        // the PARENT of the registered root, letting `reap_then_remove_dir`'s bare
-        // `remove_dir_all` delete everything beside it. Every OTHER character this map
-        // sends to `_` (not just `.`) already breaks an all-dots run, so the ONLY input
-        // shape that can produce an all-dots mapped result is an input that is itself
-        // entirely `.` characters - neutralize exactly that shape, and nothing else, by
-        // mapping every `.` in it to `_` too.
-        assert_eq!(marker_filename(".."), "__");
-        assert_eq!(marker_filename("."), "_");
-        assert_eq!(marker_filename("..."), "___");
-        // A `.` embedded alongside other safe characters is untouched - only a result
-        // that is dots FROM END TO END is a traversal shape.
-        assert_eq!(marker_filename("a.b"), "a.b");
+        // non-empty). Under the PRIOR char-by-char map (rounds 1-6), `.` passed through
+        // unescaped, so a spawn id of literally ".." resolved, unchanged, to a traversal
+        // component: `<registered_root>.join("..")` walked UP to the root's parent, and
+        // `reap_then_remove_dir`'s bare `remove_dir_all` deleted everything beside it. The
+        // injective encoding (`d77-injective-scratch-naming`) escapes `.` like any other
+        // disallowed byte (`_2e`), so no encoded output can ever contain a literal `.`
+        // character at all - a dotted input is just an ordinary, uniquely-encoded id now,
+        // never a traversal shape.
+        assert_eq!(marker_filename(".."), Some("_2e_2e".to_string()));
+        assert_eq!(marker_filename("."), Some("_2e".to_string()));
+        assert_eq!(marker_filename("..."), Some("_2e_2e_2e".to_string()));
+        assert_eq!(marker_filename("a.b"), Some("a_2eb".to_string()));
         assert_eq!(
             marker_filename("u/implementer#0.retry"),
-            "u_implementer_0.retry"
+            Some("u_2fimplementer_230_2eretry".to_string())
         );
     }
 
     #[test]
-    fn marker_filename_neutralizes_an_empty_mapped_result_so_a_join_can_never_be_a_no_op() {
-        // Round-4 review reject (ADJUDICATOR VERDICT u77c2 round 4): the all-dots guard above
-        // only fires when `!mapped.is_empty()`, so it explicitly excludes the shape where the
-        // INPUT itself is empty (mapped is then also empty, since the char-by-char map is 1:1
-        // and drops nothing). `<registered_root>.join(marker_filename(id))` with an empty
-        // `marker_filename` result is a documented no-op (`PathBuf::join("")` returns the
-        // receiver unchanged) - so every caller's derived path silently collapses to the
-        // REGISTERED ROOT ITSELF, not a leaf under it, and `reap_then_remove_dir` then reaps
-        // every sibling unit's scratch, not just the reporting one. Reachable directly: a spawn
-        // id of `""` cannot reach here (`cmd_result` already requires non-empty), but
-        // `reclaim_spawn_scratch`'s own `unit = spawn_id.split('/').next()` extraction yields
-        // `""` for any LEADING-SLASH spawn id (e.g. `rigger result "/foo" "text"`), and that
-        // empty `unit` is exactly what `mutation_scratch_path` feeds this function. Fall back to
-        // a fixed non-empty placeholder distinct from the all-dots outputs above, so an empty
-        // mapped result can never make a caller's `.join` a no-op.
-        assert_eq!(marker_filename(""), "_empty_");
+    fn marker_filename_is_none_only_for_a_truly_empty_input_so_a_join_can_never_be_a_no_op() {
+        // The ONE degenerate shape the injective encoding does not close structurally: an
+        // EMPTY input encodes to the EMPTY string (there are no bytes to escape), and
+        // `<registered_root>.join("")` is a documented `PathBuf::join` no-op that collapses
+        // the derived path to the registered root itself - letting a reaper delete every
+        // sibling leaf alongside it. Reachable directly: a spawn id of `""` cannot reach
+        // here (`cmd_result` already requires non-empty), but `reclaim_spawn_scratch`'s own
+        // `unit = spawn_id.split('/').next()` extraction yields `""` for any LEADING-SLASH
+        // spawn id (e.g. `rigger result "/foo" "text"`), and that empty `unit` is exactly
+        // what `mutation_scratch_path` feeds this function. `None` (skip entirely) is the
+        // answer here - never a fixed placeholder (rounds 3 and 5 each tried exactly that
+        // for this and the all-dots shape, and round 6 proved a placeholder drawn from the
+        // map's own output alphabet can collide with a real id; see
+        // `marker_filename_is_injective_so_two_ids_that_collided_under_a_prior_placeholder_scheme_no_longer_do`).
+        assert_eq!(marker_filename(""), None);
+    }
+
+    #[test]
+    fn marker_filename_hex_escapes_a_literal_underscore_so_a_real_underscore_run_unit_never_collides(
+    ) {
+        // Round-6 REQUIRED FIX regression: a real unit literally named an underscore-run of
+        // ANY length collided with rounds 3 and 5's fixed placeholders under the OLD scheme,
+        // which passed `_` through unescaped. The injective encoding escapes `_` itself too
+        // (to `_5f`, always 3 bytes, never bare) - so a real underscore-run id now encodes
+        // to its own unique filename, and an unrelated all-dots id of the IDENTICAL length
+        // (the exact round-6 collision shape: `.` escapes to `_2e`, not `_5f`) can never
+        // produce the same encoded output.
+        assert_eq!(marker_filename("_"), Some("_5f".to_string()));
+        assert_eq!(marker_filename("__"), Some("_5f_5f".to_string()));
+        assert_eq!(marker_filename("___"), Some("_5f_5f_5f".to_string()));
+        for len in [1usize, 3, 7, 12] {
+            let underscores = "_".repeat(len);
+            let dots = ".".repeat(len);
+            assert_ne!(
+                marker_filename(&underscores),
+                marker_filename(&dots),
+                "an underscore-run and an all-dots id of the same length ({len}) must never \
+                 encode to the same filename"
+            );
+        }
+    }
+
+    #[test]
+    fn marker_filename_is_injective_so_two_ids_that_collided_under_a_prior_placeholder_scheme_no_longer_do(
+    ) {
+        // Rounds 3 and 5 each substituted a FIXED placeholder for one degenerate shape
+        // (`"_empty_"` for an empty mapped result; an all-dots result's own dots mapped to
+        // `_` for the all-dots shape) - each collided with an unrelated, perfectly ordinary
+        // id that happened to equal the placeholder textually (`adv-u77c2r5-empty-sentinel-
+        // collides-with-a-literal-unit-id`, `adj-u77c2r6-alldots-vs-underscore-collision-
+        // extends-empty-sentinel-gap`). The injective hex encoding (`d77-injective-scratch-
+        // naming`) makes every one of these pairs distinguishable now, by construction: `_`
+        // is never emitted bare, so distinct inputs can never collapse onto the same output.
+        assert_ne!(marker_filename(""), marker_filename("_empty_"));
+        assert_ne!(marker_filename("..."), marker_filename("___"));
+        assert_ne!(marker_filename(".."), marker_filename("__"));
+        assert_ne!(marker_filename("."), marker_filename("_"));
     }
 
     #[test]
@@ -483,48 +532,63 @@ mod tests {
         let p = marker_path("/scratch", "run-7", "u/implementer#0");
         assert_eq!(
             p,
-            std::path::Path::new("/scratch/agent-live/run-7/u_implementer_0")
+            Some(std::path::PathBuf::from(
+                "/scratch/agent-live/run-7/u_2fimplementer_230"
+            ))
         );
         // An empty run id (a caller outside a run) omits the run subdir - the no-run path.
         let p = marker_path("/scratch", "", "u/implementer#0");
         assert_eq!(
             p,
-            std::path::Path::new("/scratch/agent-live/u_implementer_0")
+            Some(std::path::PathBuf::from(
+                "/scratch/agent-live/u_2fimplementer_230"
+            ))
         );
-        // A run id carrying id-structure characters is sanitized like a spawn id.
+        // A run id carrying id-structure characters is encoded like a spawn id.
         let p = marker_path("/scratch", "run/7#a", "u/implementer#0");
         assert_eq!(
             p,
-            std::path::Path::new("/scratch/agent-live/run_7_a/u_implementer_0")
+            Some(std::path::PathBuf::from(
+                "/scratch/agent-live/run_2f7_23a/u_2fimplementer_230"
+            ))
         );
     }
 
     #[test]
-    fn marker_path_never_escapes_its_scratch_root_for_a_dotdot_run_or_spawn_id() {
+    fn marker_path_hex_escapes_a_dotdot_run_or_spawn_id_so_it_can_never_walk_upward() {
         // A `..` run id or spawn id (reachable via the otherwise-unvalidated `rigger
         // result`/courier CLI ids this function's callers key on) must never make
-        // `<scratch>.join(marker_filename(id))` resolve to the PARENT of `<scratch>`.
+        // `<scratch>.join(marker_filename(id))` resolve to the PARENT of `<scratch>`. The
+        // injective encoding closes this structurally rather than by falling back to a
+        // no-subdir/no-path special case: `..` encodes to `_2e_2e` - a perfectly ordinary,
+        // unique, non-traversal filename - for EITHER position.
         let p = marker_path("/scratch", "..", "u/implementer#0");
         assert_eq!(
             p,
-            std::path::Path::new("/scratch/agent-live/__/u_implementer_0")
+            Some(std::path::PathBuf::from(
+                "/scratch/agent-live/_2e_2e/u_2fimplementer_230"
+            ))
         );
-        assert!(p.starts_with("/scratch/agent-live"));
+        assert!(p.unwrap().starts_with("/scratch/agent-live"));
         let p = marker_path("/scratch", "run-7", "..");
-        assert_eq!(p, std::path::Path::new("/scratch/agent-live/run-7/__"));
-        assert!(p.starts_with("/scratch/agent-live/run-7"));
+        assert_eq!(
+            p,
+            Some(std::path::PathBuf::from("/scratch/agent-live/run-7/_2e_2e"))
+        );
+        assert!(p.unwrap().starts_with("/scratch/agent-live/run-7"));
     }
 
     #[test]
-    fn marker_path_never_collapses_to_its_registered_root_for_an_empty_spawn_id() {
+    fn marker_path_is_none_rather_than_collapsing_to_its_registered_root_for_an_empty_spawn_id() {
         // Round-4 sibling of the dotdot regression above: an EMPTY spawn id (reachable via
         // `reclaim_spawn_scratch`'s own `unit = spawn_id.split('/').next()` extraction for a
         // leading-slash spawn id) must not make `<scratch>.join(marker_filename(id))` a no-op
         // that resolves to `<scratch>` itself - which would let a reaper delete every sibling
-        // leaf under it, not just the reporting one's.
+        // leaf under it, not just the reporting one's. `None` (skip entirely) is the ONE
+        // degenerate shape the injective encoding does not close structurally (an empty
+        // input encodes to the empty string), so it is still handled explicitly here.
         let p = marker_path("/scratch", "run-7", "");
-        assert_eq!(p, std::path::Path::new("/scratch/agent-live/run-7/_empty_"));
-        assert_ne!(p, std::path::Path::new("/scratch/agent-live/run-7"));
+        assert_eq!(p, None);
     }
 
     #[test]
@@ -623,7 +687,7 @@ mod tests {
     /// mtime is the wall-clock at creation. The sweep's `now` parameter is advanced past the
     /// bound to make it stale, so no mtime manipulation is needed.
     fn plant_marker(root: &str, id: &str) {
-        let path = marker_path(root, TEST_RUN, id);
+        let path = marker_path(root, TEST_RUN, id).expect("test ids are never degenerate");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, b"heartbeat").unwrap();
     }
@@ -786,11 +850,11 @@ mod tests {
         let p = hung_cursor_path("/scratch", "run/7#a");
         assert_eq!(
             p,
-            std::path::Path::new("/scratch/agent-live/run_7_a.hung-cursor")
+            std::path::Path::new("/scratch/agent-live/run_2f7_23a.hung-cursor")
         );
         assert_ne!(
             p,
-            marker_path("/scratch", "run/7#a", "run/7#a"),
+            marker_path("/scratch", "run/7#a", "run/7#a").unwrap(),
             "the cursor file must never collide with any sanitized spawn-id marker path"
         );
         // An empty run id (a caller outside a run) still produces a stable path, mirroring

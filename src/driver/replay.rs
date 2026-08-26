@@ -49,16 +49,24 @@ const SPAWN_SCRATCH_SUBDIR: &str = "agent-scratch";
 /// gives the scratch RUN IDENTITY: a re-run that reuses a unit-title slug computes the same
 /// spawn id, but a different run gets a different subdir, so one run never reclaims another's
 /// scratch. Both id components are made filesystem-safe by the ONE such rule,
-/// [`crate::liveness::marker_filename`] (a spawn id is `{unit}/{role}#{n}`; the `/` and `#`
-/// collapse to `_`).
-pub fn spawn_scratch_path(scratch_root: &str, run_id: &str, spawn_id: &str) -> PathBuf {
+/// [`crate::liveness::marker_filename`] - an INJECTIVE byte-hex encoding (spec 77 Design,
+/// decision `d77-injective-scratch-naming`) so distinct ids can never alias onto the same
+/// directory name (a spawn id is `{unit}/{role}#{n}`; `/` becomes `_2f`, `#` becomes `_23`).
+///
+/// Returns `None` when `spawn_id` is EMPTY - [`crate::liveness::marker_filename`]'s own doc
+/// comment, the one degenerate shape the injective encoding does not close structurally
+/// (an empty input encodes to the empty string). This path is a REMOVAL target
+/// (`reap_then_remove_dir`), so the caller skips a `None` rather than joining a no-op onto
+/// the registered root. An empty `run_id` folds into the no-subdir path instead (mirroring
+/// the established no-run convention); only the SPAWN id (the leaf actually joined last) can
+/// make the whole call `None`.
+pub fn spawn_scratch_path(scratch_root: &str, run_id: &str, spawn_id: &str) -> Option<PathBuf> {
     let dir = Path::new(scratch_root).join(SPAWN_SCRATCH_SUBDIR);
-    let dir = if run_id.is_empty() {
-        dir
-    } else {
-        dir.join(crate::liveness::marker_filename(run_id))
+    let dir = match crate::liveness::marker_filename(run_id) {
+        Some(safe) => dir.join(safe),
+        None => dir,
     };
-    dir.join(crate::liveness::marker_filename(spawn_id))
+    crate::liveness::marker_filename(spawn_id).map(|safe| dir.join(safe))
 }
 
 /// The subdirectory a unit's mutation-testing (`cargo mutants`) scratch nests under a cache
@@ -94,10 +102,17 @@ pub fn cache_home_from(xdg: Option<OsString>, home: Option<OsString>) -> Option<
 /// exactly as [`spawn_scratch_path`] already guards against for the per-spawn agent-scratch
 /// dir (spec 34, criterion 1). Sanitized through the same [`crate::liveness::marker_filename`]
 /// rule as every other scratch key.
-pub fn mutation_scratch_path(cache_home: &Path, unit_id: &str) -> PathBuf {
-    cache_home
-        .join(MUTATION_SCRATCH_SUBDIR)
-        .join(crate::liveness::marker_filename(unit_id))
+///
+/// Returns `None` when `unit_id` is EMPTY, the one degenerate [`crate::liveness::
+/// marker_filename`] shape the injective encoding does not close structurally (every
+/// OTHER `unit_id`, however unusual, now gets its own unique, never-colliding leaf - the
+/// fixed-placeholder collision `adv-u77c2r5-empty-sentinel-collides-with-a-literal-unit-id`
+/// proved is closed by construction, not by this `None` check). This path is a REMOVAL
+/// target (`reap_then_remove_dir`), so the caller skips a `None` entirely rather than
+/// joining a no-op onto the registered root.
+pub fn mutation_scratch_path(cache_home: &Path, unit_id: &str) -> Option<PathBuf> {
+    crate::liveness::marker_filename(unit_id)
+        .map(|safe| cache_home.join(MUTATION_SCRATCH_SUBDIR).join(safe))
 }
 
 /// A replay driver answers each `spawn` from the run's event log: it replays an
@@ -224,11 +239,11 @@ impl AgentDriver for ReplayDriver<'_> {
             // request lands) and best-effort - a create failure never blocks parking.
             if !opts.dir.is_empty() {
                 if let Some(scratch_root) = Path::new(&opts.dir).parent() {
-                    let _ = std::fs::create_dir_all(spawn_scratch_path(
-                        &scratch_root.to_string_lossy(),
-                        &opts.run_id,
-                        &opts.id,
-                    ));
+                    if let Some(path) =
+                        spawn_scratch_path(&scratch_root.to_string_lossy(), &opts.run_id, &opts.id)
+                    {
+                        let _ = std::fs::create_dir_all(path);
+                    }
                 }
             }
         }
@@ -303,67 +318,96 @@ mod tests {
     }
 
     #[test]
-    fn mutation_scratch_path_nests_under_rigger_mutants_keyed_by_sanitized_unit() {
+    fn mutation_scratch_path_nests_under_rigger_mutants_keyed_by_encoded_unit() {
         // spec 77, criterion 2: the mutation scratch root is PER-UNIT (not per-spawn) -
-        // `<cache_home>/rigger-mutants/<sanitized unit id>` - the single authority both the
+        // `<cache_home>/rigger-mutants/<encoded unit id>` - the single authority both the
         // seeded persona's own invocation and `cmd_result`'s registered-scratch-root reclaim
         // derive, exactly as `spawn_scratch_path` already is for the per-spawn agent-scratch
-        // dir. Sanitized through the SAME `marker_filename` rule as every other scratch key.
+        // dir. Encoded through the SAME `marker_filename` rule (injective byte-hex, spec 77
+        // Design `d77-injective-scratch-naming`) as every other scratch key.
         assert_eq!(
             mutation_scratch_path(Path::new("/home/u/.cache"), "u77c2"),
-            PathBuf::from("/home/u/.cache/rigger-mutants/u77c2")
+            Some(PathBuf::from("/home/u/.cache/rigger-mutants/u77c2"))
         );
         assert_eq!(
             mutation_scratch_path(Path::new("/home/u/.cache"), "u/weird#id"),
-            PathBuf::from("/home/u/.cache/rigger-mutants/u_weird_id"),
-            "a unit id is sanitized the same way a spawn id is (/ and # collapse to _)"
+            Some(PathBuf::from(
+                "/home/u/.cache/rigger-mutants/u_2fweird_23id"
+            )),
+            "a unit id is hex-escaped the same way a spawn id is (/ -> _2f, # -> _23)"
         );
     }
 
     #[test]
-    fn spawn_scratch_path_and_mutation_scratch_path_never_escape_their_registered_root_for_a_dotdot_id(
-    ) {
+    fn spawn_scratch_path_and_mutation_scratch_path_hex_escape_a_dotdot_id_so_it_can_never_escape()
+    {
         // Regression for the spec-77 review reject: `cmd_result`'s positional spawn id is
         // otherwise unvalidated (only checked non-empty), and `unit = spawn_id.split('/')
         // .next()` can itself equal ".." (e.g. `rigger result ".." "<text>"`). Both id-derived
-        // paths route through `liveness::marker_filename`, which now neutralizes an all-dots
-        // result - prove BOTH call sites stay contained under their registered root rather
-        // than resolving to that root's parent.
-        let p = spawn_scratch_path("/scratch", "r1", "..");
-        assert_eq!(p, PathBuf::from("/scratch/agent-scratch/r1/__"));
-        assert!(p.starts_with("/scratch/agent-scratch/r1"));
-
-        let p = mutation_scratch_path(Path::new("/home/u/.cache"), "..");
-        assert_eq!(p, PathBuf::from("/home/u/.cache/rigger-mutants/__"));
-        assert!(p.starts_with("/home/u/.cache/rigger-mutants"));
+        // paths route through `liveness::marker_filename`, which hex-escapes `.` (spec 77
+        // Design `d77-injective-scratch-naming`) - prove BOTH call sites resolve to an
+        // ordinary, unique, non-traversal leaf rather than a fabricated no-op or a walk past
+        // their registered root.
+        assert_eq!(
+            spawn_scratch_path("/scratch", "r1", ".."),
+            Some(PathBuf::from("/scratch/agent-scratch/r1/_2e_2e"))
+        );
+        assert_eq!(
+            mutation_scratch_path(Path::new("/home/u/.cache"), ".."),
+            Some(PathBuf::from("/home/u/.cache/rigger-mutants/_2e_2e"))
+        );
     }
 
     #[test]
-    fn mutation_scratch_path_never_collapses_to_its_registered_root_for_an_empty_unit_id() {
-        // Round-4 review reject (ADJUDICATOR VERDICT u77c2 round 4): round 3's all-dots guard
-        // at `marker_filename` only fires on a NON-EMPTY all-dots result, explicitly excluding
-        // the shape where the mapped result is itself EMPTY. `reclaim_spawn_scratch`'s own
-        // `unit = spawn_id.split('/').next()` extraction (main.rs) yields `""` for any
+    fn mutation_scratch_path_is_none_rather_than_collapsing_to_its_registered_root_for_an_empty_unit_id(
+    ) {
+        // Round-4 review reject (ADJUDICATOR VERDICT u77c2 round 4): `reclaim_spawn_scratch`'s
+        // own `unit = spawn_id.split('/').next()` extraction (main.rs) yields `""` for any
         // leading-slash spawn id (e.g. `rigger result "/foo" "text"`, reachable directly - the
-        // id positional carries no format validation beyond non-empty), and `mutation_scratch_path`
-        // feeds that empty unit straight to `marker_filename`. `PathBuf::join("")` is a
-        // documented no-op, so the OLD behavior collapsed this to
+        // id positional carries no format validation beyond non-empty), and
+        // `mutation_scratch_path` feeds that empty unit straight to `marker_filename`.
+        // `PathBuf::join("")` is a documented no-op, so the OLD behavior collapsed this to
         // `cache_home/rigger-mutants` - the registered root itself, not a per-unit leaf under
         // it - so `reap_then_remove_dir` would reap every OTHER unit's mutation scratch too.
-        // `marker_filename` now falls back to a fixed non-empty placeholder for an empty
-        // mapped result, so this must resolve to a distinct leaf under the registered root.
-        let p = mutation_scratch_path(Path::new("/home/u/.cache"), "");
-        assert_eq!(p, PathBuf::from("/home/u/.cache/rigger-mutants/_empty_"));
-        assert_ne!(p, PathBuf::from("/home/u/.cache/rigger-mutants"));
-        assert!(p.starts_with("/home/u/.cache/rigger-mutants"));
+        //
+        // This is the ONE degenerate shape the injective encoding does not close structurally
+        // (an empty input encodes to the empty string) - `None` (skip entirely) is still the
+        // answer, never a fixed placeholder (round 5 tried `"_empty_"` here and round 6 proved
+        // it collides with a real unit literally named `"_empty_"`).
+        assert_eq!(mutation_scratch_path(Path::new("/home/u/.cache"), ""), None);
 
         // The sibling agent-scratch call site is unaffected by THIS shape (the full spawn id
         // reaching it is never empty - `cmd_result` already enforces non-empty - only the
         // separately-extracted `unit` substring can be), but pin it here anyway so the two
         // registered-root call sites this authority guards stay documented side by side.
-        let p = spawn_scratch_path("/scratch", "r1", "");
-        assert_eq!(p, PathBuf::from("/scratch/agent-scratch/r1/_empty_"));
-        assert_ne!(p, PathBuf::from("/scratch/agent-scratch/r1"));
+        assert_eq!(spawn_scratch_path("/scratch", "r1", ""), None);
+    }
+
+    #[test]
+    fn mutation_scratch_path_never_collides_a_real_underscore_run_unit_with_a_degenerate_id() {
+        // Round-6 REQUIRED FIX regression, at the call-site level: a real unit literally
+        // named an underscore-run must resolve to its OWN unique leaf, and an unrelated
+        // all-dots unit id of the IDENTICAL length (the exact round-6 collision shape under
+        // the OLD scheme, where both `.` and `_` passed through unescaped) must resolve to a
+        // DIFFERENT leaf now that both are hex-escaped distinctly (`.` -> `_2e`, `_` -> `_5f`).
+        let real_unit = "___"; // a plausible real (if unusual) unit id: three underscores.
+        assert_eq!(
+            mutation_scratch_path(Path::new("/home/u/.cache"), real_unit),
+            Some(PathBuf::from("/home/u/.cache/rigger-mutants/_5f_5f_5f")),
+            "a real underscore-run unit id must encode to its own unique leaf"
+        );
+        assert_ne!(
+            mutation_scratch_path(Path::new("/home/u/.cache"), real_unit),
+            mutation_scratch_path(Path::new("/home/u/.cache"), "..."),
+            "an unrelated all-dots unit id of the same length must never collide with the \
+             real underscore-run unit's own leaf"
+        );
+        assert_eq!(
+            mutation_scratch_path(Path::new("/home/u/.cache"), ""),
+            None,
+            "an unrelated empty-mapped unit id must never collide with the real \
+             underscore-run unit's own leaf either"
+        );
     }
 
     #[test]
@@ -395,7 +439,8 @@ mod tests {
         // single-authority path `rigger result`'s reclaim later removes, run-scoped under
         // `agent-scratch` and keyed by the filesystem-safe spawn id.
         let assigned =
-            spawn_scratch_path(&scratch.path().to_string_lossy(), "r1", "u/implementer#0");
+            spawn_scratch_path(&scratch.path().to_string_lossy(), "r1", "u/implementer#0")
+                .expect("a well-formed spawn id must never map to a degenerate scratch path");
         assert!(
             assigned.is_dir(),
             "parking must assign (create) the spawn's dedicated scratch dir at {}",
@@ -407,8 +452,8 @@ mod tests {
                 .path()
                 .join("agent-scratch")
                 .join("r1")
-                .join("u_implementer_0"),
-            "the assigned scratch is run-scoped under agent-scratch, keyed by the sanitized id"
+                .join("u_2fimplementer_230"),
+            "the assigned scratch is run-scoped under agent-scratch, keyed by the encoded id"
         );
     }
 
