@@ -39,7 +39,13 @@ mechanism.
   message when contended - never waiting, so no build can queue behind the delete.
   While holding it, reset renames the cache to a tombstone (atomic) and deletes the
   tombstone after release. Builds rigger does not launch are outside the guarantee, by
-  scope.
+  scope. NO RESTORE PATH, decided here (round 5 proved a restore-on-failure mechanism
+  and the residue sweep race each other): a successful rename IS the reclaim - the
+  cache is a pure cache, so nothing ever needs the tombstone again and no path
+  recreates or restores anything. Reset does not create a fresh dir (cargo creates its
+  target dir on demand); a failed rename changes nothing and reports the error; a
+  failed tombstone delete leaves an ENUMERABLE residue shape the orphan sweep reaps
+  unconditionally - correct precisely because nothing can ever want it back.
 - INJECTIVE SCRATCH NAMING, decided here (closing the sanitization-alias class three
   rounds patched one placeholder at a time: "", ".", ".." each aliased onto a nameable
   real unit, letting a malformed spawn id delete another unit's live scratch): the
