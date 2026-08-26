@@ -1594,20 +1594,6 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         .map(|u| u.id.clone())
         .collect();
 
-    // Branch-GC on resume (spec 38, criterion 1): reclaim the per-unit branch AND any
-    // lingering worktree of every unit the PRIOR log already marks Integrated. A unit
-    // integrated in an earlier window is seeded into `integrated` above and never
-    // re-enters `run_stage`, so the in-window post-integrate teardown never fires for it
-    // and its `rigger/u/<unit>` branch (and a worktree a killed step left checked out on
-    // it) would otherwise accumulate forever. This is the REPLAY half of the one
-    // branch-GC rule (integrated => no branch, no worktree); the FRESH half is
-    // `run_stage`'s remove-then-delete when a unit integrates in THIS window. Both drive
-    // the same ordered teardown (worktree first, then the idempotent branch delete), so
-    // re-reaching this on a further resume, with both already gone, re-reaches the same
-    // end state. An escalated (or otherwise un-integrated) unit is NOT in this set, so
-    // its branch is retained as evidence.
-    ctx.gc_integrated_branches(&prior);
-
     // Deterministic decomposition baseline (§3.2): when the run is spec-driven
     // (`deps.criteria` non-empty), the conductor itself creates ONE implement unit per
     // acceptance criterion from the fan-out implement TEMPLATE, BEFORE any agent runs.
@@ -1629,6 +1615,35 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
             }
         }
     }
+
+    // Branch-GC on resume (spec 38, criterion 1; spec 77, criterion 3): reclaim the
+    // per-unit branch AND any lingering worktree of every unit the PRIOR log already
+    // marks Integrated, PLUS (spec 77) reclaim registered mutation-scratch for a WIDER
+    // set - see `gc_integrated_branches`'s own doc comment for the two disjoint reap
+    // authorities it now drives. A unit integrated in an earlier window is seeded into
+    // `integrated` above and never re-enters `run_stage`, so the in-window
+    // post-integrate teardown never fires for it and its `rigger/u/<unit>` branch (and
+    // a worktree a killed step left checked out on it) would otherwise accumulate
+    // forever. This is the REPLAY half of the one branch-GC rule (integrated => no
+    // branch, no worktree); the FRESH half is `run_stage`'s remove-then-delete when a
+    // unit integrates in THIS window. Both drive the same ordered teardown (worktree
+    // first, then the idempotent branch delete), so re-reaching this on a further
+    // resume, with both already gone, re-reaches the same end state. An escalated (or
+    // otherwise un-integrated) unit is NOT in the BRANCH/WORKTREE set, so its branch is
+    // retained as evidence.
+    //
+    // Called AFTER the baseline-unit expansion above (not before, as the spec 38
+    // original placement had it) so `stages` here includes every deterministically
+    // synthesized per-criterion baseline unit too - `gc_integrated_branches`'s own
+    // mutation-scratch predicate needs each unit's REAL `on_pass` value, which a
+    // baseline unit only carries once `baseline_units` has cloned it from the fan-out
+    // template (round 5 fix for
+    // `adj-u77c3r7-verdict-reject-resume-backstop-integrated-only-gap`: this repo's own
+    // implementer/sdet units are themselves baseline units, so resolving `stages` before
+    // expansion would silently exempt them from the widened predicate). Moving this call
+    // does not reorder anything it reads (`prior` is already fully projected) or
+    // anything downstream that depends on it having already run.
+    ctx.gc_integrated_branches(&prior, &stages);
 
     // Resume-safe dedup (the duplication fix, order-independent): fold any
     // ALREADY-EMITTED UnitProposed events from a PRIOR window and apply the
@@ -3404,6 +3419,23 @@ impl RunCtx<'_> {
         // this independently of which one the swap prioritized (see the comment above).
         let parked_unwind = any_parked.load(Ordering::SeqCst)
             || matches!(&result, Err(e) if is_parked_or_budget_refused(e));
+        if !parked_unwind {
+            // Spec 77, criterion 3 (UNIT-TERMINAL REAP), round 3 fix for
+            // `adv-u77c3-mutation-scratch-reap-only-fires-on-resume-never-on-a-clean-single-
+            // window-integrate` (UPHELD): this fires on the DOMINANT fresh path - every
+            // non-parked attempt boundary this stage reaches, mirroring exactly when `w.remove()`
+            // below tears down the worktree - not only the resume-only `gc_integrated_branches`
+            // call the round-2 build relied on alone (whose ONE production call site runs
+            // against the PRIOR window's state, before this window's own units even exist).
+            // UNCONDITIONAL on `wt` being present: an `isolation: none` unit has no worktree to
+            // hook a reap onto at all, yet its implementer can still populate registered
+            // mutation scratch, so gating this on `wt.is_some()` (mirroring the worktree-only
+            // `reclaim_cache_sibling` shape) would silently miss it - see
+            // `reclaim_terminal_unit_mutation_scratch`'s own doc comment for the single shared
+            // authority every terminal-teardown call site (this one, both speculation exits
+            // below, and the resume-path `gc_integrated_branches`) now drives.
+            self.reclaim_terminal_unit_mutation_scratch(&st.name);
+        }
         if let Some(w) = &wt {
             if !parked_unwind {
                 let _ = w.remove();
@@ -4842,6 +4874,16 @@ impl RunCtx<'_> {
                     &review,
                 )?;
                 self.cancel_speculation_candidates(st, &group, lane, &candidates)?;
+                // Spec 77, criterion 3 (UNIT-TERMINAL REAP), round 4 fix for
+                // adj-u77c3r6-verdict-reject-onpassnone-speculation-leak: an `on_pass: none`
+                // winner is its own genuine unit-terminal fixpoint - the group settled on a
+                // winner, no later lane is ever attempted, and (unlike the merge exit below)
+                // NO `UnitIntegrated` is ever emitted here, so the `gc_integrated_branches`
+                // resume backstop can never catch this leak either. Reap every REGISTERED
+                // mutation-scratch dir ANY of the K candidates' spawns populated, keyed by
+                // `st.name`, exactly like the winner-integrate and escalation-tail siblings
+                // below.
+                self.reclaim_terminal_unit_mutation_scratch(&st.name);
                 return Ok(false);
             }
             let integration = self.integrate_and_emit(
@@ -4904,6 +4946,14 @@ impl RunCtx<'_> {
             // exactly as the single-lane path deletes an integrated unit's branch.
             let _ = candidates[i].wt.remove();
             let _ = Worktree::delete_branch(&self.deps.repo, &candidates[i].wt.branch);
+            // Spec 77, criterion 3 (UNIT-TERMINAL REAP), round 3: the unit just reached its
+            // FRESH terminal outcome (a confirmed winner), so reap every REGISTERED
+            // mutation-scratch dir ANY of its K candidates' spawns populated - keyed by `st.name`
+            // (the bare unit id every lane's own spawn id shares as its prefix), never a
+            // lane-worktree-derived slug (see `reclaim_terminal_unit_mutation_scratch`'s own
+            // doc comment for why). ONE call here covers every lane at once: the underlying fn's
+            // unit-prefix match already reaps lane 0..K's own spawn scratch together.
+            self.reclaim_terminal_unit_mutation_scratch(&st.name);
             return Ok(true);
         }
 
@@ -4928,6 +4978,13 @@ impl RunCtx<'_> {
             json!({"id": st.name}),
             &[(META_SPEC_GROUP, &group)],
         )?;
+        // Spec 77, criterion 3 (UNIT-TERMINAL REAP), round 3: the unit just reached its FRESH
+        // terminal outcome (escalation - every candidate lost), so reap every REGISTERED
+        // mutation-scratch dir ANY of its K candidates' spawns populated, exactly like the
+        // winner-integrate exit above. Every candidate already reported its own result (or
+        // crashed) before reaching this point (§ `reclaim_terminal_unit_mutation_scratch`'s own
+        // doc comment), so nothing here is still live.
+        self.reclaim_terminal_unit_mutation_scratch(&st.name);
         Ok(false)
     }
 
@@ -6703,27 +6760,89 @@ impl RunCtx<'_> {
     /// `sweep_terminal`/`Worktree::remove` machinery; `Worktree::delete_branch`), not a
     /// parallel reconciled implementation.
     ///
-    /// An ESCALATED or otherwise un-integrated unit is NOT in this set, so its branch and
-    /// worktree are RETAINED as the human's evidence. Both steps are idempotent (a no-op
-    /// when the worktree is already gone / the branch already deleted), so re-reaching
-    /// this on a further resume re-reaches the SAME end state, never an error.
-    fn gc_integrated_branches(&self, rs: &ledger::RunState) {
+    /// An ESCALATED or otherwise un-integrated unit is NOT in the BRANCH/WORKTREE set, so
+    /// its branch and worktree are RETAINED as the human's evidence. Both steps are
+    /// idempotent (a no-op when the worktree is already gone / the branch already
+    /// deleted), so re-reaching this on a further resume re-reaches the SAME end state,
+    /// never an error.
+    ///
+    /// Registered MUTATION-SCRATCH reap (spec 77, criterion 3) rides along in the SAME
+    /// per-unit loop but is governed by [`mutation_scratch_settled`], a DELIBERATELY
+    /// WIDER predicate than the `Integrated`-only branch/worktree gate above - see that
+    /// function's own doc comment for the two disjoint cases it unions and why widening
+    /// it is safe. This is a round-5 fix for
+    /// `adj-u77c3r7-verdict-reject-resume-backstop-integrated-only-gap`: rounds 3-4 called
+    /// [`Self::reclaim_terminal_unit_mutation_scratch`] only for an `Integrated` unit here,
+    /// so a process that crashed strictly between an `Escalated` (or `on_pass: none`
+    /// settled `Verified`/`Reviewed`) unit's terminal event durably recording and the
+    /// FRESH-path call sites' own (synchronous, same-call-stack) reclaim a few lines later
+    /// would permanently strand that unit's registered scratch - it is not `Integrated`, so
+    /// this resume backstop never revisited it either.
+    fn gc_integrated_branches(&self, rs: &ledger::RunState, stages: &BTreeMap<String, Stage>) {
         for u in rs.units.values() {
-            if u.status != ledger::Status::Integrated {
-                continue;
+            if u.status == ledger::Status::Integrated {
+                // Prefer the branch recorded on the unit's `UnitStarted`; fall back to
+                // the canonical derivation for any unit whose event carried none.
+                let branch = if u.branch.is_empty() {
+                    unit_branch(&u.id)
+                } else {
+                    u.branch.clone()
+                };
+                // Ordered teardown, mirroring the fresh half: remove the lingering
+                // worktree FIRST (or `git branch -D` refuses the checked-out branch and
+                // BOTH survive), THEN delete the branch. Best-effort exactly like the
+                // fresh half's `let _`.
+                let _ = worktree::reclaim_worktree_on_branch(&self.deps.repo, &branch);
+                let _ = Worktree::delete_branch(&self.deps.repo, &branch);
             }
-            // Prefer the branch recorded on the unit's `UnitStarted`; fall back to the
-            // canonical derivation for any unit whose event carried none.
-            let branch = if u.branch.is_empty() {
-                unit_branch(&u.id)
-            } else {
-                u.branch.clone()
-            };
-            // Ordered teardown, mirroring the fresh half: remove the lingering worktree
-            // FIRST (or `git branch -D` refuses the checked-out branch and BOTH survive),
-            // THEN delete the branch. Best-effort exactly like the fresh half's `let _`.
-            let _ = worktree::reclaim_worktree_on_branch(&self.deps.repo, &branch);
-            let _ = Worktree::delete_branch(&self.deps.repo, &branch);
+            // See `mutation_scratch_settled`'s own doc comment for why this predicate
+            // covers more than the `Integrated` branch/worktree teardown just above.
+            if mutation_scratch_settled(u, rs, stages) {
+                self.reclaim_terminal_unit_mutation_scratch(&u.id);
+            }
+        }
+    }
+
+    /// Reap unit `unit_id`'s own REGISTERED mutation-scratch dirs (spec 77, criterion 3:
+    /// UNIT-TERMINAL REAP) - the ONE composition point every unit-terminal teardown call site
+    /// drives, resolving the registered-scratch-root `cache_home` fresh each call (the SAME
+    /// env-var precedence `main.rs::reclaim_spawn_scratch` already uses for the per-spawn
+    /// reclaim on `rigger result`: `XDG_CACHE_HOME` else `$HOME/.cache`, `None` in a homeless
+    /// environment, where there is nothing to reclaim either) rather than threading it through
+    /// `Deps` (which every one of this file's ~250 call sites constructs as a full struct
+    /// literal - adding a required field there is a change far outside this unit's own blast
+    /// radius for what is an established best-effort ambient-env read, mirrored from the
+    /// branch/worktree reclaim beside it in [`gc_integrated_branches`]).
+    ///
+    /// Round 3 fix for `adv-u77c3-mutation-scratch-reap-only-fires-on-resume-never-on-a-clean-
+    /// single-window-integrate` (UPHELD): round 2 called the underlying pure fn from EXACTLY
+    /// ONE site, [`gc_integrated_branches`] - the RESUME half of branch-GC, whose one
+    /// production call site runs against the PRIOR window's `RunState` at the very top of
+    /// `run()`, before this window's own units even exist. The overwhelming majority of real
+    /// unit-terminal transitions instead go through the FRESH half - `run_stage`'s own
+    /// non-parked teardown, and `run_speculation`'s winner-integrate and escalation-tail exits -
+    /// and NONE of those three ever called it. This method is now the ONE authority all four
+    /// call sites (those three, plus [`gc_integrated_branches`] above) drive, so a future site
+    /// never needs to re-derive the env precedence or re-decide the homeless no-op itself.
+    ///
+    /// Deliberately keyed on the RAW unit id (`st.name`/`u.id`), never a worktree-dir-derived
+    /// slug: an `isolation: none` unit has no worktree AT ALL to hook a reap onto, yet its
+    /// implementer can still populate registered mutation scratch (mutation efficacy is a
+    /// Done-when criterion independent of build isolation), so a purely worktree-teardown-
+    /// triggered reap (the shape `worktree::reclaim_cache_sibling` uses for the analogous
+    /// cargo-target cache) would silently miss it. A speculation LANE's worktree dir also
+    /// carries a `-spec<lane>` suffix its OWN spawn id never does (`speculation_lane_worktree`'s
+    /// doc comment), so reversing a unit id out of that dir shape is unreliable in general -
+    /// calling this with the unit's own `st.name` directly sidesteps that ambiguity entirely,
+    /// and the underlying fn's own unit-PREFIX matching (`marker_filename("<unit_id>/")`,
+    /// commuting with concatenation) already reaps every lane's own spawn scratch in ONE call
+    /// regardless of which lane's worktree happens to be tearing down.
+    fn reclaim_terminal_unit_mutation_scratch(&self, unit_id: &str) {
+        if let Some(cache_home) = crate::driver::replay::cache_home_from(
+            std::env::var_os("XDG_CACHE_HOME"),
+            std::env::var_os("HOME"),
+        ) {
+            crate::driver::replay::reclaim_unit_mutation_scratch(&cache_home, unit_id);
         }
     }
 
@@ -9308,6 +9427,57 @@ fn sanitize_for_path(id: &str) -> String {
 /// the gates but lands nothing.
 fn integrates(st: &Stage) -> bool {
     st.on_pass.is_empty() || st.on_pass.eq_ignore_ascii_case("merge")
+}
+
+/// Whether unit `u`'s registered mutation-scratch dirs are DONE being populated -
+/// permanently, not merely "for now" - so [`RunCtx::gc_integrated_branches`]'s resume
+/// sweep may reclaim them even though the unit itself is not (and, for an `on_pass:
+/// none` stage, may never become) `Integrated`.
+///
+/// Spec 77, criterion 3 (UNIT-TERMINAL REAP), round 5 fix for
+/// `adj-u77c3r7-verdict-reject-resume-backstop-integrated-only-gap`: the branch/worktree
+/// retention loop in `gc_integrated_branches` is DELIBERATELY narrow (`Integrated` only -
+/// an ESCALATED unit's worktree/branch stay as the human's evidence, per
+/// `branch_gc_reclaims_integrated_units_and_retains_escalated_ones_on_resume`), but that
+/// human-evidence rationale is about the WORKTREE/BRANCH specifically, never about a
+/// unit's registered mutation-scratch (pure `cargo mutants` build debris with zero review
+/// value once mutation testing has finished). This predicate is UNIONED over two disjoint
+/// cases, each already proven a genuine terminal fixpoint by the FRESH-path call sites
+/// that reap it synchronously, a few lines after the SAME event, the instant it happens:
+///
+/// 1. `rs.is_terminal` (`Integrated` | `Escalated`, `ledger.rs`) - the unit reached a
+///    terminal fixpoint by ANY means. Widens past `Integrated` alone to also cover
+///    `Escalated`, which the branch/worktree loop deliberately excludes but which this
+///    criterion's own Design section never asked to be excluded from - only the
+///    human-evidence retention did, and that never covered mutation scratch.
+/// 2. An `on_pass: none` stage settled at `Verified` or `Reviewed` WITHOUT ever emitting
+///    `TYPE_UNIT_INTEGRATED` (`emit_speculation_winner_status`'s own doc comment: green +
+///    verified + (reviewed, only when a panel adjudicator actually rendered a verdict)).
+///    `ledger::RunState::is_terminal` cannot see this state at all - it is neither
+///    `Integrated` nor `Escalated` - so a resumed process would otherwise never revisit
+///    this unit on any future window, permanently stranding its registered scratch if a
+///    crash landed between that status durably recording and the synchronous
+///    `reclaim_terminal_unit_mutation_scratch` call `run_speculation`'s `on_pass: none`
+///    exit already makes a few lines later. Gated on `!integrates(stage)` so an ordinary
+///    `on_pass: merge` unit mid-flight at `Verified`/`Reviewed` - still awaiting review or
+///    the merge itself - is correctly left alone: its implementer spawn already finished
+///    by the time `Verified` is recorded (mutation efficacy runs BEFORE the implementer's
+///    own pre-gate commit, so nothing later in that unit's lifecycle ever touches its
+///    registered scratch again), so this reap is safe the instant it fires, never
+///    premature relative to any later gate/review/merge step still to come. A unit id
+///    absent from `stages` (a stale id from a workflow that has since dropped it)
+///    conservatively resolves `integrates` to `true` - i.e. this arm stays false - since
+///    its `on_pass` can no longer be confirmed `none`.
+fn mutation_scratch_settled(
+    u: &ledger::Unit,
+    rs: &ledger::RunState,
+    stages: &BTreeMap<String, Stage>,
+) -> bool {
+    rs.is_terminal(&u.id)
+        || (matches!(
+            u.status,
+            ledger::Status::Verified | ledger::Status::Reviewed
+        ) && stages.get(&u.id).is_some_and(|st| !integrates(st)))
 }
 
 /// Greedily group stage names into disjoint batches by blast-radius (§3.2, §8).
