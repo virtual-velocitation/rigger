@@ -1814,6 +1814,49 @@ fn a_units_mutation_scratch_is_reclaimed_the_moment_a_spawn_of_its_reports_for_e
     }
 }
 
+/// Sibling of `a_units_mutation_scratch_is_reclaimed_the_moment_a_spawn_of_its_reports_for_every_outcome`
+/// pinning the ONE claim that test's every case leaves untouched: `reclaim_spawn_scratch`'s own
+/// doc comment says the unit-scoped mutation scratch is reclaimed "the moment ANY spawn of the
+/// unit reports - not only the implementer role that actually ran mutants" - but every case in
+/// the sibling test reports as `u/implementer#0`, so a regression that narrowed the unit
+/// extraction to filter on role (e.g. skipping reclaim unless the reporting spawn's role is
+/// literally "implementer") would pass every existing test while breaking this documented
+/// contract. Here the REPORTING spawn is `u/adversary#0` - a role that never runs `cargo
+/// mutants` - and unit `u`'s mutation scratch must still be reclaimed, proving the unit
+/// extraction (`spawn_id.split('/').next()`) is genuinely role-agnostic, not merely untested
+/// with a second role that happens to also start with "u/".
+#[test]
+fn a_units_mutation_scratch_is_reclaimed_by_a_non_implementer_roles_spawn_too() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
+
+    let cache_home = tempfile::tempdir().unwrap();
+    let unit_scratch = cache_home.path().join("rigger-mutants").join("u");
+    std::fs::create_dir_all(&unit_scratch).unwrap();
+    std::fs::write(unit_scratch.join("mutants-debris.out"), [0u8; 32]).unwrap();
+
+    // The ADVERSARY role of unit `u` reports - not the implementer role that ran mutants.
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["result", "u/adversary#0", "no blocking findings"],
+        &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
+    );
+    assert!(
+        ok,
+        "recording the adversary's result must succeed; stdout: {out:?} stderr: {err}"
+    );
+
+    assert!(
+        !unit_scratch.exists(),
+        "a unit's registered mutation-scratch dir must be reclaimed when ANY of its spawns \
+         reports - including a non-implementer role that never touched mutants - not only the \
+         implementer role that ran cargo mutants; {} still exists",
+        unit_scratch.display()
+    );
+}
+
 /// Write a minimal `.rigger/workflow.yml` into `root` pinning `defaults.grounder` to
 /// the given name. Tests that exercise the LITERAL grep grounder pin `grep`
 /// explicitly: the structural `symbols` grounder is the default now, so an unconfigured
