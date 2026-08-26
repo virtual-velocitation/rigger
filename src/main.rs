@@ -23,7 +23,9 @@ use rigger::contextgraph::{
 };
 use rigger::dash;
 use rigger::driver::cli;
-use rigger::driver::replay::{spawn_scratch_path, ReplayDriver};
+use rigger::driver::replay::{
+    cache_home_from, mutation_scratch_path, spawn_scratch_path, ReplayDriver,
+};
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::{
     sqlite::{PrunedDerived, Store},
@@ -2273,11 +2275,11 @@ fn cmd_step(args: &[String]) -> Res {
         let run_id = runscope::current_run_id(&events).unwrap_or_default();
         for item in step.wave.iter_mut() {
             if item.max_wall_clock.is_some() {
-                item.marker_path = Some(
-                    rigger::liveness::marker_path(root, &run_id, &item.id)
-                        .to_string_lossy()
-                        .into_owned(),
-                );
+                // A degenerate id (never a real spawn id rigger itself mints) yields no
+                // marker path at all rather than a fabricated placeholder - the item simply
+                // carries no liveness marker, the same as any other unbounded spawn.
+                item.marker_path = rigger::liveness::marker_path(root, &run_id, &item.id)
+                    .map(|p| p.to_string_lossy().into_owned());
             }
         }
     }
@@ -6123,7 +6125,11 @@ fn dash_read_liveness(
     };
     let now = std::time::SystemTime::now();
     for w in &step.wave {
-        let path = rigger::liveness::marker_path(scratch_root, run_id, &w.id);
+        // A degenerate id (never a real spawn id rigger itself mints) has no marker path at
+        // all - skip it exactly like a marker that is absent for any other reason.
+        let Some(path) = rigger::liveness::marker_path(scratch_root, run_id, &w.id) else {
+            continue;
+        };
         if let Ok(age) = std::fs::metadata(&path)
             .and_then(|md| md.modified())
             .map(|mtime| now.duration_since(mtime).map(|d| d.as_secs()).unwrap_or(0))
@@ -6573,7 +6579,9 @@ fn cmd_status(args: &[String]) -> Res {
     if !repo.is_empty() {
         let root = rigger::worktree::scratch_root_from_env(&repo, &workdir);
         for w in &spawn::step_result(run_events)?.wave {
-            let path = rigger::liveness::marker_path(&root, &run_id, &w.id);
+            let Some(path) = rigger::liveness::marker_path(&root, &run_id, &w.id) else {
+                continue;
+            };
             if let Ok(age) = std::fs::metadata(&path)
                 .and_then(|md| md.modified())
                 .map(|mtime| now.duration_since(mtime).map(|d| d.as_secs()).unwrap_or(0))
@@ -6880,7 +6888,9 @@ fn watch_poll(
     if !repo.is_empty() {
         let root = rigger::worktree::scratch_root_from_env(&repo, &workdir);
         for w in &spawn::step_result(&run_events)?.wave {
-            let path = rigger::liveness::marker_path(&root, &run_id, &w.id);
+            let Some(path) = rigger::liveness::marker_path(&root, &run_id, &w.id) else {
+                continue;
+            };
             if let Ok(age) = std::fs::metadata(&path)
                 .and_then(|md| md.modified())
                 .map(|mtime| now.duration_since(mtime).map(|d| d.as_secs()).unwrap_or(0))
@@ -8072,11 +8082,33 @@ fn cmd_result(args: &[String]) -> Res {
 
 /// Reclaim the per-spawn scratch dir [`spawn_scratch_path`] assigned spawn `spawn_id`,
 /// resolving the scratch root and run id the SAME way the assignment (the replay driver's
-/// park) did so the reclaim targets the exact path the run created (spec 34, criterion 1).
+/// park) did so the reclaim targets the exact path the run created (spec 34, criterion 1) -
+/// PLUS every REGISTERED SCRATCH ROOT beyond `agent-scratch` (spec 77, criterion 2):
+/// currently just the SPAWN-scoped mutation-testing scratch dir the seeded persona's `cargo
+/// mutants` invocation points `TMPDIR` at ([`mutation_scratch_path`]). That root is keyed by
+/// the FULL spawn id, never a bare unit or a unit+attempt composite (spec 77 Design "mutation
+/// scratch is spawn-scoped, never unit-scoped"), so THIS reporting spawn's own result reclaims
+/// ONLY its own leaf - exactly like the agent-scratch half two lines above, both deriving from
+/// the identical `spawn_id` this function already has in hand, no extraction needed. A
+/// reviewer spawn (lens/adversary/adjudicator/sdet-author) never populated a mutation-scratch
+/// leaf of its own (only the implementer role ever runs `cargo mutants`), so its own reclaim
+/// call here is a harmless no-op - it was never going to name anything real to begin with.
+///
+/// Full-spawn-id keying is what keeps `speculation_width > 1` safe: each candidate lane is a
+/// DISTINCT spawn ([`crate::spawn::spawn_id`]`(unit, ROLE_IMPLEMENTER, lane)`), so concurrent
+/// lanes of one unit never share a reclaim target - the round-7 review reject found a bare-unit
+/// key let the first lane to report SIGKILL a sibling lane's still-running `cargo mutants`
+/// subprocess out from under it (`sdet-u77c2r7-mutation-scratch-key-collides-across-
+/// speculation-lanes`, `adv-u77c2r7-shared-lane-reap-sigkills-sibling-mutants-on-any-result`).
 ///
 /// Entirely best-effort and platform-tolerant: the result already landed durably in
-/// `events.db`, so neither resolving the root nor removing the dir may surface an error that
-/// fails a recorded result, and an already-gone path is a graceful no-op.
+/// `events.db`, so neither resolving a root nor removing a dir may surface an error that fails
+/// a recorded result, and an already-gone (or never-populated) path is a graceful no-op. A
+/// DEGENERATE id (`spawn_scratch_path`/`mutation_scratch_path` returning `None` -
+/// [`crate::liveness::marker_filename`]'s own doc comment) is likewise a no-op, never a
+/// fabricated path to reap: no fixed placeholder drawn from that function's own reachable
+/// alphabet can ever be proven disjoint from a real id's own mapped output (round-6 review
+/// reject), so skipping is the only fail-safe answer.
 /// [`reap_then_remove_dir`] reaps any process still rooted under the scratch (spec 23) before
 /// removing it, so a build a hung worker left running never outlives its now-deleted cwd.
 fn reclaim_spawn_scratch(loc: &StoreLocation, prior: &[Event], spawn_id: &str) {
@@ -8093,7 +8125,22 @@ fn reclaim_spawn_scratch(loc: &StoreLocation, prior: &[Event], spawn_id: &str) {
         .unwrap_or_default();
     let scratch_root = rigger::worktree::scratch_root_path_from_env(repo, &workdir);
     let run_id = runscope::current_run_id(prior).unwrap_or_default();
-    reap_then_remove_dir(&spawn_scratch_path(&scratch_root, &run_id, spawn_id));
+    if let Some(path) = spawn_scratch_path(&scratch_root, &run_id, spawn_id) {
+        reap_then_remove_dir(&path);
+    }
+
+    // Registered scratch root (spec 77, criterion 2): THIS reporting spawn's own mutation-
+    // testing scratch, if the ambient environment resolves a cache home to look under (a
+    // homeless environment has nothing there to reclaim either). Keyed on the SAME raw
+    // `spawn_id` as the agent-scratch call above - no unit/attempt extraction, so this call
+    // site can never diverge from how `spawn::spawn_id` mints it.
+    if let Some(cache_home) =
+        cache_home_from(std::env::var_os("XDG_CACHE_HOME"), std::env::var_os("HOME"))
+    {
+        if let Some(path) = mutation_scratch_path(&cache_home, spawn_id) {
+            reap_then_remove_dir(&path);
+        }
+    }
 }
 
 /// Fold a just-recorded [`spawn::SpawnResult`] into the run's context graph at its recorded
@@ -20929,6 +20976,60 @@ mod tests {
             "an unjustified missed mutant must leave the unit not done - the consequence \
              clause itself, not merely the presence of the words \"unjustified miss\"; \
              got:\n{normalized}"
+        );
+    }
+
+    /// Spec 77, criterion 2 (MUTATION SCRATCH IS REAPED). A sibling drift guard to
+    /// `implementer_persona_pins_the_seeded_mutation_step_contract` above, over the SAME
+    /// committed persona file, pinning the piece this criterion (not spec 73's) owns: the
+    /// mutation-efficacy step's `TMPDIR` names the SPAWN-SCOPED registered scratch root
+    /// (`driver::replay::mutation_scratch_path`'s `.../rigger-mutants/<spawn>`, not the old
+    /// shared `.../rigger-mutants` root every unit collided on, and not a bare `<unit>` root
+    /// every LANE of a speculating unit would collide on - round-7/8 review reject, spec 77
+    /// Design "mutation scratch is spawn-scoped, never unit-scoped") and PRE-DELETES it before
+    /// running (spec 77 Design: "The seeded persona invocation moves to its own spawn-scoped
+    /// subdir and pre-deletes it before running"). Both pinned as one contiguous phrase each,
+    /// not independently-satisfiable fragments, matching the sibling test's established
+    /// pattern: a decomposed persona that keeps the escaped template as a bare substring
+    /// elsewhere while TMPDIR still names the shared or bare-unit root, or that keeps
+    /// "pre-delete" and "mkdir -p" as unrelated words in either order, must fail this test.
+    #[test]
+    fn implementer_persona_pins_the_seeded_mutation_scratch_root_registration_contract() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(RIGGER_DIR)
+            .join("agents")
+            .join("rust-engineer.md");
+        let persona = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read committed {}: {e}", path.display()));
+        let normalized = persona.split_whitespace().collect::<Vec<_>>().join(" ");
+
+        assert!(
+            normalized.contains(
+                "TMPDIR=\"${XDG_CACHE_HOME:-$HOME/.cache}/rigger-mutants/\
+                 <unit>_2fimplementer_23<attempt>\""
+            ),
+            "TMPDIR must point at the SPAWN-SCOPED mutation-scratch subdir (the injectively \
+             hex-escaped <unit>/implementer#<attempt>), not the old shared root every unit \
+             collided on and not a bare-unit root every speculation lane would collide on; \
+             got:\n{normalized}"
+        );
+        assert!(
+            normalized.contains("pre-delete that TMPDIR then mkdir -p it before running"),
+            "the invocation must PRE-DELETE its spawn-scoped TMPDIR before running, as one \
+             contiguous relational clause (not just an mkdir -p of a possibly-stale tree); \
+             got:\n{normalized}"
+        );
+        // Round-7/8 review reject regression: the persona must tell the agent WHICH attempt
+        // ordinal to substitute (its own spawn id's trailing `#<n>`), not merely widen the
+        // TMPDIR template - a persona that pins the escaped template but never says where
+        // `<attempt>` comes from would leave every agent substituting the same value (e.g.
+        // always 0) and silently reopening the exact same-unit collision this criterion exists
+        // to close.
+        assert!(
+            normalized.contains("`<attempt>` is the number after `#` in your OWN spawn id"),
+            "the persona must tell the agent to derive <attempt> from its OWN spawn id's \
+             trailing #<n>, or every speculation lane would substitute the same placeholder \
+             and collide again; got:\n{normalized}"
         );
     }
 }
