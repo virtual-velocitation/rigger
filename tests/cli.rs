@@ -1736,6 +1736,84 @@ fn a_spawns_scratch_is_reclaimed_the_moment_its_result_is_recorded_for_every_out
     }
 }
 
+/// Spec 77, criterion 2 (MUTATION SCRATCH IS REAPED): `cmd_result`'s per-spawn reclaim (spec
+/// 34, criterion 1) gains a REGISTERED SCRATCH ROOT beyond `agent-scratch` - the unit-scoped
+/// mutation-testing dir the seeded implementer persona points `cargo mutants`' `TMPDIR` at
+/// (`driver::replay::mutation_scratch_path`: `$XDG_CACHE_HOME/rigger-mutants/<unit>`). The
+/// moment ANY spawn belonging to a unit reports its result - for every outcome, the same four
+/// shapes spec 34's own per-spawn test proves - that UNIT's mutation-scratch dir is deleted,
+/// while a unit with no reported spawn keeps its own mutation-scratch dir untouched. Unlike
+/// `agent-scratch` this root is keyed by UNIT, not by the full spawn id (a retry reuses and
+/// pre-deletes the same dir, per spec 77 Design), so "sibling" here means a DIFFERENT unit,
+/// not a different spawn of the same unit.
+#[test]
+fn a_units_mutation_scratch_is_reclaimed_the_moment_a_spawn_of_its_reports_for_every_outcome() {
+    let cases: &[(&str, &[&str])] = &[
+        ("success", &["result", "u/implementer#0", "did the work"]),
+        (
+            "reject-verdict",
+            &["result", "u/implementer#0", r#"{"verdict":"reject"}"#],
+        ),
+        ("error", &["result", "u/implementer#0", "boom", "--error"]),
+        (
+            "liveness-fault",
+            &[
+                "result",
+                "u/implementer#0",
+                "worker hung past its wall clock",
+                "--error",
+                "--meta",
+                r#"{"liveness_class":"infra"}"#,
+            ],
+        ),
+    ];
+
+    for (label, args) in cases {
+        let dir = temp_project();
+        let root = dir.path();
+        seed_store(root);
+        seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
+
+        // A dedicated cache home for this test case, so XDG_CACHE_HOME never points at the
+        // operator's real ~/.cache. Two units' mutation-scratch dirs, each populated with
+        // build debris, keyed only by UNIT (`u`, `v`) - never a spawn id.
+        let cache_home = tempfile::tempdir().unwrap();
+        let done_unit_scratch = cache_home.path().join("rigger-mutants").join("u");
+        let live_unit_scratch = cache_home.path().join("rigger-mutants").join("v");
+        for d in [&done_unit_scratch, &live_unit_scratch] {
+            std::fs::create_dir_all(d).unwrap();
+            std::fs::write(d.join("mutants-debris.out"), [0u8; 32]).unwrap();
+        }
+
+        // Record the outcome for a spawn of unit `u` through the real courier, with
+        // XDG_CACHE_HOME pointed at this case's throwaway cache home.
+        let (out, err, ok) = run_rigger_envs(
+            root,
+            args,
+            &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
+        );
+        assert!(
+            ok,
+            "[{label}] recording the result must succeed; stdout: {out:?} stderr: {err}"
+        );
+
+        // Unit `u`'s mutation-scratch dir is GONE the moment its spawn's result landed...
+        assert!(
+            !done_unit_scratch.exists(),
+            "[{label}] a unit's registered mutation-scratch dir must be reclaimed the moment \
+             one of its spawns' results is recorded; {} still exists",
+            done_unit_scratch.display()
+        );
+        // ...while unit `v`, with no recorded result, keeps its own mutation-scratch untouched.
+        assert!(
+            live_unit_scratch.exists() && live_unit_scratch.join("mutants-debris.out").exists(),
+            "[{label}] a unit with no recorded spawn result must keep its mutation-scratch; {} \
+             was wrongly reclaimed",
+            live_unit_scratch.display()
+        );
+    }
+}
+
 /// Write a minimal `.rigger/workflow.yml` into `root` pinning `defaults.grounder` to
 /// the given name. Tests that exercise the LITERAL grep grounder pin `grep`
 /// explicitly: the structural `symbols` grounder is the default now, so an unconfigured

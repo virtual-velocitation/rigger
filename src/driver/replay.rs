@@ -19,6 +19,7 @@
 //! The blocking drivers (`cli`, `workflow`) are unaffected: they never park, and they
 //! ignore the [`SpawnOpts`] id/unit/stage fields this driver keys on.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -58,6 +59,45 @@ pub fn spawn_scratch_path(scratch_root: &str, run_id: &str, spawn_id: &str) -> P
         dir.join(crate::liveness::marker_filename(run_id))
     };
     dir.join(crate::liveness::marker_filename(spawn_id))
+}
+
+/// The subdirectory a unit's mutation-testing (`cargo mutants`) scratch nests under a cache
+/// home, mirroring [`SPAWN_SCRATCH_SUBDIR`]'s role for `agent-scratch`.
+const MUTATION_SCRATCH_SUBDIR: &str = "rigger-mutants";
+
+/// The cache-home directory the mutation-scratch root nests under (spec 77, criterion 2):
+/// `$XDG_CACHE_HOME` when set and non-empty, else `$HOME/.cache`, else `None` in a homeless
+/// environment. This is the exact fallback the seeded implementer persona's own shell
+/// expression names (`TMPDIR="${XDG_CACHE_HOME:-$HOME/.cache}/rigger-mutants/<unit>"`,
+/// `.rigger/agents/rust-engineer.md`) and mirrors `registry::state_home_from`'s XDG-then-HOME
+/// shape - both ambient-cache-location resolvers read the same way. Takes the two candidate
+/// env values as plain arguments (never reading `std::env` itself) so it is a pure function a
+/// unit test can drive without depending on - or mutating - the real process environment.
+pub fn cache_home_from(xdg: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
+    if let Some(dir) = xdg.filter(|v| !v.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
+    let home = home.filter(|v| !v.is_empty())?;
+    Some(PathBuf::from(home).join(".cache"))
+}
+
+/// The unit-scoped mutation-testing scratch dir a unit's implementer persona points its
+/// `cargo mutants` invocation's `TMPDIR` at (spec 77, criterion 2, extending spec 34's
+/// per-spawn reclamation authority with a REGISTERED SCRATCH ROOT beyond `agent-scratch`):
+/// `<cache_home>/rigger-mutants/<sanitized unit id>`.
+///
+/// Deliberately keyed by UNIT, not by the full spawn id: every attempt on the same unit's
+/// implementer role reuses (and pre-deletes) the SAME dir, so a retry never doubles the
+/// leaked tree. This is the ONE path both the seeded persona's own invocation
+/// (`.rigger/agents/rust-engineer.md`) and `cmd_result`'s registered-scratch-root reclaim
+/// derive - a re-hardcoded root on either side could let assignment and reclaim diverge,
+/// exactly as [`spawn_scratch_path`] already guards against for the per-spawn agent-scratch
+/// dir (spec 34, criterion 1). Sanitized through the same [`crate::liveness::marker_filename`]
+/// rule as every other scratch key.
+pub fn mutation_scratch_path(cache_home: &Path, unit_id: &str) -> PathBuf {
+    cache_home
+        .join(MUTATION_SCRATCH_SUBDIR)
+        .join(crate::liveness::marker_filename(unit_id))
 }
 
 /// A replay driver answers each `spawn` from the run's event log: it replays an
@@ -229,6 +269,55 @@ mod tests {
             stage: "u".into(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn cache_home_from_prefers_xdg_cache_home_then_falls_back_to_home_dot_cache() {
+        // spec 77, criterion 2: the mutation-scratch root nests under the SAME cache-home
+        // fallback the seeded persona's `TMPDIR="${XDG_CACHE_HOME:-$HOME/.cache}/..."` shell
+        // expression uses, mirrored here as a pure (env-var-free) resolver so the reclaim side
+        // and the test suite never depend on the real process environment.
+        assert_eq!(
+            cache_home_from(Some("/xdg/cache".into()), Some("/home/u".into())),
+            Some(PathBuf::from("/xdg/cache")),
+            "XDG_CACHE_HOME wins when set and non-empty"
+        );
+        assert_eq!(
+            cache_home_from(None, Some("/home/u".into())),
+            Some(PathBuf::from("/home/u/.cache")),
+            "an unset XDG_CACHE_HOME falls back to $HOME/.cache"
+        );
+        assert_eq!(
+            cache_home_from(Some("".into()), Some("/home/u".into())),
+            Some(PathBuf::from("/home/u/.cache")),
+            "an EMPTY XDG_CACHE_HOME (set-but-blank) is treated as unset, not a literal empty root"
+        );
+    }
+
+    #[test]
+    fn cache_home_from_is_none_in_a_homeless_environment() {
+        // Neither XDG_CACHE_HOME nor HOME resolves: there is no cache root to target, so
+        // reclaim has nothing to do (a harmless no-op - nothing was ever populated there).
+        assert_eq!(cache_home_from(None, None), None);
+        assert_eq!(cache_home_from(Some("".into()), Some("".into())), None);
+    }
+
+    #[test]
+    fn mutation_scratch_path_nests_under_rigger_mutants_keyed_by_sanitized_unit() {
+        // spec 77, criterion 2: the mutation scratch root is PER-UNIT (not per-spawn) -
+        // `<cache_home>/rigger-mutants/<sanitized unit id>` - the single authority both the
+        // seeded persona's own invocation and `cmd_result`'s registered-scratch-root reclaim
+        // derive, exactly as `spawn_scratch_path` already is for the per-spawn agent-scratch
+        // dir. Sanitized through the SAME `marker_filename` rule as every other scratch key.
+        assert_eq!(
+            mutation_scratch_path(Path::new("/home/u/.cache"), "u77c2"),
+            PathBuf::from("/home/u/.cache/rigger-mutants/u77c2")
+        );
+        assert_eq!(
+            mutation_scratch_path(Path::new("/home/u/.cache"), "u/weird#id"),
+            PathBuf::from("/home/u/.cache/rigger-mutants/u_weird_id"),
+            "a unit id is sanitized the same way a spawn id is (/ and # collapse to _)"
+        );
     }
 
     #[test]
