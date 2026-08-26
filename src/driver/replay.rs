@@ -135,6 +135,62 @@ pub fn mutation_scratch_path(cache_home: &Path, spawn_id: &str) -> Option<PathBu
         .map(|safe| cache_home.join(MUTATION_SCRATCH_SUBDIR).join(safe))
 }
 
+/// Reap every REGISTERED mutation-scratch dir unit `unit_id` ever populated under
+/// `cache_home` (spec 77, criterion 3: UNIT-TERMINAL REAP) - the crash-residue backstop the
+/// per-spawn reclaim (criterion 2, `main.rs::reclaim_spawn_scratch`, keyed on ONE reporting
+/// spawn's own id) cannot reach when a step process dies strictly between recording a
+/// spawn's result and reaping its scratch. The spec's own Notes name the fix: "the next
+/// unit-terminal ... teardown covers the residue (registered roots are enumerable)".
+///
+/// Every spawn of `unit_id` shares the id PREFIX `"<unit_id>/"` ahead of its own
+/// role/attempt suffix ([`crate::spawn::spawn_id`]'s `{unit}/{role}#{attempt}` shape), and
+/// [`crate::liveness::marker_filename`]'s injective per-byte hex-escape never looks past the
+/// byte it is encoding, so it commutes with concatenation:
+/// `marker_filename(a) + marker_filename(b) == marker_filename(a + b)` for any strings `a`,
+/// `b`. That makes `marker_filename("<unit_id>/")` the EXACT encoded prefix shared by every
+/// one of this unit's own spawn ids' encoded leaf - no reverse-decoding of an on-disk name
+/// back to a raw id is ever needed, and no DIFFERENT unit's own prefix can ever match it: a
+/// literal `_XX` escape substring in an encoded name can only originate from an escaped byte
+/// at that exact input position (the encoding leaves every raw `_` escaped too, `_5f`, never
+/// bare), so one unit id can never be a false-positive prefix of another's. A directory
+/// ENUMERATION under `<cache_home>/rigger-mutants/` filtered by that prefix therefore names
+/// precisely `unit_id`'s own registered spawns' scratch, and nothing else's - the
+/// "registered roots are enumerable" backstop the spec's Notes describe, needing no
+/// event-log spawn-id enumeration at all.
+///
+/// Best-effort throughout, mirroring this module's other reclaim helpers: an unreadable or
+/// absent registered-root dir (nothing was ever populated, or a prior reap already cleared
+/// it) is a graceful no-op. [`crate::reap::reap_processes_rooted_under`] reaps any process a
+/// hung `cargo mutants` run left rooted inside a matched dir BEFORE it is removed, so a hung
+/// build never outlives its now-deleted cwd - the same ordering [`Worktree::remove`]
+/// (`crate::worktree`) already applies to a unit's own worktree dir.
+///
+/// Degenerate `unit_id` (empty - the one shape [`crate::liveness::marker_filename`] cannot
+/// close structurally, since an empty input encodes to the empty string) matches nothing: an
+/// empty prefix would match EVERY entry under the root, so this is refused outright rather
+/// than reaping the whole registered-scratch tree - the same fail-safe-by-construction idiom
+/// [`mutation_scratch_path`] and [`spawn_scratch_path`] already follow for the identical
+/// degenerate shape.
+pub fn reclaim_unit_mutation_scratch(cache_home: &Path, unit_id: &str) {
+    let Some(prefix) = crate::liveness::marker_filename(&format!("{unit_id}/")) else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(cache_home.join(MUTATION_SCRATCH_SUBDIR)) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(prefix.as_str())
+        {
+            let path = entry.path();
+            crate::reap::reap_processes_rooted_under(&path);
+            let _ = std::fs::remove_dir_all(&path);
+        }
+    }
+}
+
 /// A replay driver answers each `spawn` from the run's event log: it replays an
 /// already-recorded spawn or parks an unrecorded one.
 ///
@@ -452,6 +508,94 @@ mod tests {
             "an unrelated empty id must never collide with the real underscore-run id's own \
              leaf either"
         );
+    }
+
+    /// Spec 77, criterion 3 (UNIT-TERMINAL REAP): [`reclaim_unit_mutation_scratch`] removes
+    /// EVERY registered mutation-scratch dir the unit's own spawns populated - proven here
+    /// with THREE spawns of the SAME unit (two different attempts of the implementer role,
+    /// plus a speculation-lane sibling `#1`), so a single-spawn enumeration bug (stopping
+    /// after the first match) cannot pass unnoticed - while a DIFFERENT unit's own dir, and
+    /// the registered root itself, both survive untouched.
+    #[test]
+    fn reclaim_unit_mutation_scratch_removes_every_one_of_the_units_own_spawn_dirs() {
+        let cache_home = tempfile::tempdir().unwrap();
+        let root = cache_home.path().join(MUTATION_SCRATCH_SUBDIR);
+        let owned = [
+            mutation_scratch_path(cache_home.path(), "u1/implementer#0").unwrap(),
+            mutation_scratch_path(cache_home.path(), "u1/implementer#1").unwrap(),
+            mutation_scratch_path(cache_home.path(), "u1/implementer#1lane1").unwrap(),
+        ];
+        let other_unit = mutation_scratch_path(cache_home.path(), "u2/implementer#0").unwrap();
+        for d in owned.iter().chain(std::iter::once(&other_unit)) {
+            std::fs::create_dir_all(d).unwrap();
+            std::fs::write(d.join("debris.out"), [0u8; 8]).unwrap();
+        }
+
+        reclaim_unit_mutation_scratch(cache_home.path(), "u1");
+
+        for d in &owned {
+            assert!(
+                !d.exists(),
+                "unit u1's own registered mutation-scratch dir must be reaped: {}",
+                d.display()
+            );
+        }
+        assert!(
+            other_unit.exists() && other_unit.join("debris.out").exists(),
+            "a DIFFERENT unit's own registered mutation-scratch must never be touched: {}",
+            other_unit.display()
+        );
+        assert!(
+            root.is_dir(),
+            "the registered root itself must survive a unit's own reap, not just its entries"
+        );
+    }
+
+    /// A unit id that is a literal PREFIX of another unit's id (`u1` vs `u10`) must never
+    /// cross-match: `marker_filename("u1/")` = `"u1_2f"`, which is NOT a prefix of
+    /// `marker_filename("u10/...")` = `"u10_2f..."` (position 2 is `0` vs the required `_`),
+    /// proving the encoding's own delimiter-escape - not a coincidence of the two example
+    /// ids chosen elsewhere in this file - is what keeps the prefix match collision-free.
+    #[test]
+    fn reclaim_unit_mutation_scratch_never_cross_matches_a_unit_id_that_is_a_string_prefix_of_another(
+    ) {
+        let cache_home = tempfile::tempdir().unwrap();
+        let sibling = mutation_scratch_path(cache_home.path(), "u10/implementer#0").unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+
+        reclaim_unit_mutation_scratch(cache_home.path(), "u1");
+
+        assert!(
+            sibling.exists(),
+            "u10's own scratch must survive a reap scoped to the DIFFERENT unit u1: {}",
+            sibling.display()
+        );
+    }
+
+    /// Degenerate empty `unit_id`: an empty prefix would match EVERY entry under the root
+    /// (matching nothing is wrong; matching everything is catastrophic), so this must be
+    /// refused outright rather than reaping the whole registered-scratch tree.
+    #[test]
+    fn reclaim_unit_mutation_scratch_is_a_no_op_for_an_empty_unit_id() {
+        let cache_home = tempfile::tempdir().unwrap();
+        let untouched = mutation_scratch_path(cache_home.path(), "u1/implementer#0").unwrap();
+        std::fs::create_dir_all(&untouched).unwrap();
+
+        reclaim_unit_mutation_scratch(cache_home.path(), "");
+
+        assert!(
+            untouched.exists(),
+            "an empty unit id must reap nothing - it must never be treated as a match-all prefix"
+        );
+    }
+
+    /// A cache home whose `rigger-mutants` root does not exist at all (nothing was ever
+    /// populated there) is a graceful no-op, never a panic or an error surfaced to the
+    /// caller - mirroring [`mutation_scratch_path`]'s own best-effort framing.
+    #[test]
+    fn reclaim_unit_mutation_scratch_is_a_no_op_when_the_registered_root_is_absent() {
+        let cache_home = tempfile::tempdir().unwrap();
+        reclaim_unit_mutation_scratch(cache_home.path(), "u1"); // must not panic
     }
 
     #[test]

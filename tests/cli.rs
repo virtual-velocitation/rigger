@@ -7759,6 +7759,88 @@ fn run_teardown_reclaims_run_level_scratch_after_a_manual_review_is_integrated()
     );
 }
 
+/// Spec 77, criterion 3 (UNIT-TERMINAL REAP): the SAME teardown that already reclaims a
+/// terminal unit's branch/worktree on the resume path (`gc_integrated_branches`, spec 38
+/// criterion 1 - proven by `branch_gc_reclaims_integrated_units_and_retains_escalated_ones_on_resume`
+/// in `src/conductor.rs`) now ALSO reaps every REGISTERED mutation-scratch dir that unit's
+/// own spawns populated (spec 77 criterion 2's `rigger-mutants` root), while a LIVE sibling
+/// unit's own registered scratch is spared - gated on the EXISTING sweep-liveness authority
+/// (only an `Integrated` unit is touched), never a new liveness notion of its own.
+///
+/// Mirrors `run_teardown_reclaims_run_level_scratch_after_a_manual_review_is_integrated`'s
+/// exact two-step shape (a real `rigger step` pauses "solo" for manual review, then a seeded
+/// `UnitIntegrated` lands and a second real `rigger step` folds it) so the reap fires through
+/// the REAL `gc_integrated_branches` seam, not a hand-called helper - plus a `sibling` unit
+/// seeded ONLY via events (no matching workflow stage, exactly like the in-process
+/// `branch_gc_reclaims_...` test's own "stuck" unit) that never integrates, so its own
+/// registered scratch must survive untouched.
+#[test]
+fn a_terminal_units_registered_mutation_scratch_is_reaped_while_a_live_siblings_survives() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_manual_review_workflow(root);
+
+    // Step 1: "solo" pauses for manual review (its only gate is manual autonomy).
+    let (_out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok,
+        "the first step must pause the sole unit for manual review; stderr:\n{err}"
+    );
+
+    // The human approves "solo" (a real UnitIntegrated lands it), and a LIVE sibling unit -
+    // known to the ledger only through its own events, exactly like the in-process
+    // `branch_gc_reclaims_...` test's "stuck" unit - never integrates.
+    seed_run_events(
+        root,
+        &[
+            ("UnitIntegrated", r#"{"id":"solo","commit":"deadbeef"}"#),
+            ("UnitStarted", r#"{"id":"sibling","agent":"worker"}"#),
+        ],
+    );
+
+    // Registered mutation-scratch for a spawn of EACH unit, under a throwaway cache home so
+    // XDG_CACHE_HOME never points at the operator's real ~/.cache.
+    let cache_home = tempfile::tempdir().unwrap();
+    let solo_scratch = cache_home
+        .path()
+        .join("rigger-mutants")
+        .join("solo_2fimplementer_230");
+    let sibling_scratch = cache_home
+        .path()
+        .join("rigger-mutants")
+        .join("sibling_2fimplementer_230");
+    for d in [&solo_scratch, &sibling_scratch] {
+        std::fs::create_dir_all(d).unwrap();
+        std::fs::write(d.join("mutants-debris.out"), [0u8; 32]).unwrap();
+    }
+
+    // Step 2: the resolved manual review folds to a clean fixpoint, running
+    // `gc_integrated_branches` over "solo" (now Integrated) and "sibling" (still not).
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["step"],
+        &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
+    );
+    assert!(
+        ok,
+        "the step after the manual review is integrated must still succeed; stdout: {out:?} \
+         stderr:\n{err}"
+    );
+
+    assert!(
+        !solo_scratch.exists(),
+        "the now-terminal (integrated) unit's registered mutation-scratch dir must be reaped \
+         by the SAME teardown that reclaims its worktree/branch; {} still exists",
+        solo_scratch.display()
+    );
+    assert!(
+        sibling_scratch.exists() && sibling_scratch.join("mutants-debris.out").exists(),
+        "a LIVE (non-terminal) sibling unit's own registered mutation-scratch must be spared \
+         by the sweep-liveness authority; {} was wrongly reclaimed",
+        sibling_scratch.display()
+    );
+}
+
 /// `rigger stats` reports the LATEST run by default and `rigger stats --all` reports the
 /// historical aggregate over every run (spec 06, unit 1). Two runs are seeded through the
 /// real `rigger emit` courier: run 1 lands one clean unit, run 2 escalates one unit. The
