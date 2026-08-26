@@ -6708,6 +6708,20 @@ impl RunCtx<'_> {
     /// when the worktree is already gone / the branch already deleted), so re-reaching
     /// this on a further resume re-reaches the SAME end state, never an error.
     fn gc_integrated_branches(&self, rs: &ledger::RunState) {
+        // The registered-scratch-root cache home (spec 77, criterion 3: UNIT-TERMINAL REAP),
+        // resolved ONCE for every unit this call reclaims - the SAME env-var precedence
+        // `main.rs::reclaim_spawn_scratch` already uses for the per-spawn reclaim on
+        // `rigger result` (`XDG_CACHE_HOME` else `$HOME/.cache`, `None` in a homeless
+        // environment, where there is nothing to reclaim either). Read here, at the ONE
+        // library-level composition point that already loops every terminal unit, rather than
+        // threaded through `Deps` (which every one of this file's ~250 call sites constructs
+        // as a full struct literal - adding a required field there is a change far outside
+        // this unit's own blast radius for what is, like the branch/worktree reclaim below it,
+        // an established best-effort ambient-env read).
+        let cache_home = crate::driver::replay::cache_home_from(
+            std::env::var_os("XDG_CACHE_HOME"),
+            std::env::var_os("HOME"),
+        );
         for u in rs.units.values() {
             if u.status != ledger::Status::Integrated {
                 continue;
@@ -6724,6 +6738,18 @@ impl RunCtx<'_> {
             // THEN delete the branch. Best-effort exactly like the fresh half's `let _`.
             let _ = worktree::reclaim_worktree_on_branch(&self.deps.repo, &branch);
             let _ = Worktree::delete_branch(&self.deps.repo, &branch);
+            // Spec 77, criterion 3 (UNIT-TERMINAL REAP): the SAME teardown that just reclaimed
+            // this now-terminal unit's worktree/branch above ALSO reaps every REGISTERED
+            // mutation-scratch dir its own spawns populated (spec 77 criterion 2's
+            // `rigger-mutants` root) - the crash-residue backstop for a step process that died
+            // strictly between a spawn's `rigger result` and that per-spawn reclaim. Gated on
+            // the SAME sweep-liveness authority as the branch/worktree reclaim above (only an
+            // `Integrated` unit reaches this line at all), never a second, parallel liveness
+            // notion. A homeless environment (`cache_home` is `None`) has nowhere registered to
+            // reap either, matching the per-spawn reclaim's own no-op there.
+            if let Some(cache_home) = &cache_home {
+                crate::driver::replay::reclaim_unit_mutation_scratch(cache_home, &u.id);
+            }
         }
     }
 
