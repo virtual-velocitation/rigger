@@ -40,6 +40,7 @@
 
 use std::path::Path;
 use std::process::Command;
+use std::sync::Mutex;
 
 use serde_json::Value;
 
@@ -86,8 +87,29 @@ fn no_emit(_t: &str, _v: Value) -> Result<(), ConductorError> {
     Ok(())
 }
 
+/// Serializes the two tests in this file against the same POSIX getenv/setenv hazard
+/// `ENV_TEST_LOCK` (`tests/build_env_authority_periphery.rs:213-219`) and `TMPDIR_LOCK`
+/// (`tests/build_budget_slots_periphery.rs:247`) already guard elsewhere: `cargo test`
+/// runs every test in this binary as concurrent threads by default, and
+/// `a_dir_with_no_per_unit_cache_never_forces_cargo_target_dir_onto_a_real_agent_
+/// subprocess` calls `std::env::remove_var("CARGO_TARGET_DIR")` while its sibling
+/// `a_real_cargo_build_the_agent_runs_lands_in_the_per_unit_cache_not_the_worktree` spawns
+/// a real subprocess via `driver::cli::Driver::spawn`, whose `Command::env` capture reads
+/// the current ambient environment (an implicit getenv-class read of the same global
+/// `environ` table) at spawn time - a real hazard regardless of which keys either side
+/// touches. Held for the duration of each test that touches env or spawns a real
+/// subprocess, so the two can never interleave.
+static SPAWN_ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+fn spawn_env_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    SPAWN_ENV_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[test]
 fn a_real_cargo_build_the_agent_runs_lands_in_the_per_unit_cache_not_the_worktree() {
+    let _guard = spawn_env_test_lock();
     let repo = init_repo_with_head();
     let repo_path = repo.path().to_string_lossy().into_owned();
     let root = scratch_root(&repo_path, "", None);
@@ -165,6 +187,7 @@ fn a_dir_with_no_per_unit_cache_never_forces_cargo_target_dir_onto_a_real_agent_
     // with that same empty env and asserts the real subprocess sees NO CARGO_TARGET_DIR -
     // neither a stale value forced in by the driver itself nor one leftover from this test
     // process's own ambient environment.
+    let _guard = spawn_env_test_lock();
     std::env::remove_var("CARGO_TARGET_DIR");
 
     let agent_bin = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/env-echo-agent.sh");
