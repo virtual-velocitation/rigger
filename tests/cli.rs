@@ -6978,6 +6978,104 @@ fn step_reclaims_a_hung_spawns_mutation_scratch_the_moment_the_sweep_records_its
     );
 }
 
+/// Sibling of `step_reclaims_a_hung_spawns_mutation_scratch_the_moment_the_sweep_records_its_fault`,
+/// covering the OTHER half of the shared reclaim authority's contract:
+/// `reclaim_spawn_registered_scratch` reaps TWO categories per spawn - the plain per-spawn
+/// `agent-scratch` dir (`spawn_scratch_path`, spec 34 criterion 1) AND the registered
+/// mutation-testing scratch dir (`mutation_scratch_path`, spec 77 criterion 2) - and
+/// `cmd_step`'s liveness-sweep call site invokes it for every spawn the sweep just found
+/// stale. The sibling test above proves the mutation-scratch half at this real sweep call
+/// site; the existing "for every outcome" test
+/// (`a_spawns_scratch_is_reclaimed_the_moment_its_result_is_recorded_for_every_outcome`)
+/// proves agent-scratch reclaim for a "liveness-fault" outcome only via the SYNTHETIC
+/// `rigger result ... --error --meta liveness_class:infra` courier call - structurally the
+/// death-courier path, never the sweep's own in-process `record_result_if_absent` call - so
+/// neither test alone proves agent-scratch is ALSO reclaimed at the real sweep call site.
+/// THIS test drives the real sweep path end to end (mirroring the mutation-scratch sibling's
+/// own shape) and asserts on the plain agent-scratch dir instead, so the shared authority's
+/// full two-category contract is proven at this call site, not just one category of it.
+#[test]
+fn step_reclaims_a_hung_spawns_agent_scratch_the_moment_the_sweep_records_its_fault() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_liveness_workflow(root);
+
+    // Step 1: the unit is ready, so its implementer parks in-flight (no result yet). The wave
+    // carries the RESOLVED marker path the worker would touch - the single authority the
+    // sweep also reads, so the test plants the marker exactly where the sweep will look.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(r#""id":"a/implementer#0""#),
+        "step 1 parks the implementer in-flight; got: {line:?}"
+    );
+    let marker_str =
+        json_string_field(line, "marker_path").expect("the wave carries the resolved marker path");
+    let marker = std::path::Path::new(&marker_str);
+
+    // `spawn_scratch_path` and `marker_path` are structurally IDENTICAL apart from their
+    // subdir name (`agent-scratch` vs `agent-live`, both `<scratch_root>/<subdir>/<run>/
+    // <encoded id>`) - deriving the hung spawn's agent-scratch dir by substituting the
+    // subdir in the wave's own marker path, rather than re-deriving run id/encoding by
+    // hand, keeps this test grounded in the SAME authority the sweep and worker share.
+    let hung_scratch =
+        std::path::PathBuf::from(marker_str.replace("/agent-live/", "/agent-scratch/"));
+    assert_ne!(
+        hung_scratch, marker,
+        "the substitution must actually land in agent-scratch, not agent-live; marker: {marker_str:?}"
+    );
+    // A DIFFERENT spawn's own agent-scratch dir (never parked by this run), which must stay
+    // untouched - a sibling under the SAME run subdir, keyed by the injective byte-hex
+    // encoding (`/` -> `_2f`, `#` -> `_23`) `spawn_scratch_path` uses.
+    let other_scratch = hung_scratch
+        .parent()
+        .expect("the hung spawn's agent-scratch dir has a run-scoped parent")
+        .join("z_2fimplementer_230");
+    for d in [&hung_scratch, &other_scratch] {
+        std::fs::create_dir_all(d).unwrap();
+        std::fs::write(d.join("cargo-target-debris.rlib"), [0u8; 64]).unwrap();
+    }
+
+    // Plant the SYNTHETIC STALE MARKER at the wire path (worker-write path == sweep-read path).
+    plant_stale_marker(marker);
+
+    // Step 2: the sweep finds the marker stale beyond the bound, classifies the spawn infra,
+    // and records the fault DIRECTLY via `record_result_if_absent` - never through
+    // `cmd_result` - exactly the path
+    // `step_surfaces_a_hung_spawn_with_a_stale_marker_as_a_liveness_halt` already pins for
+    // the halt surfacing. THIS is also the moment the fix under test reclaims the hung
+    // spawn's own plain agent-scratch dir.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok,
+        "a liveness-halted step still prints its result and exits 0; stderr: {err}"
+    );
+    let line = out.trim();
+    assert!(
+        line.contains(r#""halted":"#) && line.contains("a/implementer#0"),
+        "the hung spawn must be surfaced as a halt naming it; got: {line:?}"
+    );
+    assert!(
+        err.contains("liveness swept 1 hung spawn"),
+        "the sweep must report the hung spawn it just found; stderr: {err}"
+    );
+
+    assert!(
+        !hung_scratch.exists(),
+        "the hung spawn's own agent-scratch dir must be reclaimed the moment the liveness \
+         sweep records its fault, exactly like every other outcome that reaches \
+         `cmd_result`; {} still exists",
+        hung_scratch.display()
+    );
+    assert!(
+        other_scratch.exists() && other_scratch.join("cargo-target-debris.rlib").exists(),
+        "an unrelated spawn's own agent-scratch dir must be untouched; {} was wrongly \
+         reclaimed",
+        other_scratch.display()
+    );
+}
+
 /// The single-stage liveness workflow with an UNBOUNDED default (`defaults.max_wall_clock`
 /// absent = 0), so the parked implementer carries NO per-spawn `max_wall_clock` and thus no
 /// marker on the wire - the exact spawn the sweep can never time out and the native driver's
