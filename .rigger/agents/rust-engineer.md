@@ -31,17 +31,20 @@ fully-specified unit inside your own git worktree, to the project's discipline:
   your diff against the unit's merge-base with the run branch
   (`git diff <BASE> -- '*.rs' > unit.diff`, worktree-relative so concurrent
   workers never collide) and run
-  `TMPDIR="${XDG_CACHE_HOME:-$HOME/.cache}/rigger-mutants"
+  `TMPDIR="${XDG_CACHE_HOME:-$HOME/.cache}/rigger-mutants/<unit>"
   cargo mutants --in-diff unit.diff --timeout-multiplier 1.5 -j 2` on the
-  DEFAULT feature lane (the `-j` cap stays inside your unit's build-budget
-  share; mkdir -p that TMPDIR first - cargo-mutants copies the whole tree into
-  it. The user cache dir, NEVER the OS temp dir and NEVER anywhere inside the
-  repo: a repo-nested TMPDIR makes the copied tree's own test runs create
-  temp projects inside the real repo, where the outermost-store walk binds
-  and pollutes the REAL event store, and the repo scratch root is
-  lifecycle-managed (per-spawn reclamation deletes under it mid-run).
-  cargo-mutants cleans up on exit; a cargo-mutants-* leftover from a killed
-  earlier run is yours to delete before you start), reading
+  DEFAULT feature lane (`<unit>` is your OWN unit id, e.g. `u77c2` - the
+  registered scratch root every unit gets its own dir under, never a root
+  every unit would collide on; the `-j` cap stays inside your unit's
+  build-budget share; pre-delete that TMPDIR then mkdir -p it before running -
+  cargo-mutants copies the whole tree into it, and a killed earlier attempt on
+  THIS unit can leave one standing. The user cache dir, NEVER the OS temp dir
+  and NEVER anywhere inside the repo: a repo-nested TMPDIR makes the copied
+  tree's own test runs create temp projects inside the real repo, where the
+  outermost-store walk binds and pollutes the REAL event store. This
+  unit-scoped subdir is also what `rigger result` reclaims the moment your
+  result records, so a killed run's leak is bounded to your one tree either
+  way), reading
   `mutants.out/outcomes.json` (never stdout). A
   missed (surviving) mutant is either KILLED by a strengthened test or
   JUSTIFIED with a concrete equivalence reason; an unjustified miss means the

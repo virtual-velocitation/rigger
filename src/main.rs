@@ -23,7 +23,9 @@ use rigger::contextgraph::{
 };
 use rigger::dash;
 use rigger::driver::cli;
-use rigger::driver::replay::{spawn_scratch_path, ReplayDriver};
+use rigger::driver::replay::{
+    cache_home_from, mutation_scratch_path, spawn_scratch_path, ReplayDriver,
+};
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::{
     sqlite::{PrunedDerived, Store},
@@ -8072,11 +8074,18 @@ fn cmd_result(args: &[String]) -> Res {
 
 /// Reclaim the per-spawn scratch dir [`spawn_scratch_path`] assigned spawn `spawn_id`,
 /// resolving the scratch root and run id the SAME way the assignment (the replay driver's
-/// park) did so the reclaim targets the exact path the run created (spec 34, criterion 1).
+/// park) did so the reclaim targets the exact path the run created (spec 34, criterion 1) -
+/// PLUS every REGISTERED SCRATCH ROOT beyond `agent-scratch` (spec 77, criterion 2):
+/// currently just the unit-scoped mutation-testing scratch dir the seeded persona's `cargo
+/// mutants` invocation points `TMPDIR` at ([`mutation_scratch_path`]). That root is keyed by
+/// UNIT, not by the full spawn id (a retry on the same unit reuses and pre-deletes one dir,
+/// per spec 77 Design), so it is reclaimed the moment ANY spawn of the unit reports - not only
+/// the implementer role that actually ran mutants - exactly like the agent-scratch half, which
+/// already reclaims regardless of role.
 ///
 /// Entirely best-effort and platform-tolerant: the result already landed durably in
-/// `events.db`, so neither resolving the root nor removing the dir may surface an error that
-/// fails a recorded result, and an already-gone path is a graceful no-op.
+/// `events.db`, so neither resolving a root nor removing a dir may surface an error that fails
+/// a recorded result, and an already-gone path is a graceful no-op.
 /// [`reap_then_remove_dir`] reaps any process still rooted under the scratch (spec 23) before
 /// removing it, so a build a hung worker left running never outlives its now-deleted cwd.
 fn reclaim_spawn_scratch(loc: &StoreLocation, prior: &[Event], spawn_id: &str) {
@@ -8094,6 +8103,16 @@ fn reclaim_spawn_scratch(loc: &StoreLocation, prior: &[Event], spawn_id: &str) {
     let scratch_root = rigger::worktree::scratch_root_path_from_env(repo, &workdir);
     let run_id = runscope::current_run_id(prior).unwrap_or_default();
     reap_then_remove_dir(&spawn_scratch_path(&scratch_root, &run_id, spawn_id));
+
+    // Registered scratch root (spec 77, criterion 2): the reporting spawn's UNIT's mutation-
+    // testing scratch, if the ambient environment resolves a cache home to look under (a
+    // homeless environment has nothing there to reclaim either).
+    let unit = spawn_id.split('/').next().unwrap_or(spawn_id);
+    if let Some(cache_home) =
+        cache_home_from(std::env::var_os("XDG_CACHE_HOME"), std::env::var_os("HOME"))
+    {
+        reap_then_remove_dir(&mutation_scratch_path(&cache_home, unit));
+    }
 }
 
 /// Fold a just-recorded [`spawn::SpawnResult`] into the run's context graph at its recorded
@@ -20928,6 +20947,42 @@ mod tests {
             normalized.contains("an unjustified miss means the unit is not done"),
             "an unjustified missed mutant must leave the unit not done - the consequence \
              clause itself, not merely the presence of the words \"unjustified miss\"; \
+             got:\n{normalized}"
+        );
+    }
+
+    /// Spec 77, criterion 2 (MUTATION SCRATCH IS REAPED). A sibling drift guard to
+    /// `implementer_persona_pins_the_seeded_mutation_step_contract` above, over the SAME
+    /// committed persona file, pinning the piece this criterion (not spec 73's) owns: the
+    /// mutation-efficacy step's `TMPDIR` names the UNIT-SCOPED registered scratch root
+    /// (`driver::replay::mutation_scratch_path`'s `.../rigger-mutants/<unit>`, not the old
+    /// shared `.../rigger-mutants` root every unit collided on) and PRE-DELETES it before
+    /// running (spec 77 Design: "The seeded persona invocation moves to that unit-scoped
+    /// subdir and pre-deletes it before running"). Both pinned as one contiguous phrase each,
+    /// not independently-satisfiable fragments, matching the sibling test's established
+    /// pattern: a decomposed persona that keeps "<unit>" as a bare substring elsewhere while
+    /// TMPDIR still names the shared root, or that keeps "pre-delete" and "mkdir -p" as
+    /// unrelated words in either order, must fail this test.
+    #[test]
+    fn implementer_persona_pins_the_seeded_mutation_scratch_root_registration_contract() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(RIGGER_DIR)
+            .join("agents")
+            .join("rust-engineer.md");
+        let persona = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read committed {}: {e}", path.display()));
+        let normalized = persona.split_whitespace().collect::<Vec<_>>().join(" ");
+
+        assert!(
+            normalized.contains("TMPDIR=\"${XDG_CACHE_HOME:-$HOME/.cache}/rigger-mutants/<unit>\""),
+            "TMPDIR must point at the UNIT-SCOPED mutation-scratch subdir \
+             (.../rigger-mutants/<unit>), not the old shared root every unit collided on; \
+             got:\n{normalized}"
+        );
+        assert!(
+            normalized.contains("pre-delete that TMPDIR then mkdir -p it before running"),
+            "the invocation must PRE-DELETE its unit-scoped TMPDIR before running, as one \
+             contiguous relational clause (not just an mkdir -p of a possibly-stale tree); \
              got:\n{normalized}"
         );
     }
