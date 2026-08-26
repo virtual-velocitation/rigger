@@ -321,6 +321,24 @@ mod tests {
     }
 
     #[test]
+    fn spawn_scratch_path_and_mutation_scratch_path_never_escape_their_registered_root_for_a_dotdot_id(
+    ) {
+        // Regression for the spec-77 review reject: `cmd_result`'s positional spawn id is
+        // otherwise unvalidated (only checked non-empty), and `unit = spawn_id.split('/')
+        // .next()` can itself equal ".." (e.g. `rigger result ".." "<text>"`). Both id-derived
+        // paths route through `liveness::marker_filename`, which now neutralizes an all-dots
+        // result - prove BOTH call sites stay contained under their registered root rather
+        // than resolving to that root's parent.
+        let p = spawn_scratch_path("/scratch", "r1", "..");
+        assert_eq!(p, PathBuf::from("/scratch/agent-scratch/r1/__"));
+        assert!(p.starts_with("/scratch/agent-scratch/r1"));
+
+        let p = mutation_scratch_path(Path::new("/home/u/.cache"), "..");
+        assert_eq!(p, PathBuf::from("/home/u/.cache/rigger-mutants/__"));
+        assert!(p.starts_with("/home/u/.cache/rigger-mutants"));
+    }
+
+    #[test]
     fn parking_a_spawn_assigns_its_dedicated_scratch_dir() {
         // Spec 34, criterion 1: rigger ASSIGNS each spawn a dedicated scratch dir under the
         // run's scratch root the moment it requests (parks) the spawn - so a verify/build

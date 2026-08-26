@@ -1857,6 +1857,62 @@ fn a_units_mutation_scratch_is_reclaimed_by_a_non_implementer_roles_spawn_too() 
     );
 }
 
+/// Regression for the spec-77 review reject (ADJUDICATOR VERDICT u77c2, diff d6aa314..b9dd0dd):
+/// `cmd_result`'s positional spawn id carries NO format validation beyond non-empty, and
+/// `unit = spawn_id.split('/').next()` (main.rs, `reclaim_spawn_scratch`) can itself equal
+/// `".."`- directly reachable as `rigger result ".." "<text>"`, no crafted event needed. Both
+/// `spawn_scratch_path` and `mutation_scratch_path` used to derive `<root>.join(marker_filename(
+/// id))` with `marker_filename` passing `.` through unchanged, so a `..` id resolved to the
+/// PARENT of the registered scratch root, and `reap_then_remove_dir`'s bare `remove_dir_all`
+/// deleted everything there - an unrelated sibling directory under the operator's real cache
+/// home, included. Prove the fix holds end to end, through the real binary: a `..` spawn id
+/// must reclaim only a `__`-named leaf UNDER the registered roots, never escape past them.
+#[test]
+fn a_dotdot_spawn_id_never_escapes_the_registered_scratch_roots() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
+
+    // A dedicated cache home, so XDG_CACHE_HOME never points at the operator's real
+    // ~/.cache. `rigger-mutants/` must exist on disk (a prior unit's `cargo mutants` run
+    // would have created it) for the OS to even resolve a `..` path THROUGH it - an
+    // absent intermediate directory makes `remove_dir_all` fail closed regardless of any
+    // escape, which would make this regression pass for the wrong reason. An unrelated
+    // sibling directory under `cache_home` stands in for real ambient cache data (some
+    // OTHER tool's cache) that a reaper must never touch.
+    let cache_home = tempfile::tempdir().unwrap();
+    let mutants_root = cache_home.path().join("rigger-mutants");
+    std::fs::create_dir_all(&mutants_root).unwrap();
+    std::fs::write(mutants_root.join("mutants-debris.out"), [0u8; 8]).unwrap();
+    let sibling = cache_home.path().join("some-other-tools-cache");
+    std::fs::create_dir_all(&sibling).unwrap();
+    std::fs::write(sibling.join("keep-me.txt"), b"do not delete").unwrap();
+
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["result", "..", "typo'd or hostile spawn id"],
+        &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
+    );
+    assert!(
+        ok,
+        "recording the result must still succeed (scratch reclaim is best-effort and never \
+         fails a recorded result); stdout: {out:?} stderr: {err}"
+    );
+
+    assert!(
+        cache_home.path().exists(),
+        "cache_home itself must never be deleted by a `..`-derived reclaim path"
+    );
+    assert!(
+        sibling.exists() && sibling.join("keep-me.txt").exists(),
+        "a `..` spawn id must never let the reclaim walk up out of the registered \
+         mutation-scratch root and delete an unrelated sibling under cache_home; {} was \
+         wrongly removed",
+        sibling.display()
+    );
+}
+
 /// Write a minimal `.rigger/workflow.yml` into `root` pinning `defaults.grounder` to
 /// the given name. Tests that exercise the LITERAL grep grounder pin `grep`
 /// explicitly: the structural `symbols` grounder is the default now, so an unconfigured

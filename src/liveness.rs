@@ -51,8 +51,25 @@ pub const MARKER_SUBDIR: &str = "agent-live";
 /// so the `/` and `#` (which would otherwise create subdirectories or shell-quirky
 /// names) collapse to `_`. This exact rule is mirrored in `workflows/rigger.js` so the
 /// worker touches the SAME file the sweep reads.
+///
+/// Every caller of this function derives a filesystem path with
+/// `<registered_root>.join(marker_filename(id))` (this module's own [`marker_path`],
+/// plus [`crate::driver::replay::spawn_scratch_path`] and
+/// [`crate::driver::replay::mutation_scratch_path`]), and several of those roots are
+/// later reaped with a bare `remove_dir_all`. The id these callers key on ultimately
+/// traces back to `rigger result <id>`'s positional CLI argument, which carries NO
+/// format validation beyond non-empty - so an id (or an id fragment another caller
+/// extracts, e.g. a unit token split out of a spawn id) of exactly `"."` or `".."`
+/// must never survive this map unchanged: joined onto a root, `".."` walks the
+/// derived path up to that root's PARENT, letting a reaper delete everything beside
+/// it. Every character this map does NOT already send to `_` is alphanumeric, `-`, or
+/// `_`, each of which breaks an all-dots run just by being present - so an all-dots
+/// mapped RESULT can only arise when the input itself is composed entirely of `.`
+/// characters. Neutralize exactly that shape (and nothing else - a `.` embedded
+/// beside any other safe character is a normal, harmless filename character) by
+/// mapping every `.` in an all-dots result to `_` too.
 pub fn marker_filename(spawn_id: &str) -> String {
-    spawn_id
+    let mapped: String = spawn_id
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
@@ -61,7 +78,12 @@ pub fn marker_filename(spawn_id: &str) -> String {
                 '_'
             }
         })
-        .collect()
+        .collect();
+    if !mapped.is_empty() && mapped.chars().all(|c| c == '.') {
+        mapped.replace('.', "_")
+    } else {
+        mapped
+    }
 }
 
 /// The absolute marker path for a spawn:
@@ -392,6 +414,33 @@ mod tests {
     }
 
     #[test]
+    fn marker_filename_neutralizes_an_all_dots_result_so_it_can_never_be_a_path_traversal_component(
+    ) {
+        // `cmd_result`'s positional spawn id is otherwise unvalidated (only checked
+        // non-empty), and the char-by-char map above deliberately PRESERVES `.` (a legit
+        // character inside a real id, e.g. `u/implementer#0.retry`). That means a spawn
+        // id of literally ".." (`rigger result ".." "<text>"`, no crafted event needed)
+        // used to pass straight through unchanged, and every caller does
+        // `<registered_root>.join(marker_filename(id))` - so the derived path resolved to
+        // the PARENT of the registered root, letting `reap_then_remove_dir`'s bare
+        // `remove_dir_all` delete everything beside it. Every OTHER character this map
+        // sends to `_` (not just `.`) already breaks an all-dots run, so the ONLY input
+        // shape that can produce an all-dots mapped result is an input that is itself
+        // entirely `.` characters - neutralize exactly that shape, and nothing else, by
+        // mapping every `.` in it to `_` too.
+        assert_eq!(marker_filename(".."), "__");
+        assert_eq!(marker_filename("."), "_");
+        assert_eq!(marker_filename("..."), "___");
+        // A `.` embedded alongside other safe characters is untouched - only a result
+        // that is dots FROM END TO END is a traversal shape.
+        assert_eq!(marker_filename("a.b"), "a.b");
+        assert_eq!(
+            marker_filename("u/implementer#0.retry"),
+            "u_implementer_0.retry"
+        );
+    }
+
+    #[test]
     fn marker_path_is_scratch_root_joined_with_the_run_subdir_and_filename() {
         // With a run id: `<scratch>/agent-live/<run>/<sanitized id>` - the run subdir gives
         // the marker RUN IDENTITY, so a slug-colliding re-run never reads a prior mtime.
@@ -412,6 +461,22 @@ mod tests {
             p,
             std::path::Path::new("/scratch/agent-live/run_7_a/u_implementer_0")
         );
+    }
+
+    #[test]
+    fn marker_path_never_escapes_its_scratch_root_for_a_dotdot_run_or_spawn_id() {
+        // A `..` run id or spawn id (reachable via the otherwise-unvalidated `rigger
+        // result`/courier CLI ids this function's callers key on) must never make
+        // `<scratch>.join(marker_filename(id))` resolve to the PARENT of `<scratch>`.
+        let p = marker_path("/scratch", "..", "u/implementer#0");
+        assert_eq!(
+            p,
+            std::path::Path::new("/scratch/agent-live/__/u_implementer_0")
+        );
+        assert!(p.starts_with("/scratch/agent-live"));
+        let p = marker_path("/scratch", "run-7", "..");
+        assert_eq!(p, std::path::Path::new("/scratch/agent-live/run-7/__"));
+        assert!(p.starts_with("/scratch/agent-live/run-7"));
     }
 
     #[test]
