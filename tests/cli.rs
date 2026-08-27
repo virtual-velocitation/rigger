@@ -21470,6 +21470,60 @@ fn should_reap_singleton_public_contract_holds_at_the_crate_boundary() {
     );
 }
 
+/// Spec 62, criterion 5 - the PUBLIC contract of [`rigger::liveness::any_marker_fresh`] at the
+/// CRATE BOUNDARY, mirroring `should_reap_singleton_public_contract_holds_at_the_crate_boundary`
+/// above for its sibling new pub fn in this same unit. `src/liveness.rs`'s own module tests prove
+/// the function white-box (inside the module, including its recursive walk and unreadable-entry
+/// degrade); `a_reap_on_idle_singleton_survives_a_fresh_agent_liveness_marker_after_the_registry_ages_out`
+/// proves it end to end through the real watcher inside the built binary. Neither calls the
+/// function directly from OUTSIDE the module the way an external caller does - this test does,
+/// pinning that `rigger::liveness::any_marker_fresh` is exported and its truth table holds at the
+/// public `rigger::liveness` boundary, independent of any watcher wiring: false for an empty or
+/// never-populated scratch root, true for a marker touched within `max_age`, and false once that
+/// same marker has aged past it - the exact three-way contract `should_reap_singleton` is wired to
+/// consume as its `agent_live` input.
+#[test]
+fn any_marker_fresh_public_contract_holds_at_the_crate_boundary() {
+    use rigger::liveness::{any_marker_fresh, marker_path};
+    use std::time::{Duration, SystemTime};
+
+    let bound = Duration::from_secs(900);
+    let now = SystemTime::now();
+
+    // A repo-less caller: the same empty-scratch-root degrade every other liveness reader gives,
+    // proven here at the public fn itself rather than only via its private helper.
+    assert!(
+        !any_marker_fresh("", now, bound),
+        "an empty scratch root must read as no live agent"
+    );
+
+    // A real scratch root that has never had a marker directory created under it: nothing to find.
+    let scratch = tempfile::tempdir().unwrap();
+    let root = scratch.path().to_str().unwrap();
+    assert!(
+        !any_marker_fresh(root, now, bound),
+        "a scratch root with no agent-live directory must read as no live agent"
+    );
+
+    // A marker just written under the SAME nested `<root>/agent-live/<run>/<spawn>` shape
+    // `marker_path` builds (the one other public fn this module already exports) is fresh.
+    let path = marker_path(root, "run-1", "u1c1/implementer#0").unwrap();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, b"").unwrap();
+    assert!(
+        any_marker_fresh(root, now, bound),
+        "a just-written marker within max_age must read as a live agent"
+    );
+
+    // The same marker, judged from far enough past its real mtime to fall outside a tiny bound,
+    // reads as no live agent - the contract `should_reap_singleton`'s idle judgment depends on.
+    let far_future = now + Duration::from_secs(3600);
+    assert!(
+        !any_marker_fresh(root, far_future, Duration::from_secs(1)),
+        "a marker older than max_age must not read as a live agent signal"
+    );
+}
+
 // --- Spec 44, criterion 3: the always-on step dash is SESSION-DETACHED from the `rigger step`
 // command's PROCESS GROUP. Spec 39 criterion 2 (above) proves the dash outlives the step PROCESS
 // (it holds no `ReapedChild` guard); THIS criterion owns the distinct failure spec 44 fixes: when
