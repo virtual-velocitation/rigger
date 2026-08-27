@@ -1,7 +1,7 @@
 # Architecture addendum: the world authority
 
-Status: PROPOSED - for operator review. This document (v8) merges and SUPERSEDES two prior
-proposals (the resident conductor; the world reconciler) and integrates seven rounds of
+Status: PROPOSED - for operator review. This document (v9) merges and SUPERSEDES two prior
+proposals (the resident conductor; the world reconciler) and integrates eight rounds of
 five-lens adversarial design review. Everything below describes the TARGET state except
 "Problem", which records the measured present.
 
@@ -273,8 +273,11 @@ as a read side effect of the same append, so it never grows without limit - and 
 corrupt ledger (a rotted block, not a torn write, which no read could parse) has a named
 terminus rather than a resume/re-trip loop: because the count is a best-effort throttle and
 not a correctness rail, `daemon resume` RE-INITIALIZES an unreadable ledger to a fresh empty
-one as it clears the hold, so the daemon returns to normal operation instead of re-tripping on
-the same bad file. Rigger owns the durable signal and the notify port; delivering it to a pager is the consumer's
+one - a single-writer temp-then-rename UNDER the daemon lock, like every durable-state write -
+as it clears the hold, so the daemon returns to normal operation instead of re-tripping on the
+same bad file; a durably-corrupt ledger found on a plain start with no active trip is likewise
+re-initialized, so it self-heals without waiting for a resume. Rigger owns the durable signal
+and the notify port; delivering it to a pager is the consumer's
 `notify:` hook, by scope.
 
 **The CLI as client.** `status`/`watch` are socket queries. `progress`/`result`/`emit` are
@@ -522,9 +525,13 @@ required to stay bounded. Arms, in order:
    open anomalies, written temp-then-rename (atomic), stamped with the daemon's epoch and
    the position it derived at; readers cursor by the anomaly's stable identity, never a
    byte offset, so a rewrite never desyncs a tailer. Anomaly fields are a fixed enum of
-   kinds with typed, length-capped operands; free text is escaped, never interpolated
-   into a rendered sentence or a shell (`notify:` execs argv-only, JSON on stdin), because
-   the turn-boundary hook feeds an orchestrator holding `Bash(rigger:*)`.
+   kinds with typed, length-capped operands, and each kind carries a SEVERITY (page / warn /
+   info) so a consumer separates a live incident (a wedged-holder stall, unrepaired worktrees)
+   from a self-healing note (a debounce transition, a gc-duration report); `rigger status`
+   groups its lines by that severity and `notify:` can filter on it, so a surface that grows as
+   mechanisms are added stays triageable rather than an undifferentiated stream. Free text is
+   escaped, never interpolated into a rendered sentence or a shell (`notify:` execs argv-only,
+   JSON on stdin), because the turn-boundary hook feeds an orchestrator holding `Bash(rigger:*)`.
 
 Rails, in priority over every arm:
 
@@ -609,26 +616,36 @@ arm 3), so an abandoned project's content still expires by age - and NEVER by ma
 reclamation, so no project-root-liveness check can ever delete a live-but-dormant owner's
 unique content. Because ANY live daemon may tick this eviction over the SHARED repo, every
 mutation of one quarantine repo - a snapshot's object-write-then-ref-update, and an eviction's
-ref-delete-and-`gc` - is serialized by a PER-REPOSITORY FLOCK, so multiple daemons never `gc`
-or prune it concurrently. That flock is taken NON-BLOCKING, like `reset`'s guard: a daemon that
-finds it contended SKIPS this repo's eviction for the cycle and retries next, never blocking its
-own other work, and if the flock stays contended past a bound raises an arm-5 anomaly naming the
-repo and, where discoverable, the holding daemon's epoch and pid - so a wedged holder points an
-affected operator at itself and at `daemon kill --wedged` rather than stalling every project's
-quarantine work in silence. The flock is held across the WHOLE git plumbing subprocess (object
-write through ref-update, or ref-delete through `gc`), and that subprocess runs in the daemon's
-own cgroup so it is reaped WITH the daemon, leaving no orphaned git child mutating after a kill;
-a flock-holding successor first clears any stale `.lock`/`gc.pid` a killed predecessor left, so
-"the successor re-attempts from a clean state" is a fact, not a hope. Under that flock the
-eviction prunes PROMPTLY (`gc` with `pruneExpire` set to now, never `--force`, never relying on
-git's built-in two-week grace which the scrubbed `GIT_CONFIG_NOSYSTEM` environment would
-otherwise inherit), COALESCING all of the cycle's ref-deletes into ONE `gc` so its frequency
-tracks a single daemon's cycle rather than the machine's aggregate eviction rate, and surfacing
-that `gc`'s duration through `rigger status` so the cost is measurable; so an evicted ref's bytes
-are reclaimed WITHIN the arm's own cycle rather than lingering for weeks - and a concurrent
-owner's in-flight snapshot cannot be pruned before its ref lands, because that snapshot holds the
-same flock. An eviction that finds its target ref already deleted by a sibling daemon's earlier
-pass treats it as success, not an anomaly.
+ref-delete-and-`gc` - is serialized by a PER-REPOSITORY FLOCK. The flock lives on an OPEN FILE
+DESCRIPTION whose non-CLOEXEC descriptor is INHERITED by the forked git plumbing subprocess, so -
+by `flock` semantics, where the lock releases only when the LAST descriptor on that description
+closes - it stays HELD until the git child itself exits, even if the daemon that forked it is
+SIGKILLed mid-plumbing. This makes one invariant true on EVERY lane, cgroup delegation or not:
+the flock is free ONLY when no git process (daemon or orphaned child) is still mutating the repo.
+Cgroup-per-spawn reaping of the plumbing subtree is a belt-and-suspenders backstop where cgroup
+v2 is delegated, not the sole guarantee - so the degraded lane is as safe as the primary one.
+The flock is taken NON-BLOCKING, like `reset`'s guard: a daemon that finds it contended SKIPS this
+repo's eviction for the cycle and retries next, never blocking its own other work - and because
+eviction is an idempotent shared task any live daemon completes, a skip never leaves disk
+unbounded. A flock-holding successor therefore KNOWS no live git process holds the repo (the OFD
+invariant), so a stale `.lock`/`gc.pid` it finds is provably a dead predecessor's residue and safe
+to clear on every lane, never a live orphan's lock. A PURGE (freeing a specific escalated unit's
+disk now) takes the flock AHEAD of a routine background eviction, and a long coalesced eviction
+YIELDS the flock between batches, so an operator-visible purge is never stuck behind a background
+`gc`. The STALL anomaly is keyed on the HOLDER'S LIVENESS, not on elapsed contention: a holder
+whose daemon is alive and responsive (a legitimately long `gc`) reads `quarantine busy`
+(informational, no remedy urged), while only a holder whose daemon-liveness is stale - genuinely
+WEDGED - raises the arm-5 anomaly naming the repo and the holder and pointing at `daemon kill
+--wedged`; an orphaned non-daemon holder (which `kill --wedged` cannot target) is named as such,
+its remedy being to wait for the OFD to release on the orphan's exit. Under the flock the eviction
+prunes PROMPTLY (`gc` with `pruneExpire` set to now, never `--force`, never git's built-in
+two-week grace which the scrubbed `GIT_CONFIG_NOSYSTEM` environment would otherwise inherit),
+COALESCING the cycle's ref-deletes into ONE `gc` so its frequency tracks a single daemon's cycle
+rather than the machine's aggregate eviction rate, and surfacing that `gc`'s duration through
+`rigger status`; so an evicted ref's bytes are reclaimed WITHIN the arm's own cycle rather than
+lingering for weeks - and a concurrent owner's in-flight snapshot cannot be pruned before its ref
+lands, because that snapshot holds the same flock. An eviction that finds its target ref already
+deleted by a sibling daemon's earlier pass treats it as success, not an anomaly.
 
 **Escalation holds no disk.** An escalated unit's worktree is purged at terminal like any
 other - the purge is preceded by the unique-content snapshot every purge gets, and the unit
@@ -679,10 +696,14 @@ extends to every NEW on-disk format this design adds (ledger row, per-spawn outb
 `anomalies.jsonl`, machine-scope slot file, materialized ResourceSet snapshot, durable
 restart-ledger, and the per-container outbox-id HIGH-WATER-MARK state file), each carrying a
 format tag so a binary upgrade migrates rather than misparses, and rollback is fenced by the
-store minimum-version marker refusing an older binary against a newer store. A read of the
-high-water-mark file that cannot parse it as the current format never yields a value BELOW the
-true mark (which would re-mint a consumed id): it fails toward starting a fresh per-container
-attempt, a harmless forward gap, never a collision. The epoch CAS and the flock singleton assume a store on a LOCAL
+store minimum-version marker refusing an older binary against a newer store. A high-water-mark
+file whose version tag names an OLDER format is migrated by the reading binary; one CORRUPT
+beyond parsing is never guessed around by scanning the outbox directory or by a courier
+inventing identity - a courier has no authority to mint a `(run, owner, attempt)`, so it STOPS
+issuing repeatable-kind requests on that container and surfaces the corruption, and the daemon
+(the sole attempt authority) declares the spawn's terminus and retries it under a
+freshly-declared container whose mark starts cleanly at zero, so a lost mark never re-mints a
+consumed id and never orphans a finding into a container the daemon does not know to drain. The epoch CAS and the flock singleton assume a store on a LOCAL
 filesystem with linearizable Exact-CAS and honest advisory locks; a daemon PREFLIGHTS the
 store's filesystem at start AND re-checks on its liveness cadence (the same interval as the
 socket-inode re-stat) and on any `ESTALE`/`EIO`/lock anomaly seen during an arm, so a mount
@@ -838,26 +859,34 @@ a mount flapping at the re-check cadence raises attention once, not once per tic
     ticking arm 3 over one shared quarantine repo, a snapshot committed by one while the other
     evicts-and-`gc`s loses no objects (both take the per-repo flock), and an evicted ref's
     bytes are reclaimed within the arm's cycle rather than lingering on git's default grace.
-25. The durable outbox-line id survives a crash and a truncation: a courier SIGKILLed between
-    persisting its high-water mark and writing the line re-mints only a fresh id (never a
-    reused one), and a re-mint after a line drains and truncates never re-issues a consumed id
-    - so no distinct `emit` is ever silently dedup-dropped.
+25. The durable outbox-line id survives a crash, a truncation, and a corrupt mark: a courier
+    SIGKILLed between persisting its high-water mark and writing the line re-mints only a fresh
+    id (never a reused one), a re-mint after a line drains and truncates never re-issues a
+    consumed id, and a courier whose mark file is CORRUPT beyond parsing stops issuing rather
+    than re-minting or self-assigning an attempt (the daemon abandons-and-retries the spawn
+    under a fresh container) - so no distinct `emit` is silently dedup-dropped and no finding is
+    orphaned into an undeclared container.
 26. Within-window quarantine content survives machine-wide size pressure: under a size breach
     the arm refuses new admissions rather than evict a within-retention-window unique ref, so
     size pressure is a bounded stall, never unique-content loss.
 27. The restart-ledger fails safe: a torn or corrupt restart-ledger read never resets the
     count to zero (never silently suppressing the breaker during the crash that tore it); it
     holds the current posture and raises an arm-5 anomaly.
-28. The quarantine flock never stalls the machine silently: a daemon that wedges holding a
-    quarantine repo's per-repository flock does not block another project's escalation - the
-    contender takes the flock NON-BLOCKING, skips that repo's eviction for the cycle, and after
-    a bounded contention raises an arm-5 anomaly naming the repo and the holding daemon; and a
-    successor that acquires the flock clears a killed predecessor's stale git `.lock` and
-    re-attempts cleanly, its plumbing subprocess reaped with the daemon's cgroup.
+28. The quarantine flock is safe and legible on every lane: SIGKILL a daemon mid-plumbing on a
+    cgroup-v1 (undelegated) host and the flock stays HELD (its non-CLOEXEC FD inherited by the
+    orphaned git child) until that child exits - a successor's non-blocking acquire fails and
+    skips, never clearing a live orphan's lock; a contender against a merely-busy LIVE holder
+    reads `quarantine busy` with no kill urged, while only a holder whose daemon-liveness is
+    stale raises the wedged anomaly naming the holder and `daemon kill --wedged`; and a
+    successor that does acquire the flock (no live git remains) clears a dead predecessor's
+    stale `.lock` and re-attempts cleanly.
 29. The debounce is legible and the ledgers stay bounded: `rigger status` reports `k of N
     healthy re-checks` progress toward resuming full convergence and rate-limits repeated
     same-posture transition warnings under a flapping mount; and the restart-ledger prunes
     entries older than window W so it never grows without bound.
+30. Signals are triageable: every arm-5 anomaly kind and `rigger status` line carries a
+    severity (page / warn / info), so a consumer can separate a live incident (a wedged-holder
+    stall) from a self-healing note (a debounce transition) and `notify:` can filter on it.
 
 The bar that governs all of it: after a full campaign of rigger's OWN development,
 `validate --world-diff` reports empty modulo FOREIGN (with tier assignment asserted per
