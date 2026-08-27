@@ -20543,6 +20543,77 @@ fn step_dash_binds_exactly_the_rigger_dash_port_override() {
     );
 }
 
+/// Spec 62, criterion 1 (MARKER FOLLOWS BIND), through the BUILT binary: a step whose detached
+/// dash spawn can never confirm a bind - its `RIGGER_DASH_PORT` names a port genuinely HELD by
+/// another process - records NO `.rigger/dash.marker` and leaves a PRE-EXISTING marker
+/// byte-for-byte untouched; the step still runs to completion (a printed wave), degrading to
+/// headless rather than blocking. This closes the class of defect the marker-follows-bind
+/// design guards against: a marker surviving a failed bind and naming a dash that never
+/// actually came up.
+///
+/// The in-crate unit tests (`wait_for_dash_bind_*`, `ensure_run_dashboard_at_writes_no_marker_
+/// when_the_real_spawn_never_confirms_a_bind` in `src/main.rs`) prove the DECISION - the
+/// injected-closure ordering, and the pure `wait_for_dash_bind` state machine against a real
+/// held port - but only the real seam wired through `cargo test`'s own harness binary, which
+/// can never recognize `dash` as a subcommand and so can only ever reach the EARLY-EXIT arm of
+/// `wait_for_dash_bind`, never a genuine `AddrInUse` from the actual `rigger dash` subcommand.
+/// Only driving the real, BUILT `rigger` binary against a held port proves the production
+/// `spawn_dash_child_process -> cmd_dash -> dash::bind_singleton` wiring: the spawned child
+/// itself observes the conflict, exits promptly, and `ensure_run_dashboard_at`'s existing
+/// `Err` arm (already correct) writes nothing - the write-ordering this criterion owns, proven
+/// end to end rather than only at the injected seam.
+///
+/// The held port is a plain `TcpListener` that never calls `accept()`: it does not answer the
+/// dash header, so the spawned child's own `dash::bind_singleton` sees a genuine, non-dash
+/// `AddrInUse` conflict (never mistaken for an already-serving rigger dash) and exits with an
+/// error immediately - this test therefore completes in well under
+/// `DASH_BIND_CONFIRM_WINDOW` rather than waiting out the production timeout.
+// Hermetic against a real machine dash: the ensure port is pinned to this test's own ephemeral,
+// pre-held port (never the fixed 7420 a genuine always-on dash holds on the self-hosting box),
+// so it exercises the real ensure/bind-failure path without fighting that machine dash - the
+// same reason the other step-path dash tests in this section need no `serial` key.
+#[test]
+fn step_writes_no_dash_marker_and_leaves_a_stale_one_untouched_when_the_bind_never_confirms() {
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    write_two_stage_workflow(root);
+
+    // Hold the target port ourselves: the spawned `rigger dash --port <p>` child can never bind
+    // it, so it can never confirm serving - the bind-never-confirms shape at the real binary.
+    let held = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let dash_port = held.local_addr().unwrap().port();
+
+    // A pre-existing marker this failed start must leave COMPLETELY untouched (spec 62: "a
+    // failed bind leaves the prior marker byte-for-byte untouched and writes nothing").
+    let marker_path = root.join(".rigger").join("dash.marker");
+    std::fs::create_dir_all(marker_path.parent().unwrap()).unwrap();
+    std::fs::write(&marker_path, "40002\n999999\n").unwrap();
+
+    let (out, err) = run_step_dash_enabled(root, dash_port);
+    drop(held);
+
+    assert!(
+        out.contains(r#""wave":"#),
+        "a bind that never confirms still lets the step run to completion (a printed wave) - \
+         headless degrade, never a blocked step; stdout: {out:?} stderr: {err:?}"
+    );
+    assert_eq!(
+        read_dash_marker(root),
+        Some((40002, 999_999)),
+        "a bind that never confirmed must leave the pre-existing marker byte-for-byte untouched; \
+         stderr:\n{err}"
+    );
+    assert!(
+        err.contains("could not auto-start the dashboard"),
+        "a bind that never confirmed must announce the headless degrade, never a fabricated \
+         success; stderr:\n{err}"
+    );
+    assert!(
+        !err.contains("serving this run"),
+        "a bind that never confirmed must never announce a dash as serving; stderr:\n{err}"
+    );
+}
+
 /// Spec 39, criterion 1: the RIGGER_NO_DASH opt-out is honored by the BUILT binary on the step
 /// path - a step run under it reaches and passes the dash-start seam (it prints its wave) yet
 /// records NO `.rigger/dash.marker`, so a short-lived CI run or the crate's own integration
