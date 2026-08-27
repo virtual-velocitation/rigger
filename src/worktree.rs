@@ -701,6 +701,30 @@ pub const UNIT_WORKTREE_PREFIX: &str = "rigger-wt-";
 /// path (a killed step process leaves the worktree still registered).
 pub const UNIT_CACHE_PREFIX: &str = "cargo-target-";
 
+/// The shared gate build cache's directory NAME directly under the scratch root (spec 77
+/// Problem statement: the driver's own `CARGO_TARGET_DIR`, observed at up to 39G) - the
+/// ambient/inherited target any gate build with no per-unit `target_dir` override
+/// ([`unit_cache_sibling`]'s `None` case) builds into. Named ONCE here so `rigger reset
+/// --build-cache` (spec 77 criterion 5), the run-teardown reap
+/// ([`crate::worktree::shared_build_cache_guard_path`]'s sibling authority) and every
+/// shared-lock-holding gate build resolve the identical spelling - never a second,
+/// independently-typed literal that could drift.
+pub const SHARED_BUILD_CACHE_NAME: &str = "cargo-target";
+
+/// The guard file's path (spec 77 criterion 5, BOUNDED SHARED CACHE): a SIBLING of the
+/// shared build cache dir under `scratch_root` - BESIDE it, never inside it, so the guard
+/// survives the very rename `rigger reset --build-cache`'s reclaim performs on the cache
+/// itself (three rounds of a prior, now-superseded design proved an in-cache lock cannot
+/// close this class of race: flock is advisory to lock-takers and never gates unlink, so a
+/// lock file that lives inside the directory being renamed/deleted is no protection at
+/// all). This is the ONE naming authority both halves of the exclusion protocol resolve
+/// through: the exclusive, non-blocking attempt `rigger reset --build-cache` makes, and the
+/// shared hold every rigger-launched shared-cache build takes for its whole cargo
+/// invocation - so they can never disagree about which file guards which cache.
+pub fn shared_build_cache_guard_path(scratch_root: &str) -> String {
+    format!("{scratch_root}/{SHARED_BUILD_CACHE_NAME}.lock")
+}
+
 /// The per-unit build cache dir that is a SIBLING of the unit worktree at `worktree_dir`
 /// (Gap 19): `<root>/rigger-wt-<slug>` -> `<root>/cargo-target-<slug>`. Returns None for any
 /// dir that is not a unit worktree (e.g. a `rigger-review-*` review worktree, or the empty
@@ -1976,6 +2000,22 @@ mod tests {
         assert_eq!(unit_cache_sibling("/scratch/rigger-review-panel-0"), None);
         assert_eq!(unit_cache_sibling("/scratch/cargo-target"), None);
         assert_eq!(unit_cache_sibling(""), None);
+    }
+
+    #[test]
+    fn shared_build_cache_guard_path_is_a_sibling_lock_file_of_the_cache_dir() {
+        // spec 77 criterion 5 (BOUNDED SHARED CACHE): the guard lives BESIDE the cache
+        // (never inside it), named from the SAME `SHARED_BUILD_CACHE_NAME` constant every
+        // reader of this cache uses - so `rigger reset --build-cache`'s exclusive attempt
+        // and every gate build's shared hold can never disagree about which file guards
+        // which cache, and the rename this reclaim performs on the cache itself can never
+        // touch (or invalidate) the guard.
+        assert_eq!(
+            shared_build_cache_guard_path("/scratch"),
+            "/scratch/cargo-target.lock"
+        );
+        assert!(shared_build_cache_guard_path("/scratch")
+            .ends_with(&format!("{SHARED_BUILD_CACHE_NAME}.lock")));
     }
 
     #[test]

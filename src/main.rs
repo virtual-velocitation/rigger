@@ -1522,6 +1522,13 @@ guard exists to prevent. --force-live skips the check\n                         
 entirely and checks nothing: pass it only once you are\n                              \
 certain no writer is using this store, since forcing\n                              \
 past a genuinely live writer is exactly that corruption\n  \
+rigger reset --build-cache  reclaim the SHARED gate build cache (a pure cache,\n                              \
+always safe to cold-rebuild) under the scratch root.\n                              \
+Composes freely with --runs/--derived (each sheds its\n                              \
+own accumulation); reports the exact bytes reclaimed,\n                              \
+or 0 when there was nothing to reclaim. Refuses loudly\n                              \
+- never waiting - while a rigger-launched build still\n                              \
+holds the cache's guard lock; retry once it is idle\n  \
 rigger validate             load and validate the workflow + agents\n  \
 rigger init                 set up a project: scaffold .rigger/ (workflow.yml +\n                              \
 an agents/ folder) and install the Claude Code\n                              \
@@ -2591,11 +2598,27 @@ fn terminal_and_no_live_worker(events: &[Event]) -> Result<bool, String> {
 /// scratch root TO the repo root would have rigger park every worker's scratch there too, so the
 /// misconfiguration is self-evident long before this teardown; this function does not re-derive
 /// or second-guess `root`, it trusts the one resolution authority all scratch paths share.
+///
+/// The `cargo-target` reap (spec 77 criterion 5, BOUNDED SHARED CACHE) routes through
+/// [`reclaim_shared_build_cache`] - the SAME guarded reclaim `rigger reset --build-cache`
+/// calls - rather than a second, unguarded `remove_dir_all` over the identical resource:
+/// spec 77's Global Constraint 3 (fail-safe deletion only, skip anything a liveness guard
+/// claims) is spec-wide, and this run-teardown fires automatically and unconditionally
+/// whenever a run reaches a terminal state with no live worker, which says nothing about
+/// whether a rigger-launched build (an agent's own manual `cargo test` against this exact
+/// shared cache, per the driver's own scratch-policy convention) is still mid-flight.
+/// Contention here is a SILENT best-effort skip (never a loud refusal) - matching every
+/// other area this function reaps: a still-building cache is simply left for a LATER
+/// teardown, exactly like a missing area is a graceful no-op. The bare `target` dir (a
+/// defensive sweep for a build that ran with no `CARGO_TARGET_DIR` override at all,
+/// landing in the ambient cwd-relative default) is NOT this guard's concern - the naming
+/// convention and guard protocol are specifically for the shared `cargo-target` name every
+/// rigger-directed build actually targets; `target` stays a bare reap as before.
 fn reclaim_run_scratch(root: &str) {
     let base = std::path::Path::new(root);
     reap_then_remove_dir(&base.join("agent-scratch"));
     reap_then_remove_dir(&base.join(rigger::liveness::MARKER_SUBDIR));
-    reap_then_remove_dir(&base.join("cargo-target"));
+    let _ = reclaim_shared_build_cache(&base.join(rigger::worktree::SHARED_BUILD_CACHE_NAME));
     reap_then_remove_dir(&base.join("target"));
 }
 
@@ -5384,6 +5407,8 @@ impl Runner for ReplayRunner {
         g: &Gate,
         _dir: &str,
         _target_dir: &str,
+        _build_cache_dir: &str,
+        _build_cache_guard: &str,
         _store_fence: &str,
         _build_env: &BuildEnv,
         _budget: &BuildBudget,
@@ -7174,23 +7199,44 @@ fn cmd_reset(args: &[String]) -> Res {
     if selection.is_sqlite() {
         migrate_identity_at(&loc)?;
     }
-    // Decided up front, before anything is pruned: deleting rows and reclaiming the file are
-    // mechanics of the embedded log, not port operations, so `--derived` names the backend it
-    // needs rather than quietly doing nothing on one that cannot compact.
-    if modes.derived && !selection.is_sqlite() {
-        return Err(format!(
-            "reset --derived: the derived-index compaction deletes rows from the event log and \
-             vacuums the file, which is a mechanic of the embedded {RIGGER_DIR}/events.db store; \
-             this project is configured for the server-backed store, which rigger cannot compact. \
-             Re-run it against a project on the sqlite backend, or prune the server store with \
-             its own retention tooling. Refusing rather than reporting a prune that did not happen."
-        )
-        .into());
-    }
     if modes.runs {
         reset_runs(&loc, &selection)?;
     }
+    if modes.build_cache {
+        // A pure filesystem reclaim over the scratch root, orthogonal to the event log and
+        // graph `--runs`/`--derived` prune, and carrying NO backend requirement at all
+        // (spec 77 Design) - `reset_build_cache` resolves the one config value it needs
+        // (`defaults.workdir`) through the lightweight `config::read_scratch_workdir` probe
+        // itself, never the full `config::load` (which would additionally require a
+        // loadable agent fleet just to reclaim disk space). Dispatched BEFORE `--derived`
+        // below (not after, as its Design-bullet order might suggest) so a composed
+        // `--build-cache --derived` on a server-backed project still reclaims the cache and
+        // reports it - `--derived`'s own backend refusal below must never silently drop a
+        // sibling mode with no backend dependency of its own (spec 77 c4 review history:
+        // the identical composition defect an earlier attempt at this feature was caught
+        // for, reproduced independently before this fix landed).
+        reset_build_cache(&loc)?;
+    }
     if modes.derived {
+        // Decided up front, before compacting: deleting rows and reclaiming the file are
+        // mechanics of the embedded log, not port operations, so `--derived` names the
+        // backend it needs rather than quietly doing nothing on one that cannot compact.
+        // Checked HERE (inside this mode's own block), not as an early top-level return
+        // before `--runs`/`--build-cache` even run - both those modes complete regardless
+        // of what `--derived` decides, matching the SAME "each mode sheds only its own
+        // accumulation, and an earlier prune's completion is reported before a later
+        // refusal" honesty the live-writer guard just below already commits to.
+        if !selection.is_sqlite() {
+            return Err(format!(
+                "reset --derived: the derived-index compaction deletes rows from the event log \
+                 and vacuums the file, which is a mechanic of the embedded \
+                 {RIGGER_DIR}/events.db store; this project is configured for the \
+                 server-backed store, which rigger cannot compact. Re-run it against a project \
+                 on the sqlite backend, or prune the server store with its own retention \
+                 tooling. Refusing rather than reporting a prune that did not happen."
+            )
+            .into());
+        }
         // COMPACTION REFUSES LIVE WRITERS (spec 71, criterion 2): `--derived` leaves revision
         // gaps by design, and a writer built before this compaction ran can reissue one of those
         // gaps and reorder the log (the incident spec 71 records) if the log changes under it.
@@ -7198,16 +7244,6 @@ fn cmd_reset(args: &[String]) -> Res {
         // verifies nothing - the operator owns that risk once they pass it). The registry read
         // is resolved HERE, at the composition root, and handed in - the guard itself never
         // reads the ambient environment (see `refuse_derived_reset_if_live`'s docs).
-        //
-        // Deliberately checked AFTER `--runs` (not alongside the STATIC backend-mismatch
-        // precheck above): the live-writer guard reads a DYNAMIC snapshot that is scoped
-        // entirely to the event log, so a composed `reset --runs --derived` under a live signal
-        // still completes `--runs`'s OWN, independent, already-safe prune of the graph
-        // (`graph.db` - a different file, never at risk from a live event-log writer); only
-        // `--derived` itself refuses. This is the same "each mode sheds only its own
-        // accumulation, and an earlier prune's completion is reported before a later refusal"
-        // honesty this function's own docs already commit to for a genuine IO/lock fault -
-        // extended here to a live-writer refusal, not just an unexpected error.
         if !modes.force_live {
             refuse_derived_reset_if_live(
                 &loc,
@@ -7308,6 +7344,10 @@ fn derived_menu_line(selection: &StoreSelection, duplicates: Option<&[(String, u
 struct ResetModes {
     runs: bool,
     derived: bool,
+    /// spec 77 criterion 5 (BOUNDED SHARED CACHE): reclaim the shared gate build cache -
+    /// a pure cache (always safe to cold-rebuild), so this mode carries no store-mutation
+    /// implication at all and composes freely with `runs`/`derived`.
+    build_cache: bool,
     /// The override for `--derived`'s live-writer guard (spec 71, criterion 2): skips
     /// [`refuse_derived_reset_if_live`] entirely rather than acting on what it would have found -
     /// the operator asked to compact WHATEVER the run machinery looks like, and this flag owns
@@ -7328,17 +7368,20 @@ fn reset_modes(args: &[String]) -> Result<ResetModes, Box<dyn std::error::Error>
     let mut modes = ResetModes {
         runs: false,
         derived: false,
+        build_cache: false,
         force_live: false,
     };
     for arg in args {
         let slot = match arg.as_str() {
             "--runs" => &mut modes.runs,
             "--derived" => &mut modes.derived,
+            "--build-cache" => &mut modes.build_cache,
             "--force-live" => &mut modes.force_live,
             other => {
                 return Err(format!(
-                    "reset: expected --runs and/or --derived (with an optional --force-live), \
-                     got {other}: rigger reset --runs | rigger reset --derived [--force-live]"
+                    "reset: expected --runs and/or --derived and/or --build-cache (with an \
+                     optional --force-live), got {other}: rigger reset --runs | rigger reset \
+                     --derived [--force-live] | rigger reset --build-cache"
                 )
                 .into())
             }
@@ -7348,14 +7391,74 @@ fn reset_modes(args: &[String]) -> Result<ResetModes, Box<dyn std::error::Error>
         }
         *slot = true;
     }
-    if !modes.runs && !modes.derived {
+    if !modes.runs && !modes.derived && !modes.build_cache {
         return Err(
             "reset: expected at least one mode: rigger reset --runs (prune the context \
-                    graph) and/or rigger reset --derived (compact the event log)"
+                    graph), rigger reset --derived (compact the event log), and/or rigger \
+                    reset --build-cache (reclaim the shared gate build cache)"
                 .into(),
         );
     }
     Ok(modes)
+}
+
+/// `rigger reset --build-cache` (spec 77 criterion 5, BOUNDED SHARED CACHE): reclaims the
+/// shared gate build cache under the resolved scratch root - a PURE cache (always safe to
+/// cold-rebuild), so this is the one reset mode with no store-mutation implication at all
+/// and no backend requirement (unlike `--derived`).
+///
+/// Resolves `repo`/`scratch` the SAME way every other scratch-touching command in this
+/// project does: `repo` is the parent of the ALREADY-RESOLVED store dir `cmd_reset` handed
+/// in (no second, independently-derived walk), and `scratch` is the read-only
+/// `scratch_root_path_from_env(repo, workdir)` authority `rigger validate`'s residue scan
+/// also resolves through - so `reset --build-cache` can never disagree with either about
+/// which directory is "the shared cache". `workdir` itself comes from
+/// [`config::read_scratch_workdir`], the LIGHTWEIGHT probe (mirroring
+/// [`config::read_store_config`]'s own shape) - never the full [`config::load`], which would
+/// additionally require a loadable agent fleet and a passing [`config::Config::validate`]
+/// just to learn one string field this pure filesystem reclaim has no other use for.
+///
+/// Delegates the actual reclaim to [`reclaim_shared_build_cache`], the ONE mutation
+/// authority over this resource, and reports what happened via
+/// [`build_cache_reclaim_report`]: bytes reclaimed on success, or a loud, non-zero-exit
+/// refusal when a rigger-launched shared-cache build holds the guard.
+fn reset_build_cache(loc: &StoreLocation) -> Res {
+    let repo = loc
+        .dir
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let workdir = config::read_scratch_workdir(&loc.dir)?;
+    let scratch = PathBuf::from(rigger::worktree::scratch_root_path_from_env(
+        &repo, &workdir,
+    ));
+    let cache = scratch.join(rigger::worktree::SHARED_BUILD_CACHE_NAME);
+    let outcome = reclaim_shared_build_cache(&cache)?;
+    match build_cache_reclaim_report(outcome) {
+        Ok(line) => {
+            println!("{line}");
+            Ok(())
+        }
+        Err(msg) => Err(msg.into()),
+    }
+}
+
+/// The line (success) or refusal (busy) `rigger reset --build-cache` reports, rendered from
+/// the already-computed [`BuildCacheReclaim`] - pure, mirroring `derived_prune_report`'s own
+/// "render from the real outcome, never re-derive it" convention.
+fn build_cache_reclaim_report(outcome: BuildCacheReclaim) -> Result<String, String> {
+    match outcome {
+        BuildCacheReclaim::Reclaimed(bytes) => Ok(format!(
+            "--build-cache: reclaimed {} ({bytes} byte(s)) from the shared gate build cache",
+            human_size(bytes)
+        )),
+        BuildCacheReclaim::Busy => Err(
+            "reset --build-cache: the shared gate build cache is in use by a rigger-launched \
+             build (its guard lock is held); refusing rather than waiting - retry once it is \
+             idle"
+                .to_string(),
+        ),
+    }
 }
 
 /// `rigger reset --derived` (spec 60, criterion 5) - SUPPORTED COMPACTION of an event log that
@@ -9169,6 +9272,16 @@ fn reclaim_orphan_scratch(repo: &str, root: &str, run_units: &RunUnits) -> usize
                 reap_then_remove_dir(&path);
                 removed += 1;
             }
+        } else if is_build_cache_tombstone(&name) {
+            // A stray shared-build-cache tombstone (spec 77 criterion 5): the enumerable
+            // residue an interrupted `reclaim_shared_build_cache` delete can leave behind
+            // (a killed process, a filesystem error mid-`remove_dir_all`). NO liveness
+            // check, unlike every other arm here - the rename that created this name is
+            // the LAST thing that will ever reference it by path, so it is always safe to
+            // reap unconditionally (spec 77 Design: "correct precisely because nothing can
+            // ever want it back").
+            reap_then_remove_dir(&path);
+            removed += 1;
         }
         // Any other entry (agent-scratch, agent-live, a bare cargo-target/target, a review
         // worktree) is either a live-shared area or not rigger's slug-keyed scratch: spared
@@ -9363,6 +9476,121 @@ fn dir_size_bytes(path: &Path) -> u64 {
         }
     }
     total
+}
+
+/// What [`reclaim_shared_build_cache`] did: the exclusive, non-blocking attempt either
+/// reclaimed the cache (naming the exact bytes freed - `0` when it did not exist, an
+/// idempotent, honest no-op rather than an error) or found it BUSY (a rigger-launched
+/// shared-cache build holds the guard SHARED right now). Distinct from an `io::Error`,
+/// which this fn reserves for a genuine, unexpected filesystem failure (the caller decides
+/// how to report each: a loud, non-zero-exit refusal for the operator-invoked `rigger reset
+/// --build-cache`, a silent best-effort skip for the run-teardown sweep).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BuildCacheReclaim {
+    Reclaimed(u64),
+    Busy,
+}
+
+/// The tombstone name [`reclaim_shared_build_cache`] renames `cache` to before deleting it:
+/// process- and time-qualified so concurrent or rapid-succession reclaims (of a cache a
+/// build recreated in between) can never collide on one name - no lock is held across the
+/// delete, so uniqueness here is what keeps two tombstones from ever fighting over the same
+/// path. Named for [`is_build_cache_tombstone`] to recognize (spec 77 Design: "a failed
+/// tombstone delete leaves an ENUMERABLE residue shape the orphan sweep reaps
+/// unconditionally").
+fn build_cache_tombstone_path(cache: &Path) -> PathBuf {
+    let name = cache
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| rigger::worktree::SHARED_BUILD_CACHE_NAME.to_string());
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    cache.with_file_name(format!("{name}.tombstone-{}-{nanos}", std::process::id()))
+}
+
+/// Whether `name` (a bare filename, no path) is a [`build_cache_tombstone_path`] residue -
+/// the enumerable shape a reclaim's own failed (or killed-mid-flight) delete can leave
+/// behind. Nothing ever references a tombstone by path again once the rename lands (the
+/// reclaim that created it either deletes it itself or is gone), so ANY match here is safe
+/// to reap unconditionally - no liveness check needed, unlike the live cache name itself.
+fn is_build_cache_tombstone(name: &str) -> bool {
+    name.starts_with(&format!(
+        "{}.tombstone-",
+        rigger::worktree::SHARED_BUILD_CACHE_NAME
+    ))
+}
+
+/// Reclaim the shared gate build cache at `cache` (spec 77 criterion 5, BOUNDED SHARED
+/// CACHE) - the ONE mutation authority over this resource: both the operator-invoked
+/// `rigger reset --build-cache` ([`reset_build_cache`]) and the best-effort run-teardown
+/// sweep ([`reclaim_run_scratch`]) call this, so the safety protocol can never diverge
+/// between call sites (spec 77 Global Constraint 3: fail-safe deletion only, skip anything
+/// a liveness guard claims).
+///
+/// EXCLUSION: a reader-writer flock on [`rigger::worktree::shared_build_cache_guard_path`],
+/// acquired EXCLUSIVE and NON-BLOCKING here. Every rigger-launched shared-cache build
+/// ([`rigger::gate`]'s `hold_shared_build_cache_lock`) holds the SAME guard SHARED for its
+/// whole cargo invocation, so this can only succeed when no such build is in flight - on
+/// contention it returns `Ok(BuildCacheReclaim::Busy)` immediately, never queuing (spec 77
+/// Design: "never waiting, so no build can queue behind the delete" - a prior, now-
+/// superseded design proved a queued waiter can only ever resume into a hole, since flock
+/// never gates a concurrent unlink).
+///
+/// RECLAIM: rename-then-delete, not delete-in-place - a successful rename onto a
+/// process-unique tombstone name ([`build_cache_tombstone_path`]) IS the reclaim (cargo
+/// recreates its target dir on demand, so there is nothing to restore), and the lock is
+/// RELEASED the instant the rename lands, before the delete of the (potentially
+/// multi-gigabyte) tombstone even starts. A build whose shared-lock acquisition was parked
+/// behind this exclusive one therefore never resumes into a hole: cargo simply creates a
+/// fresh directory at the original path the moment it next writes there.
+///
+/// A missing `cache` (never built into, or already reclaimed) reclaims 0 bytes - idempotent,
+/// never an error (spec 77 Notes: "repeated reset --build-cache -> idempotent zero-report").
+/// A failed rename (still holding the lock, released before returning) changes nothing on
+/// disk and surfaces the `io::Error`; the delete itself is best-effort
+/// (`reap_then_remove_dir`'s own swallowed-`Result` convention) - a failed or
+/// killed-mid-flight delete leaves an enumerable tombstone [`is_build_cache_tombstone`]
+/// recognizes, never a silently unrecoverable leak.
+fn reclaim_shared_build_cache(cache: &Path) -> std::io::Result<BuildCacheReclaim> {
+    let guard_path = rigger::worktree::shared_build_cache_guard_path(
+        &cache
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_string_lossy(),
+    );
+    if let Some(parent) = Path::new(&guard_path).parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let guard = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&guard_path)?;
+    // Fully-qualified, matching `gate::hold_shared_build_cache_lock`'s own reasoning: std's
+    // more recently stabilized `File::try_lock`/`lock`/`unlock` share these exact names with
+    // `fs2::FileExt`, and a plain method call would silently prefer the std inherent method
+    // (leaving this crate's deliberate `fs2` choice unused) rather than genuinely exercising it.
+    if fs2::FileExt::try_lock_exclusive(&guard).is_err() {
+        return Ok(BuildCacheReclaim::Busy);
+    }
+    if !cache.exists() {
+        let _ = fs2::FileExt::unlock(&guard);
+        return Ok(BuildCacheReclaim::Reclaimed(0));
+    }
+    let tombstone = build_cache_tombstone_path(cache);
+    if let Err(e) = std::fs::rename(cache, &tombstone) {
+        let _ = fs2::FileExt::unlock(&guard);
+        return Err(e);
+    }
+    // Release the instant the rename lands - the delete below never runs with the guard
+    // held, so it can never block (or be blocked by) a build starting fresh at the now-absent
+    // original path.
+    let _ = fs2::FileExt::unlock(&guard);
+    let bytes = dir_size_bytes(&tombstone);
+    reap_then_remove_dir(&tombstone);
+    Ok(BuildCacheReclaim::Reclaimed(bytes))
 }
 
 /// A short human-readable size (`5.5G`, `12.0M`, `340.0K`, `18B`) for a residue line.
@@ -13968,6 +14196,104 @@ mod tests {
         );
     }
 
+    // --- Spec 77 criterion 4: BOUNDED SHARED CACHE (`reclaim_shared_build_cache`) ---
+
+    #[test]
+    fn reclaim_shared_build_cache_deletes_a_populated_cache_and_reports_its_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cargo-target");
+        write_file(&cache.join("debug").join("a.rlib"), &[0u8; 100]);
+        write_file(&cache.join("debug").join("b.rlib"), &[0u8; 250]);
+
+        let reclaimed = match reclaim_shared_build_cache(&cache).expect("no io error") {
+            BuildCacheReclaim::Reclaimed(n) => n,
+            BuildCacheReclaim::Busy => panic!("an unheld guard must never report busy"),
+        };
+        assert_eq!(reclaimed, 350, "must report the exact bytes it reclaimed");
+        assert!(
+            !cache.exists(),
+            "reset does not recreate a fresh dir at the original path (spec 77 Notes: cargo \
+             creates its target dir on demand): {cache:?} must be gone, not an empty dir"
+        );
+    }
+
+    #[test]
+    fn reclaim_shared_build_cache_is_idempotent_zero_report_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cargo-target");
+        // Never created at all (a virgin project) - and calling it a SECOND time after a
+        // real reclaim (simulated here by just never creating it) must both read as a
+        // clean, honest zero, never an error (spec 77 Notes: "repeated reset --build-cache
+        // -> idempotent zero-report").
+        for _ in 0..2 {
+            let reclaimed = match reclaim_shared_build_cache(&cache).expect("no io error") {
+                BuildCacheReclaim::Reclaimed(n) => n,
+                BuildCacheReclaim::Busy => panic!("nothing holds the guard here"),
+            };
+            assert_eq!(
+                reclaimed, 0,
+                "a missing cache reclaims 0 bytes, not an error"
+            );
+        }
+    }
+
+    #[test]
+    fn reclaim_shared_build_cache_refuses_rather_than_waits_when_a_build_holds_the_guard() {
+        // spec 77 Design: the exclusion is EXCLUSIVE and NON-BLOCKING - "never waiting, so
+        // no build can queue behind the delete". Simulate a rigger-launched shared-cache
+        // build by holding the SAME guard path SHARED (as `gate::hold_shared_build_cache_lock`
+        // does) before calling the reclaim.
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cargo-target");
+        write_file(&cache.join("debug").join("a.rlib"), &[0u8; 64]);
+        let guard_path =
+            rigger::worktree::shared_build_cache_guard_path(dir.path().to_str().unwrap());
+        let held = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&guard_path)
+            .expect("open guard");
+        fs2::FileExt::lock_shared(&held).expect("a build's own shared lock");
+
+        let outcome = reclaim_shared_build_cache(&cache).expect("no io error");
+        assert!(
+            matches!(outcome, BuildCacheReclaim::Busy),
+            "a build holding the guard SHARED must refuse the reclaim, never wait for it: \
+             {outcome:?}"
+        );
+        assert!(
+            cache.join("debug").join("a.rlib").exists(),
+            "a refused reclaim must leave the cache completely untouched"
+        );
+    }
+
+    #[test]
+    fn reclaim_shared_build_cache_releases_the_guard_promptly_after_a_successful_reclaim() {
+        // The lock is released the INSTANT the rename lands, well before the (potentially
+        // slow) delete of the tombstone even starts (spec 77 Design) - proven here as: once
+        // `reclaim_shared_build_cache` returns successfully, an independent probe can take
+        // the guard EXCLUSIVE immediately, with nothing still holding it.
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cargo-target");
+        write_file(&cache.join("debug").join("a.rlib"), &[0u8; 32]);
+
+        reclaim_shared_build_cache(&cache).expect("no io error");
+
+        let guard_path =
+            rigger::worktree::shared_build_cache_guard_path(dir.path().to_str().unwrap());
+        let probe = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&guard_path)
+            .expect("open guard for probe");
+        assert!(
+            fs2::FileExt::try_lock_exclusive(&probe).is_ok(),
+            "the guard must be free the instant a successful reclaim returns"
+        );
+    }
+
     #[test]
     fn scan_residue_reports_dead_worktrees_caches_shadows_and_branches() {
         let dir = tempfile::tempdir().unwrap();
@@ -14199,6 +14525,34 @@ mod tests {
             reclaim_orphan_scratch("", scratch.to_str().unwrap(), &run_units),
             0,
             "the sweep is idempotent - a clean root reclaims nothing"
+        );
+    }
+
+    #[test]
+    fn reclaim_orphan_scratch_reaps_a_stray_build_cache_tombstone_unconditionally() {
+        // spec 77 criterion 5 (BOUNDED SHARED CACHE), Design: "a failed tombstone delete
+        // leaves an ENUMERABLE residue shape the orphan sweep reaps unconditionally -
+        // correct precisely because nothing can ever want it back". A tombstone
+        // (`reclaim_shared_build_cache`'s own rename target) is never referenced by path
+        // again once the rename lands, so - unlike every other entry this sweep classifies -
+        // it needs NO liveness check at all: it is reaped every time, regardless of any
+        // `RunUnits` liveness state.
+        let dir = tempfile::tempdir().unwrap();
+        let scratch = dir.path();
+        let tombstone = scratch.join("cargo-target.tombstone-12345-67890");
+        write_file(&tombstone.join("stranded.rlib"), &[0u8; 16]);
+        // The LIVE bare cache must still be spared alongside it - the tombstone shape is a
+        // distinct, disjoint name (a `.tombstone-` suffix), never confused with the live
+        // cache's own bare name.
+        write_file(&scratch.join("cargo-target").join("live.rlib"), &[0u8; 8]);
+
+        let run_units = RunUnits::default();
+        let removed = reclaim_orphan_scratch("", scratch.to_str().unwrap(), &run_units);
+        assert_eq!(removed, 1, "exactly the one stray tombstone is reclaimed");
+        assert!(!tombstone.exists(), "the stray tombstone must be reaped");
+        assert!(
+            scratch.join("cargo-target").exists(),
+            "the live bare cache must be spared - its name is disjoint from the tombstone shape"
         );
     }
 
@@ -14484,6 +14838,42 @@ mod tests {
         // Idempotent + platform-tolerant: a second call over the now-empty root is a graceful
         // no-op (the areas are already gone), never a panic or error.
         reclaim_run_scratch(base.to_str().unwrap());
+    }
+
+    #[test]
+    fn reclaim_run_scratch_spares_the_shared_build_cache_while_a_build_holds_its_guard() {
+        // spec 77 criterion 5 / Global Constraint 3: this run-teardown fires automatically
+        // and unconditionally at every qualifying terminal state, with no operator action -
+        // so it must route the shared `cargo-target` reap through the SAME guarded
+        // primitive `rigger reset --build-cache` uses, never a second, unguarded
+        // `remove_dir_all` that could corrupt a rigger-launched build still mid-flight.
+        let root = tempfile::tempdir().unwrap();
+        let base = root.path();
+        let cache = base.join("cargo-target");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join("residue.bin"), [0u8; 32]).unwrap();
+        let agent_scratch = base.join("agent-scratch");
+        std::fs::create_dir_all(&agent_scratch).unwrap();
+
+        let guard_path = rigger::worktree::shared_build_cache_guard_path(base.to_str().unwrap());
+        let held = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&guard_path)
+            .expect("open guard");
+        fs2::FileExt::lock_shared(&held).expect("simulate a build's own shared hold");
+
+        reclaim_run_scratch(base.to_str().unwrap());
+
+        assert!(
+            cache.exists() && cache.join("residue.bin").exists(),
+            "a live build's shared cache must survive a run teardown that races it"
+        );
+        assert!(
+            !agent_scratch.exists(),
+            "contention on the shared cache alone must never abort the REST of the teardown"
+        );
     }
 
     #[test]
@@ -15196,6 +15586,26 @@ mod tests {
         assert!(
             !corpus_sentence.contains('['),
             "no flag tag may be spliced into the middle of the --corpus sentence: {corpus_sentence:?}"
+        );
+    }
+
+    #[test]
+    fn usage_text_names_the_build_cache_reset_mode() {
+        // spec 77 criterion 5 (BOUNDED SHARED CACHE), Done-when: "`rigger reset
+        // --build-cache` ... appears in the usage registry". Named right alongside its
+        // `--runs`/`--derived` siblings so an operator discovering one discovers all three.
+        assert!(
+            USAGE_TEXT.contains("rigger reset --build-cache"),
+            "usage text must name the build-cache reset mode"
+        );
+        let pos = USAGE_TEXT
+            .find("rigger reset --build-cache")
+            .expect("usage text names --build-cache");
+        let after = &USAGE_TEXT[pos..];
+        assert!(
+            after.contains("shared") && after.contains("build cache"),
+            "the --build-cache line must name what it reclaims: {:?}",
+            &after[..after.len().min(300)]
         );
     }
 
@@ -20587,6 +20997,30 @@ mod tests {
             "a bare --force-live must fall through the same 'at least one mode' refusal as a \
              bare reset; got {err}"
         );
+    }
+
+    /// spec 77 criterion 5 (BOUNDED SHARED CACHE): `--build-cache` is a mode exactly like
+    /// `--runs`/`--derived` - parses alone, composes with either sibling, is rejected on
+    /// a duplicate, and (matching every other mode) never implied on its own from a bare
+    /// `reset` with no flags at all.
+    #[test]
+    fn reset_modes_parses_build_cache_alone_and_composed_and_rejects_duplicates() {
+        let modes = reset_modes(&["--build-cache".to_string()]).expect("--build-cache alone");
+        assert!(modes.build_cache && !modes.runs && !modes.derived);
+
+        let modes = reset_modes(&["--runs".to_string(), "--build-cache".to_string()])
+            .expect("--runs --build-cache must compose");
+        assert!(modes.runs && modes.build_cache && !modes.derived);
+
+        let modes = reset_modes(&["--derived".to_string(), "--build-cache".to_string()])
+            .expect("--derived --build-cache must compose");
+        assert!(modes.derived && modes.build_cache);
+
+        let err = match reset_modes(&["--build-cache".to_string(), "--build-cache".to_string()]) {
+            Err(e) => e,
+            Ok(_) => panic!("a duplicate --build-cache must be refused"),
+        };
+        assert!(err.to_string().contains("more than once"), "got {err}");
     }
 
     // --- Spec 69, criterion 2: THE WATCHDOG (`rigger watch --once`, wired end to end) ---
