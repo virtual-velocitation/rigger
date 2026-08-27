@@ -447,11 +447,15 @@ pub fn dash_start_needed(
 ///   (unchanged by criterion 5): the agent-liveness signal has no analogous startup race to guard
 ///   (an absent marker degrades to `agent_live: false`, the same safe-to-check-again-next-poll
 ///   default the registry's own absent-directory read already uses).
-/// - `agent_live`: whether the SAME liveness authority `rigger status` presents - the local
-///   project's own per-spawn `agent-live` markers ([`crate::liveness::any_marker_fresh`]) - shows
-///   a fresh signal right now. `true` withholds the reap even when the registry has genuinely gone
-///   quiet, because a live agent working under a lapsed courier cadence is still real work in
-///   flight.
+/// - `agent_live`: whether the SAME liveness authority `rigger status` presents - a per-spawn
+///   `agent-live` marker ([`crate::liveness::any_marker_fresh`]) - shows a fresh signal right now,
+///   for the launching project OR (spec 62 criterion 5 round 2) ANY other currently- or
+///   formerly-registered project the watcher has ever seen (`watch_and_self_reap_on_idle`'s own
+///   doc comment covers the per-project derivation and its `known_roots` durability). `true`
+///   withholds the reap even when the registry has genuinely gone quiet, because a live agent
+///   working under a lapsed courier cadence - on this project or any other one the singleton
+///   outlives - is still real work in flight. This function itself stays agnostic to WHERE the
+///   signal came from; it takes one already-folded boolean.
 ///
 /// A genuinely quiet machine - registry empty past the startup guard AND no fresh agent liveness
 /// signal - reaps exactly as spec 50 criterion 5 always has.

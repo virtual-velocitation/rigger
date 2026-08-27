@@ -5837,7 +5837,8 @@ fn cmd_dash(args: &[String]) -> Res {
     // registry (every instance on the machine), not this one project's run, so no per-RUN inputs
     // are captured here. Spec 62 criterion 5 adds a second, per-PROJECT (never per-run) signal
     // alongside it: `reap_scratch_root` above, so the watcher can also see THIS project's own
-    // agent-liveness markers directly - see `watch_and_self_reap_on_idle`.
+    // agent-liveness markers directly - and, as of round 2, every OTHER registered project's own
+    // too, derived from the registry it already polls - see `watch_and_self_reap_on_idle`.
     let reap_registry_dir = reap_on_idle.then(rigger::registry::default_dir).flatten();
 
     // The SEPARATE, lazy graph provider for `/api/graph` (spec 45, criteria 1+2). It opens the
@@ -5979,19 +5980,21 @@ fn cmd_dash(args: &[String]) -> Res {
                 dash::SingletonBind::Bound(listener) => {
                     // Self-reap on machine idle (spec 50, criterion 5; spec 62, criterion 5): the
                     // detached step-path SINGLETON is started with `--reap-on-idle`, so a
-                    // background thread polls the machine-global instance registry AND this
-                    // project's own agent-liveness markers, exiting this process only once
-                    // NEITHER shows anything live - leaving no orphaned dash on a quiet machine,
-                    // while surviving one project's run ending as long as another's is still
-                    // live, AND surviving a live agent whose courier cadence has lapsed even as
-                    // the registry itself ages out. This retargets spec 39's per-run liveness
-                    // trigger at the machine-level singleton; it is driven by the registry (plus
-                    // this local agent-liveness check), NOT by any single `step` process exiting.
-                    // Read-only: the watcher only reads the registry and stats marker files. The
-                    // guard-bound `rigger run` / `run_workflow` dash omits the flag and keeps its
-                    // `ReapedChild` reaping instead. Started ONLY on the branch that actually
-                    // binds and serves - a short-circuited singleton invocation serves nothing and
-                    // starts no watcher.
+                    // background thread polls the machine-global instance registry AND the
+                    // agent-liveness markers of THIS project plus EVERY OTHER registered project
+                    // (round 2's cross-project widening - `watch_and_self_reap_on_idle`'s own doc
+                    // comment), exiting this process only once NONE of that shows anything live -
+                    // leaving no orphaned dash on a quiet machine, while surviving one project's
+                    // run ending as long as another's is still live, AND surviving a live agent
+                    // on ANY registered project whose courier cadence has lapsed even as THAT
+                    // project's own registry entry ages out. This retargets spec 39's per-run
+                    // liveness trigger at the machine-level singleton; it is driven by the
+                    // registry plus every known project's own agent-liveness check, NOT by any
+                    // single `step` process exiting. Read-only: the watcher only reads the
+                    // registry and stats marker files. The guard-bound `rigger run` /
+                    // `run_workflow` dash omits the flag and keeps its `ReapedChild` reaping
+                    // instead. Started ONLY on the branch that actually binds and serves - a
+                    // short-circuited singleton invocation serves nothing and starts no watcher.
                     if let Some(registry_dir) = reap_registry_dir {
                         let poll = dash_reap_poll();
                         let idle_window = dash_reap_idle_window();
@@ -6052,24 +6055,64 @@ fn dash_reap_idle_window() -> std::time::Duration {
     }
 }
 
+/// The scratch root a REGISTERED project at `root` would resolve for ITSELF (spec 62 criterion
+/// 5 round 2: cross-project agent liveness) - that project's OWN `.rigger/workflow.yml`
+/// configured workdir, read through the LIGHTWEIGHT [`config::read_scratch_workdir`] probe
+/// (never the full [`config::load`], which would additionally require a loadable agent fleet
+/// and a passing [`config::Config::validate`] just to learn one string field - a foreign
+/// project this singleton never launched has no business failing this scan over its own
+/// unrelated config shape), applied through the SAME read-only resolver every other
+/// scratch-touching command in this binary shares ([`rigger::worktree::scratch_root_path`], the
+/// authority `reset --build-cache` and `validate`'s residue scan both resolve through) -
+/// deliberately WITHOUT this process's own `RIGGER_TMPDIR` override (`env_override: None`):
+/// that variable states where THIS invocation places its OWN scratch and carries no meaning for
+/// a DIFFERENT project's placement (which, if it set `RIGGER_TMPDIR` at all, did so under its
+/// own separate invocation's environment - a value this long-lived singleton was never handed
+/// and cannot reconstruct; honoring it here would also collapse EVERY registered project onto
+/// the identical directory whenever the operator sets it, defeating the per-project distinction
+/// this check exists to draw). Never creates a directory, so scanning a registered project's
+/// markers never conjures a `.rigger/tmp` under a project that has none.
+fn foreign_instance_scratch_root(root: &str) -> String {
+    let rigger_dir = Path::new(root).join(".rigger");
+    let workdir = config::read_scratch_workdir(&rigger_dir).unwrap_or_default();
+    rigger::worktree::scratch_root_path(root, &workdir, None)
+}
+
 /// The dash self-reap watcher loop (spec 50, criterion 5; spec 62, criterion 5), run on a
 /// background thread inside the detached step-path SINGLETON dash. On each `poll` tick it reads
 /// the machine-global instance registry read-only ([`rigger::registry::read_live`], which prunes
-/// entries whose heartbeat has aged past `idle_window`) AND scans `scratch_root` for a fresh
-/// in-flight agent liveness marker ([`rigger::liveness::any_marker_fresh`], the SAME marker
-/// mechanism `rigger status` reads for this local project, checked against the SAME
-/// `idle_window` bound); when [`dash::should_reap_singleton`] says the machine is quiet - no
-/// registered instance is live, at least one has been seen, and no agent liveness marker is
-/// fresh - it exits the process, terminating the blocked [`dash::serve`] accept loop. This
-/// RETARGETS spec 39's per-run liveness watch at the machine-level singleton: the dash serves
-/// every registered instance and outlives any single run, so it SURVIVES one project's run ending
-/// while another's is still live (that instance keeps `read_live` non-empty), SURVIVES a live
-/// agent whose courier cadence has lapsed even as this project's own registry entry ages out
-/// (spec 62 criterion 5's headline), and reaps only on a genuinely idle machine - driven by the
-/// registry plus this local agent-liveness check, NOT by any single `step` process exiting. The
-/// `ever_seen_live` latch is the startup-race guard (a just-ensured singleton must not reap
-/// before its ensuring run writes its entry); it stays scoped to the registry, unchanged by the
-/// agent-liveness addition. Never returns (it either loops or exits the process).
+/// entries whose heartbeat has aged past `idle_window`) AND scans for a fresh in-flight AGENT
+/// liveness marker ([`rigger::liveness::any_marker_fresh`], the SAME marker mechanism `rigger
+/// status` reads, checked against the SAME `idle_window` bound) under `scratch_root` (this
+/// LAUNCHING project's own) AND under every OTHER registered project's own derived scratch root
+/// (spec 62 criterion 5 round 2 - [`foreign_instance_scratch_root`]); when
+/// [`dash::should_reap_singleton`] says the machine is quiet - no registered instance is live,
+/// at least one has been seen, and no agent liveness marker anywhere is fresh - it exits the
+/// process, terminating the blocked [`dash::serve`] accept loop. This RETARGETS spec 39's
+/// per-run liveness watch at the machine-level singleton: the dash serves every registered
+/// instance and outlives any single run, so it SURVIVES one project's run ending while
+/// another's is still live (that instance keeps `read_live` non-empty), SURVIVES a live agent on
+/// ANY registered project whose courier cadence has lapsed even as THAT project's own registry
+/// entry ages out (spec 62 criterion 5's headline, now closed for every registered project, not
+/// only the launching one), and reaps only on a genuinely idle machine - driven by the registry
+/// plus every known project's own agent-liveness check, NOT by any single `step` process
+/// exiting. The `ever_seen_live` latch is the startup-race guard (a just-ensured singleton must
+/// not reap before its ensuring run writes its entry); it stays scoped to the registry,
+/// unchanged by the agent-liveness addition.
+///
+/// `known_roots` accumulates every OTHER project's root this watcher has EVER seen registered
+/// ([`rigger::registry::read_all`], which - unlike `read_live` - applies no freshness filter and
+/// prunes nothing), and is never forgotten: a project once seen keeps its own scratch root
+/// checked for the rest of THIS singleton's lifetime, even past the poll where its registry
+/// entry itself goes stale and `read_live` prunes it from disk. Without this durability, checking
+/// only the CURRENT tick's registry snapshot would re-open almost the exact gap this criterion
+/// closes for the launching project: the instant a project's own registry entry ages out and gets
+/// pruned, a snapshot-only check would lose the only place it ever learned that project's root
+/// from, and go blind to that project's still-fresh agent marker one poll later - mirroring the
+/// exact registry-dependence gap criterion 5 round 2 exists to close for every OTHER project.
+/// Bounded by how many distinct projects register on this one machine during the singleton's
+/// lifetime - small and stable in practice, and each check is a cheap, mostly-empty directory
+/// scan. Never returns (it either loops or exits the process).
 fn watch_and_self_reap_on_idle(
     registry_dir: PathBuf,
     scratch_root: String,
@@ -6078,8 +6121,16 @@ fn watch_and_self_reap_on_idle(
 ) -> ! {
     let ttl_ms = u64::try_from(idle_window.as_millis()).unwrap_or(u64::MAX);
     let mut ever_seen_live = false;
+    let mut known_roots: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     loop {
         std::thread::sleep(poll);
+        // Grow the known-roots set from EVERY currently-registered instance BEFORE the
+        // `read_live` call below can prune any of them - so a project is remembered the moment
+        // it is first seen, even one whose registry entry goes stale and is pruned this very
+        // tick. `read_all` applies no freshness filter and deletes nothing.
+        for inst in rigger::registry::read_all(&registry_dir) {
+            known_roots.insert(inst.root);
+        }
         // Read-only scan of the machine-global registry: every instance whose heartbeat is fresher
         // than the idle window. `read_live` also prunes the entries that have aged out, so a dead
         // run's stale entry cannot keep the singleton alive.
@@ -6090,14 +6141,19 @@ fn watch_and_self_reap_on_idle(
             ever_seen_live = true;
         }
         // Read-only scan of this LOCAL project's own agent-liveness markers (spec 62, criterion
-        // 5): the same `idle_window` bound the registry check above uses, so a fresh touch (spec
-        // 10's heartbeat) counts as live for exactly as long as a fresh registry heartbeat would.
-        // An empty `scratch_root` (repo-less) degrades to no signal, matching every other reader.
-        let agent_live = rigger::liveness::any_marker_fresh(
-            &scratch_root,
-            std::time::SystemTime::now(),
-            idle_window,
-        );
+        // 5), OR any OTHER registered project's own (round 2): the same `idle_window` bound the
+        // registry check above uses, so a fresh touch (spec 10's heartbeat) counts as live for
+        // exactly as long as a fresh registry heartbeat would. An empty `scratch_root` (repo-less
+        // launching project) degrades to no signal, matching every other reader.
+        let now = std::time::SystemTime::now();
+        let agent_live = rigger::liveness::any_marker_fresh(&scratch_root, now, idle_window)
+            || known_roots.iter().any(|root| {
+                rigger::liveness::any_marker_fresh(
+                    &foreign_instance_scratch_root(root),
+                    now,
+                    idle_window,
+                )
+            });
         if dash::should_reap_singleton(live.len(), ever_seen_live, agent_live) {
             // Self-reap: exit the whole process so the detached singleton leaves no orphan on a
             // quiet machine. The stale `.rigger/dash.marker` this leaves behind is deliberately NOT
