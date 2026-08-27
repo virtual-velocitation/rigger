@@ -12873,6 +12873,138 @@ fn validate_reports_a_top_level_adhoc_agent_scratch_dir_as_its_own_category_neve
     );
 }
 
+/// Spec 77 criterion 6's "worktrees" and "per-unit caches" categories reuse
+/// `scan_residue`'s already-classified entries for their DEAD half
+/// ([`footprint_report`]'s own doc comment: "the DEAD half of worktrees/per-unit-caches
+/// comes DIRECTLY from calling `scan_residue`"), while [`scratch_totals`] sums the SAME
+/// `rigger-wt-<slug>` / `cargo-target-<slug>` entries independently for the TOTAL half.
+/// Every other footprint CLI test in this cluster seeds only the registered-scratch-roots,
+/// shared-build-cache, store, backups, and unowned-agent-scratch categories - none of them
+/// ever places a `rigger-wt-*` worktree or a `cargo-target-<slug>` per-unit cache on disk,
+/// so the wiring between these two independently-walked functions and the real `rigger
+/// validate` binary is unexercised outside `src/main.rs`'s own unit tests (which drive
+/// `scratch_footprint` directly against a fixture path, never through `cmd_validate`). A
+/// drift between the two functions' name-prefix matching (e.g. `scratch_totals` summing a
+/// dir `scan_residue` no longer classifies as residue, or vice versa) would silently
+/// mis-total or mis-flag these categories while every existing test here stayed green -
+/// exactly what the inside-out unit tests are structurally blind to. This seeds one LIVE
+/// and one DEAD entry per category through the real event store (mirroring
+/// `validate_scopes_residue_to_the_current_run_flagging_a_prior_runs_abandoned_unit`'s own
+/// two-run shape) and proves the real binary's totals and dead-share advisories both
+/// reflect the DEAD entry's bytes only, never the live one's.
+#[test]
+fn validate_footprint_worktrees_and_per_unit_caches_measure_real_dead_and_live_entries_through_the_binary(
+) {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    git_ok(root, &["add", "-A"]);
+    git_ok(root, &["commit", "-q", "-m", "scaffold"]);
+    seed_store(root);
+
+    // A PRIOR run's own unit, abandoned mid-flight (never reaches a terminal state, but is
+    // scoped OUT of the current run's live set the moment a later `RunStarted` fires) - the
+    // exact shape `validate_scopes_residue_to_the_current_run_flagging_a_prior_runs_
+    // abandoned_unit` already proves for the "branches"/"worktrees" residue advisory; here
+    // it drives the FOOTPRINT totals/dead-share instead.
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r0","criteria":["prior spec"]}"#),
+            (
+                "UnitStarted",
+                r#"{"id":"unit-old","branch":"rigger/u/unit-old"}"#,
+            ),
+            ("RunStarted", r#"{"run":"r1","criteria":["current spec"]}"#),
+            (
+                "UnitStarted",
+                r#"{"id":"unit-new","branch":"rigger/u/unit-new"}"#,
+            ),
+        ],
+    );
+
+    let scratch = root.join("scratchroot");
+    let cache_home = root.join("cachehome");
+    std::fs::create_dir_all(&scratch).unwrap();
+    std::fs::create_dir_all(&cache_home).unwrap();
+
+    // The DEAD unit's worktree and per-unit cache - out of the current run's live scope.
+    std::fs::create_dir_all(scratch.join("rigger-wt-unit-old")).unwrap();
+    std::fs::write(
+        scratch.join("rigger-wt-unit-old").join("payload.bin"),
+        [0u8; 400],
+    )
+    .unwrap();
+    std::fs::create_dir_all(scratch.join("cargo-target-unit-old")).unwrap();
+    std::fs::write(
+        scratch.join("cargo-target-unit-old").join("lib.rlib"),
+        [0u8; 300],
+    )
+    .unwrap();
+
+    // The LIVE unit's worktree and per-unit cache - in flight in THIS run, so their bytes
+    // must be counted in each category's TOTAL but never in its DEAD share.
+    std::fs::create_dir_all(scratch.join("rigger-wt-unit-new")).unwrap();
+    std::fs::write(
+        scratch.join("rigger-wt-unit-new").join("payload.bin"),
+        [0u8; 20],
+    )
+    .unwrap();
+    std::fs::create_dir_all(scratch.join("cargo-target-unit-new")).unwrap();
+    std::fs::write(
+        scratch.join("cargo-target-unit-new").join("lib.rlib"),
+        [0u8; 10],
+    )
+    .unwrap();
+
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["validate"],
+        &[
+            ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
+            ("XDG_CACHE_HOME", cache_home.to_str().unwrap()),
+        ],
+    );
+    assert!(
+        ok,
+        "validate must exit 0 even while flagging footprint advisories; stderr:\n{err}"
+    );
+
+    // Totals cover BOTH the live and dead entries together (400 + 20 = 420, 300 + 10 = 310).
+    assert!(
+        out.contains("footprint: worktrees 420B"),
+        "the worktrees total must sum the live AND dead entries via scratch_totals's own \
+         independent walk; stdout:\n{out}"
+    );
+    assert!(
+        out.contains("footprint: per-unit caches 310B"),
+        "the per-unit-caches total must sum the live AND dead entries; stdout:\n{out}"
+    );
+
+    // Dead share is exactly the dead unit's bytes (400 of 420 = 95%, 300 of 310 = 96%) - the
+    // live unit's bytes are spared, never inflating either dead share.
+    assert!(
+        err.contains("worktrees is 95% dead (400B of 420B reclaimable)"),
+        "the worktrees dead share must reflect scan_residue's classification of ONLY the \
+         prior run's abandoned worktree, never the live one; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("per-unit caches is 96% dead (300B of 310B reclaimable)"),
+        "the per-unit-caches dead share must reflect ONLY the dead unit's cache; stderr:\n{err}"
+    );
+    // Both flagged categories name the unit-scoped reclaim path (`rigger step`'s own orphan
+    // sweep already reaches these two categories, unlike the spawn-scoped ones above).
+    assert!(
+        err.contains(
+            "reclaimed automatically by the next `rigger step`, or remove the listed dirs directly"
+        ),
+        "the unit-scoped reclaim hint must be named for the flagged worktrees/per-unit-caches \
+         advisories; stderr:\n{err}"
+    );
+}
+
 /// Spec 23 (unit 2), done-when line 60: `rigger validate` reports, as a warning-only advisory
 /// that NEVER fails validation, any process whose cwd is under the scratch root - naming its
 /// pid - and reports none once nothing is rooted there. Driving the real binary proves the
