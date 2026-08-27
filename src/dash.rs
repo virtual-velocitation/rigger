@@ -407,22 +407,31 @@ pub fn dash_start_needed(
     }
 }
 
-/// The self-reap decision for the machine-level SINGLETON dashboard (spec 50, criterion 5):
-/// given the count of registered instances currently LIVE and whether the watcher has EVER
-/// observed a live instance, returns `true` iff the singleton should REAP ITSELF now - so a quiet
-/// machine leaves no orphaned dash. This is the domain core the detached dash's watcher polls; the
-/// watcher owns only the I/O (reading the machine-global instance registry, sleeping, and exiting
-/// on `true`), so the DECISION is provable here without a real dashboard process or a real run.
+/// The self-reap decision for the machine-level SINGLETON dashboard (spec 50, criterion 5;
+/// spec 62, criterion 5): given the count of registered instances currently LIVE, whether the
+/// watcher has EVER observed a live instance, and whether a fresh AGENT liveness signal is
+/// present, returns `true` iff the singleton should REAP ITSELF now - so a quiet machine leaves
+/// no orphaned dash. This is the domain core the detached dash's watcher polls; the watcher owns
+/// only the I/O (reading the machine-global instance registry, scanning the local project's
+/// agent-liveness markers, sleeping, and exiting on `true`), so the DECISION is provable here
+/// without a real dashboard process or a real run.
 ///
 /// This RETARGETS spec 39's per-run trigger ("my run went idle") at the singleton ("NOTHING has
 /// been registered or alive for the idle window"). The dash is no longer a per-run, per-project
-/// process watching its OWN run's liveness markers: it is one machine-level process that serves
-/// every registered instance and outlives any single run, so its liveness signal is the discovery
-/// [`crate::registry`] - not one run's `agent-live` heartbeat. `live_instances` is the length of
-/// [`crate::registry::read_live`], which already applies the idle window (an instance counts as
-/// live only while its heartbeat is fresher than the window; a reader prunes the rest), so "no live
-/// instance" means EVERY registered instance's heartbeat has aged past the idle window and none was
-/// refreshed within it.
+/// process watching only its OWN run's liveness markers: it is one machine-level process that
+/// serves every registered instance and outlives any single run, so its PRIMARY liveness signal
+/// is the discovery [`crate::registry`], not one run's `agent-live` heartbeat. `live_instances`
+/// is the length of [`crate::registry::read_live`], which already applies the idle window (an
+/// instance counts as live only while its heartbeat is fresher than the window; a reader prunes
+/// the rest), so "no live instance" means EVERY registered instance's heartbeat has aged past the
+/// idle window and none was refreshed within it.
+///
+/// Spec 62 criterion 5 adds a SECOND, independent signal on top of that registry view: `rigger
+/// progress` / `emit` / `result` couriers refresh the registry (spec 62 criterion 4), but an
+/// agent's OWN liveness-marker touch (spec 10's heartbeat, e.g. mid-build with no courier call in
+/// between) does not - so a registry that has genuinely aged out can still be sitting under a
+/// project with a live, working agent. The idle judgment must see that agent, not just the
+/// registry: it does, through `agent_live`.
 ///
 /// - `live_instances`: how many registered instances are currently live (heartbeat within the idle
 ///   window). Greater than zero means at least one run - on THIS project or any other, local or a
@@ -434,12 +443,29 @@ pub fn dash_start_needed(
 ///   path just ensured reads zero live instances until its ensuring run writes its registry entry,
 ///   and it must NOT reap on those first empty polls before the entry lands. Once any live instance
 ///   has been seen, a return to zero is genuine machine idle and reaps. The safe direction on
-///   uncertainty (never yet seen a live instance) is to keep serving.
-pub fn should_reap_singleton(live_instances: usize, ever_seen_live: bool) -> bool {
-    // Reap only once the watcher has seen a live instance AND none remains live: a quiet machine.
-    // A positive count never reaps (a live run - any project's - keeps the singleton serving), and
-    // an empty registry that has never yet held a live instance keeps serving (the startup guard).
-    ever_seen_live && live_instances == 0
+///   uncertainty (never yet seen a live instance) is to keep serving. Scoped to the REGISTRY only
+///   (unchanged by criterion 5): the agent-liveness signal has no analogous startup race to guard
+///   (an absent marker degrades to `agent_live: false`, the same safe-to-check-again-next-poll
+///   default the registry's own absent-directory read already uses).
+/// - `agent_live`: whether the SAME liveness authority `rigger status` presents - the local
+///   project's own per-spawn `agent-live` markers ([`crate::liveness::any_marker_fresh`]) - shows
+///   a fresh signal right now. `true` withholds the reap even when the registry has genuinely gone
+///   quiet, because a live agent working under a lapsed courier cadence is still real work in
+///   flight.
+///
+/// A genuinely quiet machine - registry empty past the startup guard AND no fresh agent liveness
+/// signal - reaps exactly as spec 50 criterion 5 always has.
+pub fn should_reap_singleton(
+    live_instances: usize,
+    ever_seen_live: bool,
+    agent_live: bool,
+) -> bool {
+    // Reap only once the watcher has seen a live instance, none remains live, AND no agent is
+    // signalling liveness directly: a quiet machine. A positive count never reaps (a live run -
+    // any project's - keeps the singleton serving); an empty registry that has never yet held a
+    // live instance keeps serving (the startup guard); and a fresh agent liveness signal keeps
+    // serving even once the registry itself has aged out (spec 62 criterion 5).
+    ever_seen_live && live_instances == 0 && !agent_live
 }
 
 /// What the dash's data provider yields per request: the run's events, its context subgraph,
@@ -8034,35 +8060,71 @@ mod tests {
         // Startup: the ensuring run has not yet written its registry entry, so the watcher reads
         // ZERO live instances on its first polls. It must NOT reap before that entry lands.
         assert!(
-            !should_reap_singleton(0, false),
+            !should_reap_singleton(0, false, false),
             "a just-ensured singleton that has not yet seen any live instance must not reap"
         );
 
         // A live instance is registered (this project's run, or any other's): keep serving.
         assert!(
-            !should_reap_singleton(1, true),
+            !should_reap_singleton(1, true, false),
             "one live registered instance keeps the singleton serving"
         );
         // The multi-instance headline: one project's run ending while ANOTHER's is still live
         // leaves the count > 0, so the singleton survives.
         assert!(
-            !should_reap_singleton(2, true),
+            !should_reap_singleton(2, true, false),
             "several live instances keep the singleton serving"
         );
 
         // Every registered instance's heartbeat has aged past the idle window (so `read_live`
-        // pruned them all) and the watcher HAS seen a live instance before: a quiet machine ->
-        // reap.
+        // pruned them all), the watcher HAS seen a live instance before, and there is no agent
+        // liveness signal either: a quiet machine -> reap.
         assert!(
-            should_reap_singleton(0, true),
+            should_reap_singleton(0, true, false),
             "no live instance, after at least one was seen, reaps the singleton"
         );
 
         // A count > 0 that was never marked seen cannot occur in the watcher (a non-empty read
         // flips the flag first), but the decision stays safe: a positive count never reaps.
         assert!(
-            !should_reap_singleton(1, false),
+            !should_reap_singleton(1, false, false),
             "a positive live count never reaps regardless of the seen flag"
+        );
+    }
+
+    #[test]
+    fn should_reap_singleton_never_reaps_while_a_fresh_agent_liveness_signal_is_present() {
+        // Spec 62, criterion 5 (SINGLETON SURVIVES LIVE WORK, OWNS the idle judgment): the
+        // reap decision now requires BOTH the registry AND the agent liveness signal to be
+        // quiet - a registry that has aged out (empty, but was once seen live) must NOT reap
+        // while a fresh in-flight agent liveness marker is present.
+        assert!(
+            !should_reap_singleton(0, true, true),
+            "an aged-out registry with a fresh agent liveness signal must not reap"
+        );
+        // With BOTH quiet, it reaps exactly as today.
+        assert!(
+            should_reap_singleton(0, true, false),
+            "an aged-out registry with no agent liveness signal reaps exactly as before"
+        );
+        // A live registered instance keeps serving regardless of the agent signal either way.
+        assert!(
+            !should_reap_singleton(1, true, false),
+            "a live registered instance keeps serving even with no agent liveness signal"
+        );
+        assert!(
+            !should_reap_singleton(1, true, true),
+            "a live registered instance plus a live agent signal still keeps serving"
+        );
+        // The startup-race guard is unchanged: never reaps before any instance has been seen,
+        // agent signal or not.
+        assert!(
+            !should_reap_singleton(0, false, false),
+            "the startup guard still holds with no agent signal"
+        );
+        assert!(
+            !should_reap_singleton(0, false, true),
+            "the startup guard still holds even with a live agent signal"
         );
     }
 

@@ -5814,6 +5814,12 @@ fn cmd_dash(args: &[String]) -> Res {
             rigger::worktree::scratch_root_from_env(&repo, &workdir)
         }
     };
+    // A clone taken BEFORE the `provider` closure below moves the original: the self-reap
+    // watcher (spec 62, criterion 5) needs this project's own scratch root to check its agent
+    // liveness markers directly, but `provider` is a `move` closure that would otherwise
+    // consume `scratch_root` entirely, leaving nothing for the watcher spawned much later in
+    // this function. Cheap regardless of `reap_on_idle` (an empty string when repo-less).
+    let reap_scratch_root = scratch_root.clone();
     // The FALLBACK release-target base the ready-to-release handoff (spec 38, criterion 3) names
     // on the dash. `build_state` reads the base PERSISTED on this run's RunStarted from the
     // events it projects each request, so the live dash names the base the run actually anchored
@@ -5828,8 +5834,10 @@ fn cmd_dash(args: &[String]) -> Res {
     // registry, so the watcher never starts and the dash simply serves). `None` for the guard-bound
     // `rigger run` / `run_workflow` dash, which never starts a watcher (it keeps its `ReapedChild`).
     // Retargets spec 39's per-run liveness snapshot at the singleton: the reap trigger is now the
-    // registry (every instance on the machine), not this one project's run, so no per-run inputs are
-    // captured here.
+    // registry (every instance on the machine), not this one project's run, so no per-RUN inputs
+    // are captured here. Spec 62 criterion 5 adds a second, per-PROJECT (never per-run) signal
+    // alongside it: `reap_scratch_root` above, so the watcher can also see THIS project's own
+    // agent-liveness markers directly - see `watch_and_self_reap_on_idle`.
     let reap_registry_dir = reap_on_idle.then(rigger::registry::default_dir).flatten();
 
     // The SEPARATE, lazy graph provider for `/api/graph` (spec 45, criteria 1+2). It opens the
@@ -5969,22 +5977,31 @@ fn cmd_dash(args: &[String]) -> Res {
                     Ok(())
                 }
                 dash::SingletonBind::Bound(listener) => {
-                    // Self-reap on machine idle (spec 50, criterion 5): the detached step-path
-                    // SINGLETON is started with `--reap-on-idle`, so a background thread polls the
-                    // machine-global instance registry and exits this process once NOTHING is
-                    // registered-and-alive - leaving no orphaned dash on a quiet machine, while
-                    // surviving one project's run ending as long as another's is still live. This
-                    // retargets spec 39's per-run liveness trigger at the machine-level singleton;
-                    // it is driven by the registry, NOT by any single `step` process exiting.
-                    // Read-only: the watcher only reads the registry. The guard-bound `rigger run` /
-                    // `run_workflow` dash omits the flag and keeps its `ReapedChild` reaping
-                    // instead. Started ONLY on the branch that actually binds and serves - a
-                    // short-circuited singleton invocation serves nothing and starts no watcher.
+                    // Self-reap on machine idle (spec 50, criterion 5; spec 62, criterion 5): the
+                    // detached step-path SINGLETON is started with `--reap-on-idle`, so a
+                    // background thread polls the machine-global instance registry AND this
+                    // project's own agent-liveness markers, exiting this process only once
+                    // NEITHER shows anything live - leaving no orphaned dash on a quiet machine,
+                    // while surviving one project's run ending as long as another's is still
+                    // live, AND surviving a live agent whose courier cadence has lapsed even as
+                    // the registry itself ages out. This retargets spec 39's per-run liveness
+                    // trigger at the machine-level singleton; it is driven by the registry (plus
+                    // this local agent-liveness check), NOT by any single `step` process exiting.
+                    // Read-only: the watcher only reads the registry and stats marker files. The
+                    // guard-bound `rigger run` / `run_workflow` dash omits the flag and keeps its
+                    // `ReapedChild` reaping instead. Started ONLY on the branch that actually
+                    // binds and serves - a short-circuited singleton invocation serves nothing and
+                    // starts no watcher.
                     if let Some(registry_dir) = reap_registry_dir {
                         let poll = dash_reap_poll();
                         let idle_window = dash_reap_idle_window();
                         std::thread::spawn(move || {
-                            watch_and_self_reap_on_idle(registry_dir, idle_window, poll)
+                            watch_and_self_reap_on_idle(
+                                registry_dir,
+                                reap_scratch_root,
+                                idle_window,
+                                poll,
+                            )
                         });
                     }
                     dash::serve_on(
@@ -6035,20 +6052,27 @@ fn dash_reap_idle_window() -> std::time::Duration {
     }
 }
 
-/// The dash self-reap watcher loop (spec 50, criterion 5), run on a background thread inside the
-/// detached step-path SINGLETON dash. On each `poll` tick it reads the machine-global instance
-/// registry read-only ([`rigger::registry::read_live`], which prunes entries whose heartbeat has
-/// aged past `idle_window`); when [`dash::should_reap_singleton`] says the machine is quiet - no
-/// registered instance is live and at least one has been seen - it exits the process, terminating
-/// the blocked [`dash::serve`] accept loop. This RETARGETS spec 39's per-run liveness watch at the
-/// machine-level singleton: the dash serves every registered instance and outlives any single run,
-/// so it SURVIVES one project's run ending while another's is still live (that instance keeps
-/// `read_live` non-empty) and reaps only on a genuinely idle machine - driven by the registry, NOT
-/// by any single `step` process exiting. The `ever_seen_live` latch is the startup-race guard (a
-/// just-ensured singleton must not reap before its ensuring run writes its entry). Never returns
-/// (it either loops or exits the process).
+/// The dash self-reap watcher loop (spec 50, criterion 5; spec 62, criterion 5), run on a
+/// background thread inside the detached step-path SINGLETON dash. On each `poll` tick it reads
+/// the machine-global instance registry read-only ([`rigger::registry::read_live`], which prunes
+/// entries whose heartbeat has aged past `idle_window`) AND scans `scratch_root` for a fresh
+/// in-flight agent liveness marker ([`rigger::liveness::any_marker_fresh`], the SAME marker
+/// mechanism `rigger status` reads for this local project, checked against the SAME
+/// `idle_window` bound); when [`dash::should_reap_singleton`] says the machine is quiet - no
+/// registered instance is live, at least one has been seen, and no agent liveness marker is
+/// fresh - it exits the process, terminating the blocked [`dash::serve`] accept loop. This
+/// RETARGETS spec 39's per-run liveness watch at the machine-level singleton: the dash serves
+/// every registered instance and outlives any single run, so it SURVIVES one project's run ending
+/// while another's is still live (that instance keeps `read_live` non-empty), SURVIVES a live
+/// agent whose courier cadence has lapsed even as this project's own registry entry ages out
+/// (spec 62 criterion 5's headline), and reaps only on a genuinely idle machine - driven by the
+/// registry plus this local agent-liveness check, NOT by any single `step` process exiting. The
+/// `ever_seen_live` latch is the startup-race guard (a just-ensured singleton must not reap
+/// before its ensuring run writes its entry); it stays scoped to the registry, unchanged by the
+/// agent-liveness addition. Never returns (it either loops or exits the process).
 fn watch_and_self_reap_on_idle(
     registry_dir: PathBuf,
+    scratch_root: String,
     idle_window: std::time::Duration,
     poll: std::time::Duration,
 ) -> ! {
@@ -6065,7 +6089,16 @@ fn watch_and_self_reap_on_idle(
             // idle (not the startup gap before the ensuring run's entry has landed).
             ever_seen_live = true;
         }
-        if dash::should_reap_singleton(live.len(), ever_seen_live) {
+        // Read-only scan of this LOCAL project's own agent-liveness markers (spec 62, criterion
+        // 5): the same `idle_window` bound the registry check above uses, so a fresh touch (spec
+        // 10's heartbeat) counts as live for exactly as long as a fresh registry heartbeat would.
+        // An empty `scratch_root` (repo-less) degrades to no signal, matching every other reader.
+        let agent_live = rigger::liveness::any_marker_fresh(
+            &scratch_root,
+            std::time::SystemTime::now(),
+            idle_window,
+        );
+        if dash::should_reap_singleton(live.len(), ever_seen_live, agent_live) {
             // Self-reap: exit the whole process so the detached singleton leaves no orphan on a
             // quiet machine. The stale `.rigger/dash.marker` this leaves behind is deliberately NOT
             // removed - a next run's first `step` already tolerates it (`dash_start_needed` probes

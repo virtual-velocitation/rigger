@@ -21148,6 +21148,137 @@ fn a_reap_on_idle_singleton_does_not_reap_before_any_instance_has_registered() {
     assert_eq!(n, 0, "a self-reaped dash should have its stdout at EOF");
 }
 
+/// Write (or refresh) a liveness marker file at `path`, creating its parent directory as needed.
+/// Rewriting an existing file refreshes its mtime - the direct-filesystem analogue of a spawn's
+/// own heartbeat touch (spec 10), used here to simulate a live agent without spawning a real
+/// worker process. Stands in for the raw `touch` a real agent performs; the marker's CONTENT is
+/// never read by anything, only its mtime.
+fn touch_marker(path: &std::path::Path) {
+    std::fs::create_dir_all(path.parent().unwrap()).expect("create marker parent dir");
+    std::fs::write(path, b"").expect("write liveness marker");
+}
+
+/// Spec 62, criterion 5 (SINGLETON SURVIVES LIVE WORK, OWNS the idle judgment) end to end,
+/// through the BUILT binary: a `rigger dash --reap-on-idle` must NOT self-reap while a fresh
+/// in-flight AGENT liveness marker is present, even once the machine-global instance REGISTRY has
+/// genuinely aged out and gone empty - the exact gap the registry-only decision (spec 50 criterion
+/// 5, proven by the sibling tests above) left open: an agent mid-build with no recent courier call
+/// keeps its own liveness marker fresh (spec 10's heartbeat) without necessarily refreshing the
+/// registry on the same cadence. Only once BOTH the registry AND the agent liveness marker have
+/// gone quiet does the singleton reap - proving this criterion's own OWNED idle judgment, not
+/// just the registry-only judgment the sibling tests already lock in.
+///
+/// The registry instance is written ONCE (never re-heartbeated), so it ages out on its own past
+/// the fast test window - the "aged-out registry" the Done-when text names. A background thread
+/// keeps a SEPARATE liveness marker fresh under a temp scratch root (`RIGGER_TMPDIR`), standing in
+/// for a real spawn's own heartbeat touch, until the test lets it go idle too.
+#[test]
+fn a_reap_on_idle_singleton_survives_a_fresh_agent_liveness_marker_after_the_registry_ages_out() {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
+
+    // A machine-global registry the dash and the test share.
+    let state = tempfile::tempdir().unwrap();
+    let xdg = state.path().to_str().unwrap().to_string();
+    let regdir = rigger::registry::instances_dir(state.path());
+
+    // A hermetic scratch root the dash resolves via `RIGGER_TMPDIR`, so its agent-liveness scan
+    // (`rigger::liveness::any_marker_fresh`) reads exactly what this test writes and nothing from
+    // the real repo's own `.rigger/tmp`.
+    let scratch = tempfile::tempdir().unwrap();
+    let scratch_root = scratch.path().to_str().unwrap().to_string();
+    let marker_path =
+        rigger::liveness::marker_path(&scratch_root, "run-1", "u1c1/implementer#0").unwrap();
+
+    // ONE registry write, never refreshed: it ages out on its own once the fast test window
+    // elapses - the "aged-out registry" half of the criterion, driven with no ongoing heartbeat.
+    write_live_instance(&regdir, "proj-a", "/home/dev/proj-a");
+
+    // The agent liveness marker starts fresh and is kept fresh by a background thread - the "fresh
+    // in-flight agent liveness signal" half of the criterion.
+    touch_marker(&marker_path);
+    let stop = Arc::new(AtomicBool::new(false));
+    let marker_thread_path = marker_path.clone();
+    let marker_stop = stop.clone();
+    let heartbeat = std::thread::spawn(move || {
+        while !marker_stop.load(Ordering::Relaxed) {
+            touch_marker(&marker_thread_path);
+            std::thread::sleep(Duration::from_millis(150));
+        }
+    });
+
+    let port = free_loopback_port();
+    let mut child = common::rigger_courier()
+        .args(["dash", "--port", &port.to_string(), "--reap-on-idle"])
+        .env("XDG_STATE_HOME", &xdg)
+        .env("RIGGER_TMPDIR", &scratch_root)
+        // Same fast poll/stale envs as the registry-only tests: the registry entry above ages
+        // out within ~2s, and (were the agent-liveness signal absent) the singleton would reap
+        // almost immediately after - a strong signal if it wrongly does.
+        .env("RIGGER_DASH_REAP_POLL_MS", "150")
+        .env("RIGGER_DASH_REAP_STALE_SECS", "2")
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn `rigger dash --reap-on-idle`");
+    let mut out = child.stdout.take().expect("dash stdout is piped");
+
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 1];
+        let n = out.read(&mut buf).unwrap_or(0);
+        let _ = tx.send(n);
+    });
+
+    if !matches!(http_get(&format!("http://127.0.0.1:{port}/")), Some(body) if body.contains("rigger dash"))
+    {
+        stop.store(true, Ordering::Relaxed);
+        let _ = heartbeat.join();
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("the `rigger dash --reap-on-idle` never served its page");
+    }
+
+    // Well past the registry's 2s window (several poll intervals beyond it), with the marker
+    // thread still refreshing: the registry alone has gone empty, but the agent liveness signal
+    // is fresh, so the singleton must NOT reap. A read here is exactly the gap this criterion
+    // closes - reaping out from under a live agent whose courier cadence lapsed.
+    if rx.recv_timeout(Duration::from_millis(3500)).is_ok() {
+        stop.store(true, Ordering::Relaxed);
+        let _ = heartbeat.join();
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!(
+            "the singleton self-reaped while the registry was empty but a fresh in-flight agent \
+             liveness marker was still present - the idle judgment must see the agent, not just \
+             the registry"
+        );
+    }
+    // Still genuinely serving (not merely a blocked-but-dead pipe).
+    assert!(
+        matches!(http_get(&format!("http://127.0.0.1:{port}/")), Some(body) if body.contains("rigger dash")),
+        "the singleton must still serve while the agent liveness marker is fresh"
+    );
+
+    // Now let the agent liveness marker go idle too: with BOTH signals quiet, the singleton
+    // reaps exactly as spec 50 criterion 5 always has.
+    stop.store(true, Ordering::Relaxed);
+    heartbeat.join().expect("marker heartbeat thread joins");
+
+    let reaped = rx.recv_timeout(Duration::from_secs(12));
+    let _ = child.kill();
+    let _ = child.wait();
+    let n = reaped.expect(
+        "the singleton did not SELF-REAP within 12s after BOTH the registry and the agent \
+         liveness marker went idle - a genuinely quiet machine's dash must not leak",
+    );
+    assert_eq!(n, 0, "a self-reaped dash should have its stdout at EOF");
+}
+
 /// Spec 50, criterion 5 - the flag GATE through the BUILT binary: a `rigger dash` WITHOUT
 /// `--reap-on-idle` starts NO watcher, so it never self-reaps even on a quiet machine with an EMPTY
 /// registry. The guard-bound `rigger run` / `run_workflow` dash relies on this: its `ReapedChild`
@@ -21289,13 +21420,15 @@ fn a_reap_on_idle_singleton_in_a_homeless_environment_serves_without_a_watcher()
     );
 }
 
-/// Spec 50, criterion 5 - the PUBLIC contract of the new decision function at the CRATE BOUNDARY.
-/// `dash::should_reap_singleton` is the exported domain core the singleton's watcher polls; the
-/// dash.rs unit test proves it white-box (inside the module), and the integration tests above drive
-/// it end-to-end through the built binary. This pins its contract at the PUBLIC `rigger::dash`
-/// boundary an EXTERNAL caller sees - that the function is exported and its truth table holds -
-/// independent of any watcher wiring: reap IFF a live instance has EVER been seen AND none remains,
-/// so a positive live count never reaps and a not-yet-seen (startup) empty registry keeps serving.
+/// Spec 50, criterion 5 (spec 62, criterion 5) - the PUBLIC contract of the new decision function
+/// at the CRATE BOUNDARY. `dash::should_reap_singleton` is the exported domain core the
+/// singleton's watcher polls; the dash.rs unit test proves it white-box (inside the module), and
+/// the integration tests above drive it end-to-end through the built binary. This pins its
+/// contract at the PUBLIC `rigger::dash` boundary an EXTERNAL caller sees - that the function is
+/// exported and its truth table holds - independent of any watcher wiring: reap IFF a live
+/// instance has EVER been seen, none remains, AND no agent liveness signal is fresh, so a positive
+/// live count never reaps, a not-yet-seen (startup) empty registry keeps serving, and a fresh
+/// agent liveness signal keeps serving even once the registry itself has gone quiet.
 #[test]
 fn should_reap_singleton_public_contract_holds_at_the_crate_boundary() {
     use rigger::dash::should_reap_singleton;
@@ -21303,29 +21436,37 @@ fn should_reap_singleton_public_contract_holds_at_the_crate_boundary() {
     // Startup guard: no live instance has EVER been seen yet, so keep serving regardless of the
     // current count - a just-ensured singleton must not reap before its ensuring run registers.
     assert!(
-        !should_reap_singleton(0, false),
+        !should_reap_singleton(0, false, false),
         "a never-seen empty registry must keep serving (the startup-race guard)"
     );
     assert!(
-        !should_reap_singleton(1, false),
+        !should_reap_singleton(1, false, false),
         "a positive live count never reaps, whatever the seen flag"
     );
 
     // A live instance keeps the singleton serving once one has been seen (this project's run or any
     // other's - a positive count means at least one run needs the dash).
     assert!(
-        !should_reap_singleton(1, true),
+        !should_reap_singleton(1, true, false),
         "one live instance keeps the singleton serving"
     );
     assert!(
-        !should_reap_singleton(5, true),
+        !should_reap_singleton(5, true, false),
         "several live instances keep the singleton serving"
     );
 
-    // Machine idle: at least one live instance was seen and none remains live -> reap.
+    // Machine idle: at least one live instance was seen and none remains live, and no agent
+    // liveness signal is fresh -> reap.
     assert!(
-        should_reap_singleton(0, true),
-        "seen-then-empty is a genuinely quiet machine: the singleton reaps"
+        should_reap_singleton(0, true, false),
+        "seen-then-empty with no agent signal is a genuinely quiet machine: the singleton reaps"
+    );
+
+    // Spec 62 criterion 5's own addition: a fresh agent liveness signal withholds the reap even
+    // once the registry has gone quiet - the idle judgment sees the agent, not just the registry.
+    assert!(
+        !should_reap_singleton(0, true, true),
+        "a fresh agent liveness signal keeps the singleton serving even with an aged-out registry"
     );
 }
 
