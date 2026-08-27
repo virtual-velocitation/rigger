@@ -1,7 +1,7 @@
 # Architecture addendum: the world authority
 
-Status: PROPOSED - for operator review. This document (v5) merges and SUPERSEDES two prior
-proposals (the resident conductor; the world reconciler) and integrates four rounds of
+Status: PROPOSED - for operator review. This document (v6) merges and SUPERSEDES two prior
+proposals (the resident conductor; the world reconciler) and integrates five rounds of
 five-lens adversarial design review. Everything below describes the TARGET state except
 "Problem", which records the measured present.
 
@@ -88,18 +88,19 @@ observations, never by a secret an agent could hold or read.
   a PROPOSAL: the daemon records it, but the SpawnResult/SpawnAbandoned terminus that
   actually drops a spawn's resources is a DAEMON DECLARATION the daemon appends only after
   it has CORROBORATED the spawn is no longer live with its own facts. Corroboration is the
-  EXACT NEGATION of the full liveness predicate - it fires only when ALL of these hold at
-  once: the spawn's socket claim is released, its last `rigger progress` heartbeat is
-  stale past the liveness TTL, AND no live process is rooted under its worktree (a forked
-  child's cgroup empty, or an agent turn's `processes_rooted_under` scan empty). ANY single
+  EXACT NEGATION of the full liveness predicate - the same FOUR facts the reap veto below
+  consults - and it fires only when ALL FOUR are negative at once: no live forked child in
+  the child table, the spawn's socket claim released, its last `rigger progress` heartbeat
+  stale past the liveness TTL, AND no live process rooted under its worktree. ANY single
   sign of life is a hard veto that blocks the terminus, and the process-presence sign is
   NON-DEGRADING: a live process under a worktree ALWAYS blocks its terminus, with no
   wall-clock override, because deleting a directory a live process writes is the founding
-  defect. So a `result` for a spawn any of whose liveness signs still shows is inert: it
-  queues as a proposal and never fires a terminus while the spawn lives. A gone spawn
-  (all three signs negative) with no recorded result is DECLARED SpawnAbandoned from the
-  same corroboration - closing the forged-reap and the crashed-worker-stranding holes
-  together, without any unforgeable secret.
+  defect. A forked child rests primarily on the first fact; an agent turn, never forked,
+  has that fact vacuously negative and rests on the other three. So a `result` for a spawn
+  any of whose liveness facts still shows is inert: it queues as a proposal and never fires
+  a terminus while the spawn lives. A gone spawn (all four facts negative) with no recorded
+  result is DECLARED SpawnAbandoned from the same corroboration - closing the forged-reap
+  and the crashed-worker-stranding holes together, without any unforgeable secret.
 - **The command line is a client.** Mutation flows through the daemon; CLI invocations
   query live state or compute an OBSERVE-ONLY diff, never converge. Destructive
   convergence happens in exactly one process, holding one lease, by construction.
@@ -168,7 +169,7 @@ the compare (a CAS append) and the act (an `unlinkat`) are separate operations o
 resources, so a superseded daemon that has ALREADY passed its per-arm CAS is caught only at
 its NEXT arm boundary - which is why the flock is the primary exclusivity and the epoch its
 backstop, and why a residual one-arm-batch window exists only once the flock has ALREADY
-failed (a degraded filesystem; on such a mount destructive arms are withheld entirely, see
+failed (a degraded filesystem; on such a mount the unsafe destructive arms are withheld, see
 the substrate preflight in Delivery). That residual is bounded by the blast-radius rail and
 reversible by git-quarantine. To make the CAS enforceable rather than advisory, the daemon's
 own writes are confined to one epoch-fenced stream; per-unit and per-spawn streams become
@@ -200,10 +201,13 @@ role); a row whose process identity is GONE and for which no `SpawnResult` propo
 recorded is DECLARED `SpawnAbandoned`; a row that completed is DECLARED `SpawnResult`. Where
 cgroup v2 delegation is ABSENT (cgroup v1, or a probed-undelegated host - the same posture
 the signal port degrades for), there is no persisted subtree, so reconciliation falls back
-to `(pid, start-time, boot-id)` identity ALONE, with the pid-recycle ambiguity documented as
-a known reduced-lane limitation: a survivor row whose identity re-verifies unambiguously is
-adopted or terminated as above, and any row whose identity is ambiguous is routed to arm 5
-for operator diagnosis, never signalled or reaped on a guess. Every survivor thus reaches a
+to `(pid, start-time, boot-id)` identity ALONE. A survivor is UNAMBIGUOUS and acted on when
+either a live process bears the exact recorded `(pid, start-time, boot-id)` (adopt or end)
+or no process bears that pid at all (declare `SpawnAbandoned`); it is AMBIGUOUS - the pid is
+live but its start-time or boot-id cannot be confirmed to match - and is routed to arm 5 for
+operator diagnosis, never signalled or reaped on a guess. These ambiguous survivors are
+rare (only a crash on a cgroup-v1 host produces them) and bounded by the number of a single
+run's live spawns, so the arm-5 route cannot flood. Every survivor thus reaches a
 daemon-declared terminus or an explicit anomaly, so `desired_world` never strands a crashed
 spawn's resources as desired-forever. The ledger MAY additionally be HMAC'd under a
 per-lifetime in-memory key strictly as intra-lifetime tamper-evidence of the row set the
@@ -214,29 +218,36 @@ cgroup membership and `/proc` identity, which no same-uid agent can forge withou
 privilege the OS boundary already denies. The `/proc` cwd scan is a read-only VETO input and
 a `validate` advisory; nothing in the binary signals a scanned process.
 
-**Liveness has two channels, both facts, and the corroboration is the exact negation of
-them.** A forked child heartbeats over its pipe and is bounded by the daemon's timer. An
-AGENT TURN - run by a courier the daemon did not fork - is represented by a courier RUNTIME
-that holds a live socket CLAIM on its spawn CONTINUOUSLY for the spawn's whole life (not
-released and re-taken per model turn, so there is no between-turns claim gap) and heartbeats
-via `rigger progress` on its OWN wall-clock timer, decoupled from whatever tool call the
-agent is blocked in - so a multi-minute `cargo build`/`cargo mutants` still heartbeats. A
-worktree's liveness is the conjunction of three facts: an open socket claim, a fresh
-progress timestamp (within TTL), and a live process rooted under the worktree. Arm 1's
-live-worker veto consults ALL THREE - the child table plus open socket claims (both channels
-above), the last-progress-freshness timestamp, and the read-only `processes_rooted_under`
-scan - and ANY ONE of them showing life vetoes the reap. The process-presence veto is
-NON-DEGRADING: it never expires on a wall clock while a process is actually rooted under the
-worktree, so the process most likely to be mid-edit - the agent's own cargo/git - can never
-be reaped under, even across a long op that outlasts every TTL. The orphan case that a naive
-non-expiring veto would leak (a harness-parented process still running under a worktree whose
-agent turn has ended, its claim released and progress stale) is NOT time-bombed into a reap
-and NOT a silent leak: it is surfaced as an arm-5 ANOMALY naming the parentless-but-live
-process and its worktree, for the operator (or the process's own exit) to resolve - and once
-the process exits, the worktree reaps normally. A liveness FAULT (a stale claim or stale
-progress while a process may still be present) records the fault but routes the resource
-consequence through arm 5 for one cycle before any reap, so a false-positive timeout never
-becomes an irreversible kill.
+**Liveness arrives on two channels; the reap veto consults four facts.** A forked child
+heartbeats over its pipe and is bounded by the daemon's timer (channel one). An AGENT TURN -
+run by a courier the daemon did not fork - is represented by a courier RUNTIME that holds a
+live socket CLAIM on its spawn (channel two); the claim is a PASSIVELY-HELD open connection,
+kernel-closed on the courier's death exactly as the flock is, so holding it needs no
+concurrency and survives a courier blocked in a synchronous multi-minute `cargo` child - it
+lapses only when the courier runtime actually dies. The runtime also heartbeats via
+`rigger progress` on its own wall-clock timer. From these two channels the reap veto (and
+its negation, the terminus corroboration) consults FOUR independent facts, ANY ONE of which
+is a hard veto that blocks a reap: (1) the child table (a forked child registered and live
+on its pipe and timer); (2) an open socket claim (an agent turn's held connection); (3)
+last-progress freshness (a `rigger progress` heartbeat within TTL); (4) the read-only
+`processes_rooted_under` scan (a live process under the worktree). Fact 1 is the forked-child
+channel and is vacuously negative for an agent turn (never forked); facts 2-4 are how an
+agent turn proves live, and facts 1 and 4 are how a forked child proves live - the four are
+independently failable (a forked child can die while an agent-turn claim is open, or vice
+versa), which is why all four are listed and why the corroboration negates all four. Fact 4,
+the process-presence scan, is NON-DEGRADING: it never expires on a wall clock while a process
+is actually rooted under the worktree, so the process most likely to be mid-edit - the
+agent's own cargo/git - can never be reaped under, even across a long op that outlasts every
+TTL. The orphan case that a naive non-expiring veto would leak (a harness-parented process
+still running under a worktree whose courier connection has CLOSED - the runtime truly dead -
+its claim released and progress stale) is NOT time-bombed into a reap and NOT a silent leak:
+it is surfaced as an arm-5 ANOMALY naming the parentless-but-live process and its worktree,
+for the operator (or the process's own exit) to resolve - and once the process exits, the
+worktree reaps normally. Because the claim is a held connection, a healthy long op (claim
+connection open) never enters this state. A liveness FAULT (a stale claim or stale progress
+while a process may still be present) records the fault but routes the resource consequence
+through arm 5 for one cycle before any reap, so a false-positive timeout never becomes an
+irreversible kill.
 
 **The dashboard** is daemon-owned; its liveness IS daemon state. Marker files, stale-marker
 diagnosis, and the self-reap protocol are deleted, not fixed.
@@ -245,10 +256,14 @@ diagnosis, and the self-reap protocol are deleted, not fixed.
 surface: the daemon EMITS each new arm-5 signal through the same `notify:` port the
 turn-boundary hook uses (argv-only, JSON on stdin) AND persists it to `anomalies.jsonl`, so a
 signal raised while no loop is driving still reaches a consumer's configured notify hook and
-survives durably for the next reader; and where a supervisor is present the crash-loop
-breaker's trip is wired to the supervisor's own restart-limit and journal, so a daemon
-crash-looping with nobody watching is not silent. Rigger owns the durable signal and the
-notify port; delivering it to a pager is the consumer's `notify:` hook, by scope.
+survives durably for the next reader. Two honest limits are surfaced, not assumed: `rigger
+status` reports (and warns) when NO `notify:` hook is configured, so an operator learns the
+push path is a no-op rather than discovering it in an incident; and the crash-loop breaker's
+restart count is kept in a DURABLE on-disk restart-ledger in the 0700 root (not only in a
+supervisor), so the breaker trips and persists its trip to `anomalies.jsonl` even in the
+`unsupervised` posture, where a supervisor's restart-limit and journal are absent. Rigger
+owns the durable signal and the notify port; delivering it to a pager is the consumer's
+`notify:` hook, by scope.
 
 **The CLI as client.** `status`/`watch` are socket queries. `progress`/`result`/`emit` are
 socket requests the daemon appends as PROPOSALS (a `result` proposes a terminus the daemon
@@ -261,45 +276,52 @@ incidental:** on every connect and tick the daemon drains ALL outboxes first (ea
 applied through the store's existing `record_result_if_absent` CAS, exactly-once by its
 idempotency key, then the applied line removed), THEN reconciles the ledger, THEN re-derives
 and re-spawns - so a worker that completed during an outage is never re-spawned into a
-double-run, and its result is never reaped before it is drained. Every socket request carries
-a client-minted idempotency key and is applied through the same CAS, never a blind `Any`
+double-run, and its result is never reaped before it is drained. Every request carries a
+client-minted idempotency key and is applied through the same CAS, never a blind `Any`
 append. For a SINGLE-SHOT kind (`result`, one per spawn) the key is `(run, owner, attempt,
 kind)`; for a REPEATABLE kind (`emit`, a reviewer's several findings) the key additionally
-carries a per-instance discriminator (a client sequence or content id), so two distinct
-observations in one attempt never collide into a silent dedup-drop - the CAS still makes a
-retried identical request idempotent, but distinct requests stay distinct. A proposal names
-the spawn it concerns; the daemon binds it to that spawn through the work-assignment token it
-minted and handed out with the work via `wave --pull` (delivered in the agent's own
-assignment channel, not a shared file), which scopes an ACCIDENTAL cross-spawn misreport -
-the HARD backstop against a forged terminus remains the liveness-corroborated declaration,
-which needs no unforgeable token. `run` starts or submits to the daemon; `wave --pull` is the
-named verb couriers use to fetch parked work (the tick is park-only and never spawns agents).
-DAEMON-AUTHORITY and DESTRUCTIVE-CONTROL verbs (`run`, `step --once`, `reset`,
-`reset --force-live`, `daemon kill --wedged`) require an OPERATOR capability - and because the
+carries the request's DURABLE OUTBOX-LINE ID - a per-container monotonic id the courier
+persists (temp-then-rename) BEFORE sending, so it is stable across a network retry of the
+same logical request (the retry reuses the id it already wrote, and the CAS dedups it),
+distinct across two textually-identical-but-separate findings (each got its own id), and
+non-colliding across a courier restart within one attempt (the counter is read from disk,
+not an in-memory zero) - closing every silent-dedup-drop path a bare sequence or a raw
+content hash would leave open. A proposal names the spawn it concerns; the daemon binds it to
+that spawn through the work-assignment token it minted and handed out with the work via
+`wave --pull` (delivered in the agent's own assignment channel, not a shared file), which
+scopes an ACCIDENTAL cross-spawn misreport - the HARD backstop against a forged terminus
+remains the liveness-corroborated declaration, which needs no unforgeable token. `run` starts
+or submits to the daemon; `wave --pull` is the named verb couriers use to fetch parked work
+(the tick is park-only and never spawns agents). DAEMON-AUTHORITY and DESTRUCTIVE-CONTROL
+verbs (`run`, `step --once`, `reset`, `reset --force-live`, `daemon kill --wedged`, `daemon
+resume`, and the weak-mount `--override`) require an OPERATOR capability - and because the
 single-uid model means an env var or same-uid file is forgeable, the capability is a marker a
 harness-parented `Bash(rigger:*)` agent STRUCTURALLY lacks: a supervisor-inherited file
-descriptor, a systemd credential, or a controlling-tty test. This stops a confused agent from
-ACCIDENTALLY assuming daemon authority or triggering a reset; against a deliberate agent that
-forges the marker the real bound is that even a forged `step --once` runs the REAL converger
-(agents hold only `Bash(rigger:*)`, not rigger internals) under every rail - the corroborated
-terminus, the non-degrading live-process veto, the blast-radius cap, git-quarantine - so no
-destructive act escapes those bounds. `step --once` is retained for tests and takes the SAME
-lease as the daemon, never a second converger. A FENCED gate (`RIGGER_STORE_FENCE_DIR` set)
-does NOT connect to the daemon at all: it opens its fenced store directly, so a unit's own
-test suite still cannot write the live run stream - and fence mode OPENS the resolved
-`FENCE_DIR` first and `fstat`s the open handle, REFUSING loudly when that handle's
-`(device, inode)` equals the live store's (no resolve-then-open TOCTOU, and a hardlink,
-bind-mount, or symlink all resolve to the same identity and are refused), so the one
-sanctioned direct-write can never be aimed at the live declaration stream. `reset` asks the
-live daemon to reconcile to quiescence and hold convergence for the prune, refusing (via the
-held lock, never a socket probe) only if the daemon declines or run state is non-quiescent.
-The daemon runs detached from login sessions only where a working, lingering-enabled
-supervisor is VERIFIED present - at start the daemon probes for one and reports its
-supervision posture (`systemd-user(lingering)` / `unsupervised` / `unknown`), along with
-whether a delegated writable cgroup v2 subtree is present, through `rigger status`, so both
-the session-independence and the process-set guarantees are checked facts, never silent
-assumptions, and `status` names the remedy for an `unsupervised` or cgroup-undelegated
-posture rather than dead-ending on the honest signal.
+descriptor, a systemd credential, a controlling-tty test, or - for a headless, non-systemd
+operator who has none of those - an operator-provisioned 0700 credential file the daemon
+roots ONLY from a trusted install/supervisor context (never writable by a running agent
+turn), so the honest-signal `status` remedy names a path for that posture too. This stops a
+confused agent from ACCIDENTALLY assuming daemon authority or triggering a reset; against a
+deliberate agent that forges the marker the real bound is that even a forged `step --once`
+runs the REAL converger (agents hold only `Bash(rigger:*)`, not rigger internals) under every
+rail - the corroborated terminus, the non-degrading live-process veto, the blast-radius cap,
+git-quarantine - so no destructive act escapes those bounds. `step --once` is retained for
+tests and takes the SAME lease as the daemon, never a second converger. A FENCED gate
+(`RIGGER_STORE_FENCE_DIR` set) does NOT connect to the daemon at all: it opens its fenced
+store directly, so a unit's own test suite still cannot write the live run stream - and fence
+mode OPENS the resolved `FENCE_DIR` first and `fstat`s the open handle it will write through,
+REFUSING loudly when that handle's `(device, inode)` equals the live store's (no
+resolve-then-open TOCTOU, and a hardlink, bind-mount, or symlink all resolve to the same
+identity and are refused), so the one sanctioned direct-write can never be aimed at the live
+declaration stream. `reset` asks the live daemon to reconcile to quiescence and hold
+convergence for the prune, refusing (via the held lock, never a socket probe) only if the
+daemon declines or run state is non-quiescent. The daemon runs detached from login sessions
+only where a working, lingering-enabled supervisor is VERIFIED present - at start the daemon
+probes for one and reports its supervision posture (`systemd-user(lingering)` /
+`unsupervised` / `unknown`), along with whether a delegated writable cgroup v2 subtree is
+present, through `rigger status`, so both the session-independence and the process-set
+guarantees are checked facts, never silent assumptions, and `status` names the remedy for an
+`unsupervised` or cgroup-undelegated posture rather than dead-ending on the honest signal.
 
 ## The resource model
 
@@ -352,18 +374,22 @@ substrate is NOT today's instance registry, whose contract is "never a source of
 loss is harmless" and which PRUNES rows as a read side effect: machine-scoped ASSIGNMENT
 moves to a separate daemon-written store in the 0700 root, each assignment proven by a HELD
 flock on the resource's own slot file (forgeable JSON can never grant it), carrying the
-owning daemon's epoch and identity. Reclamation is deliberately conservative and asymmetric
-by class. A reader never deletes a row whose slot flock is currently HELD (a live owner). A
-row whose flock is FREE but whose owning project ROOT still resolves is a DORMANT real owner:
-its row sits inert for that project's next daemon start to re-acquire, reclaimed by no one.
-Reclamation of a REBUILDABLE/positional slot (a build-budget slot, cache assignment, a
-dashboard singleton) happens only on POSITIVELY CONFIRMED abandonment - the project root's
-parent is present AND the root entry is confirmed ABSENT (a real deletion) - never on mere
-unreachability: a root that is unresolvable because its MOUNT is absent (a removable drive
-unplugged, an NFS share down) is UNKNOWN, routed to arm 5, and never reclaimed, so a
-briefly-offline project is never mistaken for a deleted one. CONTENT-BEARING quarantine repos
-are governed NOT by slot-reclamation at all but by their own declared retention window and
-LRU (below), independent of whether the owning project root currently resolves - so no
+owning daemon's epoch and identity. The machine world is swept by ANY live daemon on the
+machine as part of its own arm-3 tick (not only the assigning project's daemon), which is
+what lets a shared class expire even when its originating project never runs again - see
+quarantine below. Reclamation of an ASSIGNMENT row is deliberately conservative and
+asymmetric by class. A reader never deletes a row whose slot flock is currently HELD (a live
+owner). A row whose flock is FREE but whose owning project ROOT still resolves is a DORMANT
+real owner: its row sits inert for that project's next daemon start to re-acquire, reclaimed
+by no one. Reclamation of a REBUILDABLE/positional slot (a build-budget slot, cache
+assignment, a dashboard singleton) happens only on POSITIVELY CONFIRMED abandonment - the
+project root's parent resolves AND the root entry returns ENOENT (a real deletion) - never on
+mere unreachability, and every predicate is FAIL-CLOSED: only a clean ENOENT on the entry
+counts as absent, while any other errno on the entry OR the parent (EIO, ESTALE, ENOTCONN, a
+whole absent mount) is UNKNOWN, routed to arm 5, and never a reclaim, so a briefly-offline or
+flaky-mount project is never mistaken for a deleted one. CONTENT-BEARING quarantine repos are
+governed NOT by slot-reclamation at all but by their own declared retention window and LRU
+(below), independent of whether the owning project root currently resolves - so no
 reclamation path can ever delete unique content because a mount blinked. Two projects on one
 machine resolve by scope and held lock, never by whichever reconciler ran last. Machine paths
 move out of world-writable `/tmp` into per-user 0700 roots created with an explicit mode and
@@ -396,28 +422,36 @@ format like the ledger and outbox so a binary upgrade migrates or discards it ra
 misparsing) that it folds forward from, and the once-per-lifetime full derive VERIFIES the
 snapshot; on any mismatch the full derive WINS - the snapshot is discarded and rebuilt, never
 trusted over the log - and until that verify completes, `status` and `validate --world-diff`
-label their answer PROVISIONAL so a just-restarted daemon never presents an unverified
-snapshot as authoritative at the moment an operator is diagnosing a crash. No prune may
-remove a declaration-bearing or lifecycle-terminal event (declaration-bearing types and
+label their answer PROVISIONAL and report the derive's log position against head as a
+progress signal, so a just-restarted daemon never presents an unverified snapshot as
+authoritative and an operator diagnosing a crash sees how far the derive has to go. No prune
+may remove a declaration-bearing or lifecycle-terminal event (declaration-bearing types and
 compactable types are disjoint, pinned by test).
 
 ## The reconciler: five arms, five rails
 
 Runs as the daemon's internal loop OFF the socket-serving path (a slow re-derivation never
 blocks a courier's result), on its own timer; every CLI invocation computes the same diff
-OBSERVE-ONLY and submits judgment items over the socket. On a substrate whose preflight
-found weak locks (see Delivery), arms 1-3 are WITHHELD entirely - the daemon runs
-observe+notify-only until the store is relocated or the operator explicitly overrides -
-because a known-degraded mount makes the residual concurrent-reap window ordinary rather than
-adversarial, and safety outranks liveness. Arms, in order:
+OBSERVE-ONLY and submits judgment items over the socket. Where the substrate preflight
+(Delivery) finds weak locks - at start OR on a mid-life re-check - the arms whose safety
+depends on exclusivity are WITHHELD: arm 1 (REAP), arm 2 (REPAIR), and any eviction of
+UNIQUE content (quarantine refs). What STILL runs, because it is safe even under a lost lock,
+is arm 3's eviction of REBUILDABLE size-governed classes (build caches, mutation scratch,
+target trees) - concurrent over-eviction there costs at worst a cold rebuild, never data loss
+or a wrongful reap - together with pre-spawn ADMISSION refusal and arm 4 CREATE (positional,
+non-destructive). So a project that legitimately and permanently lives on a weak-lock mount
+still BOUNDS its disk (the 403G bulk is exactly the rebuildable classes that keep evicting)
+without ever running a destructive act whose correctness the lost lock would void; the
+operator's remedy (relocate to local disk, or `--override`) is named but not required to stay
+bounded. Arms, in order:
 
-1. **REAP** present-but-undesired, with vetoes that are facts not heuristics: the child
-   table, open socket claims, last-progress freshness, and the read-only cwd scan, ANY of
-   which blocks the reap, the process-presence one non-degrading. A spawn-owned resource is
+1. **REAP** present-but-undesired, with the four vetoes that are facts not heuristics: the
+   child table, open socket claims, last-progress freshness, and the read-only cwd scan, ANY
+   of which blocks the reap, the process-presence one non-degrading. A spawn-owned resource is
    undesired only once the daemon has DECLARED that spawn's terminus - which the daemon does
-   only on the full corroboration above - so a forged `result` cannot render a live spawn's
-   worktree undesired in the first place. Deletion follows the git-quarantine rule below, so
-   every reap of unique content is reversible.
+   only on the full four-fact corroboration above - so a forged `result` cannot render a live
+   spawn's worktree undesired in the first place. Deletion follows the git-quarantine rule
+   below, so every reap of unique content is reversible.
 2. **REPAIR** present-but-divergent - each class carries an integrity predicate;
    registered-but-absent worktrees recreate from their branch, zero-length git admin
    entries heal, bare leftover dirs adopt-or-clear, a stale empty cgroup subtree is
@@ -429,11 +463,16 @@ adversarial, and safety outranks liveness. Arms, in order:
    so the arm always has a convergent action; refusal engages only when eviction to the
    floor still breaches, is scoped to the over-budget class, and fires at two points: the
    creation authority (DIRECT) and pre-spawn ADMISSION (the only lever that reaches
-   delegate-produced bytes). Per-class byte accounting is maintained incrementally at
-   create and reclaim (reclaimed-facts carry sizes); a full non-symlink-following,
-   depth-and-inode-bounded walk runs only when `statvfs` on the device crosses a floor,
-   and "could not measure" is arm 5, never "under budget".
-4. **CREATE** absent-but-desired positional resources (dashboard, socket structure).
+   delegate-produced bytes). Quarantine repos are a machine-scoped size-governed class here:
+   their retention window and LRU are advanced by whichever live daemon on the machine ticks
+   this arm over the shared substrate, so an abandoned project's quarantine content expires
+   by AGE even though that project's own daemon never runs again - reclaimed by age, never by
+   its project root's absence. Per-class byte accounting is maintained incrementally at create
+   and reclaim (reclaimed-facts carry sizes); a full non-symlink-following,
+   depth-and-inode-bounded walk runs only when `statvfs` on the device crosses a floor, and
+   "could not measure" is arm 5, never "under budget".
+4. **CREATE** absent-but-desired positional resources (dashboard, socket structure); runs
+   even in the weak-mount posture, being non-destructive.
 5. **NOTIFY** the unconvergeable. Arm 5 IS the existing `watch::detect` over its closed
    `Signal` enum, extended (enum + generated skill body + pins together) with envelope
    and world-diff signals - detection stays STATELESS and is computed by a NON-DAEMON
@@ -481,9 +520,14 @@ Rails, in priority over every arm:
   owners for a project with governed paths on disk is an anomaly, never a reap set.
   `reconcile --explain` (dry-run) is permanent; every convergence appends a reclaimed-fact
   so 40G never disappears silently. A crash-loop breaker enters degraded diagnose-only
-  mode after N restarts in window W (default N=5 in W=10 min, both configurable, surfaced
-  in `rigger status` and wired to the supervisor restart-limit, its tripping an arm-5
-  signal), so a daemon that dies on every start cannot reap-loop.
+  mode after N restarts in window W (default N=5 in W=10 min, both configurable, counted in
+  the durable restart-ledger, surfaced in `rigger status`, its tripping an arm-5 signal); in
+  that mode it withholds arms 1-3 AND new-spawn admission, running observe+notify-only so no
+  destructive act or fresh work proceeds on a daemon that cannot start cleanly. It is EXITED
+  by an operator `daemon resume` (behind the operator capability) once the fault is cleared,
+  and the restart counter auto-resets after a full window W with no failed start - so a
+  transient flap self-heals and a real fault waits for a human, neither one a permanent
+  silent downgrade.
 
 ## Git-quarantine: the retention discipline
 
@@ -511,9 +555,11 @@ snapshot - so a quarantine failure, killed or caught, can never become silent da
 Quarantine refs are keyed by `(run, owner, attempt)` - the same identity the resource model
 mandates, never a bare owner id - so a unit escalated twice never repoints one ref and loses
 the earlier attempt's content under the later attempt's eviction schedule. They are a
-size-governed class under arm 3 with a declared retention window and LRU eviction (real
-deletion + `gc`), governed by that window ALONE and never by machine-slot reclamation, so no
-project-root-liveness check can ever delete a live-but-dormant owner's unique content.
+machine-scoped size-governed class under arm 3, evicted ONLY by their declared retention
+window and LRU (real deletion + `gc`) - which any live daemon on the machine advances (Scope,
+arm 3), so an abandoned project's content still expires by age - and NEVER by machine-slot
+reclamation, so no project-root-liveness check can ever delete a live-but-dormant owner's
+unique content.
 
 **Escalation holds no disk.** An escalated unit's worktree is purged at terminal like any
 other - the purge is preceded by the unique-content snapshot every purge gets, and the unit
@@ -539,17 +585,18 @@ content pins, so each migrates in the same change as its mechanism). Made imposs
 (regardless of whether a forgery is accidental or deliberate, because each guarantee rests on
 a mechanism that does not consult sender intent): a second driver (flock + epoch), signalling
 a stranger (parentage + cgroup + verified identity), disk exhaustion by rigger's writes
-(eviction + dual-point refusal), sweeping a surface a human or agent holds live (the
-four-fact liveness conjunction, the non-degrading live-process veto, and the FOREIGN tier),
-unowned scratch of any future kind including the daemon's own cgroups (path-authority registry
-+ container pinning + cgroup reap arm), a forged or confused observation manufacturing or
-reaping a resource (declaration/observation split + the terminus DECLARED only on the daemon's
-own liveness corroboration, so a `result` for a live spawn is inert and a crashed spawn is
-abandoned, not stranded), and silent mass deletion (blast-radius rail + reclaimed-facts). What
-is bounded rather than made impossible (the deliberate same-uid class named in the principle):
-a hostile process wasting or retaining a resource it does not own, DoSing the daemon, or
-reading another unit's same-uid data - blast-radius capped and OS-user-boundary scoped, never
-a destructive-forgery act.
+(eviction + dual-point refusal, which keep bounding rebuildable bytes even in the weak-mount
+posture), sweeping a surface a human or agent holds live (the four-fact liveness veto with a
+non-degrading live-process fact, plus the FOREIGN tier), unowned scratch of any future kind
+including the daemon's own cgroups (path-authority registry + container pinning + cgroup reap
+arm), a forged or confused observation manufacturing or reaping a resource
+(declaration/observation split + the terminus DECLARED only on the daemon's own liveness
+corroboration, so a `result` for a live spawn is inert and a crashed spawn is abandoned, not
+stranded), and silent mass deletion (blast-radius rail + reclaimed-facts). What is bounded
+rather than made impossible (the deliberate same-uid class named in the principle): a hostile
+process wasting or retaining a resource it does not own, DoSing the daemon, or reading another
+unit's same-uid data - blast-radius capped and OS-user-boundary scoped, never a
+destructive-forgery act.
 
 ## Delivery
 
@@ -560,16 +607,18 @@ has a single entry point, and arms never call into the conductor nor the conduct
 arm - both call the same class module. A store minimum-version marker plus the daemon lease
 fence an old binary's heuristic reapers out of a governed project; the same versioning
 extends to every NEW on-disk format this design adds (ledger row, per-spawn outbox line,
-`anomalies.jsonl`, machine-scope slot file, materialized ResourceSet snapshot), each carrying
-a format tag so a binary upgrade migrates rather than misparses, and rollback is fenced by the
-store minimum-version marker refusing an older binary against a newer store. The epoch CAS and
-the flock singleton assume a store on a LOCAL filesystem with linearizable Exact-CAS and
-honest advisory locks; a daemon start PREFLIGHTS the store's filesystem, and on a known-weak
-mount (such as NFS) it does NOT run destructive arms - it starts in observe+notify-only mode,
-warns loudly once, flags the posture in `rigger status`, and names the remediation (relocate
-`.rigger` to a local disk, or override explicitly) - because the residual concurrent-reap
-window widens from adversarial to ordinary operation where advisory locks are weak, and
-withholding convergence is the safe posture, not warn-and-proceed.
+`anomalies.jsonl`, machine-scope slot file, materialized ResourceSet snapshot, durable
+restart-ledger), each carrying a format tag so a binary upgrade migrates rather than
+misparses, and rollback is fenced by the store minimum-version marker refusing an older binary
+against a newer store. The epoch CAS and the flock singleton assume a store on a LOCAL
+filesystem with linearizable Exact-CAS and honest advisory locks; a daemon PREFLIGHTS the
+store's filesystem at start AND re-checks on a cadence and on any `ESTALE`/`EIO`/lock anomaly
+seen during an arm (mirroring the socket-inode re-stat), so a mount that degrades or flaps
+after a healthy start is detected mid-life; on a known-weak result it drops to the weak-mount
+posture above (arm 1, arm 2, and unique-content eviction withheld; rebuildable eviction,
+admission refusal, and arm 4 still run), warns loudly once, flags the posture in `rigger
+status`, and names the remediation (relocate `.rigger` to a local disk, or `--override`),
+resuming full convergence when a re-check finds the mount healthy again.
 
 1. **Pure domain + ports.** The path-authority class registry (including the cgroup class)
    and its enforcement test; `desired_world` as a tested fold keyed by `(run, owner,
@@ -595,24 +644,29 @@ withholding convergence is the safe posture, not warn-and-proceed.
    exists.
 3. **The resident daemon.** Flock singleton, socket rendezvous (0700/0600, peer-cred),
    epoch acquisition and per-write CAS, conductor loop as a tick that DECLARES a
-   liveness-corroborated terminus, child table, owned dashboard, the four-fact liveness
-   conjunction with a non-degrading live-process veto and courier heartbeats on an independent
-   timer, the durable outbox with fixed drain-before-reconcile-before-respawn ordering and
-   per-instance idempotency keys, CLI/courier as clients with the fenced-gate direct-write
-   exception (fstat-the-handle live-store refusal), work-assignment tokens minted at
-   `wave --pull`, the structurally-unforgeable operator capability gating daemon-authority and
-   destructive-control verbs, the arm-5 notify-port emission + supervisor restart-limit wiring,
-   a persisted-nowhere fold cursor with full-derive-on-start and a versioned materialized-
-   snapshot fast path (full-derive wins on mismatch; provisional labeling pre-verify), a
-   crash-loop breaker, socket protocol versioning + `daemon stop --drain` + `daemon kill
-   --wedged`, verified supervision and cgroup-delegation posture.
+   liveness-corroborated terminus, child table, owned dashboard, the four-fact liveness veto
+   with a passively-held claim connection, a non-degrading live-process fact, and courier
+   heartbeats on an independent timer, the durable outbox with fixed
+   drain-before-reconcile-before-respawn ordering and durable-outbox-line-id idempotency keys,
+   CLI/courier as clients with the fenced-gate direct-write exception (fstat-the-handle
+   live-store refusal), work-assignment tokens minted at `wave --pull`, the
+   structurally-unforgeable operator capability (with the headless 0700 credential path)
+   gating daemon-authority and destructive-control verbs, the arm-5 notify-port emission +
+   durable restart-ledger + missing-hook status warning, a persisted-nowhere fold cursor with
+   full-derive-on-start and a versioned materialized-snapshot fast path (full-derive wins on
+   mismatch; provisional labeling with a progress signal pre-verify), a crash-loop breaker
+   with its resume/auto-reset recovery, socket protocol versioning + `daemon stop --drain` +
+   `daemon kill --wedged` + `daemon resume`, verified supervision and cgroup-delegation
+   posture.
 4. **Reconciler arms in-daemon,** class by class, with the blast-radius rail and `--explain`
-   from the first class, and the weak-mount observe-only withholding; git-quarantine into a
+   from the first class, and the weak-mount scoped withholding (rebuildable eviction and
+   admission kept) driven by the start-and-cadence substrate preflight; git-quarantine into a
    bare repo with the fully scrubbed plumbing, the ordered ref-before-delete purge, and
-   `(run, owner, attempt)` refs governed by their own window; envelopes with eviction +
-   admission + incremental accounting; the machine-scope flock-proven assignment substrate
-   with its confirmed-absent (never merely-unreachable) reclamation and quarantine exclusion;
-   the anomalies projection + identity-cursored readers + hook + `notify:`.
+   `(run, owner, attempt)` refs governed by their own machine-scoped window; envelopes with
+   eviction + admission + incremental accounting; the machine-scope flock-proven assignment
+   substrate with its fail-closed confirmed-absent (never merely-unreachable) reclamation and
+   quarantine exclusion; the anomalies projection + identity-cursored readers + hook +
+   `notify:`.
 
 ## Acceptance (mechanical, each falsifies a core claim)
 
@@ -642,40 +696,53 @@ withholding convergence is the safe posture, not warn-and-proceed.
 10. No prune removes a declaration-bearing event; the disjointness test is RED if one is
     ever shaped like a compactable key.
 11. Observation cannot constitute a terminus: a forged or duplicate `result` naming a spawn
-    the daemon still sees LIVE (claim held, progress fresh, OR process present) declares NO
-    terminus and its worktree survives every REAP pass; the terminus fires only after the
-    daemon corroborates non-liveness on all three signs.
+    the daemon still sees LIVE (any one of the four vetoes positive: a live forked child, a
+    held socket claim, fresh progress, or a live process) declares NO terminus and its
+    worktree survives every REAP pass; the terminus fires only after all four facts are
+    negative.
 12. A crashed worker is abandoned, not stranded: a worker that DIES during a daemon outage
     (no result, no outbox line) is DECLARED `SpawnAbandoned` on restart from the cgroup +
     identity reconciliation, and its resources converge rather than staying desired forever.
 13. No orphan cgroup: after a spawn's process set exits (and across a daemon SIGKILL +
     restart), its cgroup subtree is reaped, so `find` over the delegated cgroup root returns
     to baseline; the reap needs no HMAC to succeed.
-14. Machine-scope reclamation is conservative: a rebuildable slot whose flock is FREE and
-    whose project root is CONFIRMED ABSENT (parent present, entry gone) is reclaimed; a slot
-    whose root is merely UNREACHABLE (mount absent) is routed to arm 5 and never reclaimed; a
-    content-bearing quarantine ref is never reclaimed by this path at all; a HELD-flock or
-    still-resolving-root slot is never deleted by another daemon.
+14. Machine-scope reclamation is conservative and fail-closed: a rebuildable slot whose flock
+    is FREE and whose project root's parent resolves while the entry returns ENOENT is
+    reclaimed; a slot whose root read returns any other errno, or whose mount is absent, is
+    routed to arm 5 and never reclaimed; a content-bearing quarantine ref is never reclaimed
+    by this path at all; a HELD-flock or still-resolving-root slot is never deleted by another
+    daemon.
 15. Use-time path safety: a symlink swapped into an intermediate component of a
     `ConfinedPath` between `confine()` and the destructive act - at the leaf OR mid-descent
     of a deep tree - does not redirect the syscall outside the container (every act runs at a
     captured `RESOLVE_BENEATH` fd).
 16. A live worker is never reaped under: a live, long-running, non-heartbeating op (a real
-    `cargo` subprocess rooted under a worktree) survives every REAP pass past every TTL
-    because the process-presence veto does not degrade; and an agent turn whose claim is held
-    or whose progress is fresh within TTL is likewise never declared terminated, while a
-    parentless-but-live process is raised as an arm-5 anomaly rather than reaped or leaked.
-17. The crash-loop breaker trips: a daemon forced to fail N times in window W enters
-    diagnose-only mode, emits the arm-5 signal, and runs no destructive arm thereafter.
+    `cargo` subprocess rooted under a worktree, its courier blocked in the child so no
+    progress is emitted) survives every REAP pass past every TTL because its claim connection
+    stays open and the process-presence veto does not degrade, and raises NO anomaly; a
+    process still live under a worktree whose courier connection has CLOSED is raised as an
+    arm-5 anomaly rather than reaped or leaked.
+17. The crash-loop breaker trips and recovers: a daemon forced to fail N times in window W
+    enters diagnose-only mode, emits the arm-5 signal, and runs no destructive arm or new
+    spawn thereafter; an operator `daemon resume` returns it to normal operation, and a full
+    window W with no failed start auto-resets the counter.
 18. A kill mid-quarantine-commit loses nothing: SIGKILL the daemon during an escalation
     purge's `commit-tree` (test-only seam), restart, and the worktree is intact, the run
     unchanged, and no unique content is lost.
 19. The steady-state tick declares a terminus: with the daemon UP and no crash, a spawn that
     completes normally has its `SpawnResult` appended by the conductor tick promptly; a
     regression that drops the tick's declaration is RED here even while 6/11/12 stay green.
-20. A weak-mount daemon withholds destruction: on a preflight-flagged weak-lock store the
-    daemon serves `status`/`validate --world-diff` but issues zero unlink/rmdir/ref-delete
-    from any arm until the store is relocated or the operator explicitly overrides.
+20. A weak-mount daemon withholds the unsafe arms but still bounds disk: on a preflight-flagged
+    weak-lock store the daemon serves `status`/`validate --world-diff`, issues zero worktree
+    REAP / REPAIR / unique-content-eviction, YET still evicts a rebuildable size-governed class
+    over its floor and refuses an over-budget admission - so disk stays bounded with no
+    exclusivity-dependent act.
+21. Abandoned quarantine still expires: an over-window quarantine ref whose originating
+    project never runs again is evicted by another live daemon's arm-3 tick over the shared
+    machine substrate, bounding its disk, while a within-window ref survives.
+22. Mid-life substrate degradation is caught: a store whose lock-honesty is revoked after a
+    healthy start (test-only seam raising the lock/`ESTALE` anomaly) withholds arms 1-2 and
+    unique-content eviction at the next cycle, and resumes when a re-check finds it healthy.
 
 The bar that governs all of it: after a full campaign of rigger's OWN development,
 `validate --world-diff` reports empty modulo FOREIGN (with tier assignment asserted per
