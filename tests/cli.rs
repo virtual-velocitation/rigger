@@ -20690,6 +20690,56 @@ fn step_losing_a_real_singleton_race_records_the_winners_pid_not_its_own_dead_ch
     );
 }
 
+/// Spec 62 round 2 (adv-u62c1-marker-pid-not-the-serving-pid-on-singleton-race): the new public
+/// probe `rigger::dash::dash_serving_pid_on` reports a REAL, separately-compiled `rigger dash`
+/// process's own OS-reported pid - proven against the actual product binary as the server, not
+/// only the implementer's own in-crate unit tests (`dash_serving_pid_on_reports_the_pid_a_real_
+/// dash_response_names` et al in `src/dash.rs`), which can only ever stand up a FAKE listener
+/// inside the SAME test process and so structurally can never observe a genuine cross-process
+/// `X-Rigger-Dash-Pid` round trip - the same class of gap a real subprocess closes that the
+/// bind-confirmation periphery test above already closes for criterion 1.
+///
+/// This is the direct PRODUCER-side lock on this criterion's public API surface. It complements,
+/// never duplicates, `step_losing_a_real_singleton_race_records_the_winners_pid_not_its_own_dead_
+/// childs` above: that test proves a CONSUMER (`spawn_run_dashboard_detached`, compiled into the
+/// SAME binary as its caller) reads the header correctly end to end through a whole `step`: a
+/// defect that flipped the header's write side while the consumer ALSO happened to misread it in
+/// a compensating way could still pass that test by coincidence. This test pins the probe
+/// function's own return value directly against an externally observed, independently known pid
+/// (`Child::id()`), with no such compensating path available.
+#[test]
+fn dash_serving_pid_on_reports_a_real_separately_compiled_dashs_own_pid() {
+    use std::process::Stdio;
+
+    let proj = temp_project();
+    let port = free_loopback_port();
+    let mut dash = common::rigger_courier()
+        .args(["dash", "--port", &port.to_string()])
+        .current_dir(proj.path())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn `rigger dash`");
+    let dash_pid = dash.id();
+
+    if !matches!(http_get_path(port, "/"), Some(resp) if resp.contains("rigger dash")) {
+        let _ = dash.kill();
+        let _ = dash.wait();
+        panic!("the spawned `rigger dash` never came up on port {port}");
+    }
+
+    let reported = rigger::dash::dash_serving_pid_on(port);
+    let _ = dash.kill();
+    let _ = dash.wait();
+
+    assert_eq!(
+        reported,
+        Some(dash_pid),
+        "dash_serving_pid_on must report the REAL, separately-compiled dash's own OS pid \
+         ({dash_pid}), never a stale, zero, or otherwise wrong value; got {reported:?}"
+    );
+}
+
 /// Spec 39, criterion 1: the RIGGER_NO_DASH opt-out is honored by the BUILT binary on the step
 /// path - a step run under it reaches and passes the dash-start seam (it prints its wave) yet
 /// records NO `.rigger/dash.marker`, so a short-lived CI run or the crate's own integration
