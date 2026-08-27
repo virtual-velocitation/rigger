@@ -12376,6 +12376,503 @@ fn validate_reports_scratch_residue_with_sizes_as_a_non_failing_warning() {
     );
 }
 
+/// Spec 77 criterion 6, FOOTPRINT ACCOUNTING, Done-when: on a fixture tree with seeded
+/// category sizes, `rigger validate` reports each category's total AND flags a dead-share
+/// threshold breach naming the reclaiming command, exit 0. Driving the real binary proves
+/// the config -> footprint-measurement -> stdout/stderr wiring end to end; the pure
+/// measuring/formatting functions are unit-tested in `src/main.rs`.
+#[test]
+fn validate_reports_footprint_by_category_and_flags_a_dead_share_breach() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    git_ok(root, &["add", "-A"]);
+    git_ok(root, &["commit", "-q", "-m", "scaffold"]);
+    seed_store(root); // a real store, so the store/backups categories have something to size
+
+    // A backup file, standing in for a prior repair/rotation - the store never auto-deletes
+    // these (spec 77 Global Constraint 4), so the category must be REPORTED but never
+    // flagged for reclaim.
+    std::fs::write(
+        root.join(".rigger").join("events.db.bak-20260101"),
+        [0u8; 64],
+    )
+    .unwrap();
+
+    // Point the scratch root and the mutation-scratch cache home at dirs this test controls,
+    // so the scan is hermetic (never touches the operator's real `~/.cache/rigger-mutants`).
+    let scratch = root.join("scratchroot");
+    let cache_home = root.join("cachehome");
+    std::fs::create_dir_all(&scratch).unwrap();
+    std::fs::create_dir_all(&cache_home).unwrap();
+
+    // Seed the SHARED build cache directly under the scratch root - a pure cache, so its
+    // whole size is dead share by design (spec 77 Design, criterion 5): this is the
+    // category the dead-share-breach half of this test exercises.
+    std::fs::create_dir_all(scratch.join("cargo-target")).unwrap();
+    std::fs::write(scratch.join("cargo-target").join("x.rlib"), [0u8; 4096]).unwrap();
+
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["validate"],
+        &[
+            ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
+            ("XDG_CACHE_HOME", cache_home.to_str().unwrap()),
+        ],
+    );
+    assert!(
+        ok,
+        "validate must exit 0 even while flagging a footprint advisory; stderr:\n{err}"
+    );
+
+    // Every category's total is reported, unconditionally, on stdout.
+    for category in [
+        "store",
+        "backups",
+        "shared build cache",
+        "per-unit caches",
+        "worktrees",
+        "registered scratch roots",
+    ] {
+        assert!(
+            out.contains(&format!("footprint: {category} ")),
+            "the {category} category must report its total; stdout:\n{out}"
+        );
+    }
+    assert!(
+        out.contains("footprint: shared build cache 4.0K"),
+        "the seeded build-cache size must be reported; stdout:\n{out}"
+    );
+
+    // The shared build cache's 100% dead share breaches the advisory threshold and names
+    // the reclaiming command, on stderr.
+    assert!(
+        err.contains("shared build cache is 100% dead"),
+        "the dead-share breach must be flagged; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("rigger reset --build-cache"),
+        "the flagged advisory must name the reclaiming command; stderr:\n{err}"
+    );
+
+    // The store/backups categories are never flagged - no rigger-owned reclaim command
+    // exists for them (spec 77 Global Constraint 4: never auto-deleted).
+    assert!(
+        !err.contains("store is") && !err.contains("backups is"),
+        "store/backups must never be flagged for reclaim; stderr:\n{err}"
+    );
+}
+
+/// Spec 77 criterion 6's "registered scratch roots" category is wired to the NEW public
+/// `driver::replay::mutation_scratch_root` (`<cache_home>/rigger-mutants`) rather than a
+/// second, independently-typed root literal - the sibling test above never puts any bytes
+/// under that specific subdir, so it cannot tell a correctly-wired root from one that
+/// silently measured the wrong directory (or nothing at all). This test seeds real content
+/// one level under the SAME cache-home/`rigger-mutants` shape the production leaf-naming
+/// (`mutation_scratch_path`) nests every spawn's tree under, and proves the reported total
+/// reflects it exactly - driving the real binary end to end, the pure size-measuring
+/// function being unit-tested in `src/main.rs`.
+#[test]
+fn validate_footprint_registered_scratch_roots_measures_the_real_mutation_scratch_root() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    git_ok(root, &["add", "-A"]);
+    git_ok(root, &["commit", "-q", "-m", "scaffold"]);
+
+    let scratch = root.join("scratchroot");
+    let cache_home = root.join("cachehome");
+    std::fs::create_dir_all(&scratch).unwrap();
+
+    // A stand-in mutation-scratch leaf, one level under `<cache_home>/rigger-mutants` -
+    // exactly the nesting `mutation_scratch_root`'s own doc comment names ("every spawn's
+    // leaf nests under this"). The leaf's exact NAME is irrelevant to this test (that
+    // encoding contract is pinned elsewhere); only its total size, and that it lives under
+    // the root the crate's own path authority computes, matters here.
+    let mutation_root = cache_home.join("rigger-mutants");
+    std::fs::create_dir_all(mutation_root.join("some-spawn-leaf")).unwrap();
+    std::fs::write(
+        mutation_root.join("some-spawn-leaf").join("x.tmp"),
+        [0u8; 777],
+    )
+    .unwrap();
+
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["validate"],
+        &[
+            ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
+            ("XDG_CACHE_HOME", cache_home.to_str().unwrap()),
+        ],
+    );
+    assert!(ok, "validate must exit 0; stderr:\n{err}");
+    assert!(
+        out.contains("footprint: registered scratch roots 777B"),
+        "the 777 bytes seeded under the real mutation_scratch_root path must be measured \
+         exactly - a wrong or unwired root would report 0B here even though the pure \
+         footprint_report function is separately unit-tested against a fixture path; \
+         stdout:\n{out}"
+    );
+}
+
+/// Spec 77 criterion 6 round 2 (`adj-u77c6-verdict-reject-unflaggable-highest-stakes-
+/// category`): "registered scratch roots" - the ONE category the spec's own Problem
+/// statement names as the worst observed leak - must be able to flag a dead-share breach
+/// like every other reclaimable category, not just report a total. `current_run_units` and
+/// `footprint_report`'s spawn-level classification are unit-tested directly in `src/main.rs`
+/// against in-memory events and a fixture path; THIS test proves the real seam none of that
+/// exercises - a genuine event STORE (`spawn::recorded`/`spawn::result_of` reading real
+/// `SpawnRequested`/`SpawnResult` rows through `runscope::current_run` scoping) driving real
+/// `rigger validate` stdout/stderr, over real fixture bytes written at the SAME paths
+/// production assigns via the crate's own path authorities (`spawn_scratch_path`,
+/// `mutation_scratch_path` - never a hand-encoded literal). Three spawns, mirroring exactly
+/// the distinctions `current_run_units_splits_live_spawns_from_answered_ones_scoped_to_the_
+/// current_run` pins at the fold level:
+/// - a LIVE spawn (requested in the current run, still unanswered) - spared;
+/// - an ANSWERED spawn (requested in the current run, a result recorded) - dead;
+/// - a PRIOR-RUN spawn (requested before the current run's own `RunStarted`, so outside its
+///   scope regardless of whether it was ever answered) - dead, the orphaned/hung-and-never-
+///   retried leak this category exists to surface
+///   (`adv-u77c2r8-mutation-scratch-orphan-on-never-reported-spawn`).
+#[test]
+fn validate_flags_registered_scratch_roots_dead_share_scoped_to_real_spawn_liveness_in_the_store() {
+    use rigger::driver::replay::{mutation_scratch_path, spawn_scratch_path};
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    git_ok(root, &["add", "-A"]);
+    git_ok(root, &["commit", "-q", "-m", "scaffold"]);
+    seed_store(root);
+
+    let live_id = "u-live/implementer#0";
+    let answered_id = "u-answered/implementer#0";
+    let prior_id = "u-prior/implementer#0";
+    seed_run_events(
+        root,
+        &[
+            // A PRIOR run, closed off by the CURRENT run's own later `RunStarted` -
+            // `u-prior`'s request sits outside the current run's scope even though no
+            // result was ever recorded for it (the hung/abandoned-run shape).
+            ("RunStarted", r#"{"run":"r1","criteria":["old"]}"#),
+            (
+                "SpawnRequested",
+                r#"{"id":"u-prior/implementer#0","unit":"u-prior","stage":"impl","prompt":"p"}"#,
+            ),
+            ("RunStarted", r#"{"run":"r2","criteria":["new"]}"#),
+            (
+                "SpawnRequested",
+                r#"{"id":"u-live/implementer#0","unit":"u-live","stage":"impl","prompt":"p"}"#,
+            ),
+            (
+                "SpawnRequested",
+                r#"{"id":"u-answered/implementer#0","unit":"u-answered","stage":"impl","prompt":"p"}"#,
+            ),
+            (
+                "SpawnResult",
+                r#"{"id":"u-answered/implementer#0","output":"done"}"#,
+            ),
+        ],
+    );
+
+    let scratch = root.join("scratchroot");
+    let cache_home = root.join("cachehome");
+    std::fs::create_dir_all(&scratch).unwrap();
+    std::fs::create_dir_all(&cache_home).unwrap();
+
+    let seed = |path: std::path::PathBuf, n: usize| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, vec![0u8; n]).unwrap();
+    };
+    // The LIVE spawn's own scratch, in both registered roots - spared.
+    seed(
+        spawn_scratch_path(scratch.to_str().unwrap(), "r2", live_id)
+            .unwrap()
+            .join("x"),
+        30,
+    );
+    seed(
+        mutation_scratch_path(&cache_home, live_id)
+            .unwrap()
+            .join("x"),
+        10,
+    );
+    // The ANSWERED spawn's own scratch - dead the moment its result landed.
+    seed(
+        spawn_scratch_path(scratch.to_str().unwrap(), "r2", answered_id)
+            .unwrap()
+            .join("x"),
+        60,
+    );
+    seed(
+        mutation_scratch_path(&cache_home, answered_id)
+            .unwrap()
+            .join("x"),
+        20,
+    );
+    // The PRIOR run's own orphaned spawn scratch - dead, never answered, never in scope.
+    seed(
+        spawn_scratch_path(scratch.to_str().unwrap(), "r1", prior_id)
+            .unwrap()
+            .join("x"),
+        90,
+    );
+    seed(
+        mutation_scratch_path(&cache_home, prior_id)
+            .unwrap()
+            .join("x"),
+        30,
+    );
+
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["validate"],
+        &[
+            ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
+            ("XDG_CACHE_HOME", cache_home.to_str().unwrap()),
+        ],
+    );
+    assert!(
+        ok,
+        "validate must exit 0 even while flagging a footprint advisory; stderr:\n{err}"
+    );
+
+    // Every seeded byte, live and dead together, across both registered roots.
+    assert!(
+        out.contains("footprint: registered scratch roots 240B"),
+        "stdout:\n{out}"
+    );
+    // Only the answered spawn's (60+20) and the prior run's orphaned spawn's (90+30) bytes
+    // count dead (200 of 240 = 83%) - the still-live spawn's 40 bytes (30+10) are spared,
+    // proving the dead-share classification is scoped by REAL spawn liveness read off the
+    // store, not the unit-liveness `scratch_footprint` already uses for the other categories.
+    assert!(
+        err.contains("registered scratch roots is 83% dead (200B of 240B reclaimable)"),
+        "stderr:\n{err}"
+    );
+    assert!(
+        err.contains(
+            "reclaimed automatically the next time `rigger result` is recorded for the owning spawn"
+        ),
+        "the advisory must name the real spawn-scoped reclaim path (this category is reclaimed \
+         by `cmd_result`, never by `rigger step`'s per-step orphan sweep, which explicitly \
+         never touches agent-scratch) rather than the unit-scoped `rigger step` hint the other \
+         categories use; stderr:\n{err}"
+    );
+}
+
+/// Round 2's fix (`d-u77c6r2-registered-scratch-roots-spawn-liveness-dead-bytes`) classified
+/// an `agent-scratch` leaf live-vs-dead by LEAF NAME ALONE, never by (run_id, leaf) -
+/// `sdet-u77c6r2-cross-run-leaf-collision-hides-the-highest-stakes-orphan` /
+/// `adj-u77c6r2-verdict-reject-cross-run-leaf-collision`: the moment a LATER run
+/// re-proposes the IDENTICAL unit/spawn id an EARLIER, abandoned run already used (the
+/// routine self-hosting pattern this very run's own units exhibit: a killed run followed by
+/// a fresh run that reuses the same unit-title slug), the earlier run's own orphaned
+/// `agent-scratch` tree was silently spared merely because its leaf name coincides with the
+/// current run's live spawn - exactly the killed-run-then-rerun shape spec 77's Problem
+/// statement names as the worst observed leak. This test seeds TWO run-id subdirs under the
+/// real `agent-scratch/<run-id>/<spawn-id>` nesting
+/// ([`rigger::driver::replay::spawn_scratch_path`]) that share one IDENTICAL spawn leaf
+/// name: one an orphan under an ABANDONED prior run (never answered), the other a
+/// genuinely live spawn under the CURRENT run - proving the real store-driven seam
+/// `validate_flags_registered_scratch_roots_dead_share_scoped_to_real_spawn_liveness_in_the_store`
+/// above never exercises (that test's three spawns all carry DISTINCT unit ids across its
+/// two runs).
+#[test]
+fn validate_flags_a_prior_abandoned_runs_orphan_even_when_a_later_run_reuses_the_identical_spawn_id(
+) {
+    use rigger::driver::replay::spawn_scratch_path;
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    git_ok(root, &["add", "-A"]);
+    git_ok(root, &["commit", "-q", "-m", "scaffold"]);
+    seed_store(root);
+
+    // The self-hosting re-proposal shape: both runs' spawns carry the IDENTICAL unit/attempt
+    // id, so they encode to the SAME agent-scratch leaf name.
+    let reused_id = "u-reused/implementer#2";
+    seed_run_events(
+        root,
+        &[
+            // The OLD run, abandoned (killed) before this spawn was ever answered - the
+            // hung/never-retried orphan this category exists to surface.
+            (
+                "RunStarted",
+                r#"{"run":"r-old-abandoned","criteria":["old"]}"#,
+            ),
+            (
+                "SpawnRequested",
+                r#"{"id":"u-reused/implementer#2","unit":"u-reused","stage":"impl","prompt":"p"}"#,
+            ),
+            // The CURRENT run begins, RE-PROPOSING the identical spawn id - still
+            // unanswered, genuinely in flight.
+            ("RunStarted", r#"{"run":"r-current","criteria":["new"]}"#),
+            (
+                "SpawnRequested",
+                r#"{"id":"u-reused/implementer#2","unit":"u-reused","stage":"impl","prompt":"p"}"#,
+            ),
+        ],
+    );
+
+    let scratch = root.join("scratchroot");
+    // An empty, hermetic cache-home - mirroring the sibling test above - so the mutation-
+    // scratch root the operator's REAL `$HOME/.cache/rigger-mutants` might hold never bleeds
+    // into this test's byte-exact assertions.
+    let cache_home = root.join("cachehome");
+    std::fs::create_dir_all(&scratch).unwrap();
+    std::fs::create_dir_all(&cache_home).unwrap();
+
+    let seed = |path: std::path::PathBuf, n: usize| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, vec![0u8; n]).unwrap();
+    };
+    // The OLD run's own orphaned scratch, under the OLD run's own run-id subdir.
+    seed(
+        spawn_scratch_path(scratch.to_str().unwrap(), "r-old-abandoned", reused_id)
+            .unwrap()
+            .join("orphan"),
+        500,
+    );
+    // The CURRENT run's own live spawn's scratch, under the CURRENT run's own run-id
+    // subdir - the SAME leaf name as the orphan above, but a genuinely different,
+    // in-flight resource that must be spared.
+    seed(
+        spawn_scratch_path(scratch.to_str().unwrap(), "r-current", reused_id)
+            .unwrap()
+            .join("live"),
+        5,
+    );
+
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["validate"],
+        &[
+            ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
+            ("XDG_CACHE_HOME", cache_home.to_str().unwrap()),
+        ],
+    );
+    assert!(
+        ok,
+        "validate must exit 0 even while flagging a footprint advisory; stderr:\n{err}"
+    );
+
+    // Every seeded byte, old orphan and current-run live spawn together.
+    assert!(
+        out.contains("footprint: registered scratch roots 505B"),
+        "stdout:\n{out}"
+    );
+    // Only the OLD run's orphaned 500 bytes count dead (99% of 505) - the CURRENT run's
+    // live spawn's 5 bytes are spared even though its leaf name is IDENTICAL to the dead
+    // orphan's. Before the round-3 fix this reported 0% dead (dead_bytes 0), the exact
+    // regression this test pins.
+    assert!(
+        err.contains("registered scratch roots is 99% dead (500B of 505B reclaimable)"),
+        "the prior abandoned run's orphan must be flagged dead even though a later run \
+         reuses the identical spawn id - classification must key off (run_id, leaf), never \
+         leaf name alone; stderr:\n{err}"
+    );
+}
+
+/// Spec 77 criterion 6's own added Done-when clause, over the AGENT SCRATCH IS SPAWN-OWNED
+/// Design bullet's named example: "a top-level ad-hoc dir directly under agent-scratch (no
+/// run/spawn owner) is reported as its own recognized-residue category with a reclaim
+/// command, never folded into a dead-run bucket". This drives the real binary end to end -
+/// the pure classification (`classify_agent_scratch`/`looks_like_run_container`) is
+/// unit-tested in `src/main.rs` - seeding a genuine `agent-scratch/<run>/<spawn>` container
+/// via the crate's own [`rigger::driver::replay::spawn_scratch_path`] authority ALONGSIDE a
+/// bare, top-level `agent-scratch/<name>` dir no spawn id ever produced (mirroring a leaked
+/// `CARGO_TARGET_DIR` pointed straight under `agent-scratch`, the Design bullet's own
+/// `agent-scratch/u77c4-target` example).
+#[test]
+fn validate_reports_a_top_level_adhoc_agent_scratch_dir_as_its_own_category_never_folded_into_registered_scratch_roots(
+) {
+    use rigger::driver::replay::spawn_scratch_path;
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    git_ok(root, &["add", "-A"]);
+    git_ok(root, &["commit", "-q", "-m", "scaffold"]);
+    seed_store(root);
+
+    let live_id = "u-live/implementer#0";
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["new"]}"#),
+            (
+                "SpawnRequested",
+                r#"{"id":"u-live/implementer#0","unit":"u-live","stage":"impl","prompt":"p"}"#,
+            ),
+        ],
+    );
+
+    let scratch = root.join("scratchroot");
+    let cache_home = root.join("cachehome");
+    std::fs::create_dir_all(&scratch).unwrap();
+    std::fs::create_dir_all(&cache_home).unwrap();
+
+    // The LIVE spawn's own well-formed container - via the crate's real path authority, not
+    // a hand-encoded literal - must stay spared and counted only in "registered scratch
+    // roots".
+    let live_path = spawn_scratch_path(scratch.to_str().unwrap(), "r1", live_id).unwrap();
+    std::fs::create_dir_all(&live_path).unwrap();
+    std::fs::write(live_path.join("x"), vec![0u8; 20]).unwrap();
+
+    // The ad-hoc, unowned dir: no `spawn_scratch_path` call ever produces this shape (a bare
+    // file sits directly inside it, exactly like a leaked CARGO_TARGET_DIR's own root-level
+    // files).
+    let adhoc = scratch.join("agent-scratch").join("u77c4-target");
+    std::fs::create_dir_all(&adhoc).unwrap();
+    std::fs::write(adhoc.join("CACHEDIR.TAG"), vec![0u8; 300]).unwrap();
+
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["validate"],
+        &[
+            ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
+            ("XDG_CACHE_HOME", cache_home.to_str().unwrap()),
+        ],
+    );
+    assert!(
+        ok,
+        "validate must exit 0 even while flagging a footprint advisory; stderr:\n{err}"
+    );
+
+    assert!(
+        out.contains("footprint: registered scratch roots 20B"),
+        "only the well-formed live container's bytes - the ad-hoc dir's must NOT appear \
+         here; stdout:\n{out}"
+    );
+    assert!(
+        out.contains("footprint: unowned agent scratch 300B"),
+        "the ad-hoc dir's bytes, reported on their own category; stdout:\n{out}"
+    );
+    assert!(
+        err.contains("unowned agent scratch is 100% dead"),
+        "the ad-hoc dir carries no run/spawn owner, so it is always fully reclaimable, and \
+         must be flagged - never silently folded into registered scratch roots' dead-run \
+         tally; stderr:\n{err}"
+    );
+    assert!(
+        !err.contains("registered scratch roots is"),
+        "the live spawn's own container is fully live (0% dead), so this category must not \
+         be flagged at all; stderr:\n{err}"
+    );
+}
+
 /// Spec 23 (unit 2), done-when line 60: `rigger validate` reports, as a warning-only advisory
 /// that NEVER fails validation, any process whose cwd is under the scratch root - naming its
 /// pid - and reports none once nothing is rooted there. Driving the real binary proves the
