@@ -30,7 +30,7 @@
 //! directory before handing it back - the one store-resolution authority every courier
 //! funnels through, so the fix covers `emit`/`result`/`peers`/`reported`/`prompt` uniformly).
 //!
-//! Seven tests, driving the REAL compiled `rigger` binary as a REAL OS subprocess through the
+//! Eight tests, driving the REAL compiled `rigger` binary as a REAL OS subprocess through the
 //! REAL `gate::ExecRunner` - never a fake Runner (test 7 additionally drives the full
 //! `conductor::run` orchestration around that same real `ExecRunner`, rather than calling it
 //! directly, with only its one agent spawn faked - the gate side stays 100% real throughout):
@@ -49,6 +49,20 @@
 //!    suite is itself liable to run AS a `cargo test` gate inside a unit worktree - which
 //!    would carry a real, inherited `STORE_FENCE_ENV` of its own onto every subprocess this
 //!    binary spawns, silently fencing a test whose entire point is proving the unfenced path.
+//!    Also redirects `XDG_STATE_HOME` to a per-test temp dir (spec 62 round 4 fix for
+//!    `sdet-u62c4-round2-unfenced-execrunner-path-still-leaks-ambient-registry` /
+//!    `adv-u62c4-r3-unfenced-leak-confirmed-arch-refuted`): `refresh_registry_entry`
+//!    (`src/main.rs`) now refreshes the machine-global instance registry on every unfenced
+//!    courier call - correctly, since an unfenced project SHOULD reach real ambient state -
+//!    so left unredirected, this test's own real courier subprocess would seed a phantom,
+//!    since-deleted-tempdir entry into the operator's real `~/.local/state/rigger/instances`
+//!    every time this suite runs, mirroring the identical `XDG_STATE_HOME` isolation this
+//!    unit's round-1 commit already applied to five pre-existing sibling periphery files
+//!    (`store_precedence.rs`, `store_resolution.rs`, `store_resolution_cli.rs`,
+//!    `store_secrets.rs`, `projections_stay_local.rs`) for the same reason. This test's real
+//!    subprocess courier is spawned inside `ExecRunner::run`, not by a `Command` this test
+//!    owns directly, so the redirect is applied to this test's OWN process environment
+//!    instead (which the spawned child inherits) rather than to a `Command::env` call.
 //! 3. `a_periphery_couriers_shared_command_ignores_an_inherited_ambient_fence`: the FAIL-SAFE
 //!    direction's other edge (the u3 reject's ground (a),
 //!    `adv-u3-fence-breaks-existing-store-precedence-tests-measured`) - a periphery test
@@ -102,6 +116,22 @@
 //!    standalone review stage, and proves the gate-spawned courier's write lands in the fenced
 //!    scratch location rather than the repo's live store - the one observation neither the
 //!    RecordingRunner-based unit test nor a hand-typed-fence unit test can make.
+//! 8. `an_unfenced_integrated_tree_couriers_registry_refresh_never_touches_the_real_ambient_home`:
+//!    the round-4 regression pin for the SAME defect test 2's own `XDG_STATE_HOME` redirect
+//!    closes, proving the isolation actually protects the ambient location rather than merely
+//!    asserting the redirect's env var is present. Mirrors
+//!    `courier_registry_refresh_fence_periphery.rs`'s own technique - inject a KNOWN, controlled
+//!    fixture the courier's spawned process resolves through, then read its registry entries
+//!    with a small helper and assert on them - applied to the signal this unfenced path is
+//!    actually built around: `refresh_registry_entry` resolves the registry root via
+//!    `registry::state_home()`'s own precedence (`XDG_STATE_HOME` when set, else
+//!    `$HOME/.local/state`). This test pins BOTH ends of that precedence at once: `HOME` is set
+//!    to a fixture standing in for the real ambient location this exact call would resolve to
+//!    were the `XDG_STATE_HOME` redirect ever dropped (a future edit reverting it, or a copy of
+//!    this test omitting it), and `XDG_STATE_HOME` is set to a separate, redirected fixture -
+//!    so a future regression is not "nothing observable happens" but "a concrete, checked
+//!    fixture directory gains a phantom entry", exactly the shape the adjudicator's own manual
+//!    repro found.
 //!
 //! Both cwd and target_dir are passed to `ExecRunner::run` explicitly for every call in this
 //! file - never left empty to "inherit the ambient cwd" - so the only variable that ever
@@ -121,6 +151,7 @@ use rigger::eventstore::sqlite::Store;
 use rigger::gate::{
     Autonomy, BuildEnv, ExecRunner, Gate, Kind, Runner, STORE_FENCE_ENV, STORE_FENCE_SUFFIX,
 };
+use rigger::registry::{self, Instance};
 use rigger::worktree::{review_fence_sibling, unit_cache_sibling, Worktree};
 
 mod common;
@@ -196,6 +227,30 @@ fn emit_gate(id: &str, decision_id: &str) -> Gate {
     }
 }
 
+/// Every registry entry under `state_home`, decoded through `registry::Instance`'s own
+/// (de)serialization - mirrors `courier_registry_refresh_fence_periphery.rs`'s own identically
+/// purposed helper (each periphery suite owns its own small fixture helpers rather than sharing
+/// test-only code across files).
+fn registry_entries(state_home: &Path) -> Vec<Instance> {
+    let dir = registry::instances_dir(state_home);
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        if let Ok(body) = std::fs::read(&path) {
+            if let Ok(inst) = serde_json::from_slice::<Instance>(&body) {
+                out.push(inst);
+            }
+        }
+    }
+    out
+}
+
 #[test]
 fn a_real_fenced_courier_actually_succeeds_and_lands_in_an_isolated_persistent_store() {
     let topo = build_topology();
@@ -266,6 +321,26 @@ fn an_unfenced_integrated_tree_gate_still_walks_up_to_the_live_store() {
     // convention (a separate OS process from this integration binary, so no real lock is
     // shared - the tag documents the same discipline, not a cross-binary dependency).
     std::env::remove_var(STORE_FENCE_ENV);
+
+    // Also defensive, closing a DIFFERENT leak (round 4 fix for
+    // sdet-u62c4-round2-unfenced-execrunner-path-still-leaks-ambient-registry /
+    // adv-u62c4-r3-unfenced-leak-confirmed-arch-refuted - see this file's own module doc, item
+    // 2, for the full rationale): `refresh_registry_entry` (src/main.rs) now refreshes the
+    // machine-global instance registry on every unfenced courier call, so left unredirected
+    // this test's own real courier subprocess would seed a phantom entry into the operator's
+    // real `~/.local/state/rigger/instances` every time this suite runs. The redirect is
+    // applied to THIS test's own process environment (inherited by the spawned child) rather
+    // than to a `Command::env` call, because the real courier subprocess is spawned inside
+    // `ExecRunner::run`, not by a `Command` this test builds directly.
+    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
+    std::env::set_var("XDG_STATE_HOME", state.path());
+    struct RestoreStateHome;
+    impl Drop for RestoreStateHome {
+        fn drop(&mut self) {
+            std::env::remove_var("XDG_STATE_HOME");
+        }
+    }
+    let _restore_state_home = RestoreStateHome;
 
     let topo = build_topology();
     let live_before = std::fs::read(&topo.live_events).unwrap();
@@ -758,5 +833,76 @@ fn conductors_derived_store_fence_actually_reaches_a_real_exec_runner() {
          must never let the gate-spawned courier reach the repo's live store - if this fails, \
          conductor::run_gates's caller-injected store_fence is not actually reaching the real \
          Runner it wires up in production"
+    );
+}
+
+/// THE REGRESSION PIN for the round-4 fix (test 2's own `XDG_STATE_HOME` redirect, added for
+/// `sdet-u62c4-round2-unfenced-execrunner-path-still-leaks-ambient-registry` /
+/// `adv-u62c4-r3-unfenced-leak-confirmed-arch-refuted`): proves the isolation actually
+/// protects the ambient registry location, not merely that the redirect's env var is present
+/// somewhere in the test. See this file's own module doc, item 8, for the full rationale.
+#[test]
+#[serial_test::serial(cwd)]
+fn an_unfenced_integrated_tree_couriers_registry_refresh_never_touches_the_real_ambient_home() {
+    std::env::remove_var(STORE_FENCE_ENV);
+
+    let topo = build_topology();
+    let dir = topo.worktree.to_string_lossy().into_owned();
+
+    // `ambient_home` stands in for the real ambient location `refresh_registry_entry`'s
+    // registry root (`registry::state_home()`) would resolve to via its `$HOME/.local/state`
+    // fallback, were the `XDG_STATE_HOME` redirect below ever dropped - a future edit
+    // reverting it, or a copy of this test omitting it. Setting `HOME` here (rather than
+    // leaving it whatever this suite's own process happens to have inherited) turns a
+    // regression into a concrete, checked fixture directory gaining a phantom entry, instead
+    // of "nothing observable happens in this test either way".
+    let ambient_home = tempfile::tempdir().expect("a temp ambient HOME");
+    // The genuinely applied redirect, mirroring test 2's own - `state_home_from`'s precedence
+    // (`XDG_STATE_HOME` wins over `HOME` whenever it is set) means this is where the write
+    // must land as long as the redirect is intact.
+    let redirected_state = tempfile::tempdir().expect("a temp redirected XDG_STATE_HOME");
+    std::env::set_var("HOME", ambient_home.path());
+    std::env::set_var("XDG_STATE_HOME", redirected_state.path());
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            std::env::remove_var("HOME");
+            std::env::remove_var("XDG_STATE_HOME");
+        }
+    }
+    let _restore = Restore;
+
+    let result = ExecRunner.run(
+        &emit_gate("unfenced-registry-emit", "unfenced-registry-probe"),
+        &dir,
+        "",
+        "",
+        "",
+        "",
+        &BuildEnv::default(),
+        &BuildBudget::default(),
+    );
+    assert!(
+        result.pass,
+        "the unfenced courier must still succeed by walking up to the repo's real store: \
+         {result:?}"
+    );
+
+    let redirected_entries = registry_entries(redirected_state.path());
+    assert_eq!(
+        redirected_entries.len(),
+        1,
+        "the unfenced courier's registry refresh must land in the redirected XDG_STATE_HOME - \
+         proving this call genuinely exercised refresh_registry_entry's real, unconditional- \
+         when-unfenced write path, not a fixture that trivially never reaches it: \
+         {redirected_entries:?}"
+    );
+
+    let ambient_state_home = ambient_home.path().join(".local").join("state");
+    let ambient_entries = registry_entries(&ambient_state_home);
+    assert!(
+        ambient_entries.is_empty(),
+        "the HOME-derived ambient registry directory this call would otherwise have targeted, \
+         absent the XDG_STATE_HOME redirect, must stay untouched: {ambient_entries:?}"
     );
 }
