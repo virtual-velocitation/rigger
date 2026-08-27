@@ -20614,6 +20614,82 @@ fn step_writes_no_dash_marker_and_leaves_a_stale_one_untouched_when_the_bind_nev
     );
 }
 
+/// Spec 62 round 2 (adv-u62c1-marker-pid-not-the-serving-pid-on-singleton-race), through the
+/// BUILT binary: the LOSING side of a REAL concurrent singleton-bind race must record a marker
+/// naming the WINNER's actual serving pid, never the losing side's own (already-exited-without-
+/// binding) child pid.
+///
+/// The winner is brought FULLY up and genuinely serving, deterministically with no scheduling
+/// coin flip, BEFORE the step ever spawns its own dash - so the step's own detached spawn is
+/// GUARANTEED to lose: its `bind_singleton` sees `AddrInUse`, recognizes the winner via the dash
+/// header, and exits WITHOUT ever binding (spec 50, criterion 1's `AlreadyServing` arm). Before
+/// this fix, `wait_for_dash_bind` observed the winner's port already answering and returned
+/// `true`, and `spawn_run_dashboard_detached` wrote the LOSING child's OWN (already-exited,
+/// never-bound) pid into the marker - naming a process that never served anything. The fix asks
+/// the port itself who is REALLY serving (`dash::dash_serving_pid_on`) rather than trusting the
+/// locally-spawned pid, so the marker must name the winner's pid exactly.
+///
+/// The winner is a real, long-lived detached process; it is reaped BEFORE the assertions so a
+/// failed assertion never leaks a dashboard.
+#[test]
+fn step_losing_a_real_singleton_race_records_the_winners_pid_not_its_own_dead_childs() {
+    use std::process::Stdio;
+
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    write_two_stage_workflow(root);
+    let dash_port = free_loopback_port();
+    let url = format!("http://127.0.0.1:{dash_port}/");
+
+    // The WINNER: a real, serving `rigger dash` fully up BEFORE the step ever spawns its own -
+    // so the step's own detached spawn is deterministically the LOSING side of the race.
+    let mut winner = common::rigger_courier()
+        .args(["dash", "--port", &dash_port.to_string()])
+        .current_dir(root)
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn the winning `rigger dash`");
+    let winner_pid = winner.id();
+
+    if !matches!(http_get(&url), Some(body) if body.contains("rigger dash")) {
+        let _ = winner.kill();
+        let _ = winner.wait();
+        panic!("the winning `rigger dash` never came up at {url}");
+    }
+
+    // The LOSER: `rigger step`'s own always-on ensure spawns a SECOND `rigger dash` at the same
+    // fixed address for this fresh project (no local marker exists yet); it must lose the race,
+    // recognize the winner, and exit without binding.
+    let (out, err) = run_step_dash_enabled(root, dash_port);
+
+    let marker = read_dash_marker(root);
+    let _ = winner.kill();
+    let _ = winner.wait();
+
+    assert!(
+        out.contains(r#""wave":"#),
+        "the step must still run to completion even though its OWN dash spawn lost the race; \
+         stdout: {out:?} stderr: {err:?}"
+    );
+    let (marker_port, marker_pid) = marker.unwrap_or_else(|| {
+        panic!(
+            "a step that loses a real singleton race must still record a marker for the dash \
+             that IS actually serving; stderr:\n{err}"
+        )
+    });
+    assert_eq!(
+        marker_port, dash_port,
+        "the marker must name the port the winner actually serves"
+    );
+    assert_eq!(
+        marker_pid, winner_pid,
+        "the marker must name the WINNER's real serving pid, never the losing side's own \
+         (already-exited-without-binding) child pid; stderr:\n{err}"
+    );
+}
+
 /// Spec 39, criterion 1: the RIGGER_NO_DASH opt-out is honored by the BUILT binary on the step
 /// path - a step run under it reaches and passes the dash-start seam (it prints its wave) yet
 /// records NO `.rigger/dash.marker`, so a short-lived CI run or the crate's own integration

@@ -5673,16 +5673,34 @@ fn wait_for_dash_bind(
 /// Not reaping here is what lets the dash keep serving across the run's many `step`
 /// invocations (spec 39). Also records the dash-url breadcrumb `rigger status` reads.
 ///
-/// `Ok` is returned ONLY once [`wait_for_dash_bind`] confirms the child is actually serving
-/// (spec 62, criterion 1: marker follows bind). `cmd.spawn()` succeeding proves only that the
-/// child process launched, never that it bound - a job-control-stopped predecessor can hold the
-/// port with a socket that accepts the TCP handshake but never calls `accept()`, or the child
-/// can lose an `AddrInUse` race outright and exit. Either way, the caller
+/// `Ok` is returned ONLY once [`wait_for_dash_bind`] confirms SOMETHING is genuinely serving
+/// `port` (spec 62, criterion 1: marker follows bind). `cmd.spawn()` succeeding proves only that
+/// the child process launched, never that it bound - a job-control-stopped predecessor can hold
+/// the port with a socket that accepts the TCP handshake but never calls `accept()`, or the
+/// child can lose an `AddrInUse` race outright and exit. Either way, the caller
 /// ([`ensure_run_dashboard_at`], via its injected `start` seam) must never learn of a dash that
 /// never actually came up, so a bind that is not confirmed within [`DASH_BIND_CONFIRM_WINDOW`],
 /// or a child that exits before confirming, returns `Err` here - closing the race at its source
 /// rather than asking `ensure_run_dashboard_at`'s already-correct `Err` arm (which already
 /// writes no marker) to somehow notice on its own.
+///
+/// The recorded marker's pid is the port's OWN reported serving pid
+/// ([`dash::dash_serving_pid_on`]), never assumed to be this call's locally-spawned `child`
+/// (spec 62 round 2: adv-u62c1-marker-pid-not-the-serving-pid-on-singleton-race). `wait_for_dash_
+/// bind` confirming `true` proves only that SOMETHING now answers `port` as a rigger dash - never
+/// that it is THIS `child`: the machine singleton binds one FIXED address (spec 50, criterion 4),
+/// so a concurrent run racing to start the same singleton can win it out from under this call -
+/// `child`'s own `bind_singleton` then hits `AddrInUse`, recognizes the winner via
+/// [`dash::DASH_HEADER`], and exits cleanly WITHOUT ever binding anything, while the port keeps
+/// answering via the winner the whole time. Asking the port itself who is really serving (rather
+/// than inferring it from `child`'s own liveness/exit timing, which cannot resolve this
+/// deterministically - `child` does real filesystem/config work before it ever reaches its own
+/// bind attempt, so "child has not yet exited" never proves "child is the one bound") is what
+/// makes the returned marker correct regardless of which side of any such race this call landed
+/// on. `unwrap_or(pid)` is the narrow fallback for the window between `wait_for_dash_bind`
+/// confirming a probe and this second probe running, should the server have vanished in between -
+/// falling back to the locally-spawned pid is strictly no worse than this function's PRE-fix
+/// behavior in that vanishingly narrow case, never worse than before.
 fn spawn_run_dashboard_detached() -> std::io::Result<dash::DashMarker> {
     // The machine singleton binds the FIXED default address (spec 50, criterion 4) - no free-port
     // search, so the address never drifts. If a dash is already serving it, the spawned `rigger
@@ -5710,10 +5728,17 @@ fn spawn_run_dashboard_detached() -> std::io::Result<dash::DashMarker> {
     }
     // Detach: `child` is dropped here. A std `Child`'s Drop neither waits nor kills, so the dash
     // process keeps running after this step returns. (Contrast `dash::ReapedChild`, whose Drop
-    // reaps - deliberately NOT used on the step path.)
+    // reaps - deliberately NOT used on the step path.) Dropping BEFORE the pid-attribution probe
+    // below is deliberate too: if `child` itself is the one serving, dropping it here changes
+    // nothing (Drop neither waits nor kills), and if it already lost the race and exited, there
+    // is nothing left to hold onto anyway.
+    let serving_pid = dash::dash_serving_pid_on(port).unwrap_or(pid);
     let url = format!("http://127.0.0.1:{port}/");
     let _ = std::fs::write(db_path(DASH_URL_FILE), &url);
-    Ok(dash::DashMarker { port, pid })
+    Ok(dash::DashMarker {
+        port,
+        pid: serving_pid,
+    })
 }
 
 /// Whether the always-on dash auto-ensure is SUPPRESSED for this run (spec 50, criterion 4) -

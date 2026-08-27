@@ -79,6 +79,20 @@ pub fn free_port_from(start: u16) -> io::Result<u16> {
 /// endpoint - the recognition rides the root page every dash already serves.
 pub const DASH_HEADER: &str = "X-Rigger-Dash";
 
+/// The response header carrying the pid of whichever process is ACTUALLY holding the accept
+/// loop that answered this response (spec 62 round 2:
+/// adv-u62c1-marker-pid-not-the-serving-pid-on-singleton-race). Every dash response carries it
+/// (see `Response::write_to`), stamped fresh from `std::process::id()` at write time by the
+/// process that is genuinely serving - never a value plumbed in from outside. This is what lets
+/// [`dash_serving_pid_on`] answer "who is REALLY serving this port" directly from the wire,
+/// rather than a caller having to assume its own locally-spawned child is the one that bound it:
+/// in a fixed-address singleton race (spec 50, criterion 4) the LOSING side's own spawned
+/// `rigger dash` recognizes `bind_singleton`'s `AlreadyServing` arm and exits without ever
+/// binding, so `dash_serving_on(port)` answering `true` proves only that SOMETHING is serving,
+/// never that it was the caller's own spawn - the caller needs the served pid itself to attribute
+/// a marker correctly.
+pub const DASH_HEADER_PID: &str = "X-Rigger-Dash-Pid";
+
 /// Whether a rigger dash is ALREADY serving on loopback `port` (spec 50, criterion 1). Drives
 /// one `GET /` and returns `true` only when the response carries the [`DASH_HEADER`] response
 /// header, so an unrelated process that merely holds the port is NEVER mistaken for a dash. Any
@@ -138,6 +152,102 @@ pub fn dash_serving_on(port: u16) -> bool {
             }
             Err(_) => return false, // a slow/silent holder times out here, or the peer reset
         }
+    }
+}
+
+/// The pid ACTUALLY serving loopback `port` right now, or `None` when no rigger dash answers
+/// there (spec 62 round 2: adv-u62c1-marker-pid-not-the-serving-pid-on-singleton-race). Confirms
+/// dash-ness the SAME way [`dash_serving_on`] does - the [`DASH_HEADER`] marker must be present,
+/// so an unrelated listener holding the port is never mistaken for a dash naming a pid - and
+/// then reads [`DASH_HEADER_PID`]'s value off that SAME response. This is what lets a caller ask
+/// the port itself who is REALLY serving it, instead of assuming its own locally-spawned child
+/// is the one that bound it: in a fixed-address singleton race (spec 50, criterion 4) the LOSING
+/// side's own spawned `rigger dash` recognizes `bind_singleton`'s `AlreadyServing` arm and exits
+/// without ever binding, so `dash_serving_on(port)` answering `true` proves only that SOMETHING
+/// is serving, never that it was the caller's own spawn.
+///
+/// A SEPARATE probe from [`dash_serving_on`] rather than a shared refactor: that function
+/// returns the instant it recognizes [`DASH_HEADER`], which can stop reading BEFORE a LATER
+/// `X-Rigger-Dash-Pid` line ever arrives - extracting a value needs the full header block, so
+/// this reads to `head_block_ended` (or the deadline/cap) every time. Bounded identically to
+/// `dash_serving_on` otherwise (the same connect/write timeouts, the same overall deadline, and
+/// the same total-byte cap), so this can never hang or misbehave where that proven probe would
+/// not - a dead, slow, or hostile holder still resolves to `None` within the same bound.
+pub fn dash_serving_pid_on(port: u16) -> Option<u32> {
+    use std::io::Read;
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(500)).ok()?;
+    stream
+        .set_write_timeout(Some(Duration::from_millis(500)))
+        .ok()?;
+    stream
+        .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .ok()?;
+
+    let dash_needle = format!("{DASH_HEADER}:").to_ascii_lowercase();
+    let pid_needle = format!("{DASH_HEADER_PID}:").to_ascii_lowercase();
+    let deadline = std::time::Instant::now() + Duration::from_millis(750);
+    const MAX_HEAD_BYTES: usize = 8 * 1024;
+    let mut head: Vec<u8> = Vec::with_capacity(512);
+    let mut buf = [0u8; 512];
+    loop {
+        let remaining = deadline.checked_duration_since(std::time::Instant::now())?;
+        if remaining.is_zero() || stream.set_read_timeout(Some(remaining)).is_err() {
+            return None;
+        }
+        match stream.read(&mut buf) {
+            Ok(0) => break, // closed: decide on exactly what arrived
+            Ok(n) => {
+                head.extend_from_slice(&buf[..n]);
+                if head.len() >= MAX_HEAD_BYTES || head_block_ended(&head) {
+                    break;
+                }
+            }
+            Err(_) => return None, // a slow/silent holder times out here, or the peer reset
+        }
+    }
+    if !head_has_header_line(&head, dash_needle.as_bytes()) {
+        return None; // not a rigger dash at all - never guess a pid from an unrelated listener
+    }
+    header_line_value(&head, pid_needle.as_bytes())?
+        .parse()
+        .ok()
+}
+
+/// The value substring of the FIRST line in `head` whose NAME matches `needle_lower` (e.g.
+/// `x-rigger-dash-pid:`), trimmed - or `None` when no line matches. Case-insensitive and
+/// anchored to a line start, mirroring [`head_has_header_line`]'s own matching exactly so the
+/// two can never disagree about which line is "the" header.
+fn header_line_value<'a>(head: &'a [u8], needle_lower: &[u8]) -> Option<&'a str> {
+    if needle_lower.is_empty() {
+        return None;
+    }
+    let mut start = 0usize;
+    loop {
+        if start >= head.len() {
+            return None;
+        }
+        let line_end = head[start..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map(|rel| start + rel)
+            .unwrap_or(head.len());
+        let line = &head[start..line_end];
+        if line.len() >= needle_lower.len()
+            && line[..needle_lower.len()]
+                .iter()
+                .zip(needle_lower)
+                .all(|(b, n)| b.to_ascii_lowercase() == *n)
+        {
+            return std::str::from_utf8(&line[needle_lower.len()..])
+                .ok()
+                .map(str::trim);
+        }
+        if line_end >= head.len() {
+            return None;
+        }
+        start = line_end + 1;
     }
 }
 
@@ -3422,17 +3532,23 @@ impl Response {
     /// Write this response as HTTP/1.1 with `Connection: close`, so a bare client knows
     /// the body ends at the connection close (no keep-alive bookkeeping). Every response
     /// carries the [`DASH_HEADER`] marker so a second `rigger dash` invocation can recognize
-    /// an already-serving singleton on the port (spec 50, criterion 1).
+    /// an already-serving singleton on the port (spec 50, criterion 1), AND the
+    /// [`DASH_HEADER_PID`] marker naming THIS process's own pid (`std::process::id()`, read
+    /// fresh at write time - never plumbed in from outside) so a caller can learn WHO is
+    /// actually serving, not merely THAT something is (spec 62 round 2:
+    /// adv-u62c1-marker-pid-not-the-serving-pid-on-singleton-race).
     fn write_to(&self, w: &mut impl Write) -> io::Result<()> {
         let header = format!(
             "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\
-             {}: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+             {}: {}\r\n{}: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
             self.status,
             self.reason(),
             self.content_type,
             self.body.len(),
             DASH_HEADER,
             env!("CARGO_PKG_VERSION"),
+            DASH_HEADER_PID,
+            std::process::id(),
         );
         w.write_all(header.as_bytes())?;
         w.write_all(&self.body)?;
@@ -4533,6 +4649,112 @@ mod tests {
                  (the per-read-only timeout never bounds a newline-less dribble)"
             ),
         }
+    }
+
+    /// Spec 62 round 2 (adv-u62c1-marker-pid-not-the-serving-pid-on-singleton-race):
+    /// `dash_serving_pid_on` reports the pid a REAL rigger-dash-shaped response names via
+    /// [`DASH_HEADER_PID`] - the whole point being that a caller can learn WHO is actually
+    /// serving a port without assuming it is whichever process the caller itself happens to have
+    /// spawned. A fake listener stands in for the winner of a singleton race, answering with an
+    /// ARBITRARY pid value in the header (never the test process's own pid), so a pass here can
+    /// only be explained by the probe reading the header off the wire, not by any coincidental
+    /// match with `std::process::id()`.
+    #[test]
+    fn dash_serving_pid_on_reports_the_pid_a_real_dash_response_names() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let winner_pid: u32 = 424_242; // deliberately NOT this test process's own pid
+        std::thread::spawn(move || {
+            for mut s in listener.incoming().flatten() {
+                let _ = s.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\n{DASH_HEADER}: probe\r\n{DASH_HEADER_PID}: \
+                         {winner_pid}\r\nConnection: close\r\n\r\n"
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        assert_eq!(
+            dash_serving_pid_on(port),
+            Some(winner_pid),
+            "the probe must report the EXACT pid the response names via X-Rigger-Dash-Pid"
+        );
+    }
+
+    /// Spec 62 round 2 mutation-efficacy follow-up (adv-u62c1-marker-pid-not-the-serving-pid-on-
+    /// singleton-race): [`dash_serving_pid_on`]'s read loop has its own local byte-cap constant
+    /// and a `head.len() >= <cap>` termination check, both of which matter, not merely
+    /// `head_block_ended` - a response whose header block is genuinely LARGER than the
+    /// fixed-size read buffer forces multiple `read` calls to assemble, so a wrong cap (too
+    /// small, or the comparison direction flipped) truncates the head BEFORE the real
+    /// [`DASH_HEADER_PID`] line ever arrives, well short of the block's actual end.
+    ///
+    /// The response here is ~2KB: status line, then ~2000 bytes of an unrelated padding header
+    /// (never matching either needle), THEN the real `DASH_HEADER`/`DASH_HEADER_PID` lines. Two
+    /// structural facts make the assertion robust regardless of exact OS-level TCP chunking:
+    /// (1) the read loop's own buffer is a fixed 512-byte array, so `Read::read` can never
+    /// return more than 512 bytes in one call - reaching the real content (past byte ~2030)
+    /// PROVABLY requires at least 4 calls; (2) since 1032 (`8 * 1024` mis-computed as `8 + 1024`
+    /// or `8 / 1024`) and the flipped-comparison cap are both far below 2030 while the real cap
+    /// (8192) is far above it, a wrong cap is GUARANTEED to trip - monotonically, on whichever
+    /// read call first crosses it - strictly before the padding ends, while the correct cap
+    /// never trips at all (this response never reaches 8192 bytes) and the loop instead runs to
+    /// completion exactly once `head_block_ended` sees the real trailing blank line.
+    #[test]
+    fn dash_serving_pid_on_assembles_a_head_that_spans_many_read_calls() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let winner_pid: u32 = 424_243; // deliberately NOT this test process's own pid
+        let padding = "A".repeat(2000);
+        std::thread::spawn(move || {
+            for mut s in listener.incoming().flatten() {
+                let _ = s.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nX-Padding: {padding}\r\n{DASH_HEADER}: \
+                         probe\r\n{DASH_HEADER_PID}: {winner_pid}\r\nConnection: \
+                         close\r\n\r\n"
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        assert_eq!(
+            dash_serving_pid_on(port),
+            Some(winner_pid),
+            "a head spanning many read() calls must still be fully assembled and parsed - \
+             a premature length-cap break truncates it before the real header lines arrive"
+        );
+    }
+
+    /// The false direction, mirroring `dash_serving_on_is_false_for_a_non_dash_listener`: a
+    /// listener that answers but carries no [`DASH_HEADER`] at all (an unrelated process holding
+    /// the port) must never be mistaken for a dash naming a pid, even if it happens to send a
+    /// same-shaped header by coincidence-free construction here (it sends none).
+    #[test]
+    fn dash_serving_pid_on_is_none_for_a_non_dash_listener() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for mut s in listener.incoming().flatten() {
+                let _ = s.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi",
+                );
+            }
+        });
+        assert_eq!(
+            dash_serving_pid_on(port),
+            None,
+            "a non-dash listener must never be reported as naming a serving pid"
+        );
+    }
+
+    /// Nothing listening at all must resolve to `None`, never a stale or default pid - mirrors
+    /// `dash_serving_on`'s false-on-no-connection direction.
+    #[test]
+    fn dash_serving_pid_on_is_none_when_nothing_answers() {
+        let port = free_port_from(45000).expect("a free loopback port must be available");
+        assert_eq!(dash_serving_pid_on(port), None);
     }
 
     /// Spec 50, criterion 1 (cold-race loser): when two dashes bind the fixed address at once, the
