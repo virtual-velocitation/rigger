@@ -9531,8 +9531,9 @@ fn is_build_cache_tombstone(name: &str) -> bool {
 ///
 /// EXCLUSION: a reader-writer flock on [`rigger::worktree::shared_build_cache_guard_path`],
 /// acquired EXCLUSIVE and NON-BLOCKING here. Every rigger-launched shared-cache build
-/// ([`rigger::gate`]'s `hold_shared_build_cache_lock`) holds the SAME guard SHARED for its
-/// whole cargo invocation, so this can only succeed when no such build is in flight - on
+/// ([`rigger::gate`]'s `ExecRunner::run`, via an exec-replacing `flock -s -F` wrapper around
+/// the gate command itself) holds the SAME guard SHARED for as long as its cargo/rustc
+/// process tree is alive, so this can only succeed when no such build is in flight - on
 /// contention it returns `Ok(BuildCacheReclaim::Busy)` immediately, never queuing (spec 77
 /// Design: "never waiting, so no build can queue behind the delete" - a prior, now-
 /// superseded design proved a queued waiter can only ever resume into a hole, since flock
@@ -9568,7 +9569,7 @@ fn reclaim_shared_build_cache(cache: &Path) -> std::io::Result<BuildCacheReclaim
         .write(true)
         .truncate(false)
         .open(&guard_path)?;
-    // Fully-qualified, matching `gate::hold_shared_build_cache_lock`'s own reasoning: std's
+    // Fully-qualified, matching `gate::build_cache_guard_is_usable`'s own reasoning: std's
     // more recently stabilized `File::try_lock`/`lock`/`unlock` share these exact names with
     // `fs2::FileExt`, and a plain method call would silently prefer the std inherent method
     // (leaving this crate's deliberate `fs2` choice unused) rather than genuinely exercising it.
@@ -14241,8 +14242,8 @@ mod tests {
     fn reclaim_shared_build_cache_refuses_rather_than_waits_when_a_build_holds_the_guard() {
         // spec 77 Design: the exclusion is EXCLUSIVE and NON-BLOCKING - "never waiting, so
         // no build can queue behind the delete". Simulate a rigger-launched shared-cache
-        // build by holding the SAME guard path SHARED (as `gate::hold_shared_build_cache_lock`
-        // does) before calling the reclaim.
+        // build by holding the SAME guard path SHARED (as a build's `flock -s` wrapper does,
+        // via `gate::ExecRunner::run`) before calling the reclaim.
         let dir = tempfile::tempdir().unwrap();
         let cache = dir.path().join("cargo-target");
         write_file(&cache.join("debug").join("a.rlib"), &[0u8; 64]);

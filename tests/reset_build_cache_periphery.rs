@@ -251,9 +251,10 @@ fn reset_build_cache_is_not_dropped_when_composed_with_derived_on_a_server_backe
 #[test]
 fn reset_build_cache_refuses_rather_than_waits_while_a_build_holds_the_guard() {
     // spec 77 Design: EXCLUSIVE and NON-BLOCKING - never waiting, so no build can queue
-    // behind the delete. Simulate a rigger-launched shared-cache build (`gate::
-    // hold_shared_build_cache_lock`'s own shape) with a real external `flock -s`, then run
-    // the real compiled binary against the identical guard path it independently derives.
+    // behind the delete. Simulate a rigger-launched shared-cache build (the guard SHARED
+    // for a build's duration - `gate::ExecRunner::run`'s own shape) with a real external
+    // `flock -s`, then run the real compiled binary against the identical guard path it
+    // independently derives.
     let project = temp_project();
     let root = project.path();
     seed_store(root);
@@ -303,6 +304,130 @@ fn reset_build_cache_refuses_rather_than_waits_while_a_build_holds_the_guard() {
     assert!(
         !ok,
         "reset --build-cache must refuse while the guard is held, never wait for it"
+    );
+    assert!(
+        err.contains("in use") || err.contains("guard"),
+        "the refusal must explain WHY, not just fail silently: stdout {out:?} stderr {err:?}"
+    );
+    assert!(
+        cache.join("debug").join("a.rlib").exists(),
+        "a refused reclaim must leave the cache completely untouched"
+    );
+}
+
+#[test]
+fn reset_build_cache_still_refuses_when_the_guard_holders_orchestrator_died_but_the_build_lives_on()
+{
+    // REQUIRED FIX for spec 77 criterion 5 round 2 (adv-u77c5bsc-guard-lifetime-bound-to-
+    // orchestrator-not-the-cargo-child, UPHELD on adjudication): the shared-cache guard's
+    // lock must be held by the process tree that actually WRITES the cache, never merely by
+    // the orchestrator that launched it - so a killed orchestrator (the exact "killed runs
+    // never clean up" shape spec 77's own Problem statement targets, and the crash class the
+    // driver's own liveness heartbeat exists around) must never let `reset --build-cache`
+    // reclaim a cache a still-running, now-orphaned build is mid-write into.
+    //
+    // Simulates the FIXED `gate::ExecRunner::run` command shape end to end with real
+    // processes (mirroring this file's own `..._refuses_rather_than_waits...` test's
+    // simulate-via-real-`flock` style, never re-invoking Rust code cross-process): an
+    // "orchestrator" (`sh -c "... & wait"`, spawned and owned by THIS test exactly the way
+    // the real rigger process is spawned and owned by whatever launches it) backgrounds
+    // `flock -s -F -- <guard> sh -c '<script>'` - the exact exec-replacing wrapper
+    // `ExecRunner::run` now uses - then blocks on `wait`, mirroring `Command::output()`'s own
+    // blocking wait for its child. `&` guarantees the backgrounded chain is a genuinely
+    // separate, already-forked process before the orchestrator ever dies (no shell tail-call
+    // exec-replace ambiguity, unlike a bare trailing `sh -c "singlecommand"`). Killing ONLY
+    // the orchestrator's own pid (`Child::kill`, which signals that one pid, never a process
+    // group) must leave the backgrounded flock/sh chain alive and STILL holding the guard.
+    let project = temp_project();
+    let root = project.path();
+    seed_store(root);
+    let cache = shared_cache_dir(root);
+    write_file(&cache.join("debug").join("a.rlib"), &[0u8; 64]);
+    let guard = guard_path(root);
+    std::fs::create_dir_all(guard.parent().unwrap()).unwrap();
+
+    let markers = tempfile::tempdir().expect("tempdir for markers");
+    let started = markers.path().join("started");
+    let pidfile = markers.path().join("child.pid");
+    let guard_str = guard.to_str().unwrap();
+    let started_str = started.to_str().unwrap();
+    let pidfile_str = pidfile.to_str().unwrap();
+
+    fn guard_is_busy(guard: &Path) -> bool {
+        Command::new("flock")
+            .arg("-n")
+            .arg("-x")
+            .arg(guard)
+            .arg("true")
+            .status()
+            .map(|s| !s.success())
+            .unwrap_or(false)
+    }
+
+    // The simulated "orchestrator": backgrounds the exact `flock -s -F -- <guard>
+    // sh -c '<script>'` command `ExecRunner::run` now constructs, then blocks on `wait` for
+    // it - the same spawn-then-block shape `Command::output()` gives the real orchestrator.
+    let script = format!(
+        "flock -s -F -- {guard_str} sh -c 'echo $$ > {pidfile_str}; touch {started_str}; \
+         sleep 30' & wait"
+    );
+    let mut orchestrator = Command::new("sh")
+        .arg("-c")
+        .arg(&script)
+        .spawn()
+        .expect("spawn the simulated orchestrator");
+
+    let mut started_ok = false;
+    for _ in 0..400 {
+        if started.exists() {
+            started_ok = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(
+        started_ok,
+        "the backgrounded build must start and touch its marker"
+    );
+    assert!(
+        guard_is_busy(&guard),
+        "the simulated build must actually hold the guard before this test proceeds"
+    );
+
+    // Kill ONLY the orchestrator's pid - never its process group - the exact crash shape
+    // spec 77 targets: the orchestrator (standing in for the real `rigger` process) dies,
+    // but a process it already forked keeps running independently.
+    orchestrator
+        .kill()
+        .expect("SIGKILL the simulated orchestrator");
+    orchestrator.wait().expect("reap the killed orchestrator");
+
+    let child_pid = std::fs::read_to_string(&pidfile)
+        .expect("the backgrounded build must have recorded its own pid")
+        .trim()
+        .to_string();
+    assert!(
+        Command::new("kill")
+            .arg("-0")
+            .arg(&child_pid)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false),
+        "the build must survive its orchestrator's death as a live orphan: pid {child_pid}"
+    );
+    assert!(
+        guard_is_busy(&guard),
+        "the guard must STILL be held after the orchestrator alone died - the orphaned build \
+         keeps it, the (now-dead) orchestrator never held it directly"
+    );
+
+    let (out, err, ok) = run_rigger(root, &["reset", "--build-cache"]);
+    let _ = Command::new("kill").arg("-9").arg(&child_pid).status();
+
+    assert!(
+        !ok,
+        "reset --build-cache must still refuse: the guard is held by a live orphaned build, \
+         even though the orchestrator that launched it is dead: stdout {out:?} stderr {err:?}"
     );
     assert!(
         err.contains("in use") || err.contains("guard"),

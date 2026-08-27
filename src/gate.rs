@@ -656,8 +656,56 @@ impl Runner for ExecRunner {
         build_env: &BuildEnv,
         budget: &BuildBudget,
     ) -> GateResult {
-        let mut cmd = Command::new("sh");
-        cmd.arg("-c").arg(&g.run);
+        // The shared gate build cache's exclusion protocol, PRODUCER half (spec 77
+        // criterion 5, BOUNDED SHARED CACHE), FIXED round 2 for
+        // adv-u77c5bsc-guard-lifetime-bound-to-orchestrator-not-the-cargo-child: a
+        // non-empty `build_cache_guard` now wraps the WHOLE gate command through an
+        // EXEC-REPLACING `flock -s -F -- <guard> sh -c '<g.run>'`, rather than opening
+        // and `fs2`-locking the guard fd IN THIS PROCESS and merely holding it across a
+        // separately spawned child (`Command::output()`'s own fork+exec). That older
+        // shape tied the lock's lifetime to THIS orchestrator process: std's `File`
+        // always opens close-on-exec, so the spawned `sh -c` child never inherited the
+        // locked fd, and the lock was released the instant this process died - even
+        // while a live, orphaned cargo/rustc tree that child had spawned kept writing
+        // into the very cache the lock exists to protect. `flock(1)`'s `-F`/`--no-fork`
+        // takes the shared lock ITSELF, in the CHILD process `Command::output()` forks,
+        // then execve()s directly into the wrapped `sh -c` - preserving the locked fd
+        // across that exec (flock deliberately does not set close-on-exec on it) - so
+        // the exec'd shell, and every cargo/rustc descendant it forks in turn, inherits
+        // the SAME open file description the lock is held against and keeps it held for
+        // as long as ANY of them is alive. If this orchestrator alone is killed
+        // mid-build (the exact "killed runs never clean up" crash shape spec 77's own
+        // Problem statement targets, and the class the driver's own liveness heartbeat
+        // exists around), the already-forked child is a genuinely separate OS process
+        // and is wholly unaffected - it keeps the fd it always held, never re-acquiring
+        // anything. This mirrors `src/budget.rs`'s own proven pattern for the identical
+        // "supervisor may die independently of the work it launched" problem class (its
+        // own test fixture already relies on this exact flock(1)-preserves-the-fd-
+        // across-exec guarantee to simulate an abnormally-killed holder).
+        //
+        // `build_cache_guard_is_usable` is a best-effort, released-before-use PROBE
+        // (never held across the child) mirroring `BuildBudget::acquire`'s own
+        // degrade-to-unlimited convention: filesystem trouble unrelated to the build
+        // itself (an unwritable guard path, a missing parent dir) degrades to running
+        // unguarded rather than failing a gate over a lock this build does not
+        // otherwise need.
+        let guarded =
+            !build_cache_guard.is_empty() && build_cache_guard_is_usable(build_cache_guard);
+        let mut cmd = if guarded {
+            let mut c = Command::new("flock");
+            c.arg("-s")
+                .arg("-F")
+                .arg("--")
+                .arg(build_cache_guard)
+                .arg("sh")
+                .arg("-c")
+                .arg(&g.run);
+            c
+        } else {
+            let mut c = Command::new("sh");
+            c.arg("-c").arg(&g.run);
+            c
+        };
         if !dir.is_empty() {
             cmd.current_dir(dir);
         }
@@ -722,16 +770,6 @@ impl Runner for ExecRunner {
         // frees its slot the instant it is killed, and no other code path in the crate
         // acquires a slot, so non-build work is never gated.
         let _slot = budget.acquire();
-        // The shared gate build cache's exclusion protocol, PRODUCER half (spec 77
-        // criterion 4, BOUNDED SHARED CACHE): a non-empty `build_cache_guard` names the
-        // sibling lock file `rigger reset --build-cache` takes EXCLUSIVE and non-blocking
-        // before it renames/reclaims the cache. Held SHARED for exactly this command's
-        // duration (mirroring the budget slot just above), so an exclusive reset attempted
-        // while this build is running is refused rather than ever corrupting the cache out
-        // from under it. Empty disables this entirely (a per-unit `cargo-target-<slug>`
-        // build is never at risk from that command, matching `target_dir`'s own
-        // "empty means off" convention).
-        let _cache_guard = hold_shared_build_cache_lock(build_cache_guard);
         match cmd.output() {
             Ok(out) => {
                 let mut evidence = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -750,41 +788,39 @@ impl Runner for ExecRunner {
     }
 }
 
-/// Hold the shared gate build cache's guard lock SHARED for the duration of one gate's
-/// cargo invocation (spec 77 criterion 5, BOUNDED SHARED CACHE) - the "every
-/// rigger-launched shared-cache build holds it SHARED" half of the exclusion protocol
-/// whose exclusive, non-blocking counterpart is `rigger reset --build-cache`'s own reclaim
-/// (`main.rs`'s `reclaim_shared_build_cache`). `path` is the guard file BESIDE the cache
-/// (`worktree::shared_build_cache_guard_path`'s naming authority) - never inside it, so the
-/// guard survives that command's own rename of the cache itself; empty disables this (a
-/// per-unit build's own `cargo-target-<slug>` cache is never at risk from that command, so
-/// it takes no lock at all).
+/// Best-effort capability PROBE for `path` as a shared-cache guard (spec 77 criterion 5,
+/// BOUNDED SHARED CACHE): briefly creates it, takes a shared `fs2` lock, and immediately
+/// releases it - never held across anything - purely to confirm the path is writable and
+/// this filesystem supports advisory locks, mirroring `BuildBudget::acquire`'s own
+/// degrade-to-unlimited convention for the identical class of trouble (an unwritable guard
+/// path, a missing parent dir). Empty disables this entirely (a per-unit build's own
+/// `cargo-target-<slug>` cache is never at risk from `rigger reset --build-cache`, matching
+/// `target_dir`'s own "empty means off" convention).
 ///
-/// A BLOCKING shared lock, unlike the reset side's non-blocking exclusive one: a build is
-/// legitimately willing to wait the brief moment reset holds the guard exclusive across its
-/// own rename, and reset's own non-blocking design means that wait is always short (it
-/// refuses outright rather than ever queuing itself behind a held lock). Best-effort
-/// against filesystem trouble unrelated to the build itself (an unwritable guard path, a
-/// missing parent dir): degrades to running unguarded rather than failing a gate over a
-/// lock this build does not otherwise need, mirroring `BuildBudget::acquire`'s own
-/// degrade-to-unlimited convention for the identical class of trouble.
-fn hold_shared_build_cache_lock(path: &str) -> Option<std::fs::File> {
-    if path.is_empty() {
-        return None;
-    }
-    let f = std::fs::OpenOptions::new()
+/// The REAL, invocation-lifetime lock is taken by the external `flock(1)` process
+/// `ExecRunner::run` execs into when this returns `true` - never by this probe. Locking
+/// in-process here, even briefly, is safe only because it is released before the gate
+/// command ever spawns; holding it across that spawn is precisely the bug this function's
+/// caller exists to fix (see `ExecRunner::run`'s own doc comment).
+fn build_cache_guard_is_usable(path: &str) -> bool {
+    let Ok(f) = std::fs::OpenOptions::new()
         .create(true)
         .write(true)
         .truncate(false)
         .open(path)
-        .ok()?;
+    else {
+        return false;
+    };
     // Fully-qualified (not `f.lock_shared()`): this crate deliberately uses `fs2` for
     // every advisory lock ([`crate::budget`], `main.rs`'s step lock) rather than std's
     // more recently stabilized `File::lock_shared`, which shares this exact method name -
     // a plain method call would silently resolve to the std inherent method (inherent
     // methods always win over a trait's) and leave the `fs2` import genuinely unused.
-    fs2::FileExt::lock_shared(&f).ok()?;
-    Some(f)
+    if fs2::FileExt::lock_shared(&f).is_err() {
+        return false;
+    }
+    let _ = fs2::FileExt::unlock(&f);
+    true
 }
 
 /// Cap on the length of any single evidence line (§3.3).
@@ -1114,6 +1150,35 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
     }
 
     #[test]
+    fn exec_runner_env_vars_reach_the_gate_command_through_the_flock_guard_wrapper() {
+        // The guard wrapper (`flock -s -F -- <guard> sh -c '<g.run>'`, spec 77 criterion 5
+        // round 2 fix) must never swallow the env vars this function sets on the `Command`
+        // BEFORE exec - CARGO_TARGET_DIR here, standing in for every var this module
+        // injects (BuildEnv's own wrapper vars, STORE_FENCE_ENV, ...). Proven with a REAL
+        // guard (both non-empty AND usable, so `guarded` is actually true and the command
+        // really is wrapped) - the exact combination none of this file's other
+        // build_cache_dir/env tests exercise together, since they each leave one of the two
+        // empty.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let guard_path = dir.path().join("cargo-target.lock");
+        let res = ExecRunner.run(
+            &gate_cmd("test \"$CARGO_TARGET_DIR\" = /tmp/rigger-flock-env-probe"),
+            "",
+            "",
+            "/tmp/rigger-flock-env-probe",
+            guard_path.to_str().unwrap(),
+            "",
+            &BuildEnv::default(),
+            &BuildBudget::default(),
+        );
+        assert!(
+            res.pass,
+            "CARGO_TARGET_DIR must reach the gate command even when wrapped through flock: \
+             {res:?}"
+        );
+    }
+
+    #[test]
     fn exec_runner_target_dir_wins_over_build_cache_dir_when_both_are_given() {
         // The two are mutually exclusive by every real caller's own construction
         // (`conductor::run_gates` only ever resolves a non-empty `target` XOR a non-empty
@@ -1234,6 +1299,36 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         assert!(
             !guard_path.exists(),
             "an empty build_cache_guard must never create a guard file: {guard_path:?}"
+        );
+    }
+
+    #[test]
+    fn exec_runner_degrades_to_unguarded_when_the_guard_path_cannot_be_opened() {
+        // Best-effort degrade (mirroring `BuildBudget::acquire`'s own convention, spec 77
+        // criterion 5 round 2 fix): a `build_cache_guard` whose parent directory does not
+        // exist can never be opened, so the gate command must still run (unguarded) rather
+        // than fail over guard trouble unrelated to the build itself - and, since this
+        // degrades BEFORE ever invoking `flock(1)`, no guard file is created either.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let guard_path = dir.path().join("missing-parent").join("cargo-target.lock");
+        let res = ExecRunner.run(
+            &gate_cmd("true"),
+            "",
+            "",
+            "",
+            guard_path.to_str().unwrap(),
+            "",
+            &BuildEnv::default(),
+            &BuildBudget::default(),
+        );
+        assert!(
+            res.pass,
+            "an unusable guard path must degrade to running unguarded, never fail the gate: \
+             {res:?}"
+        );
+        assert!(
+            !guard_path.exists(),
+            "a degraded (unguarded) run must never create the guard file: {guard_path:?}"
         );
     }
 
