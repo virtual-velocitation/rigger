@@ -4757,6 +4757,42 @@ mod tests {
         assert_eq!(dash_serving_pid_on(port), None);
     }
 
+    /// The sentinel arm of `dash_serving_pid_on`'s own `.parse().ok()` (spec 62 round 2, SDET
+    /// lens periphery: neither the mutation-efficacy accounting recorded in
+    /// `d-u62c1-mutation-accounting-round2` nor any existing test in this file exercises this
+    /// exact path - `cargo-mutants`' default mutator set never touches a `Result::ok()` call on
+    /// a std `.parse()`, so this arm is invisible to that tool and only a hand-written test
+    /// closes it). A listener that DOES carry a genuine `DASH_HEADER` (so the "is this even a
+    /// dash" check at the top of the function passes) but whose `DASH_HEADER_PID` value is not a
+    /// valid `u32` must resolve to `None`, never panic and never silently coerce to some other
+    /// value (e.g. `0`) - a malformed or truncated pid header must never be reported as a real
+    /// pid the caller could act on (spec 62 round 2's own fallback at the one production call
+    /// site, `spawn_run_dashboard_detached`'s `dash_serving_pid_on(port).unwrap_or(pid)`, depends
+    /// on exactly this: `None` here is what lets that fallback engage instead of recording a
+    /// nonsense pid).
+    #[test]
+    fn dash_serving_pid_on_is_none_when_the_pid_header_value_is_not_a_number() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for mut s in listener.incoming().flatten() {
+                let _ = s.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\n{DASH_HEADER}: probe\r\n{DASH_HEADER_PID}: \
+                         not-a-number\r\nConnection: close\r\n\r\n"
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        assert_eq!(
+            dash_serving_pid_on(port),
+            None,
+            "a non-numeric X-Rigger-Dash-Pid value must resolve to None, never panic or \
+             coerce to a default pid"
+        );
+    }
+
     /// Spec 50, criterion 1 (cold-race loser): when two dashes bind the fixed address at once, the
     /// winner binds and the LOSER hits `AddrInUse`. Even when the loser probes during the winner's
     /// bind-THEN-accept window (the port is bound but the winner has not entered its accept loop yet),
