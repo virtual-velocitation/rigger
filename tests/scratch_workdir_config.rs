@@ -14,7 +14,11 @@
 //!     field - the reader never depends on (or fails on) a workflow concern it has no need for,
 //!     including one whose `agents:`/`stages:` a full `config::load` would refuse to resolve;
 //!   * a syntactically MALFORMED workflow.yml surfaces as a clear parse error, never a silent
-//!     fallback to the default that would hide a typo.
+//!     fallback to the default that would hide a typo;
+//!   * a workflow.yml path that exists but cannot be READ for a reason OTHER than "absent"
+//!     (proven here with a directory sitting at that path, so `read_to_string` fails with a
+//!     non-`NotFound` `io::Error`) is a loud error too - only `NotFound` itself means "no
+//!     opinion", never any other I/O failure collapsed onto that same silent-default path.
 
 use std::path::Path;
 
@@ -83,4 +87,24 @@ fn malformed_yaml_is_a_loud_error_never_a_silent_default() {
     let (_tmp, dir) = rigger_dir();
     write_workflow(&dir, "defaults: [this is not a mapping\n");
     read_scratch_workdir(&dir).expect_err("malformed yaml must be an error, not a silent default");
+}
+
+#[test]
+fn an_unreadable_workflow_is_a_loud_error_never_the_silent_absent_default() {
+    // Mutation-efficacy gap (spec 77 criterion 5 round 2 accounting): the reader's `match`
+    // treats ONLY `io::ErrorKind::NotFound` as "no opinion" (`Ok("")`) - every OTHER I/O
+    // failure reading workflow.yml must still surface as a loud `Err`, never get folded onto
+    // that same silent-default path. Proven with a directory sitting at the `workflow.yml`
+    // path (portable across privilege levels, unlike a permission-based fixture: reading a
+    // directory as a file fails with a non-`NotFound` `io::Error` regardless of whether the
+    // test runs as root): only "genuinely absent" may resolve to the default; "present but
+    // unreadable for some other reason" must not.
+    let (_tmp, dir) = rigger_dir();
+    std::fs::create_dir_all(dir.join("workflow.yml")).expect("create a directory at the path");
+    let err = read_scratch_workdir(&dir)
+        .expect_err("a workflow.yml that exists but cannot be read as a file must be a loud error, never the silent NotFound default");
+    assert!(
+        !err.to_string().is_empty(),
+        "the surfaced error must carry a real message, not an empty one"
+    );
 }
