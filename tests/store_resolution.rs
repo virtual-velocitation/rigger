@@ -241,7 +241,12 @@ fn a_courier_in_a_project_configured_for_the_server_resolves_the_server_store() 
 
         // A bare courier - `rigger emit`, no `--eventstore` flag - the exact surface a worker's
         // self-report uses. Before this criterion it wrote to LOCAL sqlite; now it must resolve
-        // the shared server the project is configured for.
+        // the shared server the project is configured for. `XDG_STATE_HOME` is redirected to a
+        // per-call temp dir (spec 62, "couriers count as activity"): `emit` now refreshes the
+        // machine-global instance registry too, so an unredirected call here would otherwise
+        // seed a phantom, since-deleted-tempdir entry into the operator's real
+        // `~/.local/state/rigger/instances`.
+        let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
         let out = common::rigger_courier()
             .args([
                 "emit",
@@ -251,6 +256,7 @@ fn a_courier_in_a_project_configured_for_the_server_resolves_the_server_store() 
             .current_dir(root)
             .env("KURRENTDB_CONN", &conn)
             .env("RIGGER_NO_DASH", "1")
+            .env("XDG_STATE_HOME", state.path())
             .output()
             .expect("spawn rigger emit");
         assert!(
@@ -344,6 +350,9 @@ fn a_server_courier_in_a_nested_worktree_files_under_the_owning_root_identity() 
 
         // A bare courier - `rigger emit`, no `--eventstore` flag - run FROM the nested worktree,
         // the exact surface a spawned worker's self-report uses inside its unit worktree.
+        // `XDG_STATE_HOME` is redirected for the same reason as the first courier call above:
+        // `emit` now refreshes the machine-global instance registry too (spec 62).
+        let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
         let out = common::rigger_courier()
             .args([
                 "emit",
@@ -353,6 +362,7 @@ fn a_server_courier_in_a_nested_worktree_files_under_the_owning_root_identity() 
             .current_dir(&nested)
             .env("KURRENTDB_CONN", &conn)
             .env("RIGGER_NO_DASH", "1")
+            .env("XDG_STATE_HOME", state.path())
             .output()
             .expect("spawn rigger emit from the nested worktree");
         assert!(
