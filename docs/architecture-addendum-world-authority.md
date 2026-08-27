@@ -1,7 +1,7 @@
 # Architecture addendum: the world authority
 
-Status: PROPOSED - for operator review. This document (v12) merges and SUPERSEDES two prior
-proposals (the resident conductor; the world reconciler) and integrates eleven rounds of
+Status: PROPOSED - for operator review. This document (v13) merges and SUPERSEDES two prior
+proposals (the resident conductor; the world reconciler) and integrates twelve rounds of
 five-lens adversarial design review. Everything below describes the TARGET state except
 "Problem", which records the measured present.
 
@@ -531,10 +531,13 @@ required to stay bounded. Arms, in order:
    git-deduplicated, never a growing leak; and when the project is deleted its `.rigger` -
    quarantine included - goes with it.
    Per-class byte accounting is maintained incrementally at create
-   and reclaim (reclaimed-facts carry sizes); a quarantine reclaimed-fact is appended when the
-   forked prune EXITS successfully, not at ref-delete, so the figure reflects actually-reclaimed
-   space, and `rigger status` shows a `quarantine gc in progress` line for a project whose prune
-   is mid-flight so the number is never silently stale; a full non-symlink-following,
+   and reclaim (reclaimed-facts carry sizes). For quarantine the ADMISSION gate and the LRU fold
+   credit a ref-delete's bytes as freed AT ref-delete - the refs are unreachable and their objects
+   reclaimable by the pending prune - so admission never spuriously refuses after room is logically
+   freed; a reclaimed-fact appended when the forked prune EXITS records the PHYSICAL reclamation
+   for the `statvfs` ground-truth and the `rigger status` figure (which shows a `quarantine gc in
+   progress` line while a prune is mid-flight so it is never silently stale), and the two reconcile
+   at the statvfs-floor full walk. A full non-symlink-following,
    depth-and-inode-bounded walk runs only when `statvfs` on the device crosses a floor, and
    "could not measure" is arm 5, never "under budget".
 4. **CREATE** absent-but-desired positional resources (dashboard, socket structure); runs
@@ -648,10 +651,14 @@ plumbing (passed to the git child through an explicit fork/exec fd-action, never
 non-CLOEXEC in the daemon's own descriptor table, so no concurrent fork can leak it into a gate
 or build subprocess running agent code), so by `flock` semantics the lock stays HELD
 until the git child itself exits, on EVERY lane, cgroup delegation or not (cgroup-per-spawn
-reaping is a belt-and-suspenders backstop, not the sole guarantee). A successor's non-blocking
-acquire therefore FAILS while an orphan lives - it retries next tick, and past a bound raises a
-severity-tagged arm-5 anomaly naming the orphaned holder (remedy: wait for its exit or end it) so
-an indefinitely-hung orphan is visible, never a silent stall - and succeeds only when no git
+reaping is a belt-and-suspenders backstop, not the sole guarantee). A non-blocking
+acquire therefore FAILS while any prune holds the lock - it retries next tick - and the anomaly
+path DISTINGUISHES the two holders by the child table: a holder the CURRENT daemon forked and
+still tracks live (its own in-progress prune) is reported as `quarantine gc in progress`, no kill
+urged, however long a large-repo `gc` runs; only a holder the current daemon did NOT fork - a
+dead predecessor's orphaned child - raises, past a bound, the severity-tagged arm-5 anomaly
+naming it (remedy: wait for its exit or end it) so an indefinitely-hung orphan is visible, never
+a silent stall or a needless kill of live work. The acquire succeeds only when no git
 process holds the repo, at which point any stale `.lock`/`gc.pid` it finds is provably a dead
 predecessor's residue and safe to clear. A wedged git plumbing IS the project's own daemon
 wedged, diagnosed by the daemon's own liveness the runtime already tracks (never a cross-project
