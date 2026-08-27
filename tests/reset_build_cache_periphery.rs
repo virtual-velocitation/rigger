@@ -1,14 +1,17 @@
 //! Periphery (CLI) tests for spec 77, criterion 5 - the BOUNDED SHARED CACHE:
 //! `rigger reset --build-cache` reclaims the shared gate build cache under the scratch root.
 //!
-//! What this file OWNS (criterion 4) and what it deliberately does not:
+//! What this file OWNS (criterion 5) and what it deliberately does not:
 //!
 //!   - OWNS: `rigger reset --build-cache` deletes a real, populated shared cache and reports
 //!     the exact bytes reclaimed; it is idempotent (a second call, or a call against a project
 //!     that never built anything, reports zero rather than erroring); it composes with
 //!     `--runs`/`--derived` in either order; it REFUSES (non-zero exit, never blocks) while a
 //!     rigger-launched shared-cache build holds the guard, and leaves the cache byte-for-byte
-//!     untouched when it does; and the flag is registered (parses, rejects a duplicate).
+//!     untouched when it does; the flag is registered (parses, rejects a duplicate); and it
+//!     resolves a CONFIGURED `defaults.workdir` scratch root, never silently falling back to
+//!     the project-relative default - the exact guard/cache-path divergence class this
+//!     criterion's own prior review history was rejected over more than once.
 //!   - NOT OWNED: the exclusion PRIMITIVE's own unit-level contract
 //!     (`reclaim_shared_build_cache`'s rename/idempotent-zero/busy/prompt-release behavior) -
 //!     pinned in-crate beside its definition in `src/main.rs`; the PRODUCER half (a gate build
@@ -308,5 +311,52 @@ fn reset_build_cache_refuses_rather_than_waits_while_a_build_holds_the_guard() {
     assert!(
         cache.join("debug").join("a.rlib").exists(),
         "a refused reclaim must leave the cache completely untouched"
+    );
+}
+
+#[test]
+fn reset_build_cache_resolves_a_configured_scratch_workdir_not_the_default_path() {
+    // spec 77 criterion 5's own prior review history was rejected repeatedly over exactly
+    // this divergence class: a guard/cache resolution that disagreed with a configured,
+    // non-default scratch root (`RIGGER_TMPDIR`/`defaults.workdir`). `config::
+    // read_scratch_workdir` exists specifically so `reset --build-cache` tracks a configured
+    // `defaults.workdir` - prove it end to end through the real binary, not merely the
+    // lib-level contract already pinned in tests/scratch_workdir_config.rs.
+    let project = temp_project();
+    let root = project.path();
+    seed_store(root);
+    let scratch = tempfile::tempdir().expect("create a separate configured scratch root");
+    std::fs::write(
+        root.join(".rigger").join("workflow.yml"),
+        format!("defaults:\n  workdir: {}\n", scratch.path().display()),
+    )
+    .expect("write workflow.yml with a configured defaults.workdir");
+
+    // A decoy at the DEFAULT (unconfigured) location: present so that a bug which ignores
+    // the configured workdir and falls back to the default would still find something to
+    // reclaim, silently masking the divergence instead of surfacing a mismatched byte count.
+    write_file(&shared_cache_dir(root).join("decoy.bin"), &[0u8; 999]);
+    // The real cache, at the CONFIGURED scratch root - a sibling of `scratch`, never a
+    // subdirectory of the project root at all.
+    let real_cache = scratch.path().join("cargo-target");
+    write_file(&real_cache.join("real.bin"), &[0u8; 4_321]);
+
+    let (out, err, ok) = run_rigger(root, &["reset", "--build-cache"]);
+    assert!(
+        ok,
+        "reset --build-cache must succeed against a configured defaults.workdir; stderr: {err}"
+    );
+    assert!(
+        out.contains("4321 byte(s)"),
+        "must report the CONFIGURED cache's exact bytes, not the default-path decoy's: {out:?}"
+    );
+    assert!(
+        !real_cache.exists(),
+        "the cache at the configured scratch root must actually be reclaimed: {real_cache:?}"
+    );
+    assert!(
+        shared_cache_dir(root).join("decoy.bin").exists(),
+        "the default-path decoy must be left completely untouched - reset must resolve the \
+         CONFIGURED workdir, never silently fall back to the project-relative default"
     );
 }
