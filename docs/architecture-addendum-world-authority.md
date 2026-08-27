@@ -1,7 +1,7 @@
 # Architecture addendum: the world authority
 
-Status: PROPOSED - for operator review. This document (v15) merges and SUPERSEDES two prior
-proposals (the resident conductor; the world reconciler) and integrates fourteen rounds of
+Status: PROPOSED - for operator review. This document (v16) merges and SUPERSEDES two prior
+proposals (the resident conductor; the world reconciler) and integrates fifteen rounds of
 five-lens adversarial design review. Everything below describes the TARGET state except
 "Problem", which records the measured present.
 
@@ -659,17 +659,21 @@ or build subprocess running agent code), so by `flock` semantics the lock stays 
 until the git child itself exits, on EVERY lane, cgroup delegation or not (cgroup-per-spawn
 reaping is a belt-and-suspenders backstop, not the sole guarantee). A non-blocking
 acquire therefore FAILS while any prune holds the lock - it retries next tick - and the anomaly
-path DISTINGUISHES the two holders by CGROUP MEMBERSHIP, not a bare direct pid: a holder in the
-current daemon's OWN cgroup subtree - the same membership test that attributes a double-forked or
-`setsid` spawn, so a transitive git helper that inherited the lock fd and outlived the tracked
-direct child is still recognized as the daemon's own - is its in-progress prune, reported as
-`quarantine gc in progress`, no kill urged however long a large-repo `gc` runs; only a holder in
-NO cgroup the current daemon owns - a dead predecessor's orphaned child - raises, past a bound,
-the severity-tagged arm-5 anomaly naming it (remedy: wait for its exit or end it) so an
-indefinitely-hung orphan is visible, never a silent stall or a needless kill of live work. Where
-cgroup v2 is undelegated this falls back to the direct-pid child table, with the transitive-helper
-mislabel documented as a known reduced-lane signal-legibility limitation - a misleading label
-only, never a destructive act, since nothing auto-kills on this classification. The acquire succeeds only when no git
+path DISTINGUISHES the holders by membership in the DEDICATED PER-PRUNE CGROUP the daemon created
+for its currently-in-flight prune, keyed to the CURRENT daemon lifetime - not a daemon-wide
+subtree, not a bare direct pid. A holder in THAT specific per-prune cgroup (which still captures a
+transitive git helper the prune forked and outlived its tracked direct child) is the daemon's own
+in-progress prune, reported as `quarantine gc in progress`, no kill urged however long a
+large-repo `gc` runs. EVERY OTHER holder is not the current prune and, if it persists past a
+bound, raises the severity-tagged arm-5 anomaly naming it (remedy: wait for its exit or end it): a
+dead predecessor's orphan resident in a reused delegated root (excluded because it is not in THIS
+lifetime's per-prune cgroup), any unrelated daemon-spawned process that somehow holds the flock
+(excluded because it is not in the prune's cgroup), or a stale helper from a prior prune - so an
+indefinitely-hung holder is always visible, never a silent stall, and a live prune is never
+needlessly killed. Where cgroup v2 is undelegated this falls back to identifying the prune by its
+own `(pid, start-time, boot-id)` and forked-this-lifetime status in the child table, with any
+residual mislabel documented as a known reduced-lane signal-legibility limitation - a misleading
+label only, never a destructive act, since nothing auto-kills on this classification. The acquire succeeds only when no git
 process holds the repo, at which point any stale `.lock`/`gc.pid` it finds is provably a dead
 predecessor's residue and safe to clear. A wedged git plumbing IS the project's own daemon
 wedged, diagnosed by the daemon's own liveness the runtime already tracks (never a cross-project
