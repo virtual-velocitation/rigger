@@ -1,7 +1,7 @@
 # Architecture addendum: the world authority
 
-Status: PROPOSED - for operator review. This document merges and SUPERSEDES two prior
-proposals (the resident conductor; the world reconciler), integrating the findings of a
+Status: PROPOSED - for operator review. This document (v3) merges and SUPERSEDES two prior
+proposals (the resident conductor; the world reconciler) and integrates two rounds of
 five-lens adversarial design review. Everything below describes the TARGET state except
 "Problem", which records the measured present.
 
@@ -20,320 +20,389 @@ by two weaker regimes at once:
    failure class and every one has fired: a recycled pid pointed a kill at an innocent
    process (observed as far as a whole-session kill); a stale marker advertised a dead
    dashboard; mtime liveness reaped a live worker; two drivers stepped one project
-   concurrently because nothing could refuse the second.
+   concurrently.
 2. **Filesystem resources have no owner after creation.** Worktrees, per-unit and
-   shared build caches, agent scratch, mutation-testing tree copies, tombstones, and
-   backups are created at many call sites - most by DELEGATES (agents' own shells,
-   cargo, git), not by rigger code - and cleaned by per-class heuristic reapers keyed
-   on names and liveness guesses. Measured consequences: the project directory reached
-   403G (40G worktrees carrying embedded build trees, 47G of leaked mutation scratch,
-   an unreported 108G root cache); the store's volume hit 775KB free before any signal
+   shared build caches, agent scratch, mutation-testing tree copies, and backups are
+   created at many call sites - most by DELEGATES (agents' own shells, cargo, git), not
+   by rigger code - and cleaned by per-class heuristic reapers keyed on names and
+   liveness guesses. Measured consequences on this project: the directory reached 403G
+   (40G worktrees carrying embedded build trees, 47G leaked mutation scratch, an
+   unreported 108G root cache); the store's volume hit 775KB free before any signal
    fired; a heuristic sweep deleted an escalated unit's worktree while the operator
    worked inside it, because the sweep could not know what the log knew.
 
-Each incident got a mechanism; the inventory now includes a terminal-state sweep, an
-orphan-scratch walk, per-spawn reclaims, a dash ensure/self-reap pair, marker-staleness
-watchdogs, residue advisories, and operator-side polling loops - every one re-deriving,
-by inference, facts that either the log or a parent process could hold exactly. The
-defect class is singular: NOTHING OWNS THE WORLD. Process truth needs an owner that
-lives; resource truth needs an owner that derives; today both are inferred.
+The defect class is singular: NOTHING OWNS THE WORLD. Process truth needs an owner that
+lives; resource truth needs an owner that derives; today both are inferred. And the two
+regimes interact: the fix that made the loop re-entrant safe (short-lived processes,
+crash-resumable from the log) is exactly what forbids any process from holding the
+authoritative view of what it created.
 
 ## The principle
 
-One architecture, two authorities, one resident owner:
+One architecture, two authorities, one resident owner - with one rule that the first
+review round missed and this version makes structural: **the log's authority over the
+world is only as trustworthy as the log's own writes.** Because agents hold
+`Bash(rigger:*)` and can append events, a design that DERIVES delete-and-kill authority
+from the log must separate what agents may ASSERT from what CONSTITUTES a resource's
+existence or terminus.
 
 - **Parentage governs processes.** A resident conductor daemon parents every subprocess
-  the loop needs. A parent holds unforgeable identity over its children: exits are
-  delivered to it, pids cannot recycle out from under it before it reaps them, ending a
-  child is a typed act on a handle it minted. The loop may only signal a process it
-  parented and still holds, or one whose recorded `(pid, start-time)` identity it has
-  just re-verified. It never signals a guess.
-- **The log governs everything else.** The set of non-process resources that should
-  exist is DERIVED from the event log by a pure fold - never stored, never guessed from
-  names or mtimes - and one reconciler, running as the daemon's internal control loop,
-  continuously converges the actual world toward it.
+  the loop forks. A parent holds unforgeable identity over its children: exits are
+  delivered to it, pids cannot recycle before it reaps them, ending a child is a typed
+  act on a handle it minted. The loop signals only a process it parented and still
+  holds, or one whose recorded `(pid, start-time, boot-id)` identity it has just
+  re-verified. It never signals a guess. Processes the daemon did NOT fork - the
+  harness-parented agent turns - are governed by CONTAINMENT and by their own live
+  socket claim, never by a signal.
+- **The log governs everything else, split into two surfaces.** A DECLARATION surface,
+  appendable only by the daemon under exclusivity, constitutes which resources should
+  exist and when their terminus fires. An OBSERVATION surface (agent `emit`, `result`,
+  `progress`, review findings) can PROPOSE and inform, never CONSTITUTE. `desired_world`
+  folds the declaration surface; a forged observation can no longer manufacture a
+  desired resource or supersede a live owner.
 - **The command line is a client.** Mutation flows through the daemon; CLI invocations
-  query live state over a socket or degrade to read-only store access when the daemon
-  is down. Destructive convergence happens in exactly one process, by construction.
+  query live state or compute an OBSERVE-ONLY diff, never converge. Destructive
+  convergence happens in exactly one process, holding one lease, by construction.
 
 ```
              +--------------------------------------------------------------+
-             |            RESIDENT CONDUCTOR DAEMON (one per project)        |
-             |  singleton by atomic socket bind (.rigger/daemon.sock)        |
+             |            RESIDENT CONDUCTOR DAEMON (one per project store)  |
+             |  singleton by a held flock on .rigger/daemon.lock             |
+             |  (the socket is a rendezvous, never the claim)                |
              |                                                              |
              |  +--------------------+      +--------------------------+    |
              |  |  CONDUCTOR LOOP    |      |  CHILD TABLE + LEDGER    |    |
-             |  |  (the run: event-  |      |  every subprocess is a   |    |
-             |  |  sourced fold,     |      |  registered child:       |    |
-             |  |  step = internal   |      |  (handle, spawn id,      |    |
-             |  |  tick)             |      |  role, group,            |    |
-             |  +---------+----------+      |  pid + start-time)       |    |
-             |            |                 +------------+-------------+    |
+             |  |  (the run; step =  |      |  every FORKED child:     |    |
+             |  |  internal tick     |      |  handle, spawn id, role, |    |
+             |  |  that appends      |      |  cgroup, (pid,start,     |    |
+             |  |  SpawnResult)      |      |  boot-id) + capability    |    |
+             |  +---------+----------+      +------------+-------------+    |
              |            v                              |                  |
              |  +--------------------+          spawns / signals / reaps    |
-             |  |  WORLD RECONCILER  |                   |                  |
-             |  |  desired = fold of |            gates, builds,            |
-             |  |  the log; diff ->  |            agents' heavy work,       |
-             |  |  converge | notify |            the dashboard             |
+             |  |  WORLD RECONCILER  |          (only its own cgroups)      |
+             |  |  desired = fold of |                   |                  |
+             |  |  the DECLARATION   |            gates, builds,            |
+             |  |  surface; 5 arms   |            the dashboard             |
              |  +--------------------+                                      |
              +---------------+----------------------------------------------+
-                             | unix socket (line-delimited JSON)
+                             | unix socket (0700 dir, 0600 sock, peer-cred verified)
         +--------------------+--------------------+
         |                    |                    |
    rigger CLI          workflow couriers      turn-boundary hook
-   (status, watch,     (agent runtime,        (reads judgment
-   result, emit -      unchanged - clients    anomalies into the
-   queries and         that fetch parked      orchestrator's
-   requests; offline   work and record        context)
-   reads degrade to    results through
-   the store)          the socket)
+   (queries + observe-  (agent runtime -      (reads judgment
+   only diffs; writes   clients that hold a   anomalies as
+   via socket or a      live socket CLAIM     UNTRUSTED data
+   durable outbox)      on their spawn +      into the
+                        heartbeat progress)   orchestrator)
 ```
-
-Why this shape: a reconciler is indifferent to HOW the world diverged - crash, kill,
-operator error, a bug in rigger itself - because it reasons only about the difference
-between what is and what should be; every future failure mode in the resource domain is
-covered the day it occurs, not the day it is diagnosed. And a resident parent is the
-only sound substrate for the reconciler's hardest arms: it gives process identity
-without inference, serializes destructive convergence in one process without a new
-lock, holds the incremental fold cursor and notification dedup state that stateless
-invocations structurally cannot, and provides the cadence floor that polling designs
-borrow circularly from the resources they manage.
 
 ## The runtime: the resident conductor
 
-**Singleton and lease.** Binding `.rigger/daemon.sock` is atomic: a second daemon fails
-to bind and exits naming the live one - driver exclusivity is a bind, not a lease
-protocol. A stale socket (crashed daemon) is a failed connect, safely replaced. No lock
-file is ever broken: a held OS lock is treated as a live holder everywhere in this
-design, and "lapsed-but-held" is a notification, never a clear. For the shared-server
-store backend (multi-machine), exclusivity additionally carries a FENCING EPOCH: each
-daemon start appends an epoch acquisition via compare-and-swap on the stream head, and
-every subsequent daemon write carries its epoch; a superseded daemon's next write fails
-on its own, whatever its socket or clock believes.
+**Exclusivity is a held flock, never a socket.** The daemon holds `LOCK_EX` on
+`.rigger/daemon.lock` for its entire life - the kernel releases it on any death, clean or
+killed, which is the property the existing step lock already relies on. The socket
+(`.rigger/daemon.sock`) is bound only after the lock is held, and is a rendezvous, not a
+claim: a daemon finding the lock FREE but a socket present unlinks and rebinds; a daemon
+finding the lock HELD exits naming the holder, whatever the socket looks like. A "failed
+connect" is never treated as licence to replace a claim. The daemon re-`stat`s its own
+socket inode on its cadence and halts destructive arms if it no longer owns it.
 
-**The child table and process ledger.** Every subprocess is registered at fork: in
-memory, the `Child` handle, spawn id, role, and the process group minted at spawn; on
-disk (machine-local ledger), `(pid, start-time, spawn id, role, group)` written before
-the child runs and retired at reap. `(pid, start-time)` - start time from
-`/proc/<pid>/stat` - is recycling-proof identity. The daemon sets
-`PR_SET_CHILD_SUBREAPER` so double-forked children reparent to it and stay attributed.
-Ending work is: look up the handle, signal the group through a typed syscall wrapper
-(TERM, bounded grace, KILL), reap, retire the row. No shell `kill`, no argv, no string
-in the signal path. At daemon start, the ledger is reconciled: rows whose
-`(pid, start-time)` matches a live process are adopted or ended per role; mismatched or
-gone rows are retired untouched. The `/proc` cwd scan is DEMOTED permanently to a
-`validate` advisory - nothing in the binary signals a scanned process.
+**The store is the deeper authority: a fencing epoch, on every backend.** Each daemon
+start acquires an epoch by `append(epoch-stream, ExpectedRevision::Exact(n),
+[EpochAcquired])` - the same compare-and-swap the store already implements and tests on
+BOTH the sqlite and server backends. Every daemon write carries its epoch, and every
+DESTRUCTIVE reconciler arm re-asserts it with a CAS append immediately before acting
+(this IS the compare-and-act the first review found missing). A superseded daemon's next
+write fails on its own conflict, so exclusivity holds even where a socket or a clock
+lies. To make the CAS enforceable rather than advisory, the daemon's own writes are
+confined to one epoch-fenced stream; per-unit and per-spawn streams become projections of
+it, and no process other than the daemon (save the fenced-gate exception below) appends to
+that stream.
 
-**Liveness.** Children heartbeat over pipes to the parent; the daemon enforces each
-spawn's wall-clock bound on its own timer. A liveness fault is recorded as today - but
-the fault's resource consequences are gated by the child table: a spawn whose process
-the daemon still holds live is NEVER treated as resource-terminal, whatever the log's
-last recorded result says. Parentage is the live-worker veto, replacing every mtime and
-heuristic liveness check.
+**Singleton scope is the store, not the cwd.** The lock, socket, and epoch are resolved
+through the SAME bounded-walk authority the store already uses (outermost `.rigger`,
+`main_repo_root`, refuse-to-fabricate), keyed by the store's `(device, inode)` - so a
+courier inside a worktree, a symlinked repo path, or a second mount namespace can never
+mint a second daemon by resolving a nearer socket.
 
-**The dashboard** is daemon-owned (an internal task or a registered child). Its
-liveness IS daemon state; `rigger status` asks the owner. Marker files, stale-marker
+**The child table and ledger govern forked processes.** Every subprocess the daemon forks
+is registered: in memory (the `Child` handle, spawn id, role, its own cgroup v2 subtree,
+and a per-spawn CAPABILITY TOKEN handed to the child on an inherited fd - never argv); on
+disk (a machine-local ledger row `(pid, start-time, boot-id, spawn id, role, cgroup)`,
+HMAC'd under a key held only in daemon memory and re-minted each start, opened
+`O_NOFOLLOW` inside the 0700 root). A spawn's process SET is its cgroup membership, which a
+descendant cannot leave - so a double-forked or `setsid` process is still attributed, and
+`PR_SET_CHILD_SUBREAPER` is a backstop, not the authority. Ending work signals the CGROUP,
+not a pid from a file, through a typed signal PORT (see lanes below). At daemon start the
+ledger is reconciled: for a row whose HMAC verifies AND whose `(pid, start-time, boot-id)`
+matches a live process, the daemon adopts or ends per role AND appends a `SpawnResult`/
+`SpawnAbandoned` terminus so the LOG reflects the outcome; every other row is retired
+untouched, and a row that fails HMAC or names a foreign process is never a signal - only,
+at most, an arm-5 anomaly. The `/proc` cwd scan is DEMOTED to a read-only VETO input and a
+`validate` advisory; nothing in the binary signals a scanned process.
+
+**Liveness has two channels, both facts.** A forked child heartbeats over its pipe and is
+bounded by the daemon's timer. An AGENT TURN - run by a courier the daemon did not fork -
+holds a live socket CLAIM on its spawn for the turn's duration and heartbeats via
+`rigger progress` (already a client verb); its worktree's liveness is that claim plus the
+timestamp of its last progress, never a marker mtime. Arm 1's live-worker veto consults
+BOTH the child table (forked work) and open socket claims (agent turns), plus the
+read-only `processes_rooted_under` scan as a third corroborating veto - so the process
+most likely to be mid-edit in a worktree, the agent's own cargo/git, can never be reaped
+under. A liveness FAULT records the fault but routes the resource consequence through arm
+5 for one cycle before any reap, so a false-positive timeout never becomes an irreversible
+kill.
+
+**The dashboard** is daemon-owned; its liveness IS daemon state. Marker files, stale-marker
 diagnosis, and the self-reap protocol are deleted, not fixed.
 
-**The CLI as client.** `status`/`watch` are socket queries answered from live state;
-`progress`/`result`/`emit` are socket requests the daemon appends (couriers unchanged
-as agent runtime - they gain a live authority and lose every filesystem side channel);
-`run` starts or submits to the daemon; `step` survives as an internal tick plus a
-foreground `--once` for tests; `validate` is read-only and works offline; `reset` is
-offline-only and refused (naming the daemon) while one is live. The daemon should run
-detached from login sessions (setup offers a user-service unit): a session teardown
-never kills a run, and the daemon never signals outside its own tree - both directions
-of the historical blast radius closed by one boundary.
+**The CLI as client.** `status`/`watch` are socket queries. `progress`/`result`/`emit` are
+socket requests the daemon appends - but a client that finds the daemon unreachable writes
+its request to a DURABLE OUTBOX inside its own already-declared per-spawn container (one
+line, idempotency-keyed), which the daemon drains on connect and every tick; so a worker
+finishing during a daemon outage never loses its result. Every socket request carries a
+client-minted idempotency key and is applied through the store's existing
+`record_result_if_absent` CAS, never a blind `Any` append. `run` starts or submits to the
+daemon; `wave --pull` is the named verb couriers use to fetch parked work (the tick is
+park-only and never spawns agents). `step --once` is retained for tests but takes the SAME
+lease as the daemon - it IS the daemon for its duration, never a second converger. A FENCED
+gate (`RIGGER_STORE_FENCE_DIR` set) does NOT connect to the daemon at all: it opens its
+fenced store directly, so a unit's own test suite still cannot write the live run stream -
+the one control the socket would otherwise dissolve. `reset` asks the live daemon to
+reconcile to quiescence and hold convergence for the prune, refusing (via the held lock,
+never a socket probe) only if the daemon declines or run state is non-quiescent;
+`--force-live` survives. The daemon runs detached from login sessions only where a working,
+lingering-enabled supervisor is VERIFIED present - at start the daemon probes for one and
+reports its supervision posture (`systemd-user(lingering)` / `unsupervised` / `unknown`)
+through `rigger status`, so the session-independence guarantee is a checked fact, never a
+silent assumption.
 
 ## The resource model
 
 A RESOURCE is anything rigger causes to exist outside the log. The model is a CLASS
-REGISTRY IN CODE - one enum, one derivation per variant; the table below is generated
-from it, and an enforcement test fails any `create_dir_all`/`File::create`/spawn site
-whose path no class claims. Adding a class means adding a variant; the table cannot
-drift from the code because the code is the table.
+REGISTRY IN CODE - one enum, one derivation per variant - and the table is generated from
+it. The enforcement test keys on PATH AUTHORITIES, not syscalls: every variant names the
+pure path function that derives it (the eight existing single-authority functions -
+`unit_worktree_dir`, `unit_cache_sibling`, `spawn_scratch_path`, `mutation_scratch_path`,
+`liveness::marker_path`, `review_fence_sibling`, `gate::default_cache_dir`,
+`budget::default_slot_dir`, and their peers), and the test fails any production
+path-deriving function no variant names, and any `Command::new`/`create_dir_all` whose path
+does not originate in one. A regex over call sites could pass while the 403G recurred; a
+path-authority key cannot.
 
-**Identity.** Derivable classes - those whose path is a pure function of
-`(project, run id, owner id)` through the one shared injective encoding - carry NO
-declaration: the log already names them, which is also what lets the reconciler govern
-resources created before this design ships. Only non-derivable identities (an allocated
-port, an operator-relocated root, a delegate-chosen path) are declared, as metadata on
-the owner's existing lifecycle events - no new event type. Declarations record ABSOLUTE
-RESOLVED paths, never recipes: the observation set is the union of every root ever
-declared, so relocating `RIGGER_TMPDIR` makes the old root a drain-then-remove case,
-not an invisible leak.
+**Identity.** A DERIVABLE class - path a pure function of `(project, run id, owner id,
+attempt)` through the one shared injective encoding - carries NO declaration; the log
+already names it, which is what lets the reconciler govern resources created before this
+design shipped. Keying by `(run, owner, attempt)` - never a bare owner id, which recurs
+across runs - is mandatory: 208 spawn ids recur across the live log's runs, and a bare-id
+fold reopens the cross-run replay defect the project already closed. Only NON-DERIVABLE
+identities (an allocated port, an operator-relocated root, a delegate-chosen path) are
+declared, as metadata on the owner's existing lifecycle events - no new event type - and a
+declaration records the ABSOLUTE RESOLVED path plus its `(device, inode)`, so the
+observation set is the union of every root ever declared and a remounted or reused root is
+detected rather than converged.
 
-**Containers, not leaves.** Rigger declares container roots - a worktree, a per-unit
-cache, a per-spawn scratch dir, a per-spawn mutation-scratch dir - and DELEGATES fill
-them: agents' shells, cargo, git. Every spawn's environment pins `TMPDIR`,
-`CARGO_TARGET_DIR`, and cache homes INSIDE its containers, so delegate output is
-governed by containment rather than enumeration, and the reap acts subtree-wide.
-Creation is therefore two-mode: DIRECT (rigger creates; declaration and creation are
-one logical act) and DELEGATED (rigger declares and pins the environment; the delegate
-materializes; declared-but-absent is the normal steady state, not a crash artifact). A
-delegate writing OUTSIDE its container is a detected anomaly, not silent residue.
+**Containers, not leaves.** Rigger declares container ROOTS; DELEGATES fill them. Every
+spawn's environment pins `TMPDIR`, `CARGO_TARGET_DIR`, and cache homes INSIDE its
+containers - and where the workflow `agent()` primitive cannot pass env (its known limit),
+the agent obtains its container from `rigger scratch <spawn>` (shipped in spec 77) and the
+SCRATCH POLICY directs all agent-created scratch and manual cargo there. Creation is
+two-mode: DIRECT (rigger creates; declaration and creation are one act) and DELEGATED
+(rigger declares and pins/instructs; the delegate materializes; declared-but-absent is the
+normal steady state, and a convergent handler exists per class - recreate from a branch
+where idempotent, mark the owner failed where not). A delegate writing OUTSIDE its
+container is a detected anomaly, never silent residue.
 
 **Scope.** Every class is project-, machine-, or user-scoped. The project world derives
-from the project log. The machine world (dashboard singletons, build-budget slots, the
-shared compilation cache, the instance registry itself) derives from the machine-scoped
-instance registry, which is promoted to a first-class declaration substrate; a project
-daemon OBSERVES machine-scoped resources and may converge only those the machine
-substrate assigns it. Cross-project collisions (two projects, one machine) are resolved
-by scope, never by whichever reconciler runs last. Machine-scoped paths move out of
-world-writable `/tmp` into per-user 0700 roots.
+from the project log; the machine world (dashboard singletons, build-budget slots, the
+shared compilation cache, quarantine repos) derives from a machine-scoped substrate. That
+substrate is NOT today's instance registry, whose contract is "never a source of truth,
+loss is harmless" and which PRUNES rows as a read side effect: machine-scoped ASSIGNMENT
+moves to a separate daemon-written store in the 0700 root, each assignment proven by a HELD
+flock on the resource's own slot file (forgeable JSON can never grant it), carrying the
+owning daemon's epoch and identity; no reader ever deletes another daemon's row. Two
+projects on one machine resolve by scope and held lock, never by whichever reconciler ran
+last. Machine paths move out of world-writable `/tmp` into per-user 0700 roots created with
+an explicit mode and verified owner-owned, not merely `create_dir_all`'d.
 
-**The derivation.** `desired_world(log, now, observations) -> ResourceSet` is a
-deterministic function of its explicit inputs - `now` and measured sizes are ARGUMENTS,
-so log-pure rows stay replayable at any position and clock-or-size-governed rows are
-testable by injection. Folding is keyed by `(run id, owner id, attempt)` - never bare
-owner ids, which recur across runs - and reads incrementally from a daemon-held
-checkpoint cursor (a cache, discarded whenever its position is absent, never itself an
-input to deletion without full re-derivation) over type-indexed reads. Two structural
-events complete the derivation: a RUN-TERMINAL fact (appended when a run reaches
-fixpoint or is superseded) so the last run's resources do not stay desired forever, and
-the terminus rule "the LAST event for an identity is a result" (results are
-last-write-wins; a bare "a result exists" is not well-defined). Spawns that can never
-self-report (died pre-marker, unbounded wall clocks) get a declared deadline the daemon
-enforces, so no terminus can simply never arrive.
-
-**Compaction invariant.** No store prune may remove a declaration-bearing or
-lifecycle-terminal event: declaration-bearing types and compactable types are DISJOINT,
-pinned by a test. `reset` runs reconcile-to-quiescence before pruning, never a pass on
-entry.
+**The derivation.** `desired_world(log, now, observations) -> ResourceSet` is deterministic
+in its EXPLICIT inputs - `now` and measured sizes are arguments, so log-pure rows stay
+replayable at any position and clock/size-governed rows are testable by injection. A
+RUN-TERMINAL fact (appended when a run reaches fixpoint or is superseded) stops the last
+run's resources staying desired forever; the terminus rule is "the LAST event for an
+identity is a result", and the in-process driver MUST append `SpawnResult` before
+delivering on its channel (today it does not - the channel is a wakeup, but the log must be
+the record, or a daemon-tick run leaves every spawn desired forever). Reads are incremental
+from a daemon-held checkpoint cursor over type-indexed streams - but the cursor is PROCESS
+MEMORY only (a daemon start always full-derives), and arm 1 may act ONLY against a
+`ResourceSet` produced by a full re-derivation performed at least once in the current
+daemon lifetime; incremental folding advances the observe/notify arms alone. No prune may
+remove a declaration-bearing or lifecycle-terminal event (declaration-bearing types and
+compactable types are disjoint, pinned by test).
 
 ## The reconciler: five arms, five rails
 
-Runs as the daemon's internal loop on its own cadence; every CLI invocation computes
-the same diff OBSERVE-ONLY (reporting, never converging) and submits judgment items
-over the socket. Arms, in order (reclaim before create):
+Runs as the daemon's internal loop OFF the socket-serving path (a slow re-derivation never
+blocks a courier's result), on its own timer; every CLI invocation computes the same diff
+OBSERVE-ONLY and submits judgment items over the socket. Arms, in order:
 
-1. **REAP** present-but-undesired. Uniform on the derivation, with two vetoes that are
-   facts rather than heuristics: the child table (a live parented process in the
-   subtree blocks the reap) and presence holds (below). Deletion follows the
-   GIT-QUARANTINE rule - see below - so every reap of unique content is reversible.
-2. **REPAIR** present-but-divergent. Each class carries an integrity predicate beside
-   its identity: a registered-but-absent worktree is recreated from its branch; a
-   zero-length git admin entry is healed; a bare leftover dir where a worktree should
-   be is adopted or cleared. This absorbs the shipped self-healing-worktree guarantee
-   as an arm instead of losing it.
-3. **CONVERGE ENVELOPES.** Size-governed classes carry an eviction terminus (LRU
-   within the class to a declared floor) so the arm always has a convergent action;
-   only when eviction to the floor still leaves the envelope breached does refusal
-   engage - and refusal has TWO enforcement points: the creation authority declines
-   new DIRECT creations, and ADMISSION declines parking new spawns (the only lever
-   that reaches delegate-produced bytes), both naming the reclaiming command. Refusal
-   is scoped to the over-budget class, never the whole project.
-4. **CREATE** absent-but-desired positional resources (the dashboard; the socket
-   structure). Owned resources are created by their owners' flows.
-5. **NOTIFY** the unconvergeable. Arm 5 IS the existing watch detector extended with
-   envelope and world-diff signals - not a second detector. Dedup state lives in the
-   daemon's memory (preserving the settled in-process-dedup decision, now with a
-   process that actually persists across observations); the file surface
-   (`anomalies.jsonl`) is a REBUILDABLE PROJECTION of open anomalies -
-   truncate-and-rewrite, bounded, itself a registered size-governed resource - read by
-   the dash, `watch --follow`, the setup-installed turn-boundary hook (injecting
-   judgment diffs into an orchestrator's context, delimited as untrusted data), and an
-   exec-without-shell `notify:` command fed JSON on stdin.
+1. **REAP** present-but-undesired, with three vetoes that are facts not heuristics: the
+   child table, open socket claims, and the read-only cwd scan. Deletion follows the
+   git-quarantine rule below, so every reap of unique content is reversible.
+2. **REPAIR** present-but-divergent - each class carries an integrity predicate;
+   registered-but-absent worktrees recreate from their branch, zero-length git admin
+   entries heal, bare leftover dirs adopt-or-clear. Absorbs the shipped self-healing
+   guarantee. A class is EITHER repairable (arm 2 owns it, arm 3 may not evict it) OR
+   evictable (arm 3 owns it, arm 2 may not recreate it) - never both, so arm 2 cannot
+   recreate what arm 3 just evicted (the envelope livelock).
+3. **CONVERGE ENVELOPES** - size-governed classes carry an LRU-to-floor eviction terminus
+   so the arm always has a convergent action; refusal engages only when eviction to the
+   floor still breaches, is scoped to the over-budget class, and fires at two points: the
+   creation authority (DIRECT) and pre-spawn ADMISSION (the only lever that reaches
+   delegate-produced bytes). Per-class byte accounting is maintained incrementally at
+   create and reclaim (reclaimed-facts carry sizes); a full non-symlink-following,
+   depth-and-inode-bounded walk runs only when `statvfs` on the device crosses a floor,
+   and "could not measure" is arm 5, never "under budget".
+4. **CREATE** absent-but-desired positional resources (dashboard, socket structure).
+5. **NOTIFY** the unconvergeable. Arm 5 IS the existing `watch::detect` over its closed
+   `Signal` enum, extended (enum + generated skill body + pins together) with envelope
+   and world-diff signals - detection stays STATELESS and is computed by a NON-DAEMON
+   reader folding log + world + daemon-liveness, so the daemon's OWN death is a signal a
+   dead daemon cannot suppress. The `anomalies.jsonl` file is a rebuildable projection of
+   open anomalies, written temp-then-rename (atomic), stamped with the daemon's epoch and
+   the position it derived at; readers cursor by the anomaly's stable identity, never a
+   byte offset, so a rewrite never desyncs a tailer. Anomaly fields are a fixed enum of
+   kinds with typed, length-capped operands; free text is escaped, never interpolated
+   into a rendered sentence or a shell (`notify:` execs argv-only, JSON on stdin), because
+   the turn-boundary hook feeds an orchestrator holding `Bash(rigger:*)`.
 
 Rails, in priority over every arm:
 
-- **Three-tier action rail.** DECLARED-or-DERIVABLE: converge. GRAMMAR-RECOGNIZED (a
-  path matching a class's grammar under a governed root whose owner key names no
-  desired owner): converge via git-quarantine. FOREIGN (nothing claims it): report
-  only. The rail is what makes "log-derived" compatible with governing a world that
-  predates the design.
-- **One path authority.** Every path an arm touches is constructed by a single
-  `confine()` function: lstat (a symlink leaf is refused, arm-5), canonicalized
-  component-wise containment under a validated root, same-device check. Roots are
-  resolved once per pass and validated (absolute, existing, never `/`, `$HOME`, the
-  repo root, or an ancestor of any). No arm can name a path that did not pass.
-- **One safe action.** An arm exists only where the correct response is unique;
-  anything else is arm 5 by definition. Deleting is only "one safe action" because
-  quarantine makes it reversible.
-- **Convergent from any partial state.** Multi-step physical acts (worktree = dir +
-  git admin entry + branch) specify their order and every interruption lands in a
-  state arm 2 repairs. "Atomic" is claimed only of single acts.
-- **Bounded blast radius.** A pass whose REAP set exceeds an absolute or
-  relative-to-desired threshold refuses to converge and routes the batch to arm 5.
-  `reconcile --explain` (the dry-run diff) is a permanent surface, not migration
-  scaffolding. Every convergence appends a compact reclaimed-fact so 40G never
-  disappears silently.
+- **Three-tier action rail.** DECLARED-or-DERIVABLE: converge. GRAMMAR-RECOGNIZED (a path
+  matching a class's path-authority grammar under a governed root whose owner key names
+  no desired owner): converge via git-quarantine. FOREIGN (nothing claims it): report
+  only. This is what makes "log-derived" compatible with a world that predates the design
+  and stops recognized residue becoming a permanent leak.
+- **One path authority.** Every path an arm touches is a `ConfinedPath` NEWTYPE that only
+  `confine()` can construct: lstat (a symlink leaf is refused), canonicalized
+  component-wise containment under a validated root, same-device check. Every destructive
+  method takes only `ConfinedPath`, so the containment invariant is a compile-time fact,
+  not a review rule - the review rule is what produced 403G.
+- **One safe action, and destructive arms hold the lease.** An arm exists only where the
+  correct response is unique; arms 1-3 run only from the lease-holding daemon or a
+  `--once` that took the lease, and re-assert the epoch by CAS immediately before acting.
+- **Convergent from any partial state.** Multi-step physical acts specify order and land
+  every interruption in a state arm 2 repairs; "atomic" is claimed only of single acts.
+- **Bounded blast radius.** A pass whose REAP set exceeds an absolute or relative-to-
+  desired threshold refuses and routes the batch to arm 5; a derivation yielding zero
+  owners for a project with governed paths on disk is an anomaly, never a reap set.
+  `reconcile --explain` (dry-run) is permanent; every convergence appends a reclaimed-fact
+  so 40G never disappears silently. A crash-loop breaker enters degraded diagnose-only
+  mode after N restarts in window W.
 
-**Git-quarantine (the deletion discipline).** Residue splits by recreatability, and
-each half has a native lifecycle: REBUILDABLE content (build caches, mutation scratch,
-target trees - the bulk by bytes) is deleted outright, its recovery path being the cold
-rebuild that defines a cache; UNIQUE content (any tree holding uncommitted tracked or
-untracked source) is COMMITTED to a `rigger/quarantine/<owner>-<date>` ref before its
-tree is deleted - content-addressed, compressed, cache-free (ignored paths are not
-committed), recoverable by one checkout, expiring under git's own gc and reflog
-conventions rather than a bespoke window. The rule everywhere: delete what can be
-rebuilt; commit what cannot; never hold raw trees in limbo.
+## Git-quarantine: the retention discipline
 
-**Escalation holds no disk.** An escalated unit's worktree is purged at terminal like
-any other - the purge is preceded by the same unique-content snapshot every purge gets,
-and the unit branch remains the durable working base. Remedy work happens in checkouts
-the operator creates, which the rail classifies as FOREIGN and never touches; an
-operator entering a LIVE rigger worktree announces presence with `rigger hold <path>`
-(a log-visible presence marker arm 1 respects), the same primitive agents' liveness
-already uses - a log fact, not a process heuristic.
+The operator-ratified rule: **git is the retention system; disk holds only what's live.**
+Residue splits by recreatability. REBUILDABLE content (build caches, mutation scratch,
+target trees - the bulk by bytes) is deleted outright; its recovery is the cold rebuild
+that defines a cache. UNIQUE content (any tree holding uncommitted tracked or untracked
+source) is COMMITTED before its tree is deleted - but with PLUMBING in a scrubbed
+environment (`-c core.hooksPath=/dev/null -c core.fsmonitor=false`,
+`GIT_CONFIG_GLOBAL=/dev/null`, `hash-object`/`mktree`/`commit-tree`), and into a DEDICATED
+BARE quarantine repository outside the project's object store, so untrusted agent content
+never runs a hook at the daemon's privilege, never enters the repo that gets pushed, and
+never re-arms a gate on checkout (`.rigger/` and `.claude/` paths are ineligible and
+reported instead). Quarantine refs are a size-governed class under arm 3 with a declared
+retention window and LRU eviction (real deletion + `gc`), never "expiring under gc
+conventions" that a named ref does not obey.
 
-**Branches are NOTIFY-only.** The branch is what makes every worktree deletion safe;
-no arm deletes one. Dead-branch accumulation is a reported anomaly carrying the
-delete command.
+**Escalation holds no disk.** An escalated unit's worktree is purged at terminal like any
+other - the purge is preceded by the unique-content snapshot every purge gets, and the unit
+branch is the durable working base. Remedy work happens on operator-created checkouts,
+which the rail classifies FOREIGN and never touches; an operator entering ANY governed
+worktree announces presence with `rigger hold <path>` - scoped by `confine()` to a single
+container (never a repo root), owned by its taker, carrying a required TTL after which it
+degrades to arm 5 rather than remaining a veto, and appendable through the outbox when the
+daemon is down (the one mutation permitted directly). Branches are NOTIFY-only; no arm
+deletes one - the branch is what makes worktree deletion safe.
 
 ## What this deletes and what becomes impossible
 
-Retired into arms (behavior preserved, independent existence gone): the terminal-state
-sweep and its ensure-on-park half (arms 1+2), the orphan-scratch walk and per-spawn
-reclaim call sites (arm 1, three-tier), worktree self-healing (arm 2), residue
-advisories (arm 5, partly - branch advisories stay), dash ensure/self-reap and every
-marker file (daemon ownership), marker-staleness watchdogs (pipe liveness), the
-`/proc` kill path (child table; scan demoted to advisory), stateless `watch` detection
-(arm 5 reader). Made impossible rather than handled: a second driver (socket bind +
-fencing epoch), signaling a stranger (parentage + verified identity), disk exhaustion
-by rigger's writes (eviction + dual-point refusal), sweeping a surface a human holds
-(FOREIGN tier + presence holds), unowned scratch of any future kind (class registry +
-container pinning), silent mass deletion (blast-radius rail + reclaimed-facts).
-Consumer-side monitoring reduces to reading judgment anomalies; the acceptance
-criteria below make "no hand-rolled monitor" mechanical.
+Retired into arms (behavior preserved, existence gone): the terminal-state worktree sweep
+and its ensure-on-park half, the orphan-scratch walk and per-spawn reclaims, worktree
+self-healing, residue advisories (branch advisories excepted), dash ensure/self-reap and
+every marker file, marker-staleness watchdogs, the `/proc` kill path (scan demoted to
+advisory), stateless `watch` detection re-based off the retired inputs, and the generated
+consumer surfaces they backed (`rigger-restore-the-dash` retires into daemon ownership;
+`rigger-watch-a-run` and `rigger-reset-store` lose their interval/threshold text; residue
+and bloat advisories move from `validate` to arm 5 - all generated from `src/docs.rs` with
+content pins, so each migrates in the same change as its mechanism). Made impossible: a
+second driver (flock + epoch), signalling a stranger (parentage + cgroup + verified
+identity), disk exhaustion by rigger's writes (eviction + dual-point refusal), sweeping a
+surface a human or agent holds live (three vetoes + FOREIGN tier), unowned scratch of any
+future kind (path-authority registry + container pinning), a forged event manufacturing or
+reaping a resource (declaration/observation split + capability tokens), and silent mass
+deletion (blast-radius rail + reclaimed-facts).
 
 ## Delivery
 
-Class-by-class, never arm-by-arm - each class migrates in one change (implement the
-handler, replace the old mechanism's BODY with delegation, re-point its tests, delete
-the symbol), so no class ever has two owners or none. Mixed-version safety: a store
-minimum-version marker makes an old binary refuse its heuristic reapers against a
-governed project.
+Class-by-class and primitive-first, never arm-by-arm; each migration hoists every call site
+to one authority function BEFORE replacing that one body, so no class ever has two owners or
+none. A class spanning the conductor use case and the composition root migrates only once it
+has a single entry point, and arms never call into the conductor nor the conductor into an
+arm - both call the same class module. A store minimum-version marker plus the daemon lease
+fence an old binary's heuristic reapers out of a governed project.
 
-1. **Pure domain + ports.** The class registry; `desired_world` as a tested fold;
-   `diff -> Plan`; `confine()`; a `Clock` port joining the existing seams; the
-   `(run, owner, attempt)` keying; the run-terminal event; the compaction disjointness
-   test. Ends with `validate --world-diff` (observe-only) proving the derivation
-   against real history, plus `--adopt` for legacy shapes.
-2. **Process authority.** Typed signal wrapper, `(pid, start-time)` identity
-   everywhere, groups at spawn, subreaper, the ledger with crash reconciliation -
-   consumer-safe before the daemon exists, removing signal-a-stranger while the step
-   model still runs.
-3. **The resident daemon.** Socket singleton, conductor loop as tick, child table,
-   owned dashboard, pipe liveness, CLI/courier as clients, single-writer store,
-   fencing epoch on the server backend.
-4. **Reconciler arms in-daemon,** class by class per the registry, with the
-   blast-radius rail and `--explain` from the first class onward; git-quarantine;
-   envelopes with eviction + admission; anomalies projection + hook + `notify:`.
+1. **Pure domain + ports.** The path-authority class registry and its enforcement test;
+   `desired_world` as a tested fold keyed by `(run, owner, attempt)` with the run-terminal
+   event; `diff -> Plan`; the `ConfinedPath` newtype and `confine()`; a signal PORT and an
+   Fs/Proc/Git port set (time stays threaded as an argument - the crate's existing idiom -
+   so NO new Clock port); the compaction-disjointness test. Ends with observe-only
+   `validate --world-diff` (labeled with daemon-liveness so an offline diff never justifies
+   a manual kill) and `--adopt` moved to a named write command.
+2. **Process authority.** The typed signal wrapper as a port with a `libc`/`rustix` adapter
+   AND a `kill(1)` adapter (so the `--no-default-features` lane keeps its documented parity,
+   the signal taking a minted handle never a pid); `(pid, start-time, boot-id)` identity;
+   cgroup-per-spawn; subreaper as backstop; the HMAC'd ledger with crash reconciliation that
+   APPENDS termini. Consumer-safe before the daemon exists.
+3. **The resident daemon.** Flock singleton, socket rendezvous (0700/0600, peer-cred),
+   epoch acquisition and per-write CAS, conductor loop as a tick that appends `SpawnResult`,
+   child table + capability tokens, owned dashboard, pipe + socket-claim liveness, the
+   durable outbox, CLI/courier as clients with the fenced-gate direct-write exception, a
+   persisted-nowhere fold cursor with full-derive-on-start, a crash-loop breaker, socket
+   protocol versioning + `daemon stop --drain`, verified supervision posture.
+4. **Reconciler arms in-daemon,** class by class, with the blast-radius rail and `--explain`
+   from the first class; git-quarantine into a bare repo; envelopes with eviction +
+   admission + incremental accounting; the machine-scope flock-proven assignment substrate;
+   the anomalies projection + identity-cursored readers + hook + `notify:`.
 
-## Acceptance (mechanical, each testable)
+## Acceptance (mechanical, each falsifies a core claim)
 
-1. The shipped driver, skills, and setup surfaces contain no polling loop and no disk
-   guard (pinned in the architecture-integrity test family).
-2. Chaos: SIGKILL the daemon mid-wave; one invocation of any command later, every
-   undesired resource is gone, every desired one survives, and the ledger reconciles
-   its survivors - asserted for worktrees, caches, scratch, processes, dashboard.
-3. A second daemon exits naming the live one; a superseded daemon's next store write
-   fails on its epoch.
-4. At the envelope: eviction to the floor happens first; admission refuses new spawns
-   naming the reclaim command; no mid-flight deletion of a live build's inputs.
-5. After a full campaign, `validate --world-diff` reports empty modulo FOREIGN.
-6. A `rigger hold` path and a FOREIGN-named checkout survive every pass; a purged
-   escalated worktree's unique content is recoverable by one checkout of its ref.
-7. Every convergence that removed bytes has a reclaimed-fact in the log naming class,
-   owner, and size.
+1. Replay determinism: the same log prefix yields the same `ResourceSet` whether folded
+   incrementally or from scratch, in any process (the single most load-bearing property).
+2. CLI observe-only: with a daemon live, every command issues zero unlink/rmdir/ref-delete
+   from a non-daemon process.
+3. No stranger signalled: every signal originates from the one wrapper taking a minted
+   handle; a recycled-pid and a foreign-cgroup fixture are both refused.
+4. Class registry exhaustive: the enforcement test runs and fails RED when a new
+   path-deriving function is added without a variant.
+5. Refusal scoping: an over-budget class refuses its own creations and admissions while an
+   unrelated class still creates.
+6. Wave survives a daemon outage: SIGKILL the daemon mid-wave (reached via a test-only
+   synchronization seam, not a sleep), restart, and every worker that completed during the
+   outage has its result in the LOG, every undesired resource is gone, every desired one and
+   every held claim survive, and the ledger reconciles its survivors by appending termini.
+7. Exclusivity: a second daemon exits naming the holder; a superseded daemon's next
+   epoch-CAS write fails; unlinking the socket does not mint a second converger.
+8. Escalation: a purged escalated worktree's unique content is recoverable by one checkout
+   of its quarantine ref, and a `rigger hold` and a FOREIGN checkout survive every pass.
+9. Fencing on the DEFAULT backend: acceptance 7's epoch conflict is asserted on sqlite, not
+   only the server backend.
+10. No prune removes a declaration-bearing event; the disjointness test is RED if one is
+    ever shaped like a compactable key.
+
+The bar that governs all of it: after a full campaign of rigger's OWN development,
+`validate --world-diff` reports empty modulo FOREIGN (with tier assignment asserted per
+path, so classifying everything FOREIGN cannot satisfy it), and the operator ran no
+hand-rolled monitor, disk guard, or worktree reaper - the very things this session proved
+necessary under the present design.
