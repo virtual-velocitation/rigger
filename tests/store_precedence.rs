@@ -82,24 +82,33 @@ fn write_store_config(root: &Path, body: &str) {
 /// Run `rigger result <id> --error <msg>` in `root` with NO `--eventstore` flag and NO
 /// `KURRENTDB_CONN` in the environment - the exact bare-courier surface a worker's self-report
 /// uses, so the store is resolved purely from the file-backed rungs under test. `RIGGER_NO_DASH`
-/// keeps the run's dashboard from starting under test.
+/// keeps the run's dashboard from starting under test. `XDG_STATE_HOME` is redirected to a
+/// per-call temp dir (spec 62, "couriers count as activity"): `result` now refreshes the
+/// machine-global instance registry too, so an unredirected call here would otherwise seed a
+/// phantom, since-deleted-tempdir entry into the operator's real
+/// `~/.local/state/rigger/instances`.
 fn run_bare_courier(root: &Path) -> Output {
+    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
     common::rigger_courier()
         .args(["result", "u/impl#0", "--error", "a self-report"])
         .current_dir(root)
         .env("RIGGER_NO_DASH", "1")
+        .env("XDG_STATE_HOME", state.path())
         .env_remove("KURRENTDB_CONN")
         .output()
         .expect("spawn rigger result")
 }
 
 /// Run the same bare courier but WITH `KURRENTDB_CONN` set (rung 2), to prove the environment
-/// out-ranks a lower file-backed rung.
+/// out-ranks a lower file-backed rung. `XDG_STATE_HOME` redirected for the same reason as
+/// [`run_bare_courier`].
 fn run_courier_with_env(root: &Path, conn: &str) -> Output {
+    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
     common::rigger_courier()
         .args(["result", "u/impl#0", "--error", "a self-report"])
         .current_dir(root)
         .env("RIGGER_NO_DASH", "1")
+        .env("XDG_STATE_HOME", state.path())
         .env("KURRENTDB_CONN", conn)
         .output()
         .expect("spawn rigger result")

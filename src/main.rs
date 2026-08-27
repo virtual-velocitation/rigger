@@ -830,6 +830,47 @@ fn register_run_instance(repo: &str, selection: &StoreSelection) -> RunRegistrat
     }
 }
 
+/// Refresh THIS invocation's entry in the machine-global instance registry (spec 50) as a
+/// ONE-SHOT re-stamp - the courier counterpart to [`register_run_instance`]'s heartbeat thread
+/// (spec 62, "couriers count as activity"). A courier command (`progress`, `emit`, `result`)
+/// advances a run but is short-lived: it has no long-lived scope to hold a [`RunRegistration`]
+/// guard over, so it re-stamps the SAME entry a live driver's heartbeat thread would - same
+/// file, by [`rigger::registry::Instance::id`], keyed off the resolved store's root and store
+/// identity - once, right here, and returns. This is what keeps an instance whose only activity
+/// for a stretch is courier traffic from aging out of discovery mid-run: every invocation that
+/// starts OR advances a run now refreshes the heartbeat, not just the ones that hold a driver
+/// scope.
+///
+/// `loc` and `selection` are the SAME resolved [`StoreLocation`] / [`StoreSelection`] the caller
+/// already has in hand from [`require_store_dir`] - never re-resolved here, so a courier's
+/// registry entry is always keyed to the exact store its real work just wrote to. `loc.identity()`
+/// (bound to the RESOLVED root, not the process cwd) is used for the `project` label rather than
+/// the ambient [`project_identity`], for the same reason [`StoreLocation::identity`]'s own doc
+/// comment gives: a courier can run from a cwd that is not the store's owner (a nested worktree).
+///
+/// BEST-EFFORT and warn-only, mirroring [`register_run_instance`]'s degrade exactly: a homeless
+/// environment (no resolvable state home) or a write error never fails, slows, or warns away the
+/// courier's real work beyond a single stderr line - the registry's loss is harmless (spec 50).
+fn refresh_registry_entry(loc: &StoreLocation, selection: &StoreSelection) {
+    let Some(dir) = rigger::registry::default_dir() else {
+        return; // homeless environment: degrade to a no-op, exactly like register_run_instance
+    };
+    // `loc.dir` is always `<root>/.rigger` (see `StoreLocation`/`require_store_dir`); a missing
+    // parent is the same pathological case `StoreLocation::identity` already degrades from.
+    let Some(root) = loc.dir.parent() else {
+        return;
+    };
+    let inst = rigger::registry::Instance {
+        project: loc.identity(),
+        root: root.to_string_lossy().into_owned(),
+        store: registry_store_identity(selection, root),
+        heartbeat_ms: rigger::registry::now_ms(),
+    };
+    if let Err(e) = rigger::registry::write(&dir, &inst) {
+        eprintln!("rigger: instance registry refresh skipped ({e}); discovery is unaffected");
+    }
+}
+
 /// The project identity that scopes the event streams and context graph (§5.1.1,
 /// R9): the basename of the git repo top-level, falling back to the current
 /// directory's name, falling back to "rigger". Never empty.
@@ -6552,6 +6593,10 @@ fn cmd_emit(args: &[String]) -> Res {
     // in the wrong cwd, and scope it by the RESOLVED root's identity (not the cwd's), so
     // a walked-up write lands in the stream the conductor reads - see [`require_store_dir`].
     let (loc, selection) = require_store_dir()?;
+    // Spec 62 (couriers count as activity): re-stamp this project's registry heartbeat before
+    // the real work below, so the instance stays discoverable even if this emit is the only
+    // traffic in the run for a while. Best-effort/warn-only; never fails the emit.
+    refresh_registry_entry(&loc, &selection);
     let backend = resolve_store(&selection, &loc.file("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &loc.identity());
     let graph = Projector::open(&loc.file("graph.db"), &loc.identity())?;
@@ -6604,6 +6649,10 @@ fn cmd_progress(args: &[String]) -> Res {
     }
 
     let (loc, selection) = require_store_dir()?;
+    // Spec 62 (couriers count as activity): re-stamp this project's registry heartbeat before
+    // the real work below, so the instance stays discoverable even if this progress report is
+    // the only traffic in the run for a while. Best-effort/warn-only; never fails the report.
+    refresh_registry_entry(&loc, &selection);
     // Resolve the current run READ-ONLY from the run store, only to scope the report.
     let run_backend = resolve_store(&selection, &loc.file("events.db"))?;
     let run_store = Namespaced::new(run_backend.as_ref(), &loc.identity());
@@ -8176,6 +8225,10 @@ fn cmd_result(args: &[String]) -> Res {
     // the worktree's own namespace (walked-up store) while the real spawn stays parked
     // forever - both fixed here (see [`require_store_dir`] / [`StoreLocation::identity`]).
     let (loc, selection) = require_store_dir()?;
+    // Spec 62 (couriers count as activity): re-stamp this project's registry heartbeat before
+    // the real work below, so the instance stays discoverable even if this result is the only
+    // traffic in the run for a while. Best-effort/warn-only; never fails the result.
+    refresh_registry_entry(&loc, &selection);
     let backend = resolve_store(&selection, &loc.file("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &loc.identity());
 
