@@ -202,6 +202,17 @@ pub fn reclaim_unit_mutation_scratch(cache_home: &Path, unit_id: &str) {
     }
 }
 
+/// The registered mutation-scratch ROOT itself (`<cache_home>/rigger-mutants`, every spawn's
+/// leaf nests under this) - spec 77 criterion 6's FOOTPRINT ACCOUNTING surface needs this to
+/// size the "registered scratch roots" category, and per `d-p77-needs-c6-after-c2` it must
+/// call THIS crate's own path-deriving authority rather than hardcoding a second `"rigger-
+/// mutants"` literal that could drift from [`MUTATION_SCRATCH_SUBDIR`] if either ever changes.
+/// [`mutation_scratch_path`] cannot serve this alone since it always joins a spawn leaf onto
+/// the root; this is the bare root one level up.
+pub fn mutation_scratch_root(cache_home: &Path) -> PathBuf {
+    cache_home.join(MUTATION_SCRATCH_SUBDIR)
+}
+
 /// A replay driver answers each `spawn` from the run's event log: it replays an
 /// already-recorded spawn or parks an unrecorded one.
 ///
@@ -425,6 +436,18 @@ mod tests {
                 "/home/u/.cache/rigger-mutants/u_2fweird_23id"
             )),
             "hex-escaped the same way agent-scratch's own spawn-id leaf is (/ -> _2f, # -> _23)"
+        );
+    }
+
+    #[test]
+    fn mutation_scratch_root_is_the_bare_cache_home_join_rigger_mutants() {
+        // The same leaf name `mutation_scratch_path` nests every spawn's leaf under - one
+        // level up, with no spawn leaf joined - so spec 77 criterion 5's footprint accounting
+        // can size the whole registered root without hardcoding a second "rigger-mutants"
+        // literal.
+        assert_eq!(
+            mutation_scratch_root(Path::new("/home/u/.cache")),
+            PathBuf::from("/home/u/.cache/rigger-mutants")
         );
     }
 
