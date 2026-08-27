@@ -21650,6 +21650,75 @@ fn any_marker_fresh_public_contract_holds_at_the_crate_boundary() {
     );
 }
 
+/// Spec 62, criterion 5 round 2 - the PUBLIC contract of [`rigger::registry::read_all`] at the
+/// CRATE BOUNDARY, mirroring `any_marker_fresh_public_contract_holds_at_the_crate_boundary` above
+/// for this round's new pub fn. `src/registry.rs`'s own module tests prove it white-box (inside
+/// the module: a stale entry survives and is never deleted, every root comes back regardless of
+/// freshness, an absent directory is an empty registry not an error);
+/// `a_reap_on_idle_singleton_survives_a_second_registered_projects_fresh_agent_liveness_marker`
+/// proves it end to end through the real watcher inside the built binary. Neither calls the
+/// function directly from OUTSIDE the module the way an external caller does - this test does,
+/// pinning that `rigger::registry::read_all` is exported and holds the ONE contract
+/// `foreign_instance_scratch_root`'s caller depends on that `read_live` does NOT give it: a STALE
+/// entry (long past any idle window) comes back too, and comes back UNCHANGED on disk - unlike
+/// `read_live`, which would both drop it from the returned set and delete its file.
+#[test]
+fn read_all_public_contract_holds_at_the_crate_boundary() {
+    use rigger::registry::{self, Instance, StoreIdentity};
+
+    let state = tempfile::tempdir().unwrap();
+    let regdir = registry::instances_dir(state.path());
+
+    // No `write` has ever touched this directory: an absent registry is empty, not an error.
+    assert!(
+        registry::read_all(&regdir).is_empty(),
+        "an absent instances directory must read as an empty registry, not an error"
+    );
+
+    // A hopelessly stale entry - `read_live` would prune this outright (and delete its file).
+    let stale = Instance {
+        project: "proj-stale".to_string(),
+        root: "/stale/root".to_string(),
+        store: StoreIdentity::Local {
+            path: "/stale/root/.rigger/events.db".to_string(),
+        },
+        heartbeat_ms: 0,
+    };
+    let stale_path = registry::write(&regdir, &stale).unwrap();
+
+    assert_eq!(
+        registry::read_all(&regdir),
+        vec![stale.clone()],
+        "read_all returns a stale entry verbatim, with no freshness filter"
+    );
+    assert!(
+        stale_path.exists(),
+        "read_all must never delete an entry, stale or not - unlike read_live's prune side effect"
+    );
+
+    // A second, live entry: read_all returns BOTH, the fresh and the hopelessly stale alike.
+    let live = Instance {
+        project: "proj-live".to_string(),
+        root: "/live/root".to_string(),
+        store: StoreIdentity::Local {
+            path: "/live/root/.rigger/events.db".to_string(),
+        },
+        heartbeat_ms: registry::now_ms(),
+    };
+    registry::write(&regdir, &live).unwrap();
+
+    let mut roots: Vec<String> = registry::read_all(&regdir)
+        .into_iter()
+        .map(|i| i.root)
+        .collect();
+    roots.sort();
+    assert_eq!(
+        roots,
+        vec!["/live/root".to_string(), "/stale/root".to_string()],
+        "read_all returns every registered root regardless of heartbeat freshness"
+    );
+}
+
 // --- Spec 44, criterion 3: the always-on step dash is SESSION-DETACHED from the `rigger step`
 // command's PROCESS GROUP. Spec 39 criterion 2 (above) proves the dash outlives the step PROCESS
 // (it holds no `ReapedChild` guard); THIS criterion owns the distinct failure spec 44 fixes: when
