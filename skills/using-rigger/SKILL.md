@@ -53,7 +53,7 @@ Every gating agent ends its output with its verdict line: a JSON line carrying {
 
 ## Self-serve
 
-Run `rigger version` to see the exact binary and its build provenance and to diagnose drift between the installed /rigger workflow and the binary that would run it. This repo keeps its specs in specs/. The full command surface is: run, step, reported, prompt, serve, workflow, graph, stats, canary, playbooks, replay, status, dash, watch, ground, reindex, symbols-index, emit, progress, result, peers, reset, validate, init, setup, docs, prime, version, help.
+Run `rigger version` to see the exact binary and its build provenance and to diagnose drift between the installed /rigger workflow and the binary that would run it. This repo keeps its specs in specs/. The full command surface is: run, step, reported, prompt, scratch, serve, workflow, graph, stats, canary, playbooks, replay, status, dash, watch, ground, reindex, symbols-index, emit, progress, result, peers, reset, validate, init, setup, docs, prime, version, help.
 
 ## The load-bearing decisions
 
