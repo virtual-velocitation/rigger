@@ -689,8 +689,14 @@ impl Runner for ExecRunner {
         // itself (an unwritable guard path, a missing parent dir) degrades to running
         // unguarded rather than failing a gate over a lock this build does not
         // otherwise need.
-        let guarded =
-            !build_cache_guard.is_empty() && build_cache_guard_is_usable(build_cache_guard);
+        // ROUND 3 fix for adv-u77c5bsc-r2-guard-probe-failure-forces-unguarded-build-into-
+        // protected-dir: `guard_requested` and `guarded` are now tracked SEPARATELY.
+        // `guard_requested` alone (a non-empty `build_cache_guard`, independent of whether the
+        // probe below passes) is what the CARGO_TARGET_DIR force further down must key off of
+        // too - see that branch's own doc comment for why forcing on `guarded` alone reopened
+        // the exact class of bug this whole criterion exists to close.
+        let guard_requested = !build_cache_guard.is_empty();
+        let guarded = guard_requested && build_cache_guard_is_usable(build_cache_guard);
         let mut cmd = if guarded {
             let mut c = Command::new("flock");
             c.arg("-s")
@@ -737,8 +743,31 @@ impl Runner for ExecRunner {
             // unprotected and unreclaimed. Both `build_cache_dir` and `build_cache_guard`
             // are derived from the identical scratch-root authority by the caller
             // (`conductor::shared_build_cache_paths`), so this can never disagree with
-            // the lock it is paired with.
-            if !build_cache_dir.is_empty() {
+            // the lock it is paired with - AS LONG AS a requested guard is actually
+            // usable (`guarded`).
+            //
+            // ROUND 3 fix for adv-u77c5bsc-r2-guard-probe-failure-forces-unguarded-build-
+            // into-protected-dir: gated on `!guard_requested || guarded`, NOT on
+            // `!build_cache_dir.is_empty()` alone. Round 2 forced this env var
+            // unconditionally whenever `build_cache_dir` was non-empty, independent of
+            // whether the SAME call's own guard probe (`guarded`, just above) had already
+            // degraded the run to unguarded - so a probe failure (ENOSPC/EDQUOT, a
+            // locking-unsupported filesystem, a permission fault, or a transiently-
+            // missing guard-file parent dir) still pointed a REAL, lock-free cargo
+            // invocation directly at the exact directory `reclaim_shared_build_cache`
+            // (both `rigger reset --build-cache` and the automatic run-teardown sweep)
+            // can reap the instant it finds the guard uncontended - the liveness signal
+            // falsely reporting free while a live build wrote into the very directory
+            // being deleted, precisely the corruption class spec 77 Global Constraint 3
+            // forbids. A guard that was never requested at all (`!guard_requested`, the
+            // empty-guard convention every OTHER branch in this file treats as "off")
+            // still forces this env var exactly as round 2 did - there is no lock in that
+            // case to have failed, so nothing here degrades. Only "a guard was requested
+            // AND its probe failed" now also withholds the force, degrading fully to
+            // whatever CARGO_TARGET_DIR the ambient/inherited process env already carries
+            // (the pre-round-1 behavior) - never onto a directory a concurrent reset can
+            // now uncontestedly reap out from under an unguarded build.
+            if !build_cache_dir.is_empty() && (guarded || !guard_requested) {
                 cmd.env("CARGO_TARGET_DIR", build_cache_dir);
             }
             // Widened (spec 70, u4 round 2 fix for
