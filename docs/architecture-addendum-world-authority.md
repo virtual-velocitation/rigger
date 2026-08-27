@@ -1,7 +1,7 @@
 # Architecture addendum: the world authority
 
-Status: PROPOSED - for operator review. This document (v10) merges and SUPERSEDES two prior
-proposals (the resident conductor; the world reconciler) and integrates nine rounds of
+Status: PROPOSED - for operator review. This document (v11) merges and SUPERSEDES two prior
+proposals (the resident conductor; the world reconciler) and integrates ten rounds of
 five-lens adversarial design review. Everything below describes the TARGET state except
 "Problem", which records the measured present.
 
@@ -369,7 +369,10 @@ fact, not a reviewer's reading. Each variant ALSO declares its RECREATABILITY - 
 (a cache whose recovery is a cold rebuild) or UNIQUE (content only git-quarantine can
 recover) - as a required field of the same enum, so the restricted-posture withhold (the
 reconciler) and the git-quarantine disposal path both read a registry FACT, not a call-site
-judgment; the enforcement test fails RED on any variant added without one. This matters as
+judgment; the enforcement test fails RED on any variant added without one - AND on any
+MACHINE-scoped variant that is not REBUILDABLE-or-positional, pinning the invariant that lets a
+machine-scoped class be evicted by any daemon without a lock while UNIQUE content (which is
+project-scoped) is the only kind ever needing single-writer serialization. This matters as
 much as the path authority: a class mislabelled REBUILDABLE would be DELETED OUTRIGHT under
 the restricted posture and by the quarantine section's disposal rule, so the one soft
 classification that could cost unique content is given the same compile-checked teeth as
@@ -517,8 +520,11 @@ required to stay bounded. Arms, in order:
    the arm refuses new admissions instead, so size pressure becomes a bounded liveness stall,
    never unique-content loss. An abandoned project's quarantine bounds itself without a
    machine-wide sweep: while active its own daemon holds it to the window; once the project stops
-   running no new refs are added, so it is FROZEN at a window-capped, git-deduplicated size; and
-   when the project is deleted its `.rigger` - quarantine included - goes with it.
+   running no new refs are added, so it is FROZEN at whatever size its last COMPLETED eviction
+   left - a graceful `daemon stop --drain` runs a final eviction to the cap first, and a crash
+   leaves at most one tick's un-evicted burst, reclaimed on the project's next run - bounded,
+   git-deduplicated, never a growing leak; and when the project is deleted its `.rigger` -
+   quarantine included - goes with it.
    Per-class byte accounting is maintained incrementally at create
    and reclaim (reclaimed-facts carry sizes); a full non-symlink-following,
    depth-and-inode-bounded walk runs only when `statvfs` on the device crosses a floor, and
@@ -618,7 +624,8 @@ snapshot - so a quarantine failure, killed or caught, can never become silent da
 Quarantine refs are keyed by `(run, owner, attempt)` - the same identity the resource model
 mandates, never a bare owner id - so a unit escalated twice never repoints one ref and loses
 the earlier attempt's content under the later attempt's eviction schedule. They are a
-PROJECT-scoped size-governed class under arm 3, written ONLY by the project's own daemon and
+PROJECT-scoped size-governed class under arm 3, written ONLY by the project's own daemon (the repo lives under
+that project's own 0700 `.rigger`, created with an explicit mode and verified owner-owned) and
 evicted ONLY by their declared retention window and LRU (real deletion + `gc`) - never by
 machine-slot reclamation, so no project-root-liveness check can ever delete a live-but-dormant
 owner's unique content. Because the project's daemon is the SOLE writer, there is no
@@ -629,21 +636,27 @@ cross-project stall, because no other daemon ever touches this repo. The one res
 the daemon's OWN restart: a daemon SIGKILLed mid git-plumbing can orphan a git child that a
 SUCCESSOR of the SAME project would race. That is closed project-locally: the repo's own lock
 lives on an OPEN FILE DESCRIPTION whose non-CLOEXEC descriptor is INHERITED by the forked git
-plumbing (and FD_CLOEXEC is set on the daemon's own copy after the fork, so it never leaks into
-a gate or build subprocess running agent code), so by `flock` semantics the lock stays HELD
+plumbing (passed to the git child through an explicit fork/exec fd-action, never left
+non-CLOEXEC in the daemon's own descriptor table, so no concurrent fork can leak it into a gate
+or build subprocess running agent code), so by `flock` semantics the lock stays HELD
 until the git child itself exits, on EVERY lane, cgroup delegation or not (cgroup-per-spawn
 reaping is a belt-and-suspenders backstop, not the sole guarantee). A successor's non-blocking
-acquire therefore FAILS while an orphan lives - it retries next tick - and succeeds only when no
-git process holds the repo, at which point any stale `.lock`/`gc.pid` it finds is provably a dead
+acquire therefore FAILS while an orphan lives - it retries next tick, and past a bound raises a
+severity-tagged arm-5 anomaly naming the orphaned holder (remedy: wait for its exit or end it) so
+an indefinitely-hung orphan is visible, never a silent stall - and succeeds only when no git
+process holds the repo, at which point any stale `.lock`/`gc.pid` it finds is provably a dead
 predecessor's residue and safe to clear. A wedged git plumbing IS the project's own daemon
 wedged, diagnosed by the daemon's own liveness the runtime already tracks (never a cross-project
 probe) and resolved by `daemon kill --wedged` on that project. Eviction prunes PROMPTLY (`gc`
 with `pruneExpire` set to now, never `--force`, never git's built-in two-week grace which the
 scrubbed `GIT_CONFIG_NOSYSTEM` environment would otherwise inherit) so an evicted ref's bytes are
 reclaimed within the cycle; the expensive prune runs on a bounded cadence rather than on every
-ref-delete, so the repo lock is normally held only briefly; and a concurrent in-flight snapshot's
-objects are never pruned before its ref lands because both run in the same single daemon's
-ordered loop.
+ref-delete, so the repo lock is normally held only briefly; the daemon does NOT block its
+reconciler loop on the `gc` subprocess - it forks the prune (which holds the repo's own OFD lock)
+and proceeds to arms 1, 2, and 4, which never touch the quarantine repo, so a long prune delays
+only the NEXT quarantine mutation, never that project's own worktree REAP or REPAIR; and a
+concurrent in-flight snapshot's objects are never pruned before its ref lands because a snapshot
+and a prune both take the repo's OFD lock and so never overlap.
 
 **Escalation holds no disk.** An escalated unit's worktree is purged at terminal like any
 other - the purge is preceded by the unique-content snapshot every purge gets, and the unit
@@ -698,7 +711,8 @@ store minimum-version marker refusing an older binary against a newer store. A h
 file whose version tag names an OLDER format is migrated by the reading binary; one CORRUPT
 beyond parsing is never guessed around by scanning the outbox directory or by a courier
 inventing identity - a courier has no authority to mint a `(run, owner, attempt)`, so it STOPS
-issuing repeatable-kind requests on that container and surfaces the corruption, and the daemon
+issuing repeatable-kind requests on that container and RAISES the corruption as a severity-tagged
+arm-5 anomaly, and the daemon
 (the sole attempt authority) declares the spawn's terminus - on the same four-fact liveness
 corroboration every terminus requires, never while the courier is still live - and retries it
 under a freshly-declared container whose mark starts cleanly at zero, so a lost mark never
@@ -762,7 +776,7 @@ a mount flapping at the re-check cadence raises attention once, not once per tic
    from the first class, and the weak-mount scoped withholding (rebuildable eviction and
    admission kept) driven by the start-and-cadence substrate preflight; git-quarantine into a
    bare repo with the fully scrubbed plumbing, the ordered ref-before-delete purge, and
-   `(run, owner, attempt)` refs governed by their own machine-scoped window; envelopes with
+   `(run, owner, attempt)` refs governed by their own project-scoped window; envelopes with
    eviction + admission + incremental accounting; the machine-scope flock-proven assignment
    substrate with its fail-closed confirmed-absent (never merely-unreachable) reclamation and
    quarantine exclusion; the anomalies projection + identity-cursored readers + hook +
@@ -846,8 +860,9 @@ a mount flapping at the re-check cadence raises attention once, not once per tic
     only a withheld act could fix becomes a standing pushed arm-5 signal.
 21. Abandoned quarantine stays bounded without a sweep: a project's over-window refs are
     evicted by its OWN daemon while it runs; once the project is dormant its quarantine adds no
-    refs and stays frozen at its window-capped, git-deduplicated size; and it is removed with
-    the project's `.rigger` on deletion.
+    refs and stays frozen at its last-evicted, git-deduplicated size (a graceful stop drains to
+    cap; a crash leaves at most one tick's burst, reclaimed next run); and it is removed with the
+    project's `.rigger` on deletion.
 22. Mid-life substrate degradation is caught and debounced: a store whose lock-honesty is
     revoked after a healthy start (test-only seam raising the lock/`ESTALE` anomaly) enters
     the restricted posture at the next cycle and warns once for that transition; a flapping
@@ -888,6 +903,11 @@ a mount flapping at the re-check cadence raises attention once, not once per tic
 30. Signals are triageable: every arm-5 anomaly kind and `rigger status` line carries a
     severity (page / warn / info), so a consumer can separate a live incident (a wedged-holder
     stall) from a self-healing note (a debounce transition) and `notify:` can filter on it.
+31. A long quarantine gc never stalls a project's own worktree hygiene: with the daemon
+    mid-prune on its quarantine repo, that project's arm-1 REAP and arm-2 REPAIR (which never
+    touch the quarantine repo) still run in the same tick; and the daemon's single ordered loop
+    serializes its own quarantine snapshots, purges, and evictions with no re-entrancy, so
+    intra-project quarantine work never overlaps itself.
 
 The bar that governs all of it: after a full campaign of rigger's OWN development,
 `validate --world-diff` reports empty modulo FOREIGN (with tier assignment asserted per
