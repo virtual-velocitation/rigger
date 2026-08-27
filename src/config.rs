@@ -937,6 +937,36 @@ pub fn read_store_config(rigger_dir: &Path) -> Result<StoreConfig, Error> {
     Ok(probe.store)
 }
 
+/// Read ONLY `defaults.workdir` from `<rigger_dir>/workflow.yml` (spec 77 criterion 5,
+/// BOUNDED SHARED CACHE), tolerating an absent file exactly like [`read_store_config`]'s own
+/// NotFound-vs-other split - a project that pins nothing resolves to `""` (the scratch-root
+/// resolver's own default rung, `<repo>/.rigger/tmp`). This is the LIGHTWEIGHT probe `rigger
+/// reset --build-cache` resolves the scratch root through: it is a pure filesystem reclaim
+/// with no store-mutation implication, and must not additionally require a fully loadable
+/// agent fleet ([`load`]'s `load_agents`) or a passing [`Config::validate`] just to learn one
+/// string field - a workflow.yml whose `stages:`/`agents:` reference something absent from
+/// disk (or simply has no `agents/` dir at all) must not stop an operator from reclaiming
+/// disk space.
+///
+/// Anchored at the `.rigger` directory, matching [`read_store_config`]'s own convention -
+/// a caller that already resolved the store dir passes it straight through.
+pub fn read_scratch_workdir(rigger_dir: &Path) -> Result<String, Error> {
+    let path = rigger_dir.join("workflow.yml");
+    let body = match std::fs::read_to_string(&path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(e) => return Err(err(format!("read workflow: {e}"))),
+    };
+    #[derive(Deserialize, Default)]
+    struct Probe {
+        #[serde(default)]
+        defaults: Defaults,
+    }
+    let probe: Probe =
+        serde_yaml::from_str(&body).map_err(|e| err(format!("parse workflow: {e}")))?;
+    Ok(probe.defaults.workdir)
+}
+
 impl Config {
     /// Validate checks that every reference resolves and the stage graph is acyclic.
     pub fn validate(&self) -> Result<(), Error> {

@@ -171,11 +171,14 @@ pub enum Action {
 /// periphery suite already spawns the product through, so this is handled once there
 /// rather than by each test file remembering it).
 pub trait Runner: Send + Sync {
+    #[allow(clippy::too_many_arguments)]
     fn run(
         &self,
         g: &Gate,
         dir: &str,
         target_dir: &str,
+        build_cache_dir: &str,
+        build_cache_guard: &str,
         store_fence: &str,
         build_env: &BuildEnv,
         budget: &BuildBudget,
@@ -647,6 +650,8 @@ impl Runner for ExecRunner {
         g: &Gate,
         dir: &str,
         target_dir: &str,
+        build_cache_dir: &str,
+        build_cache_guard: &str,
         store_fence: &str,
         build_env: &BuildEnv,
         budget: &BuildBudget,
@@ -658,8 +663,8 @@ impl Runner for ExecRunner {
         }
         // Per-unit build cache (Gap 19): a non-empty target_dir points cargo at a
         // unit-keyed CARGO_TARGET_DIR so this gate's incremental state is never shared
-        // with a concurrent unit's divergent tree. Empty leaves the ambient env
-        // untouched (the integrated-tree/deferred gate keeps the shared cache).
+        // with a concurrent unit's divergent tree. The empty/ambient case (below) is the
+        // shared-cache one `build_cache_dir` now pins explicitly (spec 77 criterion 5).
         if !target_dir.is_empty() {
             cmd.env("CARGO_TARGET_DIR", target_dir);
             // The gate store fence (spec 70 criterion 3), on the SAME signal: a non-empty
@@ -670,7 +675,24 @@ impl Runner for ExecRunner {
             // resolves there instead of walking up. This branch always wins over
             // `store_fence` below - a unit worktree derives its own fence from target_dir.
             cmd.env(STORE_FENCE_ENV, format!("{target_dir}{STORE_FENCE_SUFFIX}"));
-        } else if !store_fence.is_empty() {
+        } else {
+            // The shared gate build cache's CONSUMER half (spec 77 criterion 5, BOUNDED
+            // SHARED CACHE - the round 8/9 lesson from this same criterion's own prior
+            // review history): a non-empty `build_cache_dir` FORCES this ambient-cache
+            // gate build onto the exact directory `build_cache_guard` protects, rather
+            // than trusting whatever CARGO_TARGET_DIR the ambient/inherited process env
+            // happens to carry. Without this, the guard and the real cargo invocation
+            // could name two different directories the moment an external launcher's
+            // hardcoded courier env diverges from the RIGGER_TMPDIR/defaults.workdir-
+            // aware path the guard is derived from - `rigger reset --build-cache` would
+            // then reclaim an empty decoy while the real, growing cache goes both
+            // unprotected and unreclaimed. Both `build_cache_dir` and `build_cache_guard`
+            // are derived from the identical scratch-root authority by the caller
+            // (`conductor::shared_build_cache_paths`), so this can never disagree with
+            // the lock it is paired with.
+            if !build_cache_dir.is_empty() {
+                cmd.env("CARGO_TARGET_DIR", build_cache_dir);
+            }
             // Widened (spec 70, u4 round 2 fix for
             // adv-u3c70-store-fence-half-wired-review-worktree-call-site-unfenced, then
             // u4 round 3 fix for arch-u4c70r2-fence-signal-not-injected-into-runner-review-case):
@@ -684,7 +706,9 @@ impl Runner for ExecRunner {
             // via `worktree::review_fence_sibling(dir)`, so `gate.rs` never depends on
             // `worktree` and the one-directional dependency (`conductor` -> `{gate,
             // worktree}`) stays intact.
-            cmd.env(STORE_FENCE_ENV, store_fence);
+            if !store_fence.is_empty() {
+                cmd.env(STORE_FENCE_ENV, store_fence);
+            }
         }
         // The ONE build-environment authority's first injection site (spec 65): the
         // resolved wrapper/cache-dir/incremental-off vars (empty when no wrapper is
@@ -698,6 +722,16 @@ impl Runner for ExecRunner {
         // frees its slot the instant it is killed, and no other code path in the crate
         // acquires a slot, so non-build work is never gated.
         let _slot = budget.acquire();
+        // The shared gate build cache's exclusion protocol, PRODUCER half (spec 77
+        // criterion 4, BOUNDED SHARED CACHE): a non-empty `build_cache_guard` names the
+        // sibling lock file `rigger reset --build-cache` takes EXCLUSIVE and non-blocking
+        // before it renames/reclaims the cache. Held SHARED for exactly this command's
+        // duration (mirroring the budget slot just above), so an exclusive reset attempted
+        // while this build is running is refused rather than ever corrupting the cache out
+        // from under it. Empty disables this entirely (a per-unit `cargo-target-<slug>`
+        // build is never at risk from that command, matching `target_dir`'s own
+        // "empty means off" convention).
+        let _cache_guard = hold_shared_build_cache_lock(build_cache_guard);
         match cmd.output() {
             Ok(out) => {
                 let mut evidence = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -714,6 +748,43 @@ impl Runner for ExecRunner {
             },
         }
     }
+}
+
+/// Hold the shared gate build cache's guard lock SHARED for the duration of one gate's
+/// cargo invocation (spec 77 criterion 5, BOUNDED SHARED CACHE) - the "every
+/// rigger-launched shared-cache build holds it SHARED" half of the exclusion protocol
+/// whose exclusive, non-blocking counterpart is `rigger reset --build-cache`'s own reclaim
+/// (`main.rs`'s `reclaim_shared_build_cache`). `path` is the guard file BESIDE the cache
+/// (`worktree::shared_build_cache_guard_path`'s naming authority) - never inside it, so the
+/// guard survives that command's own rename of the cache itself; empty disables this (a
+/// per-unit build's own `cargo-target-<slug>` cache is never at risk from that command, so
+/// it takes no lock at all).
+///
+/// A BLOCKING shared lock, unlike the reset side's non-blocking exclusive one: a build is
+/// legitimately willing to wait the brief moment reset holds the guard exclusive across its
+/// own rename, and reset's own non-blocking design means that wait is always short (it
+/// refuses outright rather than ever queuing itself behind a held lock). Best-effort
+/// against filesystem trouble unrelated to the build itself (an unwritable guard path, a
+/// missing parent dir): degrades to running unguarded rather than failing a gate over a
+/// lock this build does not otherwise need, mirroring `BuildBudget::acquire`'s own
+/// degrade-to-unlimited convention for the identical class of trouble.
+fn hold_shared_build_cache_lock(path: &str) -> Option<std::fs::File> {
+    if path.is_empty() {
+        return None;
+    }
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(path)
+        .ok()?;
+    // Fully-qualified (not `f.lock_shared()`): this crate deliberately uses `fs2` for
+    // every advisory lock ([`crate::budget`], `main.rs`'s step lock) rather than std's
+    // more recently stabilized `File::lock_shared`, which shares this exact method name -
+    // a plain method call would silently resolve to the std inherent method (inherent
+    // methods always win over a trait's) and leave the `fs2` import genuinely unused.
+    fs2::FileExt::lock_shared(&f).ok()?;
+    Some(f)
 }
 
 /// Cap on the length of any single evidence line (§3.3).
@@ -877,6 +948,8 @@ mod tests {
                     "",
                     "",
                     "",
+                    "",
+                    "",
                     &BuildEnv::default(),
                     &BuildBudget::default()
                 )
@@ -886,6 +959,8 @@ mod tests {
             !ExecRunner
                 .run(
                     &gate_cmd("false"),
+                    "",
+                    "",
                     "",
                     "",
                     "",
@@ -953,6 +1028,8 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             "",
             "",
             "",
+            "",
+            "",
             &BuildEnv::default(),
             &BuildBudget::default(),
         );
@@ -980,6 +1057,8 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             "",
             "/tmp/rigger-gap19-probe",
             "",
+            "",
+            "",
             &BuildEnv::default(),
             &BuildBudget::default(),
         );
@@ -993,12 +1072,168 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             "",
             "",
             "",
+            "",
+            "",
             &BuildEnv::default(),
             &BuildBudget::default(),
         );
         assert!(
             without.pass,
             "an empty target_dir must not force a CARGO_TARGET_DIR override: {without:?}"
+        );
+    }
+
+    #[test]
+    fn exec_runner_forces_cargo_target_dir_onto_build_cache_dir_when_target_dir_is_empty() {
+        // spec 77 criterion 5 (BOUNDED SHARED CACHE), the round 8/9 lesson from this same
+        // criterion's own prior review history: when target_dir is empty (the ambient/
+        // shared-cache case), a non-empty build_cache_dir must FORCE the real cargo
+        // invocation's CARGO_TARGET_DIR onto it - never leaving it to whatever the
+        // ambient/inherited process env happens to carry - so the directory a real gate
+        // build actually writes into can never silently diverge from the directory
+        // `build_cache_guard` (and `rigger reset --build-cache`) protects. No ambient env
+        // mutation here (this test binary runs its suite with multiple tests concurrently,
+        // and `std::env::set_var` is process-wide) - a direct positive assertion that the
+        // spawned command's own CARGO_TARGET_DIR equals build_cache_dir is exactly as
+        // conclusive and carries no cross-test race.
+        let res = ExecRunner.run(
+            &gate_cmd("test \"$CARGO_TARGET_DIR\" = /tmp/rigger-shared-cache-probe"),
+            "",
+            "",
+            "/tmp/rigger-shared-cache-probe",
+            "",
+            "",
+            &BuildEnv::default(),
+            &BuildBudget::default(),
+        );
+        assert!(
+            res.pass,
+            "an empty target_dir with a non-empty build_cache_dir must force CARGO_TARGET_DIR \
+             onto build_cache_dir: {res:?}"
+        );
+    }
+
+    #[test]
+    fn exec_runner_target_dir_wins_over_build_cache_dir_when_both_are_given() {
+        // The two are mutually exclusive by every real caller's own construction
+        // (`conductor::run_gates` only ever resolves a non-empty `target` XOR a non-empty
+        // shared-cache pair - see `shared_build_cache_paths`), but ExecRunner's own
+        // precedence must not silently rely on that external discipline: a non-empty
+        // target_dir must always win, so a per-unit build can never be redirected onto the
+        // shared cache even if a caller were to pass both.
+        let with_both = ExecRunner.run(
+            &gate_cmd("test \"$CARGO_TARGET_DIR\" = /tmp/rigger-gap19-probe"),
+            "",
+            "/tmp/rigger-gap19-probe",
+            "/tmp/rigger-shared-cache-probe",
+            "",
+            "",
+            &BuildEnv::default(),
+            &BuildBudget::default(),
+        );
+        assert!(
+            with_both.pass,
+            "a non-empty target_dir must win over a non-empty build_cache_dir: {with_both:?}"
+        );
+    }
+
+    /// Poll `pred` until it holds or a generous timeout elapses; returns whether it held.
+    /// Mirrors `budget::tests::wait_until` (the SAME flock-adjacent polling idiom, needed
+    /// here for the identical reason: a real kernel flock's timing is not something a
+    /// fixed sleep can pin reliably).
+    fn wait_until(mut pred: impl FnMut() -> bool) -> bool {
+        for _ in 0..400 {
+            if pred() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        false
+    }
+
+    #[test]
+    fn exec_runner_holds_the_shared_build_cache_guard_lock_for_the_whole_cargo_invocation() {
+        // spec 77 criterion 5 (BOUNDED SHARED CACHE): a non-empty `build_cache_guard`
+        // names the sibling lock file `rigger reset --build-cache` takes EXCLUSIVE and
+        // non-blocking; a gate build must hold it SHARED for its whole invocation, so a
+        // reset attempted while this gate's command is still running is refused rather
+        // than corrupting the cache out from under it. Proven from the OTHER side: while
+        // the gate command is still running, an independent probe's try_lock_exclusive on
+        // the SAME guard path must fail (contended); once the gate command exits, the
+        // same probe must succeed (the shared hold was released).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let guard_path = dir.path().join("cargo-target.lock");
+        let started = dir.path().join("started");
+        let guard_str = guard_path.to_str().unwrap().to_string();
+        let started_str = started.to_str().unwrap().to_string();
+        let handle = std::thread::spawn(move || {
+            ExecRunner.run(
+                &gate_cmd(&format!("touch {started_str}; sleep 1")),
+                "",
+                "",
+                "",
+                &guard_str,
+                "",
+                &BuildEnv::default(),
+                &BuildBudget::default(),
+            )
+        });
+        assert!(
+            wait_until(|| started.exists()),
+            "the gate command must start and touch its marker"
+        );
+        {
+            use fs2::FileExt;
+            let probe = std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(false)
+                .open(&guard_path)
+                .expect("open guard for probe");
+            assert!(
+                probe.try_lock_exclusive().is_err(),
+                "a running shared-cache gate build must hold the guard SHARED, blocking an \
+                 exclusive probe"
+            );
+        }
+        let res = handle.join().expect("gate thread must not panic");
+        assert!(res.pass, "the gate command must pass: {res:?}");
+        {
+            use fs2::FileExt;
+            let probe = std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(false)
+                .open(&guard_path)
+                .expect("open guard for probe");
+            assert!(
+                probe.try_lock_exclusive().is_ok(),
+                "once the gate build exits its shared hold must be released"
+            );
+        }
+    }
+
+    #[test]
+    fn exec_runner_never_touches_the_guard_when_build_cache_guard_is_empty() {
+        // Empty means off, mirroring `target_dir`'s own convention: a per-unit build's
+        // own `cargo-target-<slug>` cache is never at risk from `reset --build-cache`, so
+        // it takes no lock at all and never even creates a guard file.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let guard_path = dir.path().join("cargo-target.lock");
+        let res = ExecRunner.run(
+            &gate_cmd("true"),
+            "",
+            "",
+            "",
+            "",
+            "",
+            &BuildEnv::default(),
+            &BuildBudget::default(),
+        );
+        assert!(res.pass);
+        assert!(
+            !guard_path.exists(),
+            "an empty build_cache_guard must never create a guard file: {guard_path:?}"
         );
     }
 
@@ -1033,6 +1268,8 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             "",
             "/tmp/rigger-gap19-probe",
             "",
+            "",
+            "",
             &BuildEnv::default(),
             &BuildBudget::default(),
         );
@@ -1043,6 +1280,8 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
 
         let without = ExecRunner.run(
             &gate_cmd(&format!("test -z \"${STORE_FENCE_ENV}\"")),
+            "",
+            "",
             "",
             "",
             "",
@@ -1091,6 +1330,8 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             &gate_cmd(&format!("test \"${STORE_FENCE_ENV}\" = {injected_fence}")),
             review_dir,
             "",
+            "",
+            "",
             &injected_fence,
             &BuildEnv::default(),
             &BuildBudget::default(),
@@ -1105,6 +1346,8 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             &gate_cmd(&format!("test \"$CARGO_TARGET_DIR\" != {review_dir}")),
             review_dir,
             "",
+            "",
+            "",
             &injected_fence,
             &BuildEnv::default(),
             &BuildBudget::default(),
@@ -1117,6 +1360,8 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
 
         let unfenced = ExecRunner.run(
             &gate_cmd(&format!("test -z \"${STORE_FENCE_ENV}\"")),
+            "",
+            "",
             "",
             "",
             "",
@@ -1217,6 +1462,8 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             "",
             "",
             "",
+            "",
+            "",
             &env,
             &BuildBudget::default(),
         );
@@ -1227,6 +1474,8 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
 
         let without = ExecRunner.run(
             &gate_cmd("test -z \"$RUSTC_WRAPPER\" && test -z \"$SCCACHE_DIR\""),
+            "",
+            "",
             "",
             "",
             "",
@@ -1300,6 +1549,8 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         let env = BuildEnv::resolve("", "", 3);
         let res = ExecRunner.run(
             &gate_cmd("test \"$CARGO_BUILD_JOBS\" = 3"),
+            "",
+            "",
             "",
             "",
             "",

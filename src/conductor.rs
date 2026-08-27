@@ -6453,6 +6453,39 @@ impl RunCtx<'_> {
         )
     }
 
+    /// The shared gate build cache's DIR and guard-lock PATH (spec 77 criterion 5, BOUNDED
+    /// SHARED CACHE) - the SAME pair `main.rs`'s `reset_build_cache`/`reclaim_shared_build_cache`
+    /// resolve ([`worktree::shared_build_cache_guard_path`] plus the shared
+    /// [`worktree::SHARED_BUILD_CACHE_NAME`] constant, the ONE naming authority for each), so a
+    /// gate build here and an operator's `rigger reset --build-cache` can never disagree about
+    /// which directory is "the shared cache" or which file guards it. Both derived from ONE
+    /// `scratch_root_from_env(repo, workdir)` call, just like [`build_env`] (Self::build_env)
+    /// and [`build_budget`](Self::build_budget) - never a second, independently-spelled copy.
+    /// Returned together (not as two separate methods) so a caller can never thread one
+    /// without the other and let them drift out of step.
+    ///
+    /// Threaded to every gate call whose OWN `target_dir` is empty (the shared/ambient-cache
+    /// case); a per-unit build's own `cargo-target-<slug>` cache is never at risk from that
+    /// command and passes an empty pair instead (mirroring `target_dir`'s own "empty means
+    /// off" convention). The DIR half is what lets `gate::ExecRunner` pin the real cargo
+    /// invocation's `CARGO_TARGET_DIR` onto the exact path the guard protects (superseding,
+    /// for this guarded case specifically, `d-u3-gap19-per-unit-cargo-target`'s
+    /// blind-ambient-inheritance framing - see `d-u77c5-force-cargo-target-dir-on-ambient-guard-branch`):
+    /// this criterion's own prior review history (arch/sdet/adv round 8-9, under this
+    /// criterion's earlier, since-abandoned numbering) found that leaving CARGO_TARGET_DIR on
+    /// blind ambient inheritance lets it silently diverge from this config-aware path the
+    /// moment RIGGER_TMPDIR/defaults.workdir is configured away from the courier launcher's
+    /// own hardcoded literal - the guard would then protect a directory nothing builds into.
+    fn shared_build_cache_paths(&self) -> (String, String) {
+        let scratch = crate::worktree::scratch_root_from_env(
+            &self.deps.repo,
+            &self.cfg.workflow.defaults.workdir,
+        );
+        let dir = format!("{scratch}/{}", crate::worktree::SHARED_BUILD_CACHE_NAME);
+        let guard = crate::worktree::shared_build_cache_guard_path(&scratch);
+        (dir, guard)
+    }
+
     /// Run a stage's inline gates for its `attempt`, returning whether they all passed
     /// and the compact evidence of any failure. Each gate's verdict is REPLAY-KEYED on
     /// the `(unit, attempt, gate)` coordinate (spec 04, criterion 4): the first step to
@@ -6484,6 +6517,20 @@ impl RunCtx<'_> {
         // `isolation: none` agent or a repo-less run) has no per-unit tree to isolate, so
         // `unit_cache_sibling` returns None and the gate inherits the ambient/shared target.
         let target = crate::worktree::unit_cache_sibling(dir).unwrap_or_default();
+        // The shared gate build cache's guard path (spec 77 criterion 5, BOUNDED SHARED
+        // CACHE), on the SAME signal as `target` above: a non-empty `target` means this
+        // gate builds into its OWN per-unit `cargo-target-<slug>` cache, never at risk from
+        // `rigger reset --build-cache` (which only ever touches the bare shared cache), so
+        // it takes no lock at all - mirroring `target_dir`'s own "empty means off"
+        // convention exactly. An empty `target` (a unit-less run, or a review worktree)
+        // means this gate inherits the ambient/shared cache, so it must hold the SAME guard
+        // every OTHER shared-cache build holds AND build into the SAME dir that guard
+        // protects (see `shared_build_cache_paths`).
+        let (build_cache_dir, build_cache_guard) = if target.is_empty() {
+            self.shared_build_cache_paths()
+        } else {
+            (String::new(), String::new())
+        };
         // The gate store fence's caller-injected signal (spec 70 criterion 3, u4 round 3
         // fix for arch-u4c70r2-fence-signal-not-injected-into-runner-review-case /
         // arch-u4c70r2-sharpens-round1-no-cycle-invariant-now-broken): a standalone review
@@ -6613,8 +6660,16 @@ impl RunCtx<'_> {
             // unit 2): a clean pass; a flaky/infra failure that reran and PASSED (a
             // FlakyVerdict pass-with-warning); or a real failure (product/flaky demote,
             // infra hold).
-            let (pass, flaky, ratchet, evidence) =
-                self.run_gate_with_taxonomy(&g, dir, &target, &store_fence, &build_env, &budget);
+            let (pass, flaky, ratchet, evidence) = self.run_gate_with_taxonomy(
+                &g,
+                dir,
+                &target,
+                &build_cache_dir,
+                &build_cache_guard,
+                &store_fence,
+                &build_env,
+                &budget,
+            );
             // The compact gate evidence is threaded into the GateVerdict event payload
             // (item 3): a real run otherwise discarded it, so neither the ledger nor the
             // workflow driver ever saw WHY a gate passed or failed. `flaky` rides as the
@@ -6658,19 +6713,28 @@ impl RunCtx<'_> {
     /// demotes (`flaky`) or holds the ratchet (`infra`).
     ///
     /// Returns `(recorded_pass, flaky_annotation, ratchet_effect, evidence)`.
+    #[allow(clippy::too_many_arguments)]
     fn run_gate_with_taxonomy(
         &self,
         g: &Gate,
         dir: &str,
         target: &str,
+        build_cache_dir: &str,
+        build_cache_guard: &str,
         store_fence: &str,
         build_env: &gate::BuildEnv,
         budget: &BuildBudget,
     ) -> (bool, bool, GateRatchet, String) {
-        let res = self
-            .deps
-            .gates
-            .run(g, dir, target, store_fence, build_env, budget);
+        let res = self.deps.gates.run(
+            g,
+            dir,
+            target,
+            build_cache_dir,
+            build_cache_guard,
+            store_fence,
+            build_env,
+            budget,
+        );
         if res.pass {
             return (true, false, GateRatchet::CleanPass, res.evidence);
         }
@@ -6711,10 +6775,16 @@ impl RunCtx<'_> {
                 // unit's gate, never the wider wave.
                 std::thread::sleep(delay);
             }
-            let retry = self
-                .deps
-                .gates
-                .run(g, dir, target, store_fence, build_env, budget);
+            let retry = self.deps.gates.run(
+                g,
+                dir,
+                target,
+                build_cache_dir,
+                build_cache_guard,
+                store_fence,
+                build_env,
+                budget,
+            );
             if retry.pass {
                 // MIXED: the gate failed then passed - a FlakyVerdict pass-with-warning.
                 let evidence = format!(
@@ -6946,10 +7016,22 @@ impl RunCtx<'_> {
                     // the same machine-wide build budget, so this phase-boundary gate waits
                     // for a slot exactly like every inline gate does.
                     let build_env = self.build_env()?;
-                    let res = self
-                        .deps
-                        .gates
-                        .run(&g, "", "", "", &build_env, &self.build_budget());
+                    // The deferred gate measures the ONE integrated tree with no worktree
+                    // dir (empty `target_dir`, matching `run_gates`'s own "empty target"
+                    // shared-cache case) - so it holds the SAME shared build-cache guard
+                    // every other ambient-cache gate build holds AND builds into the SAME
+                    // dir that guard protects (spec 77 criterion 5).
+                    let (cache_dir, guard) = self.shared_build_cache_paths();
+                    let res = self.deps.gates.run(
+                        &g,
+                        "",
+                        "",
+                        &cache_dir,
+                        &guard,
+                        "",
+                        &build_env,
+                        &self.build_budget(),
+                    );
                     // The deferred phase-boundary gate keeps its single-run semantics (no
                     // taxonomy RERUN): it measures the ONE integrated tree once, so its
                     // verdict carries no flaky annotation (a whole-tree deferred rerun is
@@ -23962,6 +24044,21 @@ mod tests {
             2,
             "the two units' gate target dirs must DIFFER - never one shared cache: {targets:?}"
         );
+        // spec 77 criterion 5 (BOUNDED SHARED CACHE): a per-unit build (non-empty target)
+        // is never at risk from `rigger reset --build-cache` (which only ever touches the
+        // bare shared cache), so it must take no shared-cache guard lock at all, and must
+        // never have its own per-unit CARGO_TARGET_DIR overridden by a build_cache_dir
+        // (the two are mutually exclusive - see `shared_build_cache_paths`).
+        assert!(
+            runner.build_cache_guards().iter().all(|g| g.is_empty()),
+            "a per-unit build must never hold the shared build-cache guard: {:?}",
+            runner.build_cache_guards()
+        );
+        assert!(
+            runner.build_cache_dirs().iter().all(|d| d.is_empty()),
+            "a per-unit build must never carry a shared build_cache_dir: {:?}",
+            runner.build_cache_dirs()
+        );
 
         // Each target is the `cargo-target-<slug>` sibling of that unit's worktree under
         // the run's scratch root - the exact isolation the criterion requires. Derived the
@@ -26102,6 +26199,42 @@ mod tests {
             "run_gates must derive the review worktree's store-fence sibling itself and \
              inject it into the runner, never leaving the runner to derive it: {store_fences:?}"
         );
+
+        // spec 77 criterion 5 (BOUNDED SHARED CACHE): a review worktree owns no per-unit
+        // build cache (empty `target`, asserted above), so it builds into the shared/
+        // ambient cache and must hold the SAME guard `rigger reset --build-cache` takes
+        // exclusive - the exact sibling path `worktree::shared_build_cache_guard_path`
+        // derives from this run's own resolved scratch root, never a hand-typed stand-in.
+        let want_guard = crate::worktree::shared_build_cache_guard_path(&scratch);
+        let build_cache_guards = runner.build_cache_guards();
+        assert_eq!(
+            build_cache_guards.len(),
+            1,
+            "the one review-stage gate ran exactly once"
+        );
+        assert_eq!(
+            build_cache_guards[0], want_guard,
+            "run_gates must derive the shared build-cache guard itself for an empty-target \
+             gate and inject it into the runner: {build_cache_guards:?}"
+        );
+
+        // spec 77 criterion 5, the round 8/9 lesson from this same criterion's own prior
+        // review history: the guard alone is not enough - `run_gates` must ALSO inject the
+        // real shared-cache DIR itself, so `gate::ExecRunner` can force the actual cargo
+        // invocation's CARGO_TARGET_DIR onto the exact path the guard protects, rather than
+        // leaving it to whatever the ambient/inherited process env happens to carry.
+        let want_dir = format!("{scratch}/{}", crate::worktree::SHARED_BUILD_CACHE_NAME);
+        let build_cache_dirs = runner.build_cache_dirs();
+        assert_eq!(
+            build_cache_dirs.len(),
+            1,
+            "the one review-stage gate ran exactly once"
+        );
+        assert_eq!(
+            build_cache_dirs[0], want_dir,
+            "run_gates must derive the shared build-cache DIR itself for an empty-target gate \
+             and inject it into the runner, paired 1:1 with its guard: {build_cache_dirs:?}"
+        );
     }
 
     #[test]
@@ -26740,6 +26873,8 @@ mod tests {
             _g: &Gate,
             _dir: &str,
             _target: &str,
+            _build_cache_dir: &str,
+            _build_cache_guard: &str,
             _store_fence: &str,
             _build_env: &gate::BuildEnv,
             _budget: &BuildBudget,
@@ -27825,6 +27960,17 @@ mod tests {
         /// fence signal itself (via `worktree::review_fence_sibling`) rather than the runner
         /// deriving it, restoring the one-directional `gate` -> nothing dependency shape.
         store_fences: Mutex<Vec<String>>,
+        /// The `build_cache_guard` handed to each run, in invocation order (spec 77
+        /// criterion 5, BOUNDED SHARED CACHE) - lets a test assert `run_gates` derives and
+        /// injects the shared-cache guard path exactly when `target` is empty (never
+        /// alongside a non-empty per-unit `target`, mirroring `target_dir`'s own
+        /// "empty means off" convention).
+        build_cache_guards: Mutex<Vec<String>>,
+        /// The `build_cache_dir` handed to each run, in invocation order (spec 77 criterion
+        /// 5, the round 8/9 lesson) - lets a test assert `run_gates` forces the SAME dir
+        /// `build_cache_guard` protects onto the runner, never leaving it to ambient
+        /// inheritance, paired 1:1 with `build_cache_guards` at every call.
+        build_cache_dirs: Mutex<Vec<String>>,
         /// When set, a run with a non-empty `target_dir` MATERIALIZES that dir on disk (as a
         /// real cargo build would), so a graceful-lifecycle test can prove the per-unit cache
         /// is reclaimed when the unit's worktree is later removed (Gap 19).
@@ -27847,6 +27993,8 @@ mod tests {
                 targets: Mutex::new(Vec::new()),
                 build_envs: Mutex::new(Vec::new()),
                 store_fences: Mutex::new(Vec::new()),
+                build_cache_guards: Mutex::new(Vec::new()),
+                build_cache_dirs: Mutex::new(Vec::new()),
                 materialize_cache: false,
                 fail: fail.iter().map(|s| s.to_string()).collect(),
                 delete_worktree_dir: false,
@@ -27881,6 +28029,12 @@ mod tests {
         fn store_fences(&self) -> Vec<String> {
             self.store_fences.lock().unwrap().clone()
         }
+        fn build_cache_guards(&self) -> Vec<String> {
+            self.build_cache_guards.lock().unwrap().clone()
+        }
+        fn build_cache_dirs(&self) -> Vec<String> {
+            self.build_cache_dirs.lock().unwrap().clone()
+        }
     }
     impl gate::Runner for RecordingRunner {
         fn run(
@@ -27888,12 +28042,22 @@ mod tests {
             g: &Gate,
             dir: &str,
             target: &str,
+            build_cache_dir: &str,
+            build_cache_guard: &str,
             store_fence: &str,
             build_env: &gate::BuildEnv,
             _budget: &BuildBudget,
         ) -> gate::GateResult {
             self.calls.lock().unwrap().push(g.id.clone());
             self.targets.lock().unwrap().push(target.to_string());
+            self.build_cache_dirs
+                .lock()
+                .unwrap()
+                .push(build_cache_dir.to_string());
+            self.build_cache_guards
+                .lock()
+                .unwrap()
+                .push(build_cache_guard.to_string());
             self.store_fences
                 .lock()
                 .unwrap()
@@ -28031,6 +28195,8 @@ mod tests {
             g: &Gate,
             _dir: &str,
             _target: &str,
+            _build_cache_dir: &str,
+            _build_cache_guard: &str,
             _store_fence: &str,
             _build_env: &gate::BuildEnv,
             _budget: &BuildBudget,
@@ -31053,6 +31219,8 @@ mod tests {
             g: &Gate,
             _dir: &str,
             _target: &str,
+            _build_cache_dir: &str,
+            _build_cache_guard: &str,
             _store_fence: &str,
             _build_env: &gate::BuildEnv,
             _budget: &BuildBudget,
@@ -32012,6 +32180,8 @@ mod tests {
             _g: &Gate,
             dir: &str,
             _target: &str,
+            _build_cache_dir: &str,
+            _build_cache_guard: &str,
             _store_fence: &str,
             _build_env: &gate::BuildEnv,
             _budget: &BuildBudget,
