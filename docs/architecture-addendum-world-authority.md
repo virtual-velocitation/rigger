@@ -1,7 +1,7 @@
 # Architecture addendum: the world authority
 
-Status: PROPOSED - for operator review. This document (v6) merges and SUPERSEDES two prior
-proposals (the resident conductor; the world reconciler) and integrates five rounds of
+Status: PROPOSED - for operator review. This document (v7) merges and SUPERSEDES two prior
+proposals (the resident conductor; the world reconciler) and integrates six rounds of
 five-lens adversarial design review. Everything below describes the TARGET state except
 "Problem", which records the measured present.
 
@@ -261,7 +261,13 @@ status` reports (and warns) when NO `notify:` hook is configured, so an operator
 push path is a no-op rather than discovering it in an incident; and the crash-loop breaker's
 restart count is kept in a DURABLE on-disk restart-ledger in the 0700 root (not only in a
 supervisor), so the breaker trips and persists its trip to `anomalies.jsonl` even in the
-`unsupervised` posture, where a supervisor's restart-limit and journal are absent. Rigger
+`unsupervised` posture, where a supervisor's restart-limit and journal are absent. That
+restart-ledger is an append-only, temp-then-rename atomic log that counts ONLY a daemon
+lifecycle which acquired the lock and then died - a singleton-race loser that exits
+immediately on finding the lock HELD is not a restart, so an ordinary handoff never
+spuriously trips the breaker - and a torn or unreadable ledger read is FAIL-SAFE toward the
+current posture: it never silently resets the count to zero (which would suppress the breaker
+during the very crash-loop that tore the write) and raises an arm-5 anomaly instead. Rigger
 owns the durable signal and the notify port; delivering it to a pager is the consumer's
 `notify:` hook, by scope.
 
@@ -280,13 +286,18 @@ double-run, and its result is never reaped before it is drained. Every request c
 client-minted idempotency key and is applied through the same CAS, never a blind `Any`
 append. For a SINGLE-SHOT kind (`result`, one per spawn) the key is `(run, owner, attempt,
 kind)`; for a REPEATABLE kind (`emit`, a reviewer's several findings) the key additionally
-carries the request's DURABLE OUTBOX-LINE ID - a per-container monotonic id the courier
-persists (temp-then-rename) BEFORE sending, so it is stable across a network retry of the
-same logical request (the retry reuses the id it already wrote, and the CAS dedups it),
-distinct across two textually-identical-but-separate findings (each got its own id), and
-non-colliding across a courier restart within one attempt (the counter is read from disk,
-not an in-memory zero) - closing every silent-dedup-drop path a bare sequence or a raw
-content hash would leave open. A proposal names the spawn it concerns; the daemon binds it to
+carries the request's DURABLE OUTBOX-LINE ID - drawn from a per-container monotonic
+HIGH-WATER MARK the courier keeps in its own small state file, never derived by scanning
+the outbox directory whose lines drain away. Minting id N first advances-and-persists that
+mark to N (temp-then-rename) and only THEN writes the outbox line N, so a crash between the
+two leaves the mark at N with no line N - the next mint is N+1, a harmless gap, never a
+reused id - and because the mark is a persisted high-water value, not a directory scan,
+drain-and-truncation of line N can never let a later mint re-issue N. The id is thus stable
+across a network retry of the same logical request (the retry reuses the id it already
+wrote, and the CAS dedups it), distinct across two textually-identical-but-separate findings
+(each got its own id), and non-colliding across a courier restart or a post-drain re-mint
+within one attempt - closing every silent-dedup-drop path a bare sequence, a raw content
+hash, or a directory-scan counter would leave open. A proposal names the spawn it concerns; the daemon binds it to
 that spawn through the work-assignment token it minted and handed out with the work via
 `wave --pull` (delivered in the agent's own assignment channel, not a shared file), which
 scopes an ACCIDENTAL cross-spawn misreport - the HARD backstop against a forged terminus
@@ -342,7 +353,15 @@ whose path does not originate in one. A regex over call sites could pass while t
 recurred; a path-authority key cannot. The provenance check is a compile-gated audit: raw
 `std::fs`/`std::process` path constructors are a compile error outside the class modules
 (a wrapper the workspace lints enforce), so "originates in an authority" is a mechanical
-fact, not a reviewer's reading.
+fact, not a reviewer's reading. Each variant ALSO declares its RECREATABILITY - REBUILDABLE
+(a cache whose recovery is a cold rebuild) or UNIQUE (content only git-quarantine can
+recover) - as a required field of the same enum, so the restricted-posture withhold (the
+reconciler) and the git-quarantine disposal path both read a registry FACT, not a call-site
+judgment; the enforcement test fails RED on any variant added without one. This matters as
+much as the path authority: a class mislabelled REBUILDABLE would be DELETED OUTRIGHT under
+the restricted posture and by the quarantine section's disposal rule, so the one soft
+classification that could cost unique content is given the same compile-checked teeth as
+every other cross-cutting attribute in this model.
 
 **Identity.** A DERIVABLE class - path a pure function of `(project, run id, owner id,
 attempt)` through the one shared injective encoding - carries NO declaration; the log
@@ -433,17 +452,28 @@ compactable types are disjoint, pinned by test).
 Runs as the daemon's internal loop OFF the socket-serving path (a slow re-derivation never
 blocks a courier's result), on its own timer; every CLI invocation computes the same diff
 OBSERVE-ONLY and submits judgment items over the socket. Where the substrate preflight
-(Delivery) finds weak locks - at start OR on a mid-life re-check - the arms whose safety
-depends on exclusivity are WITHHELD: arm 1 (REAP), arm 2 (REPAIR), and any eviction of
-UNIQUE content (quarantine refs). What STILL runs, because it is safe even under a lost lock,
-is arm 3's eviction of REBUILDABLE size-governed classes (build caches, mutation scratch,
-target trees) - concurrent over-eviction there costs at worst a cold rebuild, never data loss
-or a wrongful reap - together with pre-spawn ADMISSION refusal and arm 4 CREATE (positional,
-non-destructive). So a project that legitimately and permanently lives on a weak-lock mount
-still BOUNDS its disk (the 403G bulk is exactly the rebuildable classes that keep evicting)
-without ever running a destructive act whose correctness the lost lock would void; the
-operator's remedy (relocate to local disk, or `--override`) is named but not required to stay
-bounded. Arms, in order:
+(Delivery) finds weak locks - at start OR on a mid-life re-check - and equally when the
+crash-loop breaker below trips, the daemon enters ONE RESTRICTED POSTURE, defined here and
+referenced by both, that withholds exactly the acts whose correctness needs exclusivity or
+that irreversibly delete content not classed REBUILDABLE: arm 1 (REAP), arm 2's DESTRUCTIVE
+half (clearing a bare dir, `rmdir`ing a stale cgroup, clearing a zero-length git admin
+entry), and eviction of UNIQUE content (quarantine refs). What STILL runs, because none of it
+loses non-rebuildable content or depends on a healthy lock for correctness, is arm 3's
+eviction of REBUILDABLE size-governed classes (build caches, mutation scratch, target trees -
+concurrent over-eviction there costs at worst a cold rebuild), pre-spawn ADMISSION refusal,
+arm 4 CREATE (positional), and arm 2's IDEMPOTENT half (recreating a registered-but-absent
+worktree from its branch, a deterministic checkout two daemons can race harmlessly).
+REBUILDABLE-versus-UNIQUE is not a judgment made at this call site: it is a REQUIRED field of
+the class-registry enum (The resource model), checked by the same compile-gated audit as the
+path authority, so a class can never be silently mislabelled into the deletable set. A
+divergence that ONLY a withheld destructive act could resolve is not left silent: it is raised
+as a standing, pushed arm-5 signal naming the stalled owner (for example `N units with
+unrepaired worktrees`), so the operator sees the actionable fact, not just a generic posture
+flag. So a project on a legitimately-permanent weak mount, or a daemon riding out a crash-loop,
+still BOUNDS its disk (the 403G bulk is exactly the rebuildable classes that keep evicting) and
+still self-heals a missing worktree, without ever running an act the condition would make
+unsafe; the operator's remedy (relocate to local disk, or `--override`) is named but not
+required to stay bounded. Arms, in order:
 
 1. **REAP** present-but-undesired, with the four vetoes that are facts not heuristics: the
    child table, open socket claims, last-progress freshness, and the read-only cwd scan, ANY
@@ -452,12 +482,13 @@ bounded. Arms, in order:
    only on the full four-fact corroboration above - so a forged `result` cannot render a live
    spawn's worktree undesired in the first place. Deletion follows the git-quarantine rule
    below, so every reap of unique content is reversible.
-2. **REPAIR** present-but-divergent - each class carries an integrity predicate;
-   registered-but-absent worktrees recreate from their branch, zero-length git admin
-   entries heal, bare leftover dirs adopt-or-clear, a stale empty cgroup subtree is
-   `rmdir`'d. Absorbs the shipped self-healing guarantee. A class is EITHER repairable
-   (arm 2 owns it, arm 3 may not evict it) OR evictable (arm 3 owns it, arm 2 may not
-   recreate it) - never both, so arm 2 cannot recreate what arm 3 just evicted (the
+2. **REPAIR** present-but-divergent - each class carries an integrity predicate. Its
+   IDEMPOTENT repairs (a registered-but-absent worktree recreated from its branch) run even
+   in the restricted posture; its DESTRUCTIVE repairs (a zero-length git admin entry cleared,
+   a bare leftover dir adopted-or-cleared, a stale empty cgroup subtree `rmdir`'d) are in the
+   withheld set above. Absorbs the shipped self-healing guarantee. A class is EITHER
+   repairable (arm 2 owns it, arm 3 may not evict it) OR evictable (arm 3 owns it, arm 2 may
+   not recreate it) - never both, so arm 2 cannot recreate what arm 3 just evicted (the
    envelope livelock).
 3. **CONVERGE ENVELOPES** - size-governed classes carry an LRU-to-floor eviction terminus
    so the arm always has a convergent action; refusal engages only when eviction to the
@@ -465,9 +496,13 @@ bounded. Arms, in order:
    creation authority (DIRECT) and pre-spawn ADMISSION (the only lever that reaches
    delegate-produced bytes). Quarantine repos are a machine-scoped size-governed class here:
    their retention window and LRU are advanced by whichever live daemon on the machine ticks
-   this arm over the shared substrate, so an abandoned project's quarantine content expires
-   by AGE even though that project's own daemon never runs again - reclaimed by age, never by
-   its project root's absence. Per-class byte accounting is maintained incrementally at create
+   this arm over the shared substrate, EACH under the per-repository flock the git-quarantine
+   section defines so the two never mutate one repo at once, so an abandoned project's
+   quarantine content expires by AGE even though that project's own daemon never runs again -
+   reclaimed by age, never by its project root's absence. A within-retention-window unique ref
+   is never evicted even under machine-wide size pressure: the arm refuses new admissions
+   instead, so size pressure becomes a bounded liveness stall, never unique-content loss.
+   Per-class byte accounting is maintained incrementally at create
    and reclaim (reclaimed-facts carry sizes); a full non-symlink-following,
    depth-and-inode-bounded walk runs only when `statvfs` on the device crosses a floor, and
    "could not measure" is arm 5, never "under budget".
@@ -522,12 +557,17 @@ Rails, in priority over every arm:
   so 40G never disappears silently. A crash-loop breaker enters degraded diagnose-only
   mode after N restarts in window W (default N=5 in W=10 min, both configurable, counted in
   the durable restart-ledger, surfaced in `rigger status`, its tripping an arm-5 signal); in
-  that mode it withholds arms 1-3 AND new-spawn admission, running observe+notify-only so no
-  destructive act or fresh work proceeds on a daemon that cannot start cleanly. It is EXITED
-  by an operator `daemon resume` (behind the operator capability) once the fault is cleared,
-  and the restart counter auto-resets after a full window W with no failed start - so a
-  transient flap self-heals and a real fault waits for a human, neither one a permanent
-  silent downgrade.
+  that mode it enters the SAME RESTRICTED POSTURE the weak-mount preflight uses (defined in
+  the reconciler intro) AND withholds new-spawn admission - so arm 1, arm 2's destructive
+  half, and unique-content eviction stop, while arm 3's REBUILDABLE eviction and admission
+  refusal keep running: a daemon crash-looping BECAUSE of disk pressure (the most plausible
+  trigger for a resident process writing a store, ledger, outbox, and snapshot) does not
+  switch off the one mechanism that would relieve it. `rigger status` reports the trip and
+  NAMES `daemon resume` as the remedy, matching the weak-mount and missing-hook honest-signal
+  cases. It is EXITED by an operator `daemon resume` (behind the operator capability) once the
+  fault is cleared, and the restart counter auto-resets after a full window W with no failed
+  start - so a transient flap self-heals and a real fault waits for a human, neither one a
+  permanent silent downgrade.
 
 ## Git-quarantine: the retention discipline
 
@@ -559,7 +599,16 @@ machine-scoped size-governed class under arm 3, evicted ONLY by their declared r
 window and LRU (real deletion + `gc`) - which any live daemon on the machine advances (Scope,
 arm 3), so an abandoned project's content still expires by age - and NEVER by machine-slot
 reclamation, so no project-root-liveness check can ever delete a live-but-dormant owner's
-unique content.
+unique content. Because ANY live daemon may tick this eviction over the SHARED repo, every
+mutation of one quarantine repo - a snapshot's object-write-then-ref-update, and an eviction's
+ref-delete-and-`gc` - is serialized by a PER-REPOSITORY FLOCK, so multiple daemons never `gc`
+or prune it concurrently. Under that flock the eviction prunes PROMPTLY (`gc` with
+`pruneExpire` set to now, never `--force`, never relying on git's built-in two-week grace
+which the scrubbed `GIT_CONFIG_NOSYSTEM` environment would otherwise inherit), so an evicted
+ref's bytes are reclaimed WITHIN the arm's own cycle rather than lingering for weeks - and a
+concurrent owner's in-flight snapshot cannot be pruned before its ref lands, because that
+snapshot holds the same flock. An eviction that finds its target ref already deleted by a
+sibling daemon's earlier pass treats it as success, not an anomaly.
 
 **Escalation holds no disk.** An escalated unit's worktree is purged at terminal like any
 other - the purge is preceded by the unique-content snapshot every purge gets, and the unit
@@ -612,13 +661,16 @@ restart-ledger), each carrying a format tag so a binary upgrade migrates rather 
 misparses, and rollback is fenced by the store minimum-version marker refusing an older binary
 against a newer store. The epoch CAS and the flock singleton assume a store on a LOCAL
 filesystem with linearizable Exact-CAS and honest advisory locks; a daemon PREFLIGHTS the
-store's filesystem at start AND re-checks on a cadence and on any `ESTALE`/`EIO`/lock anomaly
-seen during an arm (mirroring the socket-inode re-stat), so a mount that degrades or flaps
-after a healthy start is detected mid-life; on a known-weak result it drops to the weak-mount
-posture above (arm 1, arm 2, and unique-content eviction withheld; rebuildable eviction,
-admission refusal, and arm 4 still run), warns loudly once, flags the posture in `rigger
-status`, and names the remediation (relocate `.rigger` to a local disk, or `--override`),
-resuming full convergence when a re-check finds the mount healthy again.
+store's filesystem at start AND re-checks on its liveness cadence (the same interval as the
+socket-inode re-stat) and on any `ESTALE`/`EIO`/lock anomaly seen during an arm, so a mount
+that degrades or flaps after a healthy start is detected mid-life; on a known-weak result it
+drops to the RESTRICTED POSTURE above (arm 1, arm 2's destructive half, and unique-content
+eviction withheld; rebuildable eviction, admission refusal, arm-2 recreate, and arm 4 still
+run), warns once PER TRANSITION into that posture (not once ever, so a flapping mount is never
+silently ridden out), flags the posture in `rigger status`, and names the remediation
+(relocate `.rigger` to a local disk, or `--override`), resuming full convergence only after N
+consecutive healthy re-checks - a debounce so a flapping mount cannot thrash convergence on
+and off.
 
 1. **Pure domain + ports.** The path-authority class registry (including the cgroup class)
    and its enforcement test; `desired_world` as a tested fold keyed by `(run, owner,
@@ -722,27 +774,51 @@ resuming full convergence when a re-check finds the mount healthy again.
     stays open and the process-presence veto does not degrade, and raises NO anomaly; a
     process still live under a worktree whose courier connection has CLOSED is raised as an
     arm-5 anomaly rather than reaped or leaked.
-17. The crash-loop breaker trips and recovers: a daemon forced to fail N times in window W
-    enters diagnose-only mode, emits the arm-5 signal, and runs no destructive arm or new
-    spawn thereafter; an operator `daemon resume` returns it to normal operation, and a full
-    window W with no failed start auto-resets the counter.
+17. The crash-loop breaker trips, keeps disk bounded, and recovers: a daemon forced to fail N
+    times in window W enters the restricted posture (no REAP, no destructive repair, no
+    unique-content eviction, no new-spawn admission) and emits the arm-5 signal, YET still
+    evicts a rebuildable class over its floor so a disk-pressure crash-loop is not starved of
+    relief; `rigger status` names `daemon resume`; an operator `daemon resume` returns it to
+    normal operation, a full window W with no failed start auto-resets the counter, and a
+    singleton-race exit is never counted as a restart.
 18. A kill mid-quarantine-commit loses nothing: SIGKILL the daemon during an escalation
     purge's `commit-tree` (test-only seam), restart, and the worktree is intact, the run
     unchanged, and no unique content is lost.
 19. The steady-state tick declares a terminus: with the daemon UP and no crash, a spawn that
     completes normally has its `SpawnResult` appended by the conductor tick promptly; a
     regression that drops the tick's declaration is RED here even while 6/11/12 stay green.
-20. A weak-mount daemon withholds the unsafe arms but still bounds disk: on a preflight-flagged
-    weak-lock store the daemon serves `status`/`validate --world-diff`, issues zero worktree
-    REAP / REPAIR / unique-content-eviction, YET still evicts a rebuildable size-governed class
-    over its floor and refuses an over-budget admission - so disk stays bounded with no
-    exclusivity-dependent act.
+20. A weak-mount daemon withholds the unsafe acts but stays bounded and self-heals: on a
+    preflight-flagged weak-lock store the daemon serves `status`/`validate --world-diff`,
+    issues zero worktree REAP, zero DESTRUCTIVE repair, and zero unique-content eviction, YET
+    still evicts a rebuildable size-governed class over its floor, refuses an over-budget
+    admission, and RECREATES a registered-but-absent worktree from its branch - so disk stays
+    bounded and a missing worktree self-heals with no exclusivity-dependent act; a divergence
+    only a withheld act could fix becomes a standing pushed arm-5 signal.
 21. Abandoned quarantine still expires: an over-window quarantine ref whose originating
     project never runs again is evicted by another live daemon's arm-3 tick over the shared
     machine substrate, bounding its disk, while a within-window ref survives.
-22. Mid-life substrate degradation is caught: a store whose lock-honesty is revoked after a
-    healthy start (test-only seam raising the lock/`ESTALE` anomaly) withholds arms 1-2 and
-    unique-content eviction at the next cycle, and resumes when a re-check finds it healthy.
+22. Mid-life substrate degradation is caught and debounced: a store whose lock-honesty is
+    revoked after a healthy start (test-only seam raising the lock/`ESTALE` anomaly) enters
+    the restricted posture at the next cycle and warns once for that transition; a flapping
+    mount neither rides out silently (a warning per transition) nor thrashes (full convergence
+    resumes only after N consecutive healthy re-checks).
+23. Recreatability is registry-enforced: the class-registry audit fails RED when a variant is
+    added without a REBUILDABLE/UNIQUE tag, so no class can be silently mislabelled into the
+    outright-deletable set.
+24. Concurrent quarantine eviction loses nothing and reclaims promptly: with two daemons
+    ticking arm 3 over one shared quarantine repo, a snapshot committed by one while the other
+    evicts-and-`gc`s loses no objects (both take the per-repo flock), and an evicted ref's
+    bytes are reclaimed within the arm's cycle rather than lingering on git's default grace.
+25. The durable outbox-line id survives a crash and a truncation: a courier SIGKILLed between
+    persisting its high-water mark and writing the line re-mints only a fresh id (never a
+    reused one), and a re-mint after a line drains and truncates never re-issues a consumed id
+    - so no distinct `emit` is ever silently dedup-dropped.
+26. Within-window quarantine content survives machine-wide size pressure: under a size breach
+    the arm refuses new admissions rather than evict a within-retention-window unique ref, so
+    size pressure is a bounded stall, never unique-content loss.
+27. The restart-ledger fails safe: a torn or corrupt restart-ledger read never resets the
+    count to zero (never silently suppressing the breaker during the crash that tore it); it
+    holds the current posture and raises an arm-5 anomaly.
 
 The bar that governs all of it: after a full campaign of rigger's OWN development,
 `validate --world-diff` reports empty modulo FOREIGN (with tier assignment asserted per
