@@ -1,7 +1,7 @@
 # Architecture addendum: the world authority
 
-Status: PROPOSED - for operator review. This document (v13) merges and SUPERSEDES two prior
-proposals (the resident conductor; the world reconciler) and integrates twelve rounds of
+Status: PROPOSED - for operator review. This document (v14) merges and SUPERSEDES two prior
+proposals (the resident conductor; the world reconciler) and integrates thirteen rounds of
 five-lens adversarial design review. Everything below describes the TARGET state except
 "Problem", which records the measured present.
 
@@ -531,13 +531,19 @@ required to stay bounded. Arms, in order:
    git-deduplicated, never a growing leak; and when the project is deleted its `.rigger` -
    quarantine included - goes with it.
    Per-class byte accounting is maintained incrementally at create
-   and reclaim (reclaimed-facts carry sizes). For quarantine the ADMISSION gate and the LRU fold
-   credit a ref-delete's bytes as freed AT ref-delete - the refs are unreachable and their objects
-   reclaimable by the pending prune - so admission never spuriously refuses after room is logically
-   freed; a reclaimed-fact appended when the forked prune EXITS records the PHYSICAL reclamation
-   for the `statvfs` ground-truth and the `rigger status` figure (which shows a `quarantine gc in
-   progress` line while a prune is mid-flight so it is never silently stale), and the two reconcile
-   at the statvfs-floor full walk. A full non-symlink-following,
+   and reclaim (reclaimed-facts carry sizes). For quarantine this incremental figure is an AVOWED
+   ESTIMATE, never a claim of exact bytes: git object DEDUPLICATION makes the space a ref-delete
+   actually frees unknowable until a `gc` runs - a deleted ref may share objects with a live one,
+   so its logical credit can overstate what the prune physically reclaims - and no per-ref or
+   per-class byte total is asserted precise. The estimate is a SOFT signal only: the ADMISSION
+   gate reads it (crediting a ref-delete at delete time so it never spuriously refuses after room
+   is logically freed), and `rigger status` shows it with a `quarantine gc in progress` line while
+   a prune runs so it is never read as final. The AUTHORITATIVE bound on PHYSICAL size is the
+   device `statvfs` floor: the full walk below is ground truth, corrects estimate drift in either
+   direction (dedup over-credit or a lagging prune's under-credit), and is what actually gates
+   disk - so quarantine's physical footprint is bounded by the device floor regardless of estimate
+   error, and the estimate needs no exact per-class physical ceiling because it is never the disk
+   authority. A full non-symlink-following,
    depth-and-inode-bounded walk runs only when `statvfs` on the device crosses a floor, and
    "could not measure" is arm 5, never "under budget".
 4. **CREATE** absent-but-desired positional resources (dashboard, socket structure); runs
@@ -923,6 +929,12 @@ a mount flapping at the re-check cadence raises attention once, not once per tic
     touch the quarantine repo) still run in the same tick; and its own quarantine snapshots,
     purges, and evictions never overlap - serialized both by the single ordered loop and, against
     a detached prune still running into the next tick, by the repo's OFD lock (mirroring acc 28).
+32. Quarantine accounting is an estimate, not the disk authority: the incremental per-class byte
+    figure is used only as a soft admission signal (never asserted exact under git dedup), while
+    the device `statvfs`-floor full walk is the authoritative physical bound - so with a fixture
+    where dedup makes the estimate overstate reclaimable bytes, admission still runs off the
+    estimate but physical size is held under the device floor by the walk, which corrects the
+    drift; no exact per-class physical ceiling is claimed or needed.
 
 The bar that governs all of it: after a full campaign of rigger's OWN development,
 `validate --world-diff` reports empty modulo FOREIGN (with tier assignment asserted per
