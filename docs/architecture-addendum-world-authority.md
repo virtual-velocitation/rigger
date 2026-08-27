@@ -1,8 +1,10 @@
 # Architecture addendum: the world authority
 
-Status: PROPOSED - for operator review. This document (v16) merges and SUPERSEDES two prior
-proposals (the resident conductor; the world reconciler) and integrates fifteen rounds of
-five-lens adversarial design review. Everything below describes the TARGET state except
+Status: PROPOSED - for operator review. This document (v17) merges and SUPERSEDES two prior
+proposals (the resident conductor; the world reconciler) and integrates sixteen rounds of
+five-lens adversarial design review. The review converged: from three round-3 blockers to a
+correctness-complete design whose only residual observations are the single-uid signal-forgeability
+the threat model openly concedes (bounded, never destructive). Everything below describes the TARGET state except
 "Problem", which records the measured present.
 
 ## Problem
@@ -668,12 +670,17 @@ large-repo `gc` runs. EVERY OTHER holder is not the current prune and, if it per
 bound, raises the severity-tagged arm-5 anomaly naming it (remedy: wait for its exit or end it): a
 dead predecessor's orphan resident in a reused delegated root (excluded because it is not in THIS
 lifetime's per-prune cgroup), any unrelated daemon-spawned process that somehow holds the flock
-(excluded because it is not in the prune's cgroup), or a stale helper from a prior prune - so an
-indefinitely-hung holder is always visible, never a silent stall, and a live prune is never
-needlessly killed. Where cgroup v2 is undelegated this falls back to identifying the prune by its
-own `(pid, start-time, boot-id)` and forked-this-lifetime status in the child table, with any
-residual mislabel documented as a known reduced-lane signal-legibility limitation - a misleading
-label only, never a destructive act, since nothing auto-kills on this classification. The acquire succeeds only when no git
+(excluded because it is not in the prune's cgroup), or a stale helper from a PRIOR, already-completed prune (its
+per-prune cgroup is not the current one) - so an indefinitely-hung holder is always visible, never
+a silent stall, and a live prune is never needlessly killed. Where cgroup v2 is undelegated this
+falls back to identifying the prune by its own `(pid, start-time, boot-id)` and forked-this-lifetime
+status in the child table, with any residual mislabel documented as a known reduced-lane
+signal-legibility limitation - a misleading label only, never a destructive act, since nothing
+auto-kills on this classification. A DELIBERATELY hostile same-uid process could instead write its
+own pid into the per-prune cgroup to suppress this signal; that is the bounded, not-prevented class
+the threat model already concedes for every same-uid signal - a project-scoped quarantine-mutation
+stall at worst, never a forged destructive act or data loss - not a defense this classification can
+or claims to provide under single-uid. The acquire succeeds only when no git
 process holds the repo, at which point any stale `.lock`/`gc.pid` it finds is provably a dead
 predecessor's residue and safe to clear. A wedged git plumbing IS the project's own daemon
 wedged, diagnosed by the daemon's own liveness the runtime already tracks (never a cross-project
