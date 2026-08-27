@@ -1,7 +1,7 @@
 # Architecture addendum: the world authority
 
-Status: PROPOSED - for operator review. This document (v11) merges and SUPERSEDES two prior
-proposals (the resident conductor; the world reconciler) and integrates ten rounds of
+Status: PROPOSED - for operator review. This document (v12) merges and SUPERSEDES two prior
+proposals (the resident conductor; the world reconciler) and integrates eleven rounds of
 five-lens adversarial design review. Everything below describes the TARGET state except
 "Problem", which records the measured present.
 
@@ -370,9 +370,11 @@ fact, not a reviewer's reading. Each variant ALSO declares its RECREATABILITY - 
 recover) - as a required field of the same enum, so the restricted-posture withhold (the
 reconciler) and the git-quarantine disposal path both read a registry FACT, not a call-site
 judgment; the enforcement test fails RED on any variant added without one - AND on any
-MACHINE-scoped variant that is not REBUILDABLE-or-positional, pinning the invariant that lets a
-machine-scoped class be evicted by any daemon without a lock while UNIQUE content (which is
-project-scoped) is the only kind ever needing single-writer serialization. This matters as
+MACHINE-scoped variant that is not REBUILDABLE (a positional resource like the dashboard or
+socket is recreated by arm 4, so it carries the REBUILDABLE tag - there is no third recreatability
+state), pinning the invariant that lets a machine-scoped class be evicted by any daemon without a
+lock while UNIQUE content (which is project-scoped) is the only kind ever needing single-writer
+serialization. This matters as
 much as the path authority: a class mislabelled REBUILDABLE would be DELETED OUTRIGHT under
 the restricted posture and by the quarantine section's disposal rule, so the one soft
 classification that could cost unique content is given the same compile-checked teeth as
@@ -408,8 +410,9 @@ substrate is NOT today's instance registry, whose contract is "never a source of
 loss is harmless" and which PRUNES rows as a read side effect: machine-scoped ASSIGNMENT
 moves to a separate daemon-written store in the 0700 root, each assignment proven by a HELD
 flock on the resource's own slot file (forgeable JSON can never grant it), carrying the
-owning daemon's epoch and identity. Every machine-scoped CLASS is REBUILDABLE or positional -
-caches, slots, singletons - so any live daemon may evict a shared class as part of its own
+owning daemon's epoch and identity. Every machine-scoped CLASS is REBUILDABLE - caches, slots,
+and positional singletons the arm-4 CREATE path recreates on demand - so any live daemon may
+evict a shared class as part of its own
 arm-3 tick and concurrent over-eviction there costs at worst a cold rebuild, never data loss:
 no cross-daemon lock is needed on a machine-scoped class. UNIQUE content is deliberately NOT
 machine-scoped - the quarantine repo that holds a project's escalated unique content is
@@ -521,12 +524,17 @@ required to stay bounded. Arms, in order:
    never unique-content loss. An abandoned project's quarantine bounds itself without a
    machine-wide sweep: while active its own daemon holds it to the window; once the project stops
    running no new refs are added, so it is FROZEN at whatever size its last COMPLETED eviction
-   left - a graceful `daemon stop --drain` runs a final eviction to the cap first, and a crash
-   leaves at most one tick's un-evicted burst, reclaimed on the project's next run - bounded,
+   left - a graceful `daemon stop --drain` runs ONE bounded final eviction (the same forked,
+   non-blocking prune the steady state uses, capped by a drain deadline, never a hang that delays
+   exit), and a crash leaves at most one tick's un-evicted burst; either way the frozen size is
+   at most one eviction's worth above cap, reclaimed on the project's next run - bounded,
    git-deduplicated, never a growing leak; and when the project is deleted its `.rigger` -
    quarantine included - goes with it.
    Per-class byte accounting is maintained incrementally at create
-   and reclaim (reclaimed-facts carry sizes); a full non-symlink-following,
+   and reclaim (reclaimed-facts carry sizes); a quarantine reclaimed-fact is appended when the
+   forked prune EXITS successfully, not at ref-delete, so the figure reflects actually-reclaimed
+   space, and `rigger status` shows a `quarantine gc in progress` line for a project whose prune
+   is mid-flight so the number is never silently stale; a full non-symlink-following,
    depth-and-inode-bounded walk runs only when `statvfs` on the device crosses a floor, and
    "could not measure" is arm 5, never "under budget".
 4. **CREATE** absent-but-desired positional resources (dashboard, socket structure); runs
@@ -860,9 +868,9 @@ a mount flapping at the re-check cadence raises attention once, not once per tic
     only a withheld act could fix becomes a standing pushed arm-5 signal.
 21. Abandoned quarantine stays bounded without a sweep: a project's over-window refs are
     evicted by its OWN daemon while it runs; once the project is dormant its quarantine adds no
-    refs and stays frozen at its last-evicted, git-deduplicated size (a graceful stop drains to
-    cap; a crash leaves at most one tick's burst, reclaimed next run); and it is removed with the
-    project's `.rigger` on deletion.
+    refs and stays frozen at its last-evicted, git-deduplicated size - at most one eviction's
+    worth above cap whether the stop was a graceful bounded `--drain` (never a hang) or a crash,
+    reclaimed on the next run; and it is removed with the project's `.rigger` on deletion.
 22. Mid-life substrate degradation is caught and debounced: a store whose lock-honesty is
     revoked after a healthy start (test-only seam raising the lock/`ESTALE` anomaly) enters
     the restricted posture at the next cycle and warns once for that transition; a flapping
@@ -905,9 +913,9 @@ a mount flapping at the re-check cadence raises attention once, not once per tic
     stall) from a self-healing note (a debounce transition) and `notify:` can filter on it.
 31. A long quarantine gc never stalls a project's own worktree hygiene: with the daemon
     mid-prune on its quarantine repo, that project's arm-1 REAP and arm-2 REPAIR (which never
-    touch the quarantine repo) still run in the same tick; and the daemon's single ordered loop
-    serializes its own quarantine snapshots, purges, and evictions with no re-entrancy, so
-    intra-project quarantine work never overlaps itself.
+    touch the quarantine repo) still run in the same tick; and its own quarantine snapshots,
+    purges, and evictions never overlap - serialized both by the single ordered loop and, against
+    a detached prune still running into the next tick, by the repo's OFD lock (mirroring acc 28).
 
 The bar that governs all of it: after a full campaign of rigger's OWN development,
 `validate --world-diff` reports empty modulo FOREIGN (with tier assignment asserted per
