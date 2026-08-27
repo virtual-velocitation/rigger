@@ -1,7 +1,7 @@
 # Architecture addendum: the world authority
 
-Status: PROPOSED - for operator review. This document (v9) merges and SUPERSEDES two prior
-proposals (the resident conductor; the world reconciler) and integrates eight rounds of
+Status: PROPOSED - for operator review. This document (v10) merges and SUPERSEDES two prior
+proposals (the resident conductor; the world reconciler) and integrates nine rounds of
 five-lens adversarial design review. Everything below describes the TARGET state except
 "Problem", which records the measured present.
 
@@ -275,8 +275,11 @@ terminus rather than a resume/re-trip loop: because the count is a best-effort t
 not a correctness rail, `daemon resume` RE-INITIALIZES an unreadable ledger to a fresh empty
 one - a single-writer temp-then-rename UNDER the daemon lock, like every durable-state write -
 as it clears the hold, so the daemon returns to normal operation instead of re-tripping on the
-same bad file; a durably-corrupt ledger found on a plain start with no active trip is likewise
-re-initialized, so it self-heals without waiting for a resume. Rigger owns the durable signal
+same bad file; a durably-corrupt ledger found on a plain start is likewise
+re-initialized - the breaker's TRIP state is a durable fact of its own (persisted to
+`anomalies.jsonl` and read independently of the count), so a corrupt count-ledger is discarded
+and rebuilt whether or not a trip is active and never becomes a stuck posture - so it self-heals
+without waiting for a resume. Rigger owns the durable signal
 and the notify port; delivering it to a pager is the consumer's
 `notify:` hook, by scope.
 
@@ -397,15 +400,19 @@ container is a detected anomaly, never silent residue.
 
 **Scope.** Every class is project-, machine-, or user-scoped. The project world derives
 from the project log; the machine world (dashboard singletons, build-budget slots, the
-shared compilation cache, quarantine repos) derives from a machine-scoped substrate. That
+shared compilation cache) derives from a machine-scoped substrate. That
 substrate is NOT today's instance registry, whose contract is "never a source of truth,
 loss is harmless" and which PRUNES rows as a read side effect: machine-scoped ASSIGNMENT
 moves to a separate daemon-written store in the 0700 root, each assignment proven by a HELD
 flock on the resource's own slot file (forgeable JSON can never grant it), carrying the
-owning daemon's epoch and identity. The machine world is swept by ANY live daemon on the
-machine as part of its own arm-3 tick (not only the assigning project's daemon), which is
-what lets a shared class expire even when its originating project never runs again - see
-quarantine below. Reclamation of an ASSIGNMENT row is deliberately conservative and
+owning daemon's epoch and identity. Every machine-scoped CLASS is REBUILDABLE or positional -
+caches, slots, singletons - so any live daemon may evict a shared class as part of its own
+arm-3 tick and concurrent over-eviction there costs at worst a cold rebuild, never data loss:
+no cross-daemon lock is needed on a machine-scoped class. UNIQUE content is deliberately NOT
+machine-scoped - the quarantine repo that holds a project's escalated unique content is
+PROJECT-scoped (see git-quarantine), written only by that project's own daemon - so the one
+class where a concurrent `gc` could lose data is never shared across daemons in the first
+place, dissolving the cross-daemon serialization the shared design would otherwise force. Reclamation of an ASSIGNMENT row is deliberately conservative and
 asymmetric by class. A reader never deletes a row whose slot flock is currently HELD (a live
 owner). A row whose flock is FREE but whose owning project ROOT still resolves is a DORMANT
 real owner: its row sits inert for that project's next daemon start to re-acquire, reclaimed
@@ -503,14 +510,15 @@ required to stay bounded. Arms, in order:
    so the arm always has a convergent action; refusal engages only when eviction to the
    floor still breaches, is scoped to the over-budget class, and fires at two points: the
    creation authority (DIRECT) and pre-spawn ADMISSION (the only lever that reaches
-   delegate-produced bytes). Quarantine repos are a machine-scoped size-governed class here:
-   their retention window and LRU are advanced by whichever live daemon on the machine ticks
-   this arm over the shared substrate, EACH under the per-repository flock the git-quarantine
-   section defines so the two never mutate one repo at once, so an abandoned project's
-   quarantine content expires by AGE even though that project's own daemon never runs again -
-   reclaimed by age, never by its project root's absence. A within-retention-window unique ref
-   is never evicted even under machine-wide size pressure: the arm refuses new admissions
-   instead, so size pressure becomes a bounded liveness stall, never unique-content loss.
+   delegate-produced bytes). A project's quarantine repo is a PROJECT-scoped size-governed class
+   here: its retention window and LRU are advanced only by that project's OWN daemon on this arm
+   - the sole writer, so no cross-daemon lock is needed and there is no shared-repo concurrency
+   to arbitrate. A within-retention-window unique ref is never evicted even under size pressure:
+   the arm refuses new admissions instead, so size pressure becomes a bounded liveness stall,
+   never unique-content loss. An abandoned project's quarantine bounds itself without a
+   machine-wide sweep: while active its own daemon holds it to the window; once the project stops
+   running no new refs are added, so it is FROZEN at a window-capped, git-deduplicated size; and
+   when the project is deleted its `.rigger` - quarantine included - goes with it.
    Per-class byte accounting is maintained incrementally at create
    and reclaim (reclaimed-facts carry sizes); a full non-symlink-following,
    depth-and-inode-bounded walk runs only when `statvfs` on the device crosses a floor, and
@@ -610,42 +618,32 @@ snapshot - so a quarantine failure, killed or caught, can never become silent da
 Quarantine refs are keyed by `(run, owner, attempt)` - the same identity the resource model
 mandates, never a bare owner id - so a unit escalated twice never repoints one ref and loses
 the earlier attempt's content under the later attempt's eviction schedule. They are a
-machine-scoped size-governed class under arm 3, evicted ONLY by their declared retention
-window and LRU (real deletion + `gc`) - which any live daemon on the machine advances (Scope,
-arm 3), so an abandoned project's content still expires by age - and NEVER by machine-slot
-reclamation, so no project-root-liveness check can ever delete a live-but-dormant owner's
-unique content. Because ANY live daemon may tick this eviction over the SHARED repo, every
-mutation of one quarantine repo - a snapshot's object-write-then-ref-update, and an eviction's
-ref-delete-and-`gc` - is serialized by a PER-REPOSITORY FLOCK. The flock lives on an OPEN FILE
-DESCRIPTION whose non-CLOEXEC descriptor is INHERITED by the forked git plumbing subprocess, so -
-by `flock` semantics, where the lock releases only when the LAST descriptor on that description
-closes - it stays HELD until the git child itself exits, even if the daemon that forked it is
-SIGKILLed mid-plumbing. This makes one invariant true on EVERY lane, cgroup delegation or not:
-the flock is free ONLY when no git process (daemon or orphaned child) is still mutating the repo.
-Cgroup-per-spawn reaping of the plumbing subtree is a belt-and-suspenders backstop where cgroup
-v2 is delegated, not the sole guarantee - so the degraded lane is as safe as the primary one.
-The flock is taken NON-BLOCKING, like `reset`'s guard: a daemon that finds it contended SKIPS this
-repo's eviction for the cycle and retries next, never blocking its own other work - and because
-eviction is an idempotent shared task any live daemon completes, a skip never leaves disk
-unbounded. A flock-holding successor therefore KNOWS no live git process holds the repo (the OFD
-invariant), so a stale `.lock`/`gc.pid` it finds is provably a dead predecessor's residue and safe
-to clear on every lane, never a live orphan's lock. A PURGE (freeing a specific escalated unit's
-disk now) takes the flock AHEAD of a routine background eviction, and a long coalesced eviction
-YIELDS the flock between batches, so an operator-visible purge is never stuck behind a background
-`gc`. The STALL anomaly is keyed on the HOLDER'S LIVENESS, not on elapsed contention: a holder
-whose daemon is alive and responsive (a legitimately long `gc`) reads `quarantine busy`
-(informational, no remedy urged), while only a holder whose daemon-liveness is stale - genuinely
-WEDGED - raises the arm-5 anomaly naming the repo and the holder and pointing at `daemon kill
---wedged`; an orphaned non-daemon holder (which `kill --wedged` cannot target) is named as such,
-its remedy being to wait for the OFD to release on the orphan's exit. Under the flock the eviction
-prunes PROMPTLY (`gc` with `pruneExpire` set to now, never `--force`, never git's built-in
-two-week grace which the scrubbed `GIT_CONFIG_NOSYSTEM` environment would otherwise inherit),
-COALESCING the cycle's ref-deletes into ONE `gc` so its frequency tracks a single daemon's cycle
-rather than the machine's aggregate eviction rate, and surfacing that `gc`'s duration through
-`rigger status`; so an evicted ref's bytes are reclaimed WITHIN the arm's own cycle rather than
-lingering for weeks - and a concurrent owner's in-flight snapshot cannot be pruned before its ref
-lands, because that snapshot holds the same flock. An eviction that finds its target ref already
-deleted by a sibling daemon's earlier pass treats it as success, not an anomaly.
+PROJECT-scoped size-governed class under arm 3, written ONLY by the project's own daemon and
+evicted ONLY by their declared retention window and LRU (real deletion + `gc`) - never by
+machine-slot reclamation, so no project-root-liveness check can ever delete a live-but-dormant
+owner's unique content. Because the project's daemon is the SOLE writer, there is no
+cross-daemon concurrency to serialize: the daemon orders its own snapshots, purges, and
+evictions in its single reconciler loop, and a purge (freeing a specific escalated unit's disk)
+simply precedes a routine eviction in that ordering - no flock-priority scheme, and no
+cross-project stall, because no other daemon ever touches this repo. The one residual race is
+the daemon's OWN restart: a daemon SIGKILLed mid git-plumbing can orphan a git child that a
+SUCCESSOR of the SAME project would race. That is closed project-locally: the repo's own lock
+lives on an OPEN FILE DESCRIPTION whose non-CLOEXEC descriptor is INHERITED by the forked git
+plumbing (and FD_CLOEXEC is set on the daemon's own copy after the fork, so it never leaks into
+a gate or build subprocess running agent code), so by `flock` semantics the lock stays HELD
+until the git child itself exits, on EVERY lane, cgroup delegation or not (cgroup-per-spawn
+reaping is a belt-and-suspenders backstop, not the sole guarantee). A successor's non-blocking
+acquire therefore FAILS while an orphan lives - it retries next tick - and succeeds only when no
+git process holds the repo, at which point any stale `.lock`/`gc.pid` it finds is provably a dead
+predecessor's residue and safe to clear. A wedged git plumbing IS the project's own daemon
+wedged, diagnosed by the daemon's own liveness the runtime already tracks (never a cross-project
+probe) and resolved by `daemon kill --wedged` on that project. Eviction prunes PROMPTLY (`gc`
+with `pruneExpire` set to now, never `--force`, never git's built-in two-week grace which the
+scrubbed `GIT_CONFIG_NOSYSTEM` environment would otherwise inherit) so an evicted ref's bytes are
+reclaimed within the cycle; the expensive prune runs on a bounded cadence rather than on every
+ref-delete, so the repo lock is normally held only briefly; and a concurrent in-flight snapshot's
+objects are never pruned before its ref lands because both run in the same single daemon's
+ordered loop.
 
 **Escalation holds no disk.** An escalated unit's worktree is purged at terminal like any
 other - the purge is preceded by the unique-content snapshot every purge gets, and the unit
@@ -701,9 +699,11 @@ file whose version tag names an OLDER format is migrated by the reading binary; 
 beyond parsing is never guessed around by scanning the outbox directory or by a courier
 inventing identity - a courier has no authority to mint a `(run, owner, attempt)`, so it STOPS
 issuing repeatable-kind requests on that container and surfaces the corruption, and the daemon
-(the sole attempt authority) declares the spawn's terminus and retries it under a
-freshly-declared container whose mark starts cleanly at zero, so a lost mark never re-mints a
-consumed id and never orphans a finding into a container the daemon does not know to drain. The epoch CAS and the flock singleton assume a store on a LOCAL
+(the sole attempt authority) declares the spawn's terminus - on the same four-fact liveness
+corroboration every terminus requires, never while the courier is still live - and retries it
+under a freshly-declared container whose mark starts cleanly at zero, so a lost mark never
+re-mints a consumed id and never orphans a finding into a container the daemon does not know to
+drain. The epoch CAS and the flock singleton assume a store on a LOCAL
 filesystem with linearizable Exact-CAS and honest advisory locks; a daemon PREFLIGHTS the
 store's filesystem at start AND re-checks on its liveness cadence (the same interval as the
 socket-inode re-stat) and on any `ESTALE`/`EIO`/lock anomaly seen during an arm, so a mount
@@ -844,9 +844,10 @@ a mount flapping at the re-check cadence raises attention once, not once per tic
     admission, and RECREATES a registered-but-absent worktree from its branch - so disk stays
     bounded and a missing worktree self-heals with no exclusivity-dependent act; a divergence
     only a withheld act could fix becomes a standing pushed arm-5 signal.
-21. Abandoned quarantine still expires: an over-window quarantine ref whose originating
-    project never runs again is evicted by another live daemon's arm-3 tick over the shared
-    machine substrate, bounding its disk, while a within-window ref survives.
+21. Abandoned quarantine stays bounded without a sweep: a project's over-window refs are
+    evicted by its OWN daemon while it runs; once the project is dormant its quarantine adds no
+    refs and stays frozen at its window-capped, git-deduplicated size; and it is removed with
+    the project's `.rigger` on deletion.
 22. Mid-life substrate degradation is caught and debounced: a store whose lock-honesty is
     revoked after a healthy start (test-only seam raising the lock/`ESTALE` anomaly) enters
     the restricted posture at the next cycle and warns once for that transition; a flapping
@@ -855,10 +856,11 @@ a mount flapping at the re-check cadence raises attention once, not once per tic
 23. Recreatability is registry-enforced: the class-registry audit fails RED when a variant is
     added without a REBUILDABLE/UNIQUE tag, so no class can be silently mislabelled into the
     outright-deletable set.
-24. Concurrent quarantine eviction loses nothing and reclaims promptly: with two daemons
-    ticking arm 3 over one shared quarantine repo, a snapshot committed by one while the other
-    evicts-and-`gc`s loses no objects (both take the per-repo flock), and an evicted ref's
-    bytes are reclaimed within the arm's cycle rather than lingering on git's default grace.
+24. Quarantine has a single writer: only the owning project's daemon mutates its quarantine
+    repo - no cross-daemon eviction, snapshot, or `gc` of one project's quarantine is ever
+    issued by another project's daemon (the machine-scoped substrate governs only rebuildable
+    or positional classes, whose concurrent over-eviction is safe); an evicted ref's bytes are
+    reclaimed within the daemon's own cycle by a prompt `pruneExpire=now`.
 25. The durable outbox-line id survives a crash, a truncation, and a corrupt mark: a courier
     SIGKILLed between persisting its high-water mark and writing the line re-mints only a fresh
     id (never a reused one), a re-mint after a line drains and truncates never re-issues a
@@ -866,20 +868,19 @@ a mount flapping at the re-check cadence raises attention once, not once per tic
     than re-minting or self-assigning an attempt (the daemon abandons-and-retries the spawn
     under a fresh container) - so no distinct `emit` is silently dedup-dropped and no finding is
     orphaned into an undeclared container.
-26. Within-window quarantine content survives machine-wide size pressure: under a size breach
+26. Within-window quarantine content survives size pressure: under a size breach
     the arm refuses new admissions rather than evict a within-retention-window unique ref, so
     size pressure is a bounded stall, never unique-content loss.
 27. The restart-ledger fails safe: a torn or corrupt restart-ledger read never resets the
     count to zero (never silently suppressing the breaker during the crash that tore it); it
     holds the current posture and raises an arm-5 anomaly.
-28. The quarantine flock is safe and legible on every lane: SIGKILL a daemon mid-plumbing on a
-    cgroup-v1 (undelegated) host and the flock stays HELD (its non-CLOEXEC FD inherited by the
-    orphaned git child) until that child exits - a successor's non-blocking acquire fails and
-    skips, never clearing a live orphan's lock; a contender against a merely-busy LIVE holder
-    reads `quarantine busy` with no kill urged, while only a holder whose daemon-liveness is
-    stale raises the wedged anomaly naming the holder and `daemon kill --wedged`; and a
-    successor that does acquire the flock (no live git remains) clears a dead predecessor's
-    stale `.lock` and re-attempts cleanly.
+28. A same-project daemon restart never races its own orphaned quarantine plumbing: SIGKILL a
+    daemon mid git-plumbing on any lane (cgroup-v1 included), and a successor of the same
+    project finds the repo lock STILL HELD (the non-CLOEXEC FD inherited by the orphaned git
+    child) until that child exits - its non-blocking acquire fails and retries, never clearing
+    a live lock - then acquires and re-attempts cleanly once no git process holds the repo; the
+    FD carries FD_CLOEXEC on the daemon's own copy so it never leaks into a gate or build
+    subprocess.
 29. The debounce is legible and the ledgers stay bounded: `rigger status` reports `k of N
     healthy re-checks` progress toward resuming full convergence and rate-limits repeated
     same-posture transition warnings under a flapping mount; and the restart-ledger prunes
