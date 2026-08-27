@@ -851,7 +851,30 @@ fn register_run_instance(repo: &str, selection: &StoreSelection) -> RunRegistrat
 /// BEST-EFFORT and warn-only, mirroring [`register_run_instance`]'s degrade exactly: a homeless
 /// environment (no resolvable state home) or a write error never fails, slows, or warns away the
 /// courier's real work beyond a single stderr line - the registry's loss is harmless (spec 50).
+///
+/// FENCE-AWARE (spec 70 criterion 3): when [`STORE_FENCE_ENV`] is set - a unit-worktree gate's
+/// spawned test process, the same condition [`require_store_dir`] itself checks first - this is a
+/// complete no-op before [`rigger::registry::default_dir`] is even consulted. That resolver reads
+/// `XDG_STATE_HOME`/`HOME` directly and is NOT scoped by `loc`/`selection`, so without this check
+/// a fenced courier's registry write would still land in the real, machine-global registry even
+/// though its store write correctly landed in the fenced scratch dir - reopening the exact ambient
+/// side channel the fence exists to close.
 fn refresh_registry_entry(loc: &StoreLocation, selection: &StoreSelection) {
+    // The gate store fence (spec 70 criterion 3), mirroring `require_store_dir`'s own check
+    // (same env var, same "checked first, before touching any ambient state" placement): a
+    // fenced courier's STORE already resolves to the pinned scratch dir via `require_store_dir`,
+    // but `rigger::registry::default_dir()` below reads `XDG_STATE_HOME`/`HOME` directly and is
+    // entirely decoupled from `loc`/`selection` - so without this check, a courier a fenced
+    // gate's own spawned test process runs (the exact call shape spec 70 criterion 3 names) would
+    // still write a real Instance into the machine-global registry, reopening precisely the
+    // ambient side channel that fence exists to close. A fenced gate sees strictly less ambient
+    // state, never more - the registry is ambient state, so a fenced courier skips it entirely
+    // rather than trying to refresh a fenced/scratch registry no discovery consumer ever reads.
+    if let Ok(fenced) = std::env::var(STORE_FENCE_ENV) {
+        if !fenced.trim().is_empty() {
+            return;
+        }
+    }
     let Some(dir) = rigger::registry::default_dir() else {
         return; // homeless environment: degrade to a no-op, exactly like register_run_instance
     };
