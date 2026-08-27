@@ -1472,6 +1472,66 @@ fn scratch_requires_exactly_one_spawn_id() {
     );
 }
 
+/// PERIPHERY: `rigger scratch <id>` and `rigger result <id>` converge on the ONE shared
+/// authority [`driver::replay::spawn_scratch_path`] - `cmd_scratch` resolves it fresh to
+/// print it, `cmd_result`'s `reclaim_spawn_scratch` resolves it again to reap it (spec 77
+/// criterion 2, spec 34 criterion 1). `scratch_prints_the_spawns_own_rigger_assigned_container`
+/// already proves `cmd_scratch`'s output matches the DOCUMENTED formula, but that is a
+/// hard-coded string on the test side; it cannot catch the two call sites drifting APART
+/// from each other while each still matches its own author's hard-coded expectation. This
+/// test proves the parity by REAL BEHAVIOR instead: ask `rigger scratch` for the path, drop
+/// debris at the EXACT path it printed (never a re-derived one), then record the spawn's
+/// result through the real courier and assert that same path is gone - the two commands
+/// agreeing with each other, not merely with a shared piece of prose.
+#[test]
+fn scratch_prints_the_exact_container_rigger_result_reclaims() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
+
+    let (out, err, ok) = run_rigger(root, &["scratch", "u/implementer#0"]);
+    assert!(ok, "scratch must succeed for a live run; stderr: {err}");
+    let scratch_dir = Path::new(out.trim());
+    std::fs::create_dir_all(scratch_dir).unwrap();
+    std::fs::write(scratch_dir.join("cargo-target-debris.rlib"), [0u8; 64]).unwrap();
+
+    let (out2, err2, ok2) = run_rigger(root, &["result", "u/implementer#0", "did the work"]);
+    assert!(
+        ok2,
+        "recording the result must succeed; stdout: {out2:?} stderr: {err2}"
+    );
+
+    assert!(
+        !scratch_dir.exists(),
+        "the exact container `rigger scratch` printed must be the one `rigger result` \
+         reclaims; {} still exists",
+        scratch_dir.display()
+    );
+}
+
+/// PERIPHERY boundary/edge case: `spawn_scratch_path`'s own doc comment names an EMPTY
+/// spawn id as the one shape its injective encoding cannot map to a real directory name, so
+/// it returns `None` rather than a fabricated placeholder a later reclaim could wrongly
+/// delete (no fixed placeholder can be proven disjoint from a real id's own mapped output).
+/// `rigger scratch` must surface that as a clear refusal - never a panic, and never a bogus
+/// printed path a worker could go on to `cd` into or point `CARGO_TARGET_DIR` at.
+#[test]
+fn scratch_refuses_a_degenerate_empty_spawn_id() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
+
+    let (out, err, ok) = run_rigger(root, &["scratch", ""]);
+    assert!(!ok, "scratch must refuse a degenerate empty spawn id");
+    assert!(
+        err.contains("does not name a usable scratch path"),
+        "got: {err:?}"
+    );
+    assert!(out.trim().is_empty(), "must print no path; got: {out:?}");
+}
+
 /// The paradigm defect (adv-result-wrong-cwd-fabricates-store): `rigger result` run from
 /// a unit-worktree-shaped cwd - a tracked `.rigger/workflow.yml` but NO machine-local
 /// `.rigger/events.db` - must REFUSE instead of fabricating a fresh dead store and printing
