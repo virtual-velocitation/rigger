@@ -192,10 +192,10 @@ pub fn dash_serving_on(port: u16) -> bool {
 /// STEADY STATE when a genuine rigger dash answers [`DASH_HEADER`] but never sends
 /// [`DASH_HEADER_PID`] at all - a build that predates this header, or a foreign dash-shaped
 /// responder. Callers must never treat that `None` as narrowly timing-related and fall back to a
-/// value of their own (spec 62 round 2 fix point,
-/// adj-u62c1r2-verdict-reject-version-skew-fallback): the ONLY production caller,
-/// `spawn_run_dashboard_detached`, records no marker at all rather than asserting an
-/// unattributable pid.
+/// GUESSED value of their own, the way a round-2 draft of `spawn_run_dashboard_detached` once did
+/// (spec 62 round 2 fix point, adj-u62c1r2-verdict-reject-version-skew-fallback - rejected): the
+/// ONLY production caller instead records the documented [`UNATTRIBUTED_PID`] sentinel on this
+/// `None`, never a value it cannot prove.
 ///
 /// Shares [`probe_dash_head`] with [`dash_serving_on`] but passes a `stop_early` that never fires:
 /// [`DASH_HEADER_PID`] can arrive on a LATER line than [`DASH_HEADER`], so extracting a value
@@ -333,9 +333,33 @@ pub fn bind_singleton(addr: SocketAddr) -> io::Result<SingletonBind> {
 pub struct DashMarker {
     /// The loopback port the recorded dash bound.
     pub port: u16,
-    /// The PID of the recorded dash process, used to check whether it is still serving.
+    /// The PID of the recorded dash process. Informational only for display (e.g. `rigger
+    /// watch`'s dead-dash report naming which pid stopped answering) - every liveness /
+    /// idempotency decision made OVER a marker ([`dash_start_needed`]'s `still_serving`,
+    /// [`dash_status`]) re-probes the marker's PORT, never this field, so a stale or
+    /// unattributable value here can never wrongly suppress or fabricate a start. May be
+    /// [`UNATTRIBUTED_PID`] when the port was confirmed serving but the real serving process
+    /// could not be identified - never a guessed real pid.
     pub pid: u32,
 }
+
+/// The documented sentinel [`DashMarker::pid`] value recorded when a dash is confirmed serving
+/// a port but the real serving process's pid could not be attributed (spec 62 round 4,
+/// adj-u62c1r3-verdict-reject-idempotency-regression) - `spawn_run_dashboard_detached`'s only
+/// production write site for it. `0` is never a real OS pid (the kernel reserves it; no process
+/// is ever assigned it), so it can never collide with, or be mistaken for, an actual serving
+/// process, and [`pid_is_alive`] naturally reads it as not alive - the safe direction.
+///
+/// Recording THIS rather than refusing to write any marker at all is what keeps the step path's
+/// idempotent no-op working even when the winning dash's pid can never be named: the marker's
+/// PORT (which `dash_start_needed`/`dash_marker_serving` actually probe; neither ever reads this
+/// pid) is enough for the next `step` to recognize this dash as already serving. A round-3 fix
+/// that instead wrote NO marker at all in this exact case regressed spec 39 criterion 1's
+/// no-op-on-later-steps invariant, repeating the full spawn/probe/attribute cycle on every later
+/// step forever - and it also leaves a marker for spec 62's sibling self-heal (u62c2) to
+/// eventually correct if the real pid ever becomes attributable, where refusing to record
+/// anything left it nothing to correct.
+pub const UNATTRIBUTED_PID: u32 = 0;
 
 impl DashMarker {
     /// Render the marker as its on-disk `port\npid\n` record.
@@ -4841,10 +4865,14 @@ mod tests {
     /// dash" check at the top of the function passes) but whose `DASH_HEADER_PID` value is not a
     /// valid `u32` must resolve to `None`, never panic and never silently coerce to some other
     /// value (e.g. `0`) - a malformed or truncated pid header must never be reported as a real
-    /// pid the caller could act on (spec 62 round 2's own fallback at the one production call
-    /// site, `spawn_run_dashboard_detached`'s `dash_serving_pid_on(port).unwrap_or(pid)`, depends
-    /// on exactly this: `None` here is what lets that fallback engage instead of recording a
-    /// nonsense pid).
+    /// pid a caller could act on. A round-2 draft of the one production call site,
+    /// `spawn_run_dashboard_detached`, once used `dash_serving_pid_on(port).unwrap_or(pid)` -
+    /// this exact `None` was what let that (since-rejected,
+    /// adj-u62c1r2-verdict-reject-version-skew-fallback) fallback engage instead of recording a
+    /// nonsense pid. The current call site no longer falls back to a guessed pid at all: it
+    /// records the documented [`UNATTRIBUTED_PID`] sentinel on this `None` instead - so this
+    /// test's lasting job is proving `dash_serving_pid_on` itself never manufactures a value
+    /// from unparseable input, regardless of what any caller later does with the `None`.
     #[test]
     fn dash_serving_pid_on_is_none_when_the_pid_header_value_is_not_a_number() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
