@@ -29,6 +29,7 @@ use rigger::registry::{self, Instance};
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
+use common::RestoreEnvVars;
 
 /// A throwaway project the compiled binary accepts as a courier target: its own git repo (so the
 /// store's project identity resolves normally) and an INITIALIZED event log - a courier refuses
@@ -157,5 +158,54 @@ fn an_unfenced_courier_against_the_same_fixture_does_write_the_ambient_registry(
         ambient_entries.len(),
         1,
         "an unfenced courier against the same fixture writes exactly one ambient entry: {ambient_entries:?}"
+    );
+}
+
+/// Regression pin for `sdet-u62c4r3-kurrentdb-leak-not-blast-radius-audited` /
+/// `adv-u62c4-r5-kurrentdb-leak-independently-reproduced-8of8`, closed at
+/// `adj-u62c4-r6-verdict-reject-blast-radius-audit-incomplete`'s required fix (mirroring the
+/// identically-purposed pins in the sibling `courier_registry_refresh_*_periphery.rs` files):
+/// `common::rigger_courier()` now strips an ambient `KURRENTDB_CONN` from every child it
+/// spawns, so an UNFENCED courier against this file's own fixture (which, unlike the fenced
+/// test above, actually reaches `store_selection_at` since `require_store_dir`'s fence
+/// short-circuit never fires) resolves the local sqlite store regardless of what this test
+/// process's own environment carries.
+///
+/// Sets a well-formed but UNREACHABLE `KURRENTDB_CONN` on THIS test process before spawning -
+/// never on the `Command` itself - so this is a genuine regression proof: pre-fix, the courier
+/// below would crash with a real gRPC connect error instead of writing the ambient registry
+/// entry the way `an_unfenced_courier_against_the_same_fixture_does_write_the_ambient_registry`
+/// above proves it does under a clean environment.
+#[test]
+#[serial_test::serial(kurrentdb_conn_env)]
+fn an_ambient_kurrentdb_conn_never_leaks_into_an_unfenced_courier() {
+    let project = courier_project();
+    let root = project.path();
+    let ambient_state = tempfile::tempdir().expect("a temp ambient XDG_STATE_HOME");
+
+    let _restore = RestoreEnvVars::capture(&["KURRENTDB_CONN"]);
+    std::env::set_var("KURRENTDB_CONN", "kurrentdb://127.0.0.1:1/");
+
+    let out = common::rigger_courier()
+        .args(["progress", "u1/impl#0", "unfenced step"])
+        .current_dir(root)
+        .env("RIGGER_NO_DASH", "1")
+        .env("XDG_STATE_HOME", ambient_state.path())
+        .output()
+        .expect("the rigger binary runs");
+    assert!(
+        out.status.success(),
+        "an unfenced courier spawned through the shared rigger_courier() helper must resolve \
+         the fixture's local sqlite store, not attempt a real gRPC connection to whatever \
+         KURRENTDB_CONN this test process's own environment carries; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let ambient_entries = registry_entries(ambient_state.path());
+    assert_eq!(
+        ambient_entries.len(),
+        1,
+        "the courier's real work (including its registry refresh) still completes normally \
+         once the ambient KURRENTDB_CONN is stripped: {ambient_entries:?}"
     );
 }

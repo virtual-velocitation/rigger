@@ -29,6 +29,7 @@ use rigger::registry::{self, Instance};
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
+use common::RestoreEnvVars;
 
 /// A throwaway project the compiled binary accepts as a courier target: its own git repo with a
 /// real commit (`git worktree add` needs a committed HEAD) and an INITIALIZED event log - a
@@ -241,5 +242,42 @@ fn a_registry_write_error_never_fails_a_couriers_real_work() {
         stderr.contains("instance registry refresh skipped"),
         "the write-error degrade is still visible on stderr (warn-only, never fatal), distinct \
          from the homeless-environment message: {stderr}"
+    );
+}
+
+/// Regression pin for `sdet-u62c4r3-kurrentdb-leak-not-blast-radius-audited` /
+/// `adv-u62c4-r5-kurrentdb-leak-independently-reproduced-8of8`, closed at
+/// `adj-u62c4-r6-verdict-reject-blast-radius-audit-incomplete`'s required fix (mirroring the
+/// identically-purposed pin in `courier_registry_refresh_periphery.rs`, each periphery suite
+/// owning its own): `run_rigger`'s `common::rigger_courier()` now strips an ambient
+/// `KURRENTDB_CONN` from every child it spawns, so this file's own courier calls (including
+/// the nested-worktree one above, whose fixture commits no store config either) resolve the
+/// local sqlite store regardless of what this test process's own environment carries.
+///
+/// Sets a well-formed but UNREACHABLE `KURRENTDB_CONN` on THIS test process before spawning -
+/// never on the `Command` itself - so this is a genuine regression proof rather than a
+/// trivially-passing fixture: pre-fix, the courier below would crash with a real gRPC connect
+/// error instead of resolving this fixture's local sqlite store.
+#[test]
+#[serial_test::serial(kurrentdb_conn_env)]
+fn an_ambient_kurrentdb_conn_never_leaks_into_a_boundary_courier() {
+    let project = courier_project_with_commit();
+    let root = project.path();
+    let state = tempfile::tempdir().expect("a temp XDG_STATE_HOME");
+
+    let _restore = RestoreEnvVars::capture(&["KURRENTDB_CONN"]);
+    std::env::set_var("KURRENTDB_CONN", "kurrentdb://127.0.0.1:1/");
+
+    let out = run_rigger(
+        root,
+        state.path(),
+        &["progress", "u1/impl#0", "did a thing"],
+    );
+    assert!(
+        out.status.success(),
+        "a courier spawned through the shared rigger_courier() helper must resolve the \
+         fixture's local sqlite store, not attempt a real gRPC connection to whatever \
+         KURRENTDB_CONN this test process's own environment carries; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
     );
 }
