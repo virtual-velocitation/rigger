@@ -549,10 +549,12 @@ pub fn describe_held_port(addr: SocketAddr) -> String {
 /// SINGLE `/proc` discovery - exposed separately (spec 62 round 4 fix,
 /// adj-u62c3r3-verdict-reject-child-self-attribution) because a caller sometimes needs the
 /// discovered pid ITSELF, not only the human-readable message about it. The one such caller is
-/// `spawn_run_dashboard_detached` (`src/main.rs`): when its own `wait_for_dash_bind` gives up, it
-/// must tell a genuinely competing external process apart from its OWN just-spawned child having
-/// merely bound the port slower than the startup window allows - a distinction only the raw pid
-/// (compared against the child's already-known pid), never the rendered message text, can carry.
+/// `wait_for_dash_bind_or_diagnose` (`src/main.rs`, extracted out of `spawn_run_dashboard_detached`
+/// in this same round - see that function's own doc, adj-u62c3r4-independently-confirmed-stale-caller-doc):
+/// when its own `wait_for_dash_bind` gives up, it must tell a genuinely competing external process
+/// apart from its OWN just-spawned child having merely bound the port slower than the startup
+/// window allows - a distinction only the raw pid (compared against the spawn's already-known
+/// pid, its `spawned_pid` parameter), never the rendered message text, can carry.
 /// Splitting this out is also what lets [`describe_held_port_if_confirmed`] and this function
 /// share the exact same discovery rather than each re-running [`pid_holding_port`] independently:
 /// two scans of a live, mutable `/proc` could in principle disagree (a holder can appear or
@@ -566,26 +568,28 @@ pub fn held_port_holder(addr: SocketAddr) -> Option<(u32, String)> {
     Some((pid, format_held_port(addr, Some((pid, process_state(pid))))))
 }
 
-/// The gated half of the HELD-PORT DIAGNOSIS (spec 62 round 3 fix,
-/// adj-u62c3r2-verdict-reject-non-addrinuse-mislabel): unlike [`describe_held_port`], this
-/// never asserts occupancy it has not independently confirmed via `/proc`
-/// ([`pid_holding_port`]) - `None` when nothing can be confirmed holding `addr`'s port, `Some`
-/// with the full pid/state diagnosis when something can. `pub` (cross-crate: `src/main.rs` is a
-/// separate binary crate that depends on this library) -
-/// `spawn_run_dashboard_detached` (`src/main.rs`) is the one caller: unlike `cmd_dash`'s manual
-/// arm (which only ever calls [`describe_held_port`] AFTER `bind_singleton` has itself
-/// confirmed a genuine `AddrInUse`), the step-path auto-start has no such confirmation
-/// available - its bind attempt runs inside a detached child whose `io::Error` never reaches
-/// the parent (`Stdio::null()`, spec 44), so ALL it knows going in is that `wait_for_dash_bind`
-/// (`src/main.rs`) gave up, a signal that is equally true of a genuine held port, a permission
-/// error, a slow machine, or an unrelated config problem (measured indistinguishable by exit
-/// timing alone - a duration-based gate is not hermetic). Calling
-/// [`describe_held_port`] unconditionally on that weaker signal was round 2's defect: its
-/// `None` arm is licensed ONLY by an already-confirmed conflict, so firing it on an
-/// unconfirmed one falsely told an operator a phantom process held their port. This function
-/// supplies the missing confirmation itself, from the same `/proc` read `describe_held_port`
-/// would have made anyway - never a second, differently-worded guess. Defined in terms of
-/// [`held_port_holder`] (round 4) so the two can never drift apart.
+/// A message-only view of [`held_port_holder`]'s `(pid, message)` pair - defined in terms of it
+/// (round 4) so the two can never drift apart. This keeps the spec 62 round 3 fix
+/// (adj-u62c3r2-verdict-reject-non-addrinuse-mislabel) gate intact: `None` when nothing can be
+/// independently confirmed holding `addr`'s port via `/proc` ([`pid_holding_port`]), `Some` with
+/// the full pid/state message when something can - never asserting occupancy [`held_port_holder`]
+/// has not itself confirmed.
+///
+/// `pub` (cross-crate: `src/main.rs` is a separate binary crate that depends on this library) -
+/// its production caller chain is [`describe_held_port`] -> `cmd_dash`'s manual `rigger dash` CLI
+/// arm (`src/main.rs`), reached only AFTER `bind_singleton` has itself already confirmed a
+/// genuine `AddrInUse` from that call's OWN bind attempt. This function's `None`-gates-a-claim
+/// discipline was originally written for a DIFFERENT caller - the step-path auto-start, which has
+/// no such upstream confirmation available (its bind attempt runs inside a detached child whose
+/// `io::Error` never reaches the parent, `Stdio::null()`, spec 44) - but round 4
+/// (adj-u62c3r3-verdict-reject-child-self-attribution) rewired that caller,
+/// `wait_for_dash_bind_or_diagnose` (`src/main.rs`), to call [`held_port_holder`] directly instead
+/// of through this function, since it also needs the raw pid (to rule out self-attribution; see
+/// [`held_port_holder`]'s own doc), not just a rendered message. The gate itself did not move -
+/// it lives in [`held_port_holder`], which both callers ultimately share - only which named
+/// function each caller reaches it through did. This wrapper is kept for
+/// [`describe_held_port`]'s already-confirmed case and any future confirmed-precondition caller
+/// that only needs the message, never the pid.
 pub fn describe_held_port_if_confirmed(addr: SocketAddr) -> Option<String> {
     held_port_holder(addr).map(|(_, msg)| msg)
 }
@@ -8582,11 +8586,15 @@ mod tests {
     /// Spec 62 round 3 fix (adj-u62c3r2-verdict-reject-non-addrinuse-mislabel): unlike
     /// [`describe_held_port`] (whose one production caller, `cmd_dash`, only ever reaches it
     /// AFTER the OS has already confirmed `AddrInUse`, so a `None` holder there still means a
-    /// genuine-but-unattributed conflict), [`describe_held_port_if_confirmed`] has no such
-    /// upstream confirmation available to its caller (`spawn_run_dashboard_detached`, whose
-    /// bind attempt runs in a detached child with no observable `io::Error` at all) - so it must
-    /// independently confirm occupancy itself before naming one. A port a real listener holds
-    /// must still resolve `Some`, naming this test process's own pid.
+    /// genuine-but-unattributed conflict), [`describe_held_port_if_confirmed`] is defined in
+    /// terms of [`held_port_holder`] (round 4), which independently confirms occupancy via
+    /// `/proc` before naming a holder rather than trusting any caller's precondition - it must
+    /// never promote an unconfirmed holder to a claim regardless of who calls it. This is what let
+    /// round 4 rewire the step-path auto-start (`wait_for_dash_bind_or_diagnose`, `src/main.rs`,
+    /// whose bind attempt runs in a detached child with no observable `io::Error` at all, so it
+    /// has no upstream confirmation of its own to lean on) onto [`held_port_holder`] directly
+    /// without weakening this gate. A port a real listener holds must still resolve `Some`, naming
+    /// this test process's own pid.
     #[test]
     fn describe_held_port_if_confirmed_names_the_holder_when_independently_confirmed() {
         if !Path::new("/proc").is_dir() {
