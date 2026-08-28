@@ -7205,7 +7205,19 @@ fn watch_poll(
                 } else {
                     (
                         watch::DashProbe::NotServing {
-                            pid,
+                            // Round 5 (adj-u62c1r4-verdict-reject-sentinel-pid-leaks-to-status):
+                            // filtered HERE, at the display value handed to `NotServing`, never
+                            // by touching `pid` itself - `port_matches` above must keep reading
+                            // the UNFILTERED `pid.is_some()` so a genuinely port-matching
+                            // sentinel marker still sources `written_at` from `marker_path`, not
+                            // `url_path` (filtering inside `pid_if_port_matches` would flip
+                            // `port_matches` to false for exactly this marker and reintroduce
+                            // the wrong-file's-mtime defect class closed at round 9,
+                            // adv-u69c1-mismatched-marker-suppression-borrows-wrong-files-mtime).
+                            // `dash::displayable_pid` names no real process for the sentinel, so
+                            // it renders here exactly like the already-correct
+                            // no-matching-marker case.
+                            pid: dash::displayable_pid(pid),
                             port: url_port,
                         },
                         written_at,
@@ -7221,7 +7233,13 @@ fn watch_poll(
                 } else {
                     (
                         watch::DashProbe::NotServing {
-                            pid: Some(m.pid),
+                            // Round 5: this arm has no url port to compare against via
+                            // `pid_if_port_matches`, so it always read `m.pid` directly - the
+                            // same sentinel-leak class the two sites above were fixed for
+                            // (round-4 reject's REJECT GROUND named those two by line range, but
+                            // the underlying defect - an unfiltered raw marker pid reaching a
+                            // display site - applies here identically).
+                            pid: dash::displayable_pid(Some(m.pid)),
                             port: m.port,
                         },
                         mtime_of(&marker_path),
@@ -7253,7 +7271,10 @@ fn watch_poll(
             } else {
                 (
                     watch::DashProbe::NotServing {
-                        pid: Some(m.pid),
+                        // Round 5: same sentinel-leak class as the unparseable-url arm's comment
+                        // above - no url port to compare against, so this always read `m.pid`
+                        // directly until now.
+                        pid: dash::displayable_pid(Some(m.pid)),
                         port: m.port,
                     },
                     mtime_of(&marker_path),
