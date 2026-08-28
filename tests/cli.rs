@@ -20690,6 +20690,70 @@ fn step_losing_a_real_singleton_race_records_the_winners_pid_not_its_own_dead_ch
     );
 }
 
+/// Spec 62 round 2 fix point (adj-u62c1r2-verdict-reject-version-skew-fallback): the round-2
+/// `unwrap_or(pid)` fallback treated a `None` from `dash_serving_pid_on` as ONLY the narrow
+/// window between `wait_for_dash_bind` confirming a probe and a second probe running - but
+/// `None` is ALSO the STEADY-STATE response from any winner that answers the dash header but
+/// predates `X-Rigger-Dash-Pid` (a pre-round-2 or foreign dash build), which is not a narrow
+/// timing race at all. Under the round-2 code that case silently fell back to the LOSING side's
+/// own already-exited, never-bound child pid - reproducing the original round-1 defect
+/// (adv-u62c1-marker-pid-not-the-serving-pid-on-singleton-race) under a different, more common
+/// trigger.
+///
+/// The winner here is a raw stand-in, deliberately NOT a real `rigger dash` process: it answers
+/// the dash header (so the step's own spawned child's `bind_singleton` recognizes it as
+/// already-serving and exits cleanly without binding, and `wait_for_dash_bind` confirms the port
+/// answers) but NEVER sends the pid header at all - the exact shape of a version-skewed or
+/// foreign dash winning the race, not a scheduling coincidence. The fix must refuse to fabricate
+/// an attribution it cannot prove: it records NO marker at all, exactly like an unconfirmed
+/// bind, rather than naming the loser's own dead child as the server.
+#[test]
+fn step_losing_a_race_against_a_pid_header_less_winner_records_no_marker() {
+    use std::io::Write;
+
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    write_two_stage_workflow(root);
+    let dash_port = free_loopback_port();
+
+    // The WINNER stand-in: answers the dash header (so the race resolves cleanly) but never the
+    // pid header (so the serving pid can never be attributed) - simulating a pre-round-2 or
+    // foreign dash already holding the fixed address before this step ever spawns its own.
+    let listener = std::net::TcpListener::bind(("127.0.0.1", dash_port))
+        .expect("failed to bind the stand-in winner's port");
+    std::thread::spawn(move || {
+        for mut s in listener.incoming().flatten() {
+            let _ = s.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\n{}: probe\r\nConnection: close\r\n\r\n",
+                    rigger::dash::DASH_HEADER
+                )
+                .as_bytes(),
+            );
+        }
+    });
+
+    let (out, err) = run_step_dash_enabled(root, dash_port);
+
+    assert!(
+        out.contains(r#""wave":"#),
+        "the step must still run to completion even though its own dash spawn lost the race to \
+         an unattributable winner; stdout: {out:?} stderr: {err:?}"
+    );
+    assert_eq!(
+        read_dash_marker(root),
+        None,
+        "a loser that cannot attribute the real winner's serving pid (no X-Rigger-Dash-Pid on \
+         the wire at all) must record NO marker - never its own already-exited child's pid; \
+         stderr:\n{err}"
+    );
+    assert!(
+        err.contains("could not auto-start the dashboard"),
+        "an unattributable winner must announce the headless degrade, never a fabricated \
+         success; stderr:\n{err}"
+    );
+}
+
 /// Spec 62 round 2 (adv-u62c1-marker-pid-not-the-serving-pid-on-singleton-race): the new public
 /// probe `rigger::dash::dash_serving_pid_on` reports a REAL, separately-compiled `rigger dash`
 /// process's own OS-reported pid - proven against the actual product binary as the server, not

@@ -93,66 +93,88 @@ pub const DASH_HEADER: &str = "X-Rigger-Dash";
 /// a marker correctly.
 pub const DASH_HEADER_PID: &str = "X-Rigger-Dash-Pid";
 
-/// Whether a rigger dash is ALREADY serving on loopback `port` (spec 50, criterion 1). Drives
-/// one `GET /` and returns `true` only when the response carries the [`DASH_HEADER`] response
-/// header, so an unrelated process that merely holds the port is NEVER mistaken for a dash. Any
-/// connect / write / read failure, or a header-less response, returns `false`. Bounded by short
-/// timeouts so a dead, slow, or silent holder cannot stall the caller. `std`-only, so it is
-/// identical on the default and `--no-default-features` lanes.
-pub fn dash_serving_on(port: u16) -> bool {
+/// Connects to loopback `port`, issues a bare `GET /`, and reads the response HEAD (the status
+/// line and headers) into a buffer - the ONE probe-a-loopback-port-for-a-bounded-dash-response
+/// implementation both [`dash_serving_on`] and [`dash_serving_pid_on`] drive
+/// (arch-u62c1-dash-serving-pid-on-duplicates-the-probe-read-loop, spec 62 round 2): before this
+/// extraction each carried its own copy of this exact connect/write-timeout/deadline/cap/read-loop
+/// machinery, a second parallel implementation of the same concern the one-mutation-authority
+/// rule exists to prevent.
+///
+/// Bounded THREE independent ways so a dead, slow, or hostile holder can NEVER stall the caller:
+///   * an overall wall-clock DEADLINE across the whole head - the per-read timeout is reset to
+///     the REMAINING budget each iteration. This is the load-bearing bound: a holder that
+///     dribbles bytes just under a fixed per-read timeout while NEVER sending a newline would
+///     reset a per-read-only timeout forever and never complete a line, so only a bound on the
+///     TOTAL read defeats it;
+///   * a TOTAL byte cap - a real HTTP header block is small, so an endless within-a-line dribble
+///     is bounded in volume (memory) even inside the deadline;
+///   * the blank end-of-headers line ([`head_block_ended`]) - once the header block is fully read,
+///     stop rather than keep reading a body, so a genuine non-dash conflict fails fast.
+///
+/// `stop_early` is consulted after every chunk arrives; the instant it returns `true` the
+/// accumulated head is returned WITHOUT waiting for the rest of the header block - this is what
+/// lets [`dash_serving_on`] short-circuit the moment it recognizes [`DASH_HEADER`], while
+/// [`dash_serving_pid_on`] (which needs the FULL block, since [`DASH_HEADER_PID`] can arrive on a
+/// LATER line) passes a predicate that never fires early.
+///
+/// Returns `None` on any connect/write/read failure, or once the deadline elapses before the
+/// header block ends (and before `stop_early` fires) - the caller then reports its own failure
+/// sentinel (`false` / `None`), never distinguishing WHY the probe failed. Returns `Some(head)`
+/// once EITHER `stop_early` fires, OR the header block ends, OR the byte cap is reached, OR the
+/// peer closes the connection - in every one of those cases the caller inspects `head` itself to
+/// decide what it found (mirroring each original function's own "decide on exactly what arrived"
+/// handling of a peer close).
+fn probe_dash_head(port: u16, mut stop_early: impl FnMut(&[u8]) -> bool) -> Option<Vec<u8>> {
     use std::io::Read;
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(500)) else {
-        return false;
-    };
-    let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
-    if stream
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(500)).ok()?;
+    stream
+        .set_write_timeout(Some(Duration::from_millis(500)))
+        .ok()?;
+    stream
         .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-        .is_err()
-    {
-        return false;
-    }
-    // Read only the response head (status line + headers), bounded THREE independent ways so a
-    // dead, slow, or hostile holder can NEVER stall the caller:
-    //   * an overall wall-clock DEADLINE across the whole head - the per-read timeout is reset to
-    //     the REMAINING budget each iteration. This is the load-bearing bound: a holder that
-    //     dribbles bytes just under a fixed per-read timeout while NEVER sending a newline would
-    //     reset a per-read-only timeout forever and never complete a line, so only a bound on the
-    //     TOTAL read defeats it;
-    //   * a TOTAL byte cap - a real HTTP header block is small, so an endless within-a-line dribble
-    //     is bounded in volume (memory) even inside the deadline;
-    //   * the blank end-of-headers line - once the header block is fully read WITHOUT the marker,
-    //     stop rather than keep reading a body, so a genuine non-dash conflict fails fast.
-    // Matching stays line-anchored and case-insensitive: only a line that STARTS with the header
-    // name counts, so the marker cannot be spoofed by the same text inside another header's value.
-    let needle = format!("{DASH_HEADER}:").to_ascii_lowercase();
+        .ok()?;
+
     let deadline = std::time::Instant::now() + Duration::from_millis(750);
     const MAX_HEAD_BYTES: usize = 8 * 1024;
     let mut head: Vec<u8> = Vec::with_capacity(512);
     let mut buf = [0u8; 512];
     loop {
-        let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) else {
-            return false; // overall deadline elapsed
-        };
+        let remaining = deadline.checked_duration_since(std::time::Instant::now())?;
         if remaining.is_zero() || stream.set_read_timeout(Some(remaining)).is_err() {
-            return false;
+            return None;
         }
         match stream.read(&mut buf) {
-            // Closed before / at the end of the head: decide on exactly what arrived.
-            Ok(0) => return head_has_header_line(&head, needle.as_bytes()),
+            Ok(0) => return Some(head), // closed: caller decides on exactly what arrived
             Ok(n) => {
                 head.extend_from_slice(&buf[..n]);
-                if head_has_header_line(&head, needle.as_bytes()) {
-                    return true;
-                }
-                if head.len() >= MAX_HEAD_BYTES || head_block_ended(&head) {
-                    return false; // head too large, or the headers ended without the marker
+                if stop_early(&head) || head.len() >= MAX_HEAD_BYTES || head_block_ended(&head) {
+                    return Some(head);
                 }
             }
-            Err(_) => return false, // a slow/silent holder times out here, or the peer reset
+            Err(_) => return None, // a slow/silent holder times out here, or the peer reset
         }
     }
+}
+
+/// Whether a rigger dash is ALREADY serving on loopback `port` (spec 50, criterion 1). Drives
+/// one `GET /` (via [`probe_dash_head`]) and returns `true` only when the response carries the
+/// [`DASH_HEADER`] response header, so an unrelated process that merely holds the port is NEVER
+/// mistaken for a dash. Any connect / write / read failure, or a header-less response, returns
+/// `false`. Bounded by short timeouts so a dead, slow, or silent holder cannot stall the caller.
+/// `std`-only, so it is identical on the default and `--no-default-features` lanes.
+///
+/// Matching stays line-anchored and case-insensitive ([`head_has_header_line`]): only a line that
+/// STARTS with the header name counts, so the marker cannot be spoofed by the same text inside
+/// another header's value. The `stop_early` predicate passed to `probe_dash_head` IS this same
+/// match test, so the probe returns the instant the header line is seen - this function never
+/// waits out the rest of the header block once it already has its answer.
+pub fn dash_serving_on(port: u16) -> bool {
+    let needle = format!("{DASH_HEADER}:").to_ascii_lowercase();
+    probe_dash_head(port, |head| head_has_header_line(head, needle.as_bytes()))
+        .is_some_and(|head| head_has_header_line(&head, needle.as_bytes()))
 }
 
 /// The pid ACTUALLY serving loopback `port` right now, or `None` when no rigger dash answers
@@ -166,47 +188,26 @@ pub fn dash_serving_on(port: u16) -> bool {
 /// without ever binding, so `dash_serving_on(port)` answering `true` proves only that SOMETHING
 /// is serving, never that it was the caller's own spawn.
 ///
-/// A SEPARATE probe from [`dash_serving_on`] rather than a shared refactor: that function
-/// returns the instant it recognizes [`DASH_HEADER`], which can stop reading BEFORE a LATER
-/// `X-Rigger-Dash-Pid` line ever arrives - extracting a value needs the full header block, so
-/// this reads to `head_block_ended` (or the deadline/cap) every time. Bounded identically to
-/// `dash_serving_on` otherwise (the same connect/write timeouts, the same overall deadline, and
-/// the same total-byte cap), so this can never hang or misbehave where that proven probe would
-/// not - a dead, slow, or hostile holder still resolves to `None` within the same bound.
+/// `None` is returned not only when nothing (or something non-dash) answers, but ALSO in the
+/// STEADY STATE when a genuine rigger dash answers [`DASH_HEADER`] but never sends
+/// [`DASH_HEADER_PID`] at all - a build that predates this header, or a foreign dash-shaped
+/// responder. Callers must never treat that `None` as narrowly timing-related and fall back to a
+/// value of their own (spec 62 round 2 fix point,
+/// adj-u62c1r2-verdict-reject-version-skew-fallback): the ONLY production caller,
+/// `spawn_run_dashboard_detached`, records no marker at all rather than asserting an
+/// unattributable pid.
+///
+/// Shares [`probe_dash_head`] with [`dash_serving_on`] but passes a `stop_early` that never fires:
+/// [`DASH_HEADER_PID`] can arrive on a LATER line than [`DASH_HEADER`], so extracting a value
+/// needs the full header block every time, unlike `dash_serving_on`'s early exit. Bounded
+/// identically to `dash_serving_on` otherwise (the same connect/write timeouts, the same overall
+/// deadline, and the same total-byte cap, because both run through the same probe), so this can
+/// never hang or misbehave where that proven probe would not - a dead, slow, or hostile holder
+/// still resolves to `None` within the same bound.
 pub fn dash_serving_pid_on(port: u16) -> Option<u32> {
-    use std::io::Read;
-
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(500)).ok()?;
-    stream
-        .set_write_timeout(Some(Duration::from_millis(500)))
-        .ok()?;
-    stream
-        .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-        .ok()?;
-
     let dash_needle = format!("{DASH_HEADER}:").to_ascii_lowercase();
     let pid_needle = format!("{DASH_HEADER_PID}:").to_ascii_lowercase();
-    let deadline = std::time::Instant::now() + Duration::from_millis(750);
-    const MAX_HEAD_BYTES: usize = 8 * 1024;
-    let mut head: Vec<u8> = Vec::with_capacity(512);
-    let mut buf = [0u8; 512];
-    loop {
-        let remaining = deadline.checked_duration_since(std::time::Instant::now())?;
-        if remaining.is_zero() || stream.set_read_timeout(Some(remaining)).is_err() {
-            return None;
-        }
-        match stream.read(&mut buf) {
-            Ok(0) => break, // closed: decide on exactly what arrived
-            Ok(n) => {
-                head.extend_from_slice(&buf[..n]);
-                if head.len() >= MAX_HEAD_BYTES || head_block_ended(&head) {
-                    break;
-                }
-            }
-            Err(_) => return None, // a slow/silent holder times out here, or the peer reset
-        }
-    }
+    let head = probe_dash_head(port, |_| false)?;
     if !head_has_header_line(&head, dash_needle.as_bytes()) {
         return None; // not a rigger dash at all - never guess a pid from an unrelated listener
     }
@@ -4647,6 +4648,80 @@ mod tests {
             Err(_) => panic!(
                 "dash_serving_on HUNG against a byte-dribbling holder - it never returned within 2s \
                  (the per-read-only timeout never bounds a newline-less dribble)"
+            ),
+        }
+    }
+
+    /// Spec 62 round 3 mutation-efficacy follow-up (probe_dash_head extraction,
+    /// arch-u62c1-dash-serving-pid-on-duplicates-the-probe-read-loop): `probe_dash_head`'s
+    /// `stop_early(&head) || head.len() >= MAX_HEAD_BYTES || head_block_ended(&head)` must fire
+    /// `dash_serving_on`'s early exit the INSTANT `stop_early` (the `DASH_HEADER` match) is true,
+    /// regardless of the other two conditions - a `||` -> `&&` flip on the FIRST operator ties
+    /// the early exit to `head.len() >= MAX_HEAD_BYTES` too (virtually never true for a small
+    /// response), silently falling back to waiting for `head_block_ended` (or the deadline) on
+    /// every real dash. `dash_serving_on_is_bounded_against_a_byte_dribbling_holder` cannot catch
+    /// this: its holder never sends `DASH_HEADER` at all, so `stop_early` is false there under
+    /// EITHER version - the flip is invisible unless a holder sends the header FIRST and then
+    /// never completes the header block, isolating whether recognition happens on the header
+    /// line itself or only once the whole block (or the deadline) resolves.
+    ///
+    /// This holder does exactly that: it sends a genuine `DASH_HEADER` line immediately, then
+    /// dribbles harmlessly forever WITHOUT ever sending the terminating blank line. Correct code
+    /// recognizes the header and returns `true` almost immediately (well under the probe's own
+    /// 750ms deadline); the mutated `&&` never short-circuits on a small response, so it falls
+    /// through to `head_block_ended` (never true here) and idles out to `false` only once the
+    /// full deadline elapses - both distinctly different from "fast `true`", so a generous
+    /// wall-clock bound well under the deadline separates them without racing a specific millisecond.
+    #[test]
+    fn dash_serving_on_recognizes_the_header_fast_even_if_the_holder_never_finishes_the_block() {
+        use std::sync::mpsc;
+        use std::time::Instant;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for mut s in listener.incoming().flatten() {
+                // The real dash header, sent whole, immediately - then an endless newline-less
+                // dribble that never reaches the terminating blank line.
+                if s.write_all(format!("HTTP/1.1 200 OK\r\n{DASH_HEADER}: probe\r\n").as_bytes())
+                    .is_err()
+                {
+                    continue;
+                }
+                let _ = s.flush();
+                loop {
+                    if s.write_all(b"a").is_err() || s.flush().is_err() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        });
+
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let start = Instant::now();
+            let served = dash_serving_on(port);
+            let _ = tx.send((served, start.elapsed()));
+        });
+        match rx.recv_timeout(Duration::from_secs(2)) {
+            Ok((served, elapsed)) => {
+                assert!(
+                    served,
+                    "a genuine DASH_HEADER line must be recognized even though the holder never \
+                     finishes the header block"
+                );
+                assert!(
+                    elapsed < Duration::from_millis(500),
+                    "recognizing DASH_HEADER must short-circuit almost immediately, well under \
+                     the probe's own 750ms deadline - it took {elapsed:?}, which is only \
+                     possible if the early exit degraded into waiting out the block or the \
+                     deadline instead"
+                );
+            }
+            Err(_) => panic!(
+                "dash_serving_on HUNG against a header-then-dribble holder - it never returned \
+                 within 2s"
             ),
         }
     }
