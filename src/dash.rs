@@ -419,6 +419,128 @@ pub fn pid_is_alive(pid: u32) -> bool {
     Path::new("/proc").join(pid.to_string()).is_dir()
 }
 
+/// The inode of the socket bound to `port` in `/proc/net/tcp` (the dash only ever binds IPv4
+/// loopback - spec 62's own loopback-only charter). One row per socket:
+/// `sl local_address rem_address st tx:rx tr:tm retrnsmt uid timeout inode ...`,
+/// whitespace-separated, header row skipped; `local_address` is `<hex-ip>:<hex-port>` in the
+/// kernel's own hex formatting. Matching on the PORT alone (not the ip half) is correct here: a
+/// bind to `0.0.0.0:<port>` reserves every interface including loopback, so it is EXACTLY as
+/// much a conflict for [`bind_singleton`]'s loopback bind as a same-address holder, and must be
+/// diagnosed the same way. `None` when `/proc/net/tcp` is absent/unreadable (a non-Linux
+/// platform) or no row's port matches - [`pid_holding_port`]'s "holder undiscoverable" case.
+fn tcp_listen_inode_for_port(port: u16) -> Option<u64> {
+    let text = std::fs::read_to_string("/proc/net/tcp").ok()?;
+    let port_hex = format!("{port:04X}");
+    for line in text.lines().skip(1) {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let Some(local_address) = fields.get(1) else {
+            continue;
+        };
+        let Some((_, local_port)) = local_address.split_once(':') else {
+            continue;
+        };
+        if !local_port.eq_ignore_ascii_case(&port_hex) {
+            continue;
+        }
+        if let Some(inode) = fields.get(9).and_then(|s| s.parse().ok()) {
+            return Some(inode);
+        }
+    }
+    None
+}
+
+/// The pid of the process HOLDING `port` on this machine right now, discovered via the Linux
+/// `/proc` surface (spec 62, criterion 3 - HELD-PORT DIAGNOSIS): read the kernel's own
+/// listening-socket table ([`tcp_listen_inode_for_port`]) for the inode bound to `port`, then
+/// scan every process's open file descriptors (`/proc/<pid>/fd/*`) for the matching
+/// `socket:[<inode>]` link - the same technique `lsof`/`ss` use, done here directly over
+/// `std::fs` (no `libc`, no new dependency) so it compiles identically on both feature lanes.
+/// Best-effort throughout, mirroring [`crate::reap::processes_rooted_under`]'s own established
+/// `/proc`-scanning discipline: a platform without `/proc`, a permission-denied `fd` dir, or a
+/// holder that exits mid-scan all degrade to `None` - never a panic, never a guess.
+fn pid_holding_port(port: u16) -> Option<u32> {
+    let inode = tcp_listen_inode_for_port(port)?;
+    let proc = Path::new("/proc");
+    let entries = std::fs::read_dir(proc).ok()?;
+    let needle = format!("socket:[{inode}]");
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name.to_str().and_then(|n| n.parse::<u32>().ok()) else {
+            continue;
+        };
+        let Ok(fds) = std::fs::read_dir(proc.join(&name).join("fd")) else {
+            continue;
+        };
+        for fd in fds.flatten() {
+            if let Ok(link) = std::fs::read_link(fd.path()) {
+                if link.to_str() == Some(needle.as_str()) {
+                    return Some(pid);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The single-character process state of `pid` from `/proc/<pid>/stat` - `R` running, `S`
+/// sleeping, `D` uninterruptible sleep, `T` stopped by job control, `t` stopped under a
+/// tracer, `Z` zombie, and so on (see `proc(5)`). Parses the same field layout every
+/// `/proc/<pid>/stat` reader in this codebase already relies on (`pid (comm) state ...`, split
+/// AFTER the last `)` since `comm` may itself embed spaces or parens) - `std`-only, no `libc`.
+/// `None` when the pid is gone or `/proc` is unreadable, the same graceful-degrade discipline
+/// as [`pid_is_alive`].
+fn process_state(pid: u32) -> Option<char> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    stat.rsplit_once(')')?
+        .1
+        .split_whitespace()
+        .next()?
+        .chars()
+        .next()
+}
+
+/// Render the HELD-PORT DIAGNOSIS (spec 62, criterion 3) for a bind failure at `addr`, given
+/// whatever [`pid_holding_port`]/[`process_state`] discovered about the holder - the PURE half,
+/// kept separate from the `/proc` reads so the message text is directly testable without
+/// spawning a process. ALWAYS names `addr` (spec 62 Notes: "other platforms still get the
+/// held-address report" - a bind failure must never surface as a bare, unexplained exit). When
+/// the holder's pid is known, names it; when its state is ALSO known, names that too. A `T`/`t`
+/// (stopped) holder gets the explicit diagnosis this criterion exists for: a stopped listener
+/// keeps the port bound - the kernel still completes the TCP handshake into its backlog - but
+/// its process never calls `accept()`, so a client HANGS instead of getting a clean refusal;
+/// naming the fix (resume or kill that pid) rather than leaving the operator to guess why the
+/// port looks phantom-held.
+fn format_held_port(addr: SocketAddr, holder: Option<(u32, Option<char>)>) -> String {
+    match holder {
+        None => format!("address {addr} is already in use (holding process not found)"),
+        Some((pid, Some('T' | 't'))) => format!(
+            "address {addr} is already in use by pid {pid}, which is STOPPED - a stopped \
+             listener keeps the port bound but its process never accepts a connection; resume \
+             or kill pid {pid} to free the port"
+        ),
+        Some((pid, Some(state))) => {
+            format!("address {addr} is already in use by pid {pid} (state {state})")
+        }
+        Some((pid, None)) => {
+            format!("address {addr} is already in use by pid {pid} (state not discoverable)")
+        }
+    }
+}
+
+/// The impure half of the HELD-PORT DIAGNOSIS (spec 62, criterion 3): discover whatever this
+/// machine's `/proc` surface can prove about the process holding `addr`'s port, and render it
+/// via [`format_held_port`]. `pub` - `cmd_dash` (`src/main.rs`) is the one production caller,
+/// reporting THIS as the `Err` it surfaces when [`bind_singleton`] finds the address genuinely
+/// held by a non-dash process (a real rigger dash already on this address resolves to
+/// `AlreadyServing` instead, so a caller only ever reaches this on a genuine conflict).
+/// Best-effort: a platform without `/proc`, or a holder that exits mid-scan, degrades to the
+/// "holding process not found" report - never a panic and never a bare, unexplained exit
+/// (spec 62 Notes).
+pub fn describe_held_port(addr: SocketAddr) -> String {
+    let holder = pid_holding_port(addr.port()).map(|pid| (pid, process_state(pid)));
+    format_held_port(addr, holder)
+}
+
 /// The loopback port embedded in a recorded dash URL (`http://127.0.0.1:<port>/`, the only
 /// shape any dash-starting path writes - [`crate`]'s `spawn_run_dashboard` and
 /// `spawn_run_dashboard_detached` both format it this way). `None` for anything that does not
@@ -8290,6 +8412,122 @@ mod tests {
             !pid_is_alive(u32::MAX),
             "an impossible pid must read as not alive"
         );
+    }
+
+    // --- Spec 62, criterion 3: HELD-PORT DIAGNOSIS ---
+
+    #[test]
+    fn format_held_port_always_names_the_address_even_with_no_holder() {
+        let addr: SocketAddr = "127.0.0.1:7450".parse().unwrap();
+        let msg = format_held_port(addr, None);
+        assert!(
+            msg.contains("127.0.0.1:7450"),
+            "the held address must always appear, even when the holder is undiscoverable; \
+             got: {msg}"
+        );
+        assert!(
+            !msg.to_lowercase().contains("resume"),
+            "an undiscoverable holder must never invent a stopped-listener diagnosis; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn format_held_port_names_the_pid_and_state_for_a_running_holder() {
+        let addr: SocketAddr = "127.0.0.1:7451".parse().unwrap();
+        let msg = format_held_port(addr, Some((4242, Some('R'))));
+        assert!(msg.contains("127.0.0.1:7451"), "got: {msg}");
+        assert!(
+            msg.contains("4242"),
+            "must name the holder's pid; got: {msg}"
+        );
+        assert!(
+            msg.contains('R'),
+            "must name the discoverable state; got: {msg}"
+        );
+        assert!(
+            !msg.to_lowercase().contains("resume"),
+            "a running (non-stopped) holder must not get the stopped-listener diagnosis; \
+             got: {msg}"
+        );
+    }
+
+    #[test]
+    fn format_held_port_names_the_pid_alone_when_its_state_is_not_discoverable() {
+        let addr: SocketAddr = "127.0.0.1:7452".parse().unwrap();
+        let msg = format_held_port(addr, Some((4343, None)));
+        assert!(msg.contains("127.0.0.1:7452"), "got: {msg}");
+        assert!(
+            msg.contains("4343"),
+            "must still name the holder's pid; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn format_held_port_gives_the_stopped_listener_diagnosis_naming_resume_or_kill() {
+        for state in ['T', 't'] {
+            let addr: SocketAddr = "127.0.0.1:7453".parse().unwrap();
+            let msg = format_held_port(addr, Some((5454, Some(state))));
+            assert!(msg.contains("127.0.0.1:7453"), "got: {msg}");
+            assert!(
+                msg.contains("5454"),
+                "must name the stopped holder's pid; got: {msg}"
+            );
+            let lower = msg.to_lowercase();
+            assert!(
+                lower.contains("resume") && lower.contains("kill"),
+                "a stopped ({state:?}) holder must name resume-or-kill explicitly; got: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn pid_holding_port_finds_the_pid_of_a_listener_bound_in_this_process() {
+        if !Path::new("/proc").is_dir() {
+            return;
+        }
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert_eq!(
+            pid_holding_port(port),
+            Some(std::process::id()),
+            "the /proc scan must find THIS process as the holder of its own listener"
+        );
+        drop(listener);
+    }
+
+    #[test]
+    fn pid_holding_port_is_none_for_a_port_nothing_is_listening_on() {
+        if !Path::new("/proc").is_dir() {
+            return;
+        }
+        // Learn a free port and release it - nothing rebinds it, so no /proc/net/tcp row
+        // should name it.
+        let port = TcpListener::bind(("127.0.0.1", 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        assert_eq!(
+            pid_holding_port(port),
+            None,
+            "an unheld port must have no holder"
+        );
+    }
+
+    #[test]
+    fn describe_held_port_names_this_process_when_it_holds_the_port_itself() {
+        if !Path::new("/proc").is_dir() {
+            return;
+        }
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let msg = describe_held_port(addr);
+        assert!(
+            msg.contains(&std::process::id().to_string()),
+            "describe_held_port must name this test process's own pid as the holder; got: {msg}"
+        );
+        assert!(msg.contains(&addr.to_string()), "got: {msg}");
+        drop(listener);
     }
 
     #[test]

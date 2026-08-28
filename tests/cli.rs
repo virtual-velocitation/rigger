@@ -25328,3 +25328,193 @@ fn run_driver_cli_fresh_notice_still_prints_on_stdout() {
          keep printing on stdout, unchanged by the workflow-driver stdout fix; stdout:\n{out}"
     );
 }
+
+// --- Spec 62, criterion 3: HELD-PORT DIAGNOSIS ---
+
+/// Spec 62, criterion 3 (HELD-PORT DIAGNOSIS): a bind failure against a port held by an
+/// UNRELATED (non-dash) process names the holder - PID and process state, when the `/proc`
+/// surface can discover them - rather than the bare `Address already in use` an unadorned
+/// `io::Error` would report. This test's own process (running `cargo test`) is itself the
+/// holder: it binds the port directly and keeps the listener alive across the `rigger dash`
+/// invocation, so the discovered pid must be THIS test process's own.
+#[test]
+fn cmd_dash_names_the_running_holder_of_a_plain_held_port() {
+    if !Path::new("/proc").is_dir() {
+        // The `/proc`-surface discovery is Unix/Linux-only by design (spec 62 Notes); elsewhere
+        // only the held-address report is guaranteed, which this test does not probe for.
+        return;
+    }
+    let held = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = held.local_addr().unwrap().port();
+    let root = temp_project();
+
+    let (out, err, ok) = run_rigger(root.path(), &["dash", "--port", &port.to_string()]);
+    drop(held);
+
+    assert!(
+        !ok,
+        "a genuinely held port must fail, not silently succeed; stdout:\n{out}\nstderr:\n{err}"
+    );
+    let my_pid = std::process::id().to_string();
+    assert!(
+        err.contains(&my_pid),
+        "the diagnosis must name THIS test process's pid ({my_pid}) as the holder; \
+         stderr:\n{err}"
+    );
+    assert!(
+        err.contains(&port.to_string()),
+        "the diagnosis must always name the held address; stderr:\n{err}"
+    );
+    assert!(
+        !err.to_lowercase().contains("resume"),
+        "a running (non-stopped) holder must not get the stopped-listener diagnosis; \
+         stderr:\n{err}"
+    );
+}
+
+/// Spec 62, criterion 3 (HELD-PORT DIAGNOSIS) is scoped to a GENUINELY held port
+/// (`AddrInUse`) only - `cmd_dash`'s guard (`e.kind() == AddrInUse`) must leave every OTHER
+/// bind failure passing through with its ORIGINAL `io::Error` text, unenriched, rather than
+/// wrongly claiming a phantom holder. Port `1` (reserved, `tcpmux`) is a portable, deterministic
+/// non-`AddrInUse` failure: binding it without `CAP_NET_BIND_SERVICE` fails `PermissionDenied`,
+/// a DIFFERENT error kind than a held port. Running as root (or with the capability granted)
+/// would make the bind SUCCEED instead, silently defeating this guard the way `chmod 000` would
+/// for a file-permission test (this file's own established more-portable-than-chmod-000
+/// precedent, `validate_residue_scan_surfaces_an_unreadable_store_conn_never_misreporting_live_worktrees`),
+/// so this test probes for that directly and skips rather than false-passing when it cannot
+/// reproduce a genuine non-`AddrInUse` failure here.
+#[test]
+fn cmd_dash_leaves_a_non_addrinuse_bind_error_unenriched() {
+    // Confirm THIS environment can even reproduce a non-AddrInUse bind failure on port 1
+    // before trusting the real invocation below to prove anything about the guard.
+    match std::net::TcpListener::bind(("127.0.0.1", 1)) {
+        Ok(_) => return, // privileged (root/capability) here - this guard cannot be exercised
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => return, // someone already holds it
+        Err(_) => {}
+    }
+
+    let root = temp_project();
+    let (out, err, ok) = run_rigger(root.path(), &["dash", "--port", "1"]);
+    assert!(
+        !ok,
+        "binding the reserved port 1 without privilege must fail; stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        !err.contains("is already in use"),
+        "a non-AddrInUse bind failure must pass through its ORIGINAL io::Error unenriched, \
+         never the held-port diagnosis meant for AddrInUse alone; stderr:\n{err}"
+    );
+}
+
+/// Spec 62, criterion 3 (HELD-PORT DIAGNOSIS), the headline scenario the spec itself names: a
+/// job-control-STOPPED predecessor keeps its listening socket bound - the kernel completed the
+/// TCP handshake into the backlog - but its process never calls `accept()` again, so a plain
+/// port probe just hangs. A real `rigger dash` is spawned, confirmed genuinely serving, then
+/// stopped with `SIGSTOP` (mirroring `crate::reap`'s own `kill(1)`-based signalling, never
+/// `libc`); a second `rigger dash` against the SAME port must fail naming the first one's pid,
+/// its STOPPED state, and the resume-or-kill remedy - never a bare `Address already in use`.
+#[test]
+fn cmd_dash_gives_the_stopped_listener_diagnosis_naming_resume_or_kill() {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    if !Path::new("/proc").is_dir() {
+        return;
+    }
+
+    let root = temp_project();
+    let port = free_loopback_port();
+    let mut holder = common::rigger_courier()
+        .args(["dash", "--port", &port.to_string()])
+        .current_dir(root.path())
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn the holder `rigger dash`");
+    let holder_pid = holder.id();
+    let mut holder_out = holder.stdout.take().expect("holder dash stdout is piped");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 1];
+        let n = holder_out.read(&mut buf).unwrap_or(0);
+        let _ = tx.send(n);
+    });
+
+    if !matches!(
+        http_get(&format!("http://127.0.0.1:{port}/")),
+        Some(body) if body.contains("rigger dash")
+    ) {
+        let _ = holder.kill();
+        let _ = holder.wait();
+        panic!("the holder `rigger dash` never came up serving on port {port}");
+    }
+
+    // SIGSTOP the holder - a real job-control stop, exactly the scenario spec 62 names. Uses
+    // `kill(1)`, never `libc`, mirroring `crate::reap::send_signal`'s established convention
+    // (there is no portable std API for a stop signal).
+    let stopped = std::process::Command::new("kill")
+        .arg("-STOP")
+        .arg(holder_pid.to_string())
+        .status();
+    if !matches!(stopped, Ok(s) if s.success()) {
+        let _ = holder.kill();
+        let _ = holder.wait();
+        panic!("failed to SIGSTOP the holder pid {holder_pid}: {stopped:?}");
+    }
+
+    // Confirm the stop actually landed (state `T` in `/proc/<pid>/stat`) before racing the
+    // second dash against it - a little scheduling jitter is normal, not a defect.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut confirmed_stopped = false;
+    while Instant::now() < deadline {
+        let state = std::fs::read_to_string(format!("/proc/{holder_pid}/stat"))
+            .ok()
+            .and_then(|stat| {
+                stat.rsplit_once(')')
+                    .and_then(|(_, rest)| rest.split_whitespace().next().map(str::to_string))
+            });
+        if state.as_deref() == Some("T") {
+            confirmed_stopped = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    if !confirmed_stopped {
+        let _ = holder.kill();
+        let _ = holder.wait();
+        panic!("the holder pid {holder_pid} never reached the STOPPED (T) state in /proc");
+    }
+
+    let (out, err, ok) = run_rigger(root.path(), &["dash", "--port", &port.to_string()]);
+
+    // Reap the (still-stopped) holder BEFORE asserting so a failure never leaks a process;
+    // `Child::kill` sends SIGKILL, which terminates a stopped process unconditionally.
+    let _ = holder.kill();
+    let _ = holder.wait();
+    let _ = rx.recv_timeout(Duration::from_secs(5));
+
+    assert!(
+        !ok,
+        "a second dash against a stopped holder's port must fail; stdout:\n{out}\nstderr:\n{err}"
+    );
+    let pid_str = holder_pid.to_string();
+    assert!(
+        err.contains(&pid_str),
+        "the diagnosis must name the stopped holder's pid ({pid_str}); stderr:\n{err}"
+    );
+    assert!(
+        err.contains(&port.to_string()),
+        "the diagnosis must always name the held address; stderr:\n{err}"
+    );
+    let lower = err.to_lowercase();
+    assert!(
+        lower.contains("resume") && lower.contains("kill"),
+        "a STOPPED holder must get the explicit resume-or-kill diagnosis; stderr:\n{err}"
+    );
+    assert!(
+        lower.contains("stop"),
+        "the diagnosis should name the STOPPED state explicitly; stderr:\n{err}"
+    );
+}

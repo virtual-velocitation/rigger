@@ -6172,14 +6172,26 @@ fn cmd_dash(args: &[String]) -> Res {
             // report it and exit 0 (never a second dash, never a drifted port); a non-dash
             // holder is a genuine conflict the bind error surfaces (resolve it with `--port`).
             let addr = SocketAddr::from(([127, 0, 0, 1], port));
-            match dash::bind_singleton(addr)? {
-                dash::SingletonBind::AlreadyServing(existing) => {
+            match dash::bind_singleton(addr) {
+                Ok(dash::SingletonBind::AlreadyServing(existing)) => {
                     // The singleton is the point: a second invocation reports the ONE known
                     // address and exits cleanly instead of starting a rival dash.
                     println!("rigger dash: already serving on http://{existing}/");
                     Ok(())
                 }
-                dash::SingletonBind::Bound(listener) => {
+                // A held port is explained, not silent (spec 62, criterion 3 - HELD-PORT
+                // DIAGNOSIS): `bind_singleton` only ever returns `Err` for a genuine, non-dash
+                // conflict (a real rigger dash already on this address resolves to
+                // `AlreadyServing` above instead), so an `AddrInUse` here always means SOME
+                // other process holds the port - name it, and its process state when the
+                // `/proc` surface can discover it, instead of the bare `io::Error` a plain `?`
+                // used to propagate. Any OTHER bind error (e.g. a privileged port with no
+                // permission) is unrelated to a held port and passes through unchanged.
+                Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                    Err(dash::describe_held_port(addr).into())
+                }
+                Err(e) => Err(e.into()),
+                Ok(dash::SingletonBind::Bound(listener)) => {
                     // Self-reap on machine idle (spec 50, criterion 5; spec 62, criterion 5): the
                     // detached step-path SINGLETON is started with `--reap-on-idle`, so a
                     // background thread polls the machine-global instance registry AND the
