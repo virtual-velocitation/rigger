@@ -20676,6 +20676,14 @@ fn step_dash_binds_exactly_the_rigger_dash_port_override() {
 /// `AddrInUse` conflict (never mistaken for an already-serving rigger dash) and exits with an
 /// error immediately - this test therefore completes in well under
 /// `DASH_BIND_CONFIRM_WINDOW` rather than waiting out the production timeout.
+///
+/// Spec 62 round 2 fix (adv-u62c3-diagnosis-unreachable-from-step-path-auto-start): the
+/// headless-degrade line the step prints for THIS exact scenario must now also name the held
+/// port's holder - this test's own pid, since it holds the port itself - closing the gap an
+/// adjudicator's reject upheld: before the fix, this same scenario, driven through this same
+/// real step path, produced only the generic "could not auto-start the dashboard" line with no
+/// pid, no process state, and no remedy, even though the manual `rigger dash` CLI arm already
+/// named all three for the identical port conflict.
 // Hermetic against a real machine dash: the ensure port is pinned to this test's own ephemeral,
 // pre-held port (never the fixed 7420 a genuine always-on dash holds on the self-hosting box),
 // so it exercises the real ensure/bind-failure path without fighting that machine dash - the
@@ -20720,6 +20728,20 @@ fn step_writes_no_dash_marker_and_leaves_a_stale_one_untouched_when_the_bind_nev
         !err.contains("serving this run"),
         "a bind that never confirmed must never announce a dash as serving; stderr:\n{err}"
     );
+    if Path::new("/proc").is_dir() {
+        let my_pid = std::process::id().to_string();
+        assert!(
+            err.contains(&my_pid),
+            "spec 62 round 2 (adv-u62c3-diagnosis-unreachable-from-step-path-auto-start): the \
+             step path's own headless-degrade message must name the held port's holder - this \
+             test process's own pid - not just the generic 'could not auto-start' line; \
+             stderr:\n{err}"
+        );
+        assert!(
+            err.contains(&dash_port.to_string()),
+            "the diagnosis must always name the held address; stderr:\n{err}"
+        );
+    }
 }
 
 /// Spec 62 round 2 (adv-u62c1-marker-pid-not-the-serving-pid-on-singleton-race), through the
@@ -25571,4 +25593,137 @@ fn describe_held_port_public_contract_holds_at_the_crate_boundary() {
              got: {unheld_msg}"
         );
     }
+}
+
+/// Spec 62 round 2 fix (adv-u62c3-diagnosis-unreachable-from-step-path-auto-start), the headline
+/// scenario spec 62's own Goal names, reproduced through the STEP PATH rather than the manual
+/// `rigger dash` CLI arm the sibling `cmd_dash_gives_the_stopped_listener_diagnosis_naming_
+/// resume_or_kill` test above already covers: a job-control-STOPPED predecessor keeps its
+/// listening socket bound. A `rigger step` whose OWN always-on auto-start targets that exact
+/// port must fail naming the stopped holder's pid, its STOPPED state, and the resume-or-kill
+/// remedy - never only the generic "could not auto-start the dashboard" line the pre-fix code
+/// gave on this path. This is the exact reproduction the adjudicator's reject cited: "an
+/// operator running an ordinary `rigger step`/`rigger run` loop whose dash auto-start hits
+/// exactly the stopped-predecessor scenario spec 62's Goal names sees only the generic
+/// headless-degrade line - never the pid, never the process state, never the resume-or-kill
+/// remedy."
+#[test]
+fn step_names_the_stopped_holder_when_the_step_paths_own_auto_start_hits_the_predecessor_scenario()
+{
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    if !Path::new("/proc").is_dir() {
+        return;
+    }
+
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    write_two_stage_workflow(root);
+    let dash_port = free_loopback_port();
+
+    // The predecessor: a real, genuinely serving `rigger dash` on the SAME port the step's own
+    // always-on ensure will target below.
+    let mut holder = common::rigger_courier()
+        .args(["dash", "--port", &dash_port.to_string()])
+        .current_dir(root)
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn the holder `rigger dash`");
+    let holder_pid = holder.id();
+    let mut holder_out = holder.stdout.take().expect("holder dash stdout is piped");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 1];
+        let n = holder_out.read(&mut buf).unwrap_or(0);
+        let _ = tx.send(n);
+    });
+
+    if !matches!(
+        http_get(&format!("http://127.0.0.1:{dash_port}/")),
+        Some(body) if body.contains("rigger dash")
+    ) {
+        let _ = holder.kill();
+        let _ = holder.wait();
+        panic!("the holder `rigger dash` never came up serving on port {dash_port}");
+    }
+
+    // SIGSTOP the holder - a real job-control stop, exactly the scenario spec 62's Goal names.
+    let stopped = std::process::Command::new("kill")
+        .arg("-STOP")
+        .arg(holder_pid.to_string())
+        .status();
+    if !matches!(stopped, Ok(s) if s.success()) {
+        let _ = holder.kill();
+        let _ = holder.wait();
+        panic!("failed to SIGSTOP the holder pid {holder_pid}: {stopped:?}");
+    }
+
+    // Confirm the stop actually landed (state `T` in `/proc/<pid>/stat`) before racing the
+    // step's own dash spawn against it.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut confirmed_stopped = false;
+    while Instant::now() < deadline {
+        let state = std::fs::read_to_string(format!("/proc/{holder_pid}/stat"))
+            .ok()
+            .and_then(|stat| {
+                stat.rsplit_once(')')
+                    .and_then(|(_, rest)| rest.split_whitespace().next().map(str::to_string))
+            });
+        if state.as_deref() == Some("T") {
+            confirmed_stopped = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    if !confirmed_stopped {
+        let _ = holder.kill();
+        let _ = holder.wait();
+        panic!("the holder pid {holder_pid} never reached the STOPPED (T) state in /proc");
+    }
+
+    // The step path's OWN always-on ensure, targeting the SAME stopped-holder's port - the
+    // production seam this fix threads the diagnosis through.
+    let (out, err) = run_step_dash_enabled(root, dash_port);
+
+    // Reap the (still-stopped) holder BEFORE asserting so a failure never leaks a process;
+    // `Child::kill` sends SIGKILL, which terminates a stopped process unconditionally.
+    let _ = holder.kill();
+    let _ = holder.wait();
+    let _ = rx.recv_timeout(Duration::from_secs(5));
+
+    assert!(
+        out.contains(r#""wave":"#),
+        "the step must still run to completion (a printed wave) even though its own dash \
+         auto-start hit a stopped predecessor - headless degrade, never a blocked step; \
+         stdout: {out:?} stderr: {err:?}"
+    );
+    let pid_str = holder_pid.to_string();
+    assert!(
+        err.contains(&pid_str),
+        "the step path's OWN headless-degrade message must name the stopped predecessor's pid \
+         ({pid_str}), not only the generic 'could not auto-start' line; stderr:\n{err}"
+    );
+    assert!(
+        err.contains(&dash_port.to_string()),
+        "the diagnosis must always name the held address; stderr:\n{err}"
+    );
+    let lower = err.to_lowercase();
+    assert!(
+        lower.contains("resume") && lower.contains("kill"),
+        "a STOPPED predecessor must get the explicit resume-or-kill diagnosis on the step path \
+         too, not only the manual `rigger dash` CLI arm; stderr:\n{err}"
+    );
+    assert!(
+        lower.contains("stop"),
+        "the diagnosis should name the STOPPED state explicitly; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("could not auto-start the dashboard"),
+        "the generic headless-degrade line must still be present alongside the richer \
+         diagnosis; stderr:\n{err}"
+    );
 }
