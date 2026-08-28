@@ -12734,6 +12734,144 @@ mod tests {
         outcome.unwrap();
     }
 
+    // --- Spec 62, criterion 2: self-heal (a successful start replaces a stale marker) ---
+
+    /// A marker naming a DEAD pid whose recorded port nothing answers: wired through the REAL
+    /// `dash_marker_serving` probe (not an injected fake, unlike
+    /// `ensure_run_dashboard_at_restarts_when_the_recorded_dash_is_gone` above, which already
+    /// covers this same overwrite mechanically but only through an injected `|_| false`), the
+    /// port never actually answering as a dash makes the step start a fresh one, and the stale
+    /// record is REPLACED with the new server's own port/pid - the first of the two forms spec
+    /// 62 criterion 2's Done-when text names ("dead PID").
+    #[test]
+    fn ensure_run_dashboard_at_self_heals_a_marker_naming_a_dead_pid() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker_path = dir.path().join(DASH_MARKER_FILE);
+        let dead_port =
+            dash::free_port_from(41100).expect("a free loopback port must be available");
+        dash::DashMarker {
+            port: dead_port,
+            // No process on this machine is required to hold this exact pid; the REAL probe
+            // below decides self-heal purely from the port, never this field.
+            pid: 999_999,
+        }
+        .write(&marker_path)
+        .unwrap();
+
+        let fresh = dash::DashMarker {
+            port: dead_port + 1,
+            pid: std::process::id(),
+        };
+        let outcome = ensure_run_dashboard_at(&marker_path, dash_marker_serving, || Ok(fresh));
+
+        assert_eq!(
+            outcome,
+            DashStart::Started(fresh.port),
+            "the REAL still-serving probe finds nothing answering the dead marker's port, so a \
+             fresh dash starts"
+        );
+        assert_eq!(
+            dash::DashMarker::read(&marker_path),
+            Some(fresh),
+            "self-heal replaces the dead-pid marker with the new server's own record"
+        );
+    }
+
+    /// A marker naming a LIVE pid (this very test process, unambiguously alive) whose recorded
+    /// port nothing answers as a dash: `dash_marker_serving` never reads the pid field at all,
+    /// only probes the port (see its own doc), so a genuinely-alive-but-unrelated pid must never
+    /// suppress self-heal. The second of the two forms spec 62 criterion 2's Done-when text
+    /// names ("live PID not serving the recorded port") - distinct from the dead-pid case above
+    /// precisely because pid liveness itself is never load-bearing for this decision, only the
+    /// port's own probe is.
+    #[test]
+    fn ensure_run_dashboard_at_self_heals_a_marker_naming_a_live_pid_whose_port_is_unserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker_path = dir.path().join(DASH_MARKER_FILE);
+        let unserved_port =
+            dash::free_port_from(41200).expect("a free loopback port must be available");
+        let live_pid = std::process::id();
+        assert!(
+            dash::pid_is_alive(live_pid),
+            "the marker's pid must genuinely be alive for this scenario to be meaningful"
+        );
+        dash::DashMarker {
+            port: unserved_port,
+            pid: live_pid,
+        }
+        .write(&marker_path)
+        .unwrap();
+
+        let fresh = dash::DashMarker {
+            port: unserved_port + 1,
+            pid: live_pid,
+        };
+        let outcome = ensure_run_dashboard_at(&marker_path, dash_marker_serving, || Ok(fresh));
+
+        assert_eq!(
+            outcome,
+            DashStart::Started(fresh.port),
+            "a live-but-unrelated pid never suppresses self-heal - only the port's own probe \
+             decides whether the recorded dash is still serving"
+        );
+        assert_eq!(
+            dash::DashMarker::read(&marker_path),
+            Some(fresh),
+            "self-heal replaces the marker even though its old pid field was genuinely alive"
+        );
+    }
+
+    /// The still-serving short-circuit is UNCHANGED by self-heal (the design bullet's own text)
+    /// even for the one case self-heal deliberately does NOT correct: a marker carrying
+    /// `dash::UNATTRIBUTED_PID` whose port genuinely keeps answering. `d-u62c1-unattributable-
+    /// serving-disposition` scopes self-heal to DEAD or stale markers only, never a live-but-
+    /// unattributable server - this proves that scope holds in the real wiring: with a REAL
+    /// listener answering as a dash (the same DASH_HEADER response `wait_for_dash_bind`'s own
+    /// test above uses), `ensure_run_dashboard_at` short-circuits to `AlreadyServing` WITHOUT
+    /// ever calling `start` (a call here would panic), and the on-disk marker - sentinel pid and
+    /// all - is left completely untouched. Regression-locks
+    /// `adv-u62c1r5-eventually-correct-claim-unreachable-while-the-same-dash-serves`.
+    #[test]
+    fn ensure_run_dashboard_at_never_revisits_a_still_serving_unattributed_pid_marker() {
+        use std::io::Write as _;
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for mut s in listener.incoming().flatten() {
+                let _ = s.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\n{}: probe\r\nConnection: close\r\n\r\n",
+                        dash::DASH_HEADER
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let marker_path = dir.path().join(DASH_MARKER_FILE);
+        let sentinel = dash::DashMarker {
+            port,
+            pid: dash::UNATTRIBUTED_PID,
+        };
+        sentinel.write(&marker_path).unwrap();
+
+        let outcome = ensure_run_dashboard_at(&marker_path, dash_marker_serving, || {
+            panic!("self-heal must never call start() while the recorded port still serves")
+        });
+
+        assert_eq!(
+            outcome,
+            DashStart::AlreadyServing(port),
+            "a still-serving sentinel marker short-circuits; self-heal never gets a chance to run"
+        );
+        assert_eq!(
+            dash::DashMarker::read(&marker_path),
+            Some(sentinel),
+            "the still-serving marker, sentinel pid and all, is left completely untouched"
+        );
+    }
+
     /// Spec 50, criterion 4 (opt-out): the always-on ensure is suppressed by EITHER opt-out - the
     /// environment disable OR the config `dash: off` (surfaced as `config_dash_enabled == false`) -
     /// and only proceeds when NEITHER is set. Pins that the two opt-out paths are independent (each
