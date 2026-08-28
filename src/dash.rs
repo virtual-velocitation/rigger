@@ -356,9 +356,16 @@ pub struct DashMarker {
 /// pid) is enough for the next `step` to recognize this dash as already serving. A round-3 fix
 /// that instead wrote NO marker at all in this exact case regressed spec 39 criterion 1's
 /// no-op-on-later-steps invariant, repeating the full spawn/probe/attribute cycle on every later
-/// step forever - and it also leaves a marker for spec 62's sibling self-heal (u62c2) to
-/// eventually correct if the real pid ever becomes attributable, where refusing to record
-/// anything left it nothing to correct.
+/// step forever.
+///
+/// Self-heal (spec 62 criterion 2, u62c2) is scoped to DEAD or stale markers only
+/// (`d-u62c1-unattributable-serving-disposition`): it never proactively revisits a marker whose
+/// port is STILL serving, sentinel pid or not - `dash_start_needed`'s still-serving short-circuit
+/// answers `false` before `start()` is ever called, so nothing rewrites the on-disk record while
+/// THIS exact dash instance keeps answering. Correction to a real pid, if one ever becomes
+/// attributable, can only happen on this same instance's NEXT full stop-then-restart cycle (a
+/// fresh `start()` call reached once the port genuinely stops answering) - never while it keeps
+/// serving.
 pub const UNATTRIBUTED_PID: u32 = 0;
 
 /// The one shared filter for every DISPLAY site that renders a marker's raw pid (spec 62 round
