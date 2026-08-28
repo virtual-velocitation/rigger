@@ -16445,6 +16445,64 @@ fn status_reports_not_serving_when_the_recorded_marker_names_a_dead_dash() {
     );
 }
 
+/// Round 5 (adj-u62c1r4-verdict-reject-sentinel-pid-leaks-to-status,
+/// sdet-u62c1r4-display-only-still-violates-spec69c4-literal-text): the sibling above proves a
+/// REAL dead pid renders truthfully; this proves the [`dash::UNATTRIBUTED_PID`] SENTINEL (spec
+/// 62 round 4 - written by `spawn_run_dashboard_detached` when a port was confirmed serving but
+/// the real serving process could not be attributed) never renders as a fabricated "dead pid 0"
+/// once that same port has since stopped serving. Before this fix, `rigger status` printed
+/// literally that - a lie, since `0` is never a real, assigned, dying process pid - a direct
+/// violation of spec 69 criterion 4's "never lies about the dash" text. This must render
+/// EXACTLY like the no-matching-marker case: no pid named at all, in both the text line and
+/// `--json`'s `"pid"` field.
+#[test]
+fn status_never_names_the_unattributed_pid_sentinel_as_a_dead_process() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+
+    let port = free_loopback_port();
+    let rigger_dir = root.join(".rigger");
+    std::fs::write(
+        rigger_dir.join("dash.url"),
+        format!("http://127.0.0.1:{port}/"),
+    )
+    .unwrap();
+    // The documented sentinel (`dash::UNATTRIBUTED_PID` == 0), on-disk in the same
+    // `port\npid\n` shape `spawn_run_dashboard_detached` actually writes it in.
+    std::fs::write(rigger_dir.join("dash.marker"), format!("{port}\n0\n")).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["status"]);
+    assert!(ok, "rigger status must succeed; stderr:\n{err}");
+    assert!(
+        !out.contains(&format!("http://127.0.0.1:{port}/")),
+        "a dead marker must withhold the stale URL, never print it; stdout:\n{out}"
+    );
+    assert!(
+        !out.contains("marker names dead pid"),
+        "the sentinel pid must never be printed as a fabricated dead process - it was never a \
+         real, assigned pid; stdout:\n{out}"
+    );
+    assert!(
+        out.contains("dashboard: not serving (recorded url is unreachable)"),
+        "a sentinel-pid marker must render exactly like the no-matching-marker case; \
+         stdout:\n{out}"
+    );
+
+    let (json_out, json_err, json_ok) = run_rigger(root, &["status", "--json"]);
+    assert!(
+        json_ok,
+        "rigger status --json must succeed; stderr:\n{json_err}"
+    );
+    let json_value: serde_json::Value = serde_json::from_str(&json_out)
+        .unwrap_or_else(|e| panic!("`--json` must print valid JSON: {e}; stdout:\n{json_out}"));
+    assert_eq!(
+        json_value,
+        serde_json::json!([{"dashboard": {"status": "not_serving", "pid": null}}]),
+        "`--json` must carry `null`, never the sentinel `0`, as the pid; stdout:\n{json_out}"
+    );
+}
+
 /// Spec 69, criterion 4 - the SIBLING of the not-serving proof above, and the one branch no
 /// unit test can reach: `dash_status`'s own unit test injects a stand-in `still_serving`
 /// closure, so it proves the DECISION but never the WIRING - that `cmd_status` reads a real
@@ -18177,6 +18235,56 @@ fn watch_once_output_matches_what_restore_the_dash_promises_about_a_dead_marker(
          line naming the dead pid {dead_pid} for a marker like this one - either the skill \
          overclaims what the compiled binary does, or `rigger watch`'s own dash-liveness \
          signal has regressed; got:\n{out}"
+    );
+}
+
+/// Round 5 (adj-u62c1r4-verdict-reject-sentinel-pid-leaks-to-status): the sibling above proves a
+/// REAL dead pid renders truthfully for the marker-only, no-`dash.url`-at-all arm (`watch_poll`'s
+/// `(None, Some(m))` match arm, src/main.rs) - the shape `rigger step`'s own drive path writes.
+/// That arm reads `m.pid` straight from the marker with no `dash::pid_if_port_matches` call in
+/// between (there is no url port to compare against), so it was NOT one of the two sites the
+/// round-4 reject named by line range, but it is the same leak: a marker carrying
+/// [`dash::UNATTRIBUTED_PID`] (spec 62 round 4's documented sentinel) would still render "marker
+/// names dead pid 0" here, the identical fabricated-process lie the round-4 reject called
+/// blocking. Proves the sentinel is filtered at this construction site too.
+#[test]
+fn watch_once_never_names_the_unattributed_pid_sentinel_when_no_url_is_recorded() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    let dead_port = free_loopback_port();
+    DashMarker {
+        port: dead_port,
+        pid: rigger::dash::UNATTRIBUTED_PID,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the sentinel-pid dash marker");
+    assert!(
+        !root.join(".rigger/dash.url").exists(),
+        "this fixture must leave no dash.url behind - that is the exact shape under test"
+    );
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 against a marker-only sentinel-pid dash; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("dash liveness") && out.contains(&dead_port.to_string()),
+        "the dead marker port itself is a genuine anomaly and must still be reported, sentinel \
+         pid or not; got:\n{out}"
+    );
+    assert!(
+        !out.contains("marker names dead pid"),
+        "the sentinel pid must never be printed as a fabricated dead process - it was never a \
+         real, assigned pid; got:\n{out}"
+    );
+    assert!(
+        out.contains("no matching marker, no pid"),
+        "a sentinel-pid marker must render exactly like the no-matching-marker case; got:\n{out}"
     );
 }
 
@@ -20540,6 +20648,378 @@ fn step_dash_binds_exactly_the_rigger_dash_port_override() {
         served_at_override,
         "a real detached dash must be genuinely serving at the injected RIGGER_DASH_PORT={dash_port} \
          - the override must reach the actual bind, not just the recorded marker value"
+    );
+}
+
+/// Spec 62, criterion 1 (MARKER FOLLOWS BIND), through the BUILT binary: a step whose detached
+/// dash spawn can never confirm a bind - its `RIGGER_DASH_PORT` names a port genuinely HELD by
+/// another process - records NO `.rigger/dash.marker` and leaves a PRE-EXISTING marker
+/// byte-for-byte untouched; the step still runs to completion (a printed wave), degrading to
+/// headless rather than blocking. This closes the class of defect the marker-follows-bind
+/// design guards against: a marker surviving a failed bind and naming a dash that never
+/// actually came up.
+///
+/// The in-crate unit tests (`wait_for_dash_bind_*`, `ensure_run_dashboard_at_writes_no_marker_
+/// when_the_real_spawn_never_confirms_a_bind` in `src/main.rs`) prove the DECISION - the
+/// injected-closure ordering, and the pure `wait_for_dash_bind` state machine against a real
+/// held port - but only the real seam wired through `cargo test`'s own harness binary, which
+/// can never recognize `dash` as a subcommand and so can only ever reach the EARLY-EXIT arm of
+/// `wait_for_dash_bind`, never a genuine `AddrInUse` from the actual `rigger dash` subcommand.
+/// Only driving the real, BUILT `rigger` binary against a held port proves the production
+/// `spawn_dash_child_process -> cmd_dash -> dash::bind_singleton` wiring: the spawned child
+/// itself observes the conflict, exits promptly, and `ensure_run_dashboard_at`'s existing
+/// `Err` arm (already correct) writes nothing - the write-ordering this criterion owns, proven
+/// end to end rather than only at the injected seam.
+///
+/// The held port is a plain `TcpListener` that never calls `accept()`: it does not answer the
+/// dash header, so the spawned child's own `dash::bind_singleton` sees a genuine, non-dash
+/// `AddrInUse` conflict (never mistaken for an already-serving rigger dash) and exits with an
+/// error immediately - this test therefore completes in well under
+/// `DASH_BIND_CONFIRM_WINDOW` rather than waiting out the production timeout.
+// Hermetic against a real machine dash: the ensure port is pinned to this test's own ephemeral,
+// pre-held port (never the fixed 7420 a genuine always-on dash holds on the self-hosting box),
+// so it exercises the real ensure/bind-failure path without fighting that machine dash - the
+// same reason the other step-path dash tests in this section need no `serial` key.
+#[test]
+fn step_writes_no_dash_marker_and_leaves_a_stale_one_untouched_when_the_bind_never_confirms() {
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    write_two_stage_workflow(root);
+
+    // Hold the target port ourselves: the spawned `rigger dash --port <p>` child can never bind
+    // it, so it can never confirm serving - the bind-never-confirms shape at the real binary.
+    let held = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let dash_port = held.local_addr().unwrap().port();
+
+    // A pre-existing marker this failed start must leave COMPLETELY untouched (spec 62: "a
+    // failed bind leaves the prior marker byte-for-byte untouched and writes nothing").
+    let marker_path = root.join(".rigger").join("dash.marker");
+    std::fs::create_dir_all(marker_path.parent().unwrap()).unwrap();
+    std::fs::write(&marker_path, "40002\n999999\n").unwrap();
+
+    let (out, err) = run_step_dash_enabled(root, dash_port);
+    drop(held);
+
+    assert!(
+        out.contains(r#""wave":"#),
+        "a bind that never confirms still lets the step run to completion (a printed wave) - \
+         headless degrade, never a blocked step; stdout: {out:?} stderr: {err:?}"
+    );
+    assert_eq!(
+        read_dash_marker(root),
+        Some((40002, 999_999)),
+        "a bind that never confirmed must leave the pre-existing marker byte-for-byte untouched; \
+         stderr:\n{err}"
+    );
+    assert!(
+        err.contains("could not auto-start the dashboard"),
+        "a bind that never confirmed must announce the headless degrade, never a fabricated \
+         success; stderr:\n{err}"
+    );
+    assert!(
+        !err.contains("serving this run"),
+        "a bind that never confirmed must never announce a dash as serving; stderr:\n{err}"
+    );
+}
+
+/// Spec 62 round 2 (adv-u62c1-marker-pid-not-the-serving-pid-on-singleton-race), through the
+/// BUILT binary: the LOSING side of a REAL concurrent singleton-bind race must record a marker
+/// naming the WINNER's actual serving pid, never the losing side's own (already-exited-without-
+/// binding) child pid.
+///
+/// The winner is brought FULLY up and genuinely serving, deterministically with no scheduling
+/// coin flip, BEFORE the step ever spawns its own dash - so the step's own detached spawn is
+/// GUARANTEED to lose: its `bind_singleton` sees `AddrInUse`, recognizes the winner via the dash
+/// header, and exits WITHOUT ever binding (spec 50, criterion 1's `AlreadyServing` arm). Before
+/// this fix, `wait_for_dash_bind` observed the winner's port already answering and returned
+/// `true`, and `spawn_run_dashboard_detached` wrote the LOSING child's OWN (already-exited,
+/// never-bound) pid into the marker - naming a process that never served anything. The fix asks
+/// the port itself who is REALLY serving (`dash::dash_serving_pid_on`) rather than trusting the
+/// locally-spawned pid, so the marker must name the winner's pid exactly.
+///
+/// The winner is a real, long-lived detached process; it is reaped BEFORE the assertions so a
+/// failed assertion never leaks a dashboard.
+#[test]
+fn step_losing_a_real_singleton_race_records_the_winners_pid_not_its_own_dead_childs() {
+    use std::process::Stdio;
+
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    write_two_stage_workflow(root);
+    let dash_port = free_loopback_port();
+    let url = format!("http://127.0.0.1:{dash_port}/");
+
+    // The WINNER: a real, serving `rigger dash` fully up BEFORE the step ever spawns its own -
+    // so the step's own detached spawn is deterministically the LOSING side of the race.
+    let mut winner = common::rigger_courier()
+        .args(["dash", "--port", &dash_port.to_string()])
+        .current_dir(root)
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn the winning `rigger dash`");
+    let winner_pid = winner.id();
+
+    if !matches!(http_get(&url), Some(body) if body.contains("rigger dash")) {
+        let _ = winner.kill();
+        let _ = winner.wait();
+        panic!("the winning `rigger dash` never came up at {url}");
+    }
+
+    // The LOSER: `rigger step`'s own always-on ensure spawns a SECOND `rigger dash` at the same
+    // fixed address for this fresh project (no local marker exists yet); it must lose the race,
+    // recognize the winner, and exit without binding.
+    let (out, err) = run_step_dash_enabled(root, dash_port);
+
+    let marker = read_dash_marker(root);
+    let _ = winner.kill();
+    let _ = winner.wait();
+
+    assert!(
+        out.contains(r#""wave":"#),
+        "the step must still run to completion even though its OWN dash spawn lost the race; \
+         stdout: {out:?} stderr: {err:?}"
+    );
+    let (marker_port, marker_pid) = marker.unwrap_or_else(|| {
+        panic!(
+            "a step that loses a real singleton race must still record a marker for the dash \
+             that IS actually serving; stderr:\n{err}"
+        )
+    });
+    assert_eq!(
+        marker_port, dash_port,
+        "the marker must name the port the winner actually serves"
+    );
+    assert_eq!(
+        marker_pid, winner_pid,
+        "the marker must name the WINNER's real serving pid, never the losing side's own \
+         (already-exited-without-binding) child pid; stderr:\n{err}"
+    );
+}
+
+/// Spec 62 round 4 fix point (adj-u62c1r3-verdict-reject-idempotency-regression): the round-3
+/// refuse-only fix wrote NO marker at all when a genuinely-serving winner's pid could not be
+/// attributed - correctly closing round 2's version-skew fallback
+/// (adj-u62c1r2-verdict-reject-version-skew-fallback), but as a side effect leaving
+/// `ensure_run_dashboard_at` nothing to short-circuit on: every LATER step of the run repeated
+/// the entire spawn/probe/attribute cycle forever, never reaching spec 39 criterion 1's no-op
+/// invariant. The fix records a marker naming the winner's real port and the documented
+/// `rigger::dash::UNATTRIBUTED_PID` sentinel instead of either extreme - never a value this call
+/// cannot prove (round 2's mistake), and never nothing at all (round 3's mistake).
+///
+/// The winner here is a raw stand-in, deliberately NOT a real `rigger dash` process: it answers
+/// the dash header (so the step's own spawned child's `bind_singleton` recognizes it as
+/// already-serving and exits cleanly without binding, and `wait_for_dash_bind` confirms the port
+/// answers) but NEVER sends the pid header at all - the exact shape of a version-skewed or
+/// foreign dash winning the race, not a scheduling coincidence.
+///
+/// The idempotency half of this same fix point - a SECOND consecutive step against this same
+/// winner must not repeat any of this - is proven separately by
+/// `step_against_a_pid_header_less_winner_is_idempotent_across_two_consecutive_steps` below.
+#[test]
+fn step_losing_a_race_against_a_pid_header_less_winner_records_a_sentinel_marker() {
+    use std::io::Write;
+
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    write_two_stage_workflow(root);
+    let dash_port = free_loopback_port();
+
+    // The WINNER stand-in: answers the dash header (so the race resolves cleanly) but never the
+    // pid header (so the serving pid can never be attributed) - simulating a pre-round-2 or
+    // foreign dash already holding the fixed address before this step ever spawns its own.
+    let listener = std::net::TcpListener::bind(("127.0.0.1", dash_port))
+        .expect("failed to bind the stand-in winner's port");
+    std::thread::spawn(move || {
+        for mut s in listener.incoming().flatten() {
+            let _ = s.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\n{}: probe\r\nConnection: close\r\n\r\n",
+                    rigger::dash::DASH_HEADER
+                )
+                .as_bytes(),
+            );
+        }
+    });
+
+    let (out, err) = run_step_dash_enabled(root, dash_port);
+
+    assert!(
+        out.contains(r#""wave":"#),
+        "the step must still run to completion even though its own dash spawn lost the race to \
+         an unattributable winner; stdout: {out:?} stderr: {err:?}"
+    );
+    assert_eq!(
+        read_dash_marker(root),
+        Some((dash_port, rigger::dash::UNATTRIBUTED_PID)),
+        "a loser that cannot attribute the real winner's serving pid (no X-Rigger-Dash-Pid on \
+         the wire at all) must still record a marker - naming the winner's real port and the \
+         documented sentinel pid, never its own already-exited child's pid and never nothing at \
+         all (recording nothing forecloses the next step's idempotent short-circuit); \
+         stderr:\n{err}"
+    );
+    assert!(
+        err.contains("serving this run"),
+        "a genuinely-serving (if unattributable) winner must be announced as serving, never the \
+         headless-degrade message a true start failure gets; stderr:\n{err}"
+    );
+    assert!(
+        !err.contains("could not auto-start the dashboard"),
+        "a dash IS serving here (confirmed by the winner answering the dash header) - this must \
+         never be reported as a failed auto-start; stderr:\n{err}"
+    );
+}
+
+/// Spec 62 round 4's own fix point, the idempotency half
+/// (adj-u62c1r3-verdict-reject-idempotency-regression's fix point (1)): a SECOND, consecutive
+/// step against the SAME pid-header-less winner must find the marker the first step recorded,
+/// confirm the winner is still serving via a single port probe, and short-circuit there - never
+/// spawning a second child, never re-probing for a pid, never rewriting the marker. This is the
+/// exact invariant the round-3 refuse-only fix broke: writing no marker on the first step left
+/// nothing for a second step to find, so it repeated the ENTIRE spawn/wait/attribute cycle every
+/// single time (spec 39 criterion 1's "the second and every later step of a run is a no-op,
+/// never a second dash or a port fight" - violated).
+///
+/// Proven two ways: (1) the marker is byte-for-byte unchanged after the second step (nothing
+/// re-wrote it), and (2) the winner's listener sees exactly ONE connection during the second
+/// step - the lone `dash_marker_serving` port probe `ensure_run_dashboard_at` makes before
+/// deciding `AlreadyServing`. A regression back to the round-3 shape (or any other path that
+/// re-attempts a full spawn) would instead drive the child's own `bind_singleton` AddrInUse
+/// check, the parent's `wait_for_dash_bind` poll loop, AND a second `dash_serving_pid_on` probe -
+/// several connections, never just one.
+#[test]
+fn step_against_a_pid_header_less_winner_is_idempotent_across_two_consecutive_steps() {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    write_two_stage_workflow(root);
+    let dash_port = free_loopback_port();
+
+    let connections = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&connections);
+    let listener = std::net::TcpListener::bind(("127.0.0.1", dash_port))
+        .expect("failed to bind the stand-in winner's port");
+    std::thread::spawn(move || {
+        for mut s in listener.incoming().flatten() {
+            counter.fetch_add(1, Ordering::SeqCst);
+            let _ = s.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\n{}: probe\r\nConnection: close\r\n\r\n",
+                    rigger::dash::DASH_HEADER
+                )
+                .as_bytes(),
+            );
+        }
+    });
+
+    // First step: no marker exists yet, so this step's own spawn loses the race and (per the
+    // round-4 fix proven above) records a sentinel marker naming the winner's port.
+    let (out1, err1) = run_step_dash_enabled(root, dash_port);
+    assert!(
+        out1.contains(r#""wave":"#),
+        "the first step must run to completion; stdout: {out1:?} stderr: {err1:?}"
+    );
+    let first_marker = read_dash_marker(root).unwrap_or_else(|| {
+        panic!(
+            "the first step must record a sentinel marker for the confirmed-serving, \
+             unattributable winner; stderr:\n{err1}"
+        )
+    });
+    assert_eq!(
+        first_marker,
+        (dash_port, rigger::dash::UNATTRIBUTED_PID),
+        "the first step's marker must name the winner's real port and the sentinel pid"
+    );
+
+    // Isolate the second step's own network activity from the first step's (which necessarily
+    // makes several connections: the losing child's own AddrInUse/dash-recognition probe, the
+    // parent's wait_for_dash_bind confirmation, and the pid-attribution probe).
+    connections.store(0, Ordering::SeqCst);
+
+    // Second, consecutive step against the SAME winner and the SAME project (same run): the
+    // marker the first step recorded still names a port that is still serving, so this must be
+    // the idempotent no-op - never a second spawn.
+    let (out2, err2) = run_step_dash_enabled(root, dash_port);
+    assert!(
+        out2.contains(r#""wave":"#),
+        "the second step must also run to completion; stdout: {out2:?} stderr: {err2:?}"
+    );
+    assert_eq!(
+        read_dash_marker(root),
+        Some(first_marker),
+        "the marker must be byte-for-byte unchanged after the idempotent second step - a \
+         rewrite would mean `start` was called again instead of short-circuiting"
+    );
+    assert!(
+        !err2.contains("serving this run"),
+        "the idempotent no-op step starts nothing, so it must not announce a fresh start; \
+         stderr:\n{err2}"
+    );
+    assert!(
+        !err2.contains("could not auto-start the dashboard"),
+        "the idempotent no-op step must never report a failed start either; stderr:\n{err2}"
+    );
+    assert_eq!(
+        connections.load(Ordering::SeqCst),
+        1,
+        "a truly idempotent no-op step touches the winner's port exactly once - the single \
+         `dash_marker_serving` probe `ensure_run_dashboard_at` makes before short-circuiting to \
+         AlreadyServing. Anything more means the full spawn/wait/attribute cycle ran again \
+         (the round-3 regression this test pins against)"
+    );
+}
+
+/// Spec 62 round 2 (adv-u62c1-marker-pid-not-the-serving-pid-on-singleton-race): the new public
+/// probe `rigger::dash::dash_serving_pid_on` reports a REAL, separately-compiled `rigger dash`
+/// process's own OS-reported pid - proven against the actual product binary as the server, not
+/// only the implementer's own in-crate unit tests (`dash_serving_pid_on_reports_the_pid_a_real_
+/// dash_response_names` et al in `src/dash.rs`), which can only ever stand up a FAKE listener
+/// inside the SAME test process and so structurally can never observe a genuine cross-process
+/// `X-Rigger-Dash-Pid` round trip - the same class of gap a real subprocess closes that the
+/// bind-confirmation periphery test above already closes for criterion 1.
+///
+/// This is the direct PRODUCER-side lock on this criterion's public API surface. It complements,
+/// never duplicates, `step_losing_a_real_singleton_race_records_the_winners_pid_not_its_own_dead_
+/// childs` above: that test proves a CONSUMER (`spawn_run_dashboard_detached`, compiled into the
+/// SAME binary as its caller) reads the header correctly end to end through a whole `step`: a
+/// defect that flipped the header's write side while the consumer ALSO happened to misread it in
+/// a compensating way could still pass that test by coincidence. This test pins the probe
+/// function's own return value directly against an externally observed, independently known pid
+/// (`Child::id()`), with no such compensating path available.
+#[test]
+fn dash_serving_pid_on_reports_a_real_separately_compiled_dashs_own_pid() {
+    use std::process::Stdio;
+
+    let proj = temp_project();
+    let port = free_loopback_port();
+    let mut dash = common::rigger_courier()
+        .args(["dash", "--port", &port.to_string()])
+        .current_dir(proj.path())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn `rigger dash`");
+    let dash_pid = dash.id();
+
+    if !matches!(http_get_path(port, "/"), Some(resp) if resp.contains("rigger dash")) {
+        let _ = dash.kill();
+        let _ = dash.wait();
+        panic!("the spawned `rigger dash` never came up on port {port}");
+    }
+
+    let reported = rigger::dash::dash_serving_pid_on(port);
+    let _ = dash.kill();
+    let _ = dash.wait();
+
+    assert_eq!(
+        reported,
+        Some(dash_pid),
+        "dash_serving_pid_on must report the REAL, separately-compiled dash's own OS pid \
+         ({dash_pid}), never a stale, zero, or otherwise wrong value; got {reported:?}"
     );
 }
 
@@ -23495,6 +23975,146 @@ fn watch_once_reports_a_mismatched_dead_url_when_only_the_stale_marker_predates_
     );
 }
 
+/// Round 5 (adj-u62c1r4-verdict-reject-sentinel-pid-leaks-to-status,
+/// sdet-u62c1r4-unattributed-pid-sentinel-renders-as-a-fabricated-dead-pid): the MATCHING-port
+/// counterpart of the mismatched-marker sibling above, over the sentinel pid instead of a real
+/// one. `.rigger/dash.marker` and `.rigger/dash.url` name the SAME port (so `pid_if_port_matches`
+/// returns `Some`, taking the well-formed-url, port-matching sub-branch of `watch_poll`'s
+/// `(Some(url), Some(m))` arm - `main.rs` ~7196-7213), and the marker's pid is
+/// [`dash::UNATTRIBUTED_PID`] (spec 62 round 4's documented sentinel) rather than a real dead
+/// pid. Before this fix, `watch_poll` handed that raw `0` straight into
+/// `watch::DashProbe::NotServing`, which `watch::detect` then rendered as "marker names dead pid
+/// 0" - a lie, since `0` was never a real, assigned, dying process. Proves the anomaly is still
+/// reported (the dead port itself is genuine and must not be swallowed), but with no fabricated
+/// pid named - rendering exactly like the no-matching-marker case
+/// (`watch_once_reports_a_dead_dash_when_only_the_url_breadcrumb_is_recorded_and_no_marker_exists`
+/// above already pins that exact phrasing for the genuinely-marker-less shape; this proves the
+/// sentinel-pid shape renders identically, never inventing a pid of its own).
+#[test]
+fn watch_once_never_names_the_unattributed_pid_sentinel_as_a_dead_process() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    // A fresh, not-done run whose own dash this marker+url belong to - the same shape
+    // `watch_once_reports_this_runs_own_dead_marker_when_written_after_its_run_started` uses, so
+    // the round-6 predates-this-run suppression plays no part and the report comes straight from
+    // the live probe.
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["spec 62"]}"#),
+            ("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+        ],
+    );
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    let dead_port = free_loopback_port();
+    DashMarker {
+        port: dead_port,
+        pid: rigger::dash::UNATTRIBUTED_PID,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the sentinel-pid dash marker");
+    std::fs::write(
+        root.join(".rigger/dash.url"),
+        format!("http://127.0.0.1:{dead_port}/"),
+    )
+    .expect("seed the matching dash.url");
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 on a sentinel-pid marker; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("dash liveness") && out.contains(&format!("port {dead_port}")),
+        "the dead port itself is a genuine anomaly and must still be reported, sentinel pid or \
+         not; got:\n{out}"
+    );
+    assert!(
+        !out.contains("marker names dead pid"),
+        "the sentinel pid must never be printed as a fabricated dead process - it was never a \
+         real, assigned pid; got:\n{out}"
+    );
+    assert!(
+        out.contains("no matching marker, no pid"),
+        "a sentinel-pid marker must render exactly like the no-matching-marker case; got:\n{out}"
+    );
+}
+
+/// Round 5 (adv-u62c1r4-fix-direction-would-break-watch-mtime-provenance-if-filtered-at-pid-if-
+/// port-matches): the fix for the sibling test above filters the sentinel pid ONLY at the value
+/// handed to `watch::DashProbe::NotServing`, never inside `dash::pid_if_port_matches` itself -
+/// because `watch_poll`'s `port_matches` (which selects whether `dash_breadcrumb_written_at`
+/// sources from the marker's mtime or the url's) is derived from that SAME call's `is_some()`.
+/// Proves that derivation is intact: a port-matching sentinel marker written STALE (before this
+/// run's own `RunStarted`) with a URL naming the SAME port written FRESH (after `RunStarted`,
+/// simulating a second process rewriting only the url) still gets suppressed by the
+/// predates-this-run check - which only happens if `written_at` is sourced from the STALE
+/// marker's mtime, not the FRESH url's. Had the sentinel been filtered inside
+/// `pid_if_port_matches` instead (turning a genuinely matching marker into an apparent
+/// mismatch), `port_matches` would flip to `false` and `written_at` would wrongly source from
+/// the fresh `url_path`, reporting an anomaly here where none should fire - reintroducing the
+/// wrong-file's-mtime defect class closed at round 9
+/// (adv-u69c1-mismatched-marker-suppression-borrows-wrong-files-mtime).
+#[test]
+fn watch_once_still_sources_written_at_from_the_marker_for_a_port_matching_sentinel() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    let dead_port = free_loopback_port();
+    DashMarker {
+        port: dead_port,
+        pid: rigger::dash::UNATTRIBUTED_PID,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the stale, sentinel-pid dash marker");
+
+    // The same filesystem-mtime safety margin every sibling test in this file uses, so this
+    // run's own RunStarted lands unambiguously AFTER the marker write.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["spec 62"]}"#),
+            ("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+        ],
+    );
+
+    // Another margin so the fresh url write below lands unambiguously AFTER RunStarted too.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    // Names the SAME port as the stale marker (port-matching, unlike round 9's mismatched
+    // sibling) - a second invocation rewriting only the url breadcrumb, never touching the
+    // marker already on disk.
+    std::fs::write(
+        root.join(".rigger/dash.url"),
+        format!("http://127.0.0.1:{dead_port}/"),
+    )
+    .expect("seed the fresh, port-matching dash.url");
+
+    assert!(!root.join(".rigger/dash.attempt").exists());
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 for a port-matching sentinel marker; stderr:\n{err}"
+    );
+    assert!(
+        out.trim().is_empty(),
+        "a port-matching marker written BEFORE this run's own RunStarted must suppress the \
+         report via the predates-this-run check reading the MARKER's mtime (stale) - if \
+         `written_at` instead read the fresh url's mtime, this would wrongly report; got:\n{out}"
+    );
+}
+
 /// SDET periphery gap first flagged at round 9 (sdet-u69c1r9-malformed-url-marker-fallback-
 /// untested) and reconfirmed still open through attempt 2/round 10
 /// (sdet-u69c1-attempt2-malformed-url-marker-fallback-still-untested,
@@ -23546,6 +24166,56 @@ fn watch_once_falls_back_to_the_marker_when_the_recorded_url_is_unparseable() {
         "an unparseable dash.url must fall back to probing the marker's own port and name its \
          pid - the same report a marker-only fixture would produce, not silence and not a \
          url-shaped report; got:\n{out}"
+    );
+}
+
+/// Round 5 (adj-u62c1r4-verdict-reject-sentinel-pid-leaks-to-status): the sibling above proves a
+/// REAL dead pid renders truthfully through the unparseable-`dash.url` fallback arm (`watch_poll`'s
+/// `(Some(url), Some(m))` arm's `None` sub-branch on `dash::url_port(&url)`, src/main.rs) - which,
+/// like the marker-only arm, reads `m.pid` straight from the marker with no
+/// `dash::pid_if_port_matches` call in between (there is no parseable url port to compare
+/// against). It was NOT one of the two sites the round-4 reject named by line range, but it is
+/// the same leak: a marker carrying [`dash::UNATTRIBUTED_PID`] (spec 62 round 4's documented
+/// sentinel) would still render "marker names dead pid 0" here. Proves the sentinel is filtered
+/// at this construction site too.
+#[test]
+fn watch_once_never_names_the_unattributed_pid_sentinel_when_the_url_is_unparseable() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    std::fs::write(root.join(".rigger/dash.url"), "not-a-url")
+        .expect("seed the malformed dash.url");
+
+    let dead_port = free_loopback_port();
+    DashMarker {
+        port: dead_port,
+        pid: rigger::dash::UNATTRIBUTED_PID,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the sentinel-pid dash marker");
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 against an unparseable dash.url with a sentinel-pid \
+         marker; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("dash liveness") && out.contains(&dead_port.to_string()),
+        "the dead marker port itself is a genuine anomaly and must still be reported, sentinel \
+         pid or not; got:\n{out}"
+    );
+    assert!(
+        !out.contains("marker names dead pid"),
+        "the sentinel pid must never be printed as a fabricated dead process - it was never a \
+         real, assigned pid; got:\n{out}"
+    );
+    assert!(
+        out.contains("no matching marker, no pid"),
+        "a sentinel-pid marker must render exactly like the no-matching-marker case; got:\n{out}"
     );
 }
 
