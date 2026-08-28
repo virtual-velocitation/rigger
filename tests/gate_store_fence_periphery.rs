@@ -30,10 +30,12 @@
 //! directory before handing it back - the one store-resolution authority every courier
 //! funnels through, so the fix covers `emit`/`result`/`peers`/`reported`/`prompt` uniformly).
 //!
-//! Eight tests, driving the REAL compiled `rigger` binary as a REAL OS subprocess through the
-//! REAL `gate::ExecRunner` - never a fake Runner (test 7 additionally drives the full
+//! Nine tests, eight driving the REAL compiled `rigger` binary as a REAL OS subprocess through
+//! the REAL `gate::ExecRunner` - never a fake Runner (test 7 additionally drives the full
 //! `conductor::run` orchestration around that same real `ExecRunner`, rather than calling it
-//! directly, with only its one agent spawn faked - the gate side stays 100% real throughout):
+//! directly, with only its one agent spawn faked - the gate side stays 100% real throughout);
+//! the ninth (test 9) is a self-contained regression pin for this file's own env-var restore
+//! discipline and drives no subprocess at all:
 //!
 //! 1. `a_real_fenced_courier_actually_succeeds_and_lands_in_an_isolated_persistent_store`:
 //!    a non-empty `target_dir` (the unit-worktree gate signal) fences a real courier
@@ -132,6 +134,14 @@
 //!    so a future regression is not "nothing observable happens" but "a concrete, checked
 //!    fixture directory gains a phantom entry", exactly the shape the adjudicator's own manual
 //!    repro found.
+//! 9. `restore_env_vars_returns_a_captured_prior_value_not_removes_it`: tests 2 and 8 above
+//!    redirect `HOME`/`XDG_STATE_HOME` through `RestoreEnvVars`, a small shared RAII guard that
+//!    captures each var's value BEFORE mutating it and restores that captured value on drop -
+//!    never an unconditional `remove_var`, which would permanently unset a var this process
+//!    had ambiently set for the rest of this test binary's life the moment either test ran on
+//!    a real machine. This test pins that capture/restore round-trip directly, in isolation,
+//!    rather than trusting tests 2 and 8 to notice a silently missing environment variable as
+//!    a side effect of some later, unrelated test.
 //!
 //! Both cwd and target_dir are passed to `ExecRunner::run` explicitly for every call in this
 //! file - never left empty to "inherit the ambient cwd" - so the only variable that ever
@@ -156,6 +166,34 @@ use rigger::worktree::{review_fence_sibling, unit_cache_sibling, Worktree};
 
 mod common;
 use common::rigger_bin;
+
+/// RAII guard restoring a set of environment variables to their PRIOR value on drop - captured
+/// before mutation, not unconditionally removed - mirroring this codebase's own established
+/// `RestoreTmpdir` pattern (`tests/build_budget_slots_periphery.rs`). An unconditional
+/// `remove_var` on drop is a real regression trap: on any machine that had a variable ambiently
+/// set before the guarded code ran (the norm for `HOME`), it would permanently unset that
+/// variable for the rest of this test binary's process life the moment the guarded test ran,
+/// silently starving every later test in the same binary that reads it.
+struct RestoreEnvVars(Vec<(&'static str, Option<std::ffi::OsString>)>);
+
+impl RestoreEnvVars {
+    /// Captures each name's CURRENT value before the caller mutates it. Call this before any
+    /// `std::env::set_var`/`remove_var` on the same names, never after.
+    fn capture(names: &[&'static str]) -> Self {
+        Self(names.iter().map(|&n| (n, std::env::var_os(n))).collect())
+    }
+}
+
+impl Drop for RestoreEnvVars {
+    fn drop(&mut self) {
+        for (name, prior) in self.0.drain(..) {
+            match prior {
+                Some(v) => std::env::set_var(name, v),
+                None => std::env::remove_var(name),
+            }
+        }
+    }
+}
 
 fn git_init_quiet(root: &Path) {
     Command::new("git")
@@ -333,14 +371,8 @@ fn an_unfenced_integrated_tree_gate_still_walks_up_to_the_live_store() {
     // than to a `Command::env` call, because the real courier subprocess is spawned inside
     // `ExecRunner::run`, not by a `Command` this test builds directly.
     let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
+    let _restore_state_home = RestoreEnvVars::capture(&["XDG_STATE_HOME"]);
     std::env::set_var("XDG_STATE_HOME", state.path());
-    struct RestoreStateHome;
-    impl Drop for RestoreStateHome {
-        fn drop(&mut self) {
-            std::env::remove_var("XDG_STATE_HOME");
-        }
-    }
-    let _restore_state_home = RestoreStateHome;
 
     let topo = build_topology();
     let live_before = std::fs::read(&topo.live_events).unwrap();
@@ -861,16 +893,9 @@ fn an_unfenced_integrated_tree_couriers_registry_refresh_never_touches_the_real_
     // (`XDG_STATE_HOME` wins over `HOME` whenever it is set) means this is where the write
     // must land as long as the redirect is intact.
     let redirected_state = tempfile::tempdir().expect("a temp redirected XDG_STATE_HOME");
+    let _restore = RestoreEnvVars::capture(&["HOME", "XDG_STATE_HOME"]);
     std::env::set_var("HOME", ambient_home.path());
     std::env::set_var("XDG_STATE_HOME", redirected_state.path());
-    struct Restore;
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            std::env::remove_var("HOME");
-            std::env::remove_var("XDG_STATE_HOME");
-        }
-    }
-    let _restore = Restore;
 
     let result = ExecRunner.run(
         &emit_gate("unfenced-registry-emit", "unfenced-registry-probe"),
@@ -904,5 +929,50 @@ fn an_unfenced_integrated_tree_couriers_registry_refresh_never_touches_the_real_
         ambient_entries.is_empty(),
         "the HOME-derived ambient registry directory this call would otherwise have targeted, \
          absent the XDG_STATE_HOME redirect, must stay untouched: {ambient_entries:?}"
+    );
+}
+
+/// Regression pin for `adv-u62c4-r4-fence-fix-remove-var-not-restore-deviates-from-established-
+/// pattern`: tests 2 and 8 above used to unconditionally `remove_var` HOME/XDG_STATE_HOME on
+/// drop instead of restoring this process's real prior value - on any machine that actually had
+/// one set (the norm for HOME), that would permanently unset it for the rest of this test
+/// binary's process life the moment either test ran. `RestoreEnvVars` is the shared fix both
+/// call sites now route through; this test pins its capture/restore round-trip directly, in
+/// isolation, rather than trusting tests 2 and 8 to notice a silently missing environment
+/// variable as a side effect of some later, unrelated test in this same binary. Drives no
+/// subprocess and touches no store - purely a test-infrastructure correctness pin, self-scoped
+/// in its own outer `RestoreEnvVars` so it leaves the real ambient HOME/XDG_STATE_HOME exactly
+/// as it found them regardless of what this machine has set.
+#[test]
+#[serial_test::serial(cwd)]
+fn restore_env_vars_returns_a_captured_prior_value_not_removes_it() {
+    let _outer_restore = RestoreEnvVars::capture(&["HOME", "XDG_STATE_HOME"]);
+    let sentinel_home = "a-genuinely-fake-sentinel-home-value-for-this-one-test";
+    std::env::set_var("HOME", sentinel_home);
+    std::env::remove_var("XDG_STATE_HOME");
+
+    {
+        let _restore = RestoreEnvVars::capture(&["HOME", "XDG_STATE_HOME"]);
+        std::env::set_var("HOME", "some-other-value-the-guarded-code-set");
+        std::env::set_var("XDG_STATE_HOME", "some-value-that-was-never-there-before");
+        assert_eq!(
+            std::env::var_os("HOME"),
+            Some(std::ffi::OsString::from(
+                "some-other-value-the-guarded-code-set"
+            )),
+            "sanity: the guarded mutation actually took effect while the inner guard is alive"
+        );
+    }
+
+    assert_eq!(
+        std::env::var_os("HOME"),
+        Some(std::ffi::OsString::from(sentinel_home)),
+        "HOME must be RESTORED to this scope's captured prior value once the inner guard \
+         drops - not left at the guarded code's value and not unset"
+    );
+    assert!(
+        std::env::var_os("XDG_STATE_HOME").is_none(),
+        "XDG_STATE_HOME had no prior value in this scope, so the inner guard's None branch \
+         must leave it unset again, not stuck at the guarded code's value"
     );
 }
