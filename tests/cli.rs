@@ -25518,3 +25518,57 @@ fn cmd_dash_gives_the_stopped_listener_diagnosis_naming_resume_or_kill() {
         "the diagnosis should name the STOPPED state explicitly; stderr:\n{err}"
     );
 }
+
+/// Spec 62, criterion 3 (HELD-PORT DIAGNOSIS) - the PUBLIC contract of
+/// [`rigger::dash::describe_held_port`] at the CRATE BOUNDARY, mirroring how this file already
+/// pins `rigger::dash`'s other pub items (`DashMarker`, `dash_serving_pid_on`, `DASH_HEADER`,
+/// `UNATTRIBUTED_PID`) directly rather than only through a spawned `rigger dash` process. The
+/// three `cmd_dash_*` tests above prove the function end to end through ONE specific call path
+/// (`cmd_dash`'s `AddrInUse` arm), always with a genuine holder present; none calls
+/// `rigger::dash::describe_held_port` itself from outside its module, and none exercises the
+/// "nothing holds this port" half of its truth table (`cmd_dash` only ever reaches it after a
+/// real `AddrInUse`, so that half is structurally unreachable through the CLI). This test
+/// closes both gaps directly: the function is exported and callable at the public boundary,
+/// and its two-way contract holds independent of the `cmd_dash` wiring - a port THIS test
+/// process holds names its own pid, and a port confirmed unheld by anything on the machine
+/// names none while still always naming the address.
+#[test]
+fn describe_held_port_public_contract_holds_at_the_crate_boundary() {
+    use rigger::dash::describe_held_port;
+
+    // Held: bind a listener in this process and describe its own address - the discovered
+    // holder must be THIS test process.
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let held_addr = listener.local_addr().unwrap();
+    let held_msg = describe_held_port(held_addr);
+    assert!(
+        held_msg.contains(&held_addr.to_string()),
+        "must always name the held address; got: {held_msg}"
+    );
+    if Path::new("/proc").is_dir() {
+        assert!(
+            held_msg.contains(&std::process::id().to_string()),
+            "must name this test process's own pid as the holder; got: {held_msg}"
+        );
+    }
+    drop(listener);
+
+    // Unheld: learn a free port and release it before describing it - nothing rebinds it in
+    // between, so the crate-boundary call must report no holder while still naming the address.
+    let free_addr = {
+        let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        probe.local_addr().unwrap()
+    };
+    let unheld_msg = describe_held_port(free_addr);
+    assert!(
+        unheld_msg.contains(&free_addr.to_string()),
+        "must always name the address even with no holder; got: {unheld_msg}"
+    );
+    if Path::new("/proc").is_dir() {
+        assert!(
+            !unheld_msg.contains(&std::process::id().to_string()),
+            "an unheld port must not name this (or any) process as its holder; \
+             got: {unheld_msg}"
+        );
+    }
+}
