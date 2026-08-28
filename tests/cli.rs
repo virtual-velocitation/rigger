@@ -25731,17 +25731,23 @@ fn step_names_the_stopped_holder_when_the_step_paths_own_auto_start_hits_the_pre
 /// Spec 62, criterion 3 (HELD-PORT DIAGNOSIS) - the PUBLIC contract of
 /// [`rigger::dash::describe_held_port_if_confirmed`] at the CRATE BOUNDARY, mirroring
 /// `describe_held_port_public_contract_holds_at_the_crate_boundary` above for its round-3
-/// sibling (spec 62 round 3 fix, adj-u62c3r2-verdict-reject-non-addrinuse-mislabel). Unlike
-/// `describe_held_port`, whose one production caller (`cmd_dash`) only ever reaches it after an
-/// already-confirmed `AddrInUse`, this function's contract is `Option<String>`: `Some` ONLY when
-/// a holder is independently confirmed, `None` when nothing can be confirmed holding the port -
-/// the exact gate `spawn_run_dashboard_detached` (main.rs) now relies on so a merely-slow or
-/// permission-denied step-path start is never misreported as a held port. No test in this file
-/// calls `rigger::dash::describe_held_port_if_confirmed` directly from outside its module before
-/// this one; the production call sites (`spawn_run_dashboard_detached`, exercised below and by
-/// the step-path tests above) prove the WIRING, but never pin the function's own public contract
-/// independent of that wiring - the same gap `describe_held_port_public_contract_holds_at_the_
-/// crate_boundary` closed for its sibling at round 1.
+/// sibling (spec 62 round 3 fix, adj-u62c3r2-verdict-reject-non-addrinuse-mislabel). This
+/// function's contract is `Option<String>`: `Some` ONLY when a holder is independently
+/// confirmed, `None` when nothing can be confirmed holding the port - never a claim the
+/// discovery has not itself confirmed. Its real production role (spec 62 round 5 fix,
+/// adj-u62c3r5-verdict-reject-stale-caller-doc-survives-tests) is exclusively as
+/// `describe_held_port`'s message-only wrapper: `describe_held_port`'s one production caller
+/// is `cmd_dash`'s manual `rigger dash` CLI arm (`src/main.rs`), reached only after
+/// `bind_singleton` has itself already confirmed a genuine `AddrInUse`. The step-path
+/// auto-start, `wait_for_dash_bind_or_diagnose` (`src/main.rs`), calls `held_port_holder`
+/// directly instead (round 4), never this function, since it also needs the raw discovered
+/// pid; see that function's own doc. No test in this file calls
+/// `rigger::dash::describe_held_port_if_confirmed` directly from outside its module before this
+/// one; the WIRING through `describe_held_port` is proved by the `cmd_dash_*` tests and by
+/// `describe_held_port_public_contract_holds_at_the_crate_boundary` above, but neither pins
+/// THIS function's own public contract independent of that wrapping - the same gap
+/// `describe_held_port_public_contract_holds_at_the_crate_boundary` closed for its sibling at
+/// round 1.
 #[test]
 fn describe_held_port_if_confirmed_public_contract_holds_at_the_crate_boundary() {
     use rigger::dash::describe_held_port_if_confirmed;
