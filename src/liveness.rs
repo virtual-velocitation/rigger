@@ -128,6 +128,61 @@ pub fn marker_path(scratch_root: &str, run_id: &str, spawn_id: &str) -> Option<s
     marker_filename(spawn_id).map(|safe| dir.join(safe))
 }
 
+/// Whether ANY per-spawn liveness marker under `scratch_root` - any run, any spawn - has been
+/// touched more recently than `max_age` ago (spec 62, criterion 5: the machine-level
+/// singleton's self-reap watcher must see agent liveness, not just the instance registry).
+///
+/// The watcher has no run id or wave to check ONE spawn's marker against - the registry it
+/// already polls deliberately captures no per-run inputs (spec 50 retargets the reap trigger
+/// at the machine-global registry, not one project's run) - so this generalizes
+/// [`marker_path`]'s exact per-spawn lookup into "is anything alive at all" over the SAME
+/// [`MARKER_SUBDIR`] convention every other liveness reader walks (`sweep`, `rigger status`,
+/// the dash's per-spawn ages): reusing the ONE marker mechanism rather than standing up a
+/// second, divergent liveness check. An empty `scratch_root` (no repo, mirroring every other
+/// caller's repo-less degrade), an absent marker directory (no agent has ever run here), or
+/// any unreadable entry along the way all read as "no live agent" - never an error - the same
+/// conservative default [`sweep`]'s own doc names for a spawn with no marker at all.
+pub fn any_marker_fresh(scratch_root: &str, now: SystemTime, max_age: Duration) -> bool {
+    if scratch_root.is_empty() {
+        return false;
+    }
+    let root = std::path::Path::new(scratch_root).join(MARKER_SUBDIR);
+    any_fresh_file_under(&root, now, max_age)
+}
+
+/// The recursive freshness walk behind [`any_marker_fresh`]: true iff any REGULAR file under
+/// `dir` (searched depth-first, following one level of run-id subdirectory the way
+/// [`marker_path`] nests a spawn's marker below `MARKER_SUBDIR`) has an mtime within
+/// `max_age` of `now`. A directory that cannot be listed, or a file whose mtime cannot be
+/// read, is skipped rather than failing the whole scan - matching this module's established
+/// "absent/unreadable degrades to no signal" idiom.
+fn any_fresh_file_under(dir: &std::path::Path, now: SystemTime, max_age: Duration) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            if any_fresh_file_under(&entry.path(), now, max_age) {
+                return true;
+            }
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+        let Ok(mtime) = entry.metadata().and_then(|m| m.modified()) else {
+            continue;
+        };
+        if !is_stale(now, mtime, max_age) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Whether a spawn last seen alive at `last_seen` is STALE at `now` given its wall-clock
 /// bound: `now - last_seen > max_wall_clock`. A `last_seen` in the future (clock skew) is
 /// never stale. A zero `max_wall_clock` means "no bound" and is never stale.
@@ -905,5 +960,68 @@ mod tests {
             read_hung_cursor(root, "r1").is_empty(),
             "blank lines must never surface as a phantom hung id"
         );
+    }
+
+    #[test]
+    fn any_marker_fresh_is_false_for_an_empty_or_absent_scratch_root() {
+        let now = SystemTime::now();
+        let bound = Duration::from_secs(900);
+
+        // No scratch root at all (a repo-less caller) - the same degrade every other reader
+        // in this module gives an empty scratch root.
+        assert!(!any_marker_fresh("", now, bound));
+
+        // A real, but never-populated, scratch root - no `agent-live/` dir has ever been
+        // created, so there is nothing to find.
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().to_str().unwrap();
+        assert!(!any_marker_fresh(root, now, bound));
+    }
+
+    #[test]
+    fn any_marker_fresh_finds_a_fresh_marker_nested_under_a_run_id_directory() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().to_str().unwrap();
+        // Mirrors the real shape `marker_path` builds: `<root>/agent-live/<run>/<spawn>`.
+        let path = marker_path(root, "run-1", "u1c1/implementer#0").unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"").unwrap();
+
+        let now = SystemTime::now();
+        assert!(
+            any_marker_fresh(root, now, Duration::from_secs(900)),
+            "a just-written marker nested under a run-id directory must be found fresh"
+        );
+    }
+
+    #[test]
+    fn any_marker_fresh_is_false_once_every_marker_is_older_than_max_age() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().to_str().unwrap();
+        let path = marker_path(root, "run-1", "u1c1/implementer#0").unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"").unwrap();
+
+        // `now` far enough past the marker's real (just-now) mtime that it falls outside a
+        // tiny bound - the marker exists but is stale relative to `max_age`.
+        let far_future = SystemTime::now() + Duration::from_secs(3600);
+        assert!(
+            !any_marker_fresh(root, far_future, Duration::from_secs(1)),
+            "a marker older than max_age must not read as a live agent signal"
+        );
+    }
+
+    #[test]
+    fn any_marker_fresh_skips_unreadable_entries_without_erroring() {
+        // A degenerate marker directory (no run subdir, no spawn file) is simply empty -
+        // `any_marker_fresh` must degrade to false, not panic.
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().to_str().unwrap();
+        std::fs::create_dir_all(std::path::Path::new(root).join(MARKER_SUBDIR)).unwrap();
+        assert!(!any_marker_fresh(
+            root,
+            SystemTime::now(),
+            Duration::from_secs(900)
+        ));
     }
 }

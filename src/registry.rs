@@ -182,14 +182,22 @@ pub fn is_stale(heartbeat_ms: u64, now_ms: u64, ttl_ms: u64) -> bool {
     now_ms.saturating_sub(heartbeat_ms) > ttl_ms
 }
 
-/// Read every LIVE instance from `dir`, PRUNING (deleting) any entry whose heartbeat is stale past
-/// `ttl_ms` - "entries whose heartbeat goes stale are pruned by any reader" (spec 50). An absent
-/// directory is an empty registry (no error). Unreadable or unparseable entries are skipped, never
-/// fatal - the registry's loss is harmless. Live entries are returned; their order is unspecified.
-pub fn read_live(dir: &Path, now_ms: u64, ttl_ms: u64) -> Vec<Instance> {
-    let mut live = Vec::new();
+/// One parsed registry entry, paired with the file it was read from - the file path is needed
+/// only by [`read_live`]'s prune step, so [`read_all`] discards it and keeps just the [`Instance`].
+struct ParsedEntry {
+    path: PathBuf,
+    inst: Instance,
+}
+
+/// Parse every `.json` entry currently under `dir`, applying NO staleness filter and pruning
+/// NOTHING - the shared read+parse core behind both [`read_live`] (which additionally prunes
+/// stale entries) and [`read_all`] (which returns everything as-is). An absent directory yields
+/// no entries (no error); a non-`.json` sibling, an unreadable file, or an unparseable body are
+/// each skipped, never fatal - the registry's loss is harmless. Order is unspecified.
+fn parse_entries(dir: &Path) -> Vec<ParsedEntry> {
+    let mut parsed = Vec::new();
     let Ok(entries) = std::fs::read_dir(dir) else {
-        return live; // absent dir => empty registry
+        return parsed; // absent dir => empty registry
     };
     for entry in entries.flatten() {
         let path = entry.path();
@@ -202,13 +210,38 @@ pub fn read_live(dir: &Path, now_ms: u64, ttl_ms: u64) -> Vec<Instance> {
         let Ok(inst) = serde_json::from_slice::<Instance>(&body) else {
             continue;
         };
-        if is_stale(inst.heartbeat_ms, now_ms, ttl_ms) {
-            let _ = std::fs::remove_file(&path); // prune stale, best-effort
+        parsed.push(ParsedEntry { path, inst });
+    }
+    parsed
+}
+
+/// Read every LIVE instance from `dir`, PRUNING (deleting) any entry whose heartbeat is stale past
+/// `ttl_ms` - "entries whose heartbeat goes stale are pruned by any reader" (spec 50). An absent
+/// directory is an empty registry (no error). Unreadable or unparseable entries are skipped, never
+/// fatal - the registry's loss is harmless. Live entries are returned; their order is unspecified.
+pub fn read_live(dir: &Path, now_ms: u64, ttl_ms: u64) -> Vec<Instance> {
+    let mut live = Vec::new();
+    for entry in parse_entries(dir) {
+        if is_stale(entry.inst.heartbeat_ms, now_ms, ttl_ms) {
+            let _ = std::fs::remove_file(&entry.path); // prune stale, best-effort
             continue;
         }
-        live.push(inst);
+        live.push(entry.inst);
     }
     live
+}
+
+/// Read EVERY registered instance currently present under `dir`, regardless of heartbeat
+/// freshness - unlike [`read_live`], this applies NO staleness filter and PRUNES NOTHING (spec
+/// 62 criterion 5 round 2, cross-project agent liveness). The dash's self-reap watcher needs to
+/// find every registered project's OWN scratch root even once that project's registry HEARTBEAT
+/// has itself aged out - the same courier-cadence-lapse gap criterion 5 already closes for the
+/// launching project alone - and [`read_live`]'s freshness filter (plus its prune side effect)
+/// would silently exclude, and then permanently forget, exactly the entry this check exists to
+/// find. An absent directory is an empty registry (no error); an unreadable or unparseable entry
+/// is skipped, never fatal, matching [`read_live`]. Order is unspecified.
+pub fn read_all(dir: &Path) -> Vec<Instance> {
+    parse_entries(dir).into_iter().map(|e| e.inst).collect()
 }
 
 #[cfg(test)]
@@ -308,6 +341,52 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = instances_dir(tmp.path()).join("does-not-exist");
         assert!(read_live(&dir, 0, DEFAULT_IDLE_MS).is_empty());
+    }
+
+    #[test]
+    fn read_all_returns_a_stale_entry_read_live_would_have_pruned_and_never_deletes_it() {
+        // Spec 62 criterion 5 round 2: `read_all` is the non-pruning, non-filtering sibling of
+        // `read_live` - a project whose registry heartbeat has aged out (the exact
+        // courier-cadence-lapse gap criterion 5 exists to survive) must still be discoverable by
+        // its `root`, not silently dropped the way `read_live`'s freshness filter would.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = instances_dir(tmp.path());
+        let inst = local("/home/dev/proj-b", "/home/dev/proj-b/.rigger/events.db", 0);
+        let path = write(&dir, &inst).unwrap();
+
+        // Well past the idle window: `read_live` would prune this entry outright.
+        let all = read_all(&dir);
+        assert_eq!(
+            all,
+            vec![inst],
+            "a stale-heartbeat entry is still returned verbatim by read_all"
+        );
+        assert!(
+            path.exists(),
+            "read_all must never delete an entry, stale or not"
+        );
+    }
+
+    #[test]
+    fn read_all_returns_every_registered_root_regardless_of_freshness() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = instances_dir(tmp.path());
+        write(&dir, &local("/a", "/a/.rigger/events.db", 0)).unwrap();
+        write(&dir, &local("/b", "/b/.rigger/events.db", u64::MAX)).unwrap();
+        let mut roots: Vec<String> = read_all(&dir).into_iter().map(|i| i.root).collect();
+        roots.sort();
+        assert_eq!(
+            roots,
+            vec!["/a".to_string(), "/b".to_string()],
+            "read_all returns a fresh AND a hopelessly stale entry alike"
+        );
+    }
+
+    #[test]
+    fn read_all_over_an_absent_directory_is_an_empty_registry_not_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = instances_dir(tmp.path()).join("does-not-exist");
+        assert!(read_all(&dir).is_empty());
     }
 
     #[test]

@@ -20847,6 +20847,23 @@ fn write_live_instance(regdir: &std::path::Path, project: &str, root: &str) {
     rigger::registry::write(regdir, &inst).expect("write a live registry instance");
 }
 
+/// Write a registry instance for `project` at `root` with a heartbeat already at the unix epoch -
+/// hopelessly stale from the moment it is written, unlike [`write_live_instance`]'s fresh
+/// `now_ms()` heartbeat. Used to prove a property a fresh-then-ages-out entry cannot: a registered
+/// project whose registry entry was NEVER live during the watcher's own lifetime.
+fn write_stale_instance(regdir: &std::path::Path, project: &str, root: &str) {
+    use rigger::registry::{Instance, StoreIdentity};
+    let inst = Instance {
+        project: project.to_string(),
+        root: root.to_string(),
+        store: StoreIdentity::Local {
+            path: format!("{root}/.rigger/events.db"),
+        },
+        heartbeat_ms: 0,
+    };
+    rigger::registry::write(regdir, &inst).expect("write a stale registry instance");
+}
+
 /// Spec 50, criterion 5 end-to-end, through the BUILT binary: a detached `rigger dash --reap-on-idle`
 /// (the exact flag the ensure path passes) keeps serving WHILE a registered instance heartbeats, and
 /// SELF-REAPS once the registry empties - leaving no orphaned dash on a quiet machine. Nothing in
@@ -21148,6 +21165,406 @@ fn a_reap_on_idle_singleton_does_not_reap_before_any_instance_has_registered() {
     assert_eq!(n, 0, "a self-reaped dash should have its stdout at EOF");
 }
 
+/// Write (or refresh) a liveness marker file at `path`, creating its parent directory as needed.
+/// Rewriting an existing file refreshes its mtime - the direct-filesystem analogue of a spawn's
+/// own heartbeat touch (spec 10), used here to simulate a live agent without spawning a real
+/// worker process. Stands in for the raw `touch` a real agent performs; the marker's CONTENT is
+/// never read by anything, only its mtime.
+fn touch_marker(path: &std::path::Path) {
+    std::fs::create_dir_all(path.parent().unwrap()).expect("create marker parent dir");
+    std::fs::write(path, b"").expect("write liveness marker");
+}
+
+/// Spec 62, criterion 5 (SINGLETON SURVIVES LIVE WORK, OWNS the idle judgment) end to end,
+/// through the BUILT binary: a `rigger dash --reap-on-idle` must NOT self-reap while a fresh
+/// in-flight AGENT liveness marker is present, even once the machine-global instance REGISTRY has
+/// genuinely aged out and gone empty - the exact gap the registry-only decision (spec 50 criterion
+/// 5, proven by the sibling tests above) left open: an agent mid-build with no recent courier call
+/// keeps its own liveness marker fresh (spec 10's heartbeat) without necessarily refreshing the
+/// registry on the same cadence. Only once BOTH the registry AND the agent liveness marker have
+/// gone quiet does the singleton reap - proving this criterion's own OWNED idle judgment, not
+/// just the registry-only judgment the sibling tests already lock in.
+///
+/// The registry instance is written ONCE (never re-heartbeated), so it ages out on its own past
+/// the fast test window - the "aged-out registry" the Done-when text names. A background thread
+/// keeps a SEPARATE liveness marker fresh under a temp scratch root (`RIGGER_TMPDIR`), standing in
+/// for a real spawn's own heartbeat touch, until the test lets it go idle too.
+#[test]
+fn a_reap_on_idle_singleton_survives_a_fresh_agent_liveness_marker_after_the_registry_ages_out() {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
+
+    // A machine-global registry the dash and the test share.
+    let state = tempfile::tempdir().unwrap();
+    let xdg = state.path().to_str().unwrap().to_string();
+    let regdir = rigger::registry::instances_dir(state.path());
+
+    // A hermetic scratch root the dash resolves via `RIGGER_TMPDIR`, so its agent-liveness scan
+    // (`rigger::liveness::any_marker_fresh`) reads exactly what this test writes and nothing from
+    // the real repo's own `.rigger/tmp`.
+    let scratch = tempfile::tempdir().unwrap();
+    let scratch_root = scratch.path().to_str().unwrap().to_string();
+    let marker_path =
+        rigger::liveness::marker_path(&scratch_root, "run-1", "u1c1/implementer#0").unwrap();
+
+    // ONE registry write, never refreshed: it ages out on its own once the fast test window
+    // elapses - the "aged-out registry" half of the criterion, driven with no ongoing heartbeat.
+    write_live_instance(&regdir, "proj-a", "/home/dev/proj-a");
+
+    // The agent liveness marker starts fresh and is kept fresh by a background thread - the "fresh
+    // in-flight agent liveness signal" half of the criterion.
+    touch_marker(&marker_path);
+    let stop = Arc::new(AtomicBool::new(false));
+    let marker_thread_path = marker_path.clone();
+    let marker_stop = stop.clone();
+    let heartbeat = std::thread::spawn(move || {
+        while !marker_stop.load(Ordering::Relaxed) {
+            touch_marker(&marker_thread_path);
+            std::thread::sleep(Duration::from_millis(150));
+        }
+    });
+
+    let port = free_loopback_port();
+    let mut child = common::rigger_courier()
+        .args(["dash", "--port", &port.to_string(), "--reap-on-idle"])
+        .env("XDG_STATE_HOME", &xdg)
+        .env("RIGGER_TMPDIR", &scratch_root)
+        // Same fast poll/stale envs as the registry-only tests: the registry entry above ages
+        // out within ~2s, and (were the agent-liveness signal absent) the singleton would reap
+        // almost immediately after - a strong signal if it wrongly does.
+        .env("RIGGER_DASH_REAP_POLL_MS", "150")
+        .env("RIGGER_DASH_REAP_STALE_SECS", "2")
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn `rigger dash --reap-on-idle`");
+    let mut out = child.stdout.take().expect("dash stdout is piped");
+
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 1];
+        let n = out.read(&mut buf).unwrap_or(0);
+        let _ = tx.send(n);
+    });
+
+    if !matches!(http_get(&format!("http://127.0.0.1:{port}/")), Some(body) if body.contains("rigger dash"))
+    {
+        stop.store(true, Ordering::Relaxed);
+        let _ = heartbeat.join();
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("the `rigger dash --reap-on-idle` never served its page");
+    }
+
+    // Well past the registry's 2s window (several poll intervals beyond it), with the marker
+    // thread still refreshing: the registry alone has gone empty, but the agent liveness signal
+    // is fresh, so the singleton must NOT reap. A read here is exactly the gap this criterion
+    // closes - reaping out from under a live agent whose courier cadence lapsed.
+    if rx.recv_timeout(Duration::from_millis(3500)).is_ok() {
+        stop.store(true, Ordering::Relaxed);
+        let _ = heartbeat.join();
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!(
+            "the singleton self-reaped while the registry was empty but a fresh in-flight agent \
+             liveness marker was still present - the idle judgment must see the agent, not just \
+             the registry"
+        );
+    }
+    // Still genuinely serving (not merely a blocked-but-dead pipe).
+    assert!(
+        matches!(http_get(&format!("http://127.0.0.1:{port}/")), Some(body) if body.contains("rigger dash")),
+        "the singleton must still serve while the agent liveness marker is fresh"
+    );
+
+    // Now let the agent liveness marker go idle too: with BOTH signals quiet, the singleton
+    // reaps exactly as spec 50 criterion 5 always has.
+    stop.store(true, Ordering::Relaxed);
+    heartbeat.join().expect("marker heartbeat thread joins");
+
+    let reaped = rx.recv_timeout(Duration::from_secs(12));
+    let _ = child.kill();
+    let _ = child.wait();
+    let n = reaped.expect(
+        "the singleton did not SELF-REAP within 12s after BOTH the registry and the agent \
+         liveness marker went idle - a genuinely quiet machine's dash must not leak",
+    );
+    assert_eq!(n, 0, "a self-reaped dash should have its stdout at EOF");
+}
+
+/// Spec 62, criterion 5 round 2 (adjudication `adj-u62c5-verdict-reject-cross-project-blindness`,
+/// finding `adv-u62c5-agent-liveness-scoped-to-launching-project-only`): the idle judgment must
+/// see a fresh agent-liveness marker on ANY registered project, not only the one whose CWD
+/// happened to launch the machine-wide singleton. This is the CROSS-project sibling of
+/// `a_reap_on_idle_singleton_survives_a_fresh_agent_liveness_marker_after_the_registry_ages_out`
+/// above (same-project): here the fresh marker belongs to a SECOND, entirely different project
+/// (its own root, its own derived scratch path - never `RIGGER_TMPDIR`, which this test reserves
+/// for isolating the LAUNCHING project's own scratch root from the real repo this test binary
+/// runs inside) whose OWN registry entry is written ONCE and never refreshed, so it ages out on
+/// its own past the fast test window - reproducing the adversary's empirical repro (two
+/// registered projects, both registries aged out, one project's own agent-liveness marker still
+/// fresh) as a permanent regression test.
+#[test]
+fn a_reap_on_idle_singleton_survives_a_second_registered_projects_fresh_agent_liveness_marker() {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
+
+    // A machine-global registry the dash and the test share.
+    let state = tempfile::tempdir().unwrap();
+    let xdg = state.path().to_str().unwrap().to_string();
+    let regdir = rigger::registry::instances_dir(state.path());
+
+    // The LAUNCHING project's own scratch root: hermetic and left EMPTY (no marker ever written
+    // there), so its own agent-liveness signal reads false throughout - isolating the assertion
+    // to the SECOND project's marker alone, and keeping this test off the real repo's own live
+    // `agent-live` markers (this test binary runs inside an actual, in-use rigger checkout).
+    let own_scratch = tempfile::tempdir().unwrap();
+    let own_scratch_root = own_scratch.path().to_str().unwrap().to_string();
+
+    // The SECOND registered project: its own root, holding NO `.rigger/workflow.yml` (so its
+    // derived scratch root falls to the plain `<root>/.rigger/tmp` default rung - the same
+    // resolution its own `rigger` would use for itself, per `foreign_instance_scratch_root`),
+    // entirely distinct from `own_scratch_root` above and never touched by `RIGGER_TMPDIR`.
+    let other_project = tempfile::tempdir().unwrap();
+    let other_root = other_project.path().to_str().unwrap().to_string();
+    let other_scratch_root = format!("{other_root}/.rigger/tmp");
+    let other_marker_path =
+        rigger::liveness::marker_path(&other_scratch_root, "run-1", "u2c1/implementer#0").unwrap();
+
+    // ONE registry write for the second project, never refreshed: it ages out on its own past
+    // the fast test window - the "both registries aged out" half of the adversary's repro.
+    write_live_instance(&regdir, "proj-b", &other_root);
+
+    // The second project's own agent liveness marker starts fresh and is kept fresh by a
+    // background thread - the live-agent-on-a-different-project half of the repro.
+    touch_marker(&other_marker_path);
+    let stop = Arc::new(AtomicBool::new(false));
+    let marker_thread_path = other_marker_path.clone();
+    let marker_stop = stop.clone();
+    let heartbeat = std::thread::spawn(move || {
+        while !marker_stop.load(Ordering::Relaxed) {
+            touch_marker(&marker_thread_path);
+            std::thread::sleep(Duration::from_millis(150));
+        }
+    });
+
+    let port = free_loopback_port();
+    let mut child = common::rigger_courier()
+        .args(["dash", "--port", &port.to_string(), "--reap-on-idle"])
+        .env("XDG_STATE_HOME", &xdg)
+        .env("RIGGER_TMPDIR", &own_scratch_root)
+        .env("RIGGER_DASH_REAP_POLL_MS", "150")
+        .env("RIGGER_DASH_REAP_STALE_SECS", "2")
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn `rigger dash --reap-on-idle`");
+    let mut out = child.stdout.take().expect("dash stdout is piped");
+
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 1];
+        let n = out.read(&mut buf).unwrap_or(0);
+        let _ = tx.send(n);
+    });
+
+    if !matches!(http_get(&format!("http://127.0.0.1:{port}/")), Some(body) if body.contains("rigger dash"))
+    {
+        stop.store(true, Ordering::Relaxed);
+        let _ = heartbeat.join();
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("the `rigger dash --reap-on-idle` never served its page");
+    }
+
+    // Well past the second project's 2s registry window (several poll intervals beyond it), with
+    // its marker thread still refreshing: BOTH registries are now empty (the launching project
+    // was never registered at all; proj-b's own entry aged out and was pruned), but proj-b's own
+    // agent liveness marker is fresh under ITS OWN scratch root - the singleton must NOT reap. A
+    // read here is exactly the cross-project blindness this criterion round closes.
+    if rx.recv_timeout(Duration::from_millis(3500)).is_ok() {
+        stop.store(true, Ordering::Relaxed);
+        let _ = heartbeat.join();
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!(
+            "the singleton self-reaped while a DIFFERENT registered project's own agent \
+             liveness marker was still fresh - the idle judgment must see every registered \
+             project's agent liveness, not only the launching project's own"
+        );
+    }
+    // Still genuinely serving (not merely a blocked-but-dead pipe).
+    assert!(
+        matches!(http_get(&format!("http://127.0.0.1:{port}/")), Some(body) if body.contains("rigger dash")),
+        "the singleton must still serve while the OTHER project's agent liveness marker is fresh"
+    );
+
+    // Now let the second project's agent liveness marker go idle too: with every signal quiet,
+    // the singleton reaps exactly as spec 50 criterion 5 always has.
+    stop.store(true, Ordering::Relaxed);
+    heartbeat.join().expect("marker heartbeat thread joins");
+
+    let reaped = rx.recv_timeout(Duration::from_secs(12));
+    let _ = child.kill();
+    let _ = child.wait();
+    let n = reaped.expect(
+        "the singleton did not SELF-REAP within 12s after the second project's agent liveness \
+         marker went idle too - a genuinely quiet machine's dash must not leak",
+    );
+    assert_eq!(n, 0, "a self-reaped dash should have its stdout at EOF");
+}
+
+/// Spec 62, criterion 5 round 2 (sdet finding
+/// `sdet-u62c5r2-known-roots-read-all-vs-read-live-untested-at-call-site`, upheld and strengthened
+/// by `adv-u62c5r2-uphold-known-roots-read-all-untested-strengthened-with-repro`): the property
+/// that justifies `registry::read_all` existing as its own function at all. Unlike the sibling
+/// cross-project test above - whose foreign registry entry starts FRESH and only ages out DURING
+/// the test, so both `read_all` and `read_live` would return it on the watcher's very first poll,
+/// leaving the call site's choice between them unobserved - here the foreign project's registry
+/// entry is written with a heartbeat already at the unix epoch: hopelessly stale BEFORE the dash
+/// is even spawned. Were `watch_and_self_reap_on_idle`'s `known_roots` grown from `read_live`'s
+/// pruned result instead of `read_all`'s, this entry would never appear in `live` on ANY poll -
+/// its root would never be learned, `foreign_instance_scratch_root` would never be checked for it,
+/// and the singleton would reap right out from under its own genuinely fresh agent-liveness
+/// marker.
+///
+/// A THIRD, separate project (`proj-latch`) supplies the `ever_seen_live` startup latch exactly as
+/// the very first sibling test above does for its own project: written once, fresh, and never
+/// refreshed, so it is briefly live on the watcher's earliest polls and then ages out on its own -
+/// isolating the assertion to the SECOND project's agent-liveness signal alone once its registry
+/// entry, too, has gone quiet (`live_instances` reaches zero from BOTH projects, so only
+/// `agent_live` can still be keeping the singleton alive).
+#[test]
+fn a_reap_on_idle_singleton_survives_a_foreign_agent_liveness_marker_whose_own_registry_entry_was_already_stale_before_the_watchers_first_poll(
+) {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
+
+    // A machine-global registry the dash and the test share.
+    let state = tempfile::tempdir().unwrap();
+    let xdg = state.path().to_str().unwrap().to_string();
+    let regdir = rigger::registry::instances_dir(state.path());
+
+    // The LAUNCHING project's own scratch root: hermetic and left EMPTY (no marker ever written
+    // there), isolating the assertion to the SECOND project's marker alone.
+    let own_scratch = tempfile::tempdir().unwrap();
+    let own_scratch_root = own_scratch.path().to_str().unwrap().to_string();
+
+    // A THIRD project supplies the `ever_seen_live` startup latch: written once, fresh, and never
+    // refreshed - it is live on the watcher's earliest polls and ages out on its own past the fast
+    // test window, exactly the one-time-write-then-decay shape the very first sibling test above
+    // uses for its own project.
+    let latch_project = tempfile::tempdir().unwrap();
+    let latch_root = latch_project.path().to_str().unwrap().to_string();
+    write_live_instance(&regdir, "proj-latch", &latch_root);
+
+    // The SECOND, foreign project: its registry entry is written ONCE with a heartbeat already at
+    // the unix epoch - hopelessly stale before the dash is even spawned, so `read_live` would
+    // prune it, and never return it, on its very first poll. Never refreshed.
+    let other_project = tempfile::tempdir().unwrap();
+    let other_root = other_project.path().to_str().unwrap().to_string();
+    let other_scratch_root = format!("{other_root}/.rigger/tmp");
+    let other_marker_path =
+        rigger::liveness::marker_path(&other_scratch_root, "run-1", "u2c1/implementer#0").unwrap();
+    write_stale_instance(&regdir, "proj-b", &other_root);
+
+    // The second project's own agent liveness marker starts fresh and is kept fresh by a
+    // background thread for the WHOLE test - the live-agent-under-an-already-stale-registry-entry
+    // signal this test exists to prove is still seen.
+    touch_marker(&other_marker_path);
+    let stop = Arc::new(AtomicBool::new(false));
+    let marker_thread_path = other_marker_path.clone();
+    let marker_stop = stop.clone();
+    let heartbeat = std::thread::spawn(move || {
+        while !marker_stop.load(Ordering::Relaxed) {
+            touch_marker(&marker_thread_path);
+            std::thread::sleep(Duration::from_millis(150));
+        }
+    });
+
+    let port = free_loopback_port();
+    let mut child = common::rigger_courier()
+        .args(["dash", "--port", &port.to_string(), "--reap-on-idle"])
+        .env("XDG_STATE_HOME", &xdg)
+        .env("RIGGER_TMPDIR", &own_scratch_root)
+        .env("RIGGER_DASH_REAP_POLL_MS", "150")
+        .env("RIGGER_DASH_REAP_STALE_SECS", "2")
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn `rigger dash --reap-on-idle`");
+    let mut out = child.stdout.take().expect("dash stdout is piped");
+
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 1];
+        let n = out.read(&mut buf).unwrap_or(0);
+        let _ = tx.send(n);
+    });
+
+    if !matches!(http_get(&format!("http://127.0.0.1:{port}/")), Some(body) if body.contains("rigger dash"))
+    {
+        stop.store(true, Ordering::Relaxed);
+        let _ = heartbeat.join();
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("the `rigger dash --reap-on-idle` never served its page");
+    }
+
+    // Well past the 2s window (several poll intervals beyond it): `proj-latch`'s one-time
+    // registration has aged out and been pruned (it satisfied `ever_seen_live` on its early live
+    // polls, then dropped `live_instances` back to zero), and `proj-b`'s registry entry was
+    // ALREADY stale before the dash even started, so it never contributed a single live poll
+    // either. With the marker thread still refreshing `proj-b`'s own agent-liveness marker, the
+    // singleton must NOT reap - a read here is exactly the gap this test closes: `known_roots`
+    // must have learned `proj-b`'s root from `read_all` (which returns a stale entry too) rather
+    // than `read_live` (which would have pruned it unseen on poll 1 and never told the watcher
+    // this project existed at all).
+    if rx.recv_timeout(Duration::from_millis(3500)).is_ok() {
+        stop.store(true, Ordering::Relaxed);
+        let _ = heartbeat.join();
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!(
+            "the singleton self-reaped even though a registered project's own agent liveness \
+             marker was still fresh - its registry entry being ALREADY stale on the watcher's \
+             very first poll must not make that project invisible to the agent-liveness check"
+        );
+    }
+    // Still genuinely serving (not merely a blocked-but-dead pipe).
+    assert!(
+        matches!(http_get(&format!("http://127.0.0.1:{port}/")), Some(body) if body.contains("rigger dash")),
+        "the singleton must still serve while the OTHER project's agent liveness marker is fresh, \
+         even though its own registry entry was already stale before the watcher ever polled"
+    );
+
+    // Now let the second project's agent liveness marker go idle too: with every signal quiet,
+    // the singleton reaps exactly as spec 50 criterion 5 always has.
+    stop.store(true, Ordering::Relaxed);
+    heartbeat.join().expect("marker heartbeat thread joins");
+
+    let reaped = rx.recv_timeout(Duration::from_secs(12));
+    let _ = child.kill();
+    let _ = child.wait();
+    let n = reaped.expect(
+        "the singleton did not SELF-REAP within 12s after the second project's agent liveness \
+         marker went idle too - a genuinely quiet machine's dash must not leak",
+    );
+    assert_eq!(n, 0, "a self-reaped dash should have its stdout at EOF");
+}
+
 /// Spec 50, criterion 5 - the flag GATE through the BUILT binary: a `rigger dash` WITHOUT
 /// `--reap-on-idle` starts NO watcher, so it never self-reaps even on a quiet machine with an EMPTY
 /// registry. The guard-bound `rigger run` / `run_workflow` dash relies on this: its `ReapedChild`
@@ -21289,13 +21706,15 @@ fn a_reap_on_idle_singleton_in_a_homeless_environment_serves_without_a_watcher()
     );
 }
 
-/// Spec 50, criterion 5 - the PUBLIC contract of the new decision function at the CRATE BOUNDARY.
-/// `dash::should_reap_singleton` is the exported domain core the singleton's watcher polls; the
-/// dash.rs unit test proves it white-box (inside the module), and the integration tests above drive
-/// it end-to-end through the built binary. This pins its contract at the PUBLIC `rigger::dash`
-/// boundary an EXTERNAL caller sees - that the function is exported and its truth table holds -
-/// independent of any watcher wiring: reap IFF a live instance has EVER been seen AND none remains,
-/// so a positive live count never reaps and a not-yet-seen (startup) empty registry keeps serving.
+/// Spec 50, criterion 5 (spec 62, criterion 5) - the PUBLIC contract of the new decision function
+/// at the CRATE BOUNDARY. `dash::should_reap_singleton` is the exported domain core the
+/// singleton's watcher polls; the dash.rs unit test proves it white-box (inside the module), and
+/// the integration tests above drive it end-to-end through the built binary. This pins its
+/// contract at the PUBLIC `rigger::dash` boundary an EXTERNAL caller sees - that the function is
+/// exported and its truth table holds - independent of any watcher wiring: reap IFF a live
+/// instance has EVER been seen, none remains, AND no agent liveness signal is fresh, so a positive
+/// live count never reaps, a not-yet-seen (startup) empty registry keeps serving, and a fresh
+/// agent liveness signal keeps serving even once the registry itself has gone quiet.
 #[test]
 fn should_reap_singleton_public_contract_holds_at_the_crate_boundary() {
     use rigger::dash::should_reap_singleton;
@@ -21303,29 +21722,160 @@ fn should_reap_singleton_public_contract_holds_at_the_crate_boundary() {
     // Startup guard: no live instance has EVER been seen yet, so keep serving regardless of the
     // current count - a just-ensured singleton must not reap before its ensuring run registers.
     assert!(
-        !should_reap_singleton(0, false),
+        !should_reap_singleton(0, false, false),
         "a never-seen empty registry must keep serving (the startup-race guard)"
     );
     assert!(
-        !should_reap_singleton(1, false),
+        !should_reap_singleton(1, false, false),
         "a positive live count never reaps, whatever the seen flag"
     );
 
     // A live instance keeps the singleton serving once one has been seen (this project's run or any
     // other's - a positive count means at least one run needs the dash).
     assert!(
-        !should_reap_singleton(1, true),
+        !should_reap_singleton(1, true, false),
         "one live instance keeps the singleton serving"
     );
     assert!(
-        !should_reap_singleton(5, true),
+        !should_reap_singleton(5, true, false),
         "several live instances keep the singleton serving"
     );
 
-    // Machine idle: at least one live instance was seen and none remains live -> reap.
+    // Machine idle: at least one live instance was seen and none remains live, and no agent
+    // liveness signal is fresh -> reap.
     assert!(
-        should_reap_singleton(0, true),
-        "seen-then-empty is a genuinely quiet machine: the singleton reaps"
+        should_reap_singleton(0, true, false),
+        "seen-then-empty with no agent signal is a genuinely quiet machine: the singleton reaps"
+    );
+
+    // Spec 62 criterion 5's own addition: a fresh agent liveness signal withholds the reap even
+    // once the registry has gone quiet - the idle judgment sees the agent, not just the registry.
+    assert!(
+        !should_reap_singleton(0, true, true),
+        "a fresh agent liveness signal keeps the singleton serving even with an aged-out registry"
+    );
+}
+
+/// Spec 62, criterion 5 - the PUBLIC contract of [`rigger::liveness::any_marker_fresh`] at the
+/// CRATE BOUNDARY, mirroring `should_reap_singleton_public_contract_holds_at_the_crate_boundary`
+/// above for its sibling new pub fn in this same unit. `src/liveness.rs`'s own module tests prove
+/// the function white-box (inside the module, including its recursive walk and unreadable-entry
+/// degrade); `a_reap_on_idle_singleton_survives_a_fresh_agent_liveness_marker_after_the_registry_ages_out`
+/// proves it end to end through the real watcher inside the built binary. Neither calls the
+/// function directly from OUTSIDE the module the way an external caller does - this test does,
+/// pinning that `rigger::liveness::any_marker_fresh` is exported and its truth table holds at the
+/// public `rigger::liveness` boundary, independent of any watcher wiring: false for an empty or
+/// never-populated scratch root, true for a marker touched within `max_age`, and false once that
+/// same marker has aged past it - the exact three-way contract `should_reap_singleton` is wired to
+/// consume as its `agent_live` input.
+#[test]
+fn any_marker_fresh_public_contract_holds_at_the_crate_boundary() {
+    use rigger::liveness::{any_marker_fresh, marker_path};
+    use std::time::{Duration, SystemTime};
+
+    let bound = Duration::from_secs(900);
+    let now = SystemTime::now();
+
+    // A repo-less caller: the same empty-scratch-root degrade every other liveness reader gives,
+    // proven here at the public fn itself rather than only via its private helper.
+    assert!(
+        !any_marker_fresh("", now, bound),
+        "an empty scratch root must read as no live agent"
+    );
+
+    // A real scratch root that has never had a marker directory created under it: nothing to find.
+    let scratch = tempfile::tempdir().unwrap();
+    let root = scratch.path().to_str().unwrap();
+    assert!(
+        !any_marker_fresh(root, now, bound),
+        "a scratch root with no agent-live directory must read as no live agent"
+    );
+
+    // A marker just written under the SAME nested `<root>/agent-live/<run>/<spawn>` shape
+    // `marker_path` builds (the one other public fn this module already exports) is fresh.
+    let path = marker_path(root, "run-1", "u1c1/implementer#0").unwrap();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, b"").unwrap();
+    assert!(
+        any_marker_fresh(root, now, bound),
+        "a just-written marker within max_age must read as a live agent"
+    );
+
+    // The same marker, judged from far enough past its real mtime to fall outside a tiny bound,
+    // reads as no live agent - the contract `should_reap_singleton`'s idle judgment depends on.
+    let far_future = now + Duration::from_secs(3600);
+    assert!(
+        !any_marker_fresh(root, far_future, Duration::from_secs(1)),
+        "a marker older than max_age must not read as a live agent signal"
+    );
+}
+
+/// Spec 62, criterion 5 round 2 - the PUBLIC contract of [`rigger::registry::read_all`] at the
+/// CRATE BOUNDARY, mirroring `any_marker_fresh_public_contract_holds_at_the_crate_boundary` above
+/// for this round's new pub fn. `src/registry.rs`'s own module tests prove it white-box (inside
+/// the module: a stale entry survives and is never deleted, every root comes back regardless of
+/// freshness, an absent directory is an empty registry not an error);
+/// `a_reap_on_idle_singleton_survives_a_second_registered_projects_fresh_agent_liveness_marker`
+/// proves it end to end through the real watcher inside the built binary. Neither calls the
+/// function directly from OUTSIDE the module the way an external caller does - this test does,
+/// pinning that `rigger::registry::read_all` is exported and holds the ONE contract
+/// `foreign_instance_scratch_root`'s caller depends on that `read_live` does NOT give it: a STALE
+/// entry (long past any idle window) comes back too, and comes back UNCHANGED on disk - unlike
+/// `read_live`, which would both drop it from the returned set and delete its file.
+#[test]
+fn read_all_public_contract_holds_at_the_crate_boundary() {
+    use rigger::registry::{self, Instance, StoreIdentity};
+
+    let state = tempfile::tempdir().unwrap();
+    let regdir = registry::instances_dir(state.path());
+
+    // No `write` has ever touched this directory: an absent registry is empty, not an error.
+    assert!(
+        registry::read_all(&regdir).is_empty(),
+        "an absent instances directory must read as an empty registry, not an error"
+    );
+
+    // A hopelessly stale entry - `read_live` would prune this outright (and delete its file).
+    let stale = Instance {
+        project: "proj-stale".to_string(),
+        root: "/stale/root".to_string(),
+        store: StoreIdentity::Local {
+            path: "/stale/root/.rigger/events.db".to_string(),
+        },
+        heartbeat_ms: 0,
+    };
+    let stale_path = registry::write(&regdir, &stale).unwrap();
+
+    assert_eq!(
+        registry::read_all(&regdir),
+        vec![stale.clone()],
+        "read_all returns a stale entry verbatim, with no freshness filter"
+    );
+    assert!(
+        stale_path.exists(),
+        "read_all must never delete an entry, stale or not - unlike read_live's prune side effect"
+    );
+
+    // A second, live entry: read_all returns BOTH, the fresh and the hopelessly stale alike.
+    let live = Instance {
+        project: "proj-live".to_string(),
+        root: "/live/root".to_string(),
+        store: StoreIdentity::Local {
+            path: "/live/root/.rigger/events.db".to_string(),
+        },
+        heartbeat_ms: registry::now_ms(),
+    };
+    registry::write(&regdir, &live).unwrap();
+
+    let mut roots: Vec<String> = registry::read_all(&regdir)
+        .into_iter()
+        .map(|i| i.root)
+        .collect();
+    roots.sort();
+    assert_eq!(
+        roots,
+        vec!["/live/root".to_string(), "/stale/root".to_string()],
+        "read_all returns every registered root regardless of heartbeat freshness"
     );
 }
 
