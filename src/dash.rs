@@ -532,13 +532,41 @@ fn format_held_port(addr: SocketAddr, holder: Option<(u32, Option<char>)>) -> St
 /// via [`format_held_port`]. `pub` - `cmd_dash` (`src/main.rs`) is the one production caller,
 /// reporting THIS as the `Err` it surfaces when [`bind_singleton`] finds the address genuinely
 /// held by a non-dash process (a real rigger dash already on this address resolves to
-/// `AlreadyServing` instead, so a caller only ever reaches this on a genuine conflict).
-/// Best-effort: a platform without `/proc`, or a holder that exits mid-scan, degrades to the
-/// "holding process not found" report - never a panic and never a bare, unexplained exit
-/// (spec 62 Notes).
+/// `AlreadyServing` instead, so a caller only ever reaches this on a genuine conflict). Because
+/// that precondition already holds at the call site (the OS itself confirmed `AddrInUse`), a
+/// `None` holder here is safe to render as [`format_held_port`]'s "already in use (holding
+/// process not found)" - occupancy is already a given, `/proc` has merely failed to attribute
+/// it. Built on [`describe_held_port_if_confirmed`], whose `None` this arm is the ONE place
+/// allowed to promote to that wording, precisely because this caller's precondition licenses
+/// it and no other caller's does. Best-effort throughout: a platform without `/proc`, or a
+/// holder that exits mid-scan, degrades to the "holding process not found" report - never a
+/// panic and never a bare, unexplained exit (spec 62 Notes).
 pub fn describe_held_port(addr: SocketAddr) -> String {
-    let holder = pid_holding_port(addr.port()).map(|pid| (pid, process_state(pid)));
-    format_held_port(addr, holder)
+    describe_held_port_if_confirmed(addr).unwrap_or_else(|| format_held_port(addr, None))
+}
+
+/// The gated half of the HELD-PORT DIAGNOSIS (spec 62 round 3 fix,
+/// adj-u62c3r2-verdict-reject-non-addrinuse-mislabel): unlike [`describe_held_port`], this
+/// never asserts occupancy it has not independently confirmed via `/proc`
+/// ([`pid_holding_port`]) - `None` when nothing can be confirmed holding `addr`'s port, `Some`
+/// with the full pid/state diagnosis when something can. `pub` (cross-crate: `src/main.rs` is a
+/// separate binary crate that depends on this library) -
+/// `spawn_run_dashboard_detached` (`src/main.rs`) is the one caller: unlike `cmd_dash`'s manual
+/// arm (which only ever calls [`describe_held_port`] AFTER `bind_singleton` has itself
+/// confirmed a genuine `AddrInUse`), the step-path auto-start has no such confirmation
+/// available - its bind attempt runs inside a detached child whose `io::Error` never reaches
+/// the parent (`Stdio::null()`, spec 44), so ALL it knows going in is that `wait_for_dash_bind`
+/// (`src/main.rs`) gave up, a signal that is equally true of a genuine held port, a permission
+/// error, a slow machine, or an unrelated config problem (measured indistinguishable by exit
+/// timing alone - a duration-based gate is not hermetic). Calling
+/// [`describe_held_port`] unconditionally on that weaker signal was round 2's defect: its
+/// `None` arm is licensed ONLY by an already-confirmed conflict, so firing it on an
+/// unconfirmed one falsely told an operator a phantom process held their port. This function
+/// supplies the missing confirmation itself, from the same `/proc` read `describe_held_port`
+/// would have made anyway - never a second, differently-worded guess.
+pub fn describe_held_port_if_confirmed(addr: SocketAddr) -> Option<String> {
+    let pid = pid_holding_port(addr.port())?;
+    Some(format_held_port(addr, Some((pid, process_state(pid)))))
 }
 
 /// The loopback port embedded in a recorded dash URL (`http://127.0.0.1:<port>/`, the only
@@ -8528,6 +8556,54 @@ mod tests {
         );
         assert!(msg.contains(&addr.to_string()), "got: {msg}");
         drop(listener);
+    }
+
+    /// Spec 62 round 3 fix (adj-u62c3r2-verdict-reject-non-addrinuse-mislabel): unlike
+    /// [`describe_held_port`] (whose one production caller, `cmd_dash`, only ever reaches it
+    /// AFTER the OS has already confirmed `AddrInUse`, so a `None` holder there still means a
+    /// genuine-but-unattributed conflict), [`describe_held_port_if_confirmed`] has no such
+    /// upstream confirmation available to its caller (`spawn_run_dashboard_detached`, whose
+    /// bind attempt runs in a detached child with no observable `io::Error` at all) - so it must
+    /// independently confirm occupancy itself before naming one. A port a real listener holds
+    /// must still resolve `Some`, naming this test process's own pid.
+    #[test]
+    fn describe_held_port_if_confirmed_names_the_holder_when_independently_confirmed() {
+        if !Path::new("/proc").is_dir() {
+            return;
+        }
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let msg = describe_held_port_if_confirmed(addr)
+            .expect("a port a real listener holds must resolve Some, not None");
+        assert!(
+            msg.contains(&std::process::id().to_string()),
+            "must name this test process's own pid as the holder; got: {msg}"
+        );
+        assert!(msg.contains(&addr.to_string()), "got: {msg}");
+        drop(listener);
+    }
+
+    /// Spec 62 round 3 fix (adj-u62c3r2-verdict-reject-non-addrinuse-mislabel): the defect the
+    /// adjudicator reproduced - a bind failure unrelated to any real conflict (permission error,
+    /// slow machine, config problem) getting the false "already in use" framing anyway. A port
+    /// NOTHING holds must resolve `None`, giving the caller nothing to falsely claim.
+    #[test]
+    fn describe_held_port_if_confirmed_is_none_when_nothing_holds_the_port() {
+        if !Path::new("/proc").is_dir() {
+            return;
+        }
+        let addr: SocketAddr = {
+            let probe = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            probe.local_addr().unwrap()
+        };
+        // The listener above is already dropped by the time this line runs - nothing rebinds
+        // its port, so no /proc/net/tcp row should name a holder.
+        assert_eq!(
+            describe_held_port_if_confirmed(addr),
+            None,
+            "a port nothing holds must never be described as held - the exact false-positive \
+             this round's fix exists to close"
+        );
     }
 
     #[test]
