@@ -361,6 +361,23 @@ pub struct DashMarker {
 /// anything left it nothing to correct.
 pub const UNATTRIBUTED_PID: u32 = 0;
 
+/// The one shared filter for every DISPLAY site that renders a marker's raw pid (spec 62 round
+/// 5, adj-u62c1r4-verdict-reject-sentinel-pid-leaks-to-status): maps [`UNATTRIBUTED_PID`] to
+/// `None` so it renders identically to the already-correct no-matching-marker case, and passes
+/// any other value through unchanged. This must be called ONLY at the point a pid is handed to
+/// something that prints or serializes it ([`dash_status`]'s `NotServing` construction,
+/// `watch_poll`'s three `watch::DashProbe::NotServing` construction sites in `src/main.rs`) -
+/// NEVER upstream of a liveness/idempotency decision such as [`pid_if_port_matches`], whose
+/// `Some`/`None` also drives which file's mtime `watch_poll` trusts for
+/// `dash_breadcrumb_written_at`; filtering there would turn a genuinely port-matching sentinel
+/// marker into an apparent mismatch and reintroduce the wrong-file's-mtime defect class closed
+/// at round 9 (adv-u69c1-mismatched-marker-suppression-borrows-wrong-files-mtime). One function
+/// for this one concern rather than four hand-rolled `.filter(|&p| p != UNATTRIBUTED_PID)`
+/// copies, so a future fifth display site cannot forget it.
+pub fn displayable_pid(pid: Option<u32>) -> Option<u32> {
+    pid.filter(|&p| p != UNATTRIBUTED_PID)
+}
+
 impl DashMarker {
     /// Render the marker as its on-disk `port\npid\n` record.
     pub fn serialize(&self) -> String {
@@ -518,7 +535,17 @@ pub fn dash_status(
     if port_serving(port) {
         DashStatus::Serving(url)
     } else {
-        DashStatus::NotServing { pid }
+        // Round 5 (adj-u62c1r4-verdict-reject-sentinel-pid-leaks-to-status): filtered HERE, at
+        // the display construction site, never inside `pid_if_port_matches` itself, via the one
+        // shared `displayable_pid` (see its doc for why). A pid of `UNATTRIBUTED_PID` names no
+        // real process - `spawn_run_dashboard_detached` (`src/main.rs`) records it only to keep
+        // the marker's PORT usable for idempotency, and documents that no reader may treat it as
+        // a real pid. Printing it unfiltered here would render "marker names dead pid 0" for a
+        // process that was never assigned that pid - a literal violation of spec 69 criterion 4's
+        // "never lies about the dash" text.
+        DashStatus::NotServing {
+            pid: displayable_pid(pid),
+        }
     }
 }
 
@@ -8303,6 +8330,34 @@ mod tests {
             }),
             DashStatus::NotServing { pid: Some(4242) },
             "a marker proven dead -> not serving, naming its pid"
+        );
+    }
+
+    /// Round 5 (adj-u62c1r4-verdict-reject-sentinel-pid-leaks-to-status,
+    /// sdet-u62c1r4-unattributed-pid-sentinel-renders-as-a-fabricated-dead-pid): a marker
+    /// carrying [`UNATTRIBUTED_PID`] (spec 62 round 4's documented sentinel, recorded when a
+    /// port was confirmed serving but the real serving process could not be identified) names no
+    /// real process. Before this fix, `dash_status` handed that raw `0` straight through into
+    /// `NotServing { pid: Some(0) }`, which every display site then printed as "marker names dead
+    /// pid 0" - a literal lie, since `0` was never assigned to, or the pid of, any real process.
+    /// This proves `dash_status` itself filters it to `None` at the point it constructs
+    /// `NotServing`, so it renders identically to the already-correct no-matching-marker case.
+    #[test]
+    fn dash_status_never_names_the_unattributed_pid_sentinel_as_a_dead_process() {
+        let sentinel = DashMarker {
+            port: 7442,
+            pid: UNATTRIBUTED_PID,
+        };
+        let url = "http://127.0.0.1:7442/".to_string();
+
+        assert_eq!(
+            dash_status(Some(url), Some(sentinel), |p| {
+                assert_eq!(p, 7442, "must probe the matching marker's own port");
+                false
+            }),
+            DashStatus::NotServing { pid: None },
+            "a sentinel-pid marker proven dead must name NO pid, not the sentinel value \
+             itself - the sentinel was never a real, assigned pid"
         );
     }
 

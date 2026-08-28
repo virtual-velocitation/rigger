@@ -16445,6 +16445,64 @@ fn status_reports_not_serving_when_the_recorded_marker_names_a_dead_dash() {
     );
 }
 
+/// Round 5 (adj-u62c1r4-verdict-reject-sentinel-pid-leaks-to-status,
+/// sdet-u62c1r4-display-only-still-violates-spec69c4-literal-text): the sibling above proves a
+/// REAL dead pid renders truthfully; this proves the [`dash::UNATTRIBUTED_PID`] SENTINEL (spec
+/// 62 round 4 - written by `spawn_run_dashboard_detached` when a port was confirmed serving but
+/// the real serving process could not be attributed) never renders as a fabricated "dead pid 0"
+/// once that same port has since stopped serving. Before this fix, `rigger status` printed
+/// literally that - a lie, since `0` is never a real, assigned, dying process pid - a direct
+/// violation of spec 69 criterion 4's "never lies about the dash" text. This must render
+/// EXACTLY like the no-matching-marker case: no pid named at all, in both the text line and
+/// `--json`'s `"pid"` field.
+#[test]
+fn status_never_names_the_unattributed_pid_sentinel_as_a_dead_process() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+
+    let port = free_loopback_port();
+    let rigger_dir = root.join(".rigger");
+    std::fs::write(
+        rigger_dir.join("dash.url"),
+        format!("http://127.0.0.1:{port}/"),
+    )
+    .unwrap();
+    // The documented sentinel (`dash::UNATTRIBUTED_PID` == 0), on-disk in the same
+    // `port\npid\n` shape `spawn_run_dashboard_detached` actually writes it in.
+    std::fs::write(rigger_dir.join("dash.marker"), format!("{port}\n0\n")).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["status"]);
+    assert!(ok, "rigger status must succeed; stderr:\n{err}");
+    assert!(
+        !out.contains(&format!("http://127.0.0.1:{port}/")),
+        "a dead marker must withhold the stale URL, never print it; stdout:\n{out}"
+    );
+    assert!(
+        !out.contains("marker names dead pid"),
+        "the sentinel pid must never be printed as a fabricated dead process - it was never a \
+         real, assigned pid; stdout:\n{out}"
+    );
+    assert!(
+        out.contains("dashboard: not serving (recorded url is unreachable)"),
+        "a sentinel-pid marker must render exactly like the no-matching-marker case; \
+         stdout:\n{out}"
+    );
+
+    let (json_out, json_err, json_ok) = run_rigger(root, &["status", "--json"]);
+    assert!(
+        json_ok,
+        "rigger status --json must succeed; stderr:\n{json_err}"
+    );
+    let json_value: serde_json::Value = serde_json::from_str(&json_out)
+        .unwrap_or_else(|e| panic!("`--json` must print valid JSON: {e}; stdout:\n{json_out}"));
+    assert_eq!(
+        json_value,
+        serde_json::json!([{"dashboard": {"status": "not_serving", "pid": null}}]),
+        "`--json` must carry `null`, never the sentinel `0`, as the pid; stdout:\n{json_out}"
+    );
+}
+
 /// Spec 69, criterion 4 - the SIBLING of the not-serving proof above, and the one branch no
 /// unit test can reach: `dash_status`'s own unit test injects a stand-in `still_serving`
 /// closure, so it proves the DECISION but never the WIRING - that `cmd_status` reads a real
@@ -18177,6 +18235,56 @@ fn watch_once_output_matches_what_restore_the_dash_promises_about_a_dead_marker(
          line naming the dead pid {dead_pid} for a marker like this one - either the skill \
          overclaims what the compiled binary does, or `rigger watch`'s own dash-liveness \
          signal has regressed; got:\n{out}"
+    );
+}
+
+/// Round 5 (adj-u62c1r4-verdict-reject-sentinel-pid-leaks-to-status): the sibling above proves a
+/// REAL dead pid renders truthfully for the marker-only, no-`dash.url`-at-all arm (`watch_poll`'s
+/// `(None, Some(m))` match arm, src/main.rs) - the shape `rigger step`'s own drive path writes.
+/// That arm reads `m.pid` straight from the marker with no `dash::pid_if_port_matches` call in
+/// between (there is no url port to compare against), so it was NOT one of the two sites the
+/// round-4 reject named by line range, but it is the same leak: a marker carrying
+/// [`dash::UNATTRIBUTED_PID`] (spec 62 round 4's documented sentinel) would still render "marker
+/// names dead pid 0" here, the identical fabricated-process lie the round-4 reject called
+/// blocking. Proves the sentinel is filtered at this construction site too.
+#[test]
+fn watch_once_never_names_the_unattributed_pid_sentinel_when_no_url_is_recorded() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    let dead_port = free_loopback_port();
+    DashMarker {
+        port: dead_port,
+        pid: rigger::dash::UNATTRIBUTED_PID,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the sentinel-pid dash marker");
+    assert!(
+        !root.join(".rigger/dash.url").exists(),
+        "this fixture must leave no dash.url behind - that is the exact shape under test"
+    );
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 against a marker-only sentinel-pid dash; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("dash liveness") && out.contains(&dead_port.to_string()),
+        "the dead marker port itself is a genuine anomaly and must still be reported, sentinel \
+         pid or not; got:\n{out}"
+    );
+    assert!(
+        !out.contains("marker names dead pid"),
+        "the sentinel pid must never be printed as a fabricated dead process - it was never a \
+         real, assigned pid; got:\n{out}"
+    );
+    assert!(
+        out.contains("no matching marker, no pid"),
+        "a sentinel-pid marker must render exactly like the no-matching-marker case; got:\n{out}"
     );
 }
 
@@ -23317,6 +23425,146 @@ fn watch_once_reports_a_mismatched_dead_url_when_only_the_stale_marker_predates_
     );
 }
 
+/// Round 5 (adj-u62c1r4-verdict-reject-sentinel-pid-leaks-to-status,
+/// sdet-u62c1r4-unattributed-pid-sentinel-renders-as-a-fabricated-dead-pid): the MATCHING-port
+/// counterpart of the mismatched-marker sibling above, over the sentinel pid instead of a real
+/// one. `.rigger/dash.marker` and `.rigger/dash.url` name the SAME port (so `pid_if_port_matches`
+/// returns `Some`, taking the well-formed-url, port-matching sub-branch of `watch_poll`'s
+/// `(Some(url), Some(m))` arm - `main.rs` ~7196-7213), and the marker's pid is
+/// [`dash::UNATTRIBUTED_PID`] (spec 62 round 4's documented sentinel) rather than a real dead
+/// pid. Before this fix, `watch_poll` handed that raw `0` straight into
+/// `watch::DashProbe::NotServing`, which `watch::detect` then rendered as "marker names dead pid
+/// 0" - a lie, since `0` was never a real, assigned, dying process. Proves the anomaly is still
+/// reported (the dead port itself is genuine and must not be swallowed), but with no fabricated
+/// pid named - rendering exactly like the no-matching-marker case
+/// (`watch_once_reports_a_dead_dash_when_only_the_url_breadcrumb_is_recorded_and_no_marker_exists`
+/// above already pins that exact phrasing for the genuinely-marker-less shape; this proves the
+/// sentinel-pid shape renders identically, never inventing a pid of its own).
+#[test]
+fn watch_once_never_names_the_unattributed_pid_sentinel_as_a_dead_process() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    // A fresh, not-done run whose own dash this marker+url belong to - the same shape
+    // `watch_once_reports_this_runs_own_dead_marker_when_written_after_its_run_started` uses, so
+    // the round-6 predates-this-run suppression plays no part and the report comes straight from
+    // the live probe.
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["spec 62"]}"#),
+            ("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+        ],
+    );
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    let dead_port = free_loopback_port();
+    DashMarker {
+        port: dead_port,
+        pid: rigger::dash::UNATTRIBUTED_PID,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the sentinel-pid dash marker");
+    std::fs::write(
+        root.join(".rigger/dash.url"),
+        format!("http://127.0.0.1:{dead_port}/"),
+    )
+    .expect("seed the matching dash.url");
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 on a sentinel-pid marker; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("dash liveness") && out.contains(&format!("port {dead_port}")),
+        "the dead port itself is a genuine anomaly and must still be reported, sentinel pid or \
+         not; got:\n{out}"
+    );
+    assert!(
+        !out.contains("marker names dead pid"),
+        "the sentinel pid must never be printed as a fabricated dead process - it was never a \
+         real, assigned pid; got:\n{out}"
+    );
+    assert!(
+        out.contains("no matching marker, no pid"),
+        "a sentinel-pid marker must render exactly like the no-matching-marker case; got:\n{out}"
+    );
+}
+
+/// Round 5 (adv-u62c1r4-fix-direction-would-break-watch-mtime-provenance-if-filtered-at-pid-if-
+/// port-matches): the fix for the sibling test above filters the sentinel pid ONLY at the value
+/// handed to `watch::DashProbe::NotServing`, never inside `dash::pid_if_port_matches` itself -
+/// because `watch_poll`'s `port_matches` (which selects whether `dash_breadcrumb_written_at`
+/// sources from the marker's mtime or the url's) is derived from that SAME call's `is_some()`.
+/// Proves that derivation is intact: a port-matching sentinel marker written STALE (before this
+/// run's own `RunStarted`) with a URL naming the SAME port written FRESH (after `RunStarted`,
+/// simulating a second process rewriting only the url) still gets suppressed by the
+/// predates-this-run check - which only happens if `written_at` is sourced from the STALE
+/// marker's mtime, not the FRESH url's. Had the sentinel been filtered inside
+/// `pid_if_port_matches` instead (turning a genuinely matching marker into an apparent
+/// mismatch), `port_matches` would flip to `false` and `written_at` would wrongly source from
+/// the fresh `url_path`, reporting an anomaly here where none should fire - reintroducing the
+/// wrong-file's-mtime defect class closed at round 9
+/// (adv-u69c1-mismatched-marker-suppression-borrows-wrong-files-mtime).
+#[test]
+fn watch_once_still_sources_written_at_from_the_marker_for_a_port_matching_sentinel() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    let dead_port = free_loopback_port();
+    DashMarker {
+        port: dead_port,
+        pid: rigger::dash::UNATTRIBUTED_PID,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the stale, sentinel-pid dash marker");
+
+    // The same filesystem-mtime safety margin every sibling test in this file uses, so this
+    // run's own RunStarted lands unambiguously AFTER the marker write.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["spec 62"]}"#),
+            ("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+        ],
+    );
+
+    // Another margin so the fresh url write below lands unambiguously AFTER RunStarted too.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    // Names the SAME port as the stale marker (port-matching, unlike round 9's mismatched
+    // sibling) - a second invocation rewriting only the url breadcrumb, never touching the
+    // marker already on disk.
+    std::fs::write(
+        root.join(".rigger/dash.url"),
+        format!("http://127.0.0.1:{dead_port}/"),
+    )
+    .expect("seed the fresh, port-matching dash.url");
+
+    assert!(!root.join(".rigger/dash.attempt").exists());
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 for a port-matching sentinel marker; stderr:\n{err}"
+    );
+    assert!(
+        out.trim().is_empty(),
+        "a port-matching marker written BEFORE this run's own RunStarted must suppress the \
+         report via the predates-this-run check reading the MARKER's mtime (stale) - if \
+         `written_at` instead read the fresh url's mtime, this would wrongly report; got:\n{out}"
+    );
+}
+
 /// SDET periphery gap first flagged at round 9 (sdet-u69c1r9-malformed-url-marker-fallback-
 /// untested) and reconfirmed still open through attempt 2/round 10
 /// (sdet-u69c1-attempt2-malformed-url-marker-fallback-still-untested,
@@ -23368,6 +23616,56 @@ fn watch_once_falls_back_to_the_marker_when_the_recorded_url_is_unparseable() {
         "an unparseable dash.url must fall back to probing the marker's own port and name its \
          pid - the same report a marker-only fixture would produce, not silence and not a \
          url-shaped report; got:\n{out}"
+    );
+}
+
+/// Round 5 (adj-u62c1r4-verdict-reject-sentinel-pid-leaks-to-status): the sibling above proves a
+/// REAL dead pid renders truthfully through the unparseable-`dash.url` fallback arm (`watch_poll`'s
+/// `(Some(url), Some(m))` arm's `None` sub-branch on `dash::url_port(&url)`, src/main.rs) - which,
+/// like the marker-only arm, reads `m.pid` straight from the marker with no
+/// `dash::pid_if_port_matches` call in between (there is no parseable url port to compare
+/// against). It was NOT one of the two sites the round-4 reject named by line range, but it is
+/// the same leak: a marker carrying [`dash::UNATTRIBUTED_PID`] (spec 62 round 4's documented
+/// sentinel) would still render "marker names dead pid 0" here. Proves the sentinel is filtered
+/// at this construction site too.
+#[test]
+fn watch_once_never_names_the_unattributed_pid_sentinel_when_the_url_is_unparseable() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    std::fs::write(root.join(".rigger/dash.url"), "not-a-url")
+        .expect("seed the malformed dash.url");
+
+    let dead_port = free_loopback_port();
+    DashMarker {
+        port: dead_port,
+        pid: rigger::dash::UNATTRIBUTED_PID,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the sentinel-pid dash marker");
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 against an unparseable dash.url with a sentinel-pid \
+         marker; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("dash liveness") && out.contains(&dead_port.to_string()),
+        "the dead marker port itself is a genuine anomaly and must still be reported, sentinel \
+         pid or not; got:\n{out}"
+    );
+    assert!(
+        !out.contains("marker names dead pid"),
+        "the sentinel pid must never be printed as a fabricated dead process - it was never a \
+         real, assigned pid; got:\n{out}"
+    );
+    assert!(
+        out.contains("no matching marker, no pid"),
+        "a sentinel-pid marker must render exactly like the no-matching-marker case; got:\n{out}"
     );
 }
 
