@@ -5581,12 +5581,14 @@ fn detach_process_group(cmd: &mut Command) {
 #[cfg(not(unix))]
 fn detach_process_group(_cmd: &mut Command) {}
 
-/// Spawn `rigger dash --port <n>` as a DETACHED child - NO [`dash::ReapedChild`] guard is
-/// held - returning its port + pid as a [`dash::DashMarker`] the caller records. Detached is
-/// deliberate: the step path that starts it returns per frontier, so a guard-bound child would
-/// be reaped on that return and the very next step would find no live dash and start another.
-/// Not reaping here is what lets the dash keep serving across the run's many `step`
-/// invocations (spec 39). Also records the dash-url breadcrumb `rigger status` reads.
+/// Raw launch of `rigger dash --port <n> --reap-on-idle` as a session-detached child (spec 44).
+/// NO [`dash::ReapedChild`] guard is held, and NO claim is made about whether it bound. Split
+/// out of [`spawn_run_dashboard_detached`] so the process-group detachment is provable on its
+/// own: under `cargo test`, [`std::env::current_exe`] names the TEST harness binary, which never
+/// recognizes `dash` as a subcommand and exits immediately without binding anything, so a test
+/// that must observe a REAL detachment (not an injected stand-in) can only assert on the spawn
+/// itself, never on a confirmed bind - see `spawn_run_dashboard_detached_session_detaches_the_dash`,
+/// which calls this directly.
 ///
 /// ALL THREE of the child's standard streams are closed (`stdin`/`stdout`/`stderr` ->
 /// [`Stdio::null`]). This matters precisely BECAUSE it is detached and outlives the `step`:
@@ -5596,20 +5598,7 @@ fn detach_process_group(_cmd: &mut Command) {}
 /// dash can inherit stderr safely because it is reaped when the driver exits; a detached one
 /// must hold no inherited descriptor. The dash's own startup errors are therefore silent -
 /// acceptable for a best-effort, self-contained observability process whose logs nothing reads.
-fn spawn_run_dashboard_detached() -> std::io::Result<dash::DashMarker> {
-    // The machine singleton binds the FIXED default address (spec 50, criterion 4) - no free-port
-    // search, so the address never drifts. If a dash is already serving it, the spawned `rigger
-    // dash` recognizes the singleton and exits 0 without binding a second (criterion 1's
-    // `bind_singleton`), so this is safe even when a concurrent run races to start one.
-    //
-    // The default is overridable via [`DASH_PORT_ENV`] for exactly the case the fixed address
-    // otherwise makes untestable and unusable: a machine where a rigger dash already holds the
-    // default (the self-hosting dev box always does), or where a non-rigger process owns 7420.
-    // Unset (the production default) resolves to [`dash::DEFAULT_PORT`] with NO free-port search,
-    // so the singleton's stable-address contract is unchanged; the ensure path just gains the same
-    // port seam the manual `rigger dash --port` already has, which lets the step-path dash tests
-    // inject an ephemeral port and never fight a real machine dash.
-    let port = dash_ensure_port();
+fn spawn_dash_child_process(port: u16) -> std::io::Result<(std::process::Child, u32)> {
     let exe = std::env::current_exe()?;
     let mut cmd = Command::new(exe);
     cmd.arg("dash")
@@ -5628,12 +5617,161 @@ fn spawn_run_dashboard_detached() -> std::io::Result<dash::DashMarker> {
     detach_process_group(&mut cmd);
     let child = cmd.spawn()?;
     let pid = child.id();
-    // Detach: `child` is dropped at the end of this function. A std `Child`'s Drop neither
-    // waits nor kills, so the dash process keeps running after this step returns. (Contrast
-    // `dash::ReapedChild`, whose Drop reaps - deliberately NOT used on the step path.)
+    Ok((child, pid))
+}
+
+/// How long [`spawn_run_dashboard_detached`] polls [`dash::dash_serving_on`] for a confirmed
+/// bind before giving up (spec 62, criterion 1: marker follows bind). Generous enough to absorb
+/// a real machine's config-load-then-bind startup cost while keeping a genuinely stuck start's
+/// headless-degrade responsive rather than hanging the step that ensures it.
+const DASH_BIND_CONFIRM_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The re-poll cadence inside [`DASH_BIND_CONFIRM_WINDOW`] - the same cadence the project's
+/// other real-dash-readiness polls already use (see `bind_singleton_short_circuits_on_an_
+/// already_serving_rigger_dash` in `dash.rs`).
+const DASH_BIND_CONFIRM_POLL: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// Wait for the just-spawned `child` to confirm a bind on `port` (spec 62, criterion 1: marker
+/// follows bind, confirmed ACROSS the process boundary - not merely ordered within the parent's
+/// own call). Polls [`dash::dash_serving_on`] - the SAME probe the still-serving short-circuit
+/// already wraps - so "bound" means exactly what every other caller already means by it.
+///
+/// Returns `true` the instant the probe answers. Returns `false` the instant `child` exits
+/// before that: `cmd.spawn()` succeeding proves only that the OS launched a process, never that
+/// it bound, so an early exit (e.g. a held port losing the `AddrInUse` race) is a failed start,
+/// never awaited out the rest of `window`. Also returns `false` once `window` elapses with
+/// neither. `window` and `poll` are parameters rather than always reading the module constants
+/// so a test can bound this deterministically fast against a REAL held port, without waiting
+/// out the production window.
+fn wait_for_dash_bind(
+    port: u16,
+    child: &mut std::process::Child,
+    window: std::time::Duration,
+    poll: std::time::Duration,
+) -> bool {
+    let deadline = std::time::Instant::now() + window;
+    loop {
+        if dash::dash_serving_on(port) {
+            return true;
+        }
+        match child.try_wait() {
+            Ok(Some(_status)) => return false, // exited before confirming - a failed start
+            Ok(None) => {}                     // still running; keep polling
+            Err(_) => return false,            // liveness undeterminable - treat as failed
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(poll);
+    }
+}
+
+/// Spawn `rigger dash --port <n>` as a DETACHED child - NO [`dash::ReapedChild`] guard is
+/// held - returning its port + pid as a [`dash::DashMarker`] the caller records. Detached is
+/// deliberate: the step path that starts it returns per frontier, so a guard-bound child would
+/// be reaped on that return and the very next step would find no live dash and start another.
+/// Not reaping here is what lets the dash keep serving across the run's many `step`
+/// invocations (spec 39). Also records the dash-url breadcrumb `rigger status` reads.
+///
+/// `Ok` is returned ONLY once [`wait_for_dash_bind`] confirms SOMETHING is genuinely serving
+/// `port` (spec 62, criterion 1: marker follows bind). `cmd.spawn()` succeeding proves only that
+/// the child process launched, never that it bound - a job-control-stopped predecessor can hold
+/// the port with a socket that accepts the TCP handshake but never calls `accept()`, or the
+/// child can lose an `AddrInUse` race outright and exit. Either way, the caller
+/// ([`ensure_run_dashboard_at`], via its injected `start` seam) must never learn of a dash that
+/// never actually came up, so a bind that is not confirmed within [`DASH_BIND_CONFIRM_WINDOW`],
+/// or a child that exits before confirming, returns `Err` here - closing the race at its source
+/// rather than asking `ensure_run_dashboard_at`'s already-correct `Err` arm (which already
+/// writes no marker) to somehow notice on its own.
+///
+/// The recorded marker's pid is the port's OWN reported serving pid
+/// ([`dash::dash_serving_pid_on`]), never assumed to be this call's locally-spawned `child`
+/// (spec 62 round 2: adv-u62c1-marker-pid-not-the-serving-pid-on-singleton-race). `wait_for_dash_
+/// bind` confirming `true` proves only that SOMETHING now answers `port` as a rigger dash - never
+/// that it is THIS `child`: the machine singleton binds one FIXED address (spec 50, criterion 4),
+/// so a concurrent run racing to start the same singleton can win it out from under this call -
+/// `child`'s own `bind_singleton` then hits `AddrInUse`, recognizes the winner via
+/// [`dash::DASH_HEADER`], and exits cleanly WITHOUT ever binding anything, while the port keeps
+/// answering via the winner the whole time. Asking the port itself who is really serving (rather
+/// than inferring it from `child`'s own liveness/exit timing, which cannot resolve this
+/// deterministically - `child` does real filesystem/config work before it ever reaches its own
+/// bind attempt, so "child has not yet exited" never proves "child is the one bound") is what
+/// makes the returned marker correct regardless of which side of any such race this call landed
+/// on.
+///
+/// A [`dash::dash_serving_pid_on`] `None` here means the port's real serving pid cannot be
+/// attributed - either the confirmed server vanished in the instant since `wait_for_dash_bind`,
+/// or (the steady-state case) it is a genuine dash that predates [`dash::DASH_HEADER_PID`], e.g.
+/// a pre-round-2 or foreign build. This has been through two rejected shapes before this one.
+/// Round 2 fell back to `child`'s own locally-spawned pid (`unwrap_or(pid)`, spec 62 round 2 fix
+/// point, adj-u62c1r2-verdict-reject-version-skew-fallback) - wrong, because in a lost singleton
+/// race `child` never bound anything at all, so asserting its pid reproduced the exact defect
+/// this whole fix exists to prevent, and the steady-state case above means this is no narrow
+/// timing race but a COMMON trigger. Round 3 then refused to record anything at all in this case
+/// (adj-u62c1r3-verdict-reject-idempotency-regression) - also wrong: the port genuinely IS
+/// serving (confirmed by `wait_for_dash_bind` above), so writing no marker left
+/// `ensure_run_dashboard_at` nothing to short-circuit on, and every LATER `step` repeated this
+/// entire spawn/wait/attribute cycle forever, never reaching spec 39 criterion 1's no-op
+/// invariant. This fix records the documented [`dash::UNATTRIBUTED_PID`] sentinel instead of
+/// either extreme: never a value this call cannot prove, but never nothing either - the marker's
+/// PORT (which `dash_start_needed`/[`dash_marker_serving`] actually probe; neither ever reads
+/// this pid) is enough for the next step to recognize this dash as already serving, and it
+/// leaves a marker for spec 62's sibling self-heal (u62c2) to eventually correct if the real pid
+/// ever becomes attributable - where recording nothing left it nothing to correct.
+fn spawn_run_dashboard_detached() -> std::io::Result<dash::DashMarker> {
+    // The machine singleton binds the FIXED default address (spec 50, criterion 4) - no free-port
+    // search, so the address never drifts. If a dash is already serving it, the spawned `rigger
+    // dash` recognizes the singleton and exits 0 without binding a second (criterion 1's
+    // `bind_singleton`), so this is safe even when a concurrent run races to start one.
+    //
+    // The default is overridable via [`DASH_PORT_ENV`] for exactly the case the fixed address
+    // otherwise makes untestable and unusable: a machine where a rigger dash already holds the
+    // default (the self-hosting dev box always does), or where a non-rigger process owns 7420.
+    // Unset (the production default) resolves to [`dash::DEFAULT_PORT`] with NO free-port search,
+    // so the singleton's stable-address contract is unchanged; the ensure path just gains the same
+    // port seam the manual `rigger dash --port` already has, which lets the step-path dash tests
+    // inject an ephemeral port and never fight a real machine dash.
+    let port = dash_ensure_port();
+    let (mut child, pid) = spawn_dash_child_process(port)?;
+    if !wait_for_dash_bind(
+        port,
+        &mut child,
+        DASH_BIND_CONFIRM_WINDOW,
+        DASH_BIND_CONFIRM_POLL,
+    ) {
+        return Err(std::io::Error::other(format!(
+            "dash on port {port} (pid {pid}) did not confirm a bind within the startup window"
+        )));
+    }
+    // Detach: `child` is dropped here. A std `Child`'s Drop neither waits nor kills, so the dash
+    // process keeps running after this step returns. (Contrast `dash::ReapedChild`, whose Drop
+    // reaps - deliberately NOT used on the step path.) Dropping BEFORE the pid-attribution probe
+    // below is deliberate too: if `child` itself is the one serving, dropping it here changes
+    // nothing (Drop neither waits nor kills), and if it already lost the race and exited, there
+    // is nothing left to hold onto anyway.
+    //
+    // A `None` here means the port cannot be attributed to a real serving pid - either the
+    // confirmed server vanished in the instant since `wait_for_dash_bind`, or (the steady-state
+    // case) it is a genuine dash that predates `DASH_HEADER_PID`. Neither case may fall back to
+    // `pid`: `pid` is THIS call's own locally-spawned child, and in a lost singleton race that
+    // child never bound anything at all, so asserting its pid would repeat the exact defect this
+    // probe exists to prevent. But the port IS confirmed serving (`wait_for_dash_bind` above), so
+    // refusing to record ANYTHING is not safe either (spec 62 round 3's own regression,
+    // adj-u62c1r3-verdict-reject-idempotency-regression): it would leave the NEXT step with no
+    // marker to short-circuit on, repeating this entire spawn/probe cycle forever. Record the
+    // documented sentinel instead - never a guessed real pid, but a real marker
+    // `dash_start_needed` (which never reads this field, only the port) can recognize as
+    // already serving.
+    let serving_pid = match dash::dash_serving_pid_on(port) {
+        Some(pid) => pid,
+        None => dash::UNATTRIBUTED_PID,
+    };
     let url = format!("http://127.0.0.1:{port}/");
     let _ = std::fs::write(db_path(DASH_URL_FILE), &url);
-    Ok(dash::DashMarker { port, pid })
+    Ok(dash::DashMarker {
+        port,
+        pid: serving_pid,
+    })
 }
 
 /// Whether the always-on dash auto-ensure is SUPPRESSED for this run (spec 50, criterion 4) -
@@ -7156,7 +7294,19 @@ fn watch_poll(
                 } else {
                     (
                         watch::DashProbe::NotServing {
-                            pid,
+                            // Round 5 (adj-u62c1r4-verdict-reject-sentinel-pid-leaks-to-status):
+                            // filtered HERE, at the display value handed to `NotServing`, never
+                            // by touching `pid` itself - `port_matches` above must keep reading
+                            // the UNFILTERED `pid.is_some()` so a genuinely port-matching
+                            // sentinel marker still sources `written_at` from `marker_path`, not
+                            // `url_path` (filtering inside `pid_if_port_matches` would flip
+                            // `port_matches` to false for exactly this marker and reintroduce
+                            // the wrong-file's-mtime defect class closed at round 9,
+                            // adv-u69c1-mismatched-marker-suppression-borrows-wrong-files-mtime).
+                            // `dash::displayable_pid` names no real process for the sentinel, so
+                            // it renders here exactly like the already-correct
+                            // no-matching-marker case.
+                            pid: dash::displayable_pid(pid),
                             port: url_port,
                         },
                         written_at,
@@ -7172,7 +7322,13 @@ fn watch_poll(
                 } else {
                     (
                         watch::DashProbe::NotServing {
-                            pid: Some(m.pid),
+                            // Round 5: this arm has no url port to compare against via
+                            // `pid_if_port_matches`, so it always read `m.pid` directly - the
+                            // same sentinel-leak class the two sites above were fixed for
+                            // (round-4 reject's REJECT GROUND named those two by line range, but
+                            // the underlying defect - an unfiltered raw marker pid reaching a
+                            // display site - applies here identically).
+                            pid: dash::displayable_pid(Some(m.pid)),
                             port: m.port,
                         },
                         mtime_of(&marker_path),
@@ -7204,7 +7360,10 @@ fn watch_poll(
             } else {
                 (
                     watch::DashProbe::NotServing {
-                        pid: Some(m.pid),
+                        // Round 5: same sentinel-leak class as the unparseable-url arm's comment
+                        // above - no url port to compare against, so this always read `m.pid`
+                        // directly until now.
+                        pid: dash::displayable_pid(Some(m.pid)),
                         port: m.port,
                     },
                     mtime_of(&marker_path),
@@ -12311,6 +12470,192 @@ mod tests {
             None,
             "a failed start records no marker"
         );
+    }
+
+    // --- Spec 62, criterion 1: marker follows bind (confirmed ACROSS the process boundary) ---
+
+    /// The success arm of [`wait_for_dash_bind`]: once a port genuinely answers as a rigger dash
+    /// (carrying [`dash::DASH_HEADER`], exactly what `dash_serving_on` itself checks for), the
+    /// wait confirms PROMPTLY - well inside its window - rather than waiting the window out.
+    /// `child` here is a real, independently-spawned long-lived process standing in for "the
+    /// detached child launched"; the REAL server thread plays the "its port is now answering"
+    /// role, matching how production separates the two (a spawn succeeding is not a confirmed
+    /// bind - only the probe answering is).
+    #[test]
+    fn wait_for_dash_bind_confirms_promptly_once_the_port_answers_as_a_dash() {
+        use std::io::Write as _;
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for mut s in listener.incoming().flatten() {
+                let _ = s.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\n{}: probe\r\nConnection: close\r\n\r\n",
+                        dash::DASH_HEADER
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn a real, long-lived child standing in for the detached dash process");
+
+        let start = std::time::Instant::now();
+        let confirmed = wait_for_dash_bind(
+            port,
+            &mut child,
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_millis(20),
+        );
+
+        assert!(
+            confirmed,
+            "a port genuinely answering as a rigger dash must be confirmed"
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(2),
+            "a confirmed bind must return promptly, not wait out the whole window; took {:?}",
+            start.elapsed()
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    /// The early-exit arm: `cmd.spawn()` succeeding proves only that the OS launched a process,
+    /// never that it bound (spec 62, criterion 1) - so a child that exits BEFORE ever confirming
+    /// a bind must fail FAST, never wait out the whole window. `sleep 0` is a real process that
+    /// exits almost immediately without binding anything.
+    #[test]
+    fn wait_for_dash_bind_fails_fast_when_the_child_exits_before_confirming() {
+        let port = dash::free_port_from(42000).expect("a free loopback port must be available");
+        let mut child = Command::new("sleep")
+            .arg("0")
+            .spawn()
+            .expect("spawn a real, near-instantly-exiting child");
+        // Give the OS a moment to make the exit visible to `try_wait` before the wait begins, so
+        // this proves the early-exit short-circuit rather than racing the child's own exit.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let start = std::time::Instant::now();
+        let confirmed = wait_for_dash_bind(
+            port,
+            &mut child,
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_millis(20),
+        );
+
+        assert!(
+            !confirmed,
+            "a child that exited before confirming a bind must never be confirmed"
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "an already-exited child must fail FAST, not wait out the whole window; took {:?}",
+            start.elapsed()
+        );
+    }
+
+    /// The window-bound arm, proven against a REAL held port - not only an injected stand-in -
+    /// per the criterion's own instruction ("this criterion's test exercises this real path end
+    /// to end - a real detached spawn against a real held port"). A plain listener HOLDS a real
+    /// port but never calls `accept()`: the kernel completes the TCP handshake from its backlog,
+    /// but nothing application-level ever reads or writes, so a probing client hangs until ITS
+    /// OWN read timeout - exactly the "job-control-stopped predecessor whose socket never
+    /// accepts" shape spec 62 names. The stand-in `child` stays alive the whole time too, so only
+    /// the bounded window (never an early exit) can end this wait. Run on a background thread
+    /// with a hard `recv_timeout` so a regression to an unbounded loop fails LOUD here instead of
+    /// hanging the whole suite (the same discipline `dash_serving_on_is_bounded_against_a_byte_
+    /// dribbling_holder` in `dash.rs` uses).
+    #[test]
+    fn wait_for_dash_bind_times_out_against_a_real_held_port() {
+        use std::sync::mpsc;
+
+        let held = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = held.local_addr().unwrap().port();
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn a real, long-lived child standing in for the detached dash process");
+
+        let (tx, rx) = mpsc::channel();
+        let start = std::time::Instant::now();
+        std::thread::spawn(move || {
+            let confirmed = wait_for_dash_bind(
+                port,
+                &mut child,
+                std::time::Duration::from_millis(900),
+                std::time::Duration::from_millis(20),
+            );
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = tx.send(confirmed);
+        });
+
+        match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(confirmed) => {
+                assert!(
+                    !confirmed,
+                    "a port held by a listener that never accepts must never be confirmed as a bind"
+                );
+                assert!(
+                    start.elapsed() < std::time::Duration::from_secs(5),
+                    "wait_for_dash_bind must be bounded against a real held port; it took {:?}",
+                    start.elapsed()
+                );
+            }
+            Err(_) => panic!(
+                "wait_for_dash_bind HUNG against a real held port - it never returned within 5s \
+                 (a regression that would hang every caller, including ensure_run_dashboard)"
+            ),
+        }
+        drop(held);
+    }
+
+    /// The REAL production seam end to end - not only `ensure_run_dashboard_at`'s already-correct
+    /// injected-closure ordering test (spec 62, criterion 1's own instruction). Under `cargo
+    /// test`, `current_exe()` names THIS test binary, which never recognizes `dash` as a
+    /// subcommand and exits immediately without binding anything - so `spawn_run_dashboard_
+    /// detached` deterministically reaches the "child exited before confirming" arm of
+    /// `wait_for_dash_bind`, proving the UN-injected real seam surfaces `Err` (never a premature
+    /// `Ok` merely because `Command::spawn` succeeded) for a bind that never actually happened.
+    /// Wired through `ensure_run_dashboard_at` end to end: NO marker is written, and a
+    /// PRE-EXISTING marker is left completely untouched - the write ordering this criterion owns.
+    ///
+    /// `DASH_PORT_ENV` is pinned to a fresh ephemeral port (never the fixed default) so this can
+    /// never collide with a real dash already serving this machine's singleton address; serialized
+    /// with the project's other real-dash tests since it mutates process-wide environment state.
+    #[test]
+    #[serial_test::serial(dash_default_port)]
+    fn ensure_run_dashboard_at_writes_no_marker_when_the_real_spawn_never_confirms_a_bind() {
+        let port = dash::free_port_from(41000).expect("a free loopback port must be available");
+        std::env::set_var(DASH_PORT_ENV, port.to_string());
+        let outcome = std::panic::catch_unwind(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let marker_path = dir.path().join(DASH_MARKER_FILE);
+            let stale = dash::DashMarker {
+                port: 40002,
+                pid: 999_999,
+            };
+            stale.write(&marker_path).unwrap();
+
+            let outcome =
+                ensure_run_dashboard_at(&marker_path, |_| false, spawn_run_dashboard_detached);
+
+            assert_eq!(
+                outcome,
+                DashStart::Failed,
+                "a bind that is never confirmed degrades to headless, not a fabricated success"
+            );
+            assert_eq!(
+                dash::DashMarker::read(&marker_path),
+                Some(stale),
+                "a bind that never confirmed must leave a pre-existing marker completely untouched"
+            );
+        });
+        std::env::remove_var(DASH_PORT_ENV);
+        outcome.unwrap();
     }
 
     /// Spec 50, criterion 4 (opt-out): the always-on ensure is suppressed by EITHER opt-out - the
@@ -21828,22 +22173,27 @@ mod tests {
         let _ = child.wait();
     }
 
-    /// End-to-end wiring: the dash actually spawned by `spawn_run_dashboard_detached` is placed
-    /// in its own process group (PGID == the spawned pid, a different group than this parent), so
-    /// the production step path really does session-detach the always-on dash (spec 44 criterion
-    /// 3), not merely the seam in isolation. The spawned child is deliberately un-reaped - being
-    /// un-reaped across steps is the whole point of "detached" - and the OS reaps this transient
-    /// child when the test process exits.
+    /// End-to-end wiring: the dash actually spawned by [`spawn_dash_child_process`] (the raw
+    /// launch [`spawn_run_dashboard_detached`] wraps) is placed in its own process group (PGID ==
+    /// the spawned pid, a different group than this parent), so the production step path really
+    /// does session-detach the always-on dash (spec 44 criterion 3), not merely the seam in
+    /// isolation. This calls the raw launch directly, not `spawn_run_dashboard_detached` itself:
+    /// under `cargo test`, `current_exe()` is the TEST harness binary, which can never confirm a
+    /// bind (see the module doc on `spawn_dash_child_process`), so a test proving detachment must
+    /// observe the spawn itself rather than a bind confirmation. The spawned child is deliberately
+    /// un-reaped - being un-reaped across steps is the whole point of "detached" - and the OS
+    /// reaps this transient child when the test process exits.
     #[cfg(target_os = "linux")]
     #[test]
     fn spawn_run_dashboard_detached_session_detaches_the_dash() {
         let parent_pgid = pgid_of(std::process::id());
 
-        let marker = spawn_run_dashboard_detached().expect("spawn the detached dash");
-        let dash_pgid = pgid_of(marker.pid);
+        let port = dash::free_port_from(40000).expect("a free loopback port must be available");
+        let (child, pid) = spawn_dash_child_process(port).expect("spawn the detached dash");
+        let dash_pgid = pgid_of(pid);
 
         assert_eq!(
-            dash_pgid, marker.pid,
+            dash_pgid, pid,
             "the spawned dash is its own process-group leader (PGID == its PID)"
         );
         assert_ne!(
@@ -21851,6 +22201,10 @@ mod tests {
             "the spawned dash is in a DIFFERENT process group than the step process that spawned \
              it - so tearing down the step command's process group does not reap the dash"
         );
+
+        // Deliberately un-reaped: `Child`'s Drop neither waits nor kills, matching production -
+        // being un-reaped across steps is the whole point of "detached".
+        drop(child);
     }
 
     // --- Spec 60, criterion 5: what `rigger reset --derived` SAYS about what it did ---
