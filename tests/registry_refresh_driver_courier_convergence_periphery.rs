@@ -84,6 +84,16 @@ stages:
 /// Run `rigger <args...>` in `cwd`, with the machine-global registry redirected into the
 /// CALLER-OWNED `state_home` - shared across both calls in this test, so the SAME registry
 /// directory is read back and re-written across the driver-then-courier sequence.
+///
+/// `KURRENTDB_CONN` is REMOVED from the child so this fixture's project (a throwaway git repo
+/// with no committed store config) resolves the LOCAL sqlite log regardless of what the calling
+/// process's own ambient environment happens to carry - mirroring every sibling courier-spawning
+/// periphery test in this family (`store_precedence.rs`, `store_resolution_cli.rs`,
+/// `store_secrets.rs`). Without this, a real, reachable, credentialed `KURRENTDB_CONN` in the
+/// operator's shell - a documented, supported rigger configuration - would silently route this
+/// test's real `rigger step`/`progress` writes into the operator's actual shared event store
+/// under this fixture's fake identity: genuine test-data pollution of production
+/// infrastructure, not merely a spurious local failure.
 fn run_rigger(cwd: &Path, state_home: &Path, args: &[&str]) -> Output {
     common::rigger_courier()
         .args(args)
@@ -91,6 +101,7 @@ fn run_rigger(cwd: &Path, state_home: &Path, args: &[&str]) -> Output {
         // Never let a real driver step or courier spawn a real dashboard under test.
         .env("RIGGER_NO_DASH", "1")
         .env("XDG_STATE_HOME", state_home)
+        .env_remove("KURRENTDB_CONN")
         .output()
         .expect("the rigger binary runs")
 }
@@ -198,5 +209,60 @@ fn a_driver_step_and_a_courier_progress_refresh_the_identical_registry_entry() {
         "the courier's refresh still bumped (or held) the heartbeat forward: {} then {}",
         step_inst.heartbeat_ms,
         progress_inst.heartbeat_ms
+    );
+}
+
+/// THE REGRESSION PIN for `adv-u62c4-r4-convergence-test-leaks-ambient-kurrentdb-conn`: before
+/// `run_rigger`'s `.env_remove("KURRENTDB_CONN")` above, this suite inherited whatever
+/// `KURRENTDB_CONN` the CALLING process's own environment carried, unfiltered. This test
+/// simulates that ambient leak directly - setting a well-formed but UNREACHABLE
+/// `KURRENTDB_CONN` in the test process's own environment, the exact shape the adjudicator
+/// reproduced (`KURRENTDB_CONN=kurrentdb://127.0.0.1:1/`) - rather than depending on a real,
+/// reachable server being present in CI, since a real server would make the leak look like
+/// success (writing into someone's real store) rather than a loud, checkable failure here.
+///
+/// Pre-fix, the real `rigger step` subprocess this drives would crash immediately with a gRPC
+/// connection error to the bogus address (confirmed by direct reproduction during review); with
+/// the fix, the child never sees `KURRENTDB_CONN` at all, so it resolves this fixture's LOCAL
+/// sqlite log exactly as the primary convergence test above does, and the driver-then-courier
+/// sequence still converges on one entry.
+#[test]
+#[serial_test::serial(kurrentdb_conn_env)]
+fn an_ambient_kurrentdb_conn_never_leaks_into_the_driver_courier_calls() {
+    let project = driver_project();
+    let root = project.path();
+    let state = tempfile::tempdir().expect("a temp XDG_STATE_HOME");
+
+    // Simulate the ambient leak: set it on THIS test process, not on any one Command - proving
+    // `run_rigger` itself strips it from the child, regardless of what the calling process
+    // carries. Well-formed but unreachable (matches the adjudicator's own repro), so a
+    // regression manifests as a loud subprocess failure below, never a silent pass.
+    std::env::set_var("KURRENTDB_CONN", "kurrentdb://127.0.0.1:1/");
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            std::env::remove_var("KURRENTDB_CONN");
+        }
+    }
+    let _restore = Restore;
+
+    let step = run_rigger(root, state.path(), &["step"]);
+    assert_ok(&step, &["step"]);
+
+    let progress = run_rigger(
+        root,
+        state.path(),
+        &["progress", "a/implementer#0", "working"],
+    );
+    assert_ok(&progress, &["progress", "a/implementer#0", "working"]);
+
+    let entries = registry_entries(state.path());
+    assert_eq!(
+        entries.len(),
+        1,
+        "the driver-then-courier sequence still converges on exactly one registry entry even \
+         with an ambient KURRENTDB_CONN present in the calling process's environment - proving \
+         run_rigger's env_remove genuinely isolates the child, not merely that this fixture \
+         never happens to need a store connection: {entries:?}"
     );
 }
