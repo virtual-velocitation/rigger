@@ -545,6 +545,27 @@ pub fn describe_held_port(addr: SocketAddr) -> String {
     describe_held_port_if_confirmed(addr).unwrap_or_else(|| format_held_port(addr, None))
 }
 
+/// The raw `(pid, rendered message)` pair [`describe_held_port_if_confirmed`] resolves from a
+/// SINGLE `/proc` discovery - exposed separately (spec 62 round 4 fix,
+/// adj-u62c3r3-verdict-reject-child-self-attribution) because a caller sometimes needs the
+/// discovered pid ITSELF, not only the human-readable message about it. The one such caller is
+/// `spawn_run_dashboard_detached` (`src/main.rs`): when its own `wait_for_dash_bind` gives up, it
+/// must tell a genuinely competing external process apart from its OWN just-spawned child having
+/// merely bound the port slower than the startup window allows - a distinction only the raw pid
+/// (compared against the child's already-known pid), never the rendered message text, can carry.
+/// Splitting this out is also what lets [`describe_held_port_if_confirmed`] and this function
+/// share the exact same discovery rather than each re-running [`pid_holding_port`] independently:
+/// two scans of a live, mutable `/proc` could in principle disagree (a holder can appear or
+/// vanish between them); one discovery, consumed both ways, cannot.
+///
+/// `None` under the identical "nothing independently confirmed" gate as
+/// [`describe_held_port_if_confirmed`] - see that function's doc for why an unconfirmed holder
+/// must never be promoted to a claim.
+pub fn held_port_holder(addr: SocketAddr) -> Option<(u32, String)> {
+    let pid = pid_holding_port(addr.port())?;
+    Some((pid, format_held_port(addr, Some((pid, process_state(pid))))))
+}
+
 /// The gated half of the HELD-PORT DIAGNOSIS (spec 62 round 3 fix,
 /// adj-u62c3r2-verdict-reject-non-addrinuse-mislabel): unlike [`describe_held_port`], this
 /// never asserts occupancy it has not independently confirmed via `/proc`
@@ -563,10 +584,10 @@ pub fn describe_held_port(addr: SocketAddr) -> String {
 /// `None` arm is licensed ONLY by an already-confirmed conflict, so firing it on an
 /// unconfirmed one falsely told an operator a phantom process held their port. This function
 /// supplies the missing confirmation itself, from the same `/proc` read `describe_held_port`
-/// would have made anyway - never a second, differently-worded guess.
+/// would have made anyway - never a second, differently-worded guess. Defined in terms of
+/// [`held_port_holder`] (round 4) so the two can never drift apart.
 pub fn describe_held_port_if_confirmed(addr: SocketAddr) -> Option<String> {
-    let pid = pid_holding_port(addr.port())?;
-    Some(format_held_port(addr, Some((pid, process_state(pid)))))
+    held_port_holder(addr).map(|(_, msg)| msg)
 }
 
 /// The loopback port embedded in a recorded dash URL (`http://127.0.0.1:<port>/`, the only

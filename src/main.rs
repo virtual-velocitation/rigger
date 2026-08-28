@@ -5744,6 +5744,66 @@ fn wait_for_dash_bind(
     }
 }
 
+/// Wait for `child`'s bind on `port` to confirm via [`wait_for_dash_bind`], and on failure
+/// compose the HELD-PORT DIAGNOSIS `Err` message - the two ALWAYS travel together (spec 62
+/// round 4 fix, adj-u62c3r3-verdict-reject-child-self-attribution). Split out of
+/// [`spawn_run_dashboard_detached`] so the composed wait-then-diagnose behavior is directly
+/// testable against a REAL deadline timeout without needing a real `rigger dash` binary:
+/// `spawned_pid` and `child` are independent parameters (production always passes
+/// `child.id()` for both, since `spawn_dash_child_process` returns them as a pair, but nothing
+/// here requires that - a test can bind the target port itself to stand in for "the child has
+/// bound it", pass its OWN pid as `spawned_pid`, and use an unrelated real process only to
+/// satisfy `child`'s `try_wait` liveness check).
+///
+/// The critical fix this round makes: when [`wait_for_dash_bind`] gives up, the discovered
+/// holder of `port` (via [`dash::held_port_holder`]) is checked against `spawned_pid` BEFORE
+/// choosing the "already in use" framing. A match means the "holder" `/proc` just found is not
+/// a competing process at all - it is THIS exact spawn attempt, merely slower than `window`
+/// allows (e.g. a slow machine caught right between binding the socket and
+/// [`dash::dash_serving_on`] first answering true). Telling an operator that pid is "already in
+/// use" by itself is self-referential and actively misleading: it reads as a competing external
+/// holder blocking the port when the named process is the very one about to start serving
+/// correctly (round 3's defect, empirically reproduced against a real bound child in the
+/// deadline sub-case - the only sub-case where this can happen, since the early-exit sub-case
+/// means `child` already exited and cannot itself be the discovered holder going forward). A
+/// held port genuinely occupied by SOME OTHER process still gets the full pid/state diagnosis
+/// unchanged; nothing independently confirmed still falls back to the "could not be confirmed"
+/// wording unchanged from round 3 - only the self-attributed case is new.
+fn wait_for_dash_bind_or_diagnose(
+    port: u16,
+    child: &mut std::process::Child,
+    spawned_pid: u32,
+    window: std::time::Duration,
+    poll: std::time::Duration,
+) -> Result<(), String> {
+    if wait_for_dash_bind(port, child, window, poll) {
+        return Ok(());
+    }
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let diagnosis = match dash::held_port_holder(addr) {
+        // The discovered holder IS this exact spawn attempt (matched by pid) - never frame this
+        // as a competing occupant; see the doc above for why this sub-case is reachable and why
+        // it must read differently from a genuine conflict.
+        Some((holder_pid, _)) if holder_pid == spawned_pid => format!(
+            "this dash's own spawn (pid {spawned_pid}) has not yet confirmed serving {addr} \
+             within the startup window, even though something is now bound there - almost \
+             certainly this exact spawn attempt, merely slower than the window allows (e.g. a \
+             slow machine), not a competing process; re-checking shortly should find it already \
+             up"
+        ),
+        Some((_, msg)) => msg,
+        None => format!(
+            "address {addr} could not be confirmed bound by any other process - the failure \
+             may be unrelated to a held port (e.g. a permission or configuration problem, or \
+             a slow machine)"
+        ),
+    };
+    Err(format!(
+        "dash on port {port} (pid {spawned_pid}) did not confirm a bind within the startup \
+         window: {diagnosis}"
+    ))
+}
+
 /// Spawn `rigger dash --port <n>` as a DETACHED child - NO [`dash::ReapedChild`] guard is
 /// held - returning its port + pid as a [`dash::DashMarker`] the caller records. Detached is
 /// deliberate: the step path that starts it returns per frontier, so a guard-bound child would
@@ -5766,7 +5826,7 @@ fn wait_for_dash_bind(
 /// 62, criterion 3 - HELD-PORT DIAGNOSIS; round 2 fix,
 /// adv-u62c3-diagnosis-unreachable-from-step-path-auto-start; round 3 fix,
 /// adj-u62c3r2-verdict-reject-non-addrinuse-mislabel): it folds in
-/// [`dash::describe_held_port_if_confirmed`]'s report on `port` - the SAME pid/process-
+/// [`dash::held_port_holder`]'s report on `port` - the SAME pid/process-
 /// state/resume-or-kill diagnosis [`cmd_dash`]'s own `AddrInUse` arm already surfaces for the
 /// manual `rigger dash` CLI invocation, but computed from a GATED seam rather than
 /// [`dash::describe_held_port`] itself. The difference matters here specifically: `cmd_dash`
@@ -5781,10 +5841,21 @@ fn wait_for_dash_bind(
 /// Folding `describe_held_port`'s unconditional "already in use" wording in on that weaker
 /// signal was round 2's defect, reproduced live by the adjudicator with `RIGGER_DASH_PORT=1` (a
 /// real `PermissionDenied`, not `AddrInUse`) still getting told a phantom pid held the port.
-/// `describe_held_port_if_confirmed` supplies the missing confirmation itself, from the SAME
+/// `held_port_holder` supplies the missing confirmation itself, from the SAME
 /// live `/proc` discovery keyed only on the address (not on which process asks), and resolves
 /// `None` rather than a false claim when nothing can be confirmed holding `port` - in which case
 /// the `Err` below falls back to a message that names the timeout without asserting a holder.
+///
+/// Round 4 fix (adj-u62c3r3-verdict-reject-child-self-attribution) closes a NARROWER gap round 3
+/// left open: an independently-confirmed holder is not automatically a COMPETING one. On
+/// `wait_for_dash_bind`'s deadline sub-case (the window elapses while `child` is still alive,
+/// never the early-exit sub-case), `child` can itself already have bound `port` - it just has
+/// not yet reached the point where [`dash::dash_serving_on`] answers true (a slow machine caught
+/// in that narrow window). `/proc` then genuinely confirms a holder, but that holder IS `pid` -
+/// this exact spawn attempt, not some other process. The actual wait-then-diagnose logic now
+/// lives in [`wait_for_dash_bind_or_diagnose`], which compares the discovered holder's pid
+/// against the known `pid` before choosing the "already in use" framing; see its own doc for the
+/// full self-attribution gate.
 ///
 /// The recorded marker's pid is the port's OWN reported serving pid
 /// ([`dash::dash_serving_pid_on`]), never assumed to be this call's locally-spawned `child`
@@ -5835,40 +5906,17 @@ fn spawn_run_dashboard_detached() -> std::io::Result<dash::DashMarker> {
     // inject an ephemeral port and never fight a real machine dash.
     let port = dash_ensure_port();
     let (mut child, pid) = spawn_dash_child_process(port)?;
-    if !wait_for_dash_bind(
+    // The wait-then-diagnose composition (including the round 4 self-attribution gate - see
+    // `wait_for_dash_bind_or_diagnose`'s own doc) lives in one function precisely so the two
+    // parts can never be called out of step with each other again.
+    wait_for_dash_bind_or_diagnose(
         port,
         &mut child,
+        pid,
         DASH_BIND_CONFIRM_WINDOW,
         DASH_BIND_CONFIRM_POLL,
-    ) {
-        // Name what blocked the bind, but ONLY the "already in use" framing when a holder is
-        // INDEPENDENTLY confirmed (spec 62, criterion 3 - HELD-PORT DIAGNOSIS; round 2 fix,
-        // adv-u62c3-diagnosis-unreachable-from-step-path-auto-start; round 3 fix,
-        // adj-u62c3r2-verdict-reject-non-addrinuse-mislabel): unlike `cmd_dash`'s manual CLI arm
-        // (gated on its OWN confirmed `AddrInUse`, main.rs `cmd_dash`), this call has no such
-        // upstream confirmation - `wait_for_dash_bind` giving up is equally consistent with a
-        // permission error, a slow machine, or a config problem as with a genuinely held port
-        // (round 2's defect: it fired the "already in use" wording unconditionally on ANY of
-        // these, falsely naming a phantom holder). `describe_held_port_if_confirmed` performs
-        // the SAME live `/proc` discovery `cmd_dash` relies on, computed directly from THIS
-        // (parent) process - no capture from the detached child's own `Stdio::null()`-silenced
-        // streams (spec 44, unchanged) is needed, since it is keyed only on the address, not on
-        // who asks - but resolves `None` instead of a claim when nothing can be confirmed
-        // holding the port, so the fallback message below never asserts an occupancy it cannot
-        // prove.
-        let addr = SocketAddr::from(([127, 0, 0, 1], port));
-        let diagnosis = dash::describe_held_port_if_confirmed(addr).unwrap_or_else(|| {
-            format!(
-                "address {addr} could not be confirmed bound by any other process - the failure \
-                 may be unrelated to a held port (e.g. a permission or configuration problem, or \
-                 a slow machine)"
-            )
-        });
-        return Err(std::io::Error::other(format!(
-            "dash on port {port} (pid {pid}) did not confirm a bind within the startup window: \
-             {diagnosis}"
-        )));
-    }
+    )
+    .map_err(std::io::Error::other)?;
     // Detach: `child` is dropped here. A std `Child`'s Drop neither waits nor kills, so the dash
     // process keeps running after this step returns. (Contrast `dash::ReapedChild`, whose Drop
     // reaps - deliberately NOT used on the step path.) Dropping BEFORE the pid-attribution probe
@@ -12774,6 +12822,73 @@ mod tests {
             ),
         }
         drop(held);
+    }
+
+    /// Spec 62 round 4 fix (adj-u62c3r3-verdict-reject-child-self-attribution): the DEADLINE
+    /// sub-case of `wait_for_dash_bind` (window elapses while `child` is STILL ALIVE, never the
+    /// early-exit sub-case) must never let the HELD-PORT DIAGNOSIS self-attribute the port to
+    /// the very spawn attempt that is still starting. Mirrors `wait_for_dash_bind_times_out_
+    /// against_a_real_held_port` above (a real `TcpListener` bound in THIS test process stands
+    /// in for "the port is genuinely held" - a plain listener never calls `accept()`, so it
+    /// never answers as a dash and the wait can only end via the window, never the probe) but
+    /// drives the composed `wait_for_dash_bind_or_diagnose` instead of the bare probe, with
+    /// `spawned_pid` set to THIS test process's own pid - the exact pid the bound listener makes
+    /// independently discoverable via `/proc`, standing in for "the spawned child has bound the
+    /// port itself" without needing an external interpreter to fabricate one. `child` (used only
+    /// for the `try_wait` liveness check `wait_for_dash_bind` itself performs) stays a real,
+    /// unrelated, long-lived `sleep` process, decoupled from `spawned_pid` exactly as production
+    /// couples them (`child.id()`) only incidentally - the composed function's two parameters
+    /// are independent by construction, which is what makes this scenario constructible at all.
+    ///
+    /// Before this fix, the "already in use by pid {spawned_pid}" framing fired here exactly as
+    /// it would for a genuine competing holder (empirically reproduced by the round-3 adversary
+    /// review with a real bound child); the fix must instead recognize the pid match and report
+    /// a distinct, honest "still starting" message that never claims a competing occupant.
+    #[test]
+    fn wait_for_dash_bind_or_diagnose_never_self_attributes_its_own_still_starting_spawn() {
+        if !Path::new("/proc").is_dir() {
+            return;
+        }
+
+        let held = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = held.local_addr().unwrap().port();
+        let spawned_pid = std::process::id();
+
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn a real, long-lived child standing in for the detached dash process");
+
+        let result = wait_for_dash_bind_or_diagnose(
+            port,
+            &mut child,
+            spawned_pid,
+            std::time::Duration::from_millis(200),
+            std::time::Duration::from_millis(20),
+        );
+
+        let _ = child.kill();
+        let _ = child.wait();
+        drop(held);
+
+        let msg = result
+            .expect_err("a port held by a listener that never accepts must never confirm a bind");
+        assert!(
+            !msg.contains("already in use"),
+            "the discovered holder IS spawned_pid itself - this must never be framed as a \
+             competing external holder; got: {msg}"
+        );
+        assert!(
+            msg.contains(&spawned_pid.to_string()),
+            "the still-starting message must still name the pid so an operator can correlate \
+             it; got: {msg}"
+        );
+        let lower = msg.to_lowercase();
+        assert!(
+            lower.contains("starting") || lower.contains("slow"),
+            "the self-attribution case must get a distinct, honest message explaining this is \
+             the spawn attempt itself, not a competing process; got: {msg}"
+        );
     }
 
     /// The REAL production seam end to end - not only `ensure_run_dashboard_at`'s already-correct
