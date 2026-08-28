@@ -985,8 +985,18 @@ not the machine singleton.
   or CI run opts out with the documented `dash: off` workflow key (or its `false`/`no`
   synonyms), resolved through the single `Workflow::dash_enabled` authority, or with the
   `RIGGER_NO_DASH` environment variable - either suppresses the ensure entirely, so the run
-  proceeds with no dash and no port bind. The singleton self-reaps when the last live instance
-  it was serving is gone.
+  proceeds with no dash and no port bind. The singleton self-reaps only once TWO independent
+  signals both go quiet: the instance registry holds no live entry for any registered
+  project (an entry whose heartbeat has aged past the idle window is pruned before this
+  check runs), AND no in-flight agent's own liveness marker is still fresh. That
+  agent-liveness check is NOT scoped to the launching project alone: it is checked under
+  that project's own scratch root, and under the scratch root of every OTHER project this
+  singleton has ever seen registered on the machine, so a live agent on any of them keeps
+  the singleton serving even once that agent's own project has aged out of the registry (a
+  lapsed heartbeat cadence, or the run that registered it already having ended). This closes
+  the gap a registry-only trigger leaves open: a working agent whose heartbeat cadence falls
+  behind the idle window would otherwise watch its dashboard vanish out from under it
+  mid-work.
 
 The dashboard reads the SAME projection the agent tools read (section 5.7) - the inspector's
 three lenses, call queries, and rationale overlay (section 5.4) are the human face of the
