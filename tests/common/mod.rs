@@ -96,8 +96,57 @@ pub fn rigger_bin() -> PathBuf {
 ///
 /// This has no effect on a NON-courier command (`graph`, `docs`, `init`, ...): those never
 /// read `RIGGER_STORE_FENCE_DIR` at all, so clearing it ahead of them is a harmless no-op.
+///
+/// Also unconditionally strips an ambient `KURRENTDB_CONN` (spec 62 unit u62c4, round-6
+/// adjudication `adj-u62c4-r6-verdict-reject-blast-radius-audit-incomplete`), mirroring the
+/// `STORE_FENCE_ENV` strip above for the identical reason. `main.rs::store_selection_at`
+/// gives an environment `KURRENTDB_CONN` (rung 2) precedence over a committed `store:`
+/// config (rung 4+), and none of these throwaway test fixtures commit one - so a periphery
+/// suite spawned through this helper on a machine whose `cargo test` process happens to
+/// inherit a real, reachable, credentialed `KURRENTDB_CONN` (a documented, supported rigger
+/// configuration this self-hosted project can itself run with) would otherwise silently
+/// route that fixture's courier writes into the operator's real shared production event
+/// store under a fake throwaway git project's identity, rather than resolving the local
+/// sqlite store the fixture actually built. Applied here, in the one place every current
+/// and future courier-spawning call site already gets the binary's path from, rather than
+/// each test file having to remember it individually. A call site that deliberately wants
+/// `KURRENTDB_CONN` propagated to the child (`store_precedence.rs`, `store_resolution_cli.rs`,
+/// `store_secrets.rs`) is unaffected: it re-sets `.env("KURRENTDB_CONN", ...)` on the
+/// returned `Command` after this call, and a later `.env()` call always wins over an earlier
+/// `.env_remove()` for the same key.
 pub fn rigger_courier() -> Command {
     let mut cmd = Command::new(rigger_bin());
     cmd.env_remove(rigger::gate::STORE_FENCE_ENV);
+    cmd.env_remove("KURRENTDB_CONN");
     cmd
+}
+
+/// RAII guard restoring a set of environment variables to their PRIOR value on drop -
+/// captured before mutation, not unconditionally removed - so a test that redirects an
+/// ambient var (`HOME`, `XDG_STATE_HOME`, `KURRENTDB_CONN`, ...) never permanently erases a
+/// value this process had ambiently set for the rest of this test binary's life the moment
+/// the guarded test ran. Shared by every suite that needs this (rather than each file
+/// carrying its own bespoke Drop guard) so there is exactly ONE correct capture-and-restore
+/// implementation on record, not a second, divergent copy that reintroduces the very
+/// unconditional-`remove_var` bug this guard exists to fix (the defect class named in
+/// `adv-u62c4-r5-uphold-remove-var-reintro-third-occurrence`).
+pub struct RestoreEnvVars(Vec<(&'static str, Option<std::ffi::OsString>)>);
+
+impl RestoreEnvVars {
+    /// Captures each name's CURRENT value before the caller mutates it. Call this before any
+    /// `std::env::set_var`/`remove_var` on the same names, never after.
+    pub fn capture(names: &[&'static str]) -> Self {
+        Self(names.iter().map(|&n| (n, std::env::var_os(n))).collect())
+    }
+}
+
+impl Drop for RestoreEnvVars {
+    fn drop(&mut self) {
+        for (name, prior) in self.0.drain(..) {
+            match prior {
+                Some(v) => std::env::set_var(name, v),
+                None => std::env::remove_var(name),
+            }
+        }
+    }
 }

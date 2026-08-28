@@ -27,6 +27,7 @@ use rigger::registry::{self, Instance, DEFAULT_IDLE_MS};
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
+use common::RestoreEnvVars;
 
 /// A throwaway project the compiled binary accepts as a courier target: its own git repo (so the
 /// store's project identity resolves normally) and an INITIALIZED event log - a courier refuses
@@ -279,6 +280,54 @@ fn a_homeless_environment_never_fails_a_courier_command() {
     assert!(
         String::from_utf8_lossy(&out.stdout).contains("progress recorded for u1/impl#0"),
         "the courier's own output is unaffected by the registry's degrade: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+/// Regression pin for `sdet-u62c4r3-kurrentdb-leak-not-blast-radius-audited` /
+/// `adv-u62c4-r5-kurrentdb-leak-independently-reproduced-8of8`, closed at
+/// `adj-u62c4-r6-verdict-reject-blast-radius-audit-incomplete`'s required fix:
+/// `tests/common::rigger_courier()` now strips an ambient `KURRENTDB_CONN` from every child it
+/// spawns, exactly like its own established `STORE_FENCE_ENV` strip - so every test in this
+/// file (and any future one) is protected uniformly by the ONE shared authority they all
+/// already get the binary's path from, rather than each call site having to remember it
+/// individually.
+///
+/// Simulates the exact leak the round-6 adjudicator reproduced live: a well-formed but
+/// UNREACHABLE `KURRENTDB_CONN` (the same `kurrentdb://127.0.0.1:1/` value
+/// `registry_refresh_driver_courier_convergence_periphery.rs`'s own round-5 regression pin
+/// uses) is set on THIS TEST PROCESS before spawning - never on the `Command` itself - proving
+/// `rigger_courier()` strips it from the CHILD regardless of what the parent test process
+/// carries, not merely that this one call site happens to avoid setting it. Pre-fix, the
+/// courier below would crash with a real gRPC connect error to the bogus address instead of
+/// resolving this fixture's local sqlite store; with the fix, `store_selection_at`'s rung-2
+/// environment check never observes it and the courier succeeds exactly as it would with no
+/// ambient `KURRENTDB_CONN` at all.
+#[test]
+#[serial_test::serial(kurrentdb_conn_env)]
+fn an_ambient_kurrentdb_conn_never_leaks_into_a_courier_spawned_through_the_shared_helper() {
+    let project = courier_project();
+    let root = project.path();
+    let state = tempfile::tempdir().expect("a temp XDG_STATE_HOME");
+
+    let _restore = RestoreEnvVars::capture(&["KURRENTDB_CONN"]);
+    std::env::set_var("KURRENTDB_CONN", "kurrentdb://127.0.0.1:1/");
+
+    let out = run_rigger(
+        root,
+        state.path(),
+        &["progress", "u1/impl#0", "did a thing"],
+    );
+    assert!(
+        out.status.success(),
+        "a courier spawned through the shared rigger_courier() helper must resolve the \
+         fixture's local sqlite store, not attempt a real gRPC connection to whatever \
+         KURRENTDB_CONN this test process's own environment carries; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("progress recorded for u1/impl#0"),
+        "the courier's own output is unaffected by the ambient KURRENTDB_CONN once stripped: {}",
         String::from_utf8_lossy(&out.stdout)
     );
 }

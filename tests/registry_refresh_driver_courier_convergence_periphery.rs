@@ -237,14 +237,15 @@ fn an_ambient_kurrentdb_conn_never_leaks_into_the_driver_courier_calls() {
     // `run_rigger` itself strips it from the child, regardless of what the calling process
     // carries. Well-formed but unreachable (matches the adjudicator's own repro), so a
     // regression manifests as a loud subprocess failure below, never a silent pass.
+    //
+    // Captured through the shared `RestoreEnvVars` (`tests/common`), not a bespoke Drop guard:
+    // round 5's own local `struct Restore` here unconditionally `remove_var`'d on drop instead
+    // of restoring this process's real prior value - a real defect (`adv-u62c4-r5-uphold-
+    // remove-var-reintro-third-occurrence`, self-assessed non-blocking since no other test in
+    // this file reads `KURRENTDB_CONN` afterward) that a proper capture/restore closes for
+    // good rather than leaving a third divergent, still-broken copy on record.
+    let _restore = common::RestoreEnvVars::capture(&["KURRENTDB_CONN"]);
     std::env::set_var("KURRENTDB_CONN", "kurrentdb://127.0.0.1:1/");
-    struct Restore;
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            std::env::remove_var("KURRENTDB_CONN");
-        }
-    }
-    let _restore = Restore;
 
     let step = run_rigger(root, state.path(), &["step"]);
     assert_ok(&step, &["step"]);
