@@ -25781,6 +25781,89 @@ fn describe_held_port_if_confirmed_public_contract_holds_at_the_crate_boundary()
     }
 }
 
+/// Spec 62 round 4 fix (adj-u62c3r3-verdict-reject-child-self-attribution) - the PUBLIC contract
+/// of [`rigger::dash::held_port_holder`] at the CRATE BOUNDARY, mirroring the two sibling
+/// crate-boundary tests above. `held_port_holder` is a NEW pub item this round (it did not exist
+/// before round 4): `describe_held_port_if_confirmed` already exposed the RENDERED MESSAGE half
+/// of this discovery, but no pub item exposed the RAW PID half - the exact thing
+/// `wait_for_dash_bind_or_diagnose` (main.rs, private) now needs so it can compare a discovered
+/// holder's pid against its own known spawned pid before choosing the "already in use" framing,
+/// rather than trusting the message text alone. No test in this file calls
+/// `rigger::dash::held_port_holder` directly before this one - the only exercise of this exact
+/// discovery anywhere in the tree is `describe_held_port_if_confirmed`'s own crate-boundary test
+/// above (which now delegates to `held_port_holder` internally per its updated doc, but proves
+/// only the message string) and the implementer's own private-function unit test in
+/// `src/main.rs` `mod tests`
+/// (`wait_for_dash_bind_or_diagnose_never_self_attributes_its_own_still_starting_spawn`, which
+/// proves the self-attribution BRANCH but never calls `held_port_holder` itself from outside its
+/// module). This test closes that gap directly: the function is exported and callable at the
+/// public boundary, its raw-pid contract is what a caller doing identity comparison actually
+/// needs (not just a human-readable string), and it stays consistent with its
+/// `describe_held_port_if_confirmed` sibling - two independently pub functions built on the same
+/// underlying discovery must never disagree on what they report.
+#[test]
+fn held_port_holder_public_contract_holds_at_the_crate_boundary() {
+    use rigger::dash::{describe_held_port_if_confirmed, held_port_holder};
+
+    // Held: bind a listener in this process and query its own address - the discovered pid must
+    // be THIS test process's own, returned as a raw u32 a caller can compare for identity, not
+    // only embedded somewhere inside a message string.
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let held_addr = listener.local_addr().unwrap();
+    if Path::new("/proc").is_dir() {
+        let my_pid = std::process::id();
+        let (holder_pid, held_msg) = held_port_holder(held_addr)
+            .expect("a port this test process holds must resolve Some, not None");
+        assert_eq!(
+            holder_pid, my_pid,
+            "the raw pid half of the tuple must be THIS test process's own pid, directly \
+             comparable by a caller without parsing the message text"
+        );
+        assert!(
+            held_msg.contains(&held_addr.to_string()),
+            "the message half must always name the held address; got: {held_msg}"
+        );
+        assert!(
+            held_msg.contains(&my_pid.to_string()),
+            "the message half must name the holder pid too; got: {held_msg}"
+        );
+        // Sibling-consistency: `describe_held_port_if_confirmed` is defined in terms of
+        // `held_port_holder` (round 4) precisely so the two can never drift apart - a
+        // crate-boundary check that they agree is exactly what would catch a future edit that
+        // broke that delegation without touching either function's own doc.
+        assert_eq!(
+            describe_held_port_if_confirmed(held_addr),
+            Some(held_msg),
+            "held_port_holder's message half and describe_held_port_if_confirmed's own \
+             return must agree - they are documented as sharing one discovery"
+        );
+    }
+    drop(listener);
+
+    // Unheld: learn a free port and release it before querying it - nothing rebinds it in
+    // between, so nothing can be independently confirmed holding it: the crate-boundary call
+    // must resolve None, the same "never a claim without confirmation" contract its sibling
+    // holds, and must stay consistent with that sibling's own None resolution for the identical
+    // address.
+    let free_addr = {
+        let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        probe.local_addr().unwrap()
+    };
+    if Path::new("/proc").is_dir() {
+        assert_eq!(
+            held_port_holder(free_addr),
+            None,
+            "a port nothing holds must resolve None at the crate boundary - never a fabricated \
+             pid for a caller that will use it to make a self-attribution decision"
+        );
+        assert_eq!(
+            describe_held_port_if_confirmed(free_addr),
+            None,
+            "the two sibling pub functions must agree on the unheld case too"
+        );
+    }
+}
+
 /// Spec 62 round 3 fix (adj-u62c3r2-verdict-reject-non-addrinuse-mislabel), through the BUILT
 /// binary's own step path, mirroring `cmd_dash_leaves_a_non_addrinuse_bind_error_unenriched`
 /// above for the manual CLI arm's sibling scenario: a step-path auto-start bind failure
