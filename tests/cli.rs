@@ -25727,3 +25727,104 @@ fn step_names_the_stopped_holder_when_the_step_paths_own_auto_start_hits_the_pre
          diagnosis; stderr:\n{err}"
     );
 }
+
+/// Spec 62, criterion 3 (HELD-PORT DIAGNOSIS) - the PUBLIC contract of
+/// [`rigger::dash::describe_held_port_if_confirmed`] at the CRATE BOUNDARY, mirroring
+/// `describe_held_port_public_contract_holds_at_the_crate_boundary` above for its round-3
+/// sibling (spec 62 round 3 fix, adj-u62c3r2-verdict-reject-non-addrinuse-mislabel). Unlike
+/// `describe_held_port`, whose one production caller (`cmd_dash`) only ever reaches it after an
+/// already-confirmed `AddrInUse`, this function's contract is `Option<String>`: `Some` ONLY when
+/// a holder is independently confirmed, `None` when nothing can be confirmed holding the port -
+/// the exact gate `spawn_run_dashboard_detached` (main.rs) now relies on so a merely-slow or
+/// permission-denied step-path start is never misreported as a held port. No test in this file
+/// calls `rigger::dash::describe_held_port_if_confirmed` directly from outside its module before
+/// this one; the production call sites (`spawn_run_dashboard_detached`, exercised below and by
+/// the step-path tests above) prove the WIRING, but never pin the function's own public contract
+/// independent of that wiring - the same gap `describe_held_port_public_contract_holds_at_the_
+/// crate_boundary` closed for its sibling at round 1.
+#[test]
+fn describe_held_port_if_confirmed_public_contract_holds_at_the_crate_boundary() {
+    use rigger::dash::describe_held_port_if_confirmed;
+
+    // Held: bind a listener in this process and describe its own address - a holder IS
+    // independently confirmable, so this must resolve Some and name THIS test process.
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let held_addr = listener.local_addr().unwrap();
+    if Path::new("/proc").is_dir() {
+        let held_msg = describe_held_port_if_confirmed(held_addr)
+            .expect("a port this test process holds must resolve Some, not None");
+        assert!(
+            held_msg.contains(&held_addr.to_string()),
+            "must always name the held address; got: {held_msg}"
+        );
+        assert!(
+            held_msg.contains(&std::process::id().to_string()),
+            "must name this test process's own pid as the holder; got: {held_msg}"
+        );
+    }
+    drop(listener);
+
+    // Unheld: learn a free port and release it before describing it - nothing rebinds it in
+    // between, so nothing can be independently confirmed holding it: the crate-boundary call
+    // must resolve None, never a claim, unlike `describe_held_port`'s always-Some contract.
+    let free_addr = {
+        let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        probe.local_addr().unwrap()
+    };
+    if Path::new("/proc").is_dir() {
+        assert_eq!(
+            describe_held_port_if_confirmed(free_addr),
+            None,
+            "a port nothing holds must resolve None at the crate boundary - the exact \
+             false-positive round 3 exists to close, never surfaced through the public contract"
+        );
+    }
+}
+
+/// Spec 62 round 3 fix (adj-u62c3r2-verdict-reject-non-addrinuse-mislabel), through the BUILT
+/// binary's own step path, mirroring `cmd_dash_leaves_a_non_addrinuse_bind_error_unenriched`
+/// above for the manual CLI arm's sibling scenario: a step-path auto-start bind failure
+/// UNRELATED to any genuinely held port (the reserved port 1 without privilege, a real
+/// `PermissionDenied`, never `AddrInUse`) must never be framed as "already in use". Round 2
+/// shipped exactly this false claim on the step path (adjudicator repro:
+/// `RIGGER_DASH_PORT=1` produced "...already in use (holding process not found)" for a port
+/// nothing held); round 3 closed it with `dash::describe_held_port_if_confirmed`, but the only
+/// regression test the round-3 commit added for this exact path
+/// (`ensure_run_dashboard_at_never_claims_a_phantom_holder_for_an_unheld_port`, src/main.rs mod
+/// tests) calls the private `ensure_run_dashboard_at` directly in-process - it never drives the
+/// actual compiled `rigger` binary through `rigger step`, the real crate boundary this file
+/// exists to guard, the same distinction `cmd_dash_leaves_a_non_addrinuse_bind_error_unenriched`
+/// draws for the manual arm. This test closes that real-binary gap for the step path.
+#[test]
+fn step_leaves_a_non_addrinuse_bind_error_unenriched() {
+    // Confirm THIS environment can even reproduce a non-AddrInUse bind failure on port 1 before
+    // trusting the real step invocation below to prove anything about the guard - mirrors the
+    // manual-CLI sibling test's own guard verbatim.
+    match std::net::TcpListener::bind(("127.0.0.1", 1)) {
+        Ok(_) => return, // privileged (root/capability) here - this guard cannot be exercised
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => return, // someone already holds it
+        Err(_) => {}
+    }
+
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    write_two_stage_workflow(root);
+
+    let (out, err) = run_step_dash_enabled(root, 1);
+
+    assert!(
+        out.contains(r#""wave":"#),
+        "a non-AddrInUse bind failure still lets the step run to completion (a printed wave) - \
+         headless degrade, never a blocked step; stdout: {out:?} stderr: {err:?}"
+    );
+    assert!(
+        !err.contains("is already in use"),
+        "a non-AddrInUse bind failure must never claim the port is already in use - the exact \
+         false positive round 2 shipped and round 3's describe_held_port_if_confirmed gate \
+         closes; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("could not auto-start the dashboard"),
+        "a bind failure of any kind must still announce the headless degrade; stderr:\n{err}"
+    );
+}
