@@ -20690,25 +20690,27 @@ fn step_losing_a_real_singleton_race_records_the_winners_pid_not_its_own_dead_ch
     );
 }
 
-/// Spec 62 round 2 fix point (adj-u62c1r2-verdict-reject-version-skew-fallback): the round-2
-/// `unwrap_or(pid)` fallback treated a `None` from `dash_serving_pid_on` as ONLY the narrow
-/// window between `wait_for_dash_bind` confirming a probe and a second probe running - but
-/// `None` is ALSO the STEADY-STATE response from any winner that answers the dash header but
-/// predates `X-Rigger-Dash-Pid` (a pre-round-2 or foreign dash build), which is not a narrow
-/// timing race at all. Under the round-2 code that case silently fell back to the LOSING side's
-/// own already-exited, never-bound child pid - reproducing the original round-1 defect
-/// (adv-u62c1-marker-pid-not-the-serving-pid-on-singleton-race) under a different, more common
-/// trigger.
+/// Spec 62 round 4 fix point (adj-u62c1r3-verdict-reject-idempotency-regression): the round-3
+/// refuse-only fix wrote NO marker at all when a genuinely-serving winner's pid could not be
+/// attributed - correctly closing round 2's version-skew fallback
+/// (adj-u62c1r2-verdict-reject-version-skew-fallback), but as a side effect leaving
+/// `ensure_run_dashboard_at` nothing to short-circuit on: every LATER step of the run repeated
+/// the entire spawn/probe/attribute cycle forever, never reaching spec 39 criterion 1's no-op
+/// invariant. The fix records a marker naming the winner's real port and the documented
+/// `rigger::dash::UNATTRIBUTED_PID` sentinel instead of either extreme - never a value this call
+/// cannot prove (round 2's mistake), and never nothing at all (round 3's mistake).
 ///
 /// The winner here is a raw stand-in, deliberately NOT a real `rigger dash` process: it answers
 /// the dash header (so the step's own spawned child's `bind_singleton` recognizes it as
 /// already-serving and exits cleanly without binding, and `wait_for_dash_bind` confirms the port
 /// answers) but NEVER sends the pid header at all - the exact shape of a version-skewed or
-/// foreign dash winning the race, not a scheduling coincidence. The fix must refuse to fabricate
-/// an attribution it cannot prove: it records NO marker at all, exactly like an unconfirmed
-/// bind, rather than naming the loser's own dead child as the server.
+/// foreign dash winning the race, not a scheduling coincidence.
+///
+/// The idempotency half of this same fix point - a SECOND consecutive step against this same
+/// winner must not repeat any of this - is proven separately by
+/// `step_against_a_pid_header_less_winner_is_idempotent_across_two_consecutive_steps` below.
 #[test]
-fn step_losing_a_race_against_a_pid_header_less_winner_records_no_marker() {
+fn step_losing_a_race_against_a_pid_header_less_winner_records_a_sentinel_marker() {
     use std::io::Write;
 
     let proj = temp_git_project_with_commit();
@@ -20742,15 +20744,124 @@ fn step_losing_a_race_against_a_pid_header_less_winner_records_no_marker() {
     );
     assert_eq!(
         read_dash_marker(root),
-        None,
+        Some((dash_port, rigger::dash::UNATTRIBUTED_PID)),
         "a loser that cannot attribute the real winner's serving pid (no X-Rigger-Dash-Pid on \
-         the wire at all) must record NO marker - never its own already-exited child's pid; \
+         the wire at all) must still record a marker - naming the winner's real port and the \
+         documented sentinel pid, never its own already-exited child's pid and never nothing at \
+         all (recording nothing forecloses the next step's idempotent short-circuit); \
          stderr:\n{err}"
     );
     assert!(
-        err.contains("could not auto-start the dashboard"),
-        "an unattributable winner must announce the headless degrade, never a fabricated \
-         success; stderr:\n{err}"
+        err.contains("serving this run"),
+        "a genuinely-serving (if unattributable) winner must be announced as serving, never the \
+         headless-degrade message a true start failure gets; stderr:\n{err}"
+    );
+    assert!(
+        !err.contains("could not auto-start the dashboard"),
+        "a dash IS serving here (confirmed by the winner answering the dash header) - this must \
+         never be reported as a failed auto-start; stderr:\n{err}"
+    );
+}
+
+/// Spec 62 round 4's own fix point, the idempotency half
+/// (adj-u62c1r3-verdict-reject-idempotency-regression's fix point (1)): a SECOND, consecutive
+/// step against the SAME pid-header-less winner must find the marker the first step recorded,
+/// confirm the winner is still serving via a single port probe, and short-circuit there - never
+/// spawning a second child, never re-probing for a pid, never rewriting the marker. This is the
+/// exact invariant the round-3 refuse-only fix broke: writing no marker on the first step left
+/// nothing for a second step to find, so it repeated the ENTIRE spawn/wait/attribute cycle every
+/// single time (spec 39 criterion 1's "the second and every later step of a run is a no-op,
+/// never a second dash or a port fight" - violated).
+///
+/// Proven two ways: (1) the marker is byte-for-byte unchanged after the second step (nothing
+/// re-wrote it), and (2) the winner's listener sees exactly ONE connection during the second
+/// step - the lone `dash_marker_serving` port probe `ensure_run_dashboard_at` makes before
+/// deciding `AlreadyServing`. A regression back to the round-3 shape (or any other path that
+/// re-attempts a full spawn) would instead drive the child's own `bind_singleton` AddrInUse
+/// check, the parent's `wait_for_dash_bind` poll loop, AND a second `dash_serving_pid_on` probe -
+/// several connections, never just one.
+#[test]
+fn step_against_a_pid_header_less_winner_is_idempotent_across_two_consecutive_steps() {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    write_two_stage_workflow(root);
+    let dash_port = free_loopback_port();
+
+    let connections = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&connections);
+    let listener = std::net::TcpListener::bind(("127.0.0.1", dash_port))
+        .expect("failed to bind the stand-in winner's port");
+    std::thread::spawn(move || {
+        for mut s in listener.incoming().flatten() {
+            counter.fetch_add(1, Ordering::SeqCst);
+            let _ = s.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\n{}: probe\r\nConnection: close\r\n\r\n",
+                    rigger::dash::DASH_HEADER
+                )
+                .as_bytes(),
+            );
+        }
+    });
+
+    // First step: no marker exists yet, so this step's own spawn loses the race and (per the
+    // round-4 fix proven above) records a sentinel marker naming the winner's port.
+    let (out1, err1) = run_step_dash_enabled(root, dash_port);
+    assert!(
+        out1.contains(r#""wave":"#),
+        "the first step must run to completion; stdout: {out1:?} stderr: {err1:?}"
+    );
+    let first_marker = read_dash_marker(root).unwrap_or_else(|| {
+        panic!(
+            "the first step must record a sentinel marker for the confirmed-serving, \
+             unattributable winner; stderr:\n{err1}"
+        )
+    });
+    assert_eq!(
+        first_marker,
+        (dash_port, rigger::dash::UNATTRIBUTED_PID),
+        "the first step's marker must name the winner's real port and the sentinel pid"
+    );
+
+    // Isolate the second step's own network activity from the first step's (which necessarily
+    // makes several connections: the losing child's own AddrInUse/dash-recognition probe, the
+    // parent's wait_for_dash_bind confirmation, and the pid-attribution probe).
+    connections.store(0, Ordering::SeqCst);
+
+    // Second, consecutive step against the SAME winner and the SAME project (same run): the
+    // marker the first step recorded still names a port that is still serving, so this must be
+    // the idempotent no-op - never a second spawn.
+    let (out2, err2) = run_step_dash_enabled(root, dash_port);
+    assert!(
+        out2.contains(r#""wave":"#),
+        "the second step must also run to completion; stdout: {out2:?} stderr: {err2:?}"
+    );
+    assert_eq!(
+        read_dash_marker(root),
+        Some(first_marker),
+        "the marker must be byte-for-byte unchanged after the idempotent second step - a \
+         rewrite would mean `start` was called again instead of short-circuiting"
+    );
+    assert!(
+        !err2.contains("serving this run"),
+        "the idempotent no-op step starts nothing, so it must not announce a fresh start; \
+         stderr:\n{err2}"
+    );
+    assert!(
+        !err2.contains("could not auto-start the dashboard"),
+        "the idempotent no-op step must never report a failed start either; stderr:\n{err2}"
+    );
+    assert_eq!(
+        connections.load(Ordering::SeqCst),
+        1,
+        "a truly idempotent no-op step touches the winner's port exactly once - the single \
+         `dash_marker_serving` probe `ensure_run_dashboard_at` makes before short-circuiting to \
+         AlreadyServing. Anything more means the full spawn/wait/attribute cycle ran again \
+         (the round-3 regression this test pins against)"
     );
 }
 

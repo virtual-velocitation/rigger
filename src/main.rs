@@ -5699,19 +5699,25 @@ fn wait_for_dash_bind(
 /// makes the returned marker correct regardless of which side of any such race this call landed
 /// on.
 ///
-/// A [`dash::dash_serving_pid_on`] `None` returns `Err` here - it writes NO marker, exactly like
-/// the bind-never-confirmed arm above - rather than falling back to `child`'s own locally-spawned
-/// pid (spec 62 round 2 fix point, adj-u62c1r2-verdict-reject-version-skew-fallback). A round-2
-/// draft of this function used `unwrap_or(pid)` for that fallback, reasoning it covered only the
-/// narrow window between `wait_for_dash_bind` confirming a probe and this second probe running,
-/// should the server have vanished in between. That reasoning was wrong: `None` is ALSO the
-/// STEADY-STATE response from any winner that answers [`dash::DASH_HEADER`] but predates
-/// [`dash::DASH_HEADER_PID`] (a pre-round-2 or foreign dash build) - not a narrow timing race at
-/// all - and in that case `unwrap_or(pid)` silently reverted to the LOSING side's own
-/// already-exited, never-bound child pid, reproducing the exact defect this whole fix exists to
-/// close. An unattributable pid is never safe to assert: a caller that cannot prove which process
-/// is really serving must record nothing, leaving the NEXT `step` free to re-probe rather than
-/// asserting a value already known to be untrustworthy in exactly this scenario.
+/// A [`dash::dash_serving_pid_on`] `None` here means the port's real serving pid cannot be
+/// attributed - either the confirmed server vanished in the instant since `wait_for_dash_bind`,
+/// or (the steady-state case) it is a genuine dash that predates [`dash::DASH_HEADER_PID`], e.g.
+/// a pre-round-2 or foreign build. This has been through two rejected shapes before this one.
+/// Round 2 fell back to `child`'s own locally-spawned pid (`unwrap_or(pid)`, spec 62 round 2 fix
+/// point, adj-u62c1r2-verdict-reject-version-skew-fallback) - wrong, because in a lost singleton
+/// race `child` never bound anything at all, so asserting its pid reproduced the exact defect
+/// this whole fix exists to prevent, and the steady-state case above means this is no narrow
+/// timing race but a COMMON trigger. Round 3 then refused to record anything at all in this case
+/// (adj-u62c1r3-verdict-reject-idempotency-regression) - also wrong: the port genuinely IS
+/// serving (confirmed by `wait_for_dash_bind` above), so writing no marker left
+/// `ensure_run_dashboard_at` nothing to short-circuit on, and every LATER `step` repeated this
+/// entire spawn/wait/attribute cycle forever, never reaching spec 39 criterion 1's no-op
+/// invariant. This fix records the documented [`dash::UNATTRIBUTED_PID`] sentinel instead of
+/// either extreme: never a value this call cannot prove, but never nothing either - the marker's
+/// PORT (which `dash_start_needed`/[`dash_marker_serving`] actually probe; neither ever reads
+/// this pid) is enough for the next step to recognize this dash as already serving, and it
+/// leaves a marker for spec 62's sibling self-heal (u62c2) to eventually correct if the real pid
+/// ever becomes attributable - where recording nothing left it nothing to correct.
 fn spawn_run_dashboard_detached() -> std::io::Result<dash::DashMarker> {
     // The machine singleton binds the FIXED default address (spec 50, criterion 4) - no free-port
     // search, so the address never drifts. If a dash is already serving it, the spawned `rigger
@@ -5749,14 +5755,16 @@ fn spawn_run_dashboard_detached() -> std::io::Result<dash::DashMarker> {
     // case) it is a genuine dash that predates `DASH_HEADER_PID`. Neither case may fall back to
     // `pid`: `pid` is THIS call's own locally-spawned child, and in a lost singleton race that
     // child never bound anything at all, so asserting its pid would repeat the exact defect this
-    // probe exists to prevent. Refuse instead: write no marker, same as an unconfirmed bind.
-    let Some(serving_pid) = dash::dash_serving_pid_on(port) else {
-        return Err(std::io::Error::other(format!(
-            "dash on port {port} is serving but its serving pid could not be attributed \
-             (no {} on the wire, e.g. a pre-round-2 or foreign dash); refusing to record an \
-             unattributed marker",
-            dash::DASH_HEADER_PID
-        )));
+    // probe exists to prevent. But the port IS confirmed serving (`wait_for_dash_bind` above), so
+    // refusing to record ANYTHING is not safe either (spec 62 round 3's own regression,
+    // adj-u62c1r3-verdict-reject-idempotency-regression): it would leave the NEXT step with no
+    // marker to short-circuit on, repeating this entire spawn/probe cycle forever. Record the
+    // documented sentinel instead - never a guessed real pid, but a real marker
+    // `dash_start_needed` (which never reads this field, only the port) can recognize as
+    // already serving.
+    let serving_pid = match dash::dash_serving_pid_on(port) {
+        Some(pid) => pid,
+        None => dash::UNATTRIBUTED_PID,
     };
     let url = format!("http://127.0.0.1:{port}/");
     let _ = std::fs::write(db_path(DASH_URL_FILE), &url);
