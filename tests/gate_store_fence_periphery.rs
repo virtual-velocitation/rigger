@@ -30,10 +30,12 @@
 //! directory before handing it back - the one store-resolution authority every courier
 //! funnels through, so the fix covers `emit`/`result`/`peers`/`reported`/`prompt` uniformly).
 //!
-//! Seven tests, driving the REAL compiled `rigger` binary as a REAL OS subprocess through the
-//! REAL `gate::ExecRunner` - never a fake Runner (test 7 additionally drives the full
+//! Nine tests, eight driving the REAL compiled `rigger` binary as a REAL OS subprocess through
+//! the REAL `gate::ExecRunner` - never a fake Runner (test 7 additionally drives the full
 //! `conductor::run` orchestration around that same real `ExecRunner`, rather than calling it
-//! directly, with only its one agent spawn faked - the gate side stays 100% real throughout):
+//! directly, with only its one agent spawn faked - the gate side stays 100% real throughout);
+//! the ninth (test 9) is a self-contained regression pin for this file's own env-var restore
+//! discipline and drives no subprocess at all:
 //!
 //! 1. `a_real_fenced_courier_actually_succeeds_and_lands_in_an_isolated_persistent_store`:
 //!    a non-empty `target_dir` (the unit-worktree gate signal) fences a real courier
@@ -49,6 +51,26 @@
 //!    suite is itself liable to run AS a `cargo test` gate inside a unit worktree - which
 //!    would carry a real, inherited `STORE_FENCE_ENV` of its own onto every subprocess this
 //!    binary spawns, silently fencing a test whose entire point is proving the unfenced path.
+//!    Also redirects `XDG_STATE_HOME` to a per-test temp dir (spec 62 round 4 fix for
+//!    `sdet-u62c4-round2-unfenced-execrunner-path-still-leaks-ambient-registry` /
+//!    `adv-u62c4-r3-unfenced-leak-confirmed-arch-refuted`): `refresh_registry_entry`
+//!    (`src/main.rs`) now refreshes the machine-global instance registry on every unfenced
+//!    courier call - correctly, since an unfenced project SHOULD reach real ambient state -
+//!    so left unredirected, this test's own real courier subprocess would seed a phantom,
+//!    since-deleted-tempdir entry into the operator's real `~/.local/state/rigger/instances`
+//!    every time this suite runs, mirroring the identical `XDG_STATE_HOME` isolation this
+//!    unit's round-1 commit already applied to five pre-existing sibling periphery files
+//!    (`store_precedence.rs`, `store_resolution.rs`, `store_resolution_cli.rs`,
+//!    `store_secrets.rs`, `projections_stay_local.rs`) for the same reason. This test's real
+//!    subprocess courier is spawned inside `ExecRunner::run`, not by a `Command` this test
+//!    owns directly, so the redirect is applied to this test's OWN process environment
+//!    instead (which the spawned child inherits) rather than to a `Command::env` call. Round
+//!    6's fix (`adj-u62c4-r6-verdict-reject-blast-radius-audit-incomplete`) applies the
+//!    identical treatment to `KURRENTDB_CONN`: this test's courier is spawned the same
+//!    ExecRunner-direct way, never through `tests/common::rigger_courier()` (which strips
+//!    that var), so an ambient `KURRENTDB_CONN` would otherwise silently beat this fixture's
+//!    local sqlite store (`store_selection_at` rung 2). A well-formed but unreachable value
+//!    is set and then cleared before spawning, so this doubles as a live regression proof.
 //! 3. `a_periphery_couriers_shared_command_ignores_an_inherited_ambient_fence`: the FAIL-SAFE
 //!    direction's other edge (the u3 reject's ground (a),
 //!    `adv-u3-fence-breaks-existing-store-precedence-tests-measured`) - a periphery test
@@ -102,6 +124,33 @@
 //!    standalone review stage, and proves the gate-spawned courier's write lands in the fenced
 //!    scratch location rather than the repo's live store - the one observation neither the
 //!    RecordingRunner-based unit test nor a hand-typed-fence unit test can make.
+//! 8. `an_unfenced_integrated_tree_couriers_registry_refresh_never_touches_the_real_ambient_home`:
+//!    the round-4 regression pin for the SAME defect test 2's own `XDG_STATE_HOME` redirect
+//!    closes, proving the isolation actually protects the ambient location rather than merely
+//!    asserting the redirect's env var is present. Mirrors
+//!    `courier_registry_refresh_fence_periphery.rs`'s own technique - inject a KNOWN, controlled
+//!    fixture the courier's spawned process resolves through, then read its registry entries
+//!    with a small helper and assert on them - applied to the signal this unfenced path is
+//!    actually built around: `refresh_registry_entry` resolves the registry root via
+//!    `registry::state_home()`'s own precedence (`XDG_STATE_HOME` when set, else
+//!    `$HOME/.local/state`). This test pins BOTH ends of that precedence at once: `HOME` is set
+//!    to a fixture standing in for the real ambient location this exact call would resolve to
+//!    were the `XDG_STATE_HOME` redirect ever dropped (a future edit reverting it, or a copy of
+//!    this test omitting it), and `XDG_STATE_HOME` is set to a separate, redirected fixture -
+//!    so a future regression is not "nothing observable happens" but "a concrete, checked
+//!    fixture directory gains a phantom entry", exactly the shape the adjudicator's own manual
+//!    repro found. Carries the identical round-6 `KURRENTDB_CONN` treatment test 2 does, for
+//!    the identical reason (this test's courier is ExecRunner-direct too).
+//! 9. `restore_env_vars_returns_a_captured_prior_value_not_removes_it`: tests 2 and 8 above
+//!    redirect `HOME`/`XDG_STATE_HOME`/`KURRENTDB_CONN` through `RestoreEnvVars`
+//!    (`tests/common::RestoreEnvVars`, shared with every other suite that needs the same
+//!    guard rather than each file carrying its own bespoke copy), a small RAII guard that
+//!    captures each var's value BEFORE mutating it and restores that captured value on drop -
+//!    never an unconditional `remove_var`, which would permanently unset a var this process
+//!    had ambiently set for the rest of this test binary's life the moment either test ran on
+//!    a real machine. This test pins that capture/restore round-trip directly, in isolation,
+//!    rather than trusting tests 2 and 8 to notice a silently missing environment variable as
+//!    a side effect of some later, unrelated test.
 //!
 //! Both cwd and target_dir are passed to `ExecRunner::run` explicitly for every call in this
 //! file - never left empty to "inherit the ambient cwd" - so the only variable that ever
@@ -121,10 +170,11 @@ use rigger::eventstore::sqlite::Store;
 use rigger::gate::{
     Autonomy, BuildEnv, ExecRunner, Gate, Kind, Runner, STORE_FENCE_ENV, STORE_FENCE_SUFFIX,
 };
+use rigger::registry::{self, Instance};
 use rigger::worktree::{review_fence_sibling, unit_cache_sibling, Worktree};
 
 mod common;
-use common::rigger_bin;
+use common::{rigger_bin, RestoreEnvVars};
 
 fn git_init_quiet(root: &Path) {
     Command::new("git")
@@ -194,6 +244,30 @@ fn emit_gate(id: &str, decision_id: &str) -> Gate {
         autonomy: Autonomy::Manual,
         history: vec![],
     }
+}
+
+/// Every registry entry under `state_home`, decoded through `registry::Instance`'s own
+/// (de)serialization - mirrors `courier_registry_refresh_fence_periphery.rs`'s own identically
+/// purposed helper (each periphery suite owns its own small fixture helpers rather than sharing
+/// test-only code across files).
+fn registry_entries(state_home: &Path) -> Vec<Instance> {
+    let dir = registry::instances_dir(state_home);
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        if let Ok(body) = std::fs::read(&path) {
+            if let Ok(inst) = serde_json::from_slice::<Instance>(&body) {
+                out.push(inst);
+            }
+        }
+    }
+    out
 }
 
 #[test]
@@ -266,6 +340,36 @@ fn an_unfenced_integrated_tree_gate_still_walks_up_to_the_live_store() {
     // convention (a separate OS process from this integration binary, so no real lock is
     // shared - the tag documents the same discipline, not a cross-binary dependency).
     std::env::remove_var(STORE_FENCE_ENV);
+
+    // Also defensive, closing a DIFFERENT leak (round 4 fix for
+    // sdet-u62c4-round2-unfenced-execrunner-path-still-leaks-ambient-registry /
+    // adv-u62c4-r3-unfenced-leak-confirmed-arch-refuted - see this file's own module doc, item
+    // 2, for the full rationale): `refresh_registry_entry` (src/main.rs) now refreshes the
+    // machine-global instance registry on every unfenced courier call, so left unredirected
+    // this test's own real courier subprocess would seed a phantom entry into the operator's
+    // real `~/.local/state/rigger/instances` every time this suite runs. The redirect is
+    // applied to THIS test's own process environment (inherited by the spawned child) rather
+    // than to a `Command::env` call, because the real courier subprocess is spawned inside
+    // `ExecRunner::run`, not by a `Command` this test builds directly.
+    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
+    let _restore_state_home = RestoreEnvVars::capture(&["XDG_STATE_HOME", "KURRENTDB_CONN"]);
+    std::env::set_var("XDG_STATE_HOME", state.path());
+    // Round-6 adjudication fix (adj-u62c4-r6-verdict-reject-blast-radius-audit-incomplete):
+    // this test's real courier subprocess is spawned inside `ExecRunner::run`, never through
+    // `tests/common::rigger_courier()` (which defensively strips `KURRENTDB_CONN`), so it
+    // inherits this test binary's own process env unfiltered - an ambient `KURRENTDB_CONN`
+    // would otherwise silently beat the local sqlite store this test asserts against
+    // (`store_selection_at` rung 2 over rung 5, since this fixture commits no store config).
+    // Simulate the exact leak the adjudicator reproduced live: a well-formed but UNREACHABLE
+    // address (mirroring `registry_refresh_driver_courier_convergence_periphery.rs`'s own
+    // round-5 regression pin), standing in for whatever real, possibly-credentialed value a
+    // developer or CI machine's own shell might already export.
+    std::env::set_var("KURRENTDB_CONN", "kurrentdb://127.0.0.1:1/");
+    // THE FIX: clear it unconditionally before the courier below ever spawns. Removing this
+    // one line reintroduces the leak and turns this test into a genuine regression proof - the
+    // courier would then crash with a real gRPC connect error instead of landing "position 1"
+    // in the repo's real live store.
+    std::env::remove_var("KURRENTDB_CONN");
 
     let topo = build_topology();
     let live_before = std::fs::read(&topo.live_events).unwrap();
@@ -758,5 +862,126 @@ fn conductors_derived_store_fence_actually_reaches_a_real_exec_runner() {
          must never let the gate-spawned courier reach the repo's live store - if this fails, \
          conductor::run_gates's caller-injected store_fence is not actually reaching the real \
          Runner it wires up in production"
+    );
+}
+
+/// THE REGRESSION PIN for the round-4 fix (test 2's own `XDG_STATE_HOME` redirect, added for
+/// `sdet-u62c4-round2-unfenced-execrunner-path-still-leaks-ambient-registry` /
+/// `adv-u62c4-r3-unfenced-leak-confirmed-arch-refuted`): proves the isolation actually
+/// protects the ambient registry location, not merely that the redirect's env var is present
+/// somewhere in the test. See this file's own module doc, item 8, for the full rationale.
+#[test]
+#[serial_test::serial(cwd)]
+fn an_unfenced_integrated_tree_couriers_registry_refresh_never_touches_the_real_ambient_home() {
+    std::env::remove_var(STORE_FENCE_ENV);
+
+    let topo = build_topology();
+    let dir = topo.worktree.to_string_lossy().into_owned();
+
+    // `ambient_home` stands in for the real ambient location `refresh_registry_entry`'s
+    // registry root (`registry::state_home()`) would resolve to via its `$HOME/.local/state`
+    // fallback, were the `XDG_STATE_HOME` redirect below ever dropped - a future edit
+    // reverting it, or a copy of this test omitting it. Setting `HOME` here (rather than
+    // leaving it whatever this suite's own process happens to have inherited) turns a
+    // regression into a concrete, checked fixture directory gaining a phantom entry, instead
+    // of "nothing observable happens in this test either way".
+    let ambient_home = tempfile::tempdir().expect("a temp ambient HOME");
+    // The genuinely applied redirect, mirroring test 2's own - `state_home_from`'s precedence
+    // (`XDG_STATE_HOME` wins over `HOME` whenever it is set) means this is where the write
+    // must land as long as the redirect is intact.
+    let redirected_state = tempfile::tempdir().expect("a temp redirected XDG_STATE_HOME");
+    let _restore = RestoreEnvVars::capture(&["HOME", "XDG_STATE_HOME", "KURRENTDB_CONN"]);
+    std::env::set_var("HOME", ambient_home.path());
+    std::env::set_var("XDG_STATE_HOME", redirected_state.path());
+    // Round-6 adjudication fix (adj-u62c4-r6-verdict-reject-blast-radius-audit-incomplete):
+    // this test's real courier subprocess is spawned inside `ExecRunner::run`, never through
+    // `tests/common::rigger_courier()` (which defensively strips `KURRENTDB_CONN`), so it
+    // inherits this test binary's own process env unfiltered. Simulate the exact leak the
+    // adjudicator reproduced live (a well-formed but UNREACHABLE address, matching this
+    // file's other regression pin above and
+    // `registry_refresh_driver_courier_convergence_periphery.rs`'s own round-5 pin) THEN clear
+    // it - removing the clear turns this into a genuine regression proof, since the courier
+    // below would otherwise crash with a real gRPC connect error instead of resolving this
+    // fixture's local sqlite store.
+    std::env::set_var("KURRENTDB_CONN", "kurrentdb://127.0.0.1:1/");
+    std::env::remove_var("KURRENTDB_CONN");
+
+    let result = ExecRunner.run(
+        &emit_gate("unfenced-registry-emit", "unfenced-registry-probe"),
+        &dir,
+        "",
+        "",
+        "",
+        "",
+        &BuildEnv::default(),
+        &BuildBudget::default(),
+    );
+    assert!(
+        result.pass,
+        "the unfenced courier must still succeed by walking up to the repo's real store: \
+         {result:?}"
+    );
+
+    let redirected_entries = registry_entries(redirected_state.path());
+    assert_eq!(
+        redirected_entries.len(),
+        1,
+        "the unfenced courier's registry refresh must land in the redirected XDG_STATE_HOME - \
+         proving this call genuinely exercised refresh_registry_entry's real, unconditional- \
+         when-unfenced write path, not a fixture that trivially never reaches it: \
+         {redirected_entries:?}"
+    );
+
+    let ambient_state_home = ambient_home.path().join(".local").join("state");
+    let ambient_entries = registry_entries(&ambient_state_home);
+    assert!(
+        ambient_entries.is_empty(),
+        "the HOME-derived ambient registry directory this call would otherwise have targeted, \
+         absent the XDG_STATE_HOME redirect, must stay untouched: {ambient_entries:?}"
+    );
+}
+
+/// Regression pin for `adv-u62c4-r4-fence-fix-remove-var-not-restore-deviates-from-established-
+/// pattern`: tests 2 and 8 above used to unconditionally `remove_var` HOME/XDG_STATE_HOME on
+/// drop instead of restoring this process's real prior value - on any machine that actually had
+/// one set (the norm for HOME), that would permanently unset it for the rest of this test
+/// binary's process life the moment either test ran. `RestoreEnvVars` is the shared fix both
+/// call sites now route through; this test pins its capture/restore round-trip directly, in
+/// isolation, rather than trusting tests 2 and 8 to notice a silently missing environment
+/// variable as a side effect of some later, unrelated test in this same binary. Drives no
+/// subprocess and touches no store - purely a test-infrastructure correctness pin, self-scoped
+/// in its own outer `RestoreEnvVars` so it leaves the real ambient HOME/XDG_STATE_HOME exactly
+/// as it found them regardless of what this machine has set.
+#[test]
+#[serial_test::serial(cwd)]
+fn restore_env_vars_returns_a_captured_prior_value_not_removes_it() {
+    let _outer_restore = RestoreEnvVars::capture(&["HOME", "XDG_STATE_HOME"]);
+    let sentinel_home = "a-genuinely-fake-sentinel-home-value-for-this-one-test";
+    std::env::set_var("HOME", sentinel_home);
+    std::env::remove_var("XDG_STATE_HOME");
+
+    {
+        let _restore = RestoreEnvVars::capture(&["HOME", "XDG_STATE_HOME"]);
+        std::env::set_var("HOME", "some-other-value-the-guarded-code-set");
+        std::env::set_var("XDG_STATE_HOME", "some-value-that-was-never-there-before");
+        assert_eq!(
+            std::env::var_os("HOME"),
+            Some(std::ffi::OsString::from(
+                "some-other-value-the-guarded-code-set"
+            )),
+            "sanity: the guarded mutation actually took effect while the inner guard is alive"
+        );
+    }
+
+    assert_eq!(
+        std::env::var_os("HOME"),
+        Some(std::ffi::OsString::from(sentinel_home)),
+        "HOME must be RESTORED to this scope's captured prior value once the inner guard \
+         drops - not left at the guarded code's value and not unset"
+    );
+    assert!(
+        std::env::var_os("XDG_STATE_HOME").is_none(),
+        "XDG_STATE_HOME had no prior value in this scope, so the inner guard's None branch \
+         must leave it unset again, not stuck at the guarded code's value"
     );
 }

@@ -282,7 +282,12 @@ fn progress_against_the_server_keeps_progress_db_local_and_the_log_on_the_server
 
         // A bare `rigger progress` - no `--eventstore` flag - the exact surface a worker uses. It
         // resolves the run store (-> server, read-only, to scope the report) and appends to the
-        // SEPARATE progress store, which must stay LOCAL sqlite.
+        // SEPARATE progress store, which must stay LOCAL sqlite. `XDG_STATE_HOME` is redirected
+        // to a per-call temp dir (spec 62, "couriers count as activity"): `progress` now
+        // refreshes the machine-global instance registry too, so an unredirected call here would
+        // otherwise seed a phantom, since-deleted-tempdir entry into the operator's real
+        // `~/.local/state/rigger/instances`.
+        let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
         let out = common::rigger_courier()
             .args([
                 "progress",
@@ -292,6 +297,7 @@ fn progress_against_the_server_keeps_progress_db_local_and_the_log_on_the_server
             .current_dir(root)
             .env("KURRENTDB_CONN", &conn)
             .env("RIGGER_NO_DASH", "1")
+            .env("XDG_STATE_HOME", state.path())
             .output()
             .expect("spawn rigger progress");
         assert!(
