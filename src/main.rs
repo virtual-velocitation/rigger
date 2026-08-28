@@ -5572,8 +5572,17 @@ enum DashStart {
     /// idempotent no-op that makes the second and every later `step` of a run a no-op).
     AlreadyServing(u16),
     /// The best-effort start failed; the run proceeds headless (a start failure never
-    /// fails the step - the dash is observability, not the deliverable).
-    Failed,
+    /// fails the step - the dash is observability, not the deliverable). Carries the
+    /// failure's diagnosis text (spec 62 round 2 fix,
+    /// adv-u62c3-diagnosis-unreachable-from-step-path-auto-start): the prior unit variant
+    /// silently discarded [`spawn_run_dashboard_detached`]'s `io::Error`, so an operator whose
+    /// step-path auto-start hit a genuinely held port (e.g. a job-control-stopped predecessor -
+    /// spec 62's own motivating Goal scenario) saw only [`ensure_run_dashboard`]'s generic
+    /// headless-degrade line, never the pid, process state, or resume-or-kill remedy the
+    /// HELD-PORT DIAGNOSIS (criterion 3) exists to surface - reachable, before this fix, ONLY
+    /// through the manual `rigger dash` CLI arm ([`cmd_dash`]), never the step path that is
+    /// spec 62's actual Goal. This is the `io::Error`'s `Display` text verbatim.
+    Failed(String),
 }
 
 /// The recorded-serving predicate BOTH the step path's idempotent-start decision
@@ -5619,7 +5628,12 @@ fn ensure_run_dashboard_at(
             let _ = marker.write(marker_path);
             DashStart::Started(marker.port)
         }
-        Err(_) => DashStart::Failed,
+        // The diagnosis lives entirely in `e`'s `Display` text (spec 62 round 2 fix): the real
+        // production `start` ([`spawn_run_dashboard_detached`]) already folds the HELD-PORT
+        // DIAGNOSIS in when a genuine port conflict is what failed the bind, so carrying `e`
+        // forward here - rather than discarding it as the prior `Err(_) => DashStart::Failed`
+        // (no payload) did - is what lets that diagnosis reach the operator at all.
+        Err(e) => DashStart::Failed(e.to_string()),
     }
 }
 
@@ -5748,6 +5762,17 @@ fn wait_for_dash_bind(
 /// rather than asking `ensure_run_dashboard_at`'s already-correct `Err` arm (which already
 /// writes no marker) to somehow notice on its own.
 ///
+/// That `Err` NAMES what blocked the bind (spec 62, criterion 3 - HELD-PORT DIAGNOSIS; round 2
+/// fix, adv-u62c3-diagnosis-unreachable-from-step-path-auto-start): it folds in
+/// [`dash::describe_held_port`]'s report on `port` - the SAME pid/process-state/resume-or-kill
+/// diagnosis [`cmd_dash`]'s own `AddrInUse` arm already surfaces for the manual `rigger dash`
+/// CLI invocation. THIS caller can compute it directly, from the PARENT side, without needing
+/// anything from the detached CHILD (whose own `stdout`/`stderr`/`stdin` stay `Stdio::null()`,
+/// spec 44 - unchanged by this fix): `describe_held_port` is a live `/proc` discovery keyed only
+/// on the address, not on which process asks, so the parent asking immediately after
+/// `wait_for_dash_bind` gives up reports the SAME holder the child's own failed `bind_singleton`
+/// attempt just observed, with nothing to thread out of the child's silenced streams at all.
+///
 /// The recorded marker's pid is the port's OWN reported serving pid
 /// ([`dash::dash_serving_pid_on`]), never assumed to be this call's locally-spawned `child`
 /// (spec 62 round 2: adv-u62c1-marker-pid-not-the-serving-pid-on-singleton-race). `wait_for_dash_
@@ -5803,8 +5828,16 @@ fn spawn_run_dashboard_detached() -> std::io::Result<dash::DashMarker> {
         DASH_BIND_CONFIRM_WINDOW,
         DASH_BIND_CONFIRM_POLL,
     ) {
+        // Name what blocked the bind (spec 62, criterion 3 - HELD-PORT DIAGNOSIS; round 2 fix,
+        // adv-u62c3-diagnosis-unreachable-from-step-path-auto-start): the SAME live `/proc`
+        // discovery `cmd_dash`'s own `AddrInUse` arm already surfaces for the manual CLI
+        // invocation, computed directly from THIS (parent) process - no capture from the
+        // detached child's own `Stdio::null()`-silenced streams (spec 44, unchanged) is needed,
+        // since `describe_held_port` is keyed only on the address, not on who asks.
+        let addr = SocketAddr::from(([127, 0, 0, 1], port));
         return Err(std::io::Error::other(format!(
-            "dash on port {port} (pid {pid}) did not confirm a bind within the startup window"
+            "dash on port {port} (pid {pid}) did not confirm a bind within the startup window: {}",
+            dash::describe_held_port(addr)
         )));
     }
     // Detach: `child` is dropped here. A std `Child`'s Drop neither waits nor kills, so the dash
@@ -5907,8 +5940,17 @@ fn ensure_run_dashboard(config_dash_enabled: bool, store: &dyn EventStore) {
         // A dash is already serving the singleton address - the idempotent no-op, nothing to
         // announce (this run started it earlier, a prior run left it up, or another project did).
         DashStart::AlreadyServing(_) => {}
-        DashStart::Failed => {
-            eprintln!("rigger: could not auto-start the dashboard; the run continues headless");
+        // The diagnosis (spec 62, criterion 3 - HELD-PORT DIAGNOSIS, round 2 fix,
+        // adv-u62c3-diagnosis-unreachable-from-step-path-auto-start) travels alongside the
+        // generic headless-degrade line rather than replacing it: the generic line is the
+        // stable, always-present sentence every start failure gets; `msg` is whatever detail
+        // `spawn_run_dashboard_detached` could establish - a job-control-stopped predecessor's
+        // pid/state/remedy for a genuine port conflict (the step-path scenario this fix closes),
+        // or the bare timeout wording when nothing more specific could be determined.
+        DashStart::Failed(msg) => {
+            eprintln!(
+                "rigger: could not auto-start the dashboard; the run continues headless: {msg}"
+            );
         }
     }
 }
@@ -12538,7 +12580,10 @@ mod tests {
     }
 
     /// A best-effort start failure degrades to headless (a warning, `DashStart::Failed`) and
-    /// records no marker - never a panic or a failed step.
+    /// records no marker - never a panic or a failed step. The failure's diagnosis text (spec 62
+    /// round 2 fix, adv-u62c3-diagnosis-unreachable-from-step-path-auto-start) is carried
+    /// through verbatim - the `io::Error`'s `Display` - rather than discarded, so this pins the
+    /// carry-through at the injected-closure seam directly.
     #[test]
     fn ensure_run_dashboard_at_reports_failed_when_the_start_errors() {
         let dir = tempfile::tempdir().unwrap();
@@ -12550,8 +12595,9 @@ mod tests {
         );
         assert_eq!(
             outcome,
-            DashStart::Failed,
-            "a start failure degrades to headless, not a panic"
+            DashStart::Failed("no free port".to_string()),
+            "a start failure degrades to headless, not a panic, carrying the failure's own \
+             diagnosis text rather than discarding it"
         );
         assert_eq!(
             dash::DashMarker::read(&marker_path),
@@ -12731,10 +12777,10 @@ mod tests {
             let outcome =
                 ensure_run_dashboard_at(&marker_path, |_| false, spawn_run_dashboard_detached);
 
-            assert_eq!(
-                outcome,
-                DashStart::Failed,
-                "a bind that is never confirmed degrades to headless, not a fabricated success"
+            assert!(
+                matches!(outcome, DashStart::Failed(_)),
+                "a bind that is never confirmed degrades to headless, not a fabricated success; \
+                 got: {outcome:?}"
             );
             assert_eq!(
                 dash::DashMarker::read(&marker_path),
@@ -12743,6 +12789,60 @@ mod tests {
             );
         });
         std::env::remove_var(DASH_PORT_ENV);
+        outcome.unwrap();
+    }
+
+    /// Spec 62 round 2 fix (adv-u62c3-diagnosis-unreachable-from-step-path-auto-start): the
+    /// step-path auto-start's OWN failure message names the holder of a genuinely held port -
+    /// not only the manual `rigger dash` CLI arm. This is the real, un-injected
+    /// `spawn_run_dashboard_detached` seam (same as the sibling test above), but this time the
+    /// ensure port is pinned to a port THIS test process holds itself with a plain listener, so
+    /// the spawned child's `bind_singleton` (were it ever reached) would see a genuine
+    /// `AddrInUse` - the exact conflict shape spec 62's criterion 3 exists to explain. Before
+    /// this fix, `DashStart::Failed` carried no payload at all, so this assertion could not even
+    /// be expressed; the held port's pid must now appear in the returned diagnosis, closing the
+    /// gap the adjudicator's reject upheld: the diagnosis was structurally unreachable from this
+    /// exact path.
+    #[test]
+    #[serial_test::serial(dash_default_port)]
+    fn ensure_run_dashboard_at_names_the_held_ports_holder_when_the_real_spawn_fails() {
+        if !Path::new("/proc").is_dir() {
+            // The `/proc`-surface discovery is Unix/Linux-only by design (spec 62 Notes); this
+            // test's assertions are unavailable elsewhere.
+            return;
+        }
+        let held = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = held.local_addr().unwrap().port();
+        std::env::set_var(DASH_PORT_ENV, port.to_string());
+        let outcome = std::panic::catch_unwind(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let marker_path = dir.path().join(DASH_MARKER_FILE);
+
+            let outcome =
+                ensure_run_dashboard_at(&marker_path, |_| false, spawn_run_dashboard_detached);
+
+            let my_pid = std::process::id().to_string();
+            match outcome {
+                DashStart::Failed(msg) => {
+                    assert!(
+                        msg.contains(&my_pid),
+                        "a bind that fails against a port THIS test process holds must name \
+                         this process's own pid as the holder - the HELD-PORT DIAGNOSIS, not \
+                         only the bare 'did not confirm a bind' wording; got: {msg}"
+                    );
+                    assert!(
+                        msg.contains(&port.to_string()),
+                        "the diagnosis must always name the held address; got: {msg}"
+                    );
+                }
+                other => panic!(
+                    "expected DashStart::Failed(..) naming the held port's holder pid \
+                     {my_pid}, got {other:?}"
+                ),
+            }
+        });
+        std::env::remove_var(DASH_PORT_ENV);
+        drop(held);
         outcome.unwrap();
     }
 
