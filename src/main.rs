@@ -16519,9 +16519,14 @@ mod tests {
         // agent-scratch does not outlive the deleted dir. A process rooted OUTSIDE the swept dir
         // is untouched (the safety boundary). The inside child IGNORES SIGTERM, so only the
         // SIGKILL escalation can reap it - exercising the full SIGTERM-then-SIGKILL mechanism at
-        // this second teardown point (the first is Worktree::remove).
+        // this second teardown point (the first is Worktree::remove). spec 78's
+        // `is_reapable_base` requires the swept dir to be strictly under a real repo's
+        // `.rigger/tmp`, so the fixture is a git-inited root with that exact layout -
+        // mirroring where `cmd_step` actually points `reap_then_remove_dir` in production.
         let root = tempfile::tempdir().unwrap();
-        let swept = root.path().join("agent-scratch");
+        let root_path = root.path().canonicalize().unwrap();
+        git_init_quiet(&root_path);
+        let swept = root_path.join(".rigger").join("tmp").join("agent-scratch");
         std::fs::create_dir_all(&swept).unwrap();
 
         let mut inside = Command::new("sh")
@@ -16532,7 +16537,7 @@ mod tests {
             .expect("spawn inside child");
         let mut outside = Command::new("sleep")
             .arg("300")
-            .current_dir(root.path())
+            .current_dir(&root_path)
             .spawn()
             .expect("spawn outside child");
 

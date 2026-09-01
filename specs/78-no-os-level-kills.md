@@ -158,4 +158,6 @@ class, the gate removes the recurrence, the runner removes the blast radius.
   finished tree. This criterion OWNS the audit and introduces no signalling code of its own;
   it depends on criteria 1 and 2 having landed.
 - [ ] both feature lanes green (fmt, clippy, test on default and `--no-default-features`), and
-  the `no-os-kill` gate green on every unit's diff.
+  the `no-os-kill` gate green on every unit's diff. This criterion OWNS this closing
+  verification-only check; it introduces no code of its own and does not compete with
+  criteria 1-3's ownership of their respective files.
