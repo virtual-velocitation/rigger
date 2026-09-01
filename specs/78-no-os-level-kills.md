@@ -47,25 +47,58 @@ THE REAPER (`src/reap.rs`), decided: identification stays cwd-based - rigger hol
 the processes that root inside a worktree (an agent's `cargo`, `rustc`, test binaries, a dash
 it started), which is the only reason a scan exists - but the kill step becomes safe by
 construction:
-- `is_reapable_base(base) -> Option<PathBuf>`: the base must canonicalize, exist, and lie
-  STRICTLY under `<repo>/.rigger/tmp` where `<repo>` is resolved from the repository root
-  (`git rev-parse --show-toplevel` semantics or the configured project root), never from the
-  process cwd. Anything else - the repo root, `$HOME`, `/`, a nonexistent dir, a symlink under
-  `.rigger/tmp` that resolves outside it, `.rigger/tmp` itself - makes
-  `reap_processes_rooted_under` a LOGGED no-op ("reap refused: <base> is not strictly under
-  <repo>/.rigger/tmp"). It never widens, never falls back, never signals on a refused base.
+- `is_reapable_base(base, authorized_root) -> Option<PathBuf>`: the base must canonicalize,
+  exist, and lie STRICTLY under `authorized_root` (also canonicalized) - AMENDED round 2
+  (decision `u78c2r2-authorized-root-caller-supplied`): `authorized_root` is a parameter the
+  CALLER resolves and supplies, via the SAME authority it already used to build `base` itself
+  (`rigger::worktree::scratch_root_path_from_env` for the run's own scratch tree; the
+  registered mutation-scratch root under a cache home for the `cargo-mutants` tree, spec 77
+  criteria 2-3) - never re-derived here from `base`'s own git/filesystem position. The
+  original round-1 text pinned the boundary to a hardcoded `<repo>/.rigger/tmp` literal
+  resolved from `base`'s own git context; that silently made every reap of a relocated
+  scratch root (`defaults.workdir`/`RIGGER_TMPDIR`, a real, tested config surface -
+  `tests/scratch_workdir_config.rs`) or of the registered mutation-scratch root (which by
+  construction is never nested under any project's `.rigger/tmp`) an unconditional no-op -
+  caught in review (adjudication reject, diff `6ca027f..622560c`) before landing. Refused -
+  logged, `None` - for: an unresolvable `authorized_root`, `base` equal to it, a nonexistent
+  `base` (fails to canonicalize), or a symlink that canonicalizes outside it
+  ("reap refused: <base> is not strictly under <authorized_root>"). Never widens, never falls
+  back, never signals on a refused base. [`Worktree::remove`] is the one exception (below):
+  no `authorized_root` any caller could compute would reliably contain a worktree's own dir
+  (the same relocation surface applies, with no necessary containment relationship to the
+  repo at all), so it authorizes its reap by GIT IDENTITY instead and calls
+  `reap::reap_authorized` directly, bypassing this containment gate entirely.
 - Never signal pid <= 1, `std::process::id()`, or any ancestor of the current process (walk the
   `PPid:` chain in `/proc/<pid>/status`).
 - Time-of-check/time-of-use: the scan records `(pid, starttime)` with starttime from
   `/proc/<pid>/stat` field 22; immediately before EACH signal the cwd and starttime are re-read
   and the pid is skipped if either differs (the pid was recycled by an unrelated process).
-- Sequence unchanged: SIGTERM, grace, RE-SCAN, SIGKILL for whatever is still rooted inside.
-- Callers keep their signatures: `src/main.rs:2698,2711`, `src/driver/replay.rs:199`,
-  `src/worktree.rs:551`, and the read-only users of `processes_rooted_under`
-  (`src/main.rs:9434,16540`, `src/worktree.rs:2527`).
-- `.cargo/mutants.toml` (landed) excludes `reap::send_signal`, `reap::reap_processes_rooted_under`
-  and `reap::is_reapable_base` from mutation: a mutant of a reaper is a loaded gun by definition;
-  the guards are proven by explicit tests (criterion 2), not by mutant survival.
+- Sequence unchanged: SIGTERM, grace, RE-SCAN, SIGKILL for whatever is still rooted inside -
+  factored (round 2) into `reap::reap_authorized(base: PathBuf)`, `pub(crate)`, so
+  `reap_processes_rooted_under` (`is_reapable_base` then this) and `Worktree::remove`'s own,
+  independently (git-identity) authorized reap share the ONE termination implementation
+  rather than a second, parallel one.
+- Callers (round 2 signatures): `reap_then_remove_dir`/`reap_then_remove_worktree`
+  (`src/main.rs`) and `reclaim_unit_mutation_scratch` (`src/driver/replay.rs`) now thread an
+  `authorized_root` through to `reap_processes_rooted_under`, resolved from the SAME context
+  each already had (the run's resolved scratch root, or the registered mutation-scratch root
+  under `cache_home`); `Worktree::remove` (`src/worktree.rs`) calls `reap::reap_authorized`
+  directly after its own `worktree_on_branch` check; the read-only users of
+  `processes_rooted_under` are unaffected (that primitive's own single-argument signature is
+  unchanged).
+- `.cargo/mutants.toml` (landed, operator config - Notes below still name it not to be
+  re-authored by any unit, round 2 included) excludes `reap::send_signal`,
+  `reap::reap_processes_rooted_under` and `reap::is_reapable_base` from mutation: a mutant of
+  a reaper is a loaded gun by definition; the guards are proven by explicit tests (criterion
+  2), not by mutant survival. Round 2 found this exclusion has never actually taken mechanical
+  effect for any function (`cargo-mutants` matches `exclude_re` against its mutant NAME
+  string, `<file>:<line>:<col>: replace <fn> ...`, which never contains a `reap::`-qualified
+  form) - a latent, pre-existing bug in this operator-owned file, left unfixed per the
+  not-to-be-re-authored boundary and flagged for the operator instead (decision
+  `u78c2r2-mutants-toml-exclude-re-latent-noop`). The loaded-gun rationale itself is
+  unaffected: these functions are still proven by their own explicit tests, mechanically
+  excluded or not, and `reap::reap_authorized` (round 2, the termination sequence factored out
+  of `reap_processes_rooted_under`) carries the identical rationale.
 
 THE BUDGET FIXTURE (`src/budget.rs` test), decided: the holder is ONE process that holds the
 lock itself - `flock --no-fork -x <slot> sleep 300` (util-linux `-F` execs the command in place

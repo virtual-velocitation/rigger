@@ -2680,22 +2680,25 @@ fn terminal_and_no_live_worker(events: &[Event]) -> Result<bool, String> {
 /// rigger-directed build actually targets; `target` stays a bare reap as before.
 fn reclaim_run_scratch(root: &str) {
     let base = std::path::Path::new(root);
-    reap_then_remove_dir(&base.join("agent-scratch"));
-    reap_then_remove_dir(&base.join(rigger::liveness::MARKER_SUBDIR));
-    let _ = reclaim_shared_build_cache(&base.join(rigger::worktree::SHARED_BUILD_CACHE_NAME));
-    reap_then_remove_dir(&base.join("target"));
+    reap_then_remove_dir(&base.join("agent-scratch"), base);
+    reap_then_remove_dir(&base.join(rigger::liveness::MARKER_SUBDIR), base);
+    let _ = reclaim_shared_build_cache(&base.join(rigger::worktree::SHARED_BUILD_CACHE_NAME), base);
+    reap_then_remove_dir(&base.join("target"), base);
 }
 
 /// Reap any process rooted in `dir` (spec 23), then remove the dir. The reap runs BEFORE the
 /// removal so no process outlives the dir holding a now-deleted cwd; both halves are
-/// best-effort and never fail the step. The reap is scoped to the EXACT `dir` (the scan
-/// canonicalizes it) and only ever reaches processes rooted strictly inside it, so it is safe
-/// on any relocated scratch root and never touches a process outside rigger's own dir. Off a
-/// platform without `/proc` the reap is a graceful no-op and only the removal runs. This is the
-/// shared teardown for the fixpoint scratch-area sweep in [`cmd_step`]; the worktree-removal
-/// reap point is [`rigger::worktree::Worktree::remove`].
-fn reap_then_remove_dir(dir: &std::path::Path) {
-    rigger::reap::reap_processes_rooted_under(dir);
+/// best-effort and never fail the step. `authorized_root` (spec 78 round 2, decision
+/// `u78c2r2-authorized-root-caller-supplied`) is the SAME resolved root the caller already
+/// used to build `dir` - never re-derived here - so this reap is safe on any relocated
+/// scratch root (`RIGGER_TMPDIR`/`defaults.workdir`) or registered mutation-scratch root
+/// under a cache home, and still never touches a process outside `authorized_root`. Off a
+/// platform without `/proc` the reap is a graceful no-op and only the removal runs. This is
+/// the shared teardown for the fixpoint scratch-area sweep in [`cmd_step`]; the
+/// worktree-removal reap point is [`rigger::worktree::Worktree::remove`], which authorizes
+/// its own reap differently (git identity, not containment - see its own doc comment).
+fn reap_then_remove_dir(dir: &std::path::Path, authorized_root: &std::path::Path) {
+    rigger::reap::reap_processes_rooted_under(dir, authorized_root);
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -2707,8 +2710,9 @@ fn reap_then_remove_dir(dir: &std::path::Path) {
 /// git never tracked makes that command fail, so it falls through to the plain removal, and any
 /// dangling admin entry a partial removal leaves is pruned by [`rigger::worktree::sweep_terminal`]
 /// at the next step start. Best-effort - a failed reclaim never aborts the sweep.
-fn reap_then_remove_worktree(repo: &str, dir: &std::path::Path) {
-    rigger::reap::reap_processes_rooted_under(dir);
+/// `authorized_root` is the resolved scratch root `dir` was enumerated from (spec 78 round 2).
+fn reap_then_remove_worktree(repo: &str, dir: &std::path::Path, authorized_root: &std::path::Path) {
+    rigger::reap::reap_processes_rooted_under(dir, authorized_root);
     let deregistered = !repo.is_empty()
         && Command::new("git")
             .arg("-C")
@@ -7753,7 +7757,7 @@ fn reset_build_cache(loc: &StoreLocation) -> Res {
         &repo, &workdir,
     ));
     let cache = scratch.join(rigger::worktree::SHARED_BUILD_CACHE_NAME);
-    let outcome = reclaim_shared_build_cache(&cache)?;
+    let outcome = reclaim_shared_build_cache(&cache, &scratch)?;
     match build_cache_reclaim_report(outcome) {
         Ok(line) => {
             println!("{line}");
@@ -8653,13 +8657,19 @@ fn reclaim_spawn_scratch(loc: &StoreLocation, prior: &[Event], spawn_id: &str) {
 /// no-op, never a fabricated path to reap.
 fn reclaim_spawn_registered_scratch(scratch_root: &str, run_id: &str, spawn_id: &str) {
     if let Some(path) = spawn_scratch_path(scratch_root, run_id, spawn_id) {
-        reap_then_remove_dir(&path);
+        reap_then_remove_dir(&path, Path::new(scratch_root));
     }
     if let Some(cache_home) =
         cache_home_from(std::env::var_os("XDG_CACHE_HOME"), std::env::var_os("HOME"))
     {
         if let Some(path) = mutation_scratch_path(&cache_home, spawn_id) {
-            reap_then_remove_dir(&path);
+            // The registered mutation-scratch ROOT (`<cache_home>/rigger-mutants`), NEVER
+            // `scratch_root` - by construction (spec 77 criterion 2) it lives in the user
+            // cache, outside any one run's own scratch tree (spec 78 round 2, decision
+            // `u78c2r2-authorized-root-caller-supplied`: this is the exact call that was an
+            // unconditional no-op before this fix, since it could never canonicalize under
+            // any `<repo>/.rigger/tmp`).
+            reap_then_remove_dir(&path, &mutation_scratch_root(&cache_home));
         }
     }
 }
@@ -9615,6 +9625,7 @@ fn live_slugs(
 /// Returns how many entries were reclaimed.
 fn reclaim_orphan_scratch(repo: &str, root: &str, run_units: &RunUnits) -> usize {
     let live = live_slugs(&run_units.live_branches);
+    let root_path = std::path::Path::new(root);
     let mut removed = 0;
     let Ok(entries) = std::fs::read_dir(root) else {
         return 0;
@@ -9631,7 +9642,7 @@ fn reclaim_orphan_scratch(repo: &str, root: &str, run_units: &RunUnits) -> usize
             // (a leaked build) BEFORE removing it, and deregister it from git if a killed step
             // left it registered.
             if !worktree_belongs_to_live(&name, &live, &run_units.dead_slugs) {
-                reap_then_remove_worktree(repo, &path);
+                reap_then_remove_worktree(repo, &path, root_path);
                 removed += 1;
             }
         } else if let Some(slug) = name.strip_prefix(rigger::worktree::UNIT_CACHE_PREFIX) {
@@ -9641,7 +9652,7 @@ fn reclaim_orphan_scratch(repo: &str, root: &str, run_units: &RunUnits) -> usize
             // `cargo-target` (no `-<slug>` tail) never matches this prefix and is spared.
             let wt = format!("{}{slug}", rigger::worktree::UNIT_WORKTREE_PREFIX);
             if !worktree_belongs_to_live(&wt, &live, &run_units.dead_slugs) {
-                reap_then_remove_dir(&path);
+                reap_then_remove_dir(&path, root_path);
                 removed += 1;
             }
         } else if is_build_cache_tombstone(&name) {
@@ -9652,7 +9663,7 @@ fn reclaim_orphan_scratch(repo: &str, root: &str, run_units: &RunUnits) -> usize
             // the LAST thing that will ever reference it by path, so it is always safe to
             // reap unconditionally (spec 77 Design: "correct precisely because nothing can
             // ever want it back").
-            reap_then_remove_dir(&path);
+            reap_then_remove_dir(&path, root_path);
             removed += 1;
         }
         // Any other entry (agent-scratch, agent-live, a bare cargo-target/target, a review
@@ -9926,7 +9937,19 @@ fn is_build_cache_tombstone(name: &str) -> bool {
 /// (`reap_then_remove_dir`'s own swallowed-`Result` convention) - a failed or
 /// killed-mid-flight delete leaves an enumerable tombstone [`is_build_cache_tombstone`]
 /// recognizes, never a silently unrecoverable leak.
-fn reclaim_shared_build_cache(cache: &Path) -> std::io::Result<BuildCacheReclaim> {
+///
+/// `scratch_root` is the resolved scratch root `cache` was itself joined onto by every real
+/// caller (`cache = scratch.join(SHARED_BUILD_CACHE_NAME)`) - it authorizes the tombstone
+/// reap (spec 78 round 2, decision `u78c2r2-authorized-root-caller-supplied`). Taken as an
+/// explicit parameter rather than derived from `cache.parent()`: `build_cache_tombstone_path`
+/// guarantees the tombstone is ALWAYS a sibling of `cache` (`Path::with_file_name`), so
+/// `cache.parent()` would authorize reaping the tombstone for ANY `cache` whatsoever,
+/// including one a caller bug pointed somewhere dangerous - an independently-resolved root
+/// is the only check that means anything.
+fn reclaim_shared_build_cache(
+    cache: &Path,
+    scratch_root: &Path,
+) -> std::io::Result<BuildCacheReclaim> {
     let guard_path = rigger::worktree::shared_build_cache_guard_path(
         &cache
             .parent()
@@ -9962,7 +9985,7 @@ fn reclaim_shared_build_cache(cache: &Path) -> std::io::Result<BuildCacheReclaim
     // original path.
     let _ = fs2::FileExt::unlock(&guard);
     let bytes = dir_size_bytes(&tombstone);
-    reap_then_remove_dir(&tombstone);
+    reap_then_remove_dir(&tombstone, scratch_root);
     Ok(BuildCacheReclaim::Reclaimed(bytes))
 }
 
@@ -15432,7 +15455,7 @@ mod tests {
         write_file(&cache.join("debug").join("a.rlib"), &[0u8; 100]);
         write_file(&cache.join("debug").join("b.rlib"), &[0u8; 250]);
 
-        let reclaimed = match reclaim_shared_build_cache(&cache).expect("no io error") {
+        let reclaimed = match reclaim_shared_build_cache(&cache, dir.path()).expect("no io error") {
             BuildCacheReclaim::Reclaimed(n) => n,
             BuildCacheReclaim::Busy => panic!("an unheld guard must never report busy"),
         };
@@ -15453,10 +15476,11 @@ mod tests {
         // clean, honest zero, never an error (spec 77 Notes: "repeated reset --build-cache
         // -> idempotent zero-report").
         for _ in 0..2 {
-            let reclaimed = match reclaim_shared_build_cache(&cache).expect("no io error") {
-                BuildCacheReclaim::Reclaimed(n) => n,
-                BuildCacheReclaim::Busy => panic!("nothing holds the guard here"),
-            };
+            let reclaimed =
+                match reclaim_shared_build_cache(&cache, dir.path()).expect("no io error") {
+                    BuildCacheReclaim::Reclaimed(n) => n,
+                    BuildCacheReclaim::Busy => panic!("nothing holds the guard here"),
+                };
             assert_eq!(
                 reclaimed, 0,
                 "a missing cache reclaims 0 bytes, not an error"
@@ -15483,7 +15507,7 @@ mod tests {
             .expect("open guard");
         fs2::FileExt::lock_shared(&held).expect("a build's own shared lock");
 
-        let outcome = reclaim_shared_build_cache(&cache).expect("no io error");
+        let outcome = reclaim_shared_build_cache(&cache, dir.path()).expect("no io error");
         assert!(
             matches!(outcome, BuildCacheReclaim::Busy),
             "a build holding the guard SHARED must refuse the reclaim, never wait for it: \
@@ -15505,7 +15529,7 @@ mod tests {
         let cache = dir.path().join("cargo-target");
         write_file(&cache.join("debug").join("a.rlib"), &[0u8; 32]);
 
-        reclaim_shared_build_cache(&cache).expect("no io error");
+        reclaim_shared_build_cache(&cache, dir.path()).expect("no io error");
 
         let guard_path =
             rigger::worktree::shared_build_cache_guard_path(dir.path().to_str().unwrap());
@@ -16519,14 +16543,16 @@ mod tests {
         // agent-scratch does not outlive the deleted dir. A process rooted OUTSIDE the swept dir
         // is untouched (the safety boundary). The inside child IGNORES SIGTERM, so only the
         // SIGKILL escalation can reap it - exercising the full SIGTERM-then-SIGKILL mechanism at
-        // this second teardown point (the first is Worktree::remove). spec 78's
-        // `is_reapable_base` requires the swept dir to be strictly under a real repo's
-        // `.rigger/tmp`, so the fixture is a git-inited root with that exact layout -
-        // mirroring where `cmd_step` actually points `reap_then_remove_dir` in production.
+        // this second teardown point (the first is Worktree::remove). `reap_then_remove_dir`
+        // requires the swept dir to be strictly under the given `authorized_root` (here, the
+        // `.rigger/tmp` its production caller resolves it under), so the fixture mirrors that
+        // exact layout - mirroring where `cmd_step` actually points `reap_then_remove_dir` in
+        // production.
         let root = tempfile::tempdir().unwrap();
         let root_path = root.path().canonicalize().unwrap();
         git_init_quiet(&root_path);
-        let swept = root_path.join(".rigger").join("tmp").join("agent-scratch");
+        let scratch_root = root_path.join(".rigger").join("tmp");
+        let swept = scratch_root.join("agent-scratch");
         std::fs::create_dir_all(&swept).unwrap();
 
         let mut inside = Command::new("sh")
@@ -16556,7 +16582,7 @@ mod tests {
             "precondition: the inside child is rooted in the swept dir"
         );
 
-        reap_then_remove_dir(&swept);
+        reap_then_remove_dir(&swept, &scratch_root);
 
         let inside_died = (0..200).any(|_| {
             if matches!(inside.try_wait(), Ok(Some(_))) {

@@ -11,15 +11,20 @@
 //! outlives the dir. It extends spec 19b's no-orphaned-processes guarantee (rigger's OWN
 //! children) to ANY process rooted in a dir rigger owns, regardless of who spawned it.
 //!
-//! Two entry points share one scan authority:
+//! Three entry points share one scan authority and one termination sequence:
 //! - [`processes_rooted_under`] - the pure detection primitive, `(pid, command)` for every
 //!   process whose cwd resolves strictly inside a base dir. Both the teardown reap AND
 //!   `rigger validate`'s leaked-process advisory (spec 23, unit 2) consume this exact
 //!   function; there is no second scan. UNGUARDED by [`is_reapable_base`] - `rigger
-//!   validate` deliberately scans the whole `.rigger/tmp` tree for visibility, which the
-//!   reap's own boundary (below) would otherwise refuse as "the base itself".
+//!   validate` deliberately scans a whole scratch tree for visibility, which the reap's own
+//!   boundary (below) would otherwise refuse as "the base itself".
 //! - [`reap_processes_rooted_under`] - the teardown reap that kills what the scan finds,
-//!   gated by [`is_reapable_base`] so it can ONLY ever act on a dir rigger itself owns.
+//!   gated by [`is_reapable_base`] so it can ONLY ever act on a base the caller's own
+//!   `authorized_root` covers.
+//! - [`reap_authorized`] - the termination sequence itself (SIGTERM, grace, rescan, SIGKILL),
+//!   factored out so [`Worktree::remove`](crate::worktree::Worktree::remove)'s independent,
+//!   git-identity-based authorization reuses the ONE implementation rather than a second,
+//!   parallel one. [`reap_processes_rooted_under`] is exactly `is_reapable_base` then this.
 //!
 //! Best-effort and platform-tolerant. Detection is Linux-first via `/proc/<pid>/cwd`
 //! (read with `std::fs::read_link`, std-only - no `libc`); on a platform without `/proc`
@@ -30,10 +35,24 @@
 //! canonicalized cwd equals the base dir or lies strictly under it (`<base>/...`), by path
 //! COMPONENTS, never a raw string prefix - so a sibling dir whose path merely shares a
 //! string prefix (`<base>-x`) is never matched. On TOP of that, [`reap_processes_rooted_under`]
-//! additionally requires the base itself to canonicalize to somewhere STRICTLY under
-//! `<repo>/.rigger/tmp` ([`is_reapable_base`]) - so a caller that ever computed a wrong or
-//! widened base (the repo root, `$HOME`, `/`, a symlink escaping `.rigger/tmp`) gets a
-//! logged no-op instead of a kill.
+//! additionally requires the base itself to canonicalize to somewhere STRICTLY under an
+//! `authorized_root` the CALLER supplies ([`is_reapable_base`]) - so a caller that ever
+//! computed a wrong or widened base relative to the root it meant to reap under gets a
+//! logged no-op instead of a kill. `authorized_root` is never re-derived here (no hardcoded
+//! `<repo>/.rigger/tmp` literal, no git resolution of the caller's repo): the caller passes
+//! the SAME resolved root it already used to build `base_dir` itself
+//! ([`crate::worktree::scratch_root_path_from_env`] for the run's own scratch tree, or a
+//! registered mutation-scratch root under `$XDG_CACHE_HOME`/`$HOME/.cache` for the
+//! `cargo-mutants` tree, spec 77 criteria 2-3) - so the boundary can never silently diverge
+//! from what the rest of the codebase already treats as authoritative, however that root is
+//! placed (a relocated `RIGGER_TMPDIR`/`defaults.workdir`, or a cache home entirely outside
+//! any git tree). [`Worktree::remove`](crate::worktree::Worktree::remove) is the one
+//! exception: a worktree's own dir can legitimately live anywhere relative to its repo (the
+//! same relocation surface), so there is no `authorized_root` any caller could compute that
+//! would reliably contain it; it authorizes its reap by GIT IDENTITY instead (is `self.dir`
+//! CURRENTLY a registered worktree checked out on `self.branch`?) and calls
+//! [`reap_authorized`] directly, bypassing this containment gate entirely - see that
+//! function's own doc comment.
 //!
 //! SIGNAL API (spec 78): every signal rigger issues to a process it does not hold a
 //! [`std::process::Child`] handle to goes through `rustix::process::kill_process` - never a
@@ -57,7 +76,6 @@
 use rustix::process::{Pid, Signal};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// How long a well-behaved process is given to exit on SIGTERM before it is SIGKILLed.
 /// Short: teardown is on the hot path (every unit worktree removal), and a process that
@@ -265,69 +283,39 @@ fn send_signal(signal: Signal, pid: u32) {
     let _ = rustix::process::kill_process(rpid, signal);
 }
 
-/// The OWNING repository root for `start`, mirroring `git rev-parse --git-common-dir`
-/// rather than `--show-toplevel`: a LINKED worktree's own `--show-toplevel` is the worktree
-/// itself, but rigger's `.rigger/tmp` lives ONLY under the MAIN checkout, so a base rooted
-/// inside a worktree (the worktree's own directory - [`crate::worktree::Worktree::remove`]
-/// reaps the worktree root itself before removing it - or a scratch dir the run created
-/// directly in the main checkout) must resolve to the SAME repo root either way. Anchored
-/// entirely at `start`, NEVER at the running process's cwd, so this gives the same answer
-/// no matter what directory called it. `None` when `start` is not inside any git repo, or
-/// the common dir cannot be resolved/canonicalized.
-fn repo_root_for(start: &Path) -> Option<PathBuf> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(start)
-        .args(["rev-parse", "--git-common-dir"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let common = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if common.is_empty() {
-        return None;
-    }
-    let common_path = Path::new(&common);
-    let abs = if common_path.is_absolute() {
-        common_path.to_path_buf()
-    } else {
-        start.join(common_path)
-    };
-    let common_canon = abs.canonicalize().ok()?;
-    common_canon.parent().map(Path::to_path_buf)
-}
-
 /// Validate that `base_dir` is a directory the reaper is authorized to touch (spec 78, THE
-/// REAPER): it must canonicalize, exist, and lie STRICTLY under `<repo>/.rigger/tmp`, where
-/// `<repo>` is resolved from `base_dir`'s OWN git context via [`repo_root_for`] (never the
-/// running process's cwd). Refused - logged, `None` - for: an unresolvable repo root, the
-/// repo root itself, `$HOME`, `/`, a nonexistent dir (fails to canonicalize), `.rigger/tmp`
-/// itself, or a symlink under `.rigger/tmp` that CANONICALIZES outside it. Never widens,
-/// never falls back - the caller must no-op on `None`.
-fn is_reapable_base(base_dir: &Path) -> Option<PathBuf> {
-    let refuse = |repo_display: &str| {
+/// REAPER; spec 78 round-2 amendment, decision `u78c2r2-authorized-root-caller-supplied`):
+/// it must canonicalize, exist, and lie STRICTLY under `authorized_root` (also
+/// canonicalized) - a root the CALLER resolves and supplies, via the SAME authority it
+/// already used to build `base_dir` itself, never re-derived here from `base_dir`'s own
+/// git/filesystem position (a prior round did exactly that - a hardcoded `<repo>/.rigger/tmp`
+/// literal resolved from `base_dir`'s own git context - and it silently turned every
+/// production reap of a relocated scratch root, or the registered mutation-scratch root
+/// under a cache home, into an unconditional no-op: neither can ever canonicalize under any
+/// project's own `.rigger/tmp` by construction). Refused - logged, `None` - for: an
+/// unresolvable `authorized_root`, `base_dir` equal to it, a nonexistent `base_dir` (fails
+/// to canonicalize), or a symlink that canonicalizes outside it. Never widens, never falls
+/// back - the caller must no-op on `None`.
+fn is_reapable_base(base_dir: &Path, authorized_root: &Path) -> Option<PathBuf> {
+    let refuse = |root_display: &str| {
         eprintln!(
-            "rigger: reap refused: {} is not strictly under {repo_display}/.rigger/tmp",
+            "rigger: reap refused: {} is not strictly under {root_display}",
             base_dir.display()
         );
         None
     };
 
+    let Ok(root) = authorized_root.canonicalize() else {
+        return refuse(&authorized_root.display().to_string());
+    };
+    let root_display = root.display().to_string();
     let Ok(base) = base_dir.canonicalize() else {
-        return refuse("<repo>");
+        return refuse(&root_display);
     };
-    let Some(repo) = repo_root_for(&base) else {
-        return refuse("<repo>");
-    };
-    let repo_display = repo.display().to_string();
-    let Ok(tmp) = repo.join(".rigger").join("tmp").canonicalize() else {
-        return refuse(&repo_display);
-    };
-    if base != tmp && base.starts_with(&tmp) {
+    if base != root && base.starts_with(&root) {
         Some(base)
     } else {
-        refuse(&repo_display)
+        refuse(&root_display)
     }
 }
 
@@ -337,25 +325,50 @@ fn is_reapable_base(base_dir: &Path) -> Option<PathBuf> {
 /// outlives the worktree/scratch dir it ran in.
 ///
 /// Gated by [`is_reapable_base`]: `base_dir` must canonicalize to somewhere STRICTLY under
-/// `<repo>/.rigger/tmp` or this is a logged no-op that signals nothing - the boundary is
-/// checked ONCE, up front, never re-derived per-pid. Every candidate is then
-/// [`is_signal_eligible`] (never pid <= 1, the reaper's own pid, or one of its own
-/// ancestors) and TOCTOU-rechecked ([`signal_if_unchanged`]) immediately before it is
-/// actually signalled, via [`send_signal`] - rigger's one sanctioned signal call.
+/// `authorized_root` or this is a logged no-op that signals nothing - the boundary is
+/// checked ONCE, up front, never re-derived per-pid. Once authorized, the actual
+/// SIGTERM/grace/rescan/SIGKILL sequence is [`reap_authorized`] - the ONE termination
+/// implementation this and [`crate::worktree::Worktree::remove`]'s own, independently
+/// (git-identity) authorized reap both run.
+///
+/// Best-effort and platform-tolerant: where `/proc` is absent the scan finds nothing and
+/// this is a graceful no-op.
+pub fn reap_processes_rooted_under(base_dir: &Path, authorized_root: &Path) {
+    let Some(base) = is_reapable_base(base_dir, authorized_root) else {
+        return;
+    };
+    reap_authorized(base);
+}
+
+/// The reap's termination sequence for an ALREADY-AUTHORIZED `base` (SIGTERM every match,
+/// wait a short grace, then SIGKILL whatever is STILL rooted inside) - `pub(crate)` so a
+/// caller with its OWN independent authorization can reuse the ONE implementation rather
+/// than a second, parallel one (the charter's "never a second parallel implementation
+/// reconciled after the fact"). [`reap_processes_rooted_under`] is exactly
+/// [`is_reapable_base`] then this; [`crate::worktree::Worktree::remove`] is the other
+/// caller - a worktree's own dir can legitimately live anywhere relative to its repo
+/// (`defaults.workdir`/`RIGGER_TMPDIR` relocation, tested in
+/// `tests/scratch_workdir_config.rs`, with no necessary containment relationship to the
+/// repo at all), so no `authorized_root` any caller could compute would reliably contain
+/// it; it instead confirms `self.dir` IS a real, currently-checked-out git worktree of
+/// `self.branch` (the same `worktree_on_branch` predicate `Worktree::create`'s own
+/// fast-path adoption already trusts) before calling straight in here with the
+/// already-canonicalized dir, bypassing [`is_reapable_base`]'s containment gate entirely.
+///
+/// Every candidate is [`is_signal_eligible`] (never pid <= 1, the reaper's own pid, or one
+/// of its own ancestors) and TOCTOU-rechecked ([`signal_if_unchanged`]) immediately before
+/// it is actually signalled, via [`send_signal`] - rigger's one sanctioned signal call.
 ///
 /// The SIGKILL pass RE-SCANS rather than reusing the SIGTERM candidate list: a process that
 /// already exited on SIGTERM is gone from the re-scan (so it is not signalled, closing a
 /// pid-recycle window where its number was reused by an unrelated process outside the
 /// base), and only what is genuinely still rooted inside gets its OWN fresh start-time
-/// baseline and is force-killed - the boundary and the TOCTOU guard both hold for the
-/// SIGKILL pass too.
+/// baseline and is force-killed - the TOCTOU guard holds for the SIGKILL pass too.
 ///
-/// Best-effort and platform-tolerant: where `/proc` is absent the scan finds nothing and
-/// this is a graceful no-op.
-pub fn reap_processes_rooted_under(base_dir: &Path) {
-    let Some(base) = is_reapable_base(base_dir) else {
-        return;
-    };
+/// `base` is assumed already canonical (both callers canonicalize before calling in);
+/// best-effort and platform-tolerant throughout - where `/proc` is absent the scan finds
+/// nothing and this is a graceful no-op.
+pub(crate) fn reap_authorized(base: PathBuf) {
     let self_pid = std::process::id();
     let self_ancestors = ancestor_pids(self_pid);
 
@@ -541,89 +554,73 @@ mod tests {
     }
 
     #[test]
-    fn is_reapable_base_accepts_a_dir_strictly_under_repo_dot_rigger_tmp() {
+    fn is_reapable_base_accepts_a_dir_strictly_under_the_given_authorized_root() {
         let repo = FakeRepo::new();
         let base = repo.base("rigger-wt-uexample");
-        assert_eq!(is_reapable_base(&base), Some(base.canonicalize().unwrap()));
+        assert_eq!(
+            is_reapable_base(&base, &repo.tmp),
+            Some(base.canonicalize().unwrap())
+        );
     }
 
     #[test]
-    fn is_reapable_base_refuses_the_repo_root_itself() {
-        let repo = FakeRepo::new();
-        assert_eq!(is_reapable_base(&repo.root_path), None);
+    fn is_reapable_base_accepts_a_root_that_is_not_named_dot_rigger_tmp_at_all() {
+        // The fix (spec 78 round 2, `u78c2r2-authorized-root-caller-supplied`): the boundary
+        // is whatever `authorized_root` the caller supplies, never a hardcoded
+        // `<repo>/.rigger/tmp` literal re-derived from `base_dir`'s own git context - so a
+        // registered mutation-scratch root under a cache home (never nested under any
+        // project's `.rigger/tmp`, and not even inside a git repo at all) is authorized just
+        // as readily.
+        let cache_home = tempfile::tempdir().unwrap();
+        let mutation_root = cache_home.path().join("rigger-mutants");
+        let base = mutation_root.join("some-spawn-id");
+        std::fs::create_dir_all(&base).unwrap();
+        assert_eq!(
+            is_reapable_base(&base, &mutation_root),
+            Some(base.canonicalize().unwrap())
+        );
     }
 
     #[test]
-    fn is_reapable_base_refuses_dot_rigger_tmp_itself() {
+    fn is_reapable_base_refuses_a_dir_that_is_not_under_the_given_authorized_root() {
+        // The repo root is a real, existing dir - just not under `authorized_root` (here,
+        // its own `.rigger/tmp` subdir).
         let repo = FakeRepo::new();
-        assert_eq!(is_reapable_base(&repo.tmp), None);
+        assert_eq!(is_reapable_base(&repo.root_path, &repo.tmp), None);
+    }
+
+    #[test]
+    fn is_reapable_base_refuses_the_authorized_root_itself() {
+        let repo = FakeRepo::new();
+        assert_eq!(is_reapable_base(&repo.tmp, &repo.tmp), None);
     }
 
     #[test]
     fn is_reapable_base_refuses_a_nonexistent_dir() {
         let repo = FakeRepo::new();
         let absent = repo.tmp.join("never-created");
-        assert_eq!(is_reapable_base(&absent), None);
+        assert_eq!(is_reapable_base(&absent, &repo.tmp), None);
     }
 
     #[test]
-    fn is_reapable_base_refuses_a_dir_outside_any_repos_dot_rigger_tmp() {
-        // Stand-in for `$HOME` / `/`: an absolute, EXISTING dir that is not under any
-        // repo's `.rigger/tmp` (indeed not under any repo at all) must be refused.
-        let unrelated = tempfile::tempdir().unwrap();
-        assert_eq!(is_reapable_base(unrelated.path()), None);
+    fn is_reapable_base_refuses_an_unresolvable_authorized_root() {
+        // The authorized root itself is now caller-supplied, so an authorized_root that
+        // cannot canonicalize (never created) must refuse too, not just an absent base_dir.
+        let repo = FakeRepo::new();
+        let base = repo.base("scratch");
+        let never_created_root = repo.tmp.join("never-created-root");
+        assert_eq!(is_reapable_base(&base, &never_created_root), None);
     }
 
     #[test]
-    fn is_reapable_base_refuses_a_symlink_under_dot_rigger_tmp_that_escapes_it() {
+    fn is_reapable_base_refuses_a_symlink_under_the_authorized_root_that_escapes_it() {
         let repo = FakeRepo::new();
         let outside = tempfile::tempdir().unwrap();
         let real_outside_target = outside.path().join("real-target");
         std::fs::create_dir_all(&real_outside_target).unwrap();
         let link = repo.tmp.join("escape-link");
         std::os::unix::fs::symlink(&real_outside_target, &link).unwrap();
-        assert_eq!(is_reapable_base(&link), None);
-    }
-
-    #[test]
-    fn is_reapable_base_resolves_the_main_repo_root_from_inside_a_linked_worktree() {
-        // `Worktree::remove` calls the reap on the WORKTREE'S OWN root dir - a linked
-        // worktree has its own `.git` FILE, so this proves `is_reapable_base` still
-        // resolves the OUTER main repo (via git-common-dir semantics, not
-        // --show-toplevel) rather than treating the worktree as its own repo root.
-        let repo = FakeRepo::new();
-        // An initial commit is required before `git worktree add` can create a branch.
-        std::fs::write(repo.root_path.join("f.txt"), "x").unwrap();
-        assert!(StdCommand::new("git")
-            .arg("-C")
-            .arg(&repo.root_path)
-            .args(["add", "f.txt"])
-            .status()
-            .unwrap()
-            .success());
-        assert!(StdCommand::new("git")
-            .arg("-C")
-            .arg(&repo.root_path)
-            .args(["-c", "user.email=t@example.com", "-c", "user.name=t"])
-            .args(["commit", "-q", "-m", "init"])
-            .status()
-            .unwrap()
-            .success());
-        let wt_dir = repo.tmp.join("rigger-wt-linked");
-        assert!(StdCommand::new("git")
-            .arg("-C")
-            .arg(&repo.root_path)
-            .args(["worktree", "add", "-q", "-b", "wt-branch"])
-            .arg(&wt_dir)
-            .status()
-            .unwrap()
-            .success());
-
-        // The worktree root ITSELF is strictly under the MAIN repo's `.rigger/tmp`.
-        assert_eq!(
-            is_reapable_base(&wt_dir),
-            Some(wt_dir.canonicalize().unwrap())
-        );
+        assert_eq!(is_reapable_base(&link, &repo.tmp), None);
     }
 
     #[test]
@@ -644,7 +641,7 @@ mod tests {
             "precondition: the inside child is detected before the reap"
         );
 
-        reap_processes_rooted_under(&base);
+        reap_processes_rooted_under(&base, &repo.tmp);
 
         let inside_died = wait_for_exit(&mut inside);
         // The outside sleeper must still be running; capture before cleanup.
@@ -667,6 +664,40 @@ mod tests {
     }
 
     #[test]
+    fn reap_kills_a_process_under_an_authorized_root_that_is_not_a_dot_rigger_tmp_tree() {
+        // End-to-end proof of the fix at the public entry point: an authorized_root with NO
+        // relationship whatsoever to any git repo or `.rigger/tmp` naming (mirroring a
+        // registered mutation-scratch root under a cache home, or a `defaults.workdir`/
+        // `RIGGER_TMPDIR`-relocated scratch root) still reaps a live, SIGTERM-ignoring
+        // process rooted inside it.
+        let root_dir = tempfile::tempdir().unwrap();
+        let authorized_root = root_dir.path().join("relocated-scratch");
+        std::fs::create_dir_all(&authorized_root).unwrap();
+        let base = authorized_root.join("some-registered-leaf");
+        std::fs::create_dir_all(&base).unwrap();
+
+        let mut inside = sigterm_ignorer_in(&base);
+        assert!(
+            wait_until(|| processes_rooted_under(&base)
+                .iter()
+                .any(|(pid, _)| *pid == inside.id())),
+            "precondition: the inside child is detected before the reap"
+        );
+
+        reap_processes_rooted_under(&base, &authorized_root);
+
+        let inside_died = wait_for_exit(&mut inside);
+        if !inside_died {
+            cleanup(&mut inside);
+        }
+        assert!(
+            inside_died,
+            "a relocated/cache-home-style authorized_root with no .rigger/tmp relationship \
+             must still authorize the reap"
+        );
+    }
+
+    #[test]
     fn reap_is_a_graceful_no_op_when_nothing_is_rooted_inside() {
         // No process rooted inside a valid, empty base: the reap does nothing and never
         // errors, so teardown proceeds on any platform.
@@ -674,7 +705,7 @@ mod tests {
         let base = repo.base("scratch");
         // A sleeper OUTSIDE the base must be untouched by a reap scoped to the empty base.
         let mut outside = sleeper_in(&repo.root_path);
-        reap_processes_rooted_under(&base);
+        reap_processes_rooted_under(&base, &repo.tmp);
         let outside_alive = matches!(outside.try_wait(), Ok(None));
         cleanup(&mut outside);
         assert!(
@@ -685,22 +716,50 @@ mod tests {
 
     #[test]
     fn reap_is_a_logged_no_op_for_a_base_refused_by_is_reapable_base() {
-        // A base that is not strictly under `<repo>/.rigger/tmp` (here, the repo root
-        // itself) must NEVER be reaped, even when a process is genuinely rooted inside it -
-        // the base-guard is checked BEFORE any scan/signal, never bypassed.
+        // A base that is not strictly under the given authorized_root (here, the repo root
+        // itself, checked against its own `.rigger/tmp`) must NEVER be reaped, even when a
+        // process is genuinely rooted inside it - the base-guard is checked BEFORE any
+        // scan/signal, never bypassed.
         let repo = FakeRepo::new();
         let mut rooted_at_repo_root = sleeper_in(&repo.root_path);
         assert!(wait_until(|| processes_rooted_under(&repo.root_path)
             .iter()
             .any(|(pid, _)| *pid == rooted_at_repo_root.id())));
 
-        reap_processes_rooted_under(&repo.root_path);
+        reap_processes_rooted_under(&repo.root_path, &repo.tmp);
 
         let still_alive = matches!(rooted_at_repo_root.try_wait(), Ok(None));
         cleanup(&mut rooted_at_repo_root);
         assert!(
             still_alive,
             "a refused base (the repo root itself) must never be reaped"
+        );
+    }
+
+    #[test]
+    fn reap_authorized_kills_a_sigterm_ignoring_process_given_an_already_authorized_base() {
+        // [`reap_authorized`] is the termination sequence [`crate::worktree::Worktree::remove`]
+        // calls directly after its OWN git-identity authorization (never through
+        // `is_reapable_base`'s containment gate) - proves it independently performs the same
+        // SIGTERM-then-grace-then-SIGKILL sequence given a bare, pre-canonicalized base.
+        let root = tempfile::tempdir().unwrap();
+        let base = root.path().canonicalize().unwrap();
+
+        let mut inside = sigterm_ignorer_in(&base);
+        assert!(wait_until(|| processes_rooted_under(&base)
+            .iter()
+            .any(|(pid, _)| *pid == inside.id())));
+
+        reap_authorized(base);
+
+        let inside_died = wait_for_exit(&mut inside);
+        if !inside_died {
+            cleanup(&mut inside);
+        }
+        assert!(
+            inside_died,
+            "reap_authorized must SIGKILL a SIGTERM-ignoring process given an authorized base, \
+             with no containment gate in front of it"
         );
     }
 
@@ -885,18 +944,5 @@ mod tests {
             alive_as_ancestor,
             "a pid recorded as an ancestor of self must be skipped"
         );
-    }
-
-    #[test]
-    fn repo_root_for_resolves_from_the_root_and_from_a_nested_subdir() {
-        let repo = FakeRepo::new();
-        assert_eq!(repo_root_for(&repo.root_path), Some(repo.root_path.clone()));
-        assert_eq!(repo_root_for(&repo.tmp), Some(repo.root_path.clone()));
-    }
-
-    #[test]
-    fn repo_root_for_is_none_outside_any_git_repo() {
-        let unrelated = tempfile::tempdir().unwrap();
-        assert_eq!(repo_root_for(unrelated.path()), None);
     }
 }
