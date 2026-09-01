@@ -120,7 +120,6 @@ impl Drop for SlotGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::process::CommandExt;
     use std::process::Command;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
@@ -202,6 +201,17 @@ mod tests {
         // Reaching here without hanging proves the slot is reusable across releases.
     }
 
+    /// Whether this host's `flock(1)` supports `-F`/`--no-fork` (util-linux >= 2.32): probed
+    /// from `--help` text rather than a version-string parse, since that is the actual
+    /// capability [`slot_releases_when_its_holder_process_exits_abnormally`] depends on.
+    fn flock_supports_no_fork() -> bool {
+        Command::new("flock")
+            .arg("--help")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("--no-fork"))
+            .unwrap_or(false)
+    }
+
     #[test]
     fn slot_releases_when_its_holder_process_exits_abnormally() {
         // spec 65: "auto-released by the kernel on any exit, clean or crashed" - a holder
@@ -209,23 +219,36 @@ mod tests {
         // instant it dies. Simulated with a real external process (`flock(1)`) holding the
         // exact slot file `BuildBudget` itself would open, since the guarantee is about the
         // kernel's flock semantics on that file, not about which process took the lock.
+        //
+        // spec 78, THE BUDGET FIXTURE: the holder must be ONE process that holds the lock
+        // itself, handle-bound to termination - never a forked wrapper-plus-child pair that
+        // can only be reached as a unit via a process-group signal. `--no-fork` (util-linux's
+        // `-F`) EXECs `sleep` in place of forking, so the single spawned process IS the
+        // locked fd's sole holder for its whole life; `Child::kill()` + `Child::wait()` on
+        // the handle that spawned it is then sufficient - no `process_group(0)`, no negative
+        // pid, no `--` argv separator anywhere in this fixture. Skips (rather than falling
+        // back to the old process-group kill) when the host's `flock(1)` predates the flag.
+        if !flock_supports_no_fork() {
+            eprintln!(
+                "skipping slot_releases_when_its_holder_process_exits_abnormally: this host's \
+                 flock(1) has no -F/--no-fork (needs util-linux >= 2.32), and spec 78 forbids \
+                 falling back to the process-group kill this fixture used before that flag \
+                 existed"
+            );
+            return;
+        }
+
         let dir = tempfile::tempdir().unwrap();
         let slot_dir = dir.path().join("slots");
         fs::create_dir_all(&slot_dir).unwrap();
         let slot_path = slot_dir.join("slot-0.lock");
 
-        // `flock(1) <path> sleep 300` forks: the locked fd is inherited by the `sleep`
-        // child across that fork (that is how `flock(1)` holds the lock for the wrapped
-        // command's whole lifetime), so the fixture's own process group must be killed as
-        // a unit (`process_group(0)` makes the wrapper its own group leader) - killing only
-        // the wrapper pid would leave the lock held by its still-living child, which would
-        // prove nothing about the ONE-process case this budget's real caller is.
         let mut holder = Command::new("flock")
+            .arg("--no-fork")
             .arg("-x")
             .arg(&slot_path)
             .arg("sleep")
             .arg("300")
-            .process_group(0)
             .spawn()
             .expect("spawn an external flock holder for the fixture");
 
@@ -257,17 +280,10 @@ mod tests {
             "the slot is externally held; our acquire must block"
         );
 
-        // Kill the holder's WHOLE process group ABNORMALLY (SIGKILL) - neither it nor its
-        // child runs any cleanup, so only the kernel's own release-on-exit can free the
-        // slot. The `--` separator is load-bearing: without it, kill(1) parses the
-        // negative-pid operand as an option and the syscall targets a DIFFERENT group
-        // than the one named (strace-verified; recorded as d65-u3-group-kill-argv-hazard).
-        let pgid = holder.id();
-        let _ = Command::new("kill")
-            .arg("-9")
-            .arg("--")
-            .arg(format!("-{pgid}"))
-            .status();
+        // Abnormal death through the Child HANDLE that spawned this one process - the holder
+        // never runs its own cleanup, so only the kernel's own release-on-exit can free the
+        // slot.
+        holder.kill().expect("SIGKILL the fixture holder");
         holder.wait().expect("reap the killed fixture holder");
 
         assert!(

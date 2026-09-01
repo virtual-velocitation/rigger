@@ -20470,13 +20470,6 @@ fn read_dash_marker(root: &Path) -> Option<(u16, u32)> {
     Some((port, pid))
 }
 
-/// Best-effort kill+reap of a process by pid, so a test that drove the step path into starting
-/// a real, DETACHED `rigger dash` never leaves it orphaned. Ignores every error: the pid may
-/// already be gone, which is exactly the state we want.
-fn reap_pid(pid: u32) {
-    let _ = Command::new("kill").arg("-9").arg(pid.to_string()).status();
-}
-
 /// Run `rigger step` in `root` with the always-on step dash ENABLED - the RIGGER_NO_DASH
 /// opt-out explicitly REMOVED from the environment (so an ambient opt-out in CI cannot mask the
 /// behavior under test) - returning (stdout, stderr). Used by the spec-39/50 step-path dash
@@ -20557,7 +20550,7 @@ fn step_auto_starts_one_persistent_dash_and_a_second_step_starts_none() {
     // of its loopback URL returns the read-only page. Reap before failing so nothing leaks.
     let url = format!("http://127.0.0.1:{port1}/");
     if !matches!(http_get(&url), Some(body) if body.contains("rigger dash")) {
-        reap_pid(pid1);
+        common::terminate_pid(pid1);
         panic!("the auto-started step dash at {url} did not serve its page");
     }
 
@@ -20567,10 +20560,10 @@ fn step_auto_starts_one_persistent_dash_and_a_second_step_starts_none() {
 
     // Reap every dash this test could have started BEFORE asserting, so a failed assertion
     // never leaves an orphaned dashboard behind.
-    reap_pid(pid1);
+    common::terminate_pid(pid1);
     if let Some((_, pid2)) = marker2 {
         if pid2 != pid1 {
-            reap_pid(pid2);
+            common::terminate_pid(pid2);
         }
     }
 
@@ -20636,7 +20629,7 @@ fn step_dash_binds_exactly_the_rigger_dash_port_override() {
     let served_at_override = matches!(http_get(&url), Some(body) if body.contains("rigger dash"));
 
     // Reap the real detached dash BEFORE any assertion, so a failed assertion never leaks it.
-    reap_pid(pid);
+    common::terminate_pid(pid);
 
     assert_eq!(
         marker_port, dash_port,
@@ -21102,7 +21095,7 @@ fn step_honors_the_config_dash_off_opt_out() {
     // If the opt-out regressed, a real dash started at the fixed port and recorded a marker: reap
     // it BEFORE asserting so a failing assertion never leaks a dashboard.
     if let Some((_, pid)) = read_dash_marker(root) {
-        reap_pid(pid);
+        common::terminate_pid(pid);
     }
 
     assert!(
@@ -21267,14 +21260,14 @@ fn a_step_started_dash_is_detached_and_outlives_its_step_process() {
     // it - keeping this test off criterion 1's idempotency ground while never leaking a dash.
     if let Some((_, pid2)) = read_dash_marker(root) {
         if pid2 != pid {
-            reap_pid(pid2);
+            common::terminate_pid(pid2);
         }
     }
     let alive_after_step2 = rigger::dash::pid_is_alive(pid);
     let served_after_step2 = matches!(http_get(&url), Some(body) if body.contains("rigger dash"));
 
     // Reap the original detached dash BEFORE asserting, so a failure never leaves it orphaned.
-    reap_pid(pid);
+    common::terminate_pid(pid);
 
     assert!(
         out2.contains(r#""wave":"#),
@@ -22449,7 +22442,7 @@ fn a_real_rigger_step_session_detaches_the_dash_from_the_step_command_process_gr
     // The dash is a GENUINE serving process (not a stale marker or a recycled pid): confirm it
     // serves its page before observing its group. Reap on failure so nothing leaks.
     if !matches!(http_get(&url), Some(body) if body.contains("rigger dash")) {
-        reap_pid(dash_pid);
+        common::terminate_pid(dash_pid);
         panic!("the step-started dash at {url} did not serve its page");
     }
 
@@ -22457,7 +22450,7 @@ fn a_real_rigger_step_session_detaches_the_dash_from_the_step_command_process_gr
     let dash_pgid = proc_pgid_of(dash_pid);
 
     // Reap the detached dash BEFORE asserting, so a failed assertion never leaves it orphaned.
-    reap_pid(dash_pid);
+    common::terminate_pid(dash_pid);
 
     assert_eq!(
         dash_pgid, dash_pid,
@@ -23796,7 +23789,7 @@ fn watch_once_reports_a_real_steps_own_dash_after_the_step_process_has_long_sinc
 
     // Kill the real dash this run itself just spawned, so the NEXT probe finds a genuinely dead
     // pid on the recorded port - not a synthetic marker, an actual process this test terminated.
-    reap_pid(pid);
+    common::terminate_pid(pid);
     // Best-effort wait for the port to actually free up, so the probe below cannot race a
     // not-yet-reaped socket into a false "still serving" read.
     for _ in 0..50 {

@@ -411,17 +411,13 @@ fn reset_build_cache_still_refuses_when_the_guard_holders_orchestrator_died_but_
         .expect("SIGKILL the simulated orchestrator");
     orchestrator.wait().expect("reap the killed orchestrator");
 
-    let child_pid = std::fs::read_to_string(&pidfile)
+    let child_pid: u32 = std::fs::read_to_string(&pidfile)
         .expect("the backgrounded build must have recorded its own pid")
         .trim()
-        .to_string();
+        .parse()
+        .expect("the recorded pid must parse as a u32");
     assert!(
-        Command::new("kill")
-            .arg("-0")
-            .arg(&child_pid)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false),
+        common::is_alive(child_pid),
         "the build must survive its orchestrator's death as a live orphan: pid {child_pid}"
     );
     assert!(
@@ -431,7 +427,7 @@ fn reset_build_cache_still_refuses_when_the_guard_holders_orchestrator_died_but_
     );
 
     let (out, err, ok) = run_rigger(root, &["reset", "--build-cache"]);
-    let _ = Command::new("kill").arg("-9").arg(&child_pid).status();
+    common::terminate_pid(child_pid);
 
     assert!(
         !ok,
