@@ -340,13 +340,15 @@ fn reset_build_cache_still_refuses_when_the_guard_holders_orchestrator_died_but_
     // simulate-via-real-`flock` style, never re-invoking Rust code cross-process): an
     // "orchestrator" (`sh -c "... & wait"`, spawned and owned by THIS test exactly the way
     // the real rigger process is spawned and owned by whatever launches it) backgrounds
-    // `flock -s -F -- <guard> sh -c '<script>'` - the exact exec-replacing wrapper
-    // `ExecRunner::run` now uses - then blocks on `wait`, mirroring `Command::output()`'s own
-    // blocking wait for its child. `&` guarantees the backgrounded chain is a genuinely
-    // separate, already-forked process before the orchestrator ever dies (no shell tail-call
-    // exec-replace ambiguity, unlike a bare trailing `sh -c "singlecommand"`). Killing ONLY
-    // the orchestrator's own pid (`Child::kill`, which signals that one pid, never a process
-    // group) must leave the backgrounded flock/sh chain alive and STILL holding the guard.
+    // `flock -s -F <guard> sh -c '<script>'` - the exact exec-replacing wrapper
+    // `ExecRunner::run` now uses (spec 78's no-os-kill audit bans the bare `--` argv
+    // separator tree-wide, so the wrapper no longer passes one) - then blocks on `wait`,
+    // mirroring `Command::output()`'s own blocking wait for its child. `&` guarantees the
+    // backgrounded chain is a genuinely separate, already-forked process before the
+    // orchestrator ever dies (no shell tail-call exec-replace ambiguity, unlike a bare
+    // trailing `sh -c "singlecommand"`). Killing ONLY the orchestrator's own pid
+    // (`Child::kill`, which signals that one pid, never a process group) must leave the
+    // backgrounded flock/sh chain alive and STILL holding the guard.
     let project = temp_project();
     let root = project.path();
     seed_store(root);
@@ -373,11 +375,12 @@ fn reset_build_cache_still_refuses_when_the_guard_holders_orchestrator_died_but_
             .unwrap_or(false)
     }
 
-    // The simulated "orchestrator": backgrounds the exact `flock -s -F -- <guard>
-    // sh -c '<script>'` command `ExecRunner::run` now constructs, then blocks on `wait` for
-    // it - the same spawn-then-block shape `Command::output()` gives the real orchestrator.
+    // The simulated "orchestrator": backgrounds the exact `flock -s -F <guard>
+    // sh -c '<script>'` command `ExecRunner::run` now constructs (no `--` separator - spec
+    // 78's no-os-kill audit bans that argv shape tree-wide), then blocks on `wait` for it -
+    // the same spawn-then-block shape `Command::output()` gives the real orchestrator.
     let script = format!(
-        "flock -s -F -- {guard_str} sh -c 'echo $$ > {pidfile_str}; touch {started_str}; \
+        "flock -s -F {guard_str} sh -c 'echo $$ > {pidfile_str}; touch {started_str}; \
          sleep 30' & wait"
     );
     let mut orchestrator = Command::new("sh")
