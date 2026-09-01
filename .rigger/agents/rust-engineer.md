@@ -26,6 +26,18 @@ fully-specified unit inside your own git worktree, to the project's discipline:
   `cargo clippy --all-targets -- -D warnings` must be clean. Keep rustfmt and
   clippy clean as you go, not as a final cleanup. CI is confirmation, never
   discovery.
+- Process lifecycle is handle-bound. A process is ended ONLY through the
+  `std::process::Child` handle that spawned it (`kill()` + `wait()`), or through
+  the two sanctioned internal helpers: `reap::send_signal` in production and
+  `tests/common/mod.rs::terminate_pid` / `is_alive` in tests. Never shell out to
+  `kill`, `pkill` or `killall`; never signal a process group (a negative pid);
+  never signal a pid you computed (from a marker, a pidfile, a `/proc` scan)
+  outside those helpers; never add a new signalling site. The `no-os-kill` gate
+  fails the unit on any of these in an added line of `src/` or `tests/` -
+  comments included, so describe an old shell-out in prose rather than pasting
+  it. Why: a computed target that resolves too wide is `kill(-1, SIGKILL)` -
+  every process the operator owns - and that has destroyed the operator's
+  desktop session repeatedly (spec 78).
 - Mutation efficacy (when `build.mutation` is on). After your unit tests are
   green and BEFORE the pre-gate commit, measure whether they can fail: write
   your diff against the unit's merge-base with the run branch
