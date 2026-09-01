@@ -13,7 +13,7 @@
 //! mirrors production for the DEFAULT (unrelocated) case - the worktree lives under
 //! `<repo>/.rigger/tmp` - and (verified independently for this file: `cargo test --lib
 //! worktree::tests::remove_reaps_a_process_rooted_inside_the_worktree_and_spares_one_outside`)
-//! still passes after this diff. Neither side's tests ever construct the relocated shape
+//! still passes. Neither side's tests ever construct the relocated shape
 //! `tests/scratch_workdir_config.rs::a_present_workdir_deserializes_exactly` proves is a real,
 //! documented, tested configuration surface of this crate (`defaults.workdir: /custom/scratch`,
 //! an absolute path with no necessary relationship to the project repo at all -
@@ -21,25 +21,26 @@
 //! root partition where `<repo>` itself may sit, and a large unrelated mount the operator
 //! points scratch at instead).
 //!
-//! `is_reapable_base` (this diff) requires the base to canonicalize to somewhere STRICTLY
-//! under `<repo>/.rigger/tmp`. A worktree dir created under a RELOCATED scratch root fails
-//! that requirement by construction whenever the relocation target is not itself nested inside
-//! the project repo - which is precisely the deployment shape the relocation knob exists to
-//! reach (a scratch root OUTSIDE a small-root-partitioned repo). `Worktree::remove`'s own doc
-//! comment still promises "Reap any process still rooted inside this worktree BEFORE git
-//! removes the dir (spec 23): otherwise a build or tool an agent left running holds a
-//! now-deleted cwd and outlives its worktree, leaking memory" - unconditionally, with no
-//! carve-out for a relocated root. This file proves that promise is now broken for exactly
-//! that deployment shape: a `cargo`/`rustc`-shaped process (SIGTERM-ignoring, so only the
-//! SIGKILL escalation would end it) left running in a worktree under a relocated scratch root
-//! now outlives `Worktree::remove()` deleting that worktree's dir out from under it.
+//! ROUND 1 (`is_reapable_base` canonicalizing a hardcoded `<repo>/.rigger/tmp` literal) broke
+//! `Worktree::remove`'s own doc comment promise ("Reap any process still rooted inside this
+//! worktree BEFORE git removes the dir (spec 23): otherwise a build or tool an agent left
+//! running holds a now-deleted cwd and outlives its worktree, leaking memory") for exactly the
+//! relocated deployment shape the relocation knob exists to reach: a worktree dir under a
+//! scratch root with no relationship to the project repo could never canonicalize under that
+//! repo's `.rigger/tmp`, so a `cargo`/`rustc`-shaped process (SIGTERM-ignoring, so only the
+//! SIGKILL escalation would end it) left running there outlived `Worktree::remove()` deleting
+//! the worktree's dir out from under it. This test proved that boundary bug RED
+//! (`adj-u78c2-verdict-reject-reap-authority-conflict`), driving the round-1 reject.
 //!
-//! EXPECTED RED at u78c2: this is the boundary bug itself (the same class already flagged by
-//! the implementer for the mutation-scratch caller, `u78c2-mutation-scratch-reap-now-refused-
-//! flagging-for-review`, extended here to the CORE worktree-teardown path spec 78's own Design
-//! text names as a caller that "keeps its signature": `src/worktree.rs:551`), not a test
-//! defect - the DEFAULT (unrelocated) shape is independently proven still correct by the
-//! pre-existing sibling unit test named above, which stays green.
+//! ROUND 2 FIX (decision `u78c2r2-worktree-remove-identity-not-tree`): a worktree's own dir can
+//! legitimately live anywhere relative to its repo, so no `authorized_root` a caller could
+//! compute would reliably contain it (the same relocation surface this file exercises).
+//! `Worktree::remove` now authorizes its reap by GIT IDENTITY instead of containment - reusing
+//! the existing `worktree_on_branch` predicate to confirm `self.dir` IS a real, currently
+//! checked-out worktree of `self.branch` before calling `crate::reap::reap_authorized`
+//! directly (bypassing `is_reapable_base`'s containment gate entirely). This test now CONFIRMS
+//! that fix holds: independently re-run against the round-2 diff, it PASSES - a live process
+//! under a relocated scratch root is reaped exactly as it always was for the default case.
 
 use std::path::Path;
 use std::process::{Child, Command};
@@ -90,7 +91,7 @@ fn init_repo(path: &Path) {
 }
 
 #[test]
-fn worktree_remove_no_longer_reaps_a_process_when_its_dir_lives_under_a_relocated_scratch_root() {
+fn worktree_remove_still_reaps_a_process_when_its_dir_lives_under_a_relocated_scratch_root() {
     // `project_repo` is the worktree's OWN repo (what `Worktree::create`'s `repo` argument
     // names, and what `is_reapable_base` resolves `<repo>` from via the worktree dir's git
     // context). `relocated_scratch` stands in for a `defaults.workdir`-configured root
@@ -136,17 +137,17 @@ fn worktree_remove_no_longer_reaps_a_process_when_its_dir_lives_under_a_relocate
         died,
         "Worktree::remove's own doc comment promises every process rooted in the worktree is \
          reaped BEFORE the dir is removed, unconditionally - a SIGTERM-ignoring process here \
-         must still be SIGKILLed, exactly as it was before this diff and exactly as the \
-         DEFAULT (unrelocated) shape still is (see \
+         must still be SIGKILLed, exactly as the DEFAULT (unrelocated) shape already is (see \
          worktree::tests::remove_reaps_a_process_rooted_inside_the_worktree_and_spares_one_outside, \
-         independently re-run and confirmed green against this same diff). It survived \
-         instead: is_reapable_base's new <repo>/.rigger/tmp requirement refuses this dir, \
-         because a scratch root relocated via defaults.workdir/RIGGER_TMPDIR to a location \
-         outside the project repo (a real, tested configuration surface - see \
-         tests/scratch_workdir_config.rs) can never canonicalize under that repo's own \
-         .rigger/tmp - so reap_processes_rooted_under silently no-ops here now, exactly the \
-         same regression class already flagged for the mutation-scratch caller in decision \
-         u78c2-mutation-scratch-reap-now-refused-flagging-for-review, extended here to the \
-         CORE worktree-teardown path."
+         independently re-run and confirmed green). Round 1 broke this for a scratch root \
+         relocated via defaults.workdir/RIGGER_TMPDIR to a location outside the project repo \
+         (a real, tested configuration surface - see tests/scratch_workdir_config.rs): \
+         is_reapable_base's <repo>/.rigger/tmp containment requirement could never accept such \
+         a dir, so reap_processes_rooted_under silently no-opped (adj-u78c2-verdict-reject- \
+         reap-authority-conflict). Round 2 (decision u78c2r2-worktree-remove-identity-not-tree) \
+         fixed it by authorizing the reap via GIT IDENTITY (is self.dir a real, currently \
+         checked-out worktree of self.branch?) instead of path containment, calling \
+         reap_authorized directly - a regression back to the round-1 shape would fail this \
+         assertion again."
     );
 }
