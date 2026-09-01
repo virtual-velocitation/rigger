@@ -26,14 +26,20 @@
 //! own registered scratch dir being deleted out from under it.
 //!
 //! Already flagged by the implementer for arch/adjudicator disposition
-//! (`u78c2-mutation-scratch-reap-now-refused-flagging-for-review`); this file turns that prose
+//! (`u78c2-mutation-scratch-reap-now-refused-flagging-for-review`); this file turned that prose
 //! flag into a concrete, machine-verified boundary proof, per this loop's sdet charter ("a
 //! failing periphery test reveals a boundary BUG ... it drives remediation of the CODE, never
-//! a weakening of the test"). EXPECTED RED at u78c2: the first test below is the boundary bug
-//! itself, not a test defect - the second test is a positive control that proves the SAME
-//! reclaim call succeeds once its base legitimately lies under `<repo>/.rigger/tmp`, isolating
-//! the failure to the base-guard's new scope rather than to this file's own
-//! spawn/scan/signal mechanics.
+//! a weakening of the test"). ROUND 1: the first test below was RED - the boundary bug itself,
+//! not a test defect - while the second test (a positive control proving the SAME reclaim call
+//! succeeds once its base legitimately lies under `<repo>/.rigger/tmp`) isolated the failure to
+//! the base-guard's new scope rather than to this file's own spawn/scan/signal mechanics. ROUND
+//! 2 FIX (decision `u78c2r2-authorized-root-caller-supplied`): `reclaim_unit_mutation_scratch`
+//! now passes the registered mutation-scratch ROOT itself (`mutation_scratch_root(cache_home)`)
+//! as the `authorized_root` its own reap call already had the leaf in hand to derive - the SAME
+//! root every matched leaf actually nests under, independent of `cache_home`'s relationship (or
+//! total lack of one) to any project's `.rigger/tmp`. Both tests now PASS: independently re-run
+//! against the round-2 diff, confirming the fix closed the boundary bug without weakening
+//! either assertion.
 
 use std::path::Path;
 use std::process::{Child, Command};
@@ -108,11 +114,14 @@ fn reclaim_unit_mutation_scratch_reaps_a_live_process_rooted_in_its_registered_s
         died,
         "reclaim_unit_mutation_scratch's own doc comment promises every process rooted in a \
          matched registered mutation-scratch dir is reaped BEFORE the dir is removed - a \
-         SIGTERM-ignoring process here must still be SIGKILLed, exactly as it was before this \
-         diff. It survived instead: is_reapable_base's new <repo>/.rigger/tmp requirement \
-         refuses this real, ALWAYS-outside-any-repo registered root (see this file's header \
-         doc comment and decision u78c2-mutation-scratch-reap-now-refused-flagging-for-review), \
-         so reap_processes_rooted_under silently no-ops here now."
+         SIGTERM-ignoring process here must still be SIGKILLed. Round 1 broke this: \
+         is_reapable_base's <repo>/.rigger/tmp containment requirement refused this real, \
+         ALWAYS-outside-any-repo registered root (see this file's header doc comment and \
+         decision u78c2-mutation-scratch-reap-now-refused-flagging-for-review), so \
+         reap_processes_rooted_under silently no-opped. Round 2 (decision \
+         u78c2r2-authorized-root-caller-supplied) fixed it by passing the registered \
+         mutation-scratch root itself as authorized_root - a regression back to the round-1 \
+         shape would fail this assertion again."
     );
 }
 
