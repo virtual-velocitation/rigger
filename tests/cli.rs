@@ -24985,7 +24985,11 @@ fn step_reminder_prints_despite_env_naming_a_foreign_pid() {
             "--base",
             "origin/does-not-exist",
         ],
-        &[("RIGGER_SPEC_LINT_REMINDER_PID", "1")],
+        // A large, arbitrary sentinel - never this binary's real direct parent. NOT `"1"`:
+        // `.cargo/pidns-runner.sh` (spec 78) runs every test binary as pid 1 of its OWN
+        // fresh pid namespace, so `"1"` would genuinely equal the spawned rigger
+        // subprocess's real parent id here and wrongly suppress the reminder.
+        &[("RIGGER_SPEC_LINT_REMINDER_PID", "999999")],
     );
     assert!(
         !ok,
@@ -25059,7 +25063,11 @@ fn run_reminder_prints_despite_env_naming_a_foreign_pid() {
             "--base",
             "origin/does-not-exist",
         ],
-        &[("RIGGER_SPEC_LINT_REMINDER_PID", "1")],
+        // A large, arbitrary sentinel - never this binary's real direct parent. NOT `"1"`:
+        // `.cargo/pidns-runner.sh` (spec 78) runs every test binary as pid 1 of its OWN
+        // fresh pid namespace, so `"1"` would genuinely equal the spawned rigger
+        // subprocess's real parent id here and wrongly suppress the reminder.
+        &[("RIGGER_SPEC_LINT_REMINDER_PID", "999999")],
     );
     assert!(
         !ok,
@@ -25109,7 +25117,11 @@ fn workflow_reminder_prints_despite_env_naming_a_foreign_pid() {
     let (out, _err, ok) = run_rigger_envs(
         root,
         &["workflow", "specs/42-widgets.md"],
-        &[("RIGGER_SPEC_LINT_REMINDER_PID", "1")],
+        // A large, arbitrary sentinel - never this binary's real direct parent. NOT `"1"`:
+        // `.cargo/pidns-runner.sh` (spec 78) runs every test binary as pid 1 of its OWN
+        // fresh pid namespace, so `"1"` would genuinely equal the spawned rigger
+        // subprocess's real parent id here and wrongly suppress the reminder.
+        &[("RIGGER_SPEC_LINT_REMINDER_PID", "999999")],
     );
     assert!(
         !ok,
