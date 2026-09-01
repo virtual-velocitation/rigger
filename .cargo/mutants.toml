@@ -1,0 +1,14 @@
+# cargo-mutants configuration (read automatically from the source tree).
+#
+# The worktree reaper's signalling path is excluded from mutation on purpose: a mutant that
+# widens WHICH processes get signalled, or removes a guard (pid > 1, base strictly under
+# .rigger/tmp, cwd re-check before each signal), is a mutant that kills processes it must not.
+# Test binaries run inside a pid namespace (.cargo/pidns-runner.sh) so such a mutant could only
+# ever reach the namespace, but a reaper is a loaded gun by definition and its mutation
+# "survivors" would prove nothing about the guard's necessity - the guard is exercised by
+# explicit tests instead (specs/78-no-os-level-kills.md, criterion 2).
+exclude_re = [
+  "reap::send_signal",
+  "reap::reap_processes_rooted_under",
+  "reap::is_reapable_base",
+]
