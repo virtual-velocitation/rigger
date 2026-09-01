@@ -546,9 +546,27 @@ impl Worktree {
         // Reap any process still rooted inside this worktree BEFORE git removes the dir (spec
         // 23): otherwise a build or tool an agent left running holds a now-deleted cwd and
         // outlives its worktree, leaking memory. Scoped to this EXACT dir, so a process rooted
-        // at the repo root or outside rigger's scratch is never touched. Best-effort and a
-        // graceful no-op off Linux; it never changes the removal's result.
-        crate::reap::reap_processes_rooted_under(std::path::Path::new(&self.dir));
+        // at the repo root or outside rigger's scratch is never touched.
+        //
+        // Authorized by GIT IDENTITY, not by `crate::reap::reap_processes_rooted_under`'s usual
+        // "strictly under a resolved scratch root" containment gate (spec 78 round 2, decision
+        // `u78c2r2-worktree-remove-identity-not-tree`): a worktree's own dir can legitimately
+        // live ANYWHERE relative to `self.repo` - `defaults.workdir`/`RIGGER_TMPDIR` relocation
+        // is a real, tested config surface (`tests/scratch_workdir_config.rs`) with no
+        // necessary containment relationship to the repo at all - so there is no
+        // `authorized_root` this function could compute (from config, env, or `self.repo`
+        // itself) that would reliably contain it. [`worktree_on_branch`] is instead the SAME
+        // predicate [`Self::create`]'s own fast-path adoption already trusts to mean "this dir
+        // IS a real, currently-checked-out git worktree of this exact branch" - a fact git
+        // itself attests to, independent of where the dir physically sits - so it authorizes
+        // the reap without caring about relocation. A dir that fails this check (already
+        // removed, or somehow not on the expected branch) skips the reap: best-effort, never
+        // fails the removal below.
+        if worktree_on_branch(&self.dir, &self.branch) {
+            if let Ok(base) = std::path::Path::new(&self.dir).canonicalize() {
+                crate::reap::reap_authorized(base);
+            }
+        }
         git(&self.repo, &["worktree", "remove", "--force", &self.dir])?;
         reclaim_cache_sibling(&self.dir);
         Ok(())
