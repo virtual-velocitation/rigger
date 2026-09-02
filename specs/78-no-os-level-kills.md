@@ -148,9 +148,31 @@ by any unit: `.cargo/pidns-runner.sh` + the `runner` entry in `.cargo/config.tom
 `.cargo/mutants.toml`; the `no-os-kill` gate in `.rigger/workflow.yml`; `RIGGER_PIDNS: "off"`
 in `.github/workflows/rust.yml`.
 
+DOCUMENTED, BOUNDED EXCEPTION (decided in unit u78c4, discharging the disposition round 2 of
+u78c2 left REQUIRED - decision `u78c2r2-verdict-approve-with-scoped-out-followup`): `src/reap.rs`'s
+module doc claims that before rigger removes a dir it owns, it finds every process rooted
+inside and reaps it - true of every production removal path this spec touched, EXCEPT three
+call sites in `src/worktree.rs` that predate spec 78 and remain untouched by it, all of which
+remove a worktree dir with zero `reap::` call: `sweep_terminal` (the merged/terminal-worktree
+sweep run at the start of every `rigger step`), `clear_worktree_dir` (three callers -
+[`Worktree::create`]'s crash-mid-`git worktree add` self-heal, [`Worktree::discard`], and
+`reclaim_worktree_on_branch`), and `reclaim_worktree_on_branch` itself (the `rigger run` resume
+/ branch-GC path). The same reason [`Worktree::remove`] needed a SECOND authorization path
+(git identity via `worktree_on_branch`, not `is_reapable_base`'s scratch-root containment gate)
+applies equally to these three: a worktree's own dir can live anywhere relative to its repo
+(`defaults.workdir`/`RIGGER_TMPDIR` relocation), so no caller at these sites has an
+`authorized_root` that would reliably contain it either. This spec does NOT extend that fix to
+them - naming the gap here is not a claim that these three sites are safe, only that closing
+them is explicitly OUT of this spec's scope rather than a silent omission: a process rooted in
+a dir any of the three removes gets no reap attempt of any kind before the dir is deleted.
+Closing it is a follow-up unit's work: authorize each the same way [`Worktree::remove`] was
+authorized (git identity, `reap::reap_authorized`).
+
 Out of scope, deferred explicitly: a spawn LEDGER that would let the reaper signal only pids
 rigger itself recorded (the scan stays, guarded); the dash's `--reap-on-idle` self-exit (it
-exits itself, no signal involved); anything outside `src/` and `tests/`.
+exits itself, no signal involved); `sweep_terminal`, `clear_worktree_dir` and
+`reclaim_worktree_on_branch` in `src/worktree.rs` (named above); anything else outside `src/`
+and `tests/`.
 
 Why not keep `--`: `--` fixes one argv misparse; it does nothing about a pgid that IS 1, a
 marker that names the wrong pid, or a base that canonicalizes too wide. The rule removes the
