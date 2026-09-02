@@ -149,23 +149,33 @@ by any unit: `.cargo/pidns-runner.sh` + the `runner` entry in `.cargo/config.tom
 in `.github/workflows/rust.yml`.
 
 DOCUMENTED, BOUNDED EXCEPTION (decided in unit u78c4, discharging the disposition round 2 of
-u78c2 left REQUIRED - decision `u78c2r2-verdict-approve-with-scoped-out-followup`): `src/reap.rs`'s
-module doc claims that before rigger removes a dir it owns, it finds every process rooted
-inside and reaps it - true of every production removal path this spec touched, EXCEPT three
-call sites in `src/worktree.rs` that predate spec 78 and remain untouched by it, all of which
-remove a worktree dir with zero `reap::` call: `sweep_terminal` (the merged/terminal-worktree
-sweep run at the start of every `rigger step`), `clear_worktree_dir` (three callers -
-[`Worktree::create`]'s crash-mid-`git worktree add` self-heal, [`Worktree::discard`], and
-`reclaim_worktree_on_branch`), and `reclaim_worktree_on_branch` itself (the `rigger run` resume
-/ branch-GC path). The same reason [`Worktree::remove`] needed a SECOND authorization path
-(git identity via `worktree_on_branch`, not `is_reapable_base`'s scratch-root containment gate)
-applies equally to these three: a worktree's own dir can live anywhere relative to its repo
-(`defaults.workdir`/`RIGGER_TMPDIR` relocation), so no caller at these sites has an
-`authorized_root` that would reliably contain it either. This spec does NOT extend that fix to
-them - naming the gap here is not a claim that these three sites are safe, only that closing
-them is explicitly OUT of this spec's scope rather than a silent omission: a process rooted in
-a dir any of the three removes gets no reap attempt of any kind before the dir is deleted.
-Closing it is a follow-up unit's work: authorize each the same way [`Worktree::remove`] was
+u78c2 left REQUIRED - decision `u78c2r2-verdict-approve-with-scoped-out-followup`; widened
+round 3 for `adv-u78c4r2-reclaim-cache-sibling-never-reaped-even-on-the-exemplar-path`):
+`src/reap.rs`'s module doc claims that before rigger removes a dir it owns, it finds every
+process rooted inside and reaps it - true of every production removal path this spec touched,
+EXCEPT four call sites in `src/worktree.rs` that predate spec 78 and remain untouched by it.
+Three remove the WORKTREE dir itself with zero `reap::` call: `sweep_terminal` (the
+merged/terminal-worktree sweep run at the start of every `rigger step`), `clear_worktree_dir`
+(three callers - [`Worktree::create`]'s crash-mid-`git worktree add` self-heal,
+[`Worktree::discard`], and `reclaim_worktree_on_branch`), and `reclaim_worktree_on_branch`
+itself (the `rigger run` resume / branch-GC path). The same reason [`Worktree::remove`] needed
+a SECOND authorization path (git identity via `worktree_on_branch`, not `is_reapable_base`'s
+scratch-root containment gate) applies equally to these three: a worktree's own dir can live
+anywhere relative to its repo (`defaults.workdir`/`RIGGER_TMPDIR` relocation), so no caller at
+these sites has an `authorized_root` that would reliably contain it either. The fourth is
+`reclaim_cache_sibling`, the single authority that removes a unit worktree's per-unit
+`cargo-target-<slug>` build cache and that cache's `-store-fence` sibling (which per its own
+doc comment can hold a live sqlite `events.db` a courier still has open): both its
+`fs::remove_dir_all` calls carry zero `reap::` call and zero containment check of any kind.
+Unlike the three above, this one is reachable from ALL FOUR worktree-teardown paths -
+[`Worktree::remove`] and [`Worktree::discard`] included, the two this spec's own c2 unit
+already authorized for the worktree dir itself - so a process rooted under either
+cache-sibling dir gets no reap attempt even on the two paths this Notes section otherwise
+treats as closed. This spec does NOT extend the reap fix to any of the four - naming the gap
+here is not a claim that these sites are safe, only that closing them is explicitly OUT of
+this spec's scope rather than a silent omission: a process rooted in a dir any of the four
+removes gets no reap attempt of any kind before the dir is deleted. Closing it is a follow-up
+unit's work: authorize each the same way [`Worktree::remove`]'s own worktree-dir reap was
 authorized (git identity, `reap::reap_authorized`).
 
 Out of scope, deferred explicitly: a spawn LEDGER that would let the reaper signal only pids
