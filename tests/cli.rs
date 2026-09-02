@@ -20715,6 +20715,132 @@ fn step_writes_no_dash_marker_and_leaves_a_stale_one_untouched_when_the_bind_nev
     );
 }
 
+/// Spec 62, criterion 2 (SELF-HEAL) end-to-end at the BUILT binary: a `.rigger/dash.marker`
+/// naming a DEAD pid whose recorded port nothing answers is REPLACED by the next `rigger step`,
+/// not left stale forever. The in-crate unit tests
+/// (`ensure_run_dashboard_at_self_heals_a_marker_naming_a_dead_pid` in `src/main.rs`) prove the
+/// DECISION against the real `dash_marker_serving` predicate, but inject a fake `start()`
+/// closure that never spawns a real process; only driving the real `cmd_step ->
+/// ensure_run_dashboard -> spawn_run_dashboard_detached` wiring proves a genuine dash actually
+/// comes up and its marker actually lands on disk in place of the stale one - the same
+/// unit-test-proves-the-decision / real-binary-proves-the-wiring split criterion 1's own
+/// periphery tests in this section already establish.
+///
+/// `stale_port` is reserved-then-released (never `dash_port`, the fresh dash's own target), so
+/// nothing answers it and the pre-step marker is genuinely dead, not merely arbitrary.
+///
+/// The started dash is a real, long-lived detached process, so this test reaps it by pid right
+/// after its one liveness probe - a failed assertion before that point never even started one.
+// Hermetic against a real machine dash: pins the ensure port to its own ephemeral
+// `free_loopback_port` (never the fixed 7420 a genuine always-on dash holds on the self-hosting
+// box) - the same reason the other step-path dash tests in this section need no `serial` key.
+#[test]
+fn step_self_heals_a_stale_marker_naming_a_dead_pid() {
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    write_two_stage_workflow(root);
+    let dash_port = free_loopback_port();
+    let stale_port = free_loopback_port();
+
+    let marker_path = root.join(".rigger").join("dash.marker");
+    std::fs::create_dir_all(marker_path.parent().unwrap()).unwrap();
+    std::fs::write(&marker_path, format!("{stale_port}\n999999\n")).unwrap();
+
+    let (out, err) = run_step_dash_enabled(root, dash_port);
+    assert!(
+        out.contains(r#""wave":"#),
+        "the step must run to completion (a printed wave) past the self-heal seam; \
+         stdout: {out:?} stderr: {err:?}"
+    );
+    let (port, pid) = read_dash_marker(root)
+        .unwrap_or_else(|| panic!("self-heal must record a fresh marker; stderr:\n{err}"));
+    assert_ne!(
+        (port, pid),
+        (stale_port, 999_999),
+        "self-heal must replace the stale dead-pid record, not leave it byte-for-byte; \
+         stderr:\n{err}"
+    );
+    assert_eq!(
+        port, dash_port,
+        "the replacement marker must name this test's own fresh dash port; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("serving this run"),
+        "self-heal starting a fresh dash must announce it as newly serving; stderr:\n{err}"
+    );
+
+    // The replacement marker is a GENUINE serving process, not merely a written record.
+    let url = format!("http://127.0.0.1:{port}/");
+    let served = matches!(http_get(&url), Some(body) if body.contains("rigger dash"));
+    common::terminate_pid(pid);
+    assert!(
+        served,
+        "the self-healed dash at {url} did not serve its page"
+    );
+}
+
+/// Spec 62, criterion 2 (SELF-HEAL), the SECOND Done-when form: a `.rigger/dash.marker` naming a
+/// LIVE pid (this very test process, unambiguously alive) whose recorded port nothing answers is
+/// replaced exactly like the dead-pid form above - `dash_marker_serving` never reads the pid
+/// field at all, only probes the port (`ensure_run_dashboard_at_self_heals_a_marker_naming_a_
+/// live_pid_whose_port_is_unserved` proves this at the unit level with a fake `start()`), so a
+/// genuinely-alive-but-unrelated pid must never suppress self-heal at the real binary either.
+/// Distinct from the dead-pid test above precisely because pid liveness itself is never
+/// load-bearing for this decision, only the port's own probe is - this drives that claim through
+/// the real `cmd_step -> ensure_run_dashboard -> spawn_run_dashboard_detached` wiring, not just
+/// the injected-`start()` unit test.
+///
+/// The started dash is a real, long-lived detached process, so this test reaps it by pid right
+/// after its one liveness probe - a failed assertion before that point never even started one.
+// Hermetic against a real machine dash: pins the ensure port to its own ephemeral
+// `free_loopback_port` (never the fixed 7420 a genuine always-on dash holds on the self-hosting
+// box) - the same reason the other step-path dash tests in this section need no `serial` key.
+#[test]
+fn step_self_heals_a_stale_marker_naming_a_live_pid_whose_port_is_unserved() {
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    write_two_stage_workflow(root);
+    let dash_port = free_loopback_port();
+    let stale_port = free_loopback_port();
+    let live_pid = std::process::id();
+
+    let marker_path = root.join(".rigger").join("dash.marker");
+    std::fs::create_dir_all(marker_path.parent().unwrap()).unwrap();
+    std::fs::write(&marker_path, format!("{stale_port}\n{live_pid}\n")).unwrap();
+
+    let (out, err) = run_step_dash_enabled(root, dash_port);
+    assert!(
+        out.contains(r#""wave":"#),
+        "the step must run to completion (a printed wave) past the self-heal seam; \
+         stdout: {out:?} stderr: {err:?}"
+    );
+    let (port, pid) = read_dash_marker(root)
+        .unwrap_or_else(|| panic!("self-heal must record a fresh marker; stderr:\n{err}"));
+    assert_ne!(
+        (port, pid),
+        (stale_port, live_pid),
+        "a live-but-unrelated pid must never suppress self-heal - only the port's own probe \
+         decides whether the recorded dash is still serving; stderr:\n{err}"
+    );
+    assert_eq!(
+        port, dash_port,
+        "the replacement marker must name this test's own fresh dash port; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("serving this run"),
+        "self-heal starting a fresh dash must announce it as newly serving; stderr:\n{err}"
+    );
+
+    // The replacement marker is a GENUINE serving process, not merely a written record.
+    let url = format!("http://127.0.0.1:{port}/");
+    let served = matches!(http_get(&url), Some(body) if body.contains("rigger dash"));
+    common::terminate_pid(pid);
+    assert!(
+        served,
+        "the self-healed dash at {url} did not serve its page"
+    );
+}
+
 /// Spec 62 round 2 (adv-u62c1-marker-pid-not-the-serving-pid-on-singleton-race), through the
 /// BUILT binary: the LOSING side of a REAL concurrent singleton-bind race must record a marker
 /// naming the WINNER's actual serving pid, never the losing side's own (already-exited-without-
