@@ -148,9 +148,33 @@ by any unit: `.cargo/pidns-runner.sh` + the `runner` entry in `.cargo/config.tom
 `.cargo/mutants.toml`; the `no-os-kill` gate in `.rigger/workflow.yml`; `RIGGER_PIDNS: "off"`
 in `.github/workflows/rust.yml`.
 
+DOCUMENTED SCOPE BOUNDARY (decided in unit u78c4, discharging the disposition round 2 of
+u78c2 left REQUIRED - decision `u78c2r2-verdict-approve-with-scoped-out-followup` - via the
+class statement below rather than a site enumeration, per the binding operator scope decision
+`d-u78c4-reap-coverage-scope-split-v2`): `src/reap.rs`'s module doc claims that before rigger
+removes a dir it owns, it finds every process rooted inside and reaps it. That is an
+unqualified reap COVERAGE claim, not a claim scoped to signalling form - read the same way by
+this run's own `adj-u78c2r2-verdict-approve-with-scoped-out-followup`, which found it
+contradicted by `sweep_terminal` and `clear_worktree_dir` (neither reaps before it removes);
+this spec does not revisit or reinterpret that reading, only records it honestly as a known,
+not-yet-corrected overclaim in that doc comment. This spec itself owns the FORM of process
+signalling only: handle-bound termination, the two sanctioned sites, the diff gate, the audit
+test. A removal path that does not reap a process rooted inside it before deleting its dir
+keeps its pre-78 behavior unchanged by this spec either way - and since a removal path that
+never reaps also never signals anything, it cannot violate this spec's rule no matter how many
+such paths exist or where they live. Which removal paths reap before they remove, and which
+don't yet - i.e. closing the gap between `src/reap.rs`'s doc comment and reality - is
+`specs/79-reap-before-removal.md`'s scope: it owns the complete inventory (re-grounded at
+implementation time, since site names, line numbers and call counts drift - the exact defect
+that cost this unit three rounds of prose churn here) and the criteria that rewire each one
+through `reap::reap_authorized` or a reap-then-remove helper.
+
 Out of scope, deferred explicitly: a spawn LEDGER that would let the reaper signal only pids
 rigger itself recorded (the scan stays, guarded); the dash's `--reap-on-idle` self-exit (it
-exits itself, no signal involved); anything outside `src/` and `tests/`.
+exits itself, no signal involved); reap COVERAGE for any removal path not yet routed through
+`reap::reap_authorized` or a reap-then-remove helper - owned by `specs/79-reap-before-removal.md`,
+not enumerated here (per this spec's own class statement, none of them violates this spec's
+signalling rule); anything else outside `src/` and `tests/`.
 
 Why not keep `--`: `--` fixes one argv misparse; it does nothing about a pgid that IS 1, a
 marker that names the wrong pid, or a base that canonicalizes too wide. The rule removes the
