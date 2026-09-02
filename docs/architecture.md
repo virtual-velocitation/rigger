@@ -972,8 +972,12 @@ not the machine singleton.
   project identity, the project root, a **credential-free** store identity, and a heartbeat
   it refreshes while it works - as pure discovery metadata under the machine's state
   directory. It is NEVER a source of truth and NEVER holds a credential; its loss is
-  harmless, because live instances repopulate it as they heartbeat, and any reader prunes
-  entries whose heartbeat has gone stale.
+  harmless, because live instances repopulate it as they heartbeat. A dead instance's entry
+  ages out and is eventually deleted - but pruning is reserved to the dashboard's own
+  self-reap watcher tick alone; every other reader (an `/api/instances` poll, an attach
+  resolve, `reset --derived`'s live-writer check) filters stale entries out of its view
+  without ever deleting them, so none of those readers can prune a foreign project's entry
+  out from under it before the watcher itself has observed that project's root.
 - **Attach-to-stores, run-agnostic reads.** The dash discovers every live instance from the
   registry and attaches to each one's store read-only (`?instance=<id>`), re-resolving a
   shared server through the same store-resolution authority every command uses (the registry

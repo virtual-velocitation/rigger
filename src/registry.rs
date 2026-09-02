@@ -8,9 +8,12 @@
 //! instance refreshes while it works.
 //!
 //! The registry is NEVER a source of truth and NEVER holds a credential (spec 50 secrets
-//! discipline); its loss is harmless, because live instances repopulate it as they heartbeat.
-//! Any reader prunes entries whose heartbeat has gone stale - a dead instance's entry ages out
-//! on the next read, so nothing has to reap it eagerly.
+//! discipline); its loss is harmless, because live instances repopulate it as they heartbeat. A
+//! dead instance's entry ages out and is eventually deleted - but pruning is reserved to the
+//! machine-level self-reap watcher's own read tick ([`read_live`]), never to any of the several
+//! OTHER concurrent readers ([`read_live_no_prune`]): a prune outside that one ordered sequence
+//! could delete a foreign project's still-relevant entry before the watcher has ever observed its
+//! root (spec 62 criterion 5 round 4), so every other reader filters staleness without deleting.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -20,9 +23,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 /// The registry's default staleness window (spec 50): an entry whose heartbeat has not been
-/// refreshed within this many milliseconds is prunable by any reader. Mirrors the dash's own
-/// idle bound (900s) so a live run's normal between-step gap is never read as gone; the reader
-/// takes the window as a parameter ([`read_live`]) so a caller may tune it.
+/// refreshed within this many milliseconds counts as stale. Mirrors the dash's own idle bound
+/// (900s) so a live run's normal between-step gap is never read as gone. Staleness alone does
+/// NOT mean prunable by whoever happens to read it - deletion is reserved to the self-reap
+/// watcher's own tick ([`read_live`]); every other reader filters by this same window through
+/// [`read_live_no_prune`] without deleting anything. Both readers take the window as a
+/// parameter so a caller may tune it.
 pub const DEFAULT_IDLE_MS: u64 = 900_000;
 
 /// A CREDENTIAL-FREE description of the event store an instance reports to. This is discovery
@@ -52,8 +58,9 @@ pub struct Instance {
     /// The credential-free store this instance reports to.
     pub store: StoreIdentity,
     /// Unix-epoch milliseconds of the last heartbeat. A live instance refreshes it every time it
-    /// starts or advances a run; a reader prunes an entry whose heartbeat is older than the idle
-    /// window (see [`is_stale`]).
+    /// starts or advances a run; an entry whose heartbeat is older than the idle window is stale
+    /// (see [`is_stale`]) - deleted only by the self-reap watcher's own [`read_live`] tick, and
+    /// merely filtered out (never deleted) by every other reader via [`read_live_no_prune`].
     pub heartbeat_ms: u64,
 }
 
@@ -216,9 +223,12 @@ fn parse_entries(dir: &Path) -> Vec<ParsedEntry> {
 }
 
 /// Read every LIVE instance from `dir`, PRUNING (deleting) any entry whose heartbeat is stale past
-/// `ttl_ms` - "entries whose heartbeat goes stale are pruned by any reader" (spec 50). An absent
-/// directory is an empty registry (no error). Unreadable or unparseable entries are skipped, never
-/// fatal - the registry's loss is harmless. Live entries are returned; their order is unspecified.
+/// `ttl_ms` (spec 50's original "entries whose heartbeat goes stale are pruned by any reader",
+/// narrowed by spec 62 criterion 5 round 4: pruning is safe ONLY from the self-reap watcher's own
+/// tick, where it is guaranteed to run after that SAME tick's [`read_all`] - use
+/// [`read_live_no_prune`] anywhere else). An absent directory is an empty registry (no error).
+/// Unreadable or unparseable entries are skipped, never fatal - the registry's loss is harmless.
+/// Live entries are returned; their order is unspecified.
 pub fn read_live(dir: &Path, now_ms: u64, ttl_ms: u64) -> Vec<Instance> {
     let mut live = Vec::new();
     for entry in parse_entries(dir) {
@@ -229,6 +239,32 @@ pub fn read_live(dir: &Path, now_ms: u64, ttl_ms: u64) -> Vec<Instance> {
         live.push(entry.inst);
     }
     live
+}
+
+/// Read every LIVE instance from `dir`, filtering by heartbeat freshness exactly like
+/// [`read_live`] but WITHOUT the prune side effect - no entry, stale or not, is ever deleted
+/// (spec 62 criterion 5 round 4, `adv-u62c5r4-known-roots-prune-race-with-instances-provider`).
+///
+/// `read_live`'s delete is safe ONLY from the self-reap watcher's own tick, where it always runs
+/// immediately after that SAME tick's [`read_all`] has already captured every currently-registered
+/// root into `known_roots` - so a prune there can never outrun the one place `known_roots` is ever
+/// seeded from. Every OTHER concurrent reader of the registry (a `/api/instances` landing poll, an
+/// attach resolve, the `reset --derived` live-writer check) runs on its OWN schedule, with no such
+/// ordering guarantee relative to the watcher's tick: if one of them pruned a foreign project's
+/// stale-heartbeat-but-agent-still-live entry before the watcher's `read_all` had EVER captured
+/// that root, the root would be gone from disk and permanently unreachable - excluding that
+/// project from the cross-project agent-liveness check for the rest of the singleton's lifetime,
+/// even though its agent liveness marker stays fresh. This function is what those three call sites
+/// use instead: the SAME freshness filter, with deletion reserved exclusively for the watcher's own
+/// `read_all`-then-`read_live` sequence. An absent directory is an empty registry (no error);
+/// unreadable or unparseable entries are skipped, never fatal, matching `read_live`. Order is
+/// unspecified.
+pub fn read_live_no_prune(dir: &Path, now_ms: u64, ttl_ms: u64) -> Vec<Instance> {
+    parse_entries(dir)
+        .into_iter()
+        .filter(|e| !is_stale(e.inst.heartbeat_ms, now_ms, ttl_ms))
+        .map(|e| e.inst)
+        .collect()
 }
 
 /// Read EVERY registered instance currently present under `dir`, regardless of heartbeat
@@ -341,6 +377,49 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = instances_dir(tmp.path()).join("does-not-exist");
         assert!(read_live(&dir, 0, DEFAULT_IDLE_MS).is_empty());
+    }
+
+    #[test]
+    fn read_live_no_prune_filters_a_stale_heartbeat_but_never_deletes_its_file() {
+        // Spec 62 criterion 5 round 4 (adv-u62c5r4-known-roots-prune-race-with-instances-provider):
+        // `read_live`'s prune side effect is only safe from the self-reap watcher's OWN
+        // read_all-then-read_live tick, which is the sole place `known_roots` is ever seeded from.
+        // Every OTHER concurrent reader (a `/api/instances` poll, an attach resolve, the
+        // `reset --derived` live-writer check) must filter the SAME staleness bound WITHOUT
+        // deleting - otherwise one of those reads can win a race against the watcher's own
+        // first tick and permanently erase a foreign project's only route into `known_roots`,
+        // even though that project's own agent is still live.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = instances_dir(tmp.path());
+        let inst = local("/home/dev/proj", "/home/dev/proj/.rigger/events.db", 0);
+        let path = write(&dir, &inst).unwrap();
+
+        // Well past the idle window: `read_live` would prune this outright.
+        let live = read_live_no_prune(&dir, DEFAULT_IDLE_MS + 1, DEFAULT_IDLE_MS);
+        assert!(
+            live.is_empty(),
+            "a stale entry is filtered from the returned set, exactly like read_live"
+        );
+        assert!(
+            path.exists(),
+            "read_live_no_prune must never delete a stale entry's file - deletion is reserved \
+             exclusively for the watcher's own read_live tick"
+        );
+    }
+
+    #[test]
+    fn read_live_no_prune_still_returns_a_fresh_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = instances_dir(tmp.path());
+        let inst = local("/home/dev/proj", "/home/dev/proj/.rigger/events.db", 1_000);
+        let path = write(&dir, &inst).unwrap();
+        let live = read_live_no_prune(&dir, 1_500, DEFAULT_IDLE_MS);
+        assert_eq!(
+            live,
+            vec![inst],
+            "a within-window heartbeat is returned verbatim, same as read_live"
+        );
+        assert!(path.exists());
     }
 
     #[test]

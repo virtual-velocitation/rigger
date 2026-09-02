@@ -21913,6 +21913,129 @@ fn a_reap_on_idle_singleton_survives_a_fresh_agent_liveness_marker_after_the_reg
     assert_eq!(n, 0, "a self-reaped dash should have its stdout at EOF");
 }
 
+/// Spec 62, criterion 5 - the SAME survives-live-work guarantee as the test above, but launched
+/// from a directory with NO git repository above it at all. `cmd_dash`'s own scratch-root
+/// resolution derives `git_repo()` first and, before this fix, treated an EMPTY `git_repo()` as a
+/// hard "no scratch root, ever": it skipped `worktree::scratch_root_from_env` (and therefore
+/// `RIGGER_TMPDIR`) entirely, rather than letting that resolver's own env-override-first
+/// precedence handle a repo-less cwd - which it already does correctly on its own
+/// (`scratch_root_path`'s first match arm answers `RIGGER_TMPDIR` regardless of `repo`). A
+/// `rigger` invocation with no git repository above its cwd is not exotic: it is exactly what a
+/// whole-tree copy that excludes `.git` produces - including this project's OWN
+/// `cargo mutants --in-diff` scratch-tree build (spec 78's mutation-efficacy step every
+/// implementer runs), which is how this gap was actually found: a mutation baseline run failed
+/// this criterion's own sibling test above ONLY when run from that git-less copy, never from a
+/// real git worktree. A git-less launch silently blinding the self-reap watcher to its OWN
+/// launching project's agent-liveness marker is a real, reachable production gap, not a
+/// test-only corner.
+#[test]
+fn a_reap_on_idle_singleton_survives_a_fresh_agent_liveness_marker_with_no_git_repo_at_launch() {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
+
+    // A machine-global registry the dash and the test share.
+    let state = tempfile::tempdir().unwrap();
+    let xdg = state.path().to_str().unwrap().to_string();
+    let regdir = rigger::registry::instances_dir(state.path());
+
+    // A hermetic scratch root the dash resolves via `RIGGER_TMPDIR` alone - `cwd`, below, is
+    // deliberately NEVER `git init`-ed, so `git_repo()` resolves empty and the only way the dash
+    // can find this scratch root at all is by honoring `RIGGER_TMPDIR` even with an empty repo.
+    let scratch = tempfile::tempdir().unwrap();
+    let scratch_root = scratch.path().to_str().unwrap().to_string();
+    let marker_path =
+        rigger::liveness::marker_path(&scratch_root, "run-1", "u1c1/implementer#0").unwrap();
+
+    // A cwd with NO `.git` anywhere above it (a bare `tempfile::tempdir()`, never `git init`-ed) -
+    // exactly what a git-excluding whole-tree copy launches `rigger dash` from.
+    let cwd = tempfile::tempdir().unwrap();
+
+    // ONE registry write, never refreshed: it ages out on its own once the fast test window
+    // elapses - the "aged-out registry" half of the criterion, driven with no ongoing heartbeat.
+    write_live_instance(&regdir, "proj-a", "/home/dev/proj-a");
+
+    // The agent liveness marker starts fresh and is kept fresh by a background thread - the "fresh
+    // in-flight agent liveness signal" half of the criterion.
+    touch_marker(&marker_path);
+    let stop = Arc::new(AtomicBool::new(false));
+    let marker_thread_path = marker_path.clone();
+    let marker_stop = stop.clone();
+    let heartbeat = std::thread::spawn(move || {
+        while !marker_stop.load(Ordering::Relaxed) {
+            touch_marker(&marker_thread_path);
+            std::thread::sleep(Duration::from_millis(150));
+        }
+    });
+
+    let port = free_loopback_port();
+    let mut child = common::rigger_courier()
+        .args(["dash", "--port", &port.to_string(), "--reap-on-idle"])
+        .current_dir(cwd.path())
+        .env("XDG_STATE_HOME", &xdg)
+        .env("RIGGER_TMPDIR", &scratch_root)
+        // Same fast poll/stale envs as the sibling test above.
+        .env("RIGGER_DASH_REAP_POLL_MS", "150")
+        .env("RIGGER_DASH_REAP_STALE_SECS", "2")
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn `rigger dash --reap-on-idle`");
+    let mut out = child.stdout.take().expect("dash stdout is piped");
+
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 1];
+        let n = out.read(&mut buf).unwrap_or(0);
+        let _ = tx.send(n);
+    });
+
+    if !matches!(http_get(&format!("http://127.0.0.1:{port}/")), Some(body) if body.contains("rigger dash"))
+    {
+        stop.store(true, Ordering::Relaxed);
+        let _ = heartbeat.join();
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("the `rigger dash --reap-on-idle` never served its page");
+    }
+
+    // Well past the registry's 2s window, with the marker thread still refreshing: the registry
+    // alone has gone empty, but the agent liveness signal is fresh under `RIGGER_TMPDIR` - which
+    // must be honored even though `cwd` has no git repository above it.
+    if rx.recv_timeout(Duration::from_millis(3500)).is_ok() {
+        stop.store(true, Ordering::Relaxed);
+        let _ = heartbeat.join();
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!(
+            "the singleton self-reaped from a git-less launch even though a fresh in-flight \
+             agent liveness marker was present under RIGGER_TMPDIR - a repo-less cwd must not \
+             blind the idle judgment to an explicit RIGGER_TMPDIR override"
+        );
+    }
+    assert!(
+        matches!(http_get(&format!("http://127.0.0.1:{port}/")), Some(body) if body.contains("rigger dash")),
+        "the singleton must still serve while the agent liveness marker is fresh"
+    );
+
+    // Now let the agent liveness marker go idle too: with BOTH signals quiet, the singleton
+    // reaps exactly as spec 50 criterion 5 always has - even without a git repo.
+    stop.store(true, Ordering::Relaxed);
+    heartbeat.join().expect("marker heartbeat thread joins");
+
+    let reaped = rx.recv_timeout(Duration::from_secs(12));
+    let _ = child.kill();
+    let _ = child.wait();
+    let n = reaped.expect(
+        "the singleton did not SELF-REAP within 12s after BOTH the registry and the agent \
+         liveness marker went idle - a genuinely quiet machine's dash must not leak",
+    );
+    assert_eq!(n, 0, "a self-reaped dash should have its stdout at EOF");
+}
+
 /// Spec 62, criterion 5 round 2 (adjudication `adj-u62c5-verdict-reject-cross-project-blindness`,
 /// finding `adv-u62c5-agent-liveness-scoped-to-launching-project-only`): the idle judgment must
 /// see a fresh agent-liveness marker on ANY registered project, not only the one whose CWD
@@ -22177,6 +22300,161 @@ fn a_reap_on_idle_singleton_survives_a_foreign_agent_liveness_marker_whose_own_r
     let _ = child.wait();
     let n = reaped.expect(
         "the singleton did not SELF-REAP within 12s after the second project's agent liveness \
+         marker went idle too - a genuinely quiet machine's dash must not leak",
+    );
+    assert_eq!(n, 0, "a self-reaped dash should have its stdout at EOF");
+}
+
+/// Spec 62, criterion 5 round 4 (`adv-u62c5r4-known-roots-prune-race-with-instances-provider`):
+/// the ACTUAL race the test above cannot see, because it never calls `GET /api/instances` at all.
+/// Here an `/api/instances` poll - the most reachable of the three non-watcher registry readers
+/// (any open browser tab on the dash landing page) - is fired IMMEDIATELY once the dash is
+/// confirmed serving, deliberately racing the self-reap watcher's own first tick (a generous poll
+/// interval makes the landing GET win deterministically). Before the fix, that poll's `read_live`
+/// would delete the foreign project's hopelessly-stale-from-the-start registry entry from disk
+/// before the watcher's OWN `read_all` had ever captured its root into `known_roots` - permanently
+/// blinding the singleton to that project's still-fresh agent liveness marker and letting it reap
+/// out from under a genuinely live agent. After the fix (`registry::read_live_no_prune`), the
+/// landing poll filters the entry out of ITS OWN response without ever deleting it, so the entry
+/// survives on disk for the watcher's next `read_all` tick to capture, and the singleton keeps
+/// serving for as long as the foreign agent marker stays fresh.
+#[test]
+fn a_landing_poll_racing_the_watchers_first_tick_does_not_erase_a_foreign_projects_only_route_into_known_roots(
+) {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
+
+    // A machine-global registry the dash and the test share.
+    let state = tempfile::tempdir().unwrap();
+    let xdg = state.path().to_str().unwrap().to_string();
+    let regdir = rigger::registry::instances_dir(state.path());
+
+    // The LAUNCHING project's own scratch root: hermetic and left EMPTY (no marker ever written
+    // there), isolating the assertion to the foreign project's marker alone.
+    let own_scratch = tempfile::tempdir().unwrap();
+    let own_scratch_root = own_scratch.path().to_str().unwrap().to_string();
+
+    // A THIRD project supplies the `ever_seen_live` startup latch (see the test above for why this
+    // one-time-write-then-decay shape isolates the assertion to the SECOND project's marker alone).
+    let latch_project = tempfile::tempdir().unwrap();
+    let latch_root = latch_project.path().to_str().unwrap().to_string();
+    write_live_instance(&regdir, "proj-latch", &latch_root);
+
+    // The SECOND, foreign project: hopelessly stale from the moment it is written (heartbeat at the
+    // unix epoch), so the very FIRST reader to touch it - this test's own early `/api/instances`
+    // poll, below - sees it as stale, exactly the moment the pre-fix `read_live` would have pruned
+    // it.
+    let other_project = tempfile::tempdir().unwrap();
+    let other_root = other_project.path().to_str().unwrap().to_string();
+    let other_scratch_root = format!("{other_root}/.rigger/tmp");
+    let other_marker_path =
+        rigger::liveness::marker_path(&other_scratch_root, "run-1", "u2c1/implementer#0").unwrap();
+    let other_inst = rigger::registry::Instance {
+        project: "proj-b".to_string(),
+        root: other_root.clone(),
+        store: rigger::registry::StoreIdentity::Local {
+            path: format!("{other_root}/.rigger/events.db"),
+        },
+        heartbeat_ms: 0,
+    };
+    rigger::registry::write(&regdir, &other_inst).expect("write the stale foreign entry");
+    let other_entry_path = regdir.join(format!("{}.json", other_inst.id()));
+
+    // The second project's own agent liveness marker starts fresh and is kept fresh by a
+    // background thread for the WHOLE test - the live-agent-under-an-already-stale-registry-entry
+    // signal this test exists to prove survives the earlier landing-poll race too.
+    touch_marker(&other_marker_path);
+    let stop = Arc::new(AtomicBool::new(false));
+    let marker_thread_path = other_marker_path.clone();
+    let marker_stop = stop.clone();
+    let heartbeat = std::thread::spawn(move || {
+        while !marker_stop.load(Ordering::Relaxed) {
+            touch_marker(&marker_thread_path);
+            std::thread::sleep(Duration::from_millis(150));
+        }
+    });
+
+    let port = free_loopback_port();
+    // A generous poll interval: the racing `/api/instances` GET below must land well before the
+    // watcher's own FIRST tick (`thread::sleep(poll)` then its `read_all`/`read_live` pair), so the
+    // race this test exists to win is decided deterministically in the landing poll's favor.
+    let mut child = common::rigger_courier()
+        .args(["dash", "--port", &port.to_string(), "--reap-on-idle"])
+        .env("XDG_STATE_HOME", &xdg)
+        .env("RIGGER_TMPDIR", &own_scratch_root)
+        .env("RIGGER_DASH_REAP_POLL_MS", "900")
+        .env("RIGGER_DASH_REAP_STALE_SECS", "2")
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn `rigger dash --reap-on-idle`");
+    let mut out = child.stdout.take().expect("dash stdout is piped");
+
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 1];
+        let n = out.read(&mut buf).unwrap_or(0);
+        let _ = tx.send(n);
+    });
+
+    // THE RACE: hit `/api/instances` the instant the dash is confirmed serving - long before the
+    // watcher's own first `poll` tick (900ms) can fire.
+    let landing = http_get_path(port, "/api/instances");
+    if landing
+        .as_deref()
+        .is_none_or(|l| !l.contains("HTTP/1.1 200"))
+    {
+        stop.store(true, Ordering::Relaxed);
+        let _ = heartbeat.join();
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("the dash never served /api/instances: {landing:?}");
+    }
+
+    // THE FIX ITSELF: that early landing poll must not have deleted the foreign entry's file - had
+    // it, the watcher's own `read_all` tick (still to come) would never learn `proj-b`'s root.
+    assert!(
+        other_entry_path.exists(),
+        "an `/api/instances` poll racing the watcher's first tick deleted the foreign project's \
+         registry entry ({other_entry_path:?}) - permanently erasing its only route into \
+         `known_roots`"
+    );
+
+    // Well past several poll intervals: `proj-latch` has aged out (having satisfied `ever_seen_live`
+    // on its early live polls, then dropping `live_instances` back to zero) and `proj-b`'s entry was
+    // stale from the start, so registry liveness alone reaches zero. With the marker thread still
+    // refreshing `proj-b`'s own agent-liveness marker, the singleton must NOT reap - proving
+    // `known_roots` DID learn `proj-b`'s root from the watcher's own `read_all` despite the earlier
+    // landing-poll race.
+    if rx.recv_timeout(Duration::from_millis(3500)).is_ok() {
+        stop.store(true, Ordering::Relaxed);
+        let _ = heartbeat.join();
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!(
+            "the singleton self-reaped even though a registered project's own agent liveness \
+             marker was still fresh - the earlier `/api/instances` race must not have blinded \
+             `known_roots` to that project's root"
+        );
+    }
+    assert!(
+        matches!(http_get(&format!("http://127.0.0.1:{port}/")), Some(body) if body.contains("rigger dash")),
+        "the singleton must still be genuinely serving, not merely a blocked-but-dead pipe"
+    );
+
+    // Now let the foreign project's agent liveness marker go idle too: every signal quiet -> reap.
+    stop.store(true, Ordering::Relaxed);
+    heartbeat.join().expect("marker heartbeat thread joins");
+
+    let reaped = rx.recv_timeout(Duration::from_secs(12));
+    let _ = child.kill();
+    let _ = child.wait();
+    let n = reaped.expect(
+        "the singleton did not SELF-REAP within 12s after the foreign project's agent liveness \
          marker went idle too - a genuinely quiet machine's dash must not leak",
     );
     assert_eq!(n, 0, "a self-reaped dash should have its stdout at EOF");
@@ -23016,20 +23294,25 @@ fn dash_attach_unknown_or_since_gone_instance_serves_empty_not_the_local_run() {
     );
 }
 
-/// Spec 50, criterion 3, the STALE-PRUNE reaching the periphery AND the landing's WIRE CONTRACT,
-/// through the BUILT binary. `registry::read_live` prunes any entry whose heartbeat has gone stale
-/// past the idle window, and BOTH the `/api/instances` landing provider and the attach resolver
-/// consume it - so a stale (dead) instance must not appear in the landing, and selecting a stale
-/// id must degrade to empty. The happy-path test registers only fresh entries, so neither the
-/// prune nor the exact serialized field names the page's JS reads are exercised here.
+/// Spec 50, criterion 3, the STALE-FILTER reaching the periphery AND the landing's WIRE CONTRACT,
+/// through the BUILT binary - spec 62 criterion 5 round 4
+/// (`adv-u62c5r4-known-roots-prune-race-with-instances-provider`): `registry::read_live_no_prune`
+/// FILTERS OUT any entry whose heartbeat has gone stale past the idle window WITHOUT deleting it,
+/// and BOTH the `/api/instances` landing provider and the attach resolver consume it - so a stale
+/// (dead) instance must not appear in the landing, and selecting a stale id must degrade to empty,
+/// while its registry FILE must survive on disk for the self-reap watcher's own `read_all` tick to
+/// still find (deletion is reserved exclusively to that watcher's own `read_live` tick, never to
+/// an unsynchronized per-request reader like this landing poll). The happy-path test registers only
+/// fresh entries, so neither the filter nor the exact serialized field names the page's JS reads
+/// are exercised here.
 ///
 /// A LIVE instance (fresh heartbeat) and a STALE one (heartbeat well past `DEFAULT_IDLE_MS`) are
 /// registered into one sandboxed registry. On the built dash, `/api/instances` lists the LIVE
-/// instance and NOT the stale one (pruned by the read) and carries every one of the six
-/// `InstanceView` wire keys the landing page reads; and `?instance=<stale id>` degrades to an
-/// empty run (the stale entry was pruned before resolve).
+/// instance and NOT the stale one (filtered out, but its file left on disk) and carries every one
+/// of the six `InstanceView` wire keys the landing page reads; and `?instance=<stale id>` degrades
+/// to an empty run (the stale entry was filtered out before resolve, never deleted).
 #[test]
-fn dash_landing_prunes_stale_instances_and_pins_the_wire_contract() {
+fn dash_landing_filters_stale_instances_without_pruning_and_pins_the_wire_contract() {
     use rigger::registry;
     use std::process::Stdio;
 
@@ -23087,15 +23370,27 @@ fn dash_landing_prunes_stale_instances_and_pins_the_wire_contract() {
         landing.contains("HTTP/1.1 200"),
         "the landing endpoint answers 200: {landing}"
     );
-    // The LIVE instance is listed with its attach id; the STALE one is pruned, absent from both
-    // the landing's project labels and its selectable ids.
+    // The LIVE instance is listed with its attach id; the STALE one is filtered out, absent from
+    // both the landing's project labels and its selectable ids.
     assert!(
         landing.contains(&live_project) && landing.contains(live_id.as_str()),
         "the landing lists the live instance {live_project} with its attach id: {landing}"
     );
     assert!(
         !landing.contains(&stale_project) && !landing.contains(stale_id.as_str()),
-        "a stale instance is pruned from the landing, never shown as attachable: {landing}"
+        "a stale instance is filtered from the landing, never shown as attachable: {landing}"
+    );
+    // THE ROUND-4 FIX ITSELF: the stale instance's registry FILE must still be on disk after this
+    // `/api/instances` poll - `read_live_no_prune` filters it out of the response without ever
+    // deleting it. A per-request landing poll deleting a foreign project's entry is exactly the
+    // race `adv-u62c5r4-known-roots-prune-race-with-instances-provider` found: it could win against
+    // the self-reap watcher's own `read_all` tick and permanently erase the only place that
+    // project's root is ever learned from.
+    let stale_entry_path = regdir.join(format!("{stale_id}.json"));
+    assert!(
+        stale_entry_path.exists(),
+        "a `/api/instances` poll must never delete a stale registry entry's file from disk - \
+         deletion is reserved to the self-reap watcher's own tick: {stale_entry_path:?}"
     );
 
     // The WIRE CONTRACT: the landing body carries every field name the page's JS reads to label
@@ -23116,8 +23411,9 @@ fn dash_landing_prunes_stale_instances_and_pins_the_wire_contract() {
         );
     }
 
-    // Selecting the stale id resolves against the pruned registry, so it degrades to an empty run
-    // (a 200 with no units), never the stale instance's content and never a 500.
+    // Selecting the stale id resolves against a registry read that filters it out (never deletes
+    // it), so it degrades to an empty run (a 200 with no units), never the stale instance's
+    // content and never a 500.
     assert!(
         stale_state.contains("HTTP/1.1 200") && !stale_state.contains("HTTP/1.1 500"),
         "a stale selector degrades to an empty state, never an error: {stale_state}"
