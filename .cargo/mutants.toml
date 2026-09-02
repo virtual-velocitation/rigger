@@ -12,3 +12,11 @@
 # mutant NAME string, "<file>:<line>:<col>: replace <fn> ...", which never contains a
 # `reap::`-qualified path. Exclude the file itself instead - the whole module is the reaper.
 exclude_globs = ["src/reap.rs"]
+
+# Copy `.git` into the build directory cargo-mutants tests in (default: false). Without this,
+# the baseline (unmutated) check fails outright before any mutant is tested:
+# tests/validate_behind_the_tree_periphery.rs's real-binary tests shell out to
+# `git rev-parse --git-common-dir` and need a real repository to find, which a VCS-less copy
+# does not provide (decision impl-u62c3-copy-vcs-baseline-fix). This is a whole-suite
+# precondition, not specific to any one unit's diff.
+copy_vcs = true
