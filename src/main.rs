@@ -6136,15 +6136,23 @@ fn cmd_dash(args: &[String]) -> Res {
     };
 
     // The LANDING provider (spec 50, criterion 3): the machine-global registry projected into the
-    // credential-free instance list, freshly read (and stale-pruned) on each `/api/instances` poll.
+    // credential-free instance list, freshly read (and stale-FILTERED, never pruned) on each
+    // `/api/instances` poll. `read_live_no_prune`, not `read_live`: an open dash tab polls this on
+    // its own schedule, unsynchronized with the self-reap watcher's tick, so a delete here could
+    // win a race against the watcher's own `read_all` and permanently erase a foreign project's
+    // only route into its `known_roots` set (spec 62 criterion 5 round 4 -
+    // `adv-u62c5r4-known-roots-prune-race-with-instances-provider`; see `read_live_no_prune`'s doc).
     let instances_provider = {
         let registry_dir = registry_dir.clone();
         move || -> Vec<dash::InstanceView> {
             match registry_dir.as_deref() {
                 Some(dir) => {
                     let now = rigger::registry::now_ms();
-                    let live =
-                        rigger::registry::read_live(dir, now, rigger::registry::DEFAULT_IDLE_MS);
+                    let live = rigger::registry::read_live_no_prune(
+                        dir,
+                        now,
+                        rigger::registry::DEFAULT_IDLE_MS,
+                    );
                     dash::instance_views(&live, now)
                 }
                 None => Vec::new(),
@@ -6547,9 +6555,11 @@ enum DashAttach {
 
 /// Resolve which instance a dash request attaches to (spec 50, criterion 3). An absent/empty
 /// selector keeps the dash on its own local project; a selector names a registry entry by its
-/// stable id, resolved through a fresh [`rigger::registry::read_live`] (which also prunes stale
-/// entries) so a per-request open always lands on a currently-live instance. An unresolvable
-/// selector (homeless environment, unknown id, or a pruned-stale entry) degrades to [`DashAttach::Empty`].
+/// stable id, resolved through a fresh [`rigger::registry::read_live_no_prune`] (which filters out
+/// stale entries WITHOUT deleting them - see that function's doc for why an attach resolve must
+/// never prune, spec 62 criterion 5 round 4) so a per-request open always lands on a
+/// currently-live instance. An unresolvable selector (homeless environment, unknown id, or a
+/// stale entry) degrades to [`DashAttach::Empty`].
 fn dash_resolve_attach(instance: Option<&str>, dir: Option<&Path>) -> DashAttach {
     let Some(id) = instance.filter(|s| !s.is_empty()) else {
         return DashAttach::Local;
@@ -6557,7 +6567,7 @@ fn dash_resolve_attach(instance: Option<&str>, dir: Option<&Path>) -> DashAttach
     let Some(dir) = dir else {
         return DashAttach::Empty;
     };
-    let live = rigger::registry::read_live(
+    let live = rigger::registry::read_live_no_prune(
         dir,
         rigger::registry::now_ms(),
         rigger::registry::DEFAULT_IDLE_MS,
@@ -8060,7 +8070,10 @@ fn refuse_derived_reset_if_live(
                 .map(Path::to_path_buf)
                 .unwrap_or_else(|| PathBuf::from("."));
             let expected = registry_store_identity(selection, &root);
-            rigger::registry::read_live(
+            // `read_live_no_prune`, not `read_live`: this probe must never delete a foreign
+            // project's registry entry as a side effect of checking THIS store for live writers
+            // (spec 62 criterion 5 round 4 - see `read_live_no_prune`'s doc).
+            rigger::registry::read_live_no_prune(
                 dir,
                 rigger::registry::now_ms(),
                 rigger::registry::DEFAULT_IDLE_MS,

@@ -673,7 +673,8 @@ pub struct InstanceView {
 }
 
 /// Project the live registry entries into the landing view's rows (spec 50, criterion 3), sorted
-/// deterministically (by project, then root) because [`crate::registry::read_live`] returns entries
+/// deterministically (by project, then root) because its production caller's
+/// [`crate::registry::read_live_no_prune`] (like its pruning sibling `read_live`) returns entries
 /// in an unspecified filesystem order. Pure and credential-free: every field is copied from the
 /// already-redacted [`crate::registry::Instance`], so no connection secret can reach the view.
 pub fn instance_views(instances: &[crate::registry::Instance], now_ms: u64) -> Vec<InstanceView> {
