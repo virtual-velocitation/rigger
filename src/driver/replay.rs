@@ -186,6 +186,13 @@ pub fn reclaim_unit_mutation_scratch(cache_home: &Path, unit_id: &str) {
     let Some(prefix) = crate::liveness::marker_filename(&format!("{unit_id}/")) else {
         return;
     };
+    // The registered mutation-scratch root ITSELF (`<cache_home>/rigger-mutants`) is the
+    // `authorized_root` [`crate::reap::reap_processes_rooted_under`]'s base-guard checks each
+    // matched leaf against (spec 78 round 2, decision `u78c2r2-authorized-root-caller-
+    // supplied`) - independent of `cache_home`'s own relationship (or total lack of one) to
+    // any project's `.rigger/tmp`, since `cache_home` is an independent parameter this
+    // function's own caller resolves, never re-derived from a matched leaf's path.
+    let mutation_root = mutation_scratch_root(cache_home);
     let Ok(entries) = std::fs::read_dir(cache_home.join(MUTATION_SCRATCH_SUBDIR)) else {
         return;
     };
@@ -196,7 +203,7 @@ pub fn reclaim_unit_mutation_scratch(cache_home: &Path, unit_id: &str) {
             .starts_with(prefix.as_str())
         {
             let path = entry.path();
-            crate::reap::reap_processes_rooted_under(&path);
+            crate::reap::reap_processes_rooted_under(&path, &mutation_root);
             let _ = std::fs::remove_dir_all(&path);
         }
     }

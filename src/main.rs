@@ -2680,22 +2680,25 @@ fn terminal_and_no_live_worker(events: &[Event]) -> Result<bool, String> {
 /// rigger-directed build actually targets; `target` stays a bare reap as before.
 fn reclaim_run_scratch(root: &str) {
     let base = std::path::Path::new(root);
-    reap_then_remove_dir(&base.join("agent-scratch"));
-    reap_then_remove_dir(&base.join(rigger::liveness::MARKER_SUBDIR));
-    let _ = reclaim_shared_build_cache(&base.join(rigger::worktree::SHARED_BUILD_CACHE_NAME));
-    reap_then_remove_dir(&base.join("target"));
+    reap_then_remove_dir(&base.join("agent-scratch"), base);
+    reap_then_remove_dir(&base.join(rigger::liveness::MARKER_SUBDIR), base);
+    let _ = reclaim_shared_build_cache(&base.join(rigger::worktree::SHARED_BUILD_CACHE_NAME), base);
+    reap_then_remove_dir(&base.join("target"), base);
 }
 
 /// Reap any process rooted in `dir` (spec 23), then remove the dir. The reap runs BEFORE the
 /// removal so no process outlives the dir holding a now-deleted cwd; both halves are
-/// best-effort and never fail the step. The reap is scoped to the EXACT `dir` (the scan
-/// canonicalizes it) and only ever reaches processes rooted strictly inside it, so it is safe
-/// on any relocated scratch root and never touches a process outside rigger's own dir. Off a
-/// platform without `/proc` the reap is a graceful no-op and only the removal runs. This is the
-/// shared teardown for the fixpoint scratch-area sweep in [`cmd_step`]; the worktree-removal
-/// reap point is [`rigger::worktree::Worktree::remove`].
-fn reap_then_remove_dir(dir: &std::path::Path) {
-    rigger::reap::reap_processes_rooted_under(dir);
+/// best-effort and never fail the step. `authorized_root` (spec 78 round 2, decision
+/// `u78c2r2-authorized-root-caller-supplied`) is the SAME resolved root the caller already
+/// used to build `dir` - never re-derived here - so this reap is safe on any relocated
+/// scratch root (`RIGGER_TMPDIR`/`defaults.workdir`) or registered mutation-scratch root
+/// under a cache home, and still never touches a process outside `authorized_root`. Off a
+/// platform without `/proc` the reap is a graceful no-op and only the removal runs. This is
+/// the shared teardown for the fixpoint scratch-area sweep in [`cmd_step`]; the
+/// worktree-removal reap point is [`rigger::worktree::Worktree::remove`], which authorizes
+/// its own reap differently (git identity, not containment - see its own doc comment).
+fn reap_then_remove_dir(dir: &std::path::Path, authorized_root: &std::path::Path) {
+    rigger::reap::reap_processes_rooted_under(dir, authorized_root);
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -2707,8 +2710,9 @@ fn reap_then_remove_dir(dir: &std::path::Path) {
 /// git never tracked makes that command fail, so it falls through to the plain removal, and any
 /// dangling admin entry a partial removal leaves is pruned by [`rigger::worktree::sweep_terminal`]
 /// at the next step start. Best-effort - a failed reclaim never aborts the sweep.
-fn reap_then_remove_worktree(repo: &str, dir: &std::path::Path) {
-    rigger::reap::reap_processes_rooted_under(dir);
+/// `authorized_root` is the resolved scratch root `dir` was enumerated from (spec 78 round 2).
+fn reap_then_remove_worktree(repo: &str, dir: &std::path::Path, authorized_root: &std::path::Path) {
+    rigger::reap::reap_processes_rooted_under(dir, authorized_root);
     let deregistered = !repo.is_empty()
         && Command::new("git")
             .arg("-C")
@@ -6121,7 +6125,9 @@ fn cmd_dash(args: &[String]) -> Res {
     let progress_db = db_path("progress.db");
     let identity = project_identity();
     // The scratch root whose markers rigger stats to present each agent's liveness age (spec
-    // 14). Resolved once; a repo-less invocation leaves it empty and the view omits ages.
+    // 14). Resolved once; a repo-less invocation with no `RIGGER_TMPDIR`/configured `workdir`
+    // either leaves it empty and the view omits ages (see the resolution below for why an
+    // explicit override still resolves without a repo).
     // The configured remediation bound (same config) sets the `#n/max` on a current-blocker
     // `reject-recurrence` line so the dashboard and `rigger status` agree.
     let (workdir, max_retries) = config::load(".")
@@ -6129,7 +6135,20 @@ fn cmd_dash(args: &[String]) -> Res {
         .unwrap_or_default();
     let scratch_root = {
         let repo = git_repo();
-        if repo.is_empty() {
+        // An empty `repo` alone must NOT force an empty scratch root: `RIGGER_TMPDIR` (or a
+        // configured `workdir`) is an EXPLICIT override that `worktree::scratch_root_path`
+        // already answers correctly with no git repo at all (its own first match arm checks the
+        // override before ever consulting `repo`) - a `rigger dash` launched from a directory
+        // with no git repository above it is not exotic: a whole-tree copy that excludes `.git`
+        // (this project's own `cargo mutants --in-diff` scratch-tree build, spec 78's
+        // mutation-efficacy step) produces exactly that cwd, and silently dropping an explicit
+        // `RIGGER_TMPDIR` there blinds the self-reap watcher (spec 62, criterion 5) to this
+        // project's own agent-liveness marker. Only when NEITHER signal is present (no repo, no
+        // env override, no configured `workdir`) does this stay empty, preserving the original
+        // repo-less degrade below (no scratch to probe, no directory fabricated from a bare cwd).
+        let has_explicit_root = std::env::var("RIGGER_TMPDIR").is_ok_and(|v| !v.trim().is_empty())
+            || !workdir.trim().is_empty();
+        if repo.is_empty() && !has_explicit_root {
             String::new()
         } else {
             rigger::worktree::scratch_root_from_env(&repo, &workdir)
@@ -6251,15 +6270,23 @@ fn cmd_dash(args: &[String]) -> Res {
     };
 
     // The LANDING provider (spec 50, criterion 3): the machine-global registry projected into the
-    // credential-free instance list, freshly read (and stale-pruned) on each `/api/instances` poll.
+    // credential-free instance list, freshly read (and stale-FILTERED, never pruned) on each
+    // `/api/instances` poll. `read_live_no_prune`, not `read_live`: an open dash tab polls this on
+    // its own schedule, unsynchronized with the self-reap watcher's tick, so a delete here could
+    // win a race against the watcher's own `read_all` and permanently erase a foreign project's
+    // only route into its `known_roots` set (spec 62 criterion 5 round 4 -
+    // `adv-u62c5r4-known-roots-prune-race-with-instances-provider`; see `read_live_no_prune`'s doc).
     let instances_provider = {
         let registry_dir = registry_dir.clone();
         move || -> Vec<dash::InstanceView> {
             match registry_dir.as_deref() {
                 Some(dir) => {
                     let now = rigger::registry::now_ms();
-                    let live =
-                        rigger::registry::read_live(dir, now, rigger::registry::DEFAULT_IDLE_MS);
+                    let live = rigger::registry::read_live_no_prune(
+                        dir,
+                        now,
+                        rigger::registry::DEFAULT_IDLE_MS,
+                    );
                     dash::instance_views(&live, now)
                 }
                 None => Vec::new(),
@@ -6674,9 +6701,11 @@ enum DashAttach {
 
 /// Resolve which instance a dash request attaches to (spec 50, criterion 3). An absent/empty
 /// selector keeps the dash on its own local project; a selector names a registry entry by its
-/// stable id, resolved through a fresh [`rigger::registry::read_live`] (which also prunes stale
-/// entries) so a per-request open always lands on a currently-live instance. An unresolvable
-/// selector (homeless environment, unknown id, or a pruned-stale entry) degrades to [`DashAttach::Empty`].
+/// stable id, resolved through a fresh [`rigger::registry::read_live_no_prune`] (which filters out
+/// stale entries WITHOUT deleting them - see that function's doc for why an attach resolve must
+/// never prune, spec 62 criterion 5 round 4) so a per-request open always lands on a
+/// currently-live instance. An unresolvable selector (homeless environment, unknown id, or a
+/// stale entry) degrades to [`DashAttach::Empty`].
 fn dash_resolve_attach(instance: Option<&str>, dir: Option<&Path>) -> DashAttach {
     let Some(id) = instance.filter(|s| !s.is_empty()) else {
         return DashAttach::Local;
@@ -6684,7 +6713,7 @@ fn dash_resolve_attach(instance: Option<&str>, dir: Option<&Path>) -> DashAttach
     let Some(dir) = dir else {
         return DashAttach::Empty;
     };
-    let live = rigger::registry::read_live(
+    let live = rigger::registry::read_live_no_prune(
         dir,
         rigger::registry::now_ms(),
         rigger::registry::DEFAULT_IDLE_MS,
@@ -7884,7 +7913,7 @@ fn reset_build_cache(loc: &StoreLocation) -> Res {
         &repo, &workdir,
     ));
     let cache = scratch.join(rigger::worktree::SHARED_BUILD_CACHE_NAME);
-    let outcome = reclaim_shared_build_cache(&cache)?;
+    let outcome = reclaim_shared_build_cache(&cache, &scratch)?;
     match build_cache_reclaim_report(outcome) {
         Ok(line) => {
             println!("{line}");
@@ -8140,6 +8169,13 @@ fn live_writer_refusal(reasons: &[String]) -> String {
 /// takes for the identical reason: the registry's loss is harmless discovery metadata, never a
 /// signal this guard can invent.
 ///
+/// This probe is read-only in effect, not just in name: it reads via
+/// [`rigger::registry::read_live_no_prune`], never [`rigger::registry::read_live`], so checking
+/// for live writers here never deletes a stale registry entry as a side effect - `reset
+/// --derived` performs no registry hygiene of its own; deletion stays reserved exclusively to
+/// the dashboard's self-reap watcher tick (see `read_live_no_prune`'s doc for why a prune here
+/// would be unsafe).
+///
 /// FAIL-SAFE in two different ways for two different faults:
 ///   - a run-stream read failure propagates as a command error rather than folding into "no
 ///     in-flight spawns" - this guard may only REFUSE a prune, never approve one it could not
@@ -8187,7 +8223,10 @@ fn refuse_derived_reset_if_live(
                 .map(Path::to_path_buf)
                 .unwrap_or_else(|| PathBuf::from("."));
             let expected = registry_store_identity(selection, &root);
-            rigger::registry::read_live(
+            // `read_live_no_prune`, not `read_live`: this probe must never delete a foreign
+            // project's registry entry as a side effect of checking THIS store for live writers
+            // (spec 62 criterion 5 round 4 - see `read_live_no_prune`'s doc).
+            rigger::registry::read_live_no_prune(
                 dir,
                 rigger::registry::now_ms(),
                 rigger::registry::DEFAULT_IDLE_MS,
@@ -8784,13 +8823,19 @@ fn reclaim_spawn_scratch(loc: &StoreLocation, prior: &[Event], spawn_id: &str) {
 /// no-op, never a fabricated path to reap.
 fn reclaim_spawn_registered_scratch(scratch_root: &str, run_id: &str, spawn_id: &str) {
     if let Some(path) = spawn_scratch_path(scratch_root, run_id, spawn_id) {
-        reap_then_remove_dir(&path);
+        reap_then_remove_dir(&path, Path::new(scratch_root));
     }
     if let Some(cache_home) =
         cache_home_from(std::env::var_os("XDG_CACHE_HOME"), std::env::var_os("HOME"))
     {
         if let Some(path) = mutation_scratch_path(&cache_home, spawn_id) {
-            reap_then_remove_dir(&path);
+            // The registered mutation-scratch ROOT (`<cache_home>/rigger-mutants`), NEVER
+            // `scratch_root` - by construction (spec 77 criterion 2) it lives in the user
+            // cache, outside any one run's own scratch tree (spec 78 round 2, decision
+            // `u78c2r2-authorized-root-caller-supplied`: this is the exact call that was an
+            // unconditional no-op before this fix, since it could never canonicalize under
+            // any `<repo>/.rigger/tmp`).
+            reap_then_remove_dir(&path, &mutation_scratch_root(&cache_home));
         }
     }
 }
@@ -9746,6 +9791,7 @@ fn live_slugs(
 /// Returns how many entries were reclaimed.
 fn reclaim_orphan_scratch(repo: &str, root: &str, run_units: &RunUnits) -> usize {
     let live = live_slugs(&run_units.live_branches);
+    let root_path = std::path::Path::new(root);
     let mut removed = 0;
     let Ok(entries) = std::fs::read_dir(root) else {
         return 0;
@@ -9762,7 +9808,7 @@ fn reclaim_orphan_scratch(repo: &str, root: &str, run_units: &RunUnits) -> usize
             // (a leaked build) BEFORE removing it, and deregister it from git if a killed step
             // left it registered.
             if !worktree_belongs_to_live(&name, &live, &run_units.dead_slugs) {
-                reap_then_remove_worktree(repo, &path);
+                reap_then_remove_worktree(repo, &path, root_path);
                 removed += 1;
             }
         } else if let Some(slug) = name.strip_prefix(rigger::worktree::UNIT_CACHE_PREFIX) {
@@ -9772,7 +9818,7 @@ fn reclaim_orphan_scratch(repo: &str, root: &str, run_units: &RunUnits) -> usize
             // `cargo-target` (no `-<slug>` tail) never matches this prefix and is spared.
             let wt = format!("{}{slug}", rigger::worktree::UNIT_WORKTREE_PREFIX);
             if !worktree_belongs_to_live(&wt, &live, &run_units.dead_slugs) {
-                reap_then_remove_dir(&path);
+                reap_then_remove_dir(&path, root_path);
                 removed += 1;
             }
         } else if is_build_cache_tombstone(&name) {
@@ -9783,7 +9829,7 @@ fn reclaim_orphan_scratch(repo: &str, root: &str, run_units: &RunUnits) -> usize
             // the LAST thing that will ever reference it by path, so it is always safe to
             // reap unconditionally (spec 77 Design: "correct precisely because nothing can
             // ever want it back").
-            reap_then_remove_dir(&path);
+            reap_then_remove_dir(&path, root_path);
             removed += 1;
         }
         // Any other entry (agent-scratch, agent-live, a bare cargo-target/target, a review
@@ -10057,7 +10103,19 @@ fn is_build_cache_tombstone(name: &str) -> bool {
 /// (`reap_then_remove_dir`'s own swallowed-`Result` convention) - a failed or
 /// killed-mid-flight delete leaves an enumerable tombstone [`is_build_cache_tombstone`]
 /// recognizes, never a silently unrecoverable leak.
-fn reclaim_shared_build_cache(cache: &Path) -> std::io::Result<BuildCacheReclaim> {
+///
+/// `scratch_root` is the resolved scratch root `cache` was itself joined onto by every real
+/// caller (`cache = scratch.join(SHARED_BUILD_CACHE_NAME)`) - it authorizes the tombstone
+/// reap (spec 78 round 2, decision `u78c2r2-authorized-root-caller-supplied`). Taken as an
+/// explicit parameter rather than derived from `cache.parent()`: `build_cache_tombstone_path`
+/// guarantees the tombstone is ALWAYS a sibling of `cache` (`Path::with_file_name`), so
+/// `cache.parent()` would authorize reaping the tombstone for ANY `cache` whatsoever,
+/// including one a caller bug pointed somewhere dangerous - an independently-resolved root
+/// is the only check that means anything.
+fn reclaim_shared_build_cache(
+    cache: &Path,
+    scratch_root: &Path,
+) -> std::io::Result<BuildCacheReclaim> {
     let guard_path = rigger::worktree::shared_build_cache_guard_path(
         &cache
             .parent()
@@ -10093,7 +10151,7 @@ fn reclaim_shared_build_cache(cache: &Path) -> std::io::Result<BuildCacheReclaim
     // original path.
     let _ = fs2::FileExt::unlock(&guard);
     let bytes = dir_size_bytes(&tombstone);
-    reap_then_remove_dir(&tombstone);
+    reap_then_remove_dir(&tombstone, scratch_root);
     Ok(BuildCacheReclaim::Reclaimed(bytes))
 }
 
@@ -12969,10 +13027,16 @@ mod tests {
             match outcome {
                 DashStart::Failed(msg) => {
                     assert!(
-                        msg.contains(&my_pid),
+                        msg.contains(&format!("by pid {my_pid}")),
                         "a bind that fails against a port THIS test process holds must name \
                          this process's own pid as the holder - the HELD-PORT DIAGNOSIS, not \
-                         only the bare 'did not confirm a bind' wording; got: {msg}"
+                         only the bare 'did not confirm a bind' wording; checked as the exact \
+                         `by pid {{N}}` attribution phrase, not a raw pid-string substring test, \
+                         since this project's mandatory pid-namespace test sandbox \
+                         (.cargo/pidns-runner.sh, every test binary here runs AS PID 1 of its own \
+                         fresh namespace) makes a raw substring check vacuous - \"1\" trivially \
+                         matches inside the loopback address \"127.0.0.1\" regardless of what the \
+                         message actually reports; got: {msg}"
                     );
                     assert!(
                         msg.contains(&port.to_string()),
@@ -13032,6 +13096,144 @@ mod tests {
         });
         std::env::remove_var(DASH_PORT_ENV);
         outcome.unwrap();
+    }
+
+    // --- Spec 62, criterion 2: self-heal (a successful start replaces a stale marker) ---
+
+    /// A marker naming a DEAD pid whose recorded port nothing answers: wired through the REAL
+    /// `dash_marker_serving` probe (not an injected fake, unlike
+    /// `ensure_run_dashboard_at_restarts_when_the_recorded_dash_is_gone` above, which already
+    /// covers this same overwrite mechanically but only through an injected `|_| false`), the
+    /// port never actually answering as a dash makes the step start a fresh one, and the stale
+    /// record is REPLACED with the new server's own port/pid - the first of the two forms spec
+    /// 62 criterion 2's Done-when text names ("dead PID").
+    #[test]
+    fn ensure_run_dashboard_at_self_heals_a_marker_naming_a_dead_pid() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker_path = dir.path().join(DASH_MARKER_FILE);
+        let dead_port =
+            dash::free_port_from(41100).expect("a free loopback port must be available");
+        dash::DashMarker {
+            port: dead_port,
+            // No process on this machine is required to hold this exact pid; the REAL probe
+            // below decides self-heal purely from the port, never this field.
+            pid: 999_999,
+        }
+        .write(&marker_path)
+        .unwrap();
+
+        let fresh = dash::DashMarker {
+            port: dead_port + 1,
+            pid: std::process::id(),
+        };
+        let outcome = ensure_run_dashboard_at(&marker_path, dash_marker_serving, || Ok(fresh));
+
+        assert_eq!(
+            outcome,
+            DashStart::Started(fresh.port),
+            "the REAL still-serving probe finds nothing answering the dead marker's port, so a \
+             fresh dash starts"
+        );
+        assert_eq!(
+            dash::DashMarker::read(&marker_path),
+            Some(fresh),
+            "self-heal replaces the dead-pid marker with the new server's own record"
+        );
+    }
+
+    /// A marker naming a LIVE pid (this very test process, unambiguously alive) whose recorded
+    /// port nothing answers as a dash: `dash_marker_serving` never reads the pid field at all,
+    /// only probes the port (see its own doc), so a genuinely-alive-but-unrelated pid must never
+    /// suppress self-heal. The second of the two forms spec 62 criterion 2's Done-when text
+    /// names ("live PID not serving the recorded port") - distinct from the dead-pid case above
+    /// precisely because pid liveness itself is never load-bearing for this decision, only the
+    /// port's own probe is.
+    #[test]
+    fn ensure_run_dashboard_at_self_heals_a_marker_naming_a_live_pid_whose_port_is_unserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker_path = dir.path().join(DASH_MARKER_FILE);
+        let unserved_port =
+            dash::free_port_from(41200).expect("a free loopback port must be available");
+        let live_pid = std::process::id();
+        assert!(
+            dash::pid_is_alive(live_pid),
+            "the marker's pid must genuinely be alive for this scenario to be meaningful"
+        );
+        dash::DashMarker {
+            port: unserved_port,
+            pid: live_pid,
+        }
+        .write(&marker_path)
+        .unwrap();
+
+        let fresh = dash::DashMarker {
+            port: unserved_port + 1,
+            pid: live_pid,
+        };
+        let outcome = ensure_run_dashboard_at(&marker_path, dash_marker_serving, || Ok(fresh));
+
+        assert_eq!(
+            outcome,
+            DashStart::Started(fresh.port),
+            "a live-but-unrelated pid never suppresses self-heal - only the port's own probe \
+             decides whether the recorded dash is still serving"
+        );
+        assert_eq!(
+            dash::DashMarker::read(&marker_path),
+            Some(fresh),
+            "self-heal replaces the marker even though its old pid field was genuinely alive"
+        );
+    }
+
+    /// The still-serving short-circuit is UNCHANGED by self-heal (the design bullet's own text)
+    /// even for the one case self-heal deliberately does NOT correct: a marker carrying
+    /// `dash::UNATTRIBUTED_PID` whose port genuinely keeps answering. `d-u62c1-unattributable-
+    /// serving-disposition` scopes self-heal to DEAD or stale markers only, never a live-but-
+    /// unattributable server - this proves that scope holds in the real wiring: with a REAL
+    /// listener answering as a dash (the same DASH_HEADER response `wait_for_dash_bind`'s own
+    /// test above uses), `ensure_run_dashboard_at` short-circuits to `AlreadyServing` WITHOUT
+    /// ever calling `start` (a call here would panic), and the on-disk marker - sentinel pid and
+    /// all - is left completely untouched. Regression-locks
+    /// `adv-u62c1r5-eventually-correct-claim-unreachable-while-the-same-dash-serves`.
+    #[test]
+    fn ensure_run_dashboard_at_never_revisits_a_still_serving_unattributed_pid_marker() {
+        use std::io::Write as _;
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for mut s in listener.incoming().flatten() {
+                let _ = s.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\n{}: probe\r\nConnection: close\r\n\r\n",
+                        dash::DASH_HEADER
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let marker_path = dir.path().join(DASH_MARKER_FILE);
+        let sentinel = dash::DashMarker {
+            port,
+            pid: dash::UNATTRIBUTED_PID,
+        };
+        sentinel.write(&marker_path).unwrap();
+
+        let outcome = ensure_run_dashboard_at(&marker_path, dash_marker_serving, || {
+            panic!("self-heal must never call start() while the recorded port still serves")
+        });
+
+        assert_eq!(
+            outcome,
+            DashStart::AlreadyServing(port),
+            "a still-serving sentinel marker short-circuits; self-heal never gets a chance to run"
+        );
+        assert_eq!(
+            dash::DashMarker::read(&marker_path),
+            Some(sentinel),
+            "the still-serving marker, sentinel pid and all, is left completely untouched"
+        );
     }
 
     /// Spec 50, criterion 4 (opt-out): the always-on ensure is suppressed by EITHER opt-out - the
@@ -15594,7 +15796,7 @@ mod tests {
         write_file(&cache.join("debug").join("a.rlib"), &[0u8; 100]);
         write_file(&cache.join("debug").join("b.rlib"), &[0u8; 250]);
 
-        let reclaimed = match reclaim_shared_build_cache(&cache).expect("no io error") {
+        let reclaimed = match reclaim_shared_build_cache(&cache, dir.path()).expect("no io error") {
             BuildCacheReclaim::Reclaimed(n) => n,
             BuildCacheReclaim::Busy => panic!("an unheld guard must never report busy"),
         };
@@ -15615,10 +15817,11 @@ mod tests {
         // clean, honest zero, never an error (spec 77 Notes: "repeated reset --build-cache
         // -> idempotent zero-report").
         for _ in 0..2 {
-            let reclaimed = match reclaim_shared_build_cache(&cache).expect("no io error") {
-                BuildCacheReclaim::Reclaimed(n) => n,
-                BuildCacheReclaim::Busy => panic!("nothing holds the guard here"),
-            };
+            let reclaimed =
+                match reclaim_shared_build_cache(&cache, dir.path()).expect("no io error") {
+                    BuildCacheReclaim::Reclaimed(n) => n,
+                    BuildCacheReclaim::Busy => panic!("nothing holds the guard here"),
+                };
             assert_eq!(
                 reclaimed, 0,
                 "a missing cache reclaims 0 bytes, not an error"
@@ -15645,7 +15848,7 @@ mod tests {
             .expect("open guard");
         fs2::FileExt::lock_shared(&held).expect("a build's own shared lock");
 
-        let outcome = reclaim_shared_build_cache(&cache).expect("no io error");
+        let outcome = reclaim_shared_build_cache(&cache, dir.path()).expect("no io error");
         assert!(
             matches!(outcome, BuildCacheReclaim::Busy),
             "a build holding the guard SHARED must refuse the reclaim, never wait for it: \
@@ -15667,7 +15870,7 @@ mod tests {
         let cache = dir.path().join("cargo-target");
         write_file(&cache.join("debug").join("a.rlib"), &[0u8; 32]);
 
-        reclaim_shared_build_cache(&cache).expect("no io error");
+        reclaim_shared_build_cache(&cache, dir.path()).expect("no io error");
 
         let guard_path =
             rigger::worktree::shared_build_cache_guard_path(dir.path().to_str().unwrap());
@@ -16681,9 +16884,16 @@ mod tests {
         // agent-scratch does not outlive the deleted dir. A process rooted OUTSIDE the swept dir
         // is untouched (the safety boundary). The inside child IGNORES SIGTERM, so only the
         // SIGKILL escalation can reap it - exercising the full SIGTERM-then-SIGKILL mechanism at
-        // this second teardown point (the first is Worktree::remove).
+        // this second teardown point (the first is Worktree::remove). `reap_then_remove_dir`
+        // requires the swept dir to be strictly under the given `authorized_root` (here, the
+        // `.rigger/tmp` its production caller resolves it under), so the fixture mirrors that
+        // exact layout - mirroring where `cmd_step` actually points `reap_then_remove_dir` in
+        // production.
         let root = tempfile::tempdir().unwrap();
-        let swept = root.path().join("agent-scratch");
+        let root_path = root.path().canonicalize().unwrap();
+        git_init_quiet(&root_path);
+        let scratch_root = root_path.join(".rigger").join("tmp");
+        let swept = scratch_root.join("agent-scratch");
         std::fs::create_dir_all(&swept).unwrap();
 
         let mut inside = Command::new("sh")
@@ -16694,7 +16904,7 @@ mod tests {
             .expect("spawn inside child");
         let mut outside = Command::new("sleep")
             .arg("300")
-            .current_dir(root.path())
+            .current_dir(&root_path)
             .spawn()
             .expect("spawn outside child");
 
@@ -16713,7 +16923,7 @@ mod tests {
             "precondition: the inside child is rooted in the swept dir"
         );
 
-        reap_then_remove_dir(&swept);
+        reap_then_remove_dir(&swept, &scratch_root);
 
         let inside_died = (0..200).any(|_| {
             if matches!(inside.try_wait(), Ok(Some(_))) {

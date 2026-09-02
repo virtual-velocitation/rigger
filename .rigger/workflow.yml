@@ -109,6 +109,7 @@ defaults:
 
 build:
   mutation: "on"            # implementer's diff-scoped mutation-efficacy step (spec 73)
+  max_concurrent: 1         # serialize builds machine-wide: two concurrent cargo-mutants sweeps (~100G each) exhausted /home this session. Blunt cap (operator-binary boundary blocks a surgical mutation-only slot); revisit as a spec.
 
 gates:                      # the project's verification library, referenced by name
   fmt:    { run: "cargo fmt --check",                        kind: core }
@@ -126,6 +127,20 @@ gates:                      # the project's verification library, referenced by 
   # carries no literal em dash and therefore passes on its own diff.
   style:
     run: 'em=$(printf "\342\200\224"); base=$(git rev-parse --verify -q rigger-run || git rev-parse --verify -q origin/main || git rev-parse --verify -q HEAD); if git diff "$base"...HEAD | grep "^+" | grep -v "^+++ " | grep -qF "$em"; then echo "style gate FAILED: an em dash (U+2014) was introduced; use a hyphen"; exit 1; fi'
+    kind: core
+  # The no-os-kill gate (spec 78): rigger issues NO OS-level kills. Process lifecycle is
+  # handle-bound (`Child::kill()`/`wait()` on a child this process spawned) or, in exactly
+  # two sanctioned places, an internal guarded signal call: the worktree reaper
+  # (src/reap.rs) and the shared test lifecycle helper (tests/common/mod.rs). Everywhere
+  # else in src/ and tests/, an added line that shells out to kill/pkill/killall, formats a
+  # negative (process-group) pid, uses the `--` argv separator, or calls a signal API
+  # directly FAILS the unit. Inside the two sanctioned files a shell-out is still a failure.
+  # Scoped to code (src, tests): prose in docs/, specs/ and .rigger/ may name the rule.
+  # WHY: computed kill targets (a pgid, a marker pid, a /proc scan) resolved to kill(-1)
+  # and destroyed the operator's whole desktop session seven-plus times; the review
+  # panel approved each site because nothing mechanical forbade it. Now something does.
+  no-os-kill:
+    run: 'base=$(git rev-parse --verify -q rigger-run || git rev-parse --verify -q origin/main || git rev-parse --verify -q HEAD); bad="Command::new\(.(kill|pkill|killall|xkill)|[^a-zA-Z_]kill(all)? -[0-9A-Za-z]|[^a-zA-Z_]pkill[^a-zA-Z_]|killpg|libc::kill\(|signal::kill\(|kill_process\(|\.arg\(.--.\)|format!\(.-\{"; if git diff "$base"...HEAD -- src tests ":(exclude)src/reap.rs" ":(exclude)tests/common/mod.rs" | grep "^+" | grep -v "^+++ " | grep -qE "$bad"; then echo "no-os-kill gate FAILED: an OS-level kill, a process-group target, or a direct signal call was introduced outside the sanctioned lifecycle helpers (src/reap.rs, tests/common/mod.rs). Lifecycle is handle-bound: Child::kill()/wait(), or the shared helper. See specs/78-no-os-level-kills.md"; exit 1; fi; if git diff "$base"...HEAD -- src/reap.rs tests/common/mod.rs | grep "^+" | grep -v "^+++ " | grep -qE "Command::new\(.(kill|pkill|killall|xkill)|\.arg\(.--.\)|format!\(.-\{"; then echo "no-os-kill gate FAILED: a sanctioned lifecycle file shelled out to kill or formatted a process-group target; use the internal guarded signal call only"; exit 1; fi'
     kind: core
 
 stages:
@@ -175,6 +190,6 @@ stages:
     agent: rust-engineer
     strategy: fan-out
     partition: by-blast-radius
-    gates: [fmt, clippy, build, test, style]
+    gates: [fmt, clippy, build, test, style, no-os-kill]
     on_pass: merge
     coverage: "each unit is implemented, three-tier-reviews itself, and integrates on a green workspace"

@@ -660,7 +660,7 @@ impl Runner for ExecRunner {
         // criterion 5, BOUNDED SHARED CACHE), FIXED round 2 for
         // adv-u77c5bsc-guard-lifetime-bound-to-orchestrator-not-the-cargo-child: a
         // non-empty `build_cache_guard` now wraps the WHOLE gate command through an
-        // EXEC-REPLACING `flock -s -F -- <guard> sh -c '<g.run>'`, rather than opening
+        // EXEC-REPLACING `flock -s -F <guard> sh -c '<g.run>'`, rather than opening
         // and `fs2`-locking the guard fd IN THIS PROCESS and merely holding it across a
         // separately spawned child (`Command::output()`'s own fork+exec). That older
         // shape tied the lock's lifetime to THIS orchestrator process: std's `File`
@@ -695,13 +695,22 @@ impl Runner for ExecRunner {
         // probe below passes) is what the CARGO_TARGET_DIR force further down must key off of
         // too - see that branch's own doc comment for why forcing on `guarded` alone reopened
         // the exact class of bug this whole criterion exists to close.
+        // No leading-`--` end-of-options separator before `build_cache_guard`: unlike a
+        // generic external filename, this argument is never operator- or agent-supplied -
+        // it always comes from `worktree::shared_build_cache_guard_path`, which formats it
+        // as `{scratch_root}/cargo-target.lock` onto an already-absolute `scratch_root`, so
+        // it structurally cannot begin with `-` and `flock` can never misparse it as an
+        // option (spec 78's `no-os-kill` audit bans the bare `--` argv-separator shape
+        // tree-wide, regardless of context - it is the exact argv trick a prior incident
+        // used to paper over a negative-pid kill target rather than removing the hazard
+        // class, so the rule removes the shape everywhere rather than judging each call
+        // site's intent case by case).
         let guard_requested = !build_cache_guard.is_empty();
         let guarded = guard_requested && build_cache_guard_is_usable(build_cache_guard);
         let mut cmd = if guarded {
             let mut c = Command::new("flock");
             c.arg("-s")
                 .arg("-F")
-                .arg("--")
                 .arg(build_cache_guard)
                 .arg("sh")
                 .arg("-c")
@@ -1180,7 +1189,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
 
     #[test]
     fn exec_runner_env_vars_reach_the_gate_command_through_the_flock_guard_wrapper() {
-        // The guard wrapper (`flock -s -F -- <guard> sh -c '<g.run>'`, spec 77 criterion 5
+        // The guard wrapper (`flock -s -F <guard> sh -c '<g.run>'`, spec 77 criterion 5
         // round 2 fix) must never swallow the env vars this function sets on the `Command`
         // BEFORE exec - CARGO_TARGET_DIR here, standing in for every var this module
         // injects (BuildEnv's own wrapper vars, STORE_FENCE_ENV, ...). Proven with a REAL

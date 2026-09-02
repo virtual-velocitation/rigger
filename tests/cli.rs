@@ -20470,13 +20470,6 @@ fn read_dash_marker(root: &Path) -> Option<(u16, u32)> {
     Some((port, pid))
 }
 
-/// Best-effort kill+reap of a process by pid, so a test that drove the step path into starting
-/// a real, DETACHED `rigger dash` never leaves it orphaned. Ignores every error: the pid may
-/// already be gone, which is exactly the state we want.
-fn reap_pid(pid: u32) {
-    let _ = Command::new("kill").arg("-9").arg(pid.to_string()).status();
-}
-
 /// Run `rigger step` in `root` with the always-on step dash ENABLED - the RIGGER_NO_DASH
 /// opt-out explicitly REMOVED from the environment (so an ambient opt-out in CI cannot mask the
 /// behavior under test) - returning (stdout, stderr). Used by the spec-39/50 step-path dash
@@ -20557,7 +20550,7 @@ fn step_auto_starts_one_persistent_dash_and_a_second_step_starts_none() {
     // of its loopback URL returns the read-only page. Reap before failing so nothing leaks.
     let url = format!("http://127.0.0.1:{port1}/");
     if !matches!(http_get(&url), Some(body) if body.contains("rigger dash")) {
-        reap_pid(pid1);
+        common::terminate_pid(pid1);
         panic!("the auto-started step dash at {url} did not serve its page");
     }
 
@@ -20567,10 +20560,10 @@ fn step_auto_starts_one_persistent_dash_and_a_second_step_starts_none() {
 
     // Reap every dash this test could have started BEFORE asserting, so a failed assertion
     // never leaves an orphaned dashboard behind.
-    reap_pid(pid1);
+    common::terminate_pid(pid1);
     if let Some((_, pid2)) = marker2 {
         if pid2 != pid1 {
-            reap_pid(pid2);
+            common::terminate_pid(pid2);
         }
     }
 
@@ -20636,7 +20629,7 @@ fn step_dash_binds_exactly_the_rigger_dash_port_override() {
     let served_at_override = matches!(http_get(&url), Some(body) if body.contains("rigger dash"));
 
     // Reap the real detached dash BEFORE any assertion, so a failed assertion never leaks it.
-    reap_pid(pid);
+    common::terminate_pid(pid);
 
     assert_eq!(
         marker_port, dash_port,
@@ -20730,8 +20723,13 @@ fn step_writes_no_dash_marker_and_leaves_a_stale_one_untouched_when_the_bind_nev
     );
     if Path::new("/proc").is_dir() {
         let my_pid = std::process::id().to_string();
+        // Checked as the exact `by pid {N}` attribution phrase, not a raw pid-string substring
+        // test: this project's mandatory pid-namespace test sandbox (.cargo/pidns-runner.sh)
+        // runs this test binary AS PID 1 of its own fresh namespace, so a raw substring check
+        // would be vacuous - "1" trivially matches inside the loopback address "127.0.0.1"
+        // regardless of what the diagnosis actually reports.
         assert!(
-            err.contains(&my_pid),
+            err.contains(&format!("by pid {my_pid}")),
             "spec 62 round 2 (adv-u62c3-diagnosis-unreachable-from-step-path-auto-start): the \
              step path's own headless-degrade message must name the held port's holder - this \
              test process's own pid - not just the generic 'could not auto-start' line; \
@@ -20742,6 +20740,150 @@ fn step_writes_no_dash_marker_and_leaves_a_stale_one_untouched_when_the_bind_nev
             "the diagnosis must always name the held address; stderr:\n{err}"
         );
     }
+}
+
+/// Spec 62, criterion 2 (SELF-HEAL) end-to-end at the BUILT binary: a `.rigger/dash.marker`
+/// naming a DEAD pid whose recorded port nothing answers is REPLACED by the next `rigger step`,
+/// not left stale forever. The in-crate unit tests
+/// (`ensure_run_dashboard_at_self_heals_a_marker_naming_a_dead_pid` in `src/main.rs`) prove the
+/// DECISION against the real `dash_marker_serving` predicate, but inject a fake `start()`
+/// closure that never spawns a real process; only driving the real `cmd_step ->
+/// ensure_run_dashboard -> spawn_run_dashboard_detached` wiring proves a genuine dash actually
+/// comes up and its marker actually lands on disk in place of the stale one - the same
+/// unit-test-proves-the-decision / real-binary-proves-the-wiring split criterion 1's own
+/// periphery tests in this section already establish.
+///
+/// `stale_port` is reserved-then-released (never `dash_port`, the fresh dash's own target), so
+/// nothing answers it and the pre-step marker is genuinely dead, not merely arbitrary.
+///
+/// The started dash is a real, long-lived detached process. `read_dash_marker` returning `Some`
+/// is ITSELF already past the point a dash exists (spec 62 criterion 1, MARKER FOLLOWS BIND: a
+/// marker only ever exists after a genuine successful bind), so this test probes the dash's
+/// liveness and reaps it by pid IMMEDIATELY after that read succeeds - before the `assert_ne!`,
+/// `assert_eq!`, and `assert!(err...)` checks that follow - mirroring the reap-before-assert
+/// discipline the `step_auto_starts_one_persistent_dash_and_a_second_step_starts_none` sibling
+/// test in this same file already follows: a failed assertion never leaves an orphaned dashboard
+/// behind.
+// Hermetic against a real machine dash: pins the ensure port to its own ephemeral
+// `free_loopback_port` (never the fixed 7420 a genuine always-on dash holds on the self-hosting
+// box) - the same reason the other step-path dash tests in this section need no `serial` key.
+#[test]
+fn step_self_heals_a_stale_marker_naming_a_dead_pid() {
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    write_two_stage_workflow(root);
+    let dash_port = free_loopback_port();
+    let stale_port = free_loopback_port();
+
+    let marker_path = root.join(".rigger").join("dash.marker");
+    std::fs::create_dir_all(marker_path.parent().unwrap()).unwrap();
+    std::fs::write(&marker_path, format!("{stale_port}\n999999\n")).unwrap();
+
+    let (out, err) = run_step_dash_enabled(root, dash_port);
+    assert!(
+        out.contains(r#""wave":"#),
+        "the step must run to completion (a printed wave) past the self-heal seam; \
+         stdout: {out:?} stderr: {err:?}"
+    );
+    let (port, pid) = read_dash_marker(root)
+        .unwrap_or_else(|| panic!("self-heal must record a fresh marker; stderr:\n{err}"));
+
+    // A real dash is now alive: probe it (a GENUINE serving process, not merely a written
+    // record) and reap it by pid BEFORE any assertion below that could panic, so a failed
+    // assertion never leaves it orphaned.
+    let url = format!("http://127.0.0.1:{port}/");
+    let served = matches!(http_get(&url), Some(body) if body.contains("rigger dash"));
+    common::terminate_pid(pid);
+
+    assert_ne!(
+        (port, pid),
+        (stale_port, 999_999),
+        "self-heal must replace the stale dead-pid record, not leave it byte-for-byte; \
+         stderr:\n{err}"
+    );
+    assert_eq!(
+        port, dash_port,
+        "the replacement marker must name this test's own fresh dash port; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("serving this run"),
+        "self-heal starting a fresh dash must announce it as newly serving; stderr:\n{err}"
+    );
+    assert!(
+        served,
+        "the self-healed dash at {url} did not serve its page"
+    );
+}
+
+/// Spec 62, criterion 2 (SELF-HEAL), the SECOND Done-when form: a `.rigger/dash.marker` naming a
+/// LIVE pid (this very test process, unambiguously alive) whose recorded port nothing answers is
+/// replaced exactly like the dead-pid form above - `dash_marker_serving` never reads the pid
+/// field at all, only probes the port (`ensure_run_dashboard_at_self_heals_a_marker_naming_a_
+/// live_pid_whose_port_is_unserved` proves this at the unit level with a fake `start()`), so a
+/// genuinely-alive-but-unrelated pid must never suppress self-heal at the real binary either.
+/// Distinct from the dead-pid test above precisely because pid liveness itself is never
+/// load-bearing for this decision, only the port's own probe is - this drives that claim through
+/// the real `cmd_step -> ensure_run_dashboard -> spawn_run_dashboard_detached` wiring, not just
+/// the injected-`start()` unit test.
+///
+/// The started dash is a real, long-lived detached process. `read_dash_marker` returning `Some`
+/// is ITSELF already past the point a dash exists (spec 62 criterion 1, MARKER FOLLOWS BIND: a
+/// marker only ever exists after a genuine successful bind), so this test probes the dash's
+/// liveness and reaps it by pid IMMEDIATELY after that read succeeds - before the `assert_ne!`,
+/// `assert_eq!`, and `assert!(err...)` checks that follow - mirroring the reap-before-assert
+/// discipline the `step_auto_starts_one_persistent_dash_and_a_second_step_starts_none` sibling
+/// test in this same file already follows: a failed assertion never leaves an orphaned dashboard
+/// behind.
+// Hermetic against a real machine dash: pins the ensure port to its own ephemeral
+// `free_loopback_port` (never the fixed 7420 a genuine always-on dash holds on the self-hosting
+// box) - the same reason the other step-path dash tests in this section need no `serial` key.
+#[test]
+fn step_self_heals_a_stale_marker_naming_a_live_pid_whose_port_is_unserved() {
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    write_two_stage_workflow(root);
+    let dash_port = free_loopback_port();
+    let stale_port = free_loopback_port();
+    let live_pid = std::process::id();
+
+    let marker_path = root.join(".rigger").join("dash.marker");
+    std::fs::create_dir_all(marker_path.parent().unwrap()).unwrap();
+    std::fs::write(&marker_path, format!("{stale_port}\n{live_pid}\n")).unwrap();
+
+    let (out, err) = run_step_dash_enabled(root, dash_port);
+    assert!(
+        out.contains(r#""wave":"#),
+        "the step must run to completion (a printed wave) past the self-heal seam; \
+         stdout: {out:?} stderr: {err:?}"
+    );
+    let (port, pid) = read_dash_marker(root)
+        .unwrap_or_else(|| panic!("self-heal must record a fresh marker; stderr:\n{err}"));
+
+    // A real dash is now alive: probe it (a GENUINE serving process, not merely a written
+    // record) and reap it by pid BEFORE any assertion below that could panic, so a failed
+    // assertion never leaves it orphaned.
+    let url = format!("http://127.0.0.1:{port}/");
+    let served = matches!(http_get(&url), Some(body) if body.contains("rigger dash"));
+    common::terminate_pid(pid);
+
+    assert_ne!(
+        (port, pid),
+        (stale_port, live_pid),
+        "a live-but-unrelated pid must never suppress self-heal - only the port's own probe \
+         decides whether the recorded dash is still serving; stderr:\n{err}"
+    );
+    assert_eq!(
+        port, dash_port,
+        "the replacement marker must name this test's own fresh dash port; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("serving this run"),
+        "self-heal starting a fresh dash must announce it as newly serving; stderr:\n{err}"
+    );
+    assert!(
+        served,
+        "the self-healed dash at {url} did not serve its page"
+    );
 }
 
 /// Spec 62 round 2 (adv-u62c1-marker-pid-not-the-serving-pid-on-singleton-race), through the
@@ -21124,7 +21266,7 @@ fn step_honors_the_config_dash_off_opt_out() {
     // If the opt-out regressed, a real dash started at the fixed port and recorded a marker: reap
     // it BEFORE asserting so a failing assertion never leaks a dashboard.
     if let Some((_, pid)) = read_dash_marker(root) {
-        reap_pid(pid);
+        common::terminate_pid(pid);
     }
 
     assert!(
@@ -21289,14 +21431,14 @@ fn a_step_started_dash_is_detached_and_outlives_its_step_process() {
     // it - keeping this test off criterion 1's idempotency ground while never leaking a dash.
     if let Some((_, pid2)) = read_dash_marker(root) {
         if pid2 != pid {
-            reap_pid(pid2);
+            common::terminate_pid(pid2);
         }
     }
     let alive_after_step2 = rigger::dash::pid_is_alive(pid);
     let served_after_step2 = matches!(http_get(&url), Some(body) if body.contains("rigger dash"));
 
     // Reap the original detached dash BEFORE asserting, so a failure never leaves it orphaned.
-    reap_pid(pid);
+    common::terminate_pid(pid);
 
     assert!(
         out2.contains(r#""wave":"#),
@@ -21798,6 +21940,129 @@ fn a_reap_on_idle_singleton_survives_a_fresh_agent_liveness_marker_after_the_reg
     assert_eq!(n, 0, "a self-reaped dash should have its stdout at EOF");
 }
 
+/// Spec 62, criterion 5 - the SAME survives-live-work guarantee as the test above, but launched
+/// from a directory with NO git repository above it at all. `cmd_dash`'s own scratch-root
+/// resolution derives `git_repo()` first and, before this fix, treated an EMPTY `git_repo()` as a
+/// hard "no scratch root, ever": it skipped `worktree::scratch_root_from_env` (and therefore
+/// `RIGGER_TMPDIR`) entirely, rather than letting that resolver's own env-override-first
+/// precedence handle a repo-less cwd - which it already does correctly on its own
+/// (`scratch_root_path`'s first match arm answers `RIGGER_TMPDIR` regardless of `repo`). A
+/// `rigger` invocation with no git repository above its cwd is not exotic: it is exactly what a
+/// whole-tree copy that excludes `.git` produces - including this project's OWN
+/// `cargo mutants --in-diff` scratch-tree build (spec 78's mutation-efficacy step every
+/// implementer runs), which is how this gap was actually found: a mutation baseline run failed
+/// this criterion's own sibling test above ONLY when run from that git-less copy, never from a
+/// real git worktree. A git-less launch silently blinding the self-reap watcher to its OWN
+/// launching project's agent-liveness marker is a real, reachable production gap, not a
+/// test-only corner.
+#[test]
+fn a_reap_on_idle_singleton_survives_a_fresh_agent_liveness_marker_with_no_git_repo_at_launch() {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
+
+    // A machine-global registry the dash and the test share.
+    let state = tempfile::tempdir().unwrap();
+    let xdg = state.path().to_str().unwrap().to_string();
+    let regdir = rigger::registry::instances_dir(state.path());
+
+    // A hermetic scratch root the dash resolves via `RIGGER_TMPDIR` alone - `cwd`, below, is
+    // deliberately NEVER `git init`-ed, so `git_repo()` resolves empty and the only way the dash
+    // can find this scratch root at all is by honoring `RIGGER_TMPDIR` even with an empty repo.
+    let scratch = tempfile::tempdir().unwrap();
+    let scratch_root = scratch.path().to_str().unwrap().to_string();
+    let marker_path =
+        rigger::liveness::marker_path(&scratch_root, "run-1", "u1c1/implementer#0").unwrap();
+
+    // A cwd with NO `.git` anywhere above it (a bare `tempfile::tempdir()`, never `git init`-ed) -
+    // exactly what a git-excluding whole-tree copy launches `rigger dash` from.
+    let cwd = tempfile::tempdir().unwrap();
+
+    // ONE registry write, never refreshed: it ages out on its own once the fast test window
+    // elapses - the "aged-out registry" half of the criterion, driven with no ongoing heartbeat.
+    write_live_instance(&regdir, "proj-a", "/home/dev/proj-a");
+
+    // The agent liveness marker starts fresh and is kept fresh by a background thread - the "fresh
+    // in-flight agent liveness signal" half of the criterion.
+    touch_marker(&marker_path);
+    let stop = Arc::new(AtomicBool::new(false));
+    let marker_thread_path = marker_path.clone();
+    let marker_stop = stop.clone();
+    let heartbeat = std::thread::spawn(move || {
+        while !marker_stop.load(Ordering::Relaxed) {
+            touch_marker(&marker_thread_path);
+            std::thread::sleep(Duration::from_millis(150));
+        }
+    });
+
+    let port = free_loopback_port();
+    let mut child = common::rigger_courier()
+        .args(["dash", "--port", &port.to_string(), "--reap-on-idle"])
+        .current_dir(cwd.path())
+        .env("XDG_STATE_HOME", &xdg)
+        .env("RIGGER_TMPDIR", &scratch_root)
+        // Same fast poll/stale envs as the sibling test above.
+        .env("RIGGER_DASH_REAP_POLL_MS", "150")
+        .env("RIGGER_DASH_REAP_STALE_SECS", "2")
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn `rigger dash --reap-on-idle`");
+    let mut out = child.stdout.take().expect("dash stdout is piped");
+
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 1];
+        let n = out.read(&mut buf).unwrap_or(0);
+        let _ = tx.send(n);
+    });
+
+    if !matches!(http_get(&format!("http://127.0.0.1:{port}/")), Some(body) if body.contains("rigger dash"))
+    {
+        stop.store(true, Ordering::Relaxed);
+        let _ = heartbeat.join();
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("the `rigger dash --reap-on-idle` never served its page");
+    }
+
+    // Well past the registry's 2s window, with the marker thread still refreshing: the registry
+    // alone has gone empty, but the agent liveness signal is fresh under `RIGGER_TMPDIR` - which
+    // must be honored even though `cwd` has no git repository above it.
+    if rx.recv_timeout(Duration::from_millis(3500)).is_ok() {
+        stop.store(true, Ordering::Relaxed);
+        let _ = heartbeat.join();
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!(
+            "the singleton self-reaped from a git-less launch even though a fresh in-flight \
+             agent liveness marker was present under RIGGER_TMPDIR - a repo-less cwd must not \
+             blind the idle judgment to an explicit RIGGER_TMPDIR override"
+        );
+    }
+    assert!(
+        matches!(http_get(&format!("http://127.0.0.1:{port}/")), Some(body) if body.contains("rigger dash")),
+        "the singleton must still serve while the agent liveness marker is fresh"
+    );
+
+    // Now let the agent liveness marker go idle too: with BOTH signals quiet, the singleton
+    // reaps exactly as spec 50 criterion 5 always has - even without a git repo.
+    stop.store(true, Ordering::Relaxed);
+    heartbeat.join().expect("marker heartbeat thread joins");
+
+    let reaped = rx.recv_timeout(Duration::from_secs(12));
+    let _ = child.kill();
+    let _ = child.wait();
+    let n = reaped.expect(
+        "the singleton did not SELF-REAP within 12s after BOTH the registry and the agent \
+         liveness marker went idle - a genuinely quiet machine's dash must not leak",
+    );
+    assert_eq!(n, 0, "a self-reaped dash should have its stdout at EOF");
+}
+
 /// Spec 62, criterion 5 round 2 (adjudication `adj-u62c5-verdict-reject-cross-project-blindness`,
 /// finding `adv-u62c5-agent-liveness-scoped-to-launching-project-only`): the idle judgment must
 /// see a fresh agent-liveness marker on ANY registered project, not only the one whose CWD
@@ -22062,6 +22327,161 @@ fn a_reap_on_idle_singleton_survives_a_foreign_agent_liveness_marker_whose_own_r
     let _ = child.wait();
     let n = reaped.expect(
         "the singleton did not SELF-REAP within 12s after the second project's agent liveness \
+         marker went idle too - a genuinely quiet machine's dash must not leak",
+    );
+    assert_eq!(n, 0, "a self-reaped dash should have its stdout at EOF");
+}
+
+/// Spec 62, criterion 5 round 4 (`adv-u62c5r4-known-roots-prune-race-with-instances-provider`):
+/// the ACTUAL race the test above cannot see, because it never calls `GET /api/instances` at all.
+/// Here an `/api/instances` poll - the most reachable of the three non-watcher registry readers
+/// (any open browser tab on the dash landing page) - is fired IMMEDIATELY once the dash is
+/// confirmed serving, deliberately racing the self-reap watcher's own first tick (a generous poll
+/// interval makes the landing GET win deterministically). Before the fix, that poll's `read_live`
+/// would delete the foreign project's hopelessly-stale-from-the-start registry entry from disk
+/// before the watcher's OWN `read_all` had ever captured its root into `known_roots` - permanently
+/// blinding the singleton to that project's still-fresh agent liveness marker and letting it reap
+/// out from under a genuinely live agent. After the fix (`registry::read_live_no_prune`), the
+/// landing poll filters the entry out of ITS OWN response without ever deleting it, so the entry
+/// survives on disk for the watcher's next `read_all` tick to capture, and the singleton keeps
+/// serving for as long as the foreign agent marker stays fresh.
+#[test]
+fn a_landing_poll_racing_the_watchers_first_tick_does_not_erase_a_foreign_projects_only_route_into_known_roots(
+) {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
+
+    // A machine-global registry the dash and the test share.
+    let state = tempfile::tempdir().unwrap();
+    let xdg = state.path().to_str().unwrap().to_string();
+    let regdir = rigger::registry::instances_dir(state.path());
+
+    // The LAUNCHING project's own scratch root: hermetic and left EMPTY (no marker ever written
+    // there), isolating the assertion to the foreign project's marker alone.
+    let own_scratch = tempfile::tempdir().unwrap();
+    let own_scratch_root = own_scratch.path().to_str().unwrap().to_string();
+
+    // A THIRD project supplies the `ever_seen_live` startup latch (see the test above for why this
+    // one-time-write-then-decay shape isolates the assertion to the SECOND project's marker alone).
+    let latch_project = tempfile::tempdir().unwrap();
+    let latch_root = latch_project.path().to_str().unwrap().to_string();
+    write_live_instance(&regdir, "proj-latch", &latch_root);
+
+    // The SECOND, foreign project: hopelessly stale from the moment it is written (heartbeat at the
+    // unix epoch), so the very FIRST reader to touch it - this test's own early `/api/instances`
+    // poll, below - sees it as stale, exactly the moment the pre-fix `read_live` would have pruned
+    // it.
+    let other_project = tempfile::tempdir().unwrap();
+    let other_root = other_project.path().to_str().unwrap().to_string();
+    let other_scratch_root = format!("{other_root}/.rigger/tmp");
+    let other_marker_path =
+        rigger::liveness::marker_path(&other_scratch_root, "run-1", "u2c1/implementer#0").unwrap();
+    let other_inst = rigger::registry::Instance {
+        project: "proj-b".to_string(),
+        root: other_root.clone(),
+        store: rigger::registry::StoreIdentity::Local {
+            path: format!("{other_root}/.rigger/events.db"),
+        },
+        heartbeat_ms: 0,
+    };
+    rigger::registry::write(&regdir, &other_inst).expect("write the stale foreign entry");
+    let other_entry_path = regdir.join(format!("{}.json", other_inst.id()));
+
+    // The second project's own agent liveness marker starts fresh and is kept fresh by a
+    // background thread for the WHOLE test - the live-agent-under-an-already-stale-registry-entry
+    // signal this test exists to prove survives the earlier landing-poll race too.
+    touch_marker(&other_marker_path);
+    let stop = Arc::new(AtomicBool::new(false));
+    let marker_thread_path = other_marker_path.clone();
+    let marker_stop = stop.clone();
+    let heartbeat = std::thread::spawn(move || {
+        while !marker_stop.load(Ordering::Relaxed) {
+            touch_marker(&marker_thread_path);
+            std::thread::sleep(Duration::from_millis(150));
+        }
+    });
+
+    let port = free_loopback_port();
+    // A generous poll interval: the racing `/api/instances` GET below must land well before the
+    // watcher's own FIRST tick (`thread::sleep(poll)` then its `read_all`/`read_live` pair), so the
+    // race this test exists to win is decided deterministically in the landing poll's favor.
+    let mut child = common::rigger_courier()
+        .args(["dash", "--port", &port.to_string(), "--reap-on-idle"])
+        .env("XDG_STATE_HOME", &xdg)
+        .env("RIGGER_TMPDIR", &own_scratch_root)
+        .env("RIGGER_DASH_REAP_POLL_MS", "900")
+        .env("RIGGER_DASH_REAP_STALE_SECS", "2")
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn `rigger dash --reap-on-idle`");
+    let mut out = child.stdout.take().expect("dash stdout is piped");
+
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 1];
+        let n = out.read(&mut buf).unwrap_or(0);
+        let _ = tx.send(n);
+    });
+
+    // THE RACE: hit `/api/instances` the instant the dash is confirmed serving - long before the
+    // watcher's own first `poll` tick (900ms) can fire.
+    let landing = http_get_path(port, "/api/instances");
+    if landing
+        .as_deref()
+        .is_none_or(|l| !l.contains("HTTP/1.1 200"))
+    {
+        stop.store(true, Ordering::Relaxed);
+        let _ = heartbeat.join();
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("the dash never served /api/instances: {landing:?}");
+    }
+
+    // THE FIX ITSELF: that early landing poll must not have deleted the foreign entry's file - had
+    // it, the watcher's own `read_all` tick (still to come) would never learn `proj-b`'s root.
+    assert!(
+        other_entry_path.exists(),
+        "an `/api/instances` poll racing the watcher's first tick deleted the foreign project's \
+         registry entry ({other_entry_path:?}) - permanently erasing its only route into \
+         `known_roots`"
+    );
+
+    // Well past several poll intervals: `proj-latch` has aged out (having satisfied `ever_seen_live`
+    // on its early live polls, then dropping `live_instances` back to zero) and `proj-b`'s entry was
+    // stale from the start, so registry liveness alone reaches zero. With the marker thread still
+    // refreshing `proj-b`'s own agent-liveness marker, the singleton must NOT reap - proving
+    // `known_roots` DID learn `proj-b`'s root from the watcher's own `read_all` despite the earlier
+    // landing-poll race.
+    if rx.recv_timeout(Duration::from_millis(3500)).is_ok() {
+        stop.store(true, Ordering::Relaxed);
+        let _ = heartbeat.join();
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!(
+            "the singleton self-reaped even though a registered project's own agent liveness \
+             marker was still fresh - the earlier `/api/instances` race must not have blinded \
+             `known_roots` to that project's root"
+        );
+    }
+    assert!(
+        matches!(http_get(&format!("http://127.0.0.1:{port}/")), Some(body) if body.contains("rigger dash")),
+        "the singleton must still be genuinely serving, not merely a blocked-but-dead pipe"
+    );
+
+    // Now let the foreign project's agent liveness marker go idle too: every signal quiet -> reap.
+    stop.store(true, Ordering::Relaxed);
+    heartbeat.join().expect("marker heartbeat thread joins");
+
+    let reaped = rx.recv_timeout(Duration::from_secs(12));
+    let _ = child.kill();
+    let _ = child.wait();
+    let n = reaped.expect(
+        "the singleton did not SELF-REAP within 12s after the foreign project's agent liveness \
          marker went idle too - a genuinely quiet machine's dash must not leak",
     );
     assert_eq!(n, 0, "a self-reaped dash should have its stdout at EOF");
@@ -22471,7 +22891,7 @@ fn a_real_rigger_step_session_detaches_the_dash_from_the_step_command_process_gr
     // The dash is a GENUINE serving process (not a stale marker or a recycled pid): confirm it
     // serves its page before observing its group. Reap on failure so nothing leaks.
     if !matches!(http_get(&url), Some(body) if body.contains("rigger dash")) {
-        reap_pid(dash_pid);
+        common::terminate_pid(dash_pid);
         panic!("the step-started dash at {url} did not serve its page");
     }
 
@@ -22479,7 +22899,7 @@ fn a_real_rigger_step_session_detaches_the_dash_from_the_step_command_process_gr
     let dash_pgid = proc_pgid_of(dash_pid);
 
     // Reap the detached dash BEFORE asserting, so a failed assertion never leaves it orphaned.
-    reap_pid(dash_pid);
+    common::terminate_pid(dash_pid);
 
     assert_eq!(
         dash_pgid, dash_pid,
@@ -22901,20 +23321,25 @@ fn dash_attach_unknown_or_since_gone_instance_serves_empty_not_the_local_run() {
     );
 }
 
-/// Spec 50, criterion 3, the STALE-PRUNE reaching the periphery AND the landing's WIRE CONTRACT,
-/// through the BUILT binary. `registry::read_live` prunes any entry whose heartbeat has gone stale
-/// past the idle window, and BOTH the `/api/instances` landing provider and the attach resolver
-/// consume it - so a stale (dead) instance must not appear in the landing, and selecting a stale
-/// id must degrade to empty. The happy-path test registers only fresh entries, so neither the
-/// prune nor the exact serialized field names the page's JS reads are exercised here.
+/// Spec 50, criterion 3, the STALE-FILTER reaching the periphery AND the landing's WIRE CONTRACT,
+/// through the BUILT binary - spec 62 criterion 5 round 4
+/// (`adv-u62c5r4-known-roots-prune-race-with-instances-provider`): `registry::read_live_no_prune`
+/// FILTERS OUT any entry whose heartbeat has gone stale past the idle window WITHOUT deleting it,
+/// and BOTH the `/api/instances` landing provider and the attach resolver consume it - so a stale
+/// (dead) instance must not appear in the landing, and selecting a stale id must degrade to empty,
+/// while its registry FILE must survive on disk for the self-reap watcher's own `read_all` tick to
+/// still find (deletion is reserved exclusively to that watcher's own `read_live` tick, never to
+/// an unsynchronized per-request reader like this landing poll). The happy-path test registers only
+/// fresh entries, so neither the filter nor the exact serialized field names the page's JS reads
+/// are exercised here.
 ///
 /// A LIVE instance (fresh heartbeat) and a STALE one (heartbeat well past `DEFAULT_IDLE_MS`) are
 /// registered into one sandboxed registry. On the built dash, `/api/instances` lists the LIVE
-/// instance and NOT the stale one (pruned by the read) and carries every one of the six
-/// `InstanceView` wire keys the landing page reads; and `?instance=<stale id>` degrades to an
-/// empty run (the stale entry was pruned before resolve).
+/// instance and NOT the stale one (filtered out, but its file left on disk) and carries every one
+/// of the six `InstanceView` wire keys the landing page reads; and `?instance=<stale id>` degrades
+/// to an empty run (the stale entry was filtered out before resolve, never deleted).
 #[test]
-fn dash_landing_prunes_stale_instances_and_pins_the_wire_contract() {
+fn dash_landing_filters_stale_instances_without_pruning_and_pins_the_wire_contract() {
     use rigger::registry;
     use std::process::Stdio;
 
@@ -22972,15 +23397,27 @@ fn dash_landing_prunes_stale_instances_and_pins_the_wire_contract() {
         landing.contains("HTTP/1.1 200"),
         "the landing endpoint answers 200: {landing}"
     );
-    // The LIVE instance is listed with its attach id; the STALE one is pruned, absent from both
-    // the landing's project labels and its selectable ids.
+    // The LIVE instance is listed with its attach id; the STALE one is filtered out, absent from
+    // both the landing's project labels and its selectable ids.
     assert!(
         landing.contains(&live_project) && landing.contains(live_id.as_str()),
         "the landing lists the live instance {live_project} with its attach id: {landing}"
     );
     assert!(
         !landing.contains(&stale_project) && !landing.contains(stale_id.as_str()),
-        "a stale instance is pruned from the landing, never shown as attachable: {landing}"
+        "a stale instance is filtered from the landing, never shown as attachable: {landing}"
+    );
+    // THE ROUND-4 FIX ITSELF: the stale instance's registry FILE must still be on disk after this
+    // `/api/instances` poll - `read_live_no_prune` filters it out of the response without ever
+    // deleting it. A per-request landing poll deleting a foreign project's entry is exactly the
+    // race `adv-u62c5r4-known-roots-prune-race-with-instances-provider` found: it could win against
+    // the self-reap watcher's own `read_all` tick and permanently erase the only place that
+    // project's root is ever learned from.
+    let stale_entry_path = regdir.join(format!("{stale_id}.json"));
+    assert!(
+        stale_entry_path.exists(),
+        "a `/api/instances` poll must never delete a stale registry entry's file from disk - \
+         deletion is reserved to the self-reap watcher's own tick: {stale_entry_path:?}"
     );
 
     // The WIRE CONTRACT: the landing body carries every field name the page's JS reads to label
@@ -23001,8 +23438,9 @@ fn dash_landing_prunes_stale_instances_and_pins_the_wire_contract() {
         );
     }
 
-    // Selecting the stale id resolves against the pruned registry, so it degrades to an empty run
-    // (a 200 with no units), never the stale instance's content and never a 500.
+    // Selecting the stale id resolves against a registry read that filters it out (never deletes
+    // it), so it degrades to an empty run (a 200 with no units), never the stale instance's
+    // content and never a 500.
     assert!(
         stale_state.contains("HTTP/1.1 200") && !stale_state.contains("HTTP/1.1 500"),
         "a stale selector degrades to an empty state, never an error: {stale_state}"
@@ -23818,7 +24256,7 @@ fn watch_once_reports_a_real_steps_own_dash_after_the_step_process_has_long_sinc
 
     // Kill the real dash this run itself just spawned, so the NEXT probe finds a genuinely dead
     // pid on the recorded port - not a synthetic marker, an actual process this test terminated.
-    reap_pid(pid);
+    common::terminate_pid(pid);
     // Best-effort wait for the port to actually free up, so the probe below cannot race a
     // not-yet-reaped socket into a false "still serving" read.
     for _ in 0..50 {
@@ -25007,7 +25445,11 @@ fn step_reminder_prints_despite_env_naming_a_foreign_pid() {
             "--base",
             "origin/does-not-exist",
         ],
-        &[("RIGGER_SPEC_LINT_REMINDER_PID", "1")],
+        // A large, arbitrary sentinel - never this binary's real direct parent. NOT `"1"`:
+        // `.cargo/pidns-runner.sh` (spec 78) runs every test binary as pid 1 of its OWN
+        // fresh pid namespace, so `"1"` would genuinely equal the spawned rigger
+        // subprocess's real parent id here and wrongly suppress the reminder.
+        &[("RIGGER_SPEC_LINT_REMINDER_PID", "999999")],
     );
     assert!(
         !ok,
@@ -25081,7 +25523,11 @@ fn run_reminder_prints_despite_env_naming_a_foreign_pid() {
             "--base",
             "origin/does-not-exist",
         ],
-        &[("RIGGER_SPEC_LINT_REMINDER_PID", "1")],
+        // A large, arbitrary sentinel - never this binary's real direct parent. NOT `"1"`:
+        // `.cargo/pidns-runner.sh` (spec 78) runs every test binary as pid 1 of its OWN
+        // fresh pid namespace, so `"1"` would genuinely equal the spawned rigger
+        // subprocess's real parent id here and wrongly suppress the reminder.
+        &[("RIGGER_SPEC_LINT_REMINDER_PID", "999999")],
     );
     assert!(
         !ok,
@@ -25131,7 +25577,11 @@ fn workflow_reminder_prints_despite_env_naming_a_foreign_pid() {
     let (out, _err, ok) = run_rigger_envs(
         root,
         &["workflow", "specs/42-widgets.md"],
-        &[("RIGGER_SPEC_LINT_REMINDER_PID", "1")],
+        // A large, arbitrary sentinel - never this binary's real direct parent. NOT `"1"`:
+        // `.cargo/pidns-runner.sh` (spec 78) runs every test binary as pid 1 of its OWN
+        // fresh pid namespace, so `"1"` would genuinely equal the spawned rigger
+        // subprocess's real parent id here and wrongly suppress the reminder.
+        &[("RIGGER_SPEC_LINT_REMINDER_PID", "999999")],
     );
     assert!(
         !ok,
@@ -25378,8 +25828,13 @@ fn cmd_dash_names_the_running_holder_of_a_plain_held_port() {
         "a genuinely held port must fail, not silently succeed; stdout:\n{out}\nstderr:\n{err}"
     );
     let my_pid = std::process::id().to_string();
+    // Checked as the exact `by pid {N}` attribution phrase, not a raw pid-string substring test:
+    // this project's mandatory pid-namespace test sandbox (.cargo/pidns-runner.sh) runs this
+    // test binary AS PID 1 of its own fresh namespace, so a raw substring check would be vacuous
+    // - "1" trivially matches inside the loopback address "127.0.0.1" regardless of what the
+    // diagnosis actually reports.
     assert!(
-        err.contains(&my_pid),
+        err.contains(&format!("by pid {my_pid}")),
         "the diagnosis must name THIS test process's pid ({my_pid}) as the holder; \
          stderr:\n{err}"
     );
@@ -25473,17 +25928,14 @@ fn cmd_dash_gives_the_stopped_listener_diagnosis_naming_resume_or_kill() {
         panic!("the holder `rigger dash` never came up serving on port {port}");
     }
 
-    // SIGSTOP the holder - a real job-control stop, exactly the scenario spec 62 names. Uses
-    // `kill(1)`, never `libc`, mirroring `crate::reap::send_signal`'s established convention
-    // (there is no portable std API for a stop signal).
-    let stopped = std::process::Command::new("kill")
-        .arg("-STOP")
-        .arg(holder_pid.to_string())
-        .status();
-    if !matches!(stopped, Ok(s) if s.success()) {
+    // SIGSTOP the holder - a real job-control stop, exactly the scenario spec 62 names. Via
+    // `common::stop_pid` (tests/common/mod.rs), the sanctioned test-side signal call - never a
+    // shelled-out `kill` (the `no-os-kill` gate's exemption is scoped to that one file, not to
+    // arbitrary shell-outs anywhere a test needs a stop signal).
+    if !common::stop_pid(holder_pid) {
         let _ = holder.kill();
         let _ = holder.wait();
-        panic!("failed to SIGSTOP the holder pid {holder_pid}: {stopped:?}");
+        panic!("failed to SIGSTOP the holder pid {holder_pid}");
     }
 
     // Confirm the stop actually landed (state `T` in `/proc/<pid>/stat`) before racing the
@@ -25559,7 +26011,12 @@ fn describe_held_port_public_contract_holds_at_the_crate_boundary() {
     use rigger::dash::describe_held_port;
 
     // Held: bind a listener in this process and describe its own address - the discovered
-    // holder must be THIS test process.
+    // holder must be THIS test process. Checked as the exact `by pid {N}` attribution phrase
+    // [`format_held_port`] (src/dash.rs) renders, not a raw pid-string substring test: this
+    // project's mandatory pid-namespace test sandbox (.cargo/pidns-runner.sh, every test binary
+    // here runs AS PID 1 of its own fresh namespace) makes a raw `contains(&pid.to_string())`
+    // meaningless, since "1" is trivially a substring of the loopback address "127.0.0.1" that
+    // appears in every rendered message regardless of what it actually reports.
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let held_addr = listener.local_addr().unwrap();
     let held_msg = describe_held_port(held_addr);
@@ -25568,8 +26025,9 @@ fn describe_held_port_public_contract_holds_at_the_crate_boundary() {
         "must always name the held address; got: {held_msg}"
     );
     if Path::new("/proc").is_dir() {
+        let my_pid = std::process::id();
         assert!(
-            held_msg.contains(&std::process::id().to_string()),
+            held_msg.contains(&format!("by pid {my_pid}")),
             "must name this test process's own pid as the holder; got: {held_msg}"
         );
     }
@@ -25577,6 +26035,9 @@ fn describe_held_port_public_contract_holds_at_the_crate_boundary() {
 
     // Unheld: learn a free port and release it before describing it - nothing rebinds it in
     // between, so the crate-boundary call must report no holder while still naming the address.
+    // Same exact-phrase check as above, for the same reason (pid 1 under the mandatory
+    // pid-namespace sandbox would otherwise make a raw substring check vacuous, not a genuine
+    // no-self-attribution proof).
     let free_addr = {
         let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         probe.local_addr().unwrap()
@@ -25587,8 +26048,9 @@ fn describe_held_port_public_contract_holds_at_the_crate_boundary() {
         "must always name the address even with no holder; got: {unheld_msg}"
     );
     if Path::new("/proc").is_dir() {
+        let my_pid = std::process::id();
         assert!(
-            !unheld_msg.contains(&std::process::id().to_string()),
+            !unheld_msg.contains(&format!("by pid {my_pid}")),
             "an unheld port must not name this (or any) process as its holder; \
              got: {unheld_msg}"
         );
@@ -25652,14 +26114,11 @@ fn step_names_the_stopped_holder_when_the_step_paths_own_auto_start_hits_the_pre
     }
 
     // SIGSTOP the holder - a real job-control stop, exactly the scenario spec 62's Goal names.
-    let stopped = std::process::Command::new("kill")
-        .arg("-STOP")
-        .arg(holder_pid.to_string())
-        .status();
-    if !matches!(stopped, Ok(s) if s.success()) {
+    // Via `common::stop_pid` (tests/common/mod.rs), the sanctioned test-side signal call.
+    if !common::stop_pid(holder_pid) {
         let _ = holder.kill();
         let _ = holder.wait();
-        panic!("failed to SIGSTOP the holder pid {holder_pid}: {stopped:?}");
+        panic!("failed to SIGSTOP the holder pid {holder_pid}");
     }
 
     // Confirm the stop actually landed (state `T` in `/proc/<pid>/stat`) before racing the
@@ -25763,8 +26222,13 @@ fn describe_held_port_if_confirmed_public_contract_holds_at_the_crate_boundary()
             held_msg.contains(&held_addr.to_string()),
             "must always name the held address; got: {held_msg}"
         );
+        // Checked as the exact `by pid {N}` attribution phrase, not a raw pid-string substring
+        // test: this project's mandatory pid-namespace test sandbox (.cargo/pidns-runner.sh,
+        // every test binary here runs AS PID 1 of its own fresh namespace) makes a raw substring
+        // check vacuous, since "1" trivially matches inside the loopback address "127.0.0.1"
+        // regardless of what the message actually reports.
         assert!(
-            held_msg.contains(&std::process::id().to_string()),
+            held_msg.contains(&format!("by pid {}", std::process::id())),
             "must name this test process's own pid as the holder; got: {held_msg}"
         );
     }
@@ -25830,8 +26294,13 @@ fn held_port_holder_public_contract_holds_at_the_crate_boundary() {
             "the message half must always name the held address; got: {held_msg}"
         );
         assert!(
-            held_msg.contains(&my_pid.to_string()),
-            "the message half must name the holder pid too; got: {held_msg}"
+            held_msg.contains(&format!("by pid {my_pid}")),
+            "the message half must name the holder pid too - checked as the exact `by pid {{N}}` \
+             attribution phrase, not a raw pid-string substring test: this project's mandatory \
+             pid-namespace test sandbox (.cargo/pidns-runner.sh, every test binary here runs AS \
+             PID 1 of its own fresh namespace) makes a raw substring check vacuous, since \"1\" \
+             trivially matches inside the loopback address \"127.0.0.1\" regardless of what the \
+             message actually reports; got: {held_msg}"
         );
         // Sibling-consistency: `describe_held_port_if_confirmed` is defined in terms of
         // `held_port_holder` (round 4) precisely so the two can never drift apart - a
@@ -25850,7 +26319,9 @@ fn held_port_holder_public_contract_holds_at_the_crate_boundary() {
     // between, so nothing can be independently confirmed holding it: the crate-boundary call
     // must resolve None, the same "never a claim without confirmation" contract its sibling
     // holds, and must stay consistent with that sibling's own None resolution for the identical
-    // address.
+    // address. Unlike the pid-attribution message checks above, `None`-equality here does not
+    // depend on any pid value at all, so it needs no special handling under the pid-namespace
+    // test sandbox.
     let free_addr = {
         let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         probe.local_addr().unwrap()
