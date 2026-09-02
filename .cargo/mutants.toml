@@ -7,8 +7,8 @@
 # ever reach the namespace, but a reaper is a loaded gun by definition and its mutation
 # "survivors" would prove nothing about the guard's necessity - the guard is exercised by
 # explicit tests instead (specs/78-no-os-level-kills.md, criterion 2).
-exclude_re = [
-  "reap::send_signal",
-  "reap::reap_processes_rooted_under",
-  "reap::is_reapable_base",
-]
+# The spec-78 run proved the original `exclude_re` form here a latent no-op (decision
+# u78c2r2-mutants-toml-exclude-re-latent-noop): cargo-mutants matches exclude_re against the
+# mutant NAME string, "<file>:<line>:<col>: replace <fn> ...", which never contains a
+# `reap::`-qualified path. Exclude the file itself instead - the whole module is the reaper.
+exclude_globs = ["src/reap.rs"]
