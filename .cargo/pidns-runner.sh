@@ -34,4 +34,9 @@ if ! unshare --user --map-current-user --pid --fork --mount-proc true 2>/dev/nul
   echo "pidns-runner: set RIGGER_PIDNS=off only in a throwaway environment (never on a workstation)." >&2
   exit 1
 fi
-exec unshare --user --map-current-user --pid --fork --mount-proc --kill-child -- "$@"
+# Memory bound (2026-09-02): cap each test binary's address space (default 24G,
+# RIGGER_TEST_AS_BYTES to tune). A cargo-mutants mutant of a loop allocated ~32G on
+# 2026-09-02 02:18; the kernel OOM killer took the test, and systemd then stopped the
+# whole terminal scope as oom-kill collateral, ending the operator's session. With the
+# cap, a runaway mutant fails its allocation and the test - the box never feels it.
+exec unshare --user --map-current-user --pid --fork --mount-proc --kill-child -- prlimit --as="${RIGGER_TEST_AS_BYTES:-25769803776}" -- "$@"
