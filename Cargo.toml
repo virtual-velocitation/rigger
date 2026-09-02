@@ -61,6 +61,18 @@ serde_yaml = "0.9"
 ignore = "0.4"
 uuid = { version = "1", features = ["v4"] }
 thiserror = "2"
+# The reaper's ONLY sanctioned way to signal a process it does not own a `Child` handle to
+# (spec 78): `kill_process`/`test_kill_process`, never a `Command::new("kill")` shell-out and
+# never `libc`. `default-features = false` + explicit `std`+`process` selects the linux_raw
+# backend on Linux, so the `--no-default-features` build pulls no `libc` crate edge and
+# reaps identically (verified: `cargo tree -e normal --no-default-features -i libc` finds no
+# `libc` edge before or after this dependency). Pinned to the 1.x line (not the older 0.38.x
+# also present transitively) because `Pid::from_raw` in 1.x accepts negative raw values and
+# rejects only zero - the reaper's own explicit `pid > 1` guard is therefore load-bearing,
+# never delegated to the type; 1.1.4 is already resolved transitively in `Cargo.lock`, so
+# adding it direct at that version is a no-op for dependency resolution. Non-optional: the
+# reap runs in both feature lanes.
+rustix = { version = "1.1", default-features = false, features = ["std", "process"] }
 # Cross-process advisory file lock (`flock` under the hood) that SERIALIZES `rigger step`
 # (see `acquire_step_lock`) so the run advances ONE step at a time - spec 51 relies on that
 # invariant. A step checks out the run branch and branches unit worktrees off HEAD, then

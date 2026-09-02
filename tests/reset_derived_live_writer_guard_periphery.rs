@@ -556,6 +556,65 @@ fn reset_derived_ignores_a_registration_for_a_different_store() {
     assert!(out.contains("reset --derived: pruned"), "got {out:?}");
 }
 
+/// Spec 62, criterion 5 round 4 (`adv-u62c5r4-known-roots-prune-race-with-instances-provider`):
+/// this guard's own driver-registration probe reads the WHOLE machine-global registry (every
+/// project's entry, not just this store's own) to count live registrations that match `expected`,
+/// so before the fix, checking THIS store's liveness had the side effect of PRUNING any OTHER
+/// project's entry whose heartbeat had already gone stale, via `registry::read_live`'s delete.
+/// That is the identical race class the dash's own three call sites were hardened against in this
+/// same round (`registry::read_live_no_prune`): a foreign project's registry entry is the only
+/// route the machine-wide self-reap watcher ever learns that project's root from, so an unrelated
+/// `rigger reset --derived` invocation deleting it out from under that project is exactly the
+/// permanent, silent loss criterion 5's cross-project guarantee exists to prevent, just reached
+/// through a different call site than the dash's landing poll or attach resolve.
+///
+/// A stale (heartbeat well in the past) entry for an unrelated project's store never blocks this
+/// store's compaction (matching `reset_derived_ignores_a_registration_for_a_different_store`'s
+/// live-entry case) AND its registry FILE must still exist on disk after the command runs -
+/// `refuse_derived_reset_if_live`'s own probe now filters staleness without ever deleting.
+#[test]
+fn reset_derived_never_deletes_a_stale_foreign_registry_entrys_file() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let state_home = tempfile::tempdir().expect("create XDG_STATE_HOME");
+    let instances_dir = registry::instances_dir(state_home.path());
+    let stale_inst = Instance {
+        project: "other-proj".to_string(),
+        root: "/tmp/some-other-project".to_string(),
+        store: StoreIdentity::Local {
+            path: "/tmp/some-other-project/.rigger/events.db".to_string(),
+        },
+        // Well past `DEFAULT_IDLE_MS`: the pre-fix `read_live` would have pruned this outright as
+        // a side effect of the guard's own liveness probe.
+        heartbeat_ms: 0,
+    };
+    let entry_path = registry::write(&instances_dir, &stale_inst)
+        .expect("seed a stale, unrelated registry entry");
+    assert!(
+        entry_path.exists(),
+        "the entry must exist before the command runs"
+    );
+
+    let (out, err, ok) = run_rigger(
+        root,
+        &["reset", "--derived"],
+        &[("XDG_STATE_HOME", state_home.path().to_str().unwrap())],
+    );
+    assert!(
+        ok,
+        "a stale, unrelated project's registration must never block this store's compaction; \
+         stderr: {err}"
+    );
+    assert!(out.contains("reset --derived: pruned"), "got {out:?}");
+    assert!(
+        entry_path.exists(),
+        "reset --derived's own live-writer probe must never delete a foreign project's stale \
+         registry entry from disk as a side effect of checking THIS store's liveness - deletion \
+         is reserved exclusively to the dash's self-reap watcher's own tick: {entry_path:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------------------
 // The override: --force-live
 // ---------------------------------------------------------------------------------------

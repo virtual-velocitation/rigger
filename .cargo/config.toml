@@ -11,3 +11,9 @@
 # lane can override with `CARGO_BUILD_JOBS=<n>` (env wins over this file) for more parallelism.
 [build]
 jobs = 8
+
+# Run every test binary inside a user+pid+mount namespace (blast-radius containment for the
+# process reaping rigger's tests do). Rationale, fail-closed behavior and the opt-out for
+# throwaway CI environments are documented in the runner script itself.
+[target.x86_64-unknown-linux-gnu]
+runner = ".cargo/pidns-runner.sh"

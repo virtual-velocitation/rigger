@@ -356,9 +356,16 @@ pub struct DashMarker {
 /// pid) is enough for the next `step` to recognize this dash as already serving. A round-3 fix
 /// that instead wrote NO marker at all in this exact case regressed spec 39 criterion 1's
 /// no-op-on-later-steps invariant, repeating the full spawn/probe/attribute cycle on every later
-/// step forever - and it also leaves a marker for spec 62's sibling self-heal (u62c2) to
-/// eventually correct if the real pid ever becomes attributable, where refusing to record
-/// anything left it nothing to correct.
+/// step forever.
+///
+/// Self-heal (spec 62 criterion 2, u62c2) is scoped to DEAD or stale markers only
+/// (`d-u62c1-unattributable-serving-disposition`): it never proactively revisits a marker whose
+/// port is STILL serving, sentinel pid or not - `dash_start_needed`'s still-serving short-circuit
+/// answers `false` before `start()` is ever called, so nothing rewrites the on-disk record while
+/// THIS exact dash instance keeps answering. Correction to a real pid, if one ever becomes
+/// attributable, can only happen on this same instance's NEXT full stop-then-restart cycle (a
+/// fresh `start()` call reached once the port genuinely stops answering) - never while it keeps
+/// serving.
 pub const UNATTRIBUTED_PID: u32 = 0;
 
 /// The one shared filter for every DISPLAY site that renders a marker's raw pid (spec 62 round
@@ -841,7 +848,8 @@ pub struct InstanceView {
 }
 
 /// Project the live registry entries into the landing view's rows (spec 50, criterion 3), sorted
-/// deterministically (by project, then root) because [`crate::registry::read_live`] returns entries
+/// deterministically (by project, then root) because its production caller's
+/// [`crate::registry::read_live_no_prune`] (like its pruning sibling `read_live`) returns entries
 /// in an unspecified filesystem order. Pure and credential-free: every field is copied from the
 /// already-redacted [`crate::registry::Instance`], so no connection secret can reach the view.
 pub fn instance_views(instances: &[crate::registry::Instance], now_ms: u64) -> Vec<InstanceView> {
@@ -8575,8 +8583,13 @@ mod tests {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
         let msg = describe_held_port(addr);
+        // Checked as the exact `by pid {N}` attribution phrase, not a raw pid-string substring
+        // test: this project's mandatory pid-namespace test sandbox (.cargo/pidns-runner.sh,
+        // every test binary here runs AS PID 1 of its own fresh namespace) makes a raw substring
+        // check vacuous, since "1" trivially matches inside the loopback address "127.0.0.1"
+        // regardless of what the message actually reports.
         assert!(
-            msg.contains(&std::process::id().to_string()),
+            msg.contains(&format!("by pid {}", std::process::id())),
             "describe_held_port must name this test process's own pid as the holder; got: {msg}"
         );
         assert!(msg.contains(&addr.to_string()), "got: {msg}");
@@ -8604,8 +8617,10 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let msg = describe_held_port_if_confirmed(addr)
             .expect("a port a real listener holds must resolve Some, not None");
+        // Same exact-phrase check as `describe_held_port_names_this_process_when_it_holds_the_
+        // port_itself` above, for the same pid-namespace-sandbox reason.
         assert!(
-            msg.contains(&std::process::id().to_string()),
+            msg.contains(&format!("by pid {}", std::process::id())),
             "must name this test process's own pid as the holder; got: {msg}"
         );
         assert!(msg.contains(&addr.to_string()), "got: {msg}");

@@ -340,13 +340,15 @@ fn reset_build_cache_still_refuses_when_the_guard_holders_orchestrator_died_but_
     // simulate-via-real-`flock` style, never re-invoking Rust code cross-process): an
     // "orchestrator" (`sh -c "... & wait"`, spawned and owned by THIS test exactly the way
     // the real rigger process is spawned and owned by whatever launches it) backgrounds
-    // `flock -s -F -- <guard> sh -c '<script>'` - the exact exec-replacing wrapper
-    // `ExecRunner::run` now uses - then blocks on `wait`, mirroring `Command::output()`'s own
-    // blocking wait for its child. `&` guarantees the backgrounded chain is a genuinely
-    // separate, already-forked process before the orchestrator ever dies (no shell tail-call
-    // exec-replace ambiguity, unlike a bare trailing `sh -c "singlecommand"`). Killing ONLY
-    // the orchestrator's own pid (`Child::kill`, which signals that one pid, never a process
-    // group) must leave the backgrounded flock/sh chain alive and STILL holding the guard.
+    // `flock -s -F <guard> sh -c '<script>'` - the exact exec-replacing wrapper
+    // `ExecRunner::run` now uses (spec 78's no-os-kill audit bans the bare `--` argv
+    // separator tree-wide, so the wrapper no longer passes one) - then blocks on `wait`,
+    // mirroring `Command::output()`'s own blocking wait for its child. `&` guarantees the
+    // backgrounded chain is a genuinely separate, already-forked process before the
+    // orchestrator ever dies (no shell tail-call exec-replace ambiguity, unlike a bare
+    // trailing `sh -c "singlecommand"`). Killing ONLY the orchestrator's own pid
+    // (`Child::kill`, which signals that one pid, never a process group) must leave the
+    // backgrounded flock/sh chain alive and STILL holding the guard.
     let project = temp_project();
     let root = project.path();
     seed_store(root);
@@ -373,11 +375,12 @@ fn reset_build_cache_still_refuses_when_the_guard_holders_orchestrator_died_but_
             .unwrap_or(false)
     }
 
-    // The simulated "orchestrator": backgrounds the exact `flock -s -F -- <guard>
-    // sh -c '<script>'` command `ExecRunner::run` now constructs, then blocks on `wait` for
-    // it - the same spawn-then-block shape `Command::output()` gives the real orchestrator.
+    // The simulated "orchestrator": backgrounds the exact `flock -s -F <guard>
+    // sh -c '<script>'` command `ExecRunner::run` now constructs (no `--` separator - spec
+    // 78's no-os-kill audit bans that argv shape tree-wide), then blocks on `wait` for it -
+    // the same spawn-then-block shape `Command::output()` gives the real orchestrator.
     let script = format!(
-        "flock -s -F -- {guard_str} sh -c 'echo $$ > {pidfile_str}; touch {started_str}; \
+        "flock -s -F {guard_str} sh -c 'echo $$ > {pidfile_str}; touch {started_str}; \
          sleep 30' & wait"
     );
     let mut orchestrator = Command::new("sh")
@@ -411,17 +414,13 @@ fn reset_build_cache_still_refuses_when_the_guard_holders_orchestrator_died_but_
         .expect("SIGKILL the simulated orchestrator");
     orchestrator.wait().expect("reap the killed orchestrator");
 
-    let child_pid = std::fs::read_to_string(&pidfile)
+    let child_pid: u32 = std::fs::read_to_string(&pidfile)
         .expect("the backgrounded build must have recorded its own pid")
         .trim()
-        .to_string();
+        .parse()
+        .expect("the recorded pid must parse as a u32");
     assert!(
-        Command::new("kill")
-            .arg("-0")
-            .arg(&child_pid)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false),
+        common::is_alive(child_pid),
         "the build must survive its orchestrator's death as a live orphan: pid {child_pid}"
     );
     assert!(
@@ -431,7 +430,7 @@ fn reset_build_cache_still_refuses_when_the_guard_holders_orchestrator_died_but_
     );
 
     let (out, err, ok) = run_rigger(root, &["reset", "--build-cache"]);
-    let _ = Command::new("kill").arg("-9").arg(&child_pid).status();
+    common::terminate_pid(child_pid);
 
     assert!(
         !ok,

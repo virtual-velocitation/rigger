@@ -18,6 +18,12 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CARGO_BUILD_JOBS: 8
+      # The cargo test runner (.cargo/pidns-runner.sh) wraps every test binary in a
+      # user+pid namespace and FAILS CLOSED where one cannot be created. A hosted CI
+      # runner is a throwaway VM with no operator session to protect, and Ubuntu's
+      # AppArmor restricts unprivileged user namespaces there, so opt out explicitly.
+      # Never set this on a workstation.
+      RIGGER_PIDNS: "off"
       # Pin fastembed's model cache to a stable, absolute path (its default is a
       # `.fastembed_cache` dir in the CWD) so the cache step below can key on it and
       # restore the ~130 MB of embedding weights across runs.
