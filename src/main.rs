@@ -6006,7 +6006,9 @@ fn cmd_dash(args: &[String]) -> Res {
     let progress_db = db_path("progress.db");
     let identity = project_identity();
     // The scratch root whose markers rigger stats to present each agent's liveness age (spec
-    // 14). Resolved once; a repo-less invocation leaves it empty and the view omits ages.
+    // 14). Resolved once; a repo-less invocation with no `RIGGER_TMPDIR`/configured `workdir`
+    // either leaves it empty and the view omits ages (see the resolution below for why an
+    // explicit override still resolves without a repo).
     // The configured remediation bound (same config) sets the `#n/max` on a current-blocker
     // `reject-recurrence` line so the dashboard and `rigger status` agree.
     let (workdir, max_retries) = config::load(".")
@@ -6014,7 +6016,20 @@ fn cmd_dash(args: &[String]) -> Res {
         .unwrap_or_default();
     let scratch_root = {
         let repo = git_repo();
-        if repo.is_empty() {
+        // An empty `repo` alone must NOT force an empty scratch root: `RIGGER_TMPDIR` (or a
+        // configured `workdir`) is an EXPLICIT override that `worktree::scratch_root_path`
+        // already answers correctly with no git repo at all (its own first match arm checks the
+        // override before ever consulting `repo`) - a `rigger dash` launched from a directory
+        // with no git repository above it is not exotic: a whole-tree copy that excludes `.git`
+        // (this project's own `cargo mutants --in-diff` scratch-tree build, spec 78's
+        // mutation-efficacy step) produces exactly that cwd, and silently dropping an explicit
+        // `RIGGER_TMPDIR` there blinds the self-reap watcher (spec 62, criterion 5) to this
+        // project's own agent-liveness marker. Only when NEITHER signal is present (no repo, no
+        // env override, no configured `workdir`) does this stay empty, preserving the original
+        // repo-less degrade below (no scratch to probe, no directory fabricated from a bare cwd).
+        let has_explicit_root = std::env::var("RIGGER_TMPDIR").is_ok_and(|v| !v.trim().is_empty())
+            || !workdir.trim().is_empty();
+        if repo.is_empty() && !has_explicit_root {
             String::new()
         } else {
             rigger::worktree::scratch_root_from_env(&repo, &workdir)
@@ -8022,6 +8037,13 @@ fn live_writer_refusal(reasons: &[String]) -> String {
 /// environment) degrades to zero registrations - the same degrade `register_run_instance` itself
 /// takes for the identical reason: the registry's loss is harmless discovery metadata, never a
 /// signal this guard can invent.
+///
+/// This probe is read-only in effect, not just in name: it reads via
+/// [`rigger::registry::read_live_no_prune`], never [`rigger::registry::read_live`], so checking
+/// for live writers here never deletes a stale registry entry as a side effect - `reset
+/// --derived` performs no registry hygiene of its own; deletion stays reserved exclusively to
+/// the dashboard's self-reap watcher tick (see `read_live_no_prune`'s doc for why a prune here
+/// would be unsafe).
 ///
 /// FAIL-SAFE in two different ways for two different faults:
 ///   - a run-stream read failure propagates as a command error rather than folding into "no

@@ -23,9 +23,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 /// The registry's default staleness window (spec 50): an entry whose heartbeat has not been
-/// refreshed within this many milliseconds is prunable by any reader. Mirrors the dash's own
-/// idle bound (900s) so a live run's normal between-step gap is never read as gone; the reader
-/// takes the window as a parameter ([`read_live`]) so a caller may tune it.
+/// refreshed within this many milliseconds counts as stale. Mirrors the dash's own idle bound
+/// (900s) so a live run's normal between-step gap is never read as gone. Staleness alone does
+/// NOT mean prunable by whoever happens to read it - deletion is reserved to the self-reap
+/// watcher's own tick ([`read_live`]); every other reader filters by this same window through
+/// [`read_live_no_prune`] without deleting anything. Both readers take the window as a
+/// parameter so a caller may tune it.
 pub const DEFAULT_IDLE_MS: u64 = 900_000;
 
 /// A CREDENTIAL-FREE description of the event store an instance reports to. This is discovery
@@ -55,8 +58,9 @@ pub struct Instance {
     /// The credential-free store this instance reports to.
     pub store: StoreIdentity,
     /// Unix-epoch milliseconds of the last heartbeat. A live instance refreshes it every time it
-    /// starts or advances a run; a reader prunes an entry whose heartbeat is older than the idle
-    /// window (see [`is_stale`]).
+    /// starts or advances a run; an entry whose heartbeat is older than the idle window is stale
+    /// (see [`is_stale`]) - deleted only by the self-reap watcher's own [`read_live`] tick, and
+    /// merely filtered out (never deleted) by every other reader via [`read_live_no_prune`].
     pub heartbeat_ms: u64,
 }
 
