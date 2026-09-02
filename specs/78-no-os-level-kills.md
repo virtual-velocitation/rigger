@@ -163,15 +163,29 @@ a SECOND authorization path (git identity via `worktree_on_branch`, not `is_reap
 scratch-root containment gate) applies equally to these three: a worktree's own dir can live
 anywhere relative to its repo (`defaults.workdir`/`RIGGER_TMPDIR` relocation), so no caller at
 these sites has an `authorized_root` that would reliably contain it either. The fourth is
-`reclaim_cache_sibling`, the single authority that removes a unit worktree's per-unit
-`cargo-target-<slug>` build cache and that cache's `-store-fence` sibling (which per its own
-doc comment can hold a live sqlite `events.db` a courier still has open): both its
-`fs::remove_dir_all` calls carry zero `reap::` call and zero containment check of any kind.
-Unlike the three above, this one is reachable from ALL FOUR worktree-teardown paths -
-[`Worktree::remove`] and [`Worktree::discard`] included, the two this spec's own c2 unit
-already authorized for the worktree dir itself - so a process rooted under either
-cache-sibling dir gets no reap attempt even on the two paths this Notes section otherwise
-treats as closed. This spec does NOT extend the reap fix to any of the four - naming the gap
+`reclaim_cache_sibling` (`src/worktree.rs:810-818`), the single authority that removes a unit
+worktree's per-unit `cargo-target-<slug>` build cache and that cache's `-store-fence` sibling
+(which per its own doc comment can hold a live sqlite `events.db` a courier still has open):
+it makes THREE `fs::remove_dir_all` calls, not two, none carrying a `reap::` call or any
+containment check. Two are gated on `unit_cache_sibling` matching (`worktree_dir` names a
+`rigger-wt-<slug>` unit worktree): the cache's own `-store-fence` sibling, then the cache
+itself (`src/worktree.rs:812-813`). The third is gated on `review_fence_sibling` matching
+instead (`worktree_dir` names a `rigger-review-*` worktree): that review worktree's OWN
+`-store-fence` sibling (`src/worktree.rs:816`). The two gates are mutually exclusive on the
+worktree dir's own prefix, so exactly one branch runs per call, never both.
+Unlike the three above, `reclaim_cache_sibling` is reachable from ALL FOUR worktree-teardown
+paths, but only [`Worktree::remove`] (`src/worktree.rs:546-573`) was actually authorized a
+worktree-dir reap by this spec's own c2 unit (git identity via `worktree_on_branch`, decision
+`u78c2r2-worktree-remove-identity-not-tree`) - c2's entire `worktree.rs` delta, 21
+insertions/3 deletions, is confined to that one function. [`Worktree::discard`] never was:
+its own worktree-dir removal is one of the three zero-`reap::`-call sites named above (via
+`clear_worktree_dir`), and per its own doc comment it is NEVER called on a unit's durable
+`rigger/u/*` worktree, only a `rigger-review-*` one - so its `reclaim_cache_sibling` call
+always takes the review-fence branch (line 816 above), never the two unit-cache calls. So
+even on the one path this spec DID authorize a worktree-dir reap for, the cache-sibling
+removal that immediately follows it (`src/worktree.rs:571`) still carries no reap of its own -
+the c2 authorization covers the worktree dir itself, never its cache sibling.
+This spec does NOT extend the reap fix to any of the four - naming the gap
 here is not a claim that these sites are safe, only that closing them is explicitly OUT of
 this spec's scope rather than a silent omission: a process rooted in a dir any of the four
 removes gets no reap attempt of any kind before the dir is deleted. Closing it is a follow-up
@@ -180,9 +194,9 @@ authorized (git identity, `reap::reap_authorized`).
 
 Out of scope, deferred explicitly: a spawn LEDGER that would let the reaper signal only pids
 rigger itself recorded (the scan stays, guarded); the dash's `--reap-on-idle` self-exit (it
-exits itself, no signal involved); `sweep_terminal`, `clear_worktree_dir` and
-`reclaim_worktree_on_branch` in `src/worktree.rs` (named above); anything else outside `src/`
-and `tests/`.
+exits itself, no signal involved); `sweep_terminal`, `clear_worktree_dir`,
+`reclaim_worktree_on_branch` and `reclaim_cache_sibling` in `src/worktree.rs` (named above);
+anything else outside `src/` and `tests/`.
 
 Why not keep `--`: `--` fixes one argv misparse; it does nothing about a pgid that IS 1, a
 marker that names the wrong pid, or a base that canonicalizes too wide. The rule removes the
