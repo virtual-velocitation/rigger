@@ -20729,8 +20729,14 @@ fn step_writes_no_dash_marker_and_leaves_a_stale_one_untouched_when_the_bind_nev
 /// `stale_port` is reserved-then-released (never `dash_port`, the fresh dash's own target), so
 /// nothing answers it and the pre-step marker is genuinely dead, not merely arbitrary.
 ///
-/// The started dash is a real, long-lived detached process, so this test reaps it by pid right
-/// after its one liveness probe - a failed assertion before that point never even started one.
+/// The started dash is a real, long-lived detached process. `read_dash_marker` returning `Some`
+/// is ITSELF already past the point a dash exists (spec 62 criterion 1, MARKER FOLLOWS BIND: a
+/// marker only ever exists after a genuine successful bind), so this test probes the dash's
+/// liveness and reaps it by pid IMMEDIATELY after that read succeeds - before the `assert_ne!`,
+/// `assert_eq!`, and `assert!(err...)` checks that follow - mirroring the reap-before-assert
+/// discipline the `step_auto_starts_one_persistent_dash_and_a_second_step_starts_none` sibling
+/// test in this same file already follows: a failed assertion never leaves an orphaned dashboard
+/// behind.
 // Hermetic against a real machine dash: pins the ensure port to its own ephemeral
 // `free_loopback_port` (never the fixed 7420 a genuine always-on dash holds on the self-hosting
 // box) - the same reason the other step-path dash tests in this section need no `serial` key.
@@ -20754,6 +20760,14 @@ fn step_self_heals_a_stale_marker_naming_a_dead_pid() {
     );
     let (port, pid) = read_dash_marker(root)
         .unwrap_or_else(|| panic!("self-heal must record a fresh marker; stderr:\n{err}"));
+
+    // A real dash is now alive: probe it (a GENUINE serving process, not merely a written
+    // record) and reap it by pid BEFORE any assertion below that could panic, so a failed
+    // assertion never leaves it orphaned.
+    let url = format!("http://127.0.0.1:{port}/");
+    let served = matches!(http_get(&url), Some(body) if body.contains("rigger dash"));
+    common::terminate_pid(pid);
+
     assert_ne!(
         (port, pid),
         (stale_port, 999_999),
@@ -20768,11 +20782,6 @@ fn step_self_heals_a_stale_marker_naming_a_dead_pid() {
         err.contains("serving this run"),
         "self-heal starting a fresh dash must announce it as newly serving; stderr:\n{err}"
     );
-
-    // The replacement marker is a GENUINE serving process, not merely a written record.
-    let url = format!("http://127.0.0.1:{port}/");
-    let served = matches!(http_get(&url), Some(body) if body.contains("rigger dash"));
-    common::terminate_pid(pid);
     assert!(
         served,
         "the self-healed dash at {url} did not serve its page"
@@ -20790,8 +20799,14 @@ fn step_self_heals_a_stale_marker_naming_a_dead_pid() {
 /// the real `cmd_step -> ensure_run_dashboard -> spawn_run_dashboard_detached` wiring, not just
 /// the injected-`start()` unit test.
 ///
-/// The started dash is a real, long-lived detached process, so this test reaps it by pid right
-/// after its one liveness probe - a failed assertion before that point never even started one.
+/// The started dash is a real, long-lived detached process. `read_dash_marker` returning `Some`
+/// is ITSELF already past the point a dash exists (spec 62 criterion 1, MARKER FOLLOWS BIND: a
+/// marker only ever exists after a genuine successful bind), so this test probes the dash's
+/// liveness and reaps it by pid IMMEDIATELY after that read succeeds - before the `assert_ne!`,
+/// `assert_eq!`, and `assert!(err...)` checks that follow - mirroring the reap-before-assert
+/// discipline the `step_auto_starts_one_persistent_dash_and_a_second_step_starts_none` sibling
+/// test in this same file already follows: a failed assertion never leaves an orphaned dashboard
+/// behind.
 // Hermetic against a real machine dash: pins the ensure port to its own ephemeral
 // `free_loopback_port` (never the fixed 7420 a genuine always-on dash holds on the self-hosting
 // box) - the same reason the other step-path dash tests in this section need no `serial` key.
@@ -20816,6 +20831,14 @@ fn step_self_heals_a_stale_marker_naming_a_live_pid_whose_port_is_unserved() {
     );
     let (port, pid) = read_dash_marker(root)
         .unwrap_or_else(|| panic!("self-heal must record a fresh marker; stderr:\n{err}"));
+
+    // A real dash is now alive: probe it (a GENUINE serving process, not merely a written
+    // record) and reap it by pid BEFORE any assertion below that could panic, so a failed
+    // assertion never leaves it orphaned.
+    let url = format!("http://127.0.0.1:{port}/");
+    let served = matches!(http_get(&url), Some(body) if body.contains("rigger dash"));
+    common::terminate_pid(pid);
+
     assert_ne!(
         (port, pid),
         (stale_port, live_pid),
@@ -20830,11 +20853,6 @@ fn step_self_heals_a_stale_marker_naming_a_live_pid_whose_port_is_unserved() {
         err.contains("serving this run"),
         "self-heal starting a fresh dash must announce it as newly serving; stderr:\n{err}"
     );
-
-    // The replacement marker is a GENUINE serving process, not merely a written record.
-    let url = format!("http://127.0.0.1:{port}/");
-    let served = matches!(http_get(&url), Some(body) if body.contains("rigger dash"));
-    common::terminate_pid(pid);
     assert!(
         served,
         "the self-healed dash at {url} did not serve its page"
