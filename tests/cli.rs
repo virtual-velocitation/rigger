@@ -21769,6 +21769,129 @@ fn a_reap_on_idle_singleton_survives_a_fresh_agent_liveness_marker_after_the_reg
     assert_eq!(n, 0, "a self-reaped dash should have its stdout at EOF");
 }
 
+/// Spec 62, criterion 5 - the SAME survives-live-work guarantee as the test above, but launched
+/// from a directory with NO git repository above it at all. `cmd_dash`'s own scratch-root
+/// resolution derives `git_repo()` first and, before this fix, treated an EMPTY `git_repo()` as a
+/// hard "no scratch root, ever": it skipped `worktree::scratch_root_from_env` (and therefore
+/// `RIGGER_TMPDIR`) entirely, rather than letting that resolver's own env-override-first
+/// precedence handle a repo-less cwd - which it already does correctly on its own
+/// (`scratch_root_path`'s first match arm answers `RIGGER_TMPDIR` regardless of `repo`). A
+/// `rigger` invocation with no git repository above its cwd is not exotic: it is exactly what a
+/// whole-tree copy that excludes `.git` produces - including this project's OWN
+/// `cargo mutants --in-diff` scratch-tree build (spec 78's mutation-efficacy step every
+/// implementer runs), which is how this gap was actually found: a mutation baseline run failed
+/// this criterion's own sibling test above ONLY when run from that git-less copy, never from a
+/// real git worktree. A git-less launch silently blinding the self-reap watcher to its OWN
+/// launching project's agent-liveness marker is a real, reachable production gap, not a
+/// test-only corner.
+#[test]
+fn a_reap_on_idle_singleton_survives_a_fresh_agent_liveness_marker_with_no_git_repo_at_launch() {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
+
+    // A machine-global registry the dash and the test share.
+    let state = tempfile::tempdir().unwrap();
+    let xdg = state.path().to_str().unwrap().to_string();
+    let regdir = rigger::registry::instances_dir(state.path());
+
+    // A hermetic scratch root the dash resolves via `RIGGER_TMPDIR` alone - `cwd`, below, is
+    // deliberately NEVER `git init`-ed, so `git_repo()` resolves empty and the only way the dash
+    // can find this scratch root at all is by honoring `RIGGER_TMPDIR` even with an empty repo.
+    let scratch = tempfile::tempdir().unwrap();
+    let scratch_root = scratch.path().to_str().unwrap().to_string();
+    let marker_path =
+        rigger::liveness::marker_path(&scratch_root, "run-1", "u1c1/implementer#0").unwrap();
+
+    // A cwd with NO `.git` anywhere above it (a bare `tempfile::tempdir()`, never `git init`-ed) -
+    // exactly what a git-excluding whole-tree copy launches `rigger dash` from.
+    let cwd = tempfile::tempdir().unwrap();
+
+    // ONE registry write, never refreshed: it ages out on its own once the fast test window
+    // elapses - the "aged-out registry" half of the criterion, driven with no ongoing heartbeat.
+    write_live_instance(&regdir, "proj-a", "/home/dev/proj-a");
+
+    // The agent liveness marker starts fresh and is kept fresh by a background thread - the "fresh
+    // in-flight agent liveness signal" half of the criterion.
+    touch_marker(&marker_path);
+    let stop = Arc::new(AtomicBool::new(false));
+    let marker_thread_path = marker_path.clone();
+    let marker_stop = stop.clone();
+    let heartbeat = std::thread::spawn(move || {
+        while !marker_stop.load(Ordering::Relaxed) {
+            touch_marker(&marker_thread_path);
+            std::thread::sleep(Duration::from_millis(150));
+        }
+    });
+
+    let port = free_loopback_port();
+    let mut child = common::rigger_courier()
+        .args(["dash", "--port", &port.to_string(), "--reap-on-idle"])
+        .current_dir(cwd.path())
+        .env("XDG_STATE_HOME", &xdg)
+        .env("RIGGER_TMPDIR", &scratch_root)
+        // Same fast poll/stale envs as the sibling test above.
+        .env("RIGGER_DASH_REAP_POLL_MS", "150")
+        .env("RIGGER_DASH_REAP_STALE_SECS", "2")
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn `rigger dash --reap-on-idle`");
+    let mut out = child.stdout.take().expect("dash stdout is piped");
+
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 1];
+        let n = out.read(&mut buf).unwrap_or(0);
+        let _ = tx.send(n);
+    });
+
+    if !matches!(http_get(&format!("http://127.0.0.1:{port}/")), Some(body) if body.contains("rigger dash"))
+    {
+        stop.store(true, Ordering::Relaxed);
+        let _ = heartbeat.join();
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("the `rigger dash --reap-on-idle` never served its page");
+    }
+
+    // Well past the registry's 2s window, with the marker thread still refreshing: the registry
+    // alone has gone empty, but the agent liveness signal is fresh under `RIGGER_TMPDIR` - which
+    // must be honored even though `cwd` has no git repository above it.
+    if rx.recv_timeout(Duration::from_millis(3500)).is_ok() {
+        stop.store(true, Ordering::Relaxed);
+        let _ = heartbeat.join();
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!(
+            "the singleton self-reaped from a git-less launch even though a fresh in-flight \
+             agent liveness marker was present under RIGGER_TMPDIR - a repo-less cwd must not \
+             blind the idle judgment to an explicit RIGGER_TMPDIR override"
+        );
+    }
+    assert!(
+        matches!(http_get(&format!("http://127.0.0.1:{port}/")), Some(body) if body.contains("rigger dash")),
+        "the singleton must still serve while the agent liveness marker is fresh"
+    );
+
+    // Now let the agent liveness marker go idle too: with BOTH signals quiet, the singleton
+    // reaps exactly as spec 50 criterion 5 always has - even without a git repo.
+    stop.store(true, Ordering::Relaxed);
+    heartbeat.join().expect("marker heartbeat thread joins");
+
+    let reaped = rx.recv_timeout(Duration::from_secs(12));
+    let _ = child.kill();
+    let _ = child.wait();
+    let n = reaped.expect(
+        "the singleton did not SELF-REAP within 12s after BOTH the registry and the agent \
+         liveness marker went idle - a genuinely quiet machine's dash must not leak",
+    );
+    assert_eq!(n, 0, "a self-reaped dash should have its stdout at EOF");
+}
+
 /// Spec 62, criterion 5 round 2 (adjudication `adj-u62c5-verdict-reject-cross-project-blindness`,
 /// finding `adv-u62c5-agent-liveness-scoped-to-launching-project-only`): the idle judgment must
 /// see a fresh agent-liveness marker on ANY registered project, not only the one whose CWD
