@@ -557,6 +557,98 @@ fn validate_spec_does_not_misread_owns_or_owner_inside_an_unrelated_word_as_owne
     );
 }
 
+/// Spec 80 round 2 (adjudication REJECT, `adj-u80c1-verdict-reject-dual-boundary-walk`):
+/// `ownership_advisories` builds on `line_criterion`, which used to require a continuation
+/// line to be MORE indented than its checkbox before counting it as part of the block - so
+/// an OWNS sentence sitting on a continuation line at the checkbox's OWN margin (no
+/// indentation at all) was invisible to the F1 check, even though `extract_criteria`'s own
+/// JOINING RULE (spec 80 criterion 1) already joins it into the criterion's real,
+/// load-bearing text. Reproduced here through the real binary - not just the implementer's
+/// own unit test calling `ownership_advisories` directly - since a reviewer, not a test,
+/// is what caught this the first time.
+#[test]
+fn validate_spec_finds_an_owns_sentence_on_an_unindented_continuation_line() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Done when\n\n\
+         - [ ] the daemon writes a pidfile that is mode 0644\n\
+         and readable only by the service account. This criterion OWNS the pidfile \
+         permissions.\n\
+         - [ ] the store passes the contract suite. This criterion OWNS the suite.\n\
+         - [ ] the graph supersedes an older decision. This criterion OWNS the supersede \
+         path.\n";
+    let path = root.join("unindented-owns-spec.md");
+    std::fs::write(&path, spec).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["validate", path.to_str().unwrap()]);
+    assert!(
+        ok,
+        "spec-lint advisories are heuristic warnings, never a hard failure; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        !err.contains("F1 ownership"),
+        "criterion 1's OWNS sentence sits on an UNINDENTED continuation line, at the \
+         checkbox's own margin - it must still satisfy the ownership check on the real \
+         binary; stderr:\n{err}"
+    );
+}
+
+/// Spec 80 round 2, the false-negative twin of the fixture above
+/// (`adj-u80c1-verdict-reject-dual-boundary-walk`): before the fix, `line_criterion` never
+/// reset its open block on a blank line, so unrelated indented prose sitting AFTER a blank
+/// line - which `extract_criteria`'s own JOINING RULE correctly treats as a hard boundary,
+/// outside the criterion entirely - could wrongly reattach to the prior checkbox and mask a
+/// genuinely missing OWNS sentence. The prose here mentions "owns" only to prove it is not
+/// a coincidental miss of the word; it must never count as criterion 1's ownership text.
+#[test]
+fn validate_spec_does_not_reattach_prose_after_a_blank_line_to_the_prior_criterion() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let spec = "# Widget\n\n## Done when\n\n\
+         - [ ] the daemon writes a pidfile\n\
+         \n\
+         \x20\x20Unrelated prose that just happens to mention who owns the roadmap.\n\
+         - [ ] the store passes the contract suite. This criterion OWNS the suite.\n\
+         - [ ] the graph supersedes an older decision. This criterion OWNS the supersede \
+         path.\n";
+    let path = root.join("blank-line-reattach-spec.md");
+    std::fs::write(&path, spec).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["validate", path.to_str().unwrap()]);
+    assert!(
+        ok,
+        "spec-lint advisories are heuristic warnings, never a hard failure; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        err.contains("F1 ownership") && err.contains("(criterion 1)"),
+        "the blank line closes criterion 1's block before the prose that mentions \
+         \"owns\" - criterion 1's real text carries no OWNS sentence and must still be \
+         flagged twin-risk on the real binary, not silently suppressed by reattached prose; \
+         stderr:\n{err}"
+    );
+    assert!(
+        !err.contains("(criterion 2)") && !err.contains("(criterion 3)"),
+        "criteria 2 and 3 each carry a genuine OWNS sentence and must draw no F1 advisory; \
+         stderr:\n{err}"
+    );
+}
+
 /// A clean fixture - three-plus criteria, each carrying an OWNS sentence, single-behavior,
 /// no disposition smells, no em dash - draws no spec-lint advisory at all, and `rigger
 /// validate` still exits 0.
