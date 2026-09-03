@@ -1,7 +1,8 @@
-//! Periphery tests for spec 78's TEST HELPER (`tests/common/mod.rs::terminate_pid`/`is_alive`),
-//! the ONE sanctioned test-side signal call, and the guard behavior every other suite's
-//! converted call sites (formerly `tests/cli.rs::reap_pid`, formerly a shelled-out probe/
-//! termination pair in `tests/reset_build_cache_periphery.rs`) now depend on.
+//! Periphery tests for spec 78's TEST HELPER (`tests/common/mod.rs::terminate_pid`/`is_alive`,
+//! plus spec 62's `stop_pid`), the sanctioned test-side signal calls, and the guard behavior
+//! every other suite's converted call sites (formerly `tests/cli.rs::reap_pid`, formerly a
+//! shelled-out probe/termination pair in `tests/reset_build_cache_periphery.rs`, and `stop_pid`'s
+//! own two HELD-PORT DIAGNOSIS fixture call sites in `tests/cli.rs`) now depend on.
 //!
 //! `common::mod.rs` is compiled into every suite that declares `mod common;` but has no
 //! `#[cfg(test)]` module of its own, so no suite exercises its CONTRACT directly today - this
@@ -196,4 +197,64 @@ fn terminate_pid_refuses_pid_one() {
 #[should_panic(expected = "own pid")]
 fn terminate_pid_refuses_its_callers_own_pid() {
     common::terminate_pid(std::process::id());
+}
+
+// --- stop_pid: same guard contract as terminate_pid, plus its own false-return-on-delivery-
+// failure contract (adj-u62c3r7-verdict-reject-stop-pid-untested: stop_pid shipped with zero
+// dedicated tests - its only two call sites in tests/cli.rs both feed it a pid the test just
+// confirmed live, so neither the guard-panic paths nor the false-return path were ever
+// exercised). These four mirror the four terminate_pid guard tests above exactly, proving
+// stop_pid's independently-duplicated (now shared, via validated_target_pid) guard behaves
+// identically, plus one stop_pid-specific test for its bool return contract that terminate_pid
+// (a void, best-effort ESRCH-ignoring function) has no analog of.
+
+#[test]
+#[should_panic(expected = "not a real process")]
+fn stop_pid_refuses_pid_zero() {
+    // Pid 0 can never coincide with this (or any) process's own pid, so this message is
+    // deterministic regardless of whether the namespace runner is in effect - mirrors
+    // terminate_pid_refuses_pid_zero exactly.
+    common::stop_pid(0);
+}
+
+#[test]
+#[should_panic]
+fn stop_pid_refuses_pid_one() {
+    // Always panics, but WHICH message fires is environment-dependent (see
+    // terminate_pid_refuses_pid_one's own comment for why); stop_pid_refuses_its_callers_own_pid
+    // below pins the "own pid" message deterministically, and stop_pid_refuses_pid_zero above
+    // pins "not a real process" deterministically - between the two, both messages are proven
+    // for stop_pid the same way they already are for terminate_pid.
+    common::stop_pid(1);
+}
+
+#[test]
+#[should_panic(expected = "own pid")]
+fn stop_pid_refuses_its_callers_own_pid() {
+    common::stop_pid(std::process::id());
+}
+
+#[test]
+fn stop_pid_on_an_already_exited_pid_returns_false() {
+    // Unlike terminate_pid's silent SIGKILL-ESRCH ignore, stop_pid's own doc comment promises
+    // it reports delivery failure via its bool return ("a caller with no Child handle to
+    // inspect ... has no other way to notice a delivery failure"). SIGSTOP against a target
+    // that has already exited is exactly that failure case - the kernel has nothing left to
+    // signal, so the underlying kill_process call errs and stop_pid must return false rather
+    // than panicking or reporting a false success. This is the false-return
+    // (signal-delivery-failed) path the round-7 adjudication named as unexercised.
+    let mut child = spawn_sleeper();
+    let pid = child.id();
+    common::terminate_pid(pid);
+    assert!(
+        wait_until(|| matches!(child.try_wait(), Ok(Some(_)))),
+        "precondition: the fixture must actually exit before stop_pid is asked to signal it"
+    );
+    let _ = child.wait();
+
+    assert!(
+        !common::stop_pid(pid),
+        "stop_pid must return false when the target has already exited, not panic or report a \
+         false success"
+    );
 }
