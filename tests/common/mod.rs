@@ -121,6 +121,34 @@ pub fn rigger_courier() -> Command {
     cmd
 }
 
+/// Shared guard for every sanctioned test-side signal helper below (`terminate_pid`,
+/// `stop_pid`) - panics for pid <= 1 (init, or "no real pid") or a pid equal to THIS test
+/// process's own, either being a bug in the fixture handing over a pid to signal, never a
+/// race worth tolerating silently the way an already-exited target is. `verb` names the
+/// signal action in the panic message ("terminate", "SIGSTOP", ...) so each caller keeps its
+/// own distinct, specific wording rather than a generic one.
+///
+/// Self-pid checked FIRST, deliberately: every test binary runs as pid 1 of its own namespace
+/// under `.cargo/pidns-runner.sh` (spec 78, THE NAMESPACE RUNNER), so its own pid and the
+/// literal 1 are the SAME number there - checking self first means that case always panics
+/// with the more specific "own pid" message rather than the generic "not a real process" one,
+/// deterministically, regardless of whether the namespace runner is in effect for a given
+/// invocation.
+///
+/// Extracted (round 8, `adj-u62c3r7-verdict-reject-stop-pid-untested`'s bundled DRY finding)
+/// out of `terminate_pid` and `stop_pid`, which previously duplicated this exact two-assert
+/// guard verbatim save for the verb - now the one place either function's validation logic
+/// lives, exercised by both functions' own periphery tests in
+/// `tests/no_os_kill_test_helper_periphery.rs`.
+fn validated_target_pid(pid: u32, verb: &str) {
+    let self_pid = std::process::id();
+    assert!(
+        pid != self_pid,
+        "refusing to {verb} pid {pid}: it is this test process's own pid"
+    );
+    assert!(pid > 1, "refusing to {verb} pid {pid}: not a real process");
+}
+
 /// Terminate a process this test does not hold a [`std::process::Child`] handle to (spec 78,
 /// THE TEST HELPER) - the ONE sanctioned test-side signal call, mirroring
 /// [`rigger::reap`]'s production counterpart `send_signal` (the `no-os-kill` gate excludes
@@ -128,28 +156,12 @@ pub fn rigger_courier() -> Command {
 /// command or calling a signal API directly). Every former `tests/cli.rs::reap_pid` and
 /// `tests/reset_build_cache_periphery.rs` shelled-out SIGKILL call site is this function now.
 ///
-/// Panics for pid <= 1 (init, or "no real pid") or a pid equal to THIS test process's own -
-/// either is a bug in the fixture handing it a pid to terminate, never a race worth
-/// tolerating silently the way an already-exited target is. Otherwise SIGKILLs via the
-/// internal `rustix` syscall (never a shell-out, never `libc`, never a process-group/negative
-/// pid) and silently ignores ESRCH: the target having already exited is exactly the state a
-/// "make sure this is dead" caller wants.
+/// Panics via [`validated_target_pid`] for pid <= 1 or this test process's own pid. Otherwise
+/// SIGKILLs via the internal `rustix` syscall (never a shell-out, never `libc`, never a
+/// process-group/negative pid) and silently ignores ESRCH: the target having already exited
+/// is exactly the state a "make sure this is dead" caller wants.
 pub fn terminate_pid(pid: u32) {
-    // Self-pid checked FIRST, deliberately: every test binary runs as pid 1 of its own
-    // namespace under `.cargo/pidns-runner.sh` (spec 78, THE NAMESPACE RUNNER), so its own
-    // pid and the literal 1 are the SAME number there - checking self first means that case
-    // always panics with the more specific "own pid" message rather than the generic
-    // "not a real process" one, deterministically, regardless of whether the namespace
-    // runner is in effect for a given invocation.
-    let self_pid = std::process::id();
-    assert!(
-        pid != self_pid,
-        "refusing to terminate pid {pid}: it is this test process's own pid"
-    );
-    assert!(
-        pid > 1,
-        "refusing to terminate pid {pid}: not a real process"
-    );
+    validated_target_pid(pid, "terminate");
     let Ok(raw) = i32::try_from(pid) else {
         return;
     };
@@ -169,17 +181,14 @@ pub fn terminate_pid(pid: u32) {
 /// own call site externally invoking an OS-level stop-signal utility - is the ONE place this
 /// concern belongs, mirroring how [`terminate_pid`] already centralizes the SIGKILL case.
 ///
-/// Same self-pid/pid<=1 guard as [`terminate_pid`]. Unlike that best-effort void return, this
-/// returns whether the signal was actually delivered: a caller with no `Child` handle to
-/// inspect (only a bare pid) has no other way to notice a delivery failure - mirroring the
-/// success check a prior external-utility invocation gave the two fixtures this replaces.
+/// Same self-pid/pid<=1 guard as [`terminate_pid`], via the shared [`validated_target_pid`].
+/// Unlike that best-effort void return, this returns whether the signal was actually
+/// delivered: a caller with no `Child` handle to inspect (only a bare pid) has no other way to
+/// notice a delivery failure - mirroring the success check a prior external-utility invocation
+/// gave the two fixtures this replaces. Both the guard-panic paths and this false-return path
+/// are pinned by dedicated tests in `tests/no_os_kill_test_helper_periphery.rs`.
 pub fn stop_pid(pid: u32) -> bool {
-    let self_pid = std::process::id();
-    assert!(
-        pid != self_pid,
-        "refusing to SIGSTOP pid {pid}: it is this test process's own pid"
-    );
-    assert!(pid > 1, "refusing to SIGSTOP pid {pid}: not a real process");
+    validated_target_pid(pid, "SIGSTOP");
     let Ok(raw) = i32::try_from(pid) else {
         return false;
     };
