@@ -6,26 +6,37 @@
 //! Each caller supplies its OWN emit sink - the run's replay-keyed, concurrency-safe
 //! `emit_keyed`; the cold build's log-seeded seen-set plus a direct append-and-fold - because
 //! their mutation semantics legitimately differ. What must NOT fork is the drift-prone part:
-//! the walk over the project's per-file extraction batches and the `<prefix>/<file>@<hash>#<i>`
-//! content key. Those are derived here, once, so the run and a cold `graph build` agree on every
-//! key and never double-ingest one another's work.
+//! the walk over the project's per-file extraction batches, the `<prefix>/<file>@<hash>#<i>`
+//! content key, and the predicate that decides which recorded keys a fresh emit is redundant
+//! against ([`project_scoped_replay_keys`]). Those are derived here, once, so the run and a cold
+//! `graph build` agree on every key and never double-ingest one another's work.
 //!
 //! Symbols-gated: the walk lowers the tree through the `symbols` extraction pass, so the light
 //! lane has nothing to ingest - a no-op that emits nothing, exactly as the run's ingest is a
 //! no-op there.
 
 use crate::contextgraph::Projection;
-use crate::eventstore::{Event, EventStore, ExpectedRevision, Position};
+use crate::eventstore::{Appended, Event, EventStore, ExpectedRevision};
 
 /// Append a whole batch of events to `stream` in ONE store append and fold them into `graph` in ONE
 /// transaction (via [`Projection::apply_batch`]) - the batched-fold cadence spec 49 needs: one store
 /// transaction per file's batch, not one per event (the measured cold-build throughput was
-/// transaction-cadence bound, not parse-bound). Each event is stamped with its global position
-/// before it folds: a single append lands the batch at CONSECUTIVE positions ending at the returned
-/// last position, so event `i` of an `n`-event batch sits at `last - (n - 1) + i`. The fold is
-/// best-effort - a fold failure never fails the append, which already landed durably in the log,
-/// exactly as the run's per-event `append_and_fold` folds best-effort. Returns the last appended
-/// position (`0` for an empty batch, which appends nothing).
+/// transaction-cadence bound, not parse-bound). The fold is best-effort - a fold failure never fails
+/// the append, which already landed durably in the log, exactly as the run's per-event
+/// `append_and_fold` folds best-effort. Returns the store's own report of what it wrote.
+///
+/// # Every folded event is stamped with the position THE STORE ISSUED
+///
+/// This function folds exactly the events [`Appended::placed`] names, at the positions the store
+/// reported, and it derives no position of its own. It used to compute them arithmetically as
+/// `base = last + 1 - n`, which is unsound twice over: an append may write FEWER events than it was
+/// handed (a store carrying a content-identity guard suppresses an already-recorded derived-index
+/// event), and the port has never promised a batch lands at CONSECUTIVE positions - only distinct,
+/// strictly increasing ones, which a backend whose position is a byte offset satisfies with gaps.
+/// Either way the arithmetic stamps events at positions the store never issued, and the graph's
+/// applied ledger is keyed BY position: a wrong one marks a location applied forever and silently
+/// swallows the genuine event recorded there. A suppressed event needs no fold at all - it folded
+/// when its content was first recorded.
 ///
 /// This is the ONE batched append-and-fold authority both ingest sinks share - the run's keyed emit
 /// and a cold `rigger graph build` - so the batching can never diverge between them. It lives here
@@ -38,26 +49,41 @@ pub fn append_and_fold_batch(
     graph: Option<&dyn Projection>,
     stream: &str,
     events: &[Event],
-) -> Result<Position, crate::eventstore::Error> {
+) -> Result<Appended, crate::eventstore::Error> {
     if events.is_empty() {
-        return Ok(0);
+        return Ok(Appended::default());
     }
-    let last = store.append(stream, ExpectedRevision::Any, events)?;
+    let appended = store.append(stream, ExpectedRevision::Any, events)?;
+    // The port promises ONE slot per event handed in, and this authority folds by ZIPPING
+    // the report against the batch - so a report of a different length is not a smaller
+    // fold, it is a MISALIGNED one: every slot after the discrepancy names a different
+    // event than the store meant, and the graph is then keyed by position onto the wrong
+    // payload. `placed()` cannot see that (an index it cannot answer just yields nothing),
+    // so it is checked here, once, where the zip happens.
+    if appended.handed() != events.len() {
+        return Err(crate::eventstore::Error::Backend(format!(
+            "event store reported {} placement(s) for an append of {} event(s) to \
+             {stream:?}: the report cannot name what was written",
+            appended.handed(),
+            events.len()
+        )));
+    }
     if let Some(g) = graph {
-        let n = events.len() as Position;
-        let base = last + 1 - n;
-        let positioned: Vec<Event> = events
-            .iter()
-            .enumerate()
-            .map(|(i, e)| {
-                let mut e = e.clone();
-                e.position = base + i as Position;
-                e
+        let positioned: Vec<Event> = appended
+            .placed()
+            .filter_map(|(i, position)| {
+                events.get(i).map(|e| {
+                    let mut e = e.clone();
+                    e.position = position;
+                    e
+                })
             })
             .collect();
-        let _ = g.apply_batch(&positioned);
+        if !positioned.is_empty() {
+            let _ = g.apply_batch(&positioned);
+        }
     }
-    Ok(last)
+    Ok(appended)
 }
 
 /// What a walk did, reported back to the caller. `batches_emitted` counts the file batches the walk
@@ -74,10 +100,21 @@ pub struct IngestStats {
 /// Walk the project tree at `root` and, for every extraction event the code (spec 29a) and
 /// design (spec 29b) passes emit, call `emit(key, event)` with the event's deterministic content
 /// key `<prefix>/<file>@<hash>#<i>` (`gc` for code, `gd` for design). The key is a pure function
-/// of the batch's bytes, so an unchanged file yields identical keys (a caller dedups on them) and
-/// a changed file's batch hashes differently - every key differs, so the whole batch, its `fresh`
-/// head included, re-emits. This function owns only the walk and the keying; the sink decides what
-/// a key MEANS (append-and-fold, or skip a replay), so the mutation authority stays with the caller.
+/// of the batch's bytes ALONE, so the same content always yields the same keys and different
+/// content always yields different ones. A key is therefore a CONTENT GENERATION of a file, not a
+/// mark that the file has been seen: whether a given key is redundant is a question about the
+/// file's LATEST recorded generation ([`project_scoped_replay_keys`] answers it), which is why a
+/// file reverted to content it held earlier re-emits its whole batch even though every one of its
+/// keys is already in the log. This function owns only the walk and the keying; the sink decides
+/// what a key MEANS (append-and-fold, or skip a replay), so the mutation authority stays with the
+/// caller.
+///
+/// "Content" here is the batch this walk LOWERED, which is not always the file on disk, and the two
+/// halves differ: the design half reads the live tree, while the code half reuses the `symbols`
+/// grounder's PERSISTED index when the project has one (see [`walk_batches`]) and derives its events
+/// from the indexed symbols without reading the file. So on such a project the keys track that
+/// index's view - including for a path the tree no longer holds but the index still lists, which
+/// this walk therefore still emits a batch for.
 ///
 /// The code half's per-file parse/lower fans across a default-sized worker pool (one worker per
 /// logical core), but the EMIT stays in sorted file-path order - parallelism is observationally
@@ -199,6 +236,215 @@ fn key_batch(
     on_batch(&keyed);
 }
 
+/// The metadata key under which an event carries its deterministic REPLAY KEY (spec 04, criterion
+/// 4): the name a content key is STAMPED under and read back from, so this module owns the wire
+/// form of its key as well as its format.
+///
+/// The key itself is a pure function of what it identifies - for a derived index event, the batch's
+/// own bytes; for a run's lifecycle events, the run structure (unit id, phase or gate token,
+/// remediation attempt) - never wall clock or randomness. An event stamped with one is appended AT
+/// MOST ONCE against whatever key set its sink seeds from, so two processes computing the identical
+/// key for the identical event let the second recognize the first's as a replay. Folds and
+/// projections ignore it, like [`crate::contextgraph::META_ACTOR`].
+///
+/// It is DEFINED HERE, beside [`key_batch`] which builds the `<prefix>/<file>@<hash>#<i>` form and
+/// [`project_scoped_replay_keys`] which parses it back, rather than in the orchestrator that also
+/// stamps it. That predicate is the shared suppression authority BOTH a live run and a cold
+/// `rigger graph build` call, so reading the name out of `crate::conductor` would point this module
+/// UP at the orchestrator and couple every future caller of the predicate to it for a wire-format
+/// fact the orchestrator does not own. `conductor::META_REPLAY_KEY` re-exports this constant, so
+/// there is exactly one name and no second spelling to drift.
+pub const META_REPLAY_KEY: &str = "replay_key";
+
+/// The DERIVED INDEX event types: the re-derivable projection of the project's own sources that
+/// [`key_batch`] above keys, and the ONLY types eligible for project-scoped suppression.
+///
+/// This is a code-owned discriminator, not a string convention, and it is what makes the
+/// fail-safe direction a property of the code: an event of any OTHER type never reaches the key
+/// comparison below, so no domain event can be dropped by that path however its replay key
+/// happens to look. Domain events legitimately repeat (two identical review findings mean the
+/// finding was raised twice); these four do not - a file's content hash does not change because a
+/// new run started, so re-recording an unchanged file's batch records nothing new.
+pub const DERIVED_INDEX_TYPES: [&str; 4] = [
+    crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+    crate::contextgraph::TYPE_EDGE_INFERRED,
+    crate::contextgraph::TYPE_DOC_CONCEPT_EXTRACTED,
+    crate::contextgraph::TYPE_DOC_LINK_EXTRACTED,
+];
+
+/// Whether `type_` is one of the four [`DERIVED_INDEX_TYPES`] - the TYPE half of the partition,
+/// asked FIRST, before any key is looked at.
+pub fn is_derived_index_type(type_: &str) -> bool {
+    DERIVED_INDEX_TYPES.contains(&type_)
+}
+
+/// WHERE a derived-index content key `<prefix>/<file>@<hash>#<i>` splits: `(the byte range of the
+/// BATCH IDENTITY - which file's batch this is - , the byte range of that batch's CONTENT
+/// GENERATION)`, both indexing `key`. `None` when the key is not that shape.
+///
+/// This is THE parser of the form [`key_batch`] builds, and it is PUBLISHED because the format has
+/// more than one reader: the suppression predicate below cuts its identity and generation from it,
+/// and a composition root configuring a store's content-identity guard
+/// ([`crate::eventstore::ContentIdentity`], whose [`crate::eventstore::ContentKeySplit`] is exactly
+/// this signature) hands it in verbatim - [`derived_index_identity`] below does exactly that, so
+/// the sink rule, the storage guard and the compaction can never come to disagree about where a
+/// key's generation begins. A reader that re-spells the format instead is not a style problem: a
+/// hand-rolled copy of this split had drifted by one byte at the identity boundary while the
+/// assertion written to catch that drift stayed green over both spellings, because it only asked
+/// whether SOME split was found. The store still parses no key of its own - the split is
+/// configuration handed IN, and this is the module that owns the format to hand.
+///
+/// The identity deliberately carries the `<prefix>` segment, so one file's code (`gc`) and design
+/// (`gd`) batches are two independent identities that never overwrite each other's generation -
+/// and it is read as the WHOLE key's leading span, never by sniffing the prefix's VALUE.
+/// [`key_batch`] takes its prefix from the CALLER, so a value sniff would rest on an unenforced
+/// cross-module naming habit; the shape (a `/`, an `@`, and a `#<digits>` tail) is what the key
+/// authority actually guarantees. `<file>` may itself contain `/`, `@` or `#`, so the tail and the
+/// hash are split from the RIGHT.
+///
+/// The identity range ends BEFORE the `@` that separates it from the generation, which is exactly
+/// the property a store's range seek rests on and no more: the identity STARTS the key and every
+/// key naming this batch begins with it, so "this batch's history" is one bounded prefix range. It
+/// is not self-delimiting, so that range is a SUPERSET - `gc/README`'s range also covers
+/// `gc/README.md@h#0` - and that is the store's own documented case rather than a defect introduced
+/// here: a foreign subject nested in the range is skipped WHOLE by its own range in one step, and a
+/// walk that runs out of steps answers "undetermined", which appends. The excess can only ever cost
+/// steps, never a drop.
+pub fn derived_key_spans(key: &str) -> Option<(std::ops::Range<usize>, std::ops::Range<usize>)> {
+    let (prefix, remainder) = key.split_once('/')?;
+    if prefix.is_empty() {
+        return None;
+    }
+    let (head, index) = remainder.rsplit_once('#')?;
+    if index.is_empty() || !index.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let (file, hash) = head.rsplit_once('@')?;
+    if file.is_empty() || hash.is_empty() {
+        return None;
+    }
+    // `key` is `<prefix>` + '/' + `<file>` + '@' + `<hash>` + '#' + `<i>`, so the identity is the
+    // key's leading `prefix.len() + 1 + file.len()` bytes and the generation is the `hash.len()`
+    // bytes that follow the `@` terminating it.
+    let identity = prefix.len() + 1 + file.len();
+    Some((0..identity, identity + 1..identity + 1 + hash.len()))
+}
+
+/// [`derived_key_spans`] as the two slices themselves - `(<prefix>/<file>, <hash>)` - for the
+/// callers that want the text rather than the offsets. ONE parse, two views: it cuts the ranges
+/// that function returns and computes nothing of its own.
+fn derived_key_parts(key: &str) -> Option<(&str, &str)> {
+    let (identity, generation) = derived_key_spans(key)?;
+    Some((&key[identity], &key[generation]))
+}
+
+/// The derived index's CONTENT-IDENTITY POLICY as one value: the metadata key a derived event
+/// carries its content key under, the four types that carry content identity, where a key splits
+/// into subject and generation, and WHICH of those types re-assert a fact in place rather than
+/// superseding the subject's prior recording.
+///
+/// It exists so no consumer has to re-spell the policy as loose parameters. Every field of it is a
+/// per-type or per-key rule that a caller would otherwise pass positionally: two strings can be
+/// handed over in the wrong order, a list can drift apart one call site at a time, and neither
+/// says anything about where a generation lies inside a key or which recording's date the
+/// projection holds. One value, built HERE beside the key authority that builds the key form and
+/// beside the fold facts the partition is derived from, is what keeps every consumer on one story.
+///
+/// TODAY'S ONE CONSUMER is the compacting prune (`rigger reset --derived`). The store-level
+/// idempotency guard takes the same value - that is what `Store::with_content_identity` is for -
+/// but the composition root does not yet configure it on the production store, so this is written
+/// as the policy BOTH consumers take rather than as one two consumers are already taking. The
+/// carry partition it declares is what the prune needs; the guard reads only the key and type
+/// halves, so wiring it later adds a consumer and changes nothing here.
+///
+/// THAT "not yet" IS A RECORDED DECISION, NOT AN OVERSIGHT, and it is recorded on the event log
+/// where a peer can read it rather than only here: `d60c5r5-guard-wiring-is-superseded-out-of-
+/// spec-60-and-routed-by-name` supersedes `d60u4b-guard-is-configuration-and-this-criterion-does-
+/// not-wire-it`, which had made the wiring conditional on this accessor being public - it now is.
+/// The wiring is one line in `main`'s `resolve_store` (the write-path composition root, never the
+/// shared read-only-attach constructor), and it is routed to a follow-up spec because switching
+/// the guard on changes production append behavior for these four types across every command that
+/// resolves a store, which no criterion of spec 60 owns and no gate of this run measures.
+pub fn derived_index_identity() -> crate::eventstore::ContentIdentity {
+    crate::eventstore::ContentIdentity::new(META_REPLAY_KEY, DERIVED_INDEX_TYPES, derived_key_spans)
+        .with_reasserting_types(reasserted_derived_types())
+}
+
+/// The derived index types whose recordings RE-ASSERT a fact that was already true, rather than
+/// SUPERSEDING the subject's prior recording - the ones whose EARLIEST recorded valid-time is the
+/// one the graph holds, and which a compaction must therefore carry onto the recording it keeps.
+///
+/// Derived, never listed: the partition comes from the single fold fact
+/// [`crate::contextgraph::refold_supersedes_prior_edges`], filtered over
+/// [`DERIVED_INDEX_TYPES`] - so a FIFTH derived type added above is placed by the fold that
+/// projects it, and no second hand-written list can drift from it.
+pub fn reasserted_derived_types() -> Vec<&'static str> {
+    DERIVED_INDEX_TYPES
+        .into_iter()
+        .filter(|t| !crate::contextgraph::refold_supersedes_prior_edges(t))
+        .collect()
+}
+
+/// The ONE project-scoped suppression predicate, expressed as the set of replay keys a derived-index
+/// emit may be suppressed against, derived from the WHOLE prior stream.
+///
+/// Both ingest sinks - the run's keyed emit and a cold `rigger graph build` - seed from this and
+/// neither copies it, because the `<prefix>/<file>@<hash>#<i>` format is built by [`key_batch`]
+/// here and must not fork. The rule, in the order it is applied:
+///
+/// 1. **Type first.** Only the four [`DERIVED_INDEX_TYPES`] are eligible. Every other event is
+///    passed over whatever its replay key looks like, so a unit or stage whose id happened to read
+///    like an ingest prefix could never have its lifecycle key mistaken for a project fact.
+/// 2. **Then the whole key.** A derived event's key is parsed for its batch identity and content
+///    generation ([`derived_key_parts`]); a key that is not that shape names no generation and is
+///    passed over (the fail-safe direction - it re-emits).
+/// 3. **Latest per file, never ever-recorded.** Only the keys of each identity's LATEST recorded
+///    generation are returned. A file's earlier generations are deliberately absent: content
+///    REVERTED to a generation the file has since moved past differs from its latest recorded
+///    batch, so it must re-emit. An ever-recorded key set would match the old records, re-emit
+///    nothing, and strand the graph on a superseded version of that file forever. Whether the
+///    re-emitted batch then RETIRES the newer structural edges is the FOLD's business, not this
+///    predicate's: only the code half's `fresh` head drives `supersede_file_edges`, and the design
+///    half sets no `fresh` head at all.
+///
+/// This is project-scoped ON PURPOSE: derived index facts are facts about the project's files, not
+/// about a run, so a NEW run inherits them and an unchanged file appends nothing on every
+/// subsequent run forever. Run-scoped seeding stays exactly as it is for every other replay key
+/// (unit lifecycle, gate verdicts, breaker trips), whose recurrence IS a property of one run.
+///
+/// What this function returns is a SEED, and a seed only. Each sink owns the set it builds from it
+/// and both EXTEND that set with the keys they emit without retiring a superseded generation, so
+/// "latest generation per file" is a statement about this return value at the moment it is taken,
+/// never about a sink's set once the sink has run.
+pub fn project_scoped_replay_keys(prior: &[Event]) -> std::collections::HashSet<String> {
+    // identity -> (that identity's latest recorded generation, the keys of that generation)
+    let mut latest: std::collections::HashMap<String, (String, Vec<String>)> =
+        std::collections::HashMap::new();
+    for e in prior {
+        // TYPE first: a non-derived event never reaches the key comparison at all.
+        if !is_derived_index_type(&e.type_) {
+            continue;
+        }
+        let Some(key) = e.meta.get(META_REPLAY_KEY) else {
+            continue;
+        };
+        let Some((identity, hash)) = derived_key_parts(key) else {
+            continue;
+        };
+        let slot = latest
+            .entry(identity.to_string())
+            .or_insert_with(|| (hash.to_string(), Vec::new()));
+        // A later generation of the same file RETIRES the keys of every earlier one: the stream is
+        // read in append order, so the last generation seen is the file's latest recorded batch.
+        if slot.0 != hash {
+            slot.0 = hash.to_string();
+            slot.1.clear();
+        }
+        slot.1.push(key.clone());
+    }
+    latest.into_values().flat_map(|(_, keys)| keys).collect()
+}
+
 /// The light lane compiles no extraction pass, so there is nothing to walk - a no-op that emits
 /// nothing. `graph build` still opens (creating) the store and degrades to an empty graph, never
 /// an error, exactly as the run's ingest is a no-op here.
@@ -213,6 +459,155 @@ pub fn ingest_project_batched(
     _root: &str,
     _on_batch: impl FnMut(&[(String, &crate::eventstore::Event)]),
 ) {
+}
+
+/// The suppression predicate's OWN contract, at the unit level: which recorded keys it hands a
+/// sink, given a stream. Both lanes compile it, because the predicate is not `symbols`-gated - it
+/// reads recorded events, it does not walk a tree. The two SEAM-level proofs BELONG to their own
+/// criteria and are not in this tree yet: that a prior run's non-ingest key never suppresses this
+/// run's keyed emit is criterion 2's, and that a reverted file survives the full suppression stack
+/// is criterion 3's.
+#[cfg(test)]
+mod dedup_tests {
+    use super::{derived_key_parts, project_scoped_replay_keys, META_REPLAY_KEY};
+    use crate::contextgraph::{
+        TYPE_CODE_ENTITY_EXTRACTED, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_EDGE_INFERRED,
+        TYPE_REVIEW_FINDING,
+    };
+    use crate::eventstore::Event;
+    use std::collections::HashSet;
+
+    fn keyed(type_: &str, key: &str) -> Event {
+        Event::new(type_, Vec::new()).with_meta(META_REPLAY_KEY, key)
+    }
+
+    #[test]
+    fn the_suppression_predicate_is_type_first_whole_key_and_latest_generation_only() {
+        let stream = vec![
+            // A file's code batch, then the SAME file's design batch: two independent identities,
+            // because the identity carries the `<prefix>` segment.
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, "gc/src/a.rs@h1#0"),
+            keyed(TYPE_EDGE_INFERRED, "gc/src/a.rs@h1#1"),
+            keyed(TYPE_DOC_CONCEPT_EXTRACTED, "gd/src/a.rs@h1#0"),
+            // A DOMAIN event whose replay key is spelled exactly like a content key. Type first:
+            // it is never eligible, so no domain event can be dropped by this path.
+            keyed(TYPE_REVIEW_FINDING, "gc/src/b.rs@h1#0"),
+            // A derived event whose key is NOT the content-key shape names no generation, so it
+            // suppresses nothing (the fail-safe direction: it re-emits).
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, "gc/src/c.rs"),
+            // A file path containing both `@` and `#`: the tail and the hash split from the RIGHT,
+            // so the identity is still the whole `<prefix>/<file>` span.
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, "gc/we@ird#1/x.rs@h3#0"),
+            // A LATER generation of the first file's code batch retires its earlier keys.
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, "gc/src/a.rs@h2#0"),
+            // A derived event carrying no replay key at all is simply passed over.
+            Event::new(TYPE_CODE_ENTITY_EXTRACTED, Vec::new()),
+        ];
+
+        let keys = project_scoped_replay_keys(&stream);
+
+        assert_eq!(
+            keys,
+            HashSet::from([
+                "gc/src/a.rs@h2#0".to_string(),
+                "gd/src/a.rs@h1#0".to_string(),
+                "gc/we@ird#1/x.rs@h3#0".to_string(),
+            ]),
+            "only the LATEST generation of each derived-type, well-formed identity is returned"
+        );
+        assert!(
+            !keys.contains("gc/src/a.rs@h1#0") && !keys.contains("gc/src/a.rs@h1#1"),
+            "a superseded generation's keys must NOT suppress - that is what makes a revert re-emit"
+        );
+        assert!(
+            !keys.contains("gc/src/b.rs@h1#0"),
+            "a domain event is ineligible however its replay key is spelled"
+        );
+        assert!(
+            project_scoped_replay_keys(&[]).is_empty(),
+            "an empty stream suppresses nothing"
+        );
+    }
+
+    #[test]
+    fn two_files_whose_paths_contain_an_at_sign_stay_two_batch_identities() {
+        // The identity/generation split direction is load-bearing and rigger is project-agnostic:
+        // `@` is an ordinary character in a real path (a vendored `pkg@1.2.3/` directory, a scoped
+        // package folder), and only `key_batch`'s OWN trailing `@<hash>` separates identity from
+        // generation. Splitting from the LEFT instead would cut both keys below at their FIRST `@`,
+        // collapsing two different files onto the single identity `gc/vendor/pkg` - and since their
+        // (mis-parsed) generations then differ, the later file would RETIRE the earlier file's keys
+        // and strip them from the suppression set. Two unrelated files must never share one batch
+        // identity, whatever their paths spell.
+        let stream = vec![
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, "gc/vendor/pkg@1.2.3/a.rs@h1#0"),
+            keyed(TYPE_EDGE_INFERRED, "gc/vendor/pkg@1.2.3/a.rs@h1#1"),
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, "gc/vendor/pkg@4.5.6/b.rs@h2#0"),
+        ];
+
+        assert_eq!(
+            project_scoped_replay_keys(&stream),
+            HashSet::from([
+                "gc/vendor/pkg@1.2.3/a.rs@h1#0".to_string(),
+                "gc/vendor/pkg@1.2.3/a.rs@h1#1".to_string(),
+                "gc/vendor/pkg@4.5.6/b.rs@h2#0".to_string(),
+            ]),
+            "every file's own keys survive: no file's batch may retire another file's"
+        );
+
+        // The same rule at the parser: the identity is the WHOLE `<prefix>/<file>` span, so every
+        // `@` and `#` inside the path belongs to the file, never to the generation or the index.
+        assert_eq!(
+            derived_key_parts("gc/vendor/pkg@1.2.3/a.rs@h1#0"),
+            Some(("gc/vendor/pkg@1.2.3/a.rs", "h1")),
+            "identity and generation split from the RIGHT, at the key authority's own separators"
+        );
+        assert_eq!(
+            derived_key_parts("gd/a#1/b@2/c.md@deadbeef#12"),
+            Some(("gd/a#1/b@2/c.md", "deadbeef")),
+            "a path carrying both `@` and `#` still yields the whole path as the identity"
+        );
+    }
+
+    #[test]
+    fn a_key_that_is_not_the_content_key_shape_names_no_generation() {
+        // Rule 2 of the predicate's contract, and the fail-safe direction it encodes: a derived
+        // event whose replay key is not `<prefix>/<file>@<hash>#<i>` names no generation, so it is
+        // passed over and its emit is NEVER suppressed. The rows below cover EVERY reject arm the
+        // parser has, so deleting any ARM fails this test rather than surviving it. They are NOT
+        // one row per arm: a guard testing two conditions needs a row per condition, and two
+        // differently-shaped keys can land on the same arm.
+        for key in [
+            "gcsrca.rs@h1#0",    // no `/` anywhere: the prefix split itself finds no separator
+            "gcsrc/a.rs@h1",     // `gcsrc` parses AS the prefix, so this rejects at the `#` tail
+            "/src/a.rs@h1#0",    // empty prefix
+            "gc/src/a.rs@h1",    // no `#<i>` tail
+            "gc/src/a.rs@h1#",   // empty index
+            "gc/src/a.rs@h1#0a", // non-digit in the index
+            "gc/src/a.rs@h1#-1", // ditto: a sign is not a digit
+            "gc/src/a.rs#0",     // no `@`: nothing separates the generation
+            "gc/@h1#0",          // empty file
+            "gc/src/a.rs@#0",    // empty generation
+        ] {
+            assert_eq!(
+                derived_key_parts(key),
+                None,
+                "{key:?} is not the content-key shape, so it names no batch identity"
+            );
+            assert!(
+                project_scoped_replay_keys(&[keyed(TYPE_CODE_ENTITY_EXTRACTED, key)]).is_empty(),
+                "{key:?} must suppress nothing - a key we cannot parse re-emits (fail-safe)"
+            );
+        }
+
+        // The positive control, so the table proves a REJECT rather than a parser that says no to
+        // everything: the well-formed shape still yields its identity and generation.
+        assert_eq!(
+            derived_key_parts("gc/src/a.rs@h1#0"),
+            Some(("gc/src/a.rs", "h1")),
+            "the well-formed content key still parses"
+        );
+    }
 }
 
 #[cfg(all(test, feature = "symbols"))]

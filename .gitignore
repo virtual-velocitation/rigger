@@ -19,9 +19,12 @@
 # The always-on dash's discoverability breadcrumbs (spec 39): the serving URL and the
 # port+pid marker, rewritten on every run. Runtime-only, per-machine, never committed -
 # left tracked they get swept into unit commits and collide with the live dash's rewrites
-# when the conductor merges (the untracked-file-would-be-overwritten merge abort).
+# when the conductor merges (the untracked-file-would-be-overwritten merge abort). Same
+# reasoning covers dash.attempt (spec 69 round 8): the current run-id a step path last
+# attempted a dash ensure for, rewritten on every step.
 .rigger/dash.url
 .rigger/dash.marker
+.rigger/dash.attempt
 # Persisted symbol index (spec 15): a rebuildable projection of the tree, per-machine
 # derived data, never committed.
 .rigger/symbols/
@@ -41,3 +44,18 @@ shim/node_modules/
 # The run's transient scratch root: unit/review worktrees + their build dirs
 # (defaults.workdir / RIGGER_TMPDIR override the location; Gap 14)
 .rigger/tmp
+.rigger/store.conn
+
+# The mutation-efficacy step's per-unit diff (rust-engineer.md: `git diff <BASE> --
+# '*.rs' > unit.diff`), written at the worktree root as scratch input to
+# `cargo mutants --in-diff`. Never a Done-when deliverable - ignore it wherever it
+# lands so it can never be swept into a unit's commit again.
+/unit.diff
+
+# cargo-mutants' own output directory - and its `.old`-suffixed rotation, which
+# cargo-mutants renames the previous run's directory to before writing a fresh
+# one (spec 66 u66c3 fresh-r1: mutants.out.old/ leaked into a unit commit as
+# 27 files / 22236 lines, the same scratch-leak class as /unit.diff above).
+# Glob covers both today and any future cargo-mutants rotation suffix so this
+# class cannot recur a third time in a different shape.
+mutants.out*/

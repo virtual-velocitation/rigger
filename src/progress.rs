@@ -77,7 +77,8 @@ impl AgentProgress {
 
 /// Record one progress report to the progress `store`, stamped with `run_id`. Append-only
 /// and side-effect-free beyond the one event: a pure write, cheap to call after every
-/// significant step. Returns the global position of the appended event.
+/// significant step. Returns the global position the store issued for the report, or the
+/// failure a store that wrote nothing has earned ([`crate::eventstore::Appended::one`]).
 pub fn record(
     store: &dyn EventStore,
     run_id: &str,
@@ -91,7 +92,9 @@ pub fn record(
     let ev = progress
         .to_event(run_id)
         .map_err(|e| Error::Backend(format!("serialize AgentProgress: {e}")))?;
-    store.append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&ev))
+    store
+        .append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&ev))?
+        .one(&format!("the progress report of {id}"))
 }
 
 /// A live per-agent view (spec 14, unit 2): for one in-flight spawn, what stage it is at,
@@ -346,6 +349,33 @@ mod tests {
         assert!(
             !p[0].meta.contains_key(META_RUN_ID),
             "no run stamp when no run has started"
+        );
+    }
+    /// A PROGRESS REPORT THE STORE DID NOT WRITE IS NOT A REPORT, and this seam is the one
+    /// an agent calls after every step to prove it is not stalled.
+    ///
+    /// The absence used to come back as `Ok(None)` - a success the caller had to interpret,
+    /// and the command above it interpreted it by printing that the report was recorded.
+    /// A live view built on reports that were never written is the exact blackout this
+    /// feature exists to close, so the seam asks the one authority instead: the position,
+    /// or the failure.
+    #[test]
+    fn a_progress_report_the_store_did_not_write_is_reported_as_lost() {
+        let err = record(
+            &crate::eventstore::SilentStore,
+            "run-1",
+            "u1/implementer#0",
+            "did a thing",
+        )
+        .expect_err("a progress report nobody can find was not recorded");
+        let message = err.to_string();
+        assert!(
+            message.contains("nothing"),
+            "the failure says the store wrote nothing: {message}"
+        );
+        assert!(
+            message.contains("u1/implementer#0"),
+            "and names the spawn whose report was lost: {message}"
         );
     }
 }

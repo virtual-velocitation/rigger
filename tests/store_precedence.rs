@@ -31,10 +31,10 @@ use std::process::{Command, Output};
 
 use tempfile::TempDir;
 
-/// The compiled `rigger` binary under test (Cargo sets this for integration tests).
-fn rigger_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_rigger")
-}
+// The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
+// `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
+// and every suite that spawns the product then dies with a bare NotFound.
+mod common;
 
 /// An unreachable but well-formed server address: nothing listens on this loopback port, so the
 /// eager connect (fail-fast) is refused immediately. We prove WHICH backend the authority selected,
@@ -82,24 +82,33 @@ fn write_store_config(root: &Path, body: &str) {
 /// Run `rigger result <id> --error <msg>` in `root` with NO `--eventstore` flag and NO
 /// `KURRENTDB_CONN` in the environment - the exact bare-courier surface a worker's self-report
 /// uses, so the store is resolved purely from the file-backed rungs under test. `RIGGER_NO_DASH`
-/// keeps the run's dashboard from starting under test.
+/// keeps the run's dashboard from starting under test. `XDG_STATE_HOME` is redirected to a
+/// per-call temp dir (spec 62, "couriers count as activity"): `result` now refreshes the
+/// machine-global instance registry too, so an unredirected call here would otherwise seed a
+/// phantom, since-deleted-tempdir entry into the operator's real
+/// `~/.local/state/rigger/instances`.
 fn run_bare_courier(root: &Path) -> Output {
-    Command::new(rigger_bin())
+    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
+    common::rigger_courier()
         .args(["result", "u/impl#0", "--error", "a self-report"])
         .current_dir(root)
         .env("RIGGER_NO_DASH", "1")
+        .env("XDG_STATE_HOME", state.path())
         .env_remove("KURRENTDB_CONN")
         .output()
         .expect("spawn rigger result")
 }
 
 /// Run the same bare courier but WITH `KURRENTDB_CONN` set (rung 2), to prove the environment
-/// out-ranks a lower file-backed rung.
+/// out-ranks a lower file-backed rung. `XDG_STATE_HOME` redirected for the same reason as
+/// [`run_bare_courier`].
 fn run_courier_with_env(root: &Path, conn: &str) -> Output {
-    Command::new(rigger_bin())
+    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
+    common::rigger_courier()
         .args(["result", "u/impl#0", "--error", "a self-report"])
         .current_dir(root)
         .env("RIGGER_NO_DASH", "1")
+        .env("XDG_STATE_HOME", state.path())
         .env("KURRENTDB_CONN", conn)
         .output()
         .expect("spawn rigger result")

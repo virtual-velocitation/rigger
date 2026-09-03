@@ -30,6 +30,7 @@ use serde_json::Value;
 
 use crate::conductor::STREAM;
 use crate::eventstore::{Direction, Error, Event, EventStore, ExpectedRevision, Position};
+use crate::ledger::AttentionEntry;
 
 /// The event type a parked spawn request is persisted as - the "spawn-request" half
 /// of the spawn-request/result pair the spec permits as the only new vocabulary the
@@ -399,7 +400,28 @@ pub fn park_in_run(
     if !run_id.is_empty() {
         ev = ev.with_meta(crate::run::META_RUN_ID, run_id);
     }
-    store.append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&ev))
+    one_position(store, &req.id, &ev)
+}
+
+/// The global position of the ONE event `ev` landed at, appended to the spawn stream.
+/// `subject` names WHAT was being recorded - the spawn id - so a failure reads as the
+/// thing the operator asked for rather than as an internal type name.
+///
+/// What an absence means is not decided here: [`crate::eventstore::Appended::one`] decides
+/// it, once, for every single-event append in the codebase. This function only names the subject it
+/// was recording, so the one failure it can raise says what was lost.
+fn one_position(store: &dyn EventStore, subject: &str, ev: &Event) -> Result<Position, Error> {
+    store
+        .append(STREAM, ExpectedRevision::Any, std::slice::from_ref(ev))?
+        .one(&what(&ev.type_, subject))
+}
+
+/// How a spawn-stream write names itself in a failure: the event TYPE, the SUBJECT it was
+/// about, and the stream it was bound for. One phrasing for every seam in this module, so
+/// the compare-and-append half and the plain-append half cannot drift into two vocabularies
+/// for the same loss.
+fn what(type_: &str, subject: &str) -> String {
+    format!("the {type_} of {subject} on {STREAM:?}")
 }
 
 /// Fold the [`TYPE_SPAWN_REQUESTED`] events in `events` into the spawn requests
@@ -638,7 +660,7 @@ pub fn record_result(store: &dyn EventStore, res: &SpawnResult) -> Result<Positi
     let ev = res
         .to_event()
         .map_err(|e| Error::Backend(format!("serialize spawn result {}: {e}", res.id)))?;
-    store.append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&ev))
+    one_position(store, &res.id, &ev)
 }
 
 /// Record `res` to the run's event log ONLY when the spawn has no result yet, as a
@@ -685,7 +707,11 @@ pub fn record_result_if_absent(
             None => ExpectedRevision::NoStream,
         };
         match store.append(STREAM, expected, std::slice::from_ref(&ev)) {
-            Ok(pos) => return Ok(Some(pos)),
+            // `Ok(None)` from THIS function means "a result already stood, so I chose to
+            // write nothing" - the idempotent no-op. A store that wrote nothing is a
+            // different answer entirely, and the shared authority raises it as the failure
+            // it is rather than letting it collapse into the no-op.
+            Ok(appended) => return appended.one(&what(&ev.type_, &res.id)).map(Some),
             // The stream moved under us; re-read and re-decide. If the racing writer
             // recorded THIS id, the re-check returns `None` and nothing is clobbered.
             Err(Error::Conflict { .. }) => continue,
@@ -828,6 +854,18 @@ pub struct Step {
     /// unit lifecycle). Lexically ordered for a deterministic wire.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub escalated: Vec<String>,
+    /// The push-side anomalies THIS step surfaced (spec 69: the watching discipline's step
+    /// wire) - unit ESCALATED, run HALTED, a worker's death RECURRED, the budget crossed
+    /// into its final tenth, and STALLED FRONTIER. Empty on a clean step, and OMITTED from
+    /// the wire then, so a converged run still prints `{"wave":[],"done":true}` unchanged;
+    /// when non-empty a later criterion's driver renders one narrator line per entry naming
+    /// its event, unit, and response skill. Like [`escalated`](Step::escalated) this is
+    /// stamped by `rigger step` (`cmd_step`) from the conductor's live
+    /// [`ledger::RunState::attention`](crate::ledger::RunState::attention) - a fact of THIS
+    /// call's own before/after transition, not derivable from the log alone - so the pure
+    /// [`step_result`] log seam leaves it empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub attention: Vec<AttentionEntry>,
 }
 
 /// Compute the [`Step`] a step process prints, from the run stream `events`.
@@ -874,6 +912,11 @@ pub fn step_result(events: &[Event]) -> Result<Step, serde_json::Error> {
         // request/result stream this pure seam folds; `rigger step` stamps it from the
         // conductor's `RunState::escalated_units`, so this leaves it empty (like `halted`).
         escalated: Vec::new(),
+        // `attention` is a fact of THIS call's own before/after transition (spec 69,
+        // criterion 5), not of the recorded spawn stream this pure seam folds; `rigger
+        // step` stamps it from the conductor's live `RunState::attention`, so this leaves
+        // it empty too (like `halted` and `escalated`).
+        attention: Vec::new(),
     })
 }
 
@@ -1266,6 +1309,38 @@ mod tests {
     }
 
     #[test]
+    fn resolved_model_never_reads_a_conflicting_claim_from_the_agents_own_output() {
+        // Spec 61 c10 (AUTHORITATIVE MODEL IDENTITY): "a conflicting agent-prose claim
+        // never enters the record" - resolved_model() is sourced EXCLUSIVELY from the
+        // structured `meta` object a runner (never the agent itself) attaches, so a
+        // model id an agent typed into its own free-text `output` - even one shaped
+        // exactly like the real meta payload - can never be mistaken for it.
+        let prose_claim = SpawnResult::ok(
+            "u/implementer#0",
+            r#"done. {"resolved_model":"a-model-i-am-lying-about"}"#,
+        );
+        assert_eq!(
+            prose_claim.resolved_model(),
+            "",
+            "a claim living only in `output` (agent prose) must never surface as the resolved model"
+        );
+
+        // The SAME output, once a runner ALSO attaches the real value via the
+        // structured `meta` channel, is honored - and it is the meta value that wins,
+        // never the (different) prose claim sitting right next to it in `output`.
+        let with_structured_meta = SpawnResult::ok(
+            "u/implementer#0",
+            r#"done. {"resolved_model":"a-model-i-am-lying-about"}"#,
+        )
+        .with_meta(serde_json::json!({ "resolved_model": "claude-sonnet-4-9-20260215" }));
+        assert_eq!(
+            with_structured_meta.resolved_model(),
+            "claude-sonnet-4-9-20260215",
+            "the structured meta value is authoritative even when output carries a conflicting claim"
+        );
+    }
+
+    #[test]
     fn recording_a_result_persists_it_and_result_of_reads_it_back() {
         let store = Store::open(":memory:").unwrap();
         // No result yet -> the spawn is still parked at the frontier.
@@ -1376,7 +1451,7 @@ mod tests {
             stream: &str,
             expected: ExpectedRevision,
             events: &[Event],
-        ) -> Result<Position, Error> {
+        ) -> Result<crate::eventstore::Appended, Error> {
             // The concurrent writer: land it once, just before the caller's first
             // append, so the stream head moves under the caller's pinned expectation
             // and the real store returns a genuine Conflict.
@@ -1912,6 +1987,7 @@ mod tests {
             done: true,
             halted: Some("budget exhausted: 2/2 spawns".into()),
             escalated: Vec::new(),
+            attention: Vec::new(),
         };
         let obj = serde_json::to_value(&halted).unwrap();
         assert_eq!(obj["done"], serde_json::json!(true));
@@ -1925,6 +2001,7 @@ mod tests {
             done: true,
             halted: None,
             escalated: Vec::new(),
+            attention: Vec::new(),
         };
         let wire = serde_json::to_string(&converged).unwrap();
         assert_eq!(
@@ -1944,6 +2021,7 @@ mod tests {
             done: true,
             halted: None,
             escalated: vec!["u-a".into(), "u-b".into()],
+            attention: Vec::new(),
         };
         let obj = serde_json::to_value(&wedged).unwrap();
         assert_eq!(obj["done"], serde_json::json!(true));
@@ -1954,11 +2032,53 @@ mod tests {
             done: true,
             halted: None,
             escalated: Vec::new(),
+            attention: Vec::new(),
         };
         let wire = serde_json::to_string(&clean).unwrap();
         assert_eq!(
             wire, r#"{"wave":[],"done":true}"#,
             "a clean fixpoint omits `escalated`, preserving the historical wire shape"
+        );
+    }
+
+    #[test]
+    fn an_attention_bearing_step_serializes_the_array_and_a_clean_one_omits_it() {
+        // Spec 69, criterion 5: the `done`/`attention` split, mirroring `halted` and
+        // `escalated`. A step during which a signal crossed carries the array on the wire;
+        // a clean step omits the field entirely, leaving the historical `{"wave":[],
+        // "done":true}` shape byte-for-byte unchanged.
+        let flagged = Step {
+            wave: Vec::new(),
+            done: true,
+            halted: None,
+            escalated: Vec::new(),
+            attention: vec![AttentionEntry::unit_scoped(
+                crate::ledger::ATTENTION_ESCALATED,
+                "u-a",
+                "escalated after exhausting remediation",
+            )],
+        };
+        let obj = serde_json::to_value(&flagged).unwrap();
+        assert_eq!(
+            obj["attention"],
+            serde_json::json!([{
+                "kind": "escalated",
+                "unit": "u-a",
+                "detail": "escalated after exhausting remediation",
+            }])
+        );
+
+        let clean = Step {
+            wave: Vec::new(),
+            done: true,
+            halted: None,
+            escalated: Vec::new(),
+            attention: Vec::new(),
+        };
+        let wire = serde_json::to_string(&clean).unwrap();
+        assert_eq!(
+            wire, r#"{"wave":[],"done":true}"#,
+            "a clean step omits `attention`, preserving the historical wire shape"
         );
     }
 

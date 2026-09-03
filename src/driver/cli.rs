@@ -60,6 +60,13 @@ impl AgentDriver for Driver {
         if !opts.dir.is_empty() {
             cmd.current_dir(&opts.dir);
         }
+        // The ONE build-environment authority's second injection site (spec 65): every
+        // var the resolver derived (empty when no wrapper is configured, applying
+        // nothing) so this agent's OWN `cargo test`/`cargo build` invocations hit the
+        // same compilation cache under the same settings a gate build gets.
+        for (k, v) in &opts.env {
+            cmd.env(k, v);
+        }
         let out = cmd
             .output()
             .map_err(|e| Error(format!("cli driver: spawn agent {:?}: {e}", agent.id)))?;
@@ -329,6 +336,67 @@ thinking out loud, not json\n\
         assert_eq!(calls[0].1["id"], "sd1");
         assert_eq!(calls[1].0, TYPE_UNIT_PROPOSED);
         assert_eq!(calls[1].1["id"], "su1");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn spawn_applies_opts_env_to_the_subprocess() {
+        // The ONE build-environment authority's second injection site (spec 65): the
+        // conductor resolves the shared wrapper/cache/incremental vars into
+        // `SpawnOpts.env`, and this driver must apply EVERY one of them to the spawned
+        // agent process - the same as `gate::ExecRunner::run` does for a gate build - so
+        // an agent's own `cargo test` invocation hits the same compilation cache. A
+        // fixture "agent" echoes what it actually sees; empty `env` (the default,
+        // wrapper off) must not inject anything either.
+        let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/env-echo-agent.sh")
+            .to_string_lossy()
+            .into_owned();
+        let driver = Driver { bin };
+        let emit = |_: &str, _: Value| Ok(());
+
+        let with = driver
+            .spawn(
+                &AgentDef {
+                    id: "e".into(),
+                    ..Default::default()
+                },
+                "task",
+                &SpawnOpts {
+                    env: vec![
+                        ("RUSTC_WRAPPER".to_string(), "sccache".to_string()),
+                        ("SCCACHE_DIR".to_string(), "/shared/build-cache".to_string()),
+                        ("CARGO_INCREMENTAL".to_string(), "0".to_string()),
+                    ],
+                    ..Default::default()
+                },
+                &emit,
+            )
+            .unwrap();
+        assert!(
+            with.output.contains("RUSTC_WRAPPER=sccache"),
+            "output: {:?}",
+            with.output
+        );
+        assert!(with.output.contains("SCCACHE_DIR=/shared/build-cache"));
+        assert!(with.output.contains("CARGO_INCREMENTAL=0"));
+
+        let without = driver
+            .spawn(
+                &AgentDef {
+                    id: "e".into(),
+                    ..Default::default()
+                },
+                "task",
+                &SpawnOpts::default(),
+                &emit,
+            )
+            .unwrap();
+        assert!(
+            without.output.contains("RUSTC_WRAPPER=\n"),
+            "an empty SpawnOpts.env must inject nothing: {:?}",
+            without.output
+        );
     }
 
     #[test]

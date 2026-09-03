@@ -19,6 +19,7 @@
 //! The blocking drivers (`cli`, `workflow`) are unaffected: they never park, and they
 //! ignore the [`SpawnOpts`] id/unit/stage fields this driver keys on.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -48,16 +49,175 @@ const SPAWN_SCRATCH_SUBDIR: &str = "agent-scratch";
 /// gives the scratch RUN IDENTITY: a re-run that reuses a unit-title slug computes the same
 /// spawn id, but a different run gets a different subdir, so one run never reclaims another's
 /// scratch. Both id components are made filesystem-safe by the ONE such rule,
-/// [`crate::liveness::marker_filename`] (a spawn id is `{unit}/{role}#{n}`; the `/` and `#`
-/// collapse to `_`).
-pub fn spawn_scratch_path(scratch_root: &str, run_id: &str, spawn_id: &str) -> PathBuf {
+/// [`crate::liveness::marker_filename`] - an INJECTIVE byte-hex encoding (spec 77 Design,
+/// decision `d77-injective-scratch-naming`) so distinct ids can never alias onto the same
+/// directory name (a spawn id is `{unit}/{role}#{n}`; `/` becomes `_2f`, `#` becomes `_23`).
+///
+/// Returns `None` when `spawn_id` is EMPTY - [`crate::liveness::marker_filename`]'s own doc
+/// comment, the one degenerate shape the injective encoding does not close structurally
+/// (an empty input encodes to the empty string). This path is a REMOVAL target
+/// (`reap_then_remove_dir`), so the caller skips a `None` rather than joining a no-op onto
+/// the registered root. An empty `run_id` folds into the no-subdir path instead (mirroring
+/// the established no-run convention); only the SPAWN id (the leaf actually joined last) can
+/// make the whole call `None`.
+pub fn spawn_scratch_path(scratch_root: &str, run_id: &str, spawn_id: &str) -> Option<PathBuf> {
     let dir = Path::new(scratch_root).join(SPAWN_SCRATCH_SUBDIR);
-    let dir = if run_id.is_empty() {
-        dir
-    } else {
-        dir.join(crate::liveness::marker_filename(run_id))
+    let dir = match crate::liveness::marker_filename(run_id) {
+        Some(safe) => dir.join(safe),
+        None => dir,
     };
-    dir.join(crate::liveness::marker_filename(spawn_id))
+    crate::liveness::marker_filename(spawn_id).map(|safe| dir.join(safe))
+}
+
+/// The subdirectory a unit's mutation-testing (`cargo mutants`) scratch nests under a cache
+/// home, mirroring [`SPAWN_SCRATCH_SUBDIR`]'s role for `agent-scratch`.
+const MUTATION_SCRATCH_SUBDIR: &str = "rigger-mutants";
+
+/// The cache-home directory the mutation-scratch root nests under (spec 77, criterion 2):
+/// `$XDG_CACHE_HOME` when set and non-empty, else `$HOME/.cache`, else `None` in a homeless
+/// environment. This is the exact fallback the seeded implementer persona's own shell
+/// expression names (`TMPDIR="${XDG_CACHE_HOME:-$HOME/.cache}/rigger-mutants/<spawn>"`,
+/// `.rigger/agents/rust-engineer.md`) and mirrors `registry::state_home_from`'s XDG-then-HOME
+/// shape - both ambient-cache-location resolvers read the same way. Takes the two candidate
+/// env values as plain arguments (never reading `std::env` itself) so it is a pure function a
+/// unit test can drive without depending on - or mutating - the real process environment.
+pub fn cache_home_from(xdg: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
+    if let Some(dir) = xdg.filter(|v| !v.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
+    let home = home.filter(|v| !v.is_empty())?;
+    Some(PathBuf::from(home).join(".cache"))
+}
+
+/// The SPAWN-scoped mutation-testing scratch dir an implementer persona points its `cargo
+/// mutants` invocation's `TMPDIR` at (spec 77, criterion 2, extending spec 34's per-spawn
+/// reclamation authority with a REGISTERED SCRATCH ROOT beyond `agent-scratch`, per spec 77
+/// Design "mutation scratch is spawn-scoped, never unit-scoped"): `<cache_home>/rigger-
+/// mutants/<sanitized full spawn id>` - structurally IDENTICAL to [`spawn_scratch_path`]'s own
+/// spawn-id-encoding half, just nested under a different root and with no `run_id` prefix
+/// (mutation scratch lives in the user cache, outside any one run's `.rigger/tmp`, so there is
+/// no run subdir to key on).
+///
+/// Keyed by the FULL spawn id (`{unit}/{role}#{attempt}`), NOT by bare unit or by unit+attempt:
+/// `speculation_width > 1` (spec 13, unit 3) runs K implementer candidates of ONE unit
+/// CONCURRENTLY, each a distinct `<unit>/implementer#<lane>` spawn in its own worktree
+/// (`speculation_lane_worktree` suffixes the dir `-spec{lane}` for exactly this reason) - a
+/// unit-only (or unit+attempt-only) key can still collapse distinct SPAWNS onto one shared
+/// directory depending on what else shares that key, so keying on the id `spawn_id` already
+/// mints uniquely per spawn closes the whole class at once, exactly like agent-scratch already
+/// does. The prior round's reject (`sdet-u77c2r7-mutation-scratch-key-collides-across-
+/// speculation-lanes`, `adv-u77c2r7-shared-lane-reap-sigkills-sibling-mutants-on-any-result`)
+/// found a bare-unit key let the first lane to report reclaim - and SIGKILL, via
+/// `reap_then_remove_dir`'s `reap_processes_rooted_under` - a SIBLING lane's still-running
+/// mutation-testing tree; full-spawn-id keying means EVERY spawn (every lane, every role, every
+/// remediation attempt) gets its own leaf, so no two distinct spawns ever share a reclaim
+/// target, full stop. Only the IMPLEMENTER role ever populates this path (reviewers never run
+/// `cargo mutants`), so a non-implementer spawn's own computed path is simply never created -
+/// its own reclaim call is a harmless no-op, never a cross-role collision.
+///
+/// Sanitized through the SAME [`crate::liveness::marker_filename`] injective encoding
+/// (spec 77 Design `d77-injective-scratch-naming`) as every other scratch key - the identical
+/// proof [`spawn_scratch_path`] already relies on for its own spawn-id leaf, reused rather than
+/// re-derived. This is the ONE path both the seeded persona's own invocation
+/// (`.rigger/agents/rust-engineer.md`) and `cmd_result`'s registered-scratch-root reclaim
+/// derive - a re-hardcoded root on either side could let assignment and reclaim diverge,
+/// exactly as [`spawn_scratch_path`] already guards against for the per-spawn agent-scratch
+/// dir (spec 34, criterion 1).
+///
+/// Returns `None` when `spawn_id` is EMPTY - [`crate::liveness::marker_filename`]'s own doc
+/// comment, the one degenerate shape the injective encoding does not close structurally (an
+/// empty input encodes to the empty string). Not reachable through `cmd_result` (its `id`
+/// positional is already enforced non-empty), but kept as the established fail-safe idiom
+/// this whole call chain follows regardless (a caller skips a `None` rather than joining a
+/// no-op onto the registered root).
+pub fn mutation_scratch_path(cache_home: &Path, spawn_id: &str) -> Option<PathBuf> {
+    crate::liveness::marker_filename(spawn_id)
+        .map(|safe| cache_home.join(MUTATION_SCRATCH_SUBDIR).join(safe))
+}
+
+/// Reap every REGISTERED mutation-scratch dir unit `unit_id` ever populated under
+/// `cache_home` (spec 77, criterion 3: UNIT-TERMINAL REAP) - the crash-residue backstop the
+/// per-spawn reclaim (criterion 2, `main.rs::reclaim_spawn_scratch`, keyed on ONE reporting
+/// spawn's own id) cannot reach when a step process dies strictly between recording a
+/// spawn's result and reaping its scratch. The spec's own Notes name the fix: "the next
+/// unit-terminal ... teardown covers the residue (registered roots are enumerable)".
+///
+/// Every spawn of `unit_id` shares the id PREFIX `"<unit_id>/"` ahead of its own
+/// role/attempt suffix ([`crate::spawn::spawn_id`]'s `{unit}/{role}#{attempt}` shape), and
+/// [`crate::liveness::marker_filename`]'s injective per-byte hex-escape never looks past the
+/// byte it is encoding, so it commutes with concatenation:
+/// `marker_filename(a) + marker_filename(b) == marker_filename(a + b)` for any strings `a`,
+/// `b`. That makes `marker_filename("<unit_id>/")` the EXACT encoded prefix shared by every
+/// one of this unit's own spawn ids' encoded leaf - no reverse-decoding of an on-disk name
+/// back to a raw id is ever needed, and no DIFFERENT unit's own prefix can ever match it: a
+/// literal `_XX` escape substring in an encoded name can only originate from an escaped byte
+/// at that exact input position (the encoding leaves every raw `_` escaped too, `_5f`, never
+/// bare), so one unit id can never be a false-positive prefix of another's. A directory
+/// ENUMERATION under `<cache_home>/rigger-mutants/` filtered by that prefix therefore names
+/// precisely `unit_id`'s own registered spawns' scratch, and nothing else's - the
+/// "registered roots are enumerable" backstop the spec's Notes describe, needing no
+/// event-log spawn-id enumeration at all.
+///
+/// Best-effort throughout, mirroring this module's other reclaim helpers: an unreadable or
+/// absent registered-root dir (nothing was ever populated, or a prior reap already cleared
+/// it) is a graceful no-op. [`crate::reap::reap_processes_rooted_under`] reaps any process a
+/// hung `cargo mutants` run left rooted inside a matched dir BEFORE it is removed, so a hung
+/// build never outlives its now-deleted cwd - the same ordering [`Worktree::remove`]
+/// (`crate::worktree`) already applies to a unit's own worktree dir.
+///
+/// Degenerate `unit_id` (empty - the one shape [`crate::liveness::marker_filename`] cannot
+/// close structurally, since an empty input encodes to the empty string) matches nothing: an
+/// empty prefix would match EVERY entry under the root, so this is refused outright rather
+/// than reaping the whole registered-scratch tree - the same fail-safe-by-construction idiom
+/// [`mutation_scratch_path`] and [`spawn_scratch_path`] already follow for the identical
+/// degenerate shape. Round 3 fix for `sdet-u77c3-empty-unit-id-fail-safe-guard-is-illusory`
+/// (UPHELD): the guard checks the RAW `unit_id` itself, BEFORE the `"/"` separator is
+/// appended - the prior round's guard instead checked
+/// `marker_filename(&format!("{unit_id}/"))` directly, which is `Some("_2f")` (the escaped `/`
+/// alone) even for an EMPTY `unit_id`, so it never actually caught the degenerate id it
+/// claimed to: it let an empty id match every entry whose OWN spawn id happens to start with a
+/// literal `/` (reachable via `reclaim_spawn_scratch`'s own `spawn_id.split('/').next()`
+/// unit-extraction, which yields `""` for a leading-slash spawn id) instead of matching
+/// nothing.
+pub fn reclaim_unit_mutation_scratch(cache_home: &Path, unit_id: &str) {
+    if crate::liveness::marker_filename(unit_id).is_none() {
+        return;
+    }
+    let Some(prefix) = crate::liveness::marker_filename(&format!("{unit_id}/")) else {
+        return;
+    };
+    // The registered mutation-scratch root ITSELF (`<cache_home>/rigger-mutants`) is the
+    // `authorized_root` [`crate::reap::reap_processes_rooted_under`]'s base-guard checks each
+    // matched leaf against (spec 78 round 2, decision `u78c2r2-authorized-root-caller-
+    // supplied`) - independent of `cache_home`'s own relationship (or total lack of one) to
+    // any project's `.rigger/tmp`, since `cache_home` is an independent parameter this
+    // function's own caller resolves, never re-derived from a matched leaf's path.
+    let mutation_root = mutation_scratch_root(cache_home);
+    let Ok(entries) = std::fs::read_dir(cache_home.join(MUTATION_SCRATCH_SUBDIR)) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(prefix.as_str())
+        {
+            let path = entry.path();
+            crate::reap::reap_processes_rooted_under(&path, &mutation_root);
+            let _ = std::fs::remove_dir_all(&path);
+        }
+    }
+}
+
+/// The registered mutation-scratch ROOT itself (`<cache_home>/rigger-mutants`, every spawn's
+/// leaf nests under this) - spec 77 criterion 6's FOOTPRINT ACCOUNTING surface needs this to
+/// size the "registered scratch roots" category, and per `d-p77-needs-c6-after-c2` it must
+/// call THIS crate's own path-deriving authority rather than hardcoding a second `"rigger-
+/// mutants"` literal that could drift from [`MUTATION_SCRATCH_SUBDIR`] if either ever changes.
+/// [`mutation_scratch_path`] cannot serve this alone since it always joins a spawn leaf onto
+/// the root; this is the bare root one level up.
+pub fn mutation_scratch_root(cache_home: &Path) -> PathBuf {
+    cache_home.join(MUTATION_SCRATCH_SUBDIR)
 }
 
 /// A replay driver answers each `spawn` from the run's event log: it replays an
@@ -184,11 +344,11 @@ impl AgentDriver for ReplayDriver<'_> {
             // request lands) and best-effort - a create failure never blocks parking.
             if !opts.dir.is_empty() {
                 if let Some(scratch_root) = Path::new(&opts.dir).parent() {
-                    let _ = std::fs::create_dir_all(spawn_scratch_path(
-                        &scratch_root.to_string_lossy(),
-                        &opts.run_id,
-                        &opts.id,
-                    ));
+                    if let Some(path) =
+                        spawn_scratch_path(&scratch_root.to_string_lossy(), &opts.run_id, &opts.id)
+                    {
+                        let _ = std::fs::create_dir_all(path);
+                    }
                 }
             }
         }
@@ -232,6 +392,285 @@ mod tests {
     }
 
     #[test]
+    fn cache_home_from_prefers_xdg_cache_home_then_falls_back_to_home_dot_cache() {
+        // spec 77, criterion 2: the mutation-scratch root nests under the SAME cache-home
+        // fallback the seeded persona's `TMPDIR="${XDG_CACHE_HOME:-$HOME/.cache}/..."` shell
+        // expression uses, mirrored here as a pure (env-var-free) resolver so the reclaim side
+        // and the test suite never depend on the real process environment.
+        assert_eq!(
+            cache_home_from(Some("/xdg/cache".into()), Some("/home/u".into())),
+            Some(PathBuf::from("/xdg/cache")),
+            "XDG_CACHE_HOME wins when set and non-empty"
+        );
+        assert_eq!(
+            cache_home_from(None, Some("/home/u".into())),
+            Some(PathBuf::from("/home/u/.cache")),
+            "an unset XDG_CACHE_HOME falls back to $HOME/.cache"
+        );
+        assert_eq!(
+            cache_home_from(Some("".into()), Some("/home/u".into())),
+            Some(PathBuf::from("/home/u/.cache")),
+            "an EMPTY XDG_CACHE_HOME (set-but-blank) is treated as unset, not a literal empty root"
+        );
+    }
+
+    #[test]
+    fn cache_home_from_is_none_in_a_homeless_environment() {
+        // Neither XDG_CACHE_HOME nor HOME resolves: there is no cache root to target, so
+        // reclaim has nothing to do (a harmless no-op - nothing was ever populated there).
+        assert_eq!(cache_home_from(None, None), None);
+        assert_eq!(cache_home_from(Some("".into()), Some("".into())), None);
+    }
+
+    #[test]
+    fn mutation_scratch_path_nests_under_rigger_mutants_keyed_by_the_full_encoded_spawn_id() {
+        // spec 77 Design ("mutation scratch is spawn-scoped, never unit-scoped"): the mutation
+        // scratch root is keyed by the FULL spawn id, not a bare unit or a unit+attempt
+        // composite - `<cache_home>/rigger-mutants/<encoded spawn id>` - the single authority
+        // both the seeded persona's own invocation and `cmd_result`'s registered-scratch-root
+        // reclaim derive, structurally identical to `spawn_scratch_path`'s own spawn-id leaf.
+        // Encoded through the SAME `marker_filename` rule (injective byte-hex, spec 77 Design
+        // `d77-injective-scratch-naming`) as every other scratch key.
+        assert_eq!(
+            mutation_scratch_path(Path::new("/home/u/.cache"), "u77c2/implementer#0"),
+            Some(PathBuf::from(
+                "/home/u/.cache/rigger-mutants/u77c2_2fimplementer_230"
+            ))
+        );
+        assert_eq!(
+            mutation_scratch_path(Path::new("/home/u/.cache"), "u/weird#id"),
+            Some(PathBuf::from(
+                "/home/u/.cache/rigger-mutants/u_2fweird_23id"
+            )),
+            "hex-escaped the same way agent-scratch's own spawn-id leaf is (/ -> _2f, # -> _23)"
+        );
+    }
+
+    #[test]
+    fn mutation_scratch_root_is_the_bare_cache_home_join_rigger_mutants() {
+        // The same leaf name `mutation_scratch_path` nests every spawn's leaf under - one
+        // level up, with no spawn leaf joined - so spec 77 criterion 5's footprint accounting
+        // can size the whole registered root without hardcoding a second "rigger-mutants"
+        // literal.
+        assert_eq!(
+            mutation_scratch_root(Path::new("/home/u/.cache")),
+            PathBuf::from("/home/u/.cache/rigger-mutants")
+        );
+    }
+
+    #[test]
+    fn mutation_scratch_path_differs_across_lanes_of_the_same_speculating_unit() {
+        // Round-7/8 review reject (`sdet-u77c2r7-mutation-scratch-key-collides-across-
+        // speculation-lanes`, `adv-u77c2r7-shared-lane-reap-sigkills-sibling-mutants-on-any-
+        // result`): `speculation_width > 1` runs K implementer candidates of ONE unit
+        // CONCURRENTLY, each its own spawn `<unit>/implementer#<lane>`. A bare-unit key
+        // collapsed every lane's scratch (and `reclaim_spawn_scratch`'s reap target) onto ONE
+        // shared dir, so the first lane to report its result reclaimed - and SIGKILLed - a
+        // sibling lane's still-running mutation-testing tree. Keying by the FULL spawn id
+        // closes this: every lane's own distinct `#<lane>` gives it its own distinct leaf.
+        let cache_home = Path::new("/home/u/.cache");
+        let lane0 = mutation_scratch_path(cache_home, "u77c2/implementer#0");
+        let lane1 = mutation_scratch_path(cache_home, "u77c2/implementer#1");
+        assert_ne!(
+            lane0, lane1,
+            "two lanes of the SAME unit must never share a mutation-scratch dir"
+        );
+    }
+
+    #[test]
+    fn mutation_scratch_path_differs_across_roles_of_the_same_unit_and_attempt() {
+        // Sibling of the lane test: two DIFFERENT roles at the SAME unit+attempt (e.g. the
+        // implementer that actually ran `cargo mutants` and the adversary reviewing its diff)
+        // must ALSO get distinct leaves - only the implementer's own spawn ever populates its
+        // path, so a reviewer's result reporting must never resolve to (and reclaim) the
+        // implementer's still-relevant scratch.
+        let cache_home = Path::new("/home/u/.cache");
+        assert_ne!(
+            mutation_scratch_path(cache_home, "u/implementer#0"),
+            mutation_scratch_path(cache_home, "u/adversary#0"),
+            "a reviewer spawn must never resolve to the same leaf as the implementer spawn \
+             whose mutation run it never touched"
+        );
+    }
+
+    #[test]
+    fn spawn_scratch_path_and_mutation_scratch_path_hex_escape_a_dotdot_id_so_it_can_never_escape()
+    {
+        // Regression for the spec-77 review reject: `cmd_result`'s positional spawn id carries
+        // NO format validation beyond non-empty, so a spawn id can itself be ".."
+        // (`rigger result ".." "<text>"`). Both `spawn_scratch_path` and `mutation_scratch_path`
+        // route the SAME raw id through `liveness::marker_filename`, which hex-escapes `.`
+        // (spec 77 Design `d77-injective-scratch-naming`) - prove BOTH call sites resolve to an
+        // ordinary, unique, non-traversal leaf rather than a fabricated no-op or a walk past
+        // their registered root.
+        assert_eq!(
+            spawn_scratch_path("/scratch", "r1", ".."),
+            Some(PathBuf::from("/scratch/agent-scratch/r1/_2e_2e"))
+        );
+        assert_eq!(
+            mutation_scratch_path(Path::new("/home/u/.cache"), ".."),
+            Some(PathBuf::from("/home/u/.cache/rigger-mutants/_2e_2e"))
+        );
+    }
+
+    #[test]
+    fn mutation_scratch_path_is_none_only_for_an_empty_spawn_id() {
+        // `cmd_result`'s `id` positional is already enforced non-empty, so this shape is not
+        // reachable through the CLI - pinned anyway because it is the one degenerate shape
+        // `marker_filename` does not close structurally (an empty input encodes to the empty
+        // string), and every registered-root call site shares the same fail-safe idiom: skip
+        // entirely rather than join a no-op onto the root itself.
+        assert_eq!(mutation_scratch_path(Path::new("/home/u/.cache"), ""), None);
+        assert_eq!(spawn_scratch_path("/scratch", "r1", ""), None);
+    }
+
+    #[test]
+    fn mutation_scratch_path_never_collides_a_real_underscore_run_spawn_id_with_a_degenerate_id() {
+        // Round-6 REQUIRED FIX regression, at the call-site level: a real spawn id literally
+        // named an underscore-run must resolve to its OWN unique leaf, and an unrelated
+        // all-dots id of the IDENTICAL length (the exact round-6 collision shape under the OLD
+        // scheme, where both `.` and `_` passed through unescaped) must resolve to a DIFFERENT
+        // leaf now that both are hex-escaped distinctly (`.` -> `_2e`, `_` -> `_5f`).
+        let real_id = "___"; // a plausible-if-unusual bare id: three underscores.
+        assert_eq!(
+            mutation_scratch_path(Path::new("/home/u/.cache"), real_id),
+            Some(PathBuf::from("/home/u/.cache/rigger-mutants/_5f_5f_5f")),
+            "a real underscore-run id must encode to its own unique leaf"
+        );
+        assert_ne!(
+            mutation_scratch_path(Path::new("/home/u/.cache"), real_id),
+            mutation_scratch_path(Path::new("/home/u/.cache"), "..."),
+            "an unrelated all-dots id of the same length must never collide with the real \
+             underscore-run id's own leaf"
+        );
+        assert_ne!(
+            mutation_scratch_path(Path::new("/home/u/.cache"), real_id),
+            mutation_scratch_path(Path::new("/home/u/.cache"), ""),
+            "an unrelated empty id must never collide with the real underscore-run id's own \
+             leaf either"
+        );
+    }
+
+    /// Spec 77, criterion 3 (UNIT-TERMINAL REAP): [`reclaim_unit_mutation_scratch`] removes
+    /// EVERY registered mutation-scratch dir the unit's own spawns populated - proven here
+    /// with THREE spawns of the SAME unit (two different attempts of the implementer role,
+    /// plus a speculation-lane sibling `#1`), so a single-spawn enumeration bug (stopping
+    /// after the first match) cannot pass unnoticed - while a DIFFERENT unit's own dir, and
+    /// the registered root itself, both survive untouched.
+    #[test]
+    fn reclaim_unit_mutation_scratch_removes_every_one_of_the_units_own_spawn_dirs() {
+        let cache_home = tempfile::tempdir().unwrap();
+        let root = cache_home.path().join(MUTATION_SCRATCH_SUBDIR);
+        let owned = [
+            mutation_scratch_path(cache_home.path(), "u1/implementer#0").unwrap(),
+            mutation_scratch_path(cache_home.path(), "u1/implementer#1").unwrap(),
+            mutation_scratch_path(cache_home.path(), "u1/implementer#1lane1").unwrap(),
+        ];
+        let other_unit = mutation_scratch_path(cache_home.path(), "u2/implementer#0").unwrap();
+        for d in owned.iter().chain(std::iter::once(&other_unit)) {
+            std::fs::create_dir_all(d).unwrap();
+            std::fs::write(d.join("debris.out"), [0u8; 8]).unwrap();
+        }
+
+        reclaim_unit_mutation_scratch(cache_home.path(), "u1");
+
+        for d in &owned {
+            assert!(
+                !d.exists(),
+                "unit u1's own registered mutation-scratch dir must be reaped: {}",
+                d.display()
+            );
+        }
+        assert!(
+            other_unit.exists() && other_unit.join("debris.out").exists(),
+            "a DIFFERENT unit's own registered mutation-scratch must never be touched: {}",
+            other_unit.display()
+        );
+        assert!(
+            root.is_dir(),
+            "the registered root itself must survive a unit's own reap, not just its entries"
+        );
+    }
+
+    /// A unit id that is a literal PREFIX of another unit's id (`u1` vs `u10`) must never
+    /// cross-match: `marker_filename("u1/")` = `"u1_2f"`, which is NOT a prefix of
+    /// `marker_filename("u10/...")` = `"u10_2f..."` (position 2 is `0` vs the required `_`),
+    /// proving the encoding's own delimiter-escape - not a coincidence of the two example
+    /// ids chosen elsewhere in this file - is what keeps the prefix match collision-free.
+    #[test]
+    fn reclaim_unit_mutation_scratch_never_cross_matches_a_unit_id_that_is_a_string_prefix_of_another(
+    ) {
+        let cache_home = tempfile::tempdir().unwrap();
+        let sibling = mutation_scratch_path(cache_home.path(), "u10/implementer#0").unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+
+        reclaim_unit_mutation_scratch(cache_home.path(), "u1");
+
+        assert!(
+            sibling.exists(),
+            "u10's own scratch must survive a reap scoped to the DIFFERENT unit u1: {}",
+            sibling.display()
+        );
+    }
+
+    /// Degenerate empty `unit_id`: an empty prefix would match EVERY entry under the root
+    /// (matching nothing is wrong; matching everything is catastrophic), so this must be
+    /// refused outright rather than reaping the whole registered-scratch tree.
+    #[test]
+    fn reclaim_unit_mutation_scratch_is_a_no_op_for_an_empty_unit_id() {
+        let cache_home = tempfile::tempdir().unwrap();
+        let untouched = mutation_scratch_path(cache_home.path(), "u1/implementer#0").unwrap();
+        std::fs::create_dir_all(&untouched).unwrap();
+
+        reclaim_unit_mutation_scratch(cache_home.path(), "");
+
+        assert!(
+            untouched.exists(),
+            "an empty unit id must reap nothing - it must never be treated as a match-all prefix"
+        );
+    }
+
+    /// Round-3 fix for `sdet-u77c3-empty-unit-id-fail-safe-guard-is-illusory` (UPHELD): the
+    /// PRIOR round's guard checked `marker_filename(&format!("{unit_id}/"))`, which encodes to
+    /// `Some("_2f")` (the escaped `/` alone) even for an EMPTY `unit_id` - appending the
+    /// separator before encoding means the input handed to `marker_filename` always carries at
+    /// least one byte, so the None-on-empty-input special case was structurally unreachable
+    /// from that call site. An empty `unit_id` therefore computed a LIVE, non-empty prefix (the
+    /// encoded leading slash) and proceeded with real prefix matching, cross-deleting any OTHER
+    /// unit's own registered scratch whose spawn id happens to start with a literal `/`. The
+    /// test above never caught this because its seeded victim (`u1/implementer#0`) does not
+    /// happen to start with a slash, so it passed for the wrong reason. This test seeds the
+    /// EXACT victim shape that DOES collide with the illusory guard's own live prefix and
+    /// proves the FIXED guard (checking the raw `unit_id` itself, before the separator is
+    /// appended) leaves it untouched.
+    #[test]
+    fn reclaim_unit_mutation_scratch_spares_a_leading_slash_spawn_ids_scratch_on_an_empty_unit_id()
+    {
+        let cache_home = tempfile::tempdir().unwrap();
+        let victim = mutation_scratch_path(cache_home.path(), "/weird-unit/implementer#0").unwrap();
+        std::fs::create_dir_all(&victim).unwrap();
+        std::fs::write(victim.join("debris.out"), [0u8; 8]).unwrap();
+
+        reclaim_unit_mutation_scratch(cache_home.path(), "");
+
+        assert!(
+            victim.exists() && victim.join("debris.out").exists(),
+            "an empty unit id must never cross-delete a real spawn whose own id starts with a \
+             literal slash (the exact shape the illusory guard used to match): {}",
+            victim.display()
+        );
+    }
+
+    /// A cache home whose `rigger-mutants` root does not exist at all (nothing was ever
+    /// populated there) is a graceful no-op, never a panic or an error surfaced to the
+    /// caller - mirroring [`mutation_scratch_path`]'s own best-effort framing.
+    #[test]
+    fn reclaim_unit_mutation_scratch_is_a_no_op_when_the_registered_root_is_absent() {
+        let cache_home = tempfile::tempdir().unwrap();
+        reclaim_unit_mutation_scratch(cache_home.path(), "u1"); // must not panic
+    }
+
+    #[test]
     fn parking_a_spawn_assigns_its_dedicated_scratch_dir() {
         // Spec 34, criterion 1: rigger ASSIGNS each spawn a dedicated scratch dir under the
         // run's scratch root the moment it requests (parks) the spawn - so a verify/build
@@ -260,7 +699,8 @@ mod tests {
         // single-authority path `rigger result`'s reclaim later removes, run-scoped under
         // `agent-scratch` and keyed by the filesystem-safe spawn id.
         let assigned =
-            spawn_scratch_path(&scratch.path().to_string_lossy(), "r1", "u/implementer#0");
+            spawn_scratch_path(&scratch.path().to_string_lossy(), "r1", "u/implementer#0")
+                .expect("a well-formed spawn id must never map to a degenerate scratch path");
         assert!(
             assigned.is_dir(),
             "parking must assign (create) the spawn's dedicated scratch dir at {}",
@@ -272,8 +712,8 @@ mod tests {
                 .path()
                 .join("agent-scratch")
                 .join("r1")
-                .join("u_implementer_0"),
-            "the assigned scratch is run-scoped under agent-scratch, keyed by the sanitized id"
+                .join("u_2fimplementer_230"),
+            "the assigned scratch is run-scoped under agent-scratch, keyed by the encoded id"
         );
     }
 

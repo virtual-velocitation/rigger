@@ -12,6 +12,7 @@ pub fn assert_contract(store: &dyn EventStore) {
     append_assigns_revisions(store);
     optimistic_concurrency_reports_actual(store);
     exact_revision_concurrency_round_trips(store);
+    append_races_one_stream_serialize_to_the_named_conflict(store);
     meta_and_valid_from_round_trip(store);
     subscription_replays_then_goes_live(store);
     stream_subscription_replays_then_goes_live(store);
@@ -22,6 +23,150 @@ pub fn assert_contract(store: &dyn EventStore) {
     all_position_round_trips_into_read_and_subscribe(store);
     nonexistent_stream_reads_empty(store);
     concurrent_appends_to_distinct_streams_get_distinct_positions(store);
+    append_reports_every_event_at_the_position_the_store_holds_it(store);
+    append_of_one_event_answers_the_position_the_store_holds_it(store);
+    append_of_no_events_reports_nothing(store);
+}
+
+/// THE HONESTY OBLIGATION, and the reason it is pinned HERE rather than in one
+/// adapter's tests: whichever backend is wired, a caller must be able to fold what it
+/// appended at the positions the log actually holds it at. The shared append-and-fold
+/// authority stamps every event it folds from this report, and the graph's applied
+/// ledger is keyed BY position, so one invented position marks a location applied
+/// forever and silently swallows the genuine event recorded there.
+///
+/// Three things are checked, and the middle one is the one that makes the promise
+/// FALSIFIABLE rather than decorative: every reported position is read back and the
+/// event found there must be the event the slot names. A suite that only checked
+/// counts and ordering would pass a backend that invented positions by arithmetic -
+/// which is exactly what a backend whose `$all` position is a byte offset would have
+/// to do, since such positions are strictly increasing but never consecutive.
+fn append_reports_every_event_at_the_position_the_store_holds_it(store: &dyn EventStore) {
+    let batch: Vec<Event> = (0..4)
+        .map(|i| Event::new(format!("H{i}"), vec![i as u8]))
+        .collect();
+    let appended = store
+        .append("c-honest", ExpectedRevision::NoStream, &batch)
+        .expect("the append must succeed");
+
+    assert_eq!(
+        appended.handed(),
+        batch.len(),
+        "the report must carry exactly one slot per event handed in, in input order"
+    );
+
+    let reported: Vec<u64> = appended.placed().map(|(_, p)| p).collect();
+    let mut strictly_increasing = reported.clone();
+    strictly_increasing.sort_unstable();
+    strictly_increasing.dedup();
+    assert_eq!(
+        reported, strictly_increasing,
+        "reported positions must be distinct and strictly increasing within one append, got {reported:?}"
+    );
+
+    // The falsifying check: ask the store what it actually holds at each reported
+    // position. A position the store did not issue for THAT event fails here.
+    let held = store
+        .read_all(0, Direction::Forward, &Filter::default())
+        .expect("read_all must succeed");
+    for (i, position) in appended.placed() {
+        let at = held.iter().find(|e| e.position == position);
+        let at = at.unwrap_or_else(|| {
+            panic!(
+                "the store reported event {i} at position {position}, but holds no event there \
+                 (positions must be the store's answer, never arithmetic the adapter invented)"
+            )
+        });
+        assert_eq!(
+            at.id, batch[i].id,
+            "the store reported event {i} ({:?}) at position {position}, but holds {:?} there",
+            batch[i].id, at.id
+        );
+    }
+}
+
+/// THE SINGLE-EVENT QUESTION, which is a DIFFERENT question and belongs beside the batch
+/// obligation rather than in one adapter's tests. Most of what this codebase records is
+/// one event: a progress report, an emitted decision, a spawn result, a run boundary. Each
+/// of those seams asks its report [`super::Appended::one`] and has no second answer
+/// available - it cannot fold, cite, or print a position the store never issued - so
+/// whichever backend is wired, that question must be answerable, and its answer must be a
+/// position the log actually holds THAT event at.
+///
+/// The batch check above cannot stand in for this. A report can satisfy every batch
+/// property - one slot per handed event, distinct and increasing positions, each readable
+/// back - and still come from an adapter whose one-event path answers with a differently
+/// shaped report; `one` refuses a report that does not answer exactly one event, so such
+/// an adapter fails every single-event seam in the binary at runtime while passing every
+/// check that existed before this one. The falsifying half is the same read-back the batch
+/// obligation uses: the position is looked up in what the store HOLDS, so an adapter that
+/// answers a one-event append with a position it did not issue fails here.
+fn append_of_one_event_answers_the_position_the_store_holds_it(store: &dyn EventStore) {
+    let event = Event::new("H-one", vec![7]);
+    let appended = store
+        .append(
+            "c-one",
+            ExpectedRevision::NoStream,
+            std::slice::from_ref(&event),
+        )
+        .expect("the append must succeed");
+
+    assert_eq!(
+        appended.handed(),
+        1,
+        "one event handed in, exactly one slot reported"
+    );
+    let position = appended
+        .one("the one event of the contract suite")
+        .expect("a store that wrote the event must be able to say where it wrote it");
+
+    let held = store
+        .read_stream("c-one", 0, Direction::Forward)
+        .expect("read must succeed");
+    let at = held
+        .iter()
+        .find(|e| e.position == position)
+        .unwrap_or_else(|| {
+            panic!(
+                "the store answered a one-event append with position {position}, but holds no \
+                 event there (the position must be the store's own answer, never arithmetic \
+                 the adapter invented)"
+            )
+        });
+    assert_eq!(
+        at.id, event.id,
+        "the store answered with position {position}, but holds {:?} there rather than the \
+         event it was handed",
+        at.id
+    );
+}
+
+/// An append of no events writes nothing and says so: an empty report, and in
+/// particular NO position. The absence has to be expressible, because "the store wrote
+/// nothing" is a real answer a caller must be able to act on; an in-band sentinel
+/// (position `0`) would be indistinguishable from a genuine first write.
+fn append_of_no_events_reports_nothing(store: &dyn EventStore) {
+    let appended = store
+        .append("c-empty", ExpectedRevision::Any, &[])
+        .expect("appending nothing is not an error");
+    assert_eq!(
+        appended.handed(),
+        0,
+        "no events handed in, no slots reported"
+    );
+    assert_eq!(appended.written(), 0, "an empty append writes nothing");
+    assert_eq!(
+        appended.last(),
+        None,
+        "an append that wrote nothing reports an absence, never a fabricated position"
+    );
+    assert!(
+        store
+            .read_stream("c-empty", 0, Direction::Forward)
+            .expect("read must succeed")
+            .is_empty(),
+        "an empty append leaves the stream untouched"
+    );
 }
 
 fn append_assigns_revisions(store: &dyn EventStore) {
@@ -383,6 +528,80 @@ fn exact_revision_concurrency_round_trips(store: &dyn EventStore) {
     );
 }
 
+/// Spec 71 - APPEND REFUSES DISORDER, the concurrency face this criterion owns. Many
+/// writers race the SAME stream under the SAME stale `ExpectedRevision::Exact`: they
+/// must serialize through the append's own transaction (never interleave into a raw
+/// `UNIQUE(stream, revision)` collision), exactly one may win, and every loser's
+/// stale expectation surfaces through the SAME named `Error::Conflict` every other
+/// stale expectation produces - never an unnamed backend error carrying the store's
+/// raw constraint text. A correct append afterward, at the revision the winner
+/// actually left the stream at, is untouched by any of it.
+fn append_races_one_stream_serialize_to_the_named_conflict(store: &dyn EventStore) {
+    let stream = "c-race-order";
+    store
+        .append(
+            stream,
+            ExpectedRevision::NoStream,
+            &[Event::new("Seed", b"0".to_vec())],
+        )
+        .expect("the seed append must succeed");
+
+    const RACERS: usize = 16;
+    let outcomes: Vec<Result<super::Appended, Error>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..RACERS)
+            .map(|i| {
+                scope.spawn(move || {
+                    store.append(
+                        stream,
+                        // Every racer shares the SAME (now stale-the-instant-one-lands)
+                        // expectation, so at most one can win.
+                        ExpectedRevision::Exact(0),
+                        &[Event::new("R", vec![i as u8])],
+                    )
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+
+    let wins = outcomes.iter().filter(|o| o.is_ok()).count();
+    assert_eq!(
+        wins, 1,
+        "exactly one racer sharing one stale expectation may win the append"
+    );
+    for outcome in &outcomes {
+        if let Err(e) = outcome {
+            assert!(
+                matches!(e, Error::Conflict { .. }),
+                "a losing racer must surface the named optimistic-concurrency error, \
+                 never an unnamed one: {e}"
+            );
+            let message = e.to_string();
+            assert!(
+                !message.to_uppercase().contains("UNIQUE"),
+                "a losing racer must never see the bare UNIQUE(stream, revision) failure \
+                 leak through as its reported error: {message}"
+            );
+        }
+    }
+
+    // A correct append, at the revision the race actually left the stream on, is
+    // untouched by any of it.
+    store
+        .append(
+            stream,
+            ExpectedRevision::Exact(1),
+            &[Event::new("Next", b"n".to_vec())],
+        )
+        .expect("a correct append at the stream's true current revision proceeds normally");
+    let all = store.read_stream(stream, 0, Direction::Forward).unwrap();
+    assert_eq!(
+        all.len(),
+        3,
+        "the seed, the one race winner, and the follow-up append - nothing more, nothing lost"
+    );
+}
+
 /// A stream catch-up subscription resumed FROM a nonzero revision replays only
 /// that revision onward (the stream-scope boundary is inclusive), never the
 /// earlier events - the checkpoint-resume shape a projection relies on. This is
@@ -497,6 +716,8 @@ fn concurrent_appends_to_distinct_streams_get_distinct_positions(store: &dyn Eve
                             &[Event::new("C", vec![i as u8])],
                         )
                         .expect("concurrent appends to distinct streams must all succeed")
+                        .last()
+                        .expect("a one-event append reports the position it wrote")
                 })
             })
             .collect();
@@ -563,5 +784,87 @@ fn drain_until(sub: &super::Subscription, want_type: &str, msg: &str) {
             }
         }
         assert!(Instant::now() < deadline, "{msg}");
+    }
+}
+
+/// The suite's own falsifiability proof. A promise a contract suite cannot FAIL is not
+/// a contract, and the honesty obligation is exactly the kind that decays into
+/// decoration: it is easy to write checks that count slots and compare orderings and
+/// pass a backend that invented every position. So the check is run here against a
+/// store built to lie, and it must reject it.
+#[cfg(test)]
+mod falsifiability {
+    use super::*;
+    use crate::eventstore::sqlite::Store;
+    use crate::eventstore::{Appended, Revision, Subscription};
+
+    /// A store that appends honestly and then reports positions arithmetically - the
+    /// shape an adapter falls into when it can only learn the LAST position and fills
+    /// the rest in by counting backwards.
+    struct Fabricator {
+        inner: Store,
+    }
+
+    impl EventStore for Fabricator {
+        fn append(
+            &self,
+            stream: &str,
+            expected: ExpectedRevision,
+            events: &[Event],
+        ) -> Result<Appended, Error> {
+            let honest = self.inner.append(stream, expected, events)?;
+            let Some(last) = honest.last() else {
+                return Ok(honest);
+            };
+            // Every event but the last gets a made-up position derived from `last`.
+            let n = honest.handed() as u64;
+            Ok(Appended::all(
+                (0..n).map(|i| last + 1 - n + i + 100).collect(),
+            ))
+        }
+        fn read_stream(
+            &self,
+            stream: &str,
+            from: Revision,
+            dir: Direction,
+        ) -> Result<Vec<Event>, Error> {
+            self.inner.read_stream(stream, from, dir)
+        }
+        fn read_all(
+            &self,
+            from: u64,
+            dir: Direction,
+            filter: &Filter,
+        ) -> Result<Vec<Event>, Error> {
+            self.inner.read_all(from, dir, filter)
+        }
+        fn subscribe_all(&self, from: u64, filter: &Filter) -> Result<Subscription, Error> {
+            self.inner.subscribe_all(from, filter)
+        }
+        fn subscribe_stream(&self, stream: &str, from: Revision) -> Result<Subscription, Error> {
+            self.inner.subscribe_stream(stream, from)
+        }
+    }
+
+    #[test]
+    fn the_honesty_check_rejects_a_store_that_invents_positions() {
+        // Positive control first: the honest embedded store passes the very check the
+        // liar must fail, so a failure below is the LIE being caught and not the check
+        // rejecting everything.
+        let honest = Store::open(":memory:").unwrap();
+        append_reports_every_event_at_the_position_the_store_holds_it(&honest);
+
+        let liar = Fabricator {
+            inner: Store::open(":memory:").unwrap(),
+        };
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            append_reports_every_event_at_the_position_the_store_holds_it(&liar)
+        }));
+        assert!(
+            caught.is_err(),
+            "a store reporting positions it did not issue must FAIL the port's honesty check - \
+             otherwise the promise is decoration and a caller can fold at a location the store \
+             never gave"
+        );
     }
 }

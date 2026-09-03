@@ -1870,13 +1870,14 @@ dependencies = [
 
 [[package]]
 name = "rigger"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "fs2",
  "ignore",
  "kurrentdb",
  "regex",
  "rusqlite",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "serde_yaml",

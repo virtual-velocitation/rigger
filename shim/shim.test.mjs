@@ -16,14 +16,24 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { mkdtempSync, readFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, readFileSync, existsSync, writeFileSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 
-import { runWorkflow, unwrap, renderPeers, buildProxyServer, buildAgentOptions } from './shim.mjs'
+import {
+  runWorkflow,
+  unwrap,
+  renderPeers,
+  buildProxyServer,
+  buildAgentOptions,
+  specLintPassThroughEnv,
+  SPEC_LINT_REMINDER_PID_ENV,
+  connect,
+  resolvedModelFromUsage,
+} from './shim.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const MOCK = join(here, 'mock-rigger-server.mjs')
@@ -48,6 +58,131 @@ test('renderPeers injects scoped peer decisions, empty when none', () => {
   const out = renderPeers({ decisions: [{ id: 'p1', summary: 'use the buffer', governs: ['a.rs'] }] })
   assert.match(out, /PEERS CONTEXT REFRESH/)
   assert.match(out, /p1: use the buffer \[governs: a\.rs\]/)
+})
+
+// --- Spec 66, criterion 5: REMINDER DEDUP - the shim is an INTERMEDIARY that must pass
+// the pid-scoped parent-to-child contract through, never launder an unverified value ---
+
+test('specLintPassThroughEnv re-stamps with our own pid only when the inherited value ' +
+  'names our real direct parent', () => {
+  const env = { PATH: '/bin', [SPEC_LINT_REMINDER_PID_ENV]: '111' }
+  const out = specLintPassThroughEnv(env, /* ownParentPid */ 111, /* ownPid */ 222)
+  assert.equal(out[SPEC_LINT_REMINDER_PID_ENV], '222', 're-stamped with our own pid')
+  assert.equal(out.PATH, '/bin', 'the rest of the env passes through untouched')
+})
+
+test('specLintPassThroughEnv drops the sentinel on absent, foreign, stale, or malformed ' +
+  'values - never forwards an unverified value, and never launders it by re-stamping on ' +
+  'bare presence', () => {
+  const cases = [
+    ['absent', {}],
+    ['foreign (not our real direct parent)', { [SPEC_LINT_REMINDER_PID_ENV]: '999' }],
+    ['malformed', { [SPEC_LINT_REMINDER_PID_ENV]: 'not-a-pid' }],
+    ['stale/empty', { [SPEC_LINT_REMINDER_PID_ENV]: '' }],
+    ['trailing garbage', { [SPEC_LINT_REMINDER_PID_ENV]: '111x' }],
+  ]
+  for (const [label, env] of cases) {
+    const out = specLintPassThroughEnv({ PATH: '/bin', ...env }, /* ownParentPid */ 111, /* ownPid */ 222)
+    assert.equal(out[SPEC_LINT_REMINDER_PID_ENV], undefined, `${label}: must be dropped, not forwarded`)
+    assert.equal(out.PATH, '/bin', `${label}: the rest of the env still passes through`)
+  }
+})
+
+// --- Spec 66, criterion 5: REMINDER DEDUP - connect()'s REAL wiring, not the pure function ---
+//
+// The two tests above prove `specLintPassThroughEnv` is correct in isolation, given
+// caller-supplied ownParentPid/ownPid. Neither proves `connect()` (shim.mjs) actually calls it
+// with the REAL `process.ppid`/`process.pid` at the real child-spawn boundary: that call site
+// is impure (reads process.env/ppid/pid directly, then spawns a real child over a real
+// StdioClientTransport) and untested anywhere else in this suite - every other test either
+// calls the pure function directly or builds its OWN transport against MOCK, never going
+// through `connect()`. These two close that gap with a POSIX-sh stub standing in for
+// `rigger serve` (RIGGER_BIN), spawned for real - `StdioClientTransport` uses `shell: false`,
+// so the stub's own real direct OS parent IS this test process, exactly the seam `connect()`
+// computes over. The stub reports what it received on RIGGER_SPEC_LINT_REMINDER_PID and its
+// own real parent pid (the POSIX special parameter `$PPID` - not a forked `awk` reader over
+// `/proc/self/status`, whose own `/proc/self` would name the reader, not the script one hop
+// up), then exits immediately so the handshake `connect()` attempts - which was never going to
+// complete against a plain shell script - fails fast and `connect()` throws, exactly as a
+// real spawn/connect failure does in production.
+
+function writePidReportingStub(scriptPath, outPath) {
+  writeFileSync(
+    scriptPath,
+    '#!/bin/sh\n' +
+      `printf 'sentinel=%s ppid=%s\\n' "\${RIGGER_SPEC_LINT_REMINDER_PID:-}" "$PPID" > '${outPath}'\n` +
+      'exit 3\n',
+  )
+  chmodSync(scriptPath, 0o755)
+}
+
+function readPidReport(outPath) {
+  const text = readFileSync(outPath, 'utf8').trim()
+  return {
+    sentinel: /sentinel=(\S*)/.exec(text)?.[1] ?? '',
+    ppid: /ppid=(\S*)/.exec(text)?.[1] ?? '',
+  }
+}
+
+test('connect() re-stamps RIGGER_SPEC_LINT_REMINDER_PID with our REAL own pid when the ' +
+  'inherited value names our REAL direct parent pid - the real seam, not a mock of it', async () => {
+  const workDir = mkdtempSync(join(tmpdir(), 'rigger-shim-test-'))
+  const stub = join(workDir, 'rigger-stub.sh')
+  const out = join(workDir, 'report.txt')
+  writePidReportingStub(stub, out)
+
+  const priorBin = process.env.RIGGER_BIN
+  const priorSentinel = process.env[SPEC_LINT_REMINDER_PID_ENV]
+  process.env.RIGGER_BIN = stub
+  // This test process IS connect()'s real direct OS parent once it spawns the stub, so
+  // naming OUR OWN real ppid here is the genuine-match case from connect()'s point of view
+  // (connect() reads process.ppid/process.pid off THIS SAME process).
+  process.env[SPEC_LINT_REMINDER_PID_ENV] = String(process.ppid)
+  try {
+    await assert.rejects(() => connect())
+  } finally {
+    if (priorBin === undefined) delete process.env.RIGGER_BIN
+    else process.env.RIGGER_BIN = priorBin
+    if (priorSentinel === undefined) delete process.env[SPEC_LINT_REMINDER_PID_ENV]
+    else process.env[SPEC_LINT_REMINDER_PID_ENV] = priorSentinel
+  }
+
+  const { sentinel, ppid } = readPidReport(out)
+  assert.equal(
+    sentinel,
+    ppid,
+    `connect() must re-stamp with ITS OWN real pid (which is the child's real parent pid); got ${JSON.stringify({ sentinel, ppid })}`,
+  )
+  assert.notEqual(
+    sentinel,
+    String(process.ppid),
+    'the child must see a fresh own-pid stamp, not the inbound value forwarded verbatim',
+  )
+})
+
+test('connect() drops RIGGER_SPEC_LINT_REMINDER_PID entirely when the inherited value does ' +
+  'not name our real direct parent pid - never launders an unverified value onto a real ' +
+  'spawned child', async () => {
+  const workDir = mkdtempSync(join(tmpdir(), 'rigger-shim-test-'))
+  const stub = join(workDir, 'rigger-stub.sh')
+  const out = join(workDir, 'report.txt')
+  writePidReportingStub(stub, out)
+
+  const priorBin = process.env.RIGGER_BIN
+  const priorSentinel = process.env[SPEC_LINT_REMINDER_PID_ENV]
+  process.env.RIGGER_BIN = stub
+  process.env[SPEC_LINT_REMINDER_PID_ENV] = '1' // foreign: not this test process's real pid
+  try {
+    await assert.rejects(() => connect())
+  } finally {
+    if (priorBin === undefined) delete process.env.RIGGER_BIN
+    else process.env.RIGGER_BIN = priorBin
+    if (priorSentinel === undefined) delete process.env[SPEC_LINT_REMINDER_PID_ENV]
+    else process.env[SPEC_LINT_REMINDER_PID_ENV] = priorSentinel
+  }
+
+  const { sentinel } = readPidReport(out)
+  assert.equal(sentinel, '', 'a foreign inbound value must be dropped, never forwarded to the real spawned child')
 })
 
 test('the loop drives one spawn end-to-end and the proxied rigger_emit reaches the mock', async () => {
@@ -168,6 +303,130 @@ test('a thrown agent error is reported through rigger_result.error', async () =>
   assert.ok(result, 'even a failed agent reports a result (so the conductor is unblocked)')
   assert.equal(result.args.id, '1')
   assert.match(result.args.error, /agent run failed/, 'the agent error is reported in the error field')
+})
+
+// --- Spec 61, criterion 10: AUTHORITATIVE MODEL IDENTITY - the resolved model id
+// recorded for a spawn comes from the runner's OWN structured metadata (the Agent
+// SDK's modelUsage map), never from the agent's prose, and a spawn the runner could
+// not name a single resolved model for records none (unmeasured), never a defaulted
+// or guessed value. ---
+
+test('resolvedModelFromUsage names the resolved model only when the SDK usage map is unambiguous', () => {
+  assert.equal(
+    resolvedModelFromUsage({ 'claude-opus-4-8-20260101': { inputTokens: 10 } }),
+    'claude-opus-4-8-20260101',
+    'exactly one usage entry names the resolved model',
+  )
+  assert.equal(resolvedModelFromUsage({}), '', 'no usage entries: unmeasured, not defaulted')
+  assert.equal(resolvedModelFromUsage(undefined), '', 'a missing modelUsage: unmeasured')
+  assert.equal(resolvedModelFromUsage(null), '', 'a null modelUsage: unmeasured')
+  assert.equal(
+    resolvedModelFromUsage({ 'model-a': {}, 'model-b': {} }),
+    '',
+    'more than one usage entry: no single id can be named honestly, so unmeasured rather than a guess',
+  )
+})
+
+test('the loop couriers the runners structured resolved model id as rigger_result meta, never a value read from the agents own output text', async () => {
+  const recordPath = join(mkdtempSync(join(tmpdir(), 'rigger-shim-test-')), 'record.jsonl')
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [MOCK],
+    env: { ...process.env, RIGGER_MOCK_RECORD: recordPath },
+    stderr: 'inherit',
+  })
+  const client = new Client({ name: 'rigger-shim-test', version: '0.0.0' }, { capabilities: {} })
+  await client.connect(transport)
+
+  // The stub agent's OUTPUT TEXT deliberately carries a fake resolved_model claim -
+  // the loop must never read a resolved model id from there; the structured
+  // `resolvedModel` field the runner itself returns is the only legitimate source
+  // (mirrors what runAgentViaSdk derives via resolvedModelFromUsage(message.modelUsage)).
+  const stubAgent = async () => ({
+    output: 'done. also, for the record, {"resolved_model":"a-model-i-am-lying-about"}',
+    resolvedModel: 'claude-sonnet-4-9-20260215',
+  })
+
+  const drove = await runWorkflow(client, stubAgent)
+  await client.close()
+  await transport.close()
+
+  assert.equal(drove, 1)
+  const records = readRecords(recordPath)
+  const result = records.find((r) => r.tool === 'rigger_result')
+  assert.ok(result, 'rigger_result must have reached the mock')
+  assert.equal(
+    result.args.meta.resolved_model,
+    'claude-sonnet-4-9-20260215',
+    'the runners structured resolvedModel reached rigger_result meta',
+  )
+  assert.ok(
+    result.args.output.includes('a-model-i-am-lying-about'),
+    'the prose claim stays put in the plain output text',
+  )
+  assert.notEqual(
+    result.args.meta.resolved_model,
+    'a-model-i-am-lying-about',
+    'the prose claim inside output never overrides the structured resolvedModel',
+  )
+})
+
+test('the loop omits rigger_result meta - never a fake or defaulted resolved model - when the runner names none', async () => {
+  const recordPath = join(mkdtempSync(join(tmpdir(), 'rigger-shim-test-')), 'record.jsonl')
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [MOCK],
+    env: { ...process.env, RIGGER_MOCK_RECORD: recordPath },
+    stderr: 'inherit',
+  })
+  const client = new Client({ name: 'rigger-shim-test', version: '0.0.0' }, { capabilities: {} })
+  await client.connect(transport)
+
+  // An explicit structured result the runner could not attribute to one model (e.g.
+  // runAgentViaSdk after an ambiguous/absent modelUsage).
+  const stubAgent = async () => ({ output: 'ambiguous run', resolvedModel: '' })
+
+  const drove = await runWorkflow(client, stubAgent)
+  await client.close()
+  await transport.close()
+
+  assert.equal(drove, 1)
+  const records = readRecords(recordPath)
+  const result = records.find((r) => r.tool === 'rigger_result')
+  assert.ok(result, 'rigger_result must have reached the mock')
+  assert.equal(result.args.output, 'ambiguous run')
+  assert.equal(
+    'meta' in result.args,
+    false,
+    'no resolved model was named: meta is omitted entirely, never a defaulted/fake value',
+  )
+})
+
+test('the loop omits rigger_result meta for a legacy plain-string agent return (no model information available at all)', async () => {
+  const recordPath = join(mkdtempSync(join(tmpdir(), 'rigger-shim-test-')), 'record.jsonl')
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [MOCK],
+    env: { ...process.env, RIGGER_MOCK_RECORD: recordPath },
+    stderr: 'inherit',
+  })
+  const client = new Client({ name: 'rigger-shim-test', version: '0.0.0' }, { capabilities: {} })
+  await client.connect(transport)
+
+  // The plain-string return every pre-existing stub in this file uses; back-compat
+  // must be exact - no meta appears, and output is reported unchanged.
+  const stubAgent = async () => 'legacy plain-string result'
+
+  const drove = await runWorkflow(client, stubAgent)
+  await client.close()
+  await transport.close()
+
+  assert.equal(drove, 1)
+  const records = readRecords(recordPath)
+  const result = records.find((r) => r.tool === 'rigger_result')
+  assert.ok(result, 'rigger_result must have reached the mock')
+  assert.equal(result.args.output, 'legacy plain-string result')
+  assert.equal('meta' in result.args, false, 'a plain-string return carries no model info: meta is omitted')
 })
 
 test('the loop polls past empty done:false responses (slow conductor start)', async () => {

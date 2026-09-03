@@ -14,6 +14,18 @@ pub struct Worktree {
     pub dir: String,
     pub branch: String,
     repo: String,
+    /// Serializes [`Self::ensure_present`]'s call into [`Self::create`]'s mutation path
+    /// (spec 64 criterion 3, round 5: adv-u3c3r4-concurrent-lens-ensure-present-races-
+    /// worktree-create, sdet-u3c3r4-concurrent-lenses-race-ensure-present-on-the-same-
+    /// worktree, both UPHELD). The review tier's lens fan-out shares ONE `&Worktree`
+    /// across N real OS threads (`run_review_agents_concurrently`), and each calls
+    /// `ensure_present` independently before its own spawn - `create`'s own doc comment
+    /// above states its `git worktree add`/adopt path does not support concurrent
+    /// callers. This lock is per-WORKTREE (not per-run), so it serializes only concurrent
+    /// re-asserts of THIS SAME instance - it never adds contention across different
+    /// units racing in `run_batch`, a separate, already-known, wider admin-directory race
+    /// this unit does not own. `()` payload: only mutual exclusion is needed.
+    reassert_mu: std::sync::Mutex<()>,
 }
 
 /// What [`Worktree::ensure_run_branch`] did, so the caller can tell the operator when
@@ -94,14 +106,19 @@ impl Worktree {
             // worktree, adopt it directly - a check on the dir's own HEAD, with no
             // `git worktree list` porcelain parse and no re-`add` (which git refuses for a
             // branch already checked out). (This handles sequential resume/supersede, not
-            // a true create-race: two processes that both see the branch absent still race
-            // the underlying `git worktree add -b`; rigger drives unit-worktree creation
-            // single-threaded within one `rigger step`, so that is not a first-class case.)
+            // a true create-race: two INDEPENDENT `Worktree::create` calls - two separate
+            // processes, or two units' own worktrees within one `run_batch` - that both see
+            // the branch absent still race the underlying `git worktree add -b`; rigger
+            // drives unit-worktree creation single-threaded within one `rigger step`, so
+            // that shape is not a first-class case. [`Self::ensure_present`]'s OWN repeat
+            // calls on the SAME instance are a different shape - N threads that already
+            // share one `&Worktree` - and that one IS serialized, by `reassert_mu`.)
             if worktree_on_branch(dir, branch) {
                 return Ok(Worktree {
                     dir: dir.to_string(),
                     branch: branch.to_string(),
                     repo: repo.to_string(),
+                    reassert_mu: std::sync::Mutex::new(()),
                 });
             }
             // FALLBACK - adopt-or-prune, for a dir DELETED out from under git (the branch
@@ -115,6 +132,7 @@ impl Worktree {
                         dir: existing,
                         branch: branch.to_string(),
                         repo: repo.to_string(),
+                        reassert_mu: std::sync::Mutex::new(()),
                     });
                 }
                 git(repo, &["worktree", "prune"])?;
@@ -143,7 +161,43 @@ impl Worktree {
             dir: dir.to_string(),
             branch: branch.to_string(),
             repo: repo.to_string(),
+            reassert_mu: std::sync::Mutex::new(()),
         })
+    }
+
+    /// Re-assert THIS worktree exists on its branch, at the tip [`Self::create`] would
+    /// hand out, right now (ensure-on-park, spec 64 criterion 3: defense in depth).
+    ///
+    /// `stage_worktree` (the conductor's caller) already guarantees the worktree exists
+    /// exactly ONCE, at the top of a unit's `run_stage` call - but that single call can
+    /// go on to reach a LATER spawn point (the review tier, after the gates run - real
+    /// wall-clock time) in the SAME process. An out-of-band actor that deletes the
+    /// worktree in that window - the historical fault this whole spec closes: an agent
+    /// finding its assigned worktree gone at spawn - would otherwise hand the next spawn
+    /// a `dir` string whose directory no longer exists. Calling this again immediately
+    /// before every such LATER spawn closes that window with the SAME deterministic
+    /// adopt-or-create machinery `stage_worktree`'s first call already uses, so it never
+    /// deviates behavior for the common case: a worktree that is still exactly where it
+    /// was left is the FAST `worktree_on_branch` path-lookup inside [`Self::create`], a
+    /// cheap no-op.
+    ///
+    /// Never mutates the branch tip or discards commits - `Self::create`'s adopt path
+    /// checks out the branch's CURRENT head exactly as it is; this only guarantees the
+    /// DIR is present and checked out.
+    ///
+    /// Concurrent-caller safe (spec 64 criterion 3, round 5), UNLIKE a bare `Self::create`
+    /// call: the review tier's lens fan-out shares ONE `&Worktree` across N real OS
+    /// threads (`run_review_agents_concurrently`), each calling this independently right
+    /// before its own spawn - so two threads can both find the dir gone at once. `reassert_
+    /// mu` serializes this instance's calls into `Self::create`'s mutation path, so at most
+    /// one thread actually runs `git worktree add`/adopt at a time; the rest either take
+    /// the cheap no-op fast path once the winner has restored it, or (rare: the winner's
+    /// OWN restore was itself raced out from under it) retry. Per-INSTANCE, not global - it
+    /// never adds contention across a DIFFERENT unit's worktree.
+    pub fn ensure_present(&self) -> Result<(), Error> {
+        let _lock = self.reassert_mu.lock().unwrap();
+        Worktree::create(&self.repo, &self.dir, &self.branch)?;
+        Ok(())
     }
 
     /// Whether the unit's branch has at least one commit beyond the base the run is
@@ -262,6 +316,18 @@ impl Worktree {
     /// branch so the subsequent `create` mints a fresh checkout of the current HEAD. NEVER
     /// call this on a unit's durable `rigger/u/*` branch - that would throw away a
     /// checkpoint; it is only for the non-durable `rigger/review/*` branch.
+    ///
+    /// Also reclaims the dir's store-fence sibling (spec 70 criterion 3, u4 round 2 fix for
+    /// `adv-u4c70r2-discard-path-leaks-review-fence-sibling`), via the SAME
+    /// [`reclaim_cache_sibling`] authority [`Self::remove`]/[`sweep_terminal`]/
+    /// [`reclaim_worktree_on_branch`] already call - mirroring the exact clear-then-reclaim
+    /// sequence [`reclaim_worktree_on_branch`] uses. `discard` is the FOURTH teardown path
+    /// (this doc comment's own crash-resume case, driven by `review_only_worktree` on every
+    /// standalone-review-stage attempt): before this fix a fenced review worktree's
+    /// `-store-fence` sibling - a live sqlite `events.db` a gate-spawned courier opened -
+    /// survived every discard-then-recreate cycle, leaked forever on the operator's small
+    /// scratch partition. A unit's durable worktree owns no fence sibling here (`discard` is
+    /// never called on one), so this is a no-op on that path.
     pub fn discard(repo: &str, dir: &str, branch: &str) -> Result<(), Error> {
         if std::path::Path::new(dir).exists() {
             clear_worktree_dir(repo, dir)?;
@@ -269,6 +335,7 @@ impl Worktree {
             // No dir to clear, but a killed process may still leave a dangling admin entry.
             git(repo, &["worktree", "prune"])?;
         }
+        reclaim_cache_sibling(dir);
         Self::delete_branch(repo, branch)
     }
 
@@ -479,9 +546,27 @@ impl Worktree {
         // Reap any process still rooted inside this worktree BEFORE git removes the dir (spec
         // 23): otherwise a build or tool an agent left running holds a now-deleted cwd and
         // outlives its worktree, leaking memory. Scoped to this EXACT dir, so a process rooted
-        // at the repo root or outside rigger's scratch is never touched. Best-effort and a
-        // graceful no-op off Linux; it never changes the removal's result.
-        crate::reap::reap_processes_rooted_under(std::path::Path::new(&self.dir));
+        // at the repo root or outside rigger's scratch is never touched.
+        //
+        // Authorized by GIT IDENTITY, not by `crate::reap::reap_processes_rooted_under`'s usual
+        // "strictly under a resolved scratch root" containment gate (spec 78 round 2, decision
+        // `u78c2r2-worktree-remove-identity-not-tree`): a worktree's own dir can legitimately
+        // live ANYWHERE relative to `self.repo` - `defaults.workdir`/`RIGGER_TMPDIR` relocation
+        // is a real, tested config surface (`tests/scratch_workdir_config.rs`) with no
+        // necessary containment relationship to the repo at all - so there is no
+        // `authorized_root` this function could compute (from config, env, or `self.repo`
+        // itself) that would reliably contain it. [`worktree_on_branch`] is instead the SAME
+        // predicate [`Self::create`]'s own fast-path adoption already trusts to mean "this dir
+        // IS a real, currently-checked-out git worktree of this exact branch" - a fact git
+        // itself attests to, independent of where the dir physically sits - so it authorizes
+        // the reap without caring about relocation. A dir that fails this check (already
+        // removed, or somehow not on the expected branch) skips the reap: best-effort, never
+        // fails the removal below.
+        if worktree_on_branch(&self.dir, &self.branch) {
+            if let Ok(base) = std::path::Path::new(&self.dir).canonicalize() {
+                crate::reap::reap_authorized(base);
+            }
+        }
         git(&self.repo, &["worktree", "remove", "--force", &self.dir])?;
         reclaim_cache_sibling(&self.dir);
         Ok(())
@@ -634,6 +719,30 @@ pub const UNIT_WORKTREE_PREFIX: &str = "rigger-wt-";
 /// path (a killed step process leaves the worktree still registered).
 pub const UNIT_CACHE_PREFIX: &str = "cargo-target-";
 
+/// The shared gate build cache's directory NAME directly under the scratch root (spec 77
+/// Problem statement: the driver's own `CARGO_TARGET_DIR`, observed at up to 39G) - the
+/// ambient/inherited target any gate build with no per-unit `target_dir` override
+/// ([`unit_cache_sibling`]'s `None` case) builds into. Named ONCE here so `rigger reset
+/// --build-cache` (spec 77 criterion 5), the run-teardown reap
+/// ([`crate::worktree::shared_build_cache_guard_path`]'s sibling authority) and every
+/// shared-lock-holding gate build resolve the identical spelling - never a second,
+/// independently-typed literal that could drift.
+pub const SHARED_BUILD_CACHE_NAME: &str = "cargo-target";
+
+/// The guard file's path (spec 77 criterion 5, BOUNDED SHARED CACHE): a SIBLING of the
+/// shared build cache dir under `scratch_root` - BESIDE it, never inside it, so the guard
+/// survives the very rename `rigger reset --build-cache`'s reclaim performs on the cache
+/// itself (three rounds of a prior, now-superseded design proved an in-cache lock cannot
+/// close this class of race: flock is advisory to lock-takers and never gates unlink, so a
+/// lock file that lives inside the directory being renamed/deleted is no protection at
+/// all). This is the ONE naming authority both halves of the exclusion protocol resolve
+/// through: the exclusive, non-blocking attempt `rigger reset --build-cache` makes, and the
+/// shared hold every rigger-launched shared-cache build takes for its whole cargo
+/// invocation - so they can never disagree about which file guards which cache.
+pub fn shared_build_cache_guard_path(scratch_root: &str) -> String {
+    format!("{scratch_root}/{SHARED_BUILD_CACHE_NAME}.lock")
+}
+
 /// The per-unit build cache dir that is a SIBLING of the unit worktree at `worktree_dir`
 /// (Gap 19): `<root>/rigger-wt-<slug>` -> `<root>/cargo-target-<slug>`. Returns None for any
 /// dir that is not a unit worktree (e.g. a `rigger-review-*` review worktree, or the empty
@@ -652,15 +761,59 @@ pub fn unit_cache_sibling(worktree_dir: &str) -> Option<String> {
     Some(format!("{parent}/{UNIT_CACHE_PREFIX}{slug}"))
 }
 
+/// The gate store fence's scratch sibling for a STANDALONE REVIEW worktree at
+/// `worktree_dir` (spec 70 criterion 3, widened - u4 round 2 fix for
+/// `adv-u3c70-store-fence-half-wired-review-worktree-call-site-unfenced`): a review
+/// worktree (`rigger-review-<stage>-<attempt>`) owns no per-unit build cache to key off
+/// (unlike [`unit_cache_sibling`]'s unit-worktree case, which `gate::ExecRunner::run`
+/// already fences via its non-empty `target_dir`), yet `run_fan_out_stage`'s EXHAUSTIVE
+/// gate pass (conductor.rs) still runs real store-opening couriers inside one. This is a
+/// direct sibling of the worktree itself - `{worktree_dir}{gate::STORE_FENCE_SUFFIX}` -
+/// the same naming shape as the unit-worktree fence sibling, just not routed through a
+/// build cache that does not exist for this kind. Returns None for anything that is not a
+/// review worktree (a unit worktree - already fenced above - or the empty worktree-less
+/// path), which owns no fence sibling here.
+pub fn review_fence_sibling(worktree_dir: &str) -> Option<String> {
+    let path = std::path::Path::new(worktree_dir);
+    let name = path.file_name()?.to_str()?;
+    if !name.starts_with("rigger-review-") {
+        return None;
+    }
+    Some(format!("{worktree_dir}{}", crate::gate::STORE_FENCE_SUFFIX))
+}
+
 /// Reclaim the per-unit build cache that is a SIBLING of the unit worktree at `worktree_dir`
-/// (Gap 19) - the ONE mutation authority for cache reclamation, called from both worktree
-/// removal paths: [`Worktree::remove`] (the dominant graceful teardown) and [`sweep_terminal`]
-/// (crash recovery). A no-op for any dir that owns no such cache (a review worktree, or a unit
-/// whose gates never ran cargo, has none). Best-effort: a failed reclaim of a throwaway cache
-/// must never fail worktree teardown or abort the sweep.
+/// (Gap 19) - the ONE mutation authority for cache reclamation, called from every worktree
+/// removal path: [`Worktree::remove`] (the dominant graceful teardown), [`sweep_terminal`]
+/// (crash recovery), and [`reclaim_worktree_on_branch`] (the resume-path branch GC). A no-op
+/// for any dir that owns no such cache (a review worktree, or a unit whose gates never ran
+/// cargo, has none). Best-effort: a failed reclaim of a throwaway cache must never fail
+/// worktree teardown or abort the sweep.
+///
+/// Also reclaims the gate store fence's own sibling scratch dir (spec 70 criterion 3,
+/// `cargo-target-<slug>{gate::STORE_FENCE_SUFFIX}`) at the SAME coordinate: `gate::
+/// ExecRunner::run` derives it as a further-suffixed sibling of this same cache path
+/// whenever a unit-worktree gate runs with a non-empty target_dir (the everyday case), and
+/// nothing else on any path ever removes it - left alone, it is a live sqlite events.db
+/// (plus WAL/SHM) orphaned forever on every such gate run. Reclaiming it HERE, in the one
+/// authority already reclaiming its `cargo-target-<slug>` sibling, means every current and
+/// future call site inherits the fix uniformly rather than needing its own copy.
+///
+/// Widened (spec 70, u4 round 2 fix for
+/// `adv-u3c70-reclaim-shares-the-same-exclusion-fix-fence-alone-leaks`): a standalone
+/// review worktree owns no `cargo-target-<slug>` cache above, but now that
+/// `gate::ExecRunner::run` fences its store resolution too (via [`review_fence_sibling`]),
+/// it owns THAT fence sibling and must be reclaimed here in lockstep - `Worktree::remove`
+/// runs for both worktree kinds (its own doc comment), so fixing only the fence half
+/// without widening this reclaim half in the SAME change would leave a newly-created,
+/// previously-nonexistent leak on every review-worktree gate run.
 fn reclaim_cache_sibling(worktree_dir: &str) {
     if let Some(cache) = unit_cache_sibling(worktree_dir) {
+        let _ = std::fs::remove_dir_all(format!("{cache}{}", crate::gate::STORE_FENCE_SUFFIX));
         let _ = std::fs::remove_dir_all(cache);
+    }
+    if let Some(fence) = review_fence_sibling(worktree_dir) {
+        let _ = std::fs::remove_dir_all(fence);
     }
 }
 
@@ -679,7 +832,20 @@ fn reclaim_cache_sibling(worktree_dir: &str) {
 /// cache here. On the dominant graceful path [`Worktree::remove`] already reclaimed it, so
 /// this sweep never sees that worktree at all. Reclamation is best-effort and never aborts
 /// the sweep.
-pub fn sweep_terminal(repo: &str, root: &str, run_branch: &str) -> Result<usize, Error> {
+/// `live_branches` is the `rigger/u/<slug>` set of the CURRENT run's non-terminal units (the
+/// same run-scoped fold the conductor already reads to decide liveness elsewhere - see
+/// `current_run_units` in `main.rs`), never a process-memory list. The merged-only ancestry
+/// rule alone is not sufficient: a PARKED unit whose attempt produced an EMPTY diff has a
+/// branch tip that IS an ancestor of `run_branch` (trivially - it never advanced past it)
+/// while the unit is still live in review, so `live_branches` is checked BEFORE the ancestry
+/// test and spares such a worktree outright; a merged-or-dead, not-live worktree is still
+/// reclaimed exactly as before.
+pub fn sweep_terminal(
+    repo: &str,
+    root: &str,
+    run_branch: &str,
+    live_branches: &std::collections::HashSet<String>,
+) -> Result<usize, Error> {
     git(repo, &["worktree", "prune"])?;
     let out = run_git(repo, &["worktree", "list", "--porcelain"]).map_err(Error)?;
     let mut removed = 0;
@@ -689,7 +855,7 @@ pub fn sweep_terminal(repo: &str, root: &str, run_branch: &str) -> Result<usize,
             dir = Some(d.to_string());
         } else if let Some(branch) = line.strip_prefix("branch refs/heads/") {
             let Some(d) = dir.take() else { continue };
-            if !d.starts_with(root) || branch == run_branch {
+            if !d.starts_with(root) || branch == run_branch || live_branches.contains(branch) {
                 continue;
             }
             let merged =
@@ -1399,7 +1565,13 @@ mod tests {
         std::fs::write(std::path::Path::new(&live_dir).join("wip.txt"), "wip\n").unwrap();
         live.commit("rigger: in-flight").unwrap();
 
-        let removed = sweep_terminal(&repo_path, &root, "rigger-run").unwrap();
+        let removed = sweep_terminal(
+            &repo_path,
+            &root,
+            "rigger-run",
+            &std::collections::HashSet::new(),
+        )
+        .unwrap();
         assert_eq!(removed, 1, "exactly the terminal worktree is swept");
         assert!(
             !std::path::Path::new(&done_dir).exists(),
@@ -1408,6 +1580,45 @@ mod tests {
         assert!(
             std::path::Path::new(&live_dir).join("wip.txt").exists(),
             "the in-flight worktree is untouched"
+        );
+    }
+
+    #[test]
+    fn sweep_terminal_spares_a_live_units_worktree_even_at_the_empty_diff_run_tip() {
+        // Spec 64 criterion 4: the merged-only ancestry rule alone is NOT sufficient. A
+        // PARKED unit whose attempt produced an EMPTY diff has a branch tip that IS an
+        // ancestor of the run branch (trivially - it never advanced past it) while the
+        // unit is still LIVE in review. Liveness - read from the current run's event-log
+        // slice, passed in as `live_branches` - must spare it despite it passing the
+        // ancestry test; a dead unit in the identical empty-diff shape is still swept.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        run_git(&repo_path, &["checkout", "-b", "rigger-run"]).unwrap();
+        let root = scratch_root(&repo_path, "", None);
+
+        // Live, empty-diff: branch created off the run branch, never advanced (so it IS
+        // an ancestor of run_branch, exactly like a terminal unit) but its unit is still
+        // in-flight per the current run's log.
+        let live_dir = format!("{root}/rigger-wt-live-empty-diff");
+        Worktree::create(&repo_path, &live_dir, "rigger/u/live-empty-diff").unwrap();
+
+        // Dead, empty-diff: the identical shape, but no live unit claims its branch - this
+        // is the case the pre-existing ancestry rule already swept and must keep sweeping.
+        let dead_dir = format!("{root}/rigger-wt-dead-empty-diff");
+        Worktree::create(&repo_path, &dead_dir, "rigger/u/dead-empty-diff").unwrap();
+
+        let mut live_branches = std::collections::HashSet::new();
+        live_branches.insert("rigger/u/live-empty-diff".to_string());
+
+        let removed = sweep_terminal(&repo_path, &root, "rigger-run", &live_branches).unwrap();
+        assert_eq!(removed, 1, "only the dead empty-diff worktree is swept");
+        assert!(
+            std::path::Path::new(&live_dir).exists(),
+            "the live unit's worktree survives despite its branch tip equalling the run tip"
+        );
+        assert!(
+            !std::path::Path::new(&dead_dir).exists(),
+            "a dead unit in the identical empty-diff shape is still reclaimed"
         );
     }
 
@@ -1442,7 +1653,13 @@ mod tests {
         let live_cache = format!("{root}/{UNIT_CACHE_PREFIX}live");
         std::fs::create_dir_all(&live_cache).unwrap();
 
-        let removed = sweep_terminal(&repo_path, &root, "rigger-run").unwrap();
+        let removed = sweep_terminal(
+            &repo_path,
+            &root,
+            "rigger-run",
+            &std::collections::HashSet::new(),
+        )
+        .unwrap();
         assert_eq!(removed, 1, "exactly the terminal unit worktree is swept");
         assert!(
             !std::path::Path::new(&done_cache).exists(),
@@ -1495,6 +1712,92 @@ mod tests {
         assert!(
             std::path::Path::new(&bystander).exists(),
             "removing a review worktree (which owns no per-unit cache) must not touch an unrelated cache dir"
+        );
+    }
+
+    #[test]
+    fn worktree_remove_also_reclaims_the_store_fence_sibling() {
+        // Ground (b) of the u3 reject (adv-u3-fence-dir-leaks-forever-uncleaned): the gate
+        // store fence (spec 70 criterion 3) creates a SECOND per-unit scratch sibling next
+        // to the `cargo-target-<slug>` cache - `cargo-target-<slug>-store-fence`, a live
+        // sqlite events.db a fenced courier subprocess opened during this unit's own test
+        // gate (gate::ExecRunner::run derives its name from target_dir, main.rs's
+        // require_store_dir creates it). Before this fix, `reclaim_cache_sibling` only knew
+        // the plain cache sibling, so every unit-worktree gate run with a non-empty
+        // target_dir (the everyday case, since `unit_cache_sibling` derives one for every
+        // real `rigger-wt-<slug>` worktree) permanently orphaned this dir even after the
+        // worktree and its cache sibling were both torn down. It must be reclaimed by the
+        // SAME authority, on the SAME dominant graceful path `Worktree::remove` already
+        // reclaims the cache sibling on.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let root = scratch_root(&repo_path, "", None);
+
+        let unit_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}fenced");
+        let unit = Worktree::create(&repo_path, &unit_dir, "rigger/u/fenced").unwrap();
+        let unit_cache = format!("{root}/{UNIT_CACHE_PREFIX}fenced");
+        std::fs::create_dir_all(&unit_cache).unwrap();
+        // The store-fence sibling ExecRunner::run derives from the SAME cache path, one
+        // suffix further (gate::STORE_FENCE_SUFFIX) - populated here exactly as a real
+        // fenced courier would leave it: a live sqlite store with WAL/SHM siblings.
+        let fence_dir = format!("{unit_cache}{}", crate::gate::STORE_FENCE_SUFFIX);
+        std::fs::create_dir_all(&fence_dir).unwrap();
+        std::fs::write(std::path::Path::new(&fence_dir).join("events.db"), "x").unwrap();
+        std::fs::write(std::path::Path::new(&fence_dir).join("events.db-wal"), "x").unwrap();
+
+        unit.remove().unwrap();
+
+        assert!(
+            !std::path::Path::new(&fence_dir).exists(),
+            "removing the unit worktree must reclaim its store-fence sibling too, leaked at {fence_dir}"
+        );
+    }
+
+    #[test]
+    fn review_fence_sibling_maps_a_review_worktree_to_its_fence_sibling_and_ignores_the_rest() {
+        // Spec 70 criterion 3, widened (u4 round 2 fix for
+        // adv-u3c70-store-fence-half-wired-review-worktree-call-site-unfenced): the
+        // dir-driven derivation authority for a review worktree's fence sibling, parallel
+        // to `unit_cache_sibling`'s cache derivation for a unit worktree. A `rigger-wt-*`
+        // unit worktree - already fenced via its non-empty target_dir above - and the empty
+        // worktree-less path own no fence sibling HERE (they map to None), so nothing
+        // double-fences or tries to reclaim a sibling this function never derived.
+        assert_eq!(
+            review_fence_sibling("/scratch/rigger-review-panel-0"),
+            Some("/scratch/rigger-review-panel-0-store-fence".to_string())
+        );
+        assert_eq!(review_fence_sibling("/scratch/rigger-wt-unit-7"), None);
+        assert_eq!(review_fence_sibling(""), None);
+    }
+
+    #[test]
+    fn worktree_remove_also_reclaims_a_review_worktrees_store_fence_sibling() {
+        // Spec 70 criterion 3, widened (u4 round 2 fix for
+        // adv-u3c70-reclaim-shares-the-same-exclusion-fix-fence-alone-leaks): fixing the
+        // fence half alone (gate.rs, above) without widening this reclaim half in
+        // LOCKSTEP would create a new, previously-nonexistent resource leak - every
+        // standalone review stage's EXHAUSTIVE gate pass now leaves a live sqlite
+        // events.db (plus WAL/SHM) sibling of the review worktree, and nothing would ever
+        // remove it. `Worktree::remove` is the SAME dominant graceful path that already
+        // reclaims a unit worktree's fence sibling (the test above) - it runs for a
+        // review worktree too (its own doc comment), so it must reclaim this kind's fence
+        // sibling too, populated here exactly as a real fenced courier would leave it.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let root = scratch_root(&repo_path, "", None);
+
+        let review_dir = format!("{root}/rigger-review-fanout-stage-0");
+        let review = Worktree::create(&repo_path, &review_dir, "rigger/review/fanout-0").unwrap();
+        let fence_dir = format!("{review_dir}{}", crate::gate::STORE_FENCE_SUFFIX);
+        std::fs::create_dir_all(&fence_dir).unwrap();
+        std::fs::write(std::path::Path::new(&fence_dir).join("events.db"), "x").unwrap();
+        std::fs::write(std::path::Path::new(&fence_dir).join("events.db-wal"), "x").unwrap();
+
+        review.remove().unwrap();
+
+        assert!(
+            !std::path::Path::new(&fence_dir).exists(),
+            "removing a review worktree must reclaim its store-fence sibling too, leaked at {fence_dir}"
         );
     }
 
@@ -1715,6 +2018,22 @@ mod tests {
         assert_eq!(unit_cache_sibling("/scratch/rigger-review-panel-0"), None);
         assert_eq!(unit_cache_sibling("/scratch/cargo-target"), None);
         assert_eq!(unit_cache_sibling(""), None);
+    }
+
+    #[test]
+    fn shared_build_cache_guard_path_is_a_sibling_lock_file_of_the_cache_dir() {
+        // spec 77 criterion 5 (BOUNDED SHARED CACHE): the guard lives BESIDE the cache
+        // (never inside it), named from the SAME `SHARED_BUILD_CACHE_NAME` constant every
+        // reader of this cache uses - so `rigger reset --build-cache`'s exclusive attempt
+        // and every gate build's shared hold can never disagree about which file guards
+        // which cache, and the rename this reclaim performs on the cache itself can never
+        // touch (or invalidate) the guard.
+        assert_eq!(
+            shared_build_cache_guard_path("/scratch"),
+            "/scratch/cargo-target.lock"
+        );
+        assert!(shared_build_cache_guard_path("/scratch")
+            .ends_with(&format!("{SHARED_BUILD_CACHE_NAME}.lock")));
     }
 
     #[test]
@@ -1974,6 +2293,41 @@ mod tests {
         );
         fresh.remove().unwrap();
         Worktree::delete_branch(&repo_path, branch).unwrap();
+    }
+
+    #[test]
+    fn discard_also_reclaims_the_review_worktrees_store_fence_sibling() {
+        // adv-u4c70r2-discard-path-leaks-review-fence-sibling (u4 round 2 fix): `discard`
+        // is the FOURTH teardown path a review worktree goes through -
+        // `review_only_worktree` calls it unconditionally before `create()` on every
+        // standalone-review-stage attempt, the crash-resume path this function's own doc
+        // comment describes ("a resumed review step recomputes the same path and reclaims
+        // it instead of leaking a fresh worktree each process"). `remove`, `sweep_terminal`,
+        // and `reclaim_worktree_on_branch` already reclaim a fence sibling via
+        // `reclaim_cache_sibling`; `discard` did not, so a process that crashed after a
+        // fenced gate wrote a real events.db into `<dir>-store-fence` left it orphaned with
+        // no teardown path guaranteed to ever reclaim it - populated here exactly as a real
+        // fenced courier would leave it (a live sqlite store with a WAL sibling).
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let root = scratch_root(&repo_path, "", None);
+        let branch = "rigger/review/discard-fence-0";
+        let dir = format!("{root}/rigger-review-discard-fence-0");
+
+        let stale = Worktree::create(&repo_path, &dir, branch).unwrap();
+        drop(stale); // the Rust struct is gone but the worktree registration + dir survive.
+
+        let fence_dir = format!("{dir}{}", crate::gate::STORE_FENCE_SUFFIX);
+        std::fs::create_dir_all(&fence_dir).unwrap();
+        std::fs::write(std::path::Path::new(&fence_dir).join("events.db"), "x").unwrap();
+        std::fs::write(std::path::Path::new(&fence_dir).join("events.db-wal"), "x").unwrap();
+
+        Worktree::discard(&repo_path, &dir, branch).unwrap();
+
+        assert!(
+            !std::path::Path::new(&fence_dir).exists(),
+            "discard must reclaim the review worktree's store-fence sibling too, leaked at {fence_dir}"
+        );
     }
 
     #[test]
@@ -2453,6 +2807,62 @@ mod tests {
         assert!(
             list.contains(&healthy_dir),
             "the healthy worktree stays registered after healing"
+        );
+    }
+
+    #[test]
+    fn concurrent_ensure_present_on_a_deleted_worktree_never_races_create() {
+        // Spec 64 criterion 3, adjudication round 4
+        // (adv-u3c3r4-concurrent-lens-ensure-present-races-worktree-create,
+        // sdet-u3c3r4-concurrent-lenses-race-ensure-present-on-the-same-worktree, UPHELD):
+        // the review tier's lens fan-out (`run_review_agents_concurrently`) runs REAL
+        // concurrent OS threads that all share ONE `&Worktree` reference and each calls
+        // `ensure_present` independently before its own spawn. `Worktree::create`'s own doc
+        // comment above states its mutation path does not support concurrent callers ("two
+        // processes that both see the branch absent still race the underlying `git worktree
+        // add -b`"), and there was no lock anywhere enforcing that. This drives that EXACT
+        // shape directly against the mechanism: N real threads sharing one `Worktree` whose
+        // dir was deleted out from under git, all calling `ensure_present` at once. Every
+        // call must succeed - none may observe the underlying `git worktree add`/adopt race
+        // (a torn admin-dir read, an `already exists`, or any other transient git failure).
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let root = scratch_root(&repo_path, "", None);
+        let dir = format!("{root}/{UNIT_WORKTREE_PREFIX}racer");
+        let wt = Worktree::create(&repo_path, &dir, "rigger/u/racer").unwrap();
+
+        // Out-of-band deletion: the exact scenario `ensure_present` exists to self-heal -
+        // the dir is gone but the branch (the durable checkpoint) still exists.
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(
+            !std::path::Path::new(&dir).exists(),
+            "premise: the out-of-band deletion must actually remove it, or this test proves \
+             nothing"
+        );
+
+        // N concurrent callers sharing the SAME `&Worktree`, matching the lens fan-out's own
+        // sharing of one `wt: Option<&Worktree>` reference across threads (MAX_CONCURRENCY =
+        // 4 in production; over-subscribe here to widen the race window).
+        let results: Vec<Result<(), Error>> = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..8).map(|_| s.spawn(|| wt.ensure_present())).collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+
+        for (i, r) in results.iter().enumerate() {
+            assert!(
+                r.is_ok(),
+                "every concurrent ensure_present call must succeed - call {i} raced the \
+                 underlying git mutation: {r:?}"
+            );
+        }
+        assert!(
+            std::path::Path::new(&dir).is_dir(),
+            "the worktree must exist after the concurrent re-assert: {dir}"
+        );
+        assert!(
+            worktree_on_branch(&dir, "rigger/u/racer"),
+            "the restored worktree must be checked out on its own branch, not left in a \
+             half-recreated state"
         );
     }
 }
