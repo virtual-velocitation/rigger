@@ -51,6 +51,12 @@ fn cargo(args: &[&str]) -> Output {
         .current_dir(Path::new(manifest_dir))
         .arg("tree")
         .arg("--offline")
+        // `--prefix none` prints bare `name vX.Y.Z` lines instead of tree glyphs, the one
+        // rendering that is stable across cargo versions: PR #27's CI ran a newer stable
+        // whose glyph rendering broke `crate_names` down to 4 tokens, and only the
+        // anti-vacuous guard caught it. Parse the format made for parsing.
+        .arg("--prefix")
+        .arg("none")
         .args(args)
         .output()
         .unwrap_or_else(|e| panic!("failed to spawn `{cargo_bin} tree {args:?}`: {e}"))
