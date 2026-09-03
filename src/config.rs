@@ -494,17 +494,36 @@ pub struct Stage {
     /// and every planner-proposed unit.
     #[serde(skip)]
     pub baseline: bool,
-    /// The STABLE id of the acceptance criterion this baseline serves (spec 18 §3.3):
-    /// its 1-based position plus a content hash of the normalized criterion text,
-    /// computed by `conductor::criterion_stable_id`. Set by the conductor (never
-    /// authored, hence `serde(skip)`) on the per-criterion baseline units only. The
-    /// planner is shown this id next to each criterion and echoes it on every
-    /// proposal, so `harvest_proposed` matches a proposal to its baseline by this id
-    /// rather than by re-normalized prose - a paraphrase or truncation of a long
-    /// criterion the planner was told to copy verbatim no longer silently spawns a
-    /// duplicate. Empty for every non-baseline stage.
+    /// The STABLE id of the acceptance criterion this stage serves (spec 18 §3.3): its
+    /// 1-based position plus a content hash of the normalized criterion text, computed
+    /// by `conductor::criterion_stable_id`. Set by the conductor (never authored, hence
+    /// `serde(skip)`) on the per-criterion baseline units AND (spec 72, THE STAMP) on
+    /// every planner-proposed stage `harvest_proposed`'s ADD path resolves to a
+    /// criterion - without this second stamp a planner-added stage could never be found
+    /// by a LATER proposal's supersede match, so only a baseline could ever be
+    /// superseded and a planner unit superseding a planner unit silently duplicated
+    /// instead (spec 72's Problem). The planner is shown this id next to each criterion
+    /// and echoes it on every proposal, so `harvest_proposed` matches a proposal to
+    /// whatever currently serves that criterion by this id rather than by
+    /// re-normalized prose - a paraphrase or truncation of a long criterion the planner
+    /// was told to copy verbatim no longer silently spawns a duplicate. Empty for every
+    /// stage that serves no criterion (the plan/plan-critique infrastructure stages, and
+    /// a genuinely-new unmatched-proposal sub-unit).
     #[serde(skip)]
     pub criterion_id: String,
+    /// The identity of the PLANNING EPISODE that proposed this stage (spec 72,
+    /// PLAN-EPISODE IDENTITY): one planner pass (the initial plan or a plan-critique
+    /// reject's re-plan) is one episode, and `harvest_proposed` copies the winning
+    /// proposal's own `UnitProposed::episode` here at insert time so a LATER episode's
+    /// proposal for the same criterion can tell this stage's episode is EARLIER and
+    /// supersede it - and so a SAME-episode sibling (a real split) can tell it must
+    /// never supersede this stage. Never set on a conductor-synthesized baseline (`
+    /// baseline` is the always-earliest sentinel instead - a baseline predates every
+    /// episode by construction, so it needs no episode identity of its own); empty on a
+    /// stage whose proposal carried no episode (the pre-spec-72 legacy shape, or a
+    /// hand-authored proposal), which a later unit's supersede handling resolves.
+    #[serde(skip)]
+    pub episode: String,
 }
 
 impl AgentDef {
@@ -597,6 +616,84 @@ pub struct StoreConfig {
     pub url: String,
 }
 
+/// BuildConfig is the committed `build:` config the shared build-environment resolver
+/// reads (spec 65 - one build-environment authority): a single resolver
+/// ([`crate::gate::BuildEnv::resolve`]) derives the actual env vars from these three
+/// fields (`wrapper`/`cache_dir` as one facet, `jobs` as an independent one - see
+/// below) and applies them to gate builds (run via [`crate::gate::Runner::run`] by
+/// [`crate::gate::ExecRunner`]) and the blocking `driver::cli` agent driver - the
+/// two sites wired so far (see [`crate::gate::BuildEnv`] for the disclosed gap on
+/// the remaining agent-spawn paths). Plain config-shape data only - the resolution
+/// logic itself (verbatim wrapper passthrough today; `auto` PATH-probing and the
+/// named-but-absent hard error are spec 65 unit 2's job) lives in `gate.rs`, not
+/// here, so this stays a pure value type like its siblings.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+pub struct BuildConfig {
+    /// The `RUSTC_WRAPPER` binary name, `auto` to probe PATH, or `off`/empty (the
+    /// default) to disable the shared-cache layer entirely.
+    #[serde(default)]
+    pub wrapper: String,
+    /// The shared compilation-cache directory. Empty (the default) resolves to
+    /// `<state home>/rigger/build-cache` (the resolver's own default), so every
+    /// project and worktree on the machine shares one cache absent explicit
+    /// configuration.
+    #[serde(default)]
+    pub cache_dir: String,
+    /// The `CARGO_BUILD_JOBS` cap on each build's OWN internal parallelism (spec
+    /// 65, JOBS CAP - unit 4). `0` (the default) means unset, matching this
+    /// config's existing zero-as-unset convention (see
+    /// [`Defaults::budget`]/[`Defaults::max_retries`]/[`Defaults::speculation_width`]):
+    /// the ambient/cargo default jobs count is left untouched, byte-for-byte
+    /// back-compatible with every workflow committed before this field existed. A
+    /// positive value reaches every build via the ONE resolver
+    /// ([`crate::gate::BuildEnv::resolve`]), independent of `wrapper`, so
+    /// `build.max_concurrent` (unit 3's slot budget) times `jobs` can be sized to
+    /// the machine.
+    #[serde(default)]
+    pub jobs: u32,
+    /// The machine-wide build concurrency budget (spec 65): how many actual compiler
+    /// invocations may run at once, across every rigger process on the machine, before
+    /// the next one blocks for a free slot ([`crate::budget::BuildBudget`] is the
+    /// resolver that reads this). Omitted resolves to 4 (a deliberately non-zero
+    /// default distinct from this field's plain `u32::default()`); an EXPLICIT `0`
+    /// means unlimited (the same `budget: 0` convention `defaults.budget` uses) -
+    /// every build is admitted immediately and no slot directory is ever touched.
+    #[serde(default = "default_max_concurrent")]
+    pub max_concurrent: u32,
+    /// Whether the implementer's diff-scoped mutation-efficacy step (spec 73) runs:
+    /// `on` (trimmed, case-insensitive) enables it and requires the `cargo-mutants` binary
+    /// to be resolvable on PATH (checked at run start by [`Config::validate`], via
+    /// [`crate::gate::resolve_mutation_layer`] - ENABLED-BUT-ABSENT FAILS LOUD, never a
+    /// silent skip). Empty (the default, back-compat with every workflow committed before
+    /// this key existed) / `off` / anything else disables it - PATH is never probed. Modeled
+    /// as a `String`, like `wrapper`/`dash`/`grounder`/`autonomy`, so the documented `on`/
+    /// `off` scalars parse without a bespoke bool deserializer.
+    #[serde(default)]
+    pub mutation: String,
+}
+
+/// The `Workflow.build` field's serde default (spec 65): called only when the WHOLE
+/// `build:` key is absent from a committed workflow.yml. Deliberately distinct from the
+/// derived [`BuildConfig::default`] (which a Rust-constructed `Config::default()` still
+/// gets, `max_concurrent: 0`/unlimited, in tests that build a config in memory) - a
+/// missing `build:` section in a REAL workflow.yml must resolve `max_concurrent` to the
+/// documented default of 4 exactly like a `build:` section present but missing the key
+/// specifically ([`default_max_concurrent`]), so both absent-shapes agree.
+fn default_build_config() -> BuildConfig {
+    BuildConfig {
+        max_concurrent: default_max_concurrent(),
+        ..Default::default()
+    }
+}
+
+/// The default `build.max_concurrent` (spec 65) when the key is absent from a committed
+/// workflow.yml: 4 concurrent builds machine-wide. A named `fn` (not a bare literal) so
+/// serde can call it only when the key is truly ABSENT - an explicit `max_concurrent: 0`
+/// still parses as 0 (unlimited), never silently promoted back to this default.
+fn default_max_concurrent() -> u32 {
+    4
+}
+
 /// Workflow is the declarative loop: a DAG of stages, a gate library, and defaults.
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct Workflow {
@@ -620,6 +717,17 @@ pub struct Workflow {
     /// deserializer treats `off` as a plain scalar, not a boolean).
     #[serde(default)]
     pub dash: String,
+    /// The shared build-environment config (spec 65): `wrapper` / `cache_dir`, read
+    /// by the ONE resolver ([`crate::gate::BuildEnv::resolve`]) that derives the env
+    /// applied to gate builds and the blocking `driver::cli` agent driver - the two
+    /// sites wired so far, not yet every agent-spawn path in the crate (see
+    /// [`crate::gate::BuildEnv`]). Absent (the common case) resolves to no wrapper -
+    /// today's ambient-environment behavior, unchanged - but `max_concurrent` still
+    /// resolves to its documented default of 4 (`default_build_config`, not the plain
+    /// derived `BuildConfig::default()`, which a whole-section-absent `build:` would
+    /// otherwise silently fall back to).
+    #[serde(default = "default_build_config")]
+    pub build: BuildConfig,
     #[serde(default)]
     pub gates: BTreeMap<String, Gate>,
     #[serde(default)]
@@ -829,10 +937,61 @@ pub fn read_store_config(rigger_dir: &Path) -> Result<StoreConfig, Error> {
     Ok(probe.store)
 }
 
+/// Read ONLY `defaults.workdir` from `<rigger_dir>/workflow.yml` (spec 77 criterion 5,
+/// BOUNDED SHARED CACHE), tolerating an absent file exactly like [`read_store_config`]'s own
+/// NotFound-vs-other split - a project that pins nothing resolves to `""` (the scratch-root
+/// resolver's own default rung, `<repo>/.rigger/tmp`). This is the LIGHTWEIGHT probe `rigger
+/// reset --build-cache` resolves the scratch root through: it is a pure filesystem reclaim
+/// with no store-mutation implication, and must not additionally require a fully loadable
+/// agent fleet ([`load`]'s `load_agents`) or a passing [`Config::validate`] just to learn one
+/// string field - a workflow.yml whose `stages:`/`agents:` reference something absent from
+/// disk (or simply has no `agents/` dir at all) must not stop an operator from reclaiming
+/// disk space.
+///
+/// Anchored at the `.rigger` directory, matching [`read_store_config`]'s own convention -
+/// a caller that already resolved the store dir passes it straight through.
+pub fn read_scratch_workdir(rigger_dir: &Path) -> Result<String, Error> {
+    let path = rigger_dir.join("workflow.yml");
+    let body = match std::fs::read_to_string(&path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(e) => return Err(err(format!("read workflow: {e}"))),
+    };
+    #[derive(Deserialize, Default)]
+    struct Probe {
+        #[serde(default)]
+        defaults: Defaults,
+    }
+    let probe: Probe =
+        serde_yaml::from_str(&body).map_err(|e| err(format!("parse workflow: {e}")))?;
+    Ok(probe.defaults.workdir)
+}
+
 impl Config {
     /// Validate checks that every reference resolves and the stage graph is acyclic.
     pub fn validate(&self) -> Result<(), Error> {
         let wf = &self.workflow;
+        // Build-environment resolution (spec 65 unit 2, NO SILENT DEGRADE): a CONFIGURED
+        // (non-auto, non-off) `build.wrapper` absent from PATH, OR whose cache dir cannot
+        // be created, is a run-start config error naming what failed and the relevant key -
+        // the operator asked for it explicitly, so proceeding would fake a cache that never
+        // actually runs. `auto` (either axis comes up empty -> injects nothing) and
+        // `off`/empty never fail here - a discovered-implicit degrade, not a
+        // configured-explicit one. This is the ONE resolution `crate::conductor`'s
+        // build-environment authority and `rigger validate`'s reporting surface both read
+        // too - never a second, independently re-derived check.
+        if let Err(e) = crate::gate::resolve_build_layer(&wf.build.wrapper, &wf.build.cache_dir) {
+            return Err(err(e.to_string()));
+        }
+        // Mutation-efficacy step gating (spec 73, ENABLED-BUT-ABSENT FAILS AT RUN START): a
+        // CONFIGURED `build.mutation: on` whose required `cargo-mutants` binary is absent
+        // from PATH is a run-start config error naming the binary and the key - the operator
+        // asked for the step explicitly, so proceeding would silently skip a check they
+        // turned on. `off`/empty never probe PATH. The SAME resolution `rigger validate`'s
+        // reporting surface reads too - never a second, independently re-derived check.
+        if let Err(e) = crate::gate::resolve_mutation_layer(&wf.build.mutation) {
+            return Err(err(e.to_string()));
+        }
         // The default review panel (applied to every unit) must reference real agents,
         // including its light-tier roster, and its depth policy must be structurally
         // sound (a configured light tier names an adjudicator).
@@ -2728,6 +2887,291 @@ class: product\n";
             let w: Workflow = serde_yaml::from_str(&format!("dash: \"{v}\"\n")).unwrap();
             assert!(w.dash_enabled(), "`dash: {v:?}` keeps the dash ON");
         }
+    }
+
+    /// Spec 65: `build.wrapper` / `build.cache_dir` are the config plumbing the shared
+    /// build-environment resolver reads. An omitted `build:` section (the common case)
+    /// resolves to the defaults - empty wrapper, empty cache_dir - so the workflow's ONE
+    /// resolver ([`crate::gate::BuildEnv::resolve`]) treats it exactly like an explicit
+    /// `wrapper: off`.
+    #[test]
+    fn build_config_parses_wrapper_and_cache_dir_and_defaults_when_omitted() {
+        let wf: Workflow = serde_yaml::from_str("name: x\n").unwrap();
+        assert_eq!(
+            wf.build.wrapper, "",
+            "an omitted build: section defaults empty"
+        );
+        assert_eq!(wf.build.cache_dir, "");
+
+        let wf: Workflow =
+            serde_yaml::from_str("build:\n  wrapper: sccache\n  cache_dir: /shared/cache\n")
+                .unwrap();
+        assert_eq!(wf.build.wrapper, "sccache");
+        assert_eq!(wf.build.cache_dir, "/shared/cache");
+    }
+
+    /// Spec 65 unit 4 (JOBS CAP): `build.jobs` is the config plumbing
+    /// [`crate::gate::BuildEnv::resolve`]'s jobs facet reads. Omitted (the common
+    /// case) parses to `0` - unset, matching this config's own zero-as-unset
+    /// convention (`budget`, `max_retries`, `speculation_width`) - so a pre-existing
+    /// workflow with no opinion on `build.jobs` is byte-for-byte back-compatible. An
+    /// explicit positive value parses through untouched.
+    #[test]
+    fn build_config_parses_jobs_and_defaults_to_zero_when_omitted() {
+        let wf: Workflow = serde_yaml::from_str("name: x\n").unwrap();
+        assert_eq!(
+            wf.build.jobs, 0,
+            "an omitted build: section defaults jobs to 0 (unset)"
+        );
+
+        let wf: Workflow = serde_yaml::from_str("build:\n  jobs: 4\n").unwrap();
+        assert_eq!(wf.build.jobs, 4);
+
+        // jobs is independent of wrapper - both may be set together without either
+        // suppressing the other's parse.
+        let wf: Workflow = serde_yaml::from_str("build:\n  wrapper: sccache\n  jobs: 8\n").unwrap();
+        assert_eq!(wf.build.wrapper, "sccache");
+        assert_eq!(wf.build.jobs, 8);
+    }
+
+    /// Spec 65: `build.max_concurrent` is the machine-wide build budget's config plumbing
+    /// ([`crate::budget::BuildBudget`] is the resolver that reads it). Omitted resolves to
+    /// the documented default of 4 - NOT to a bare `u32::default()` of 0, which the `0`
+    /// value is separately reserved to mean (the `budget: 0` convention `defaults.budget`
+    /// already uses): an explicit `max_concurrent: 0` must parse distinctly from an absent
+    /// key.
+    #[test]
+    fn build_config_parses_max_concurrent_defaulting_to_four_when_omitted() {
+        let wf: Workflow = serde_yaml::from_str("name: x\n").unwrap();
+        assert_eq!(
+            wf.build.max_concurrent, 4,
+            "an omitted build: section defaults max_concurrent to 4"
+        );
+
+        let wf: Workflow = serde_yaml::from_str("build:\n  max_concurrent: 9\n").unwrap();
+        assert_eq!(wf.build.max_concurrent, 9);
+
+        let wf: Workflow = serde_yaml::from_str("build:\n  max_concurrent: 0\n").unwrap();
+        assert_eq!(
+            wf.build.max_concurrent, 0,
+            "an EXPLICIT 0 must parse as 0 (unlimited), distinct from the omitted default"
+        );
+    }
+
+    /// Spec 65 unit 2 (NO SILENT DEGRADE): a CONFIGURED (non-auto, non-off) `build.wrapper`
+    /// absent from PATH must fail `Config::validate` - a run-start loud error naming both
+    /// the missing binary and the `build.wrapper` config key - rather than silently letting
+    /// the run proceed with a cache that will never actually engage. Uses a definitely-fake
+    /// binary name against the REAL ambient PATH (a read, never a mutation, so this needs no
+    /// env-race guard - see `gate::resolve_wrapper_name_from`'s own tests for the
+    /// synthetic-PATH coverage of every branch).
+    #[test]
+    fn validate_rejects_a_named_build_wrapper_absent_from_path() {
+        let mut cfg = Config::default();
+        cfg.workflow.build.wrapper = "definitely-not-a-real-wrapper-rigger-u2-test".into();
+        let err = cfg
+            .validate()
+            .expect_err("a named-but-absent build.wrapper must fail validation");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("definitely-not-a-real-wrapper-rigger-u2-test"),
+            "the error must name the missing binary: {msg:?}"
+        );
+        assert!(
+            msg.contains("build.wrapper"),
+            "the error must name the config key: {msg:?}"
+        );
+    }
+
+    /// `auto` and `off` never fail validation regardless of PATH content: `auto` finding
+    /// nothing is a discovered-implicit DEGRADE (inject nothing), never a configured-explicit
+    /// failure, and `off`/empty never even probes PATH. Only a NAMED wrapper's absence
+    /// errors (`validate_rejects_a_named_build_wrapper_absent_from_path` above).
+    #[test]
+    fn validate_accepts_auto_and_off_wrapper_regardless_of_path() {
+        for wrapper in ["auto", "off", "", "  "] {
+            let mut cfg = Config::default();
+            cfg.workflow.build.wrapper = wrapper.into();
+            assert!(
+                cfg.validate().is_ok(),
+                "build.wrapper: {wrapper:?} must never fail validation"
+            );
+        }
+    }
+
+    /// Spec 73: `build.mutation` is the config plumbing
+    /// [`crate::gate::resolve_mutation_layer`] reads. An omitted `build:` section (the
+    /// common case, and every workflow committed before this key existed) resolves to empty
+    /// - off - so `Config::validate` never probes PATH for pre-existing projects.
+    #[test]
+    fn build_config_parses_mutation_and_defaults_to_off_when_omitted() {
+        let wf: Workflow = serde_yaml::from_str("name: x\n").unwrap();
+        assert_eq!(
+            wf.build.mutation, "",
+            "an omitted build: section defaults mutation empty (off)"
+        );
+
+        let wf: Workflow = serde_yaml::from_str("build:\n  mutation: on\n").unwrap();
+        assert_eq!(wf.build.mutation, "on");
+    }
+
+    /// `off`/empty never fail validation and never probe PATH (spec 73) - mirrors
+    /// `validate_accepts_auto_and_off_wrapper_regardless_of_path`'s own off-never-fails shape
+    /// for the mutation axis. The synthetic-PATH proof that `off` never even REACHES the
+    /// probe lives in `gate::tests::resolve_mutation_layer_off_and_empty_resolve_to_false_
+    /// without_touching_path`; this proves the SAME resolution wired through
+    /// `Config::validate` behaves identically against the real ambient PATH.
+    #[test]
+    fn validate_accepts_off_mutation_regardless_of_path() {
+        for mutation in ["off", "", "  ", "  OFF  "] {
+            let mut cfg = Config::default();
+            cfg.workflow.build.mutation = mutation.into();
+            assert!(
+                cfg.validate().is_ok(),
+                "build.mutation: {mutation:?} must never fail validation"
+            );
+        }
+    }
+
+    /// Spec 73 (ENABLED-BUT-ABSENT FAILS AT RUN START): a CONFIGURED `build.mutation: on`
+    /// with the `cargo-mutants` binary genuinely present on this test's real ambient PATH
+    /// (a setup precondition this repo's own build.mutation step requires, per spec 73's
+    /// notes) must validate successfully - the positive-resolution half of the contract,
+    /// mirroring `validate_rejects_a_named_build_wrapper_absent_from_path`'s own real-PATH
+    /// approach. The ABSENT-binary failure direction cannot be proven against this repo's
+    /// real ambient PATH the way a nonsense wrapper NAME can (the binary name here is fixed,
+    /// not operator-chosen, and is genuinely installed) - that direction is proven with a
+    /// synthetic PATH at the pure-resolver level
+    /// (`gate::tests::resolve_mutation_layer_on_with_the_binary_absent_errors_naming_the_
+    /// binary_and_key`) and end to end through the real CLI with a controlled PATH in
+    /// `tests/cli.rs`.
+    #[test]
+    fn validate_accepts_mutation_on_when_cargo_mutants_is_on_the_real_path() {
+        let mut cfg = Config::default();
+        cfg.workflow.build.mutation = "on".into();
+        assert!(
+            cfg.validate().is_ok(),
+            "build.mutation: on with cargo-mutants resolvable must validate; this test's own \
+             environment must have cargo-mutants installed"
+        );
+    }
+
+    /// Spec 65 unit 2 (NO SILENT DEGRADE) - the SAME Design sentence (specs/65:26-28) that
+    /// decides a named-but-absent wrapper BINARY must fail `Config::validate` also decides a
+    /// named wrapper's UNCREATABLE cache dir must fail it too, naming both the dir and the
+    /// `build.cache_dir` config key - mirroring `validate_rejects_a_named_build_wrapper_
+    /// absent_from_path` above for the cache-dir axis. `wrapper: "true"` names a binary
+    /// virtually guaranteed present on any real Unix PATH (this crate already assumes a Unix
+    /// PATH elsewhere - `gate::is_executable_file` is `#[cfg(unix)]`-gated), so this
+    /// deterministically reaches the cache-dir axis rather than failing on the binary axis
+    /// first. The uncreatable dir is a real FILE blocking a path component - deterministic on
+    /// every OS/user, unlike a permission-bit trick a root-run test could bypass.
+    #[test]
+    fn validate_rejects_a_named_wrapper_with_an_uncreatable_cache_dir() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let blocker = tmp.path().join("blocker");
+        std::fs::write(&blocker, "not a directory").expect("write blocker file");
+        let cache_dir = blocker.join("nested").join("cache");
+
+        let mut cfg = Config::default();
+        cfg.workflow.build.wrapper = "true".into();
+        cfg.workflow.build.cache_dir = cache_dir.to_string_lossy().into_owned();
+        let err = cfg
+            .validate()
+            .expect_err("a named wrapper's uncreatable cache dir must fail validation");
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&cache_dir.to_string_lossy().into_owned()),
+            "the error must name the cache dir: {msg:?}"
+        );
+        assert!(
+            msg.contains("build.cache_dir"),
+            "the error must name the config key: {msg:?}"
+        );
+    }
+
+    /// The auto-discovery counterpart: `build.wrapper: auto` with an uncreatable cache dir
+    /// must never fail validation (a discovered-implicit degrade skips the whole layer,
+    /// regardless of whether `auto`'s PATH probe would otherwise have found a known
+    /// wrapper), mirroring `validate_accepts_auto_and_off_wrapper_regardless_of_path` above
+    /// for the cache-dir axis - only the NAMED-wrapper case
+    /// (`validate_rejects_a_named_wrapper_with_an_uncreatable_cache_dir` above) is a
+    /// configured-explicit failure.
+    #[test]
+    fn validate_accepts_auto_wrapper_with_an_uncreatable_cache_dir() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let blocker = tmp.path().join("blocker");
+        std::fs::write(&blocker, "not a directory").expect("write blocker file");
+        let cache_dir = blocker.join("nested").join("cache");
+
+        let mut cfg = Config::default();
+        cfg.workflow.build.wrapper = "auto".into();
+        cfg.workflow.build.cache_dir = cache_dir.to_string_lossy().into_owned();
+        assert!(
+            cfg.validate().is_ok(),
+            "auto must never fail validation regardless of cache-dir usability"
+        );
+    }
+
+    /// Spec 65 unit 2 round 2 (cache-dir checks CREATABLE, not just WRITABLE): the
+    /// realistic steady state is a cache dir that ALREADY EXISTS (the shared
+    /// `default_cache_dir` every project reuses after the first one creates it) but is not
+    /// WRITABLE - `create_dir_all` alone is a no-op success against it, so only an actual
+    /// write probe catches this. Mirrors `validate_rejects_a_named_wrapper_with_an_
+    /// uncreatable_cache_dir` above, but chmod's an ALREADY-CREATED dir read+execute-only
+    /// (0o555) instead of blocking a path component - the only way to make a dir that
+    /// EXISTS yet cannot be written into. Unix-only: the mode bits are a POSIX concept.
+    #[cfg(unix)]
+    #[test]
+    fn validate_rejects_a_named_wrapper_with_a_preexisting_unwritable_cache_dir() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cache_dir = tmp.path().join("preexisting-cache");
+        std::fs::create_dir_all(&cache_dir).expect("pre-create cache dir");
+        std::fs::set_permissions(&cache_dir, std::fs::Permissions::from_mode(0o555))
+            .expect("chmod cache dir read+execute-only");
+
+        let mut cfg = Config::default();
+        cfg.workflow.build.wrapper = "true".into();
+        cfg.workflow.build.cache_dir = cache_dir.to_string_lossy().into_owned();
+        let err = cfg.validate().expect_err(
+            "a named wrapper's pre-existing-but-unwritable cache dir must fail validation, \
+             not silently report the layer usable",
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&cache_dir.to_string_lossy().into_owned()),
+            "the error must name the cache dir: {msg:?}"
+        );
+        assert!(
+            msg.contains("build.cache_dir"),
+            "the error must name the config key: {msg:?}"
+        );
+    }
+
+    /// The auto-discovery counterpart of the test directly above: `build.wrapper: auto`
+    /// against a pre-existing-but-unwritable cache dir must degrade silently, never fail
+    /// validation - mirroring `validate_accepts_auto_wrapper_with_an_uncreatable_cache_dir`
+    /// for the writability (rather than creatability) failure mode.
+    #[cfg(unix)]
+    #[test]
+    fn validate_accepts_auto_wrapper_with_a_preexisting_unwritable_cache_dir() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cache_dir = tmp.path().join("preexisting-cache");
+        std::fs::create_dir_all(&cache_dir).expect("pre-create cache dir");
+        std::fs::set_permissions(&cache_dir, std::fs::Permissions::from_mode(0o555))
+            .expect("chmod cache dir read+execute-only");
+
+        let mut cfg = Config::default();
+        cfg.workflow.build.wrapper = "auto".into();
+        cfg.workflow.build.cache_dir = cache_dir.to_string_lossy().into_owned();
+        assert!(
+            cfg.validate().is_ok(),
+            "auto must never fail validation regardless of cache-dir writability"
+        );
     }
 
     #[test]

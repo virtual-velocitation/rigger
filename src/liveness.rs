@@ -34,6 +34,7 @@
 //! do the dead-worker-exit driver's job, which is out of this unit's scope.) Recovery is
 //! uniform too: an operator records a real result (last-write-wins) and re-drives.
 
+use std::collections::BTreeSet;
 use std::time::{Duration, SystemTime};
 
 use crate::eventstore::{Error, Event, EventStore};
@@ -45,22 +46,59 @@ use crate::spawn::{self, SpawnResult};
 /// worker instruction (`workflows/rigger.js`) derive the same path.
 pub const MARKER_SUBDIR: &str = "agent-live";
 
-/// The filesystem-safe marker filename for a spawn id: every character that is not
-/// ASCII alphanumeric, `.`, `-`, or `_` becomes `_`. A spawn id is `{unit}/{role}#{n}`,
-/// so the `/` and `#` (which would otherwise create subdirectories or shell-quirky
-/// names) collapse to `_`. This exact rule is mirrored in `workflows/rigger.js` so the
-/// worker touches the SAME file the sweep reads.
-pub fn marker_filename(spawn_id: &str) -> String {
-    spawn_id
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
+/// The filesystem-safe marker filename for a spawn id: an INJECTIVE byte-for-byte
+/// encoding (spec 77 Design, decision `d77-injective-scratch-naming`) - every BYTE that
+/// is not ASCII alphanumeric or `-` becomes `_` followed by its two-lowercase-hex-digit
+/// value, and `_` itself is escaped the same way (to `_5f`), so a literal `_` never
+/// appears in the output except as the first byte of a 3-byte escape. A spawn id is
+/// `{unit}/{role}#{n}`, so `/` becomes `_2f` and `#` becomes `_23`. `workflows/rigger.js`
+/// never recomputes this rule itself - it receives the fully-resolved absolute path
+/// `rigger step` stamps on the wire (through THIS function, via [`marker_path`]) and just
+/// touches it verbatim, so the worker and the sweep can never compute two different
+/// filenames for the same spawn.
+///
+/// INJECTIVE BY CONSTRUCTION, not by guard: every caller of this function derives a
+/// filesystem path with `<registered_root>.join(marker_filename(id))` (this module's own
+/// [`marker_path`], plus [`crate::driver::replay::spawn_scratch_path`] and
+/// [`crate::driver::replay::mutation_scratch_path`]), and several of those roots are
+/// later reaped with a bare `remove_dir_all` - so two DISTINCT ids must never produce the
+/// SAME encoded name (a same-level collision misattributes a reap to the wrong unit's
+/// live scratch), and no id may encode to `""`, `"."`, or `".."` (a `PathBuf::join`
+/// no-op or an upward walk that lets a reaper delete a sibling or an ancestor). This
+/// encoding is injective: since `_` is NEVER emitted as a bare passthrough byte (it is
+/// always escaped to `_5f`), a decoder scanning left to right can unambiguously tell a
+/// literal allowed byte from the start of a 3-byte escape - so distinct inputs can never
+/// collapse onto the same output, and since only alphanumerics and `-` ever appear bare,
+/// no encoded output can ever consist entirely of `.` characters either. Three earlier
+/// rounds instead tried substituting a FIXED placeholder for each degenerate shape one
+/// at a time (`"_empty_"` for an empty mapped result, mapping an all-dots result's own
+/// dots to `_`) - both wrong the same way: a placeholder drawn from the map's own
+/// non-injective output alphabet can never be proven disjoint from a real id's own
+/// mapped output (a real unit literally named `"_empty_"`, or any underscore-run,
+/// collided with one of them). This encoding has no such alphabet-reuse hazard because
+/// the alphabet itself makes every output unique to its input.
+///
+/// The ONE remaining degenerate shape - the EMPTY input, which encodes to the EMPTY
+/// string (there are no bytes to escape) - still returns `None` rather than `Some("")`:
+/// an empty string still makes a caller's `.join` a no-op. It is reachable via
+/// `reclaim_spawn_scratch`'s own `spawn_id.split('/').next()` unit-extraction, which
+/// yields `""` for any leading-slash spawn id. Every caller skips a `None`, mirroring
+/// this module's own established idiom for uncertainty elsewhere in the same call chain
+/// ([`sweep`]: "a spawn with NO marker is left alone").
+pub fn marker_filename(spawn_id: &str) -> Option<String> {
+    let mut encoded = String::with_capacity(spawn_id.len());
+    for byte in spawn_id.bytes() {
+        if byte.is_ascii_alphanumeric() || byte == b'-' {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("_{byte:02x}"));
+        }
+    }
+    if encoded.is_empty() {
+        None
+    } else {
+        Some(encoded)
+    }
 }
 
 /// The absolute marker path for a spawn:
@@ -74,14 +112,75 @@ pub fn marker_filename(spawn_id: &str) -> String {
 /// different subdir, so the sweep never reads a prior run's leftover mtime and records a
 /// bogus multi-hour `silent_for`. An empty `run_id` (a caller outside a run - the pure-fold
 /// tests) omits the run subdir, keeping the path stable for the no-run case.
-pub fn marker_path(scratch_root: &str, run_id: &str, spawn_id: &str) -> std::path::PathBuf {
+///
+/// Returns `None` when `run_id` or `spawn_id` maps to the ONE remaining degenerate
+/// [`marker_filename`] shape (an empty INPUT - never a non-empty one, since the injective
+/// encoding gives every non-empty input its own unique, never-empty output), so every
+/// caller treats a degenerate id exactly like the existing "marker absent" no-op
+/// ([`sweep`]'s own doc comment: "a spawn with NO marker is left alone") instead of
+/// stat-ing or touching a fabricated placeholder path.
+pub fn marker_path(scratch_root: &str, run_id: &str, spawn_id: &str) -> Option<std::path::PathBuf> {
     let dir = std::path::Path::new(scratch_root).join(MARKER_SUBDIR);
-    let dir = if run_id.is_empty() {
-        dir
-    } else {
-        dir.join(marker_filename(run_id))
+    let dir = match marker_filename(run_id) {
+        Some(safe) => dir.join(safe),
+        None => dir,
     };
-    dir.join(marker_filename(spawn_id))
+    marker_filename(spawn_id).map(|safe| dir.join(safe))
+}
+
+/// Whether ANY per-spawn liveness marker under `scratch_root` - any run, any spawn - has been
+/// touched more recently than `max_age` ago (spec 62, criterion 5: the machine-level
+/// singleton's self-reap watcher must see agent liveness, not just the instance registry).
+///
+/// The watcher has no run id or wave to check ONE spawn's marker against - the registry it
+/// already polls deliberately captures no per-run inputs (spec 50 retargets the reap trigger
+/// at the machine-global registry, not one project's run) - so this generalizes
+/// [`marker_path`]'s exact per-spawn lookup into "is anything alive at all" over the SAME
+/// [`MARKER_SUBDIR`] convention every other liveness reader walks (`sweep`, `rigger status`,
+/// the dash's per-spawn ages): reusing the ONE marker mechanism rather than standing up a
+/// second, divergent liveness check. An empty `scratch_root` (no repo, mirroring every other
+/// caller's repo-less degrade), an absent marker directory (no agent has ever run here), or
+/// any unreadable entry along the way all read as "no live agent" - never an error - the same
+/// conservative default [`sweep`]'s own doc names for a spawn with no marker at all.
+pub fn any_marker_fresh(scratch_root: &str, now: SystemTime, max_age: Duration) -> bool {
+    if scratch_root.is_empty() {
+        return false;
+    }
+    let root = std::path::Path::new(scratch_root).join(MARKER_SUBDIR);
+    any_fresh_file_under(&root, now, max_age)
+}
+
+/// The recursive freshness walk behind [`any_marker_fresh`]: true iff any REGULAR file under
+/// `dir` (searched depth-first, following one level of run-id subdirectory the way
+/// [`marker_path`] nests a spawn's marker below `MARKER_SUBDIR`) has an mtime within
+/// `max_age` of `now`. A directory that cannot be listed, or a file whose mtime cannot be
+/// read, is skipped rather than failing the whole scan - matching this module's established
+/// "absent/unreadable degrades to no signal" idiom.
+fn any_fresh_file_under(dir: &std::path::Path, now: SystemTime, max_age: Duration) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            if any_fresh_file_under(&entry.path(), now, max_age) {
+                return true;
+            }
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+        let Ok(mtime) = entry.metadata().and_then(|m| m.modified()) else {
+            continue;
+        };
+        if !is_stale(now, mtime, max_age) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Whether a spawn last seen alive at `last_seen` is STALE at `now` given its wall-clock
@@ -232,10 +331,13 @@ pub fn sweep(
         // The marker's mtime is the spawn's last proof of life. The path carries the run id
         // ([`marker_path`]), so a prior run's leftover marker for a slug-colliding id lives
         // under a different subdir and is never read here. A MISSING marker is left alone
-        // (conservative - see the fn docs); only a present-but-stale marker is hung.
-        let last_seen = match std::fs::metadata(marker_path(scratch_root, run_id, &req.id))
-            .and_then(|m| m.modified())
-        {
+        // (conservative - see the fn docs); only a present-but-stale marker is hung. A
+        // degenerate id ([`marker_path`] returns `None`) is treated identically - the same
+        // conservative no-op, never a fabricated path to stat.
+        let Some(path) = marker_path(scratch_root, run_id, &req.id) else {
+            continue;
+        };
+        let last_seen = match std::fs::metadata(path).and_then(|m| m.modified()) {
             Ok(mtime) => mtime,
             Err(_) => continue,
         };
@@ -296,18 +398,186 @@ pub fn halt_reason(hung: &[HungSpawn]) -> String {
     )
 }
 
+/// The persisted CROSSING BOUNDARY for the hung-liveness half of the push-side `attention`
+/// signal (spec 69, criterion 5; review u69c5 round 3, cause genuine-defect): which hung
+/// spawn ids `rigger step` has ALREADY surfaced, as of the end of the PREVIOUS invocation.
+///
+/// Every other piece of state `rigger step` uses is re-derived fresh from the event log on
+/// every invocation - the log is the single source of truth, and no other cross-process
+/// state exists anywhere in this codebase's conductor path. This is the one deliberate
+/// exception, forced by what "once per crossing" needs here specifically: the fault that
+/// makes a spawn HUNG is not always recorded by the process that goes on to surface it. A
+/// driver's out-of-band `rigger result --error` (the outer-wall-clock backstop, spec 19c
+/// unit 2, for a spawn with no per-spawn `max_wall_clock` the in-process sweep can never
+/// time out) runs as a wholly separate process strictly BETWEEN two `rigger step`
+/// invocations. By the time the NEXT invocation opens the store, that write already
+/// predates every read it could possibly take - so "this process's own start" is always too
+/// late a boundary; a fault recorded that way is indistinguishable, from inside a fresh
+/// process, from one this run already reported steps ago. The one boundary that IS early
+/// enough is "the end of the PREVIOUS `rigger step` invocation" - and only a value persisted
+/// OUTSIDE the log, by that previous process, for this one to read, can supply it. This is
+/// the exact role [`crate::dash::DashMarker`] already plays for "is a dash already serving
+/// on this machine" - a cross-process fact the append-only log cannot answer either, so a
+/// small on-disk record is the established escape hatch, not a new one.
+///
+/// One id per line (spawn ids never contain a newline), written in the caller's sorted
+/// order so two folds of the same state produce a byte-identical file. Scoped by `run_id` -
+/// a SIBLING of the run's own marker subdir ([`MARKER_SUBDIR`]`/<run>/`), never a file
+/// inside it, so it can never collide with a sanitized spawn-id marker filename regardless
+/// of what a workflow names its units. Reclaimed with the rest of `agent-live` at run
+/// teardown (the same lifecycle a per-spawn marker already has), so it never outlives the
+/// run it tracks. An empty `run_id` (a caller outside a run) still produces a stable path,
+/// mirroring [`marker_path`]'s own convention for the no-run case - the only degenerate
+/// [`marker_filename`] shape under the injective encoding.
+pub fn hung_cursor_path(scratch_root: &str, run_id: &str) -> std::path::PathBuf {
+    let dir = std::path::Path::new(scratch_root).join(MARKER_SUBDIR);
+    let name = match marker_filename(run_id) {
+        Some(safe) => format!("{safe}.hung-cursor"),
+        None => ".hung-cursor".to_string(),
+    };
+    dir.join(name)
+}
+
+/// Read the hung-attention cursor ([`hung_cursor_path`]): the spawn ids already surfaced as
+/// of the end of the PREVIOUS `rigger step`. Absent, unreadable, or malformed all read as
+/// EMPTY - "nothing surfaced yet" - which is the safe default in both directions this can be
+/// wrong: correct on the very first step of a run (nothing has surfaced), and on any read
+/// failure the safe direction is toward one extra, harmless re-notification of a still-true
+/// halt, never toward silently swallowing a genuine new crossing (the exact failure mode
+/// this mechanism exists to close - see [`hung_cursor_path`]'s own doc comment).
+pub fn read_hung_cursor(scratch_root: &str, run_id: &str) -> BTreeSet<String> {
+    std::fs::read_to_string(hung_cursor_path(scratch_root, run_id))
+        .map(|s| {
+            s.lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Persist the hung-attention cursor ([`hung_cursor_path`]): the FULL set of currently-hung
+/// spawn ids, as computed at the end of THIS `rigger step`, for the NEXT invocation's
+/// [`read_hung_cursor`] to seed its own crossing check from. Unconditionally overwritten
+/// every step (cheap - a handful of short ids) rather than only on a change, so a recovered
+/// spawn drops out of the file the same step it drops out of [`hung_spawns`] and a later
+/// re-hang of the same id is correctly treated as fresh. Best-effort at the call site, like
+/// every other scratch write `rigger step` performs - a failed write only means the NEXT
+/// step may re-stamp a still-true halt once more than strictly necessary, never that this
+/// step fails.
+pub fn write_hung_cursor(
+    scratch_root: &str,
+    run_id: &str,
+    hung: &BTreeSet<String>,
+) -> std::io::Result<()> {
+    let path = hung_cursor_path(scratch_root, run_id);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, hung.iter().cloned().collect::<Vec<_>>().join("\n"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn marker_filename_collapses_id_separators_to_underscores() {
+    fn marker_filename_hex_escapes_every_byte_outside_alphanumeric_and_hyphen() {
+        // Spec 77 Design, decision `d77-injective-scratch-naming`: `/` and `#` (the
+        // spawn-id-structure characters) each become a 3-byte `_XX` escape.
         assert_eq!(
             marker_filename("unit-3-spawns-a-wall-clock/implementer#1"),
-            "unit-3-spawns-a-wall-clock_implementer_1"
+            Some("unit-3-spawns-a-wall-clock_2fimplementer_231".to_string())
         );
-        // Alphanumerics and . - _ survive; everything else (/, #, spaces, colons) is _.
-        assert_eq!(marker_filename("a b:c/d#e.f-g_h"), "a_b_c_d_e.f-g_h");
+        // Every byte outside [A-Za-z0-9-] escapes - space, colon, `/`, `#`, `.`, and `_`
+        // itself (`_` -> `_5f`, never left bare) - while `-` and alphanumerics survive.
+        assert_eq!(
+            marker_filename("a b:c/d#e.f-g_h"),
+            Some("a_20b_3ac_2fd_23e_2ef-g_5fh".to_string())
+        );
+    }
+
+    #[test]
+    fn marker_filename_hex_escapes_dots_so_no_encoded_result_can_ever_be_a_path_traversal_component(
+    ) {
+        // `cmd_result`'s positional spawn id is otherwise unvalidated (only checked
+        // non-empty). Under the PRIOR char-by-char map (rounds 1-6), `.` passed through
+        // unescaped, so a spawn id of literally ".." resolved, unchanged, to a traversal
+        // component: `<registered_root>.join("..")` walked UP to the root's parent, and
+        // `reap_then_remove_dir`'s bare `remove_dir_all` deleted everything beside it. The
+        // injective encoding (`d77-injective-scratch-naming`) escapes `.` like any other
+        // disallowed byte (`_2e`), so no encoded output can ever contain a literal `.`
+        // character at all - a dotted input is just an ordinary, uniquely-encoded id now,
+        // never a traversal shape.
+        assert_eq!(marker_filename(".."), Some("_2e_2e".to_string()));
+        assert_eq!(marker_filename("."), Some("_2e".to_string()));
+        assert_eq!(marker_filename("..."), Some("_2e_2e_2e".to_string()));
+        assert_eq!(marker_filename("a.b"), Some("a_2eb".to_string()));
+        assert_eq!(
+            marker_filename("u/implementer#0.retry"),
+            Some("u_2fimplementer_230_2eretry".to_string())
+        );
+    }
+
+    #[test]
+    fn marker_filename_is_none_only_for_a_truly_empty_input_so_a_join_can_never_be_a_no_op() {
+        // The ONE degenerate shape the injective encoding does not close structurally: an
+        // EMPTY input encodes to the EMPTY string (there are no bytes to escape), and
+        // `<registered_root>.join("")` is a documented `PathBuf::join` no-op that collapses
+        // the derived path to the registered root itself - letting a reaper delete every
+        // sibling leaf alongside it. Reachable directly: a spawn id of `""` cannot reach
+        // here (`cmd_result` already requires non-empty), but `reclaim_spawn_scratch`'s own
+        // `unit = spawn_id.split('/').next()` extraction yields `""` for any LEADING-SLASH
+        // spawn id (e.g. `rigger result "/foo" "text"`), and that empty `unit` is exactly
+        // what `mutation_scratch_path` feeds this function. `None` (skip entirely) is the
+        // answer here - never a fixed placeholder (rounds 3 and 5 each tried exactly that
+        // for this and the all-dots shape, and round 6 proved a placeholder drawn from the
+        // map's own output alphabet can collide with a real id; see
+        // `marker_filename_is_injective_so_two_ids_that_collided_under_a_prior_placeholder_scheme_no_longer_do`).
+        assert_eq!(marker_filename(""), None);
+    }
+
+    #[test]
+    fn marker_filename_hex_escapes_a_literal_underscore_so_a_real_underscore_run_unit_never_collides(
+    ) {
+        // Round-6 REQUIRED FIX regression: a real unit literally named an underscore-run of
+        // ANY length collided with rounds 3 and 5's fixed placeholders under the OLD scheme,
+        // which passed `_` through unescaped. The injective encoding escapes `_` itself too
+        // (to `_5f`, always 3 bytes, never bare) - so a real underscore-run id now encodes
+        // to its own unique filename, and an unrelated all-dots id of the IDENTICAL length
+        // (the exact round-6 collision shape: `.` escapes to `_2e`, not `_5f`) can never
+        // produce the same encoded output.
+        assert_eq!(marker_filename("_"), Some("_5f".to_string()));
+        assert_eq!(marker_filename("__"), Some("_5f_5f".to_string()));
+        assert_eq!(marker_filename("___"), Some("_5f_5f_5f".to_string()));
+        for len in [1usize, 3, 7, 12] {
+            let underscores = "_".repeat(len);
+            let dots = ".".repeat(len);
+            assert_ne!(
+                marker_filename(&underscores),
+                marker_filename(&dots),
+                "an underscore-run and an all-dots id of the same length ({len}) must never \
+                 encode to the same filename"
+            );
+        }
+    }
+
+    #[test]
+    fn marker_filename_is_injective_so_two_ids_that_collided_under_a_prior_placeholder_scheme_no_longer_do(
+    ) {
+        // Rounds 3 and 5 each substituted a FIXED placeholder for one degenerate shape
+        // (`"_empty_"` for an empty mapped result; an all-dots result's own dots mapped to
+        // `_` for the all-dots shape) - each collided with an unrelated, perfectly ordinary
+        // id that happened to equal the placeholder textually (`adv-u77c2r5-empty-sentinel-
+        // collides-with-a-literal-unit-id`, `adj-u77c2r6-alldots-vs-underscore-collision-
+        // extends-empty-sentinel-gap`). The injective hex encoding (`d77-injective-scratch-
+        // naming`) makes every one of these pairs distinguishable now, by construction: `_`
+        // is never emitted bare, so distinct inputs can never collapse onto the same output.
+        assert_ne!(marker_filename(""), marker_filename("_empty_"));
+        assert_ne!(marker_filename("..."), marker_filename("___"));
+        assert_ne!(marker_filename(".."), marker_filename("__"));
+        assert_ne!(marker_filename("."), marker_filename("_"));
     }
 
     #[test]
@@ -317,20 +587,63 @@ mod tests {
         let p = marker_path("/scratch", "run-7", "u/implementer#0");
         assert_eq!(
             p,
-            std::path::Path::new("/scratch/agent-live/run-7/u_implementer_0")
+            Some(std::path::PathBuf::from(
+                "/scratch/agent-live/run-7/u_2fimplementer_230"
+            ))
         );
         // An empty run id (a caller outside a run) omits the run subdir - the no-run path.
         let p = marker_path("/scratch", "", "u/implementer#0");
         assert_eq!(
             p,
-            std::path::Path::new("/scratch/agent-live/u_implementer_0")
+            Some(std::path::PathBuf::from(
+                "/scratch/agent-live/u_2fimplementer_230"
+            ))
         );
-        // A run id carrying id-structure characters is sanitized like a spawn id.
+        // A run id carrying id-structure characters is encoded like a spawn id.
         let p = marker_path("/scratch", "run/7#a", "u/implementer#0");
         assert_eq!(
             p,
-            std::path::Path::new("/scratch/agent-live/run_7_a/u_implementer_0")
+            Some(std::path::PathBuf::from(
+                "/scratch/agent-live/run_2f7_23a/u_2fimplementer_230"
+            ))
         );
+    }
+
+    #[test]
+    fn marker_path_hex_escapes_a_dotdot_run_or_spawn_id_so_it_can_never_walk_upward() {
+        // A `..` run id or spawn id (reachable via the otherwise-unvalidated `rigger
+        // result`/courier CLI ids this function's callers key on) must never make
+        // `<scratch>.join(marker_filename(id))` resolve to the PARENT of `<scratch>`. The
+        // injective encoding closes this structurally rather than by falling back to a
+        // no-subdir/no-path special case: `..` encodes to `_2e_2e` - a perfectly ordinary,
+        // unique, non-traversal filename - for EITHER position.
+        let p = marker_path("/scratch", "..", "u/implementer#0");
+        assert_eq!(
+            p,
+            Some(std::path::PathBuf::from(
+                "/scratch/agent-live/_2e_2e/u_2fimplementer_230"
+            ))
+        );
+        assert!(p.unwrap().starts_with("/scratch/agent-live"));
+        let p = marker_path("/scratch", "run-7", "..");
+        assert_eq!(
+            p,
+            Some(std::path::PathBuf::from("/scratch/agent-live/run-7/_2e_2e"))
+        );
+        assert!(p.unwrap().starts_with("/scratch/agent-live/run-7"));
+    }
+
+    #[test]
+    fn marker_path_is_none_rather_than_collapsing_to_its_registered_root_for_an_empty_spawn_id() {
+        // Round-4 sibling of the dotdot regression above: an EMPTY spawn id (reachable via
+        // `reclaim_spawn_scratch`'s own `unit = spawn_id.split('/').next()` extraction for a
+        // leading-slash spawn id) must not make `<scratch>.join(marker_filename(id))` a no-op
+        // that resolves to `<scratch>` itself - which would let a reaper delete every sibling
+        // leaf under it, not just the reporting one's. `None` (skip entirely) is the ONE
+        // degenerate shape the injective encoding does not close structurally (an empty
+        // input encodes to the empty string), so it is still handled explicitly here.
+        let p = marker_path("/scratch", "run-7", "");
+        assert_eq!(p, None);
     }
 
     #[test]
@@ -429,7 +742,7 @@ mod tests {
     /// mtime is the wall-clock at creation. The sweep's `now` parameter is advanced past the
     /// bound to make it stale, so no mtime manipulation is needed.
     fn plant_marker(root: &str, id: &str) {
-        let path = marker_path(root, TEST_RUN, id);
+        let path = marker_path(root, TEST_RUN, id).expect("test ids are never degenerate");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, b"heartbeat").unwrap();
     }
@@ -581,5 +894,134 @@ mod tests {
         assert_eq!(stale[0].id, "u/implementer#0");
         assert_eq!(stale[0].class, FailureClass::Infra);
         assert_eq!(stale[0].silent_for, Duration::from_secs(400));
+    }
+
+    #[test]
+    fn hung_cursor_path_is_a_sibling_of_the_run_marker_subdir_never_inside_it() {
+        // With a run id: `<scratch>/agent-live/<sanitized run>.hung-cursor` - a FILE
+        // alongside the `<run>/` marker directory, never a filename inside it, so it can
+        // never collide with a sanitized spawn-id marker regardless of what a workflow
+        // names its units.
+        let p = hung_cursor_path("/scratch", "run/7#a");
+        assert_eq!(
+            p,
+            std::path::Path::new("/scratch/agent-live/run_2f7_23a.hung-cursor")
+        );
+        assert_ne!(
+            p,
+            marker_path("/scratch", "run/7#a", "run/7#a").unwrap(),
+            "the cursor file must never collide with any sanitized spawn-id marker path"
+        );
+        // An empty run id (a caller outside a run) still produces a stable path, mirroring
+        // `marker_path`'s own no-run convention.
+        let p = hung_cursor_path("/scratch", "");
+        assert_eq!(p, std::path::Path::new("/scratch/agent-live/.hung-cursor"));
+    }
+
+    #[test]
+    fn read_hung_cursor_is_empty_when_absent_and_round_trips_through_write() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().to_str().unwrap();
+
+        // No cursor has ever been written for this run: empty, not an error - the correct
+        // reading for the very first step of a run.
+        assert!(read_hung_cursor(root, "r1").is_empty());
+
+        // A round trip persists the exact set, and only that run's set - a DIFFERENT run id
+        // reads its own (still-empty) cursor, never another run's.
+        let mut hung = BTreeSet::new();
+        hung.insert("a/implementer#0".to_string());
+        hung.insert("b/implementer#0".to_string());
+        write_hung_cursor(root, "r1", &hung).unwrap();
+        assert_eq!(read_hung_cursor(root, "r1"), hung);
+        assert!(
+            read_hung_cursor(root, "r2").is_empty(),
+            "a cursor is scoped per run id; a sibling run must not see it"
+        );
+
+        // Overwriting with a SMALLER set (a recovery) drops the recovered id - the cursor
+        // always reflects THIS step's own full hung set, never a sticky union.
+        let mut recovered = BTreeSet::new();
+        recovered.insert("b/implementer#0".to_string());
+        write_hung_cursor(root, "r1", &recovered).unwrap();
+        assert_eq!(read_hung_cursor(root, "r1"), recovered);
+    }
+
+    #[test]
+    fn read_hung_cursor_reads_a_malformed_or_empty_file_as_empty() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().to_str().unwrap();
+        let path = hung_cursor_path(root, "r1");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+
+        // A blank line and surrounding whitespace never produce a phantom empty-string id.
+        std::fs::write(&path, "\n  \n\n").unwrap();
+        assert!(
+            read_hung_cursor(root, "r1").is_empty(),
+            "blank lines must never surface as a phantom hung id"
+        );
+    }
+
+    #[test]
+    fn any_marker_fresh_is_false_for_an_empty_or_absent_scratch_root() {
+        let now = SystemTime::now();
+        let bound = Duration::from_secs(900);
+
+        // No scratch root at all (a repo-less caller) - the same degrade every other reader
+        // in this module gives an empty scratch root.
+        assert!(!any_marker_fresh("", now, bound));
+
+        // A real, but never-populated, scratch root - no `agent-live/` dir has ever been
+        // created, so there is nothing to find.
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().to_str().unwrap();
+        assert!(!any_marker_fresh(root, now, bound));
+    }
+
+    #[test]
+    fn any_marker_fresh_finds_a_fresh_marker_nested_under_a_run_id_directory() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().to_str().unwrap();
+        // Mirrors the real shape `marker_path` builds: `<root>/agent-live/<run>/<spawn>`.
+        let path = marker_path(root, "run-1", "u1c1/implementer#0").unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"").unwrap();
+
+        let now = SystemTime::now();
+        assert!(
+            any_marker_fresh(root, now, Duration::from_secs(900)),
+            "a just-written marker nested under a run-id directory must be found fresh"
+        );
+    }
+
+    #[test]
+    fn any_marker_fresh_is_false_once_every_marker_is_older_than_max_age() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().to_str().unwrap();
+        let path = marker_path(root, "run-1", "u1c1/implementer#0").unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"").unwrap();
+
+        // `now` far enough past the marker's real (just-now) mtime that it falls outside a
+        // tiny bound - the marker exists but is stale relative to `max_age`.
+        let far_future = SystemTime::now() + Duration::from_secs(3600);
+        assert!(
+            !any_marker_fresh(root, far_future, Duration::from_secs(1)),
+            "a marker older than max_age must not read as a live agent signal"
+        );
+    }
+
+    #[test]
+    fn any_marker_fresh_skips_unreadable_entries_without_erroring() {
+        // A degenerate marker directory (no run subdir, no spawn file) is simply empty -
+        // `any_marker_fresh` must degrade to false, not panic.
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().to_str().unwrap();
+        std::fs::create_dir_all(std::path::Path::new(root).join(MARKER_SUBDIR)).unwrap();
+        assert!(!any_marker_fresh(
+            root,
+            SystemTime::now(),
+            Duration::from_secs(900)
+        ));
     }
 }

@@ -99,6 +99,7 @@
 //! upheld nothing" when the truth is "the upheld findings were unattributed here".
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::{Duration, SystemTime};
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -114,7 +115,10 @@ use crate::ledger::{
     TYPE_UNIT_STATUS,
 };
 use crate::run::META_RUN_ID;
-use crate::spawn::{spawn_role, SpawnResult, ROLE_ADJUDICATOR, ROLE_ADVERSARY, TYPE_SPAWN_RESULT};
+use crate::spawn::{
+    spawn_role, SpawnRequest, SpawnResult, ROLE_ADJUDICATOR, ROLE_ADVERSARY, TYPE_SPAWN_REQUESTED,
+    TYPE_SPAWN_RESULT,
+};
 
 /// The tier a review spawn belongs to, recovered from its deterministic
 /// [`spawn_id`](crate::spawn::spawn_id) `{unit}/{role}#{attempt}` (a retry id may add a
@@ -216,6 +220,61 @@ pub struct Metrics {
     /// [`parallelism_retention_warns`](Metrics::parallelism_retention_warns) surfaces so it is
     /// visible in production.
     pub parallelism_retention: Option<f64>,
+    /// Per-agent wall-clock duration aggregates (spec 61, SPAWN TIMING), keyed by the spawn's
+    /// ROLE token ([`spawn_role`], e.g. `"implementer"`, `"adversary"`, `"lens:sdet"`) - the SAME
+    /// per-agent breakdown the review-tier cost fold uses, but covering EVERY recorded spawn
+    /// role, not only the review tiers. Each recorded [`TYPE_SPAWN_REQUESTED`] is paired with its
+    /// [`TYPE_SPAWN_RESULT`] by `(run WINDOW, spawn id)` - NEVER by the bare spawn id, since
+    /// [`crate::spawn::spawn_id`] carries no run component and this project namespace routinely
+    /// reuses spawn ids across independent runs (a re-proposed or relaunched unit). The window is
+    /// the run each event falls into by STREAM POSITION (which [`crate::run::TYPE_RUN_STARTED`]
+    /// boundary precedes it), not event metadata - so the key works whether or not either event
+    /// carries a run-id stamp. A request with no same-window recorded result (a dead worker) - or
+    /// whose paired result yields a non-positive duration (see
+    /// [`unpaired_spawns`](Metrics::unpaired_spawns)) - contributes to no entry here and is
+    /// counted there instead: a fabricated, cross-run, or zero-or-negative duration never enters a
+    /// mean. Sorted by role for stable reporting.
+    pub spawn_timing: BTreeMap<String, SpawnTiming>,
+    /// Recorded spawn requests excluded from every [`spawn_timing`](Metrics::spawn_timing)
+    /// aggregate (spec 61, SPAWN TIMING), for either of two reasons:
+    ///   - **no matching result** on this slice in the SAME run window - a dead/unanswered
+    ///     worker (or a request whose only same-id result belongs to a DIFFERENT window, which
+    ///     the `(run window, spawn id)` pairing key makes unpairable by construction - a
+    ///     cross-run id collision can never synthesize a bogus duration under `rigger stats
+    ///     --all`);
+    ///   - **a paired result with a non-positive duration** - SUSPECT, not a real measurement:
+    ///     either the request and result landed in the same store-append batch (an exact zero,
+    ///     since the store stamps one `recorded_at` per batch) or the result was recorded before
+    ///     its request (clock skew / a replayed re-record).
+    ///
+    /// Reported here as its own count, so neither a stalled spawn, a cross-run collision, nor a
+    /// suspect zero-or-negative reading can masquerade as a real duration measurement.
+    pub unpaired_spawns: u64,
+}
+
+/// One spawn role's wall-clock duration aggregate (spec 61, SPAWN TIMING): how many recorded
+/// spawns paired a [`TYPE_SPAWN_REQUESTED`] to its [`TYPE_SPAWN_RESULT`] by id under this role,
+/// and their summed duration. The mean is derived on demand ([`SpawnTiming::mean`]), never
+/// stored, mirroring how the rest of [`Metrics`] derives its rates rather than persisting them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SpawnTiming {
+    /// Paired request/result spawns folded under this role.
+    pub count: u64,
+    /// Their summed wall-clock duration: each pair's
+    /// `SpawnResult event's recorded_at - SpawnRequested event's recorded_at`.
+    pub total: Duration,
+}
+
+impl SpawnTiming {
+    /// The mean duration per spawn, or [`Duration::ZERO`] when `count == 0` (never a division by
+    /// zero).
+    pub fn mean(&self) -> Duration {
+        if self.count == 0 {
+            Duration::ZERO
+        } else {
+            self.total / self.count as u32
+        }
+    }
 }
 
 /// The parallelism-retention floor below which [`Metrics::parallelism_retention_warns`] fires
@@ -532,6 +591,40 @@ pub fn project(events: &[Event]) -> Metrics {
     // runtime parallelism-retention metric. Latest-per-unit so a remediation attempt's re-record
     // supersedes the prior attempt's radius rather than double-counting the same unit.
     let mut blast_radii: BTreeMap<String, (Vec<String>, bool)> = BTreeMap::new();
+    // spec 61 SPAWN TIMING: keyed by (run WINDOW, spawn id) - NEVER by spawn id alone.
+    // spawn::spawn_id ("{unit}/{role}#{attempt}") carries no run component, and this project
+    // namespace routinely reuses spawn ids across independent runs (a re-proposed/relaunched
+    // unit); folding the WHOLE stream (`rigger stats --all`) over a bare-id key would let an
+    // unrelated run-A request pair with an unrelated run-B result and synthesize a fabricated
+    // duration (adv-u61c9-all-mode-cross-run-id-collision-synthesizes-bogus-duration).
+    //
+    // The window is derived STRUCTURALLY from `events`' own [`crate::run::TYPE_RUN_STARTED`]
+    // boundaries (`run_generation` below), mirroring [`crate::run::run_attribution`]'s window
+    // fold - NOT from each event's own META_RUN_ID metadata. That distinction is load-bearing:
+    // a TYPE_SPAWN_REQUESTED gets META_RUN_ID from TWO production writers (RunCtx's append
+    // chokepoint, and `spawn::park_in_run`), but a TYPE_SPAWN_RESULT is recorded by `rigger
+    // result` (`spawn::record_result`/`record_result_if_absent`) from a SEPARATE process (the
+    // worker or courier self-reporting) that stamps NO run-id metadata at all - keying on
+    // metadata would make every request's real run id fail to match its own result's empty
+    // one, silently reporting every genuinely-answered spawn as unpaired in production. Keying
+    // on stream POSITION instead needs no metadata on either side: it groups every event -
+    // request or result, stamped or not - by which `RunStarted` most recently preceded it in
+    // THIS slice, so a same-id collision across two runs is still unpairable by construction
+    // (their windows differ) while an ordinary same-run pairing (the common case) is unaffected
+    // regardless of which writer produced either event. A store with no `RunStarted` at all (a
+    // legacy store, or this fold's own pure unit tests) has exactly one window (generation 0),
+    // so it folds exactly as before this feature; the default (non-`--all`) `rigger stats` path
+    // is unaffected either way, since its scoped slice ([`crate::run::current_run`]) opens with
+    // at most one `RunStarted` and so never crosses a second window.
+    //
+    // Value semantics per key: the request's FIRST sighting wins (the true request moment; a
+    // re-park is an idempotency violation the replay driver prevents) and the result's LATEST
+    // recorded time wins (mirroring spawn::result_of's last-write-wins semantics - a corrected
+    // re-record supersedes the earlier one). Paired by key after the pass.
+    type SpawnKey = (u64, String); // (run generation/window, spawn id)
+    let mut run_generation: u64 = 0;
+    let mut spawn_requested_at: BTreeMap<SpawnKey, SystemTime> = BTreeMap::new();
+    let mut spawn_result_at: BTreeMap<SpawnKey, SystemTime> = BTreeMap::new();
 
     for e in events {
         match e.type_.as_str() {
@@ -708,6 +801,36 @@ pub fn project(events: &[Event]) -> Metrics {
                 finding_about.insert(id.clone(), about);
                 finding_actor.insert(id, actor);
             }
+            crate::run::TYPE_RUN_STARTED
+                if serde_json::from_slice::<crate::run::RunStarted>(&e.data).is_ok() =>
+            {
+                // spec 61 SPAWN TIMING: advance the run WINDOW every fold in this module keys
+                // its spawn-pairing state by (see the declaration above) - every event from
+                // here onward, until the next boundary, belongs to this new window. Mirrors
+                // `crate::run::run_attribution`'s identical forward fold over the same event
+                // type, so both derivations agree on where one run ends and the next begins -
+                // which requires gating the advance on a SUCCESSFUL decode of the body, exactly
+                // as `run_attribution` does (`RunStarted::from_event` is module-private to
+                // `run.rs`, so the decode is reproduced here via the same `pub` struct rather
+                // than duplicating its logic under a different name). A malformed/legacy body
+                // is simply ignored, like every other fold here, so the two derivations of
+                // "where one run ends and the next begins" can never silently disagree.
+                run_generation += 1;
+            }
+            TYPE_SPAWN_REQUESTED => {
+                // spec 61 SPAWN TIMING: the park time of a recorded spawn request. First
+                // sighting wins - the true request moment - so a malformed re-park (an
+                // idempotency violation the replay driver is responsible for preventing)
+                // cannot silently shift an already-folded spawn's start time. Keyed by
+                // (run window, spawn id) - see the declaration above - so this request can
+                // only ever pair with a result recorded in the SAME window.
+                let Ok(req) = SpawnRequest::from_event(e) else {
+                    continue;
+                };
+                spawn_requested_at
+                    .entry((run_generation, req.id))
+                    .or_insert(e.recorded_at);
+            }
             TYPE_SPAWN_RESULT => {
                 // A recorded review spawn: count it under its tier (cost side), and - for
                 // the adjudicator - parse the grown verdict JSON for the findings it upheld
@@ -715,6 +838,12 @@ pub fn project(events: &[Event]) -> Metrics {
                 let Ok(res) = SpawnResult::from_event(e) else {
                     continue;
                 };
+                // spec 61 SPAWN TIMING: record every spawn's LATEST result time regardless of
+                // role, before the review-tier-only early continue below - SPAWN TIMING covers
+                // every recorded spawn (the implementer included), not just the review tiers.
+                // Keyed by (run window, spawn id) - see the declaration above - so this result
+                // can only ever pair with a request recorded in the SAME window.
+                spawn_result_at.insert((run_generation, res.id.clone()), e.recorded_at);
                 let Some(tier) = review_tier(&res.id) else {
                     continue;
                 };
@@ -758,6 +887,34 @@ pub fn project(events: &[Event]) -> Metrics {
     // grounding reports no retention rather than a spurious full-parallelism reading.
     let radii: Vec<(Vec<String>, bool)> = blast_radii.into_values().collect();
     metrics.parallelism_retention = parallelism_retention_of(&radii);
+
+    // ---- Finalize the spec-61 SPAWN TIMING fold: pair each recorded request with its result by
+    // (run window, spawn id), bucketed per spawn ROLE. Two cases fall through to `unpaired_spawns`
+    // rather than a real aggregate entry, both SUSPECT rather than a genuine measurement:
+    //   - no same-window result at all (dead worker, OR the only same-id result belongs to a
+    //     different window - a cross-run collision the composite key already made unpairable);
+    //   - a same-window result whose `duration_since` is non-positive: either an EXACT zero (the
+    //     request and result landed in the same store-append batch, which stamps one
+    //     `recorded_at` per batch) or an `Err` (the result recorded BEFORE its request - clock
+    //     skew / a replayed re-record). Neither is a real wall-clock duration, so neither may
+    //     silently enter a mean as a fabricated zero.
+    for (key, requested_at) in &spawn_requested_at {
+        let paired_duration = spawn_result_at
+            .get(key)
+            .and_then(|result_at| result_at.duration_since(*requested_at).ok())
+            .filter(|d| *d > Duration::ZERO);
+        match paired_duration {
+            Some(duration) => {
+                let t = metrics
+                    .spawn_timing
+                    .entry(spawn_role(&key.1).to_string())
+                    .or_default();
+                t.count += 1;
+                t.total += duration;
+            }
+            None => metrics.unpaired_spawns += 1,
+        }
+    }
 
     // ---- Finalize the review-quality folds from the accumulated findings/verdicts ----
     metrics.review_quality.rejections_by_cause = rejections_by_cause;
@@ -951,6 +1108,43 @@ pub struct CanaryMetrics {
     /// The distinct planted defect classes the run cataloged (spec 13 unit 5 requires
     /// at least three).
     pub defect_classes: BTreeSet<String>,
+    /// The total count of findings each review tier RAISED across every scored item
+    /// (planted and known-good alike) - the findings-VOLUME measure, distinct from this
+    /// struct's own `tier_catch` catch tally: a tier that over-flags (many findings, few
+    /// catches) is visible here even though its catch rate looks fine. Summed from each
+    /// item's [`crate::canary::CanaryOutcome`] `findings_raised` field.
+    pub findings_raised: BTreeMap<String, u64>,
+    /// Planted items the adjudicator correctly rejected whose `caught_by` was empty (spec
+    /// 61, NO FAKE ZEROS criterion) - the catch attribution for these was never actually
+    /// MEASURED, as distinct from a tier that looked and genuinely caught nothing. A
+    /// per-tier catch rate of `0` while this is non-zero is a FAKE zero: `format_canary_stats`
+    /// reads it to render `n/a` with a reason instead of a false `0/N (0.0%)`.
+    pub unattributed_correct_rejects: u64,
+    /// Known-good control items scored in the run (`planted == false`) - spec 61, FALSE
+    /// POSITIVES criterion's denominator. Folded from [`crate::canary::CanaryOutcome`]'s
+    /// EXISTING `planted` field; no new `CanaryOutcome` field.
+    pub controls: u64,
+    /// Known-good controls the adjudicator INCORRECTLY rejected (`verdict_approved ==
+    /// false`) - a false positive (spec 61, FALSE POSITIVES criterion). Rejecting a
+    /// known-good control burns a remediation cycle and, repeated, escalates a correct
+    /// unit, so it is reported as its own summary line, visible at the same glance as the
+    /// per-tier catch rate. Folded from [`crate::canary::CanaryOutcome`]'s EXISTING
+    /// `verdict_approved` field; no new `CanaryOutcome` field.
+    pub control_false_positives: u64,
+    /// What built the binary that ran this canary run (MODEL PINNING criterion, spec 61
+    /// c7), folded from the run's [`crate::canary::CanaryHeader`] event. Empty when the
+    /// latest run predates this criterion (a legacy stream with no header event).
+    pub binary_build: String,
+    /// The content hash of the corpus this run scored, from the same header event. Empty
+    /// under the same legacy condition as `binary_build`.
+    pub corpus_hash: String,
+    /// Every review tier's ACTUALLY-resolved model id this run (`lens`, `adversary`,
+    /// [`crate::spawn::ROLE_ADJUDICATOR`]), sourced from
+    /// [`crate::conductor::AgentResult::resolved_model`] - never a configured alias, never
+    /// fabricated. Seeded empty ("unmeasured") for every known tier so the header always
+    /// names all three; a tier the header event did not report stays empty rather than
+    /// omitted.
+    pub resolved_models: BTreeMap<String, String>,
 }
 
 impl CanaryMetrics {
@@ -981,11 +1175,32 @@ impl CanaryMetrics {
 pub fn project_canary(events: &[Event]) -> CanaryMetrics {
     let mut m = CanaryMetrics::default();
     // Seed both tiers so a run reports a `0/0` for a tier that never caught, rather than
-    // omitting it (a silent absence reads as "not measured", not "caught nothing").
+    // omitting it (a silent absence reads as "not measured", not "caught nothing"). The
+    // findings-volume total is seeded the same way, for the same reason.
     for tier in [crate::canary::TIER_LENS, crate::canary::TIER_ADVERSARY] {
         m.tier_catch.insert(tier.to_string(), TierCatch::default());
+        m.findings_raised.insert(tier.to_string(), 0);
+    }
+    // MODEL PINNING criterion (spec 61 c7): seed every known tier - including the
+    // adjudicator, which raises no findings/catches but IS a pinnable/reportable tier -
+    // with an empty (unmeasured) resolved id, so the header always names all three rather
+    // than silently omitting one the header event never reported.
+    for tier in [
+        crate::canary::TIER_LENS,
+        crate::canary::TIER_ADVERSARY,
+        crate::spawn::ROLE_ADJUDICATOR,
+    ] {
+        m.resolved_models.insert(tier.to_string(), String::new());
     }
     for e in crate::canary::latest_run(events) {
+        if let Some(h) = crate::canary::CanaryHeader::from_event(e) {
+            m.binary_build = h.binary_build;
+            m.corpus_hash = h.corpus_hash;
+            for (tier, id) in h.resolved_models {
+                m.resolved_models.insert(tier, id);
+            }
+            continue;
+        }
         let Some(o) = crate::canary::CanaryOutcome::from_event(e) else {
             continue; // a batch marker or a foreign/malformed event
         };
@@ -995,6 +1210,15 @@ pub fn project_canary(events: &[Event]) -> CanaryMetrics {
         }
         if o.stable {
             m.stable += 1;
+        }
+        // Findings volume aggregates over EVERY item (planted and known-good alike) - a
+        // tier's over-flagging shows up on a known-good control just as much as on a
+        // planted defect it was supposed to catch. Only the two known tiers are scored,
+        // matching the tier_catch discipline just below.
+        for (tier, count) in &o.findings_raised {
+            if let Some(total) = m.findings_raised.get_mut(tier) {
+                *total += count;
+            }
         }
         if o.planted {
             m.planted += 1;
@@ -1013,6 +1237,23 @@ pub fn project_canary(events: &[Event]) -> CanaryMetrics {
                 if let Some(tc) = m.tier_catch.get_mut(tier) {
                     tc.caught += 1;
                 }
+            }
+            // NO FAKE ZEROS (spec 61): a planted item the adjudicator correctly rejected
+            // but whose caught_by came back empty was never actually MEASURED by any
+            // tier - as distinct from a tier that looked and genuinely caught nothing.
+            // format_canary_stats reads this count to render n/a instead of a fake 0/N.
+            if o.verdict_correct && o.caught_by.is_empty() {
+                m.unattributed_correct_rejects += 1;
+            }
+        } else {
+            // FALSE POSITIVES (spec 61): a known-good control the adjudicator did NOT
+            // approve was incorrectly rejected - the false-positive event the corpus's
+            // control items exist to surface. `verdict_correct` conflates this with the
+            // planted-item miss case above, so it is read straight off `verdict_approved`
+            // here instead.
+            m.controls += 1;
+            if !o.verdict_approved {
+                m.control_false_positives += 1;
             }
         }
     }
@@ -1033,6 +1274,30 @@ pub struct ModelChange {
     pub previous: String,
     /// The concrete model id the alias resolved to in the current run.
     pub current: String,
+}
+
+impl ModelChange {
+    /// DRIFT SEVERITY (spec 61): true when `previous` and `current` share the same BASE and
+    /// differ only in a trailing `-YYYYMMDD` date suffix - the same model re-resolving to a
+    /// fresher dated build, not a re-point to a different model. Splits each id at its
+    /// trailing `-` followed by exactly 8 ASCII digits; an id with no such suffix uses the
+    /// whole id as its base, so two dateless ids that merely look similar (e.g. a trailing
+    /// version number that is not 8 digits) are compared as their full, undivided selves and
+    /// never misclassified as a snapshot bump.
+    pub fn is_snapshot_drift(&self) -> bool {
+        model_id_base(&self.previous) == model_id_base(&self.current)
+    }
+}
+
+/// The BASE of a resolved model id (spec 61, DRIFT SEVERITY): `id` with a trailing
+/// `-YYYYMMDD` date suffix stripped, or `id` unchanged when it carries no such suffix.
+fn model_id_base(id: &str) -> &str {
+    match id.rsplit_once('-') {
+        Some((base, suffix)) if suffix.len() == 8 && suffix.bytes().all(|b| b.is_ascii_digit()) => {
+            base
+        }
+        _ => id,
+    }
 }
 
 /// The cross-run resolved-model drift between the current run and the most recent prior run
@@ -1057,6 +1322,15 @@ impl ModelDrift {
     /// Whether any tier's resolved model changed - the boolean the drift monitor gates on.
     pub fn changed(&self) -> bool {
         !self.changes.is_empty()
+    }
+
+    /// DRIFT SEVERITY (spec 61): true when drift occurred and EVERY change is snapshot drift
+    /// ([`ModelChange::is_snapshot_drift`]) - no tier re-pointed to a different model base. A
+    /// single base-differing change among several is enough to disqualify the whole drift as
+    /// snapshot-only, since one real re-point warrants the panel regardless of what else
+    /// merely bumped a date.
+    pub fn snapshot_only(&self) -> bool {
+        self.changed() && self.changes.iter().all(ModelChange::is_snapshot_drift)
     }
 }
 
@@ -1444,6 +1718,10 @@ mod tests {
             review_quality: ReviewQuality::default(),
             // No BlastRadiusComputed events in this slice, so the retention metric is absent.
             parallelism_retention: None,
+            // No SpawnRequested/SpawnResult events in this slice, so the spec-61 spawn-timing
+            // fold is empty too - the new fields never disturb the existing ones.
+            spawn_timing: BTreeMap::new(),
+            unpaired_spawns: 0,
         };
 
         let m = project(&events);
@@ -1727,6 +2005,278 @@ mod tests {
         SpawnResult::ok(format!("{unit}/{role}#{attempt}"), "")
             .to_event()
             .unwrap()
+    }
+
+    // ---- spec-61 SPAWN TIMING helpers ----
+
+    /// An arbitrary but fixed instant `secs` after `SystemTime::UNIX_EPOCH`, for building
+    /// spawn events with a CONTROLLED `recorded_at` (the field the store stamps on ingest;
+    /// these pure-fold tests set it directly, never touching a real store).
+    fn at(secs: u64) -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(secs)
+    }
+
+    /// A well-formed `SpawnRequested` event for `id`, recorded at `secs`. Rebuilds `id`'s
+    /// unit/role/attempt coordinates via [`SpawnRequest::new`] (the same deterministic
+    /// [`crate::spawn::spawn_id`] construction production code uses) so the event's `id`
+    /// matches exactly; `stage`/`prompt` are irrelevant to the timing fold, so placeholders.
+    fn spawn_requested(id: &str, secs: u64) -> Event {
+        let unit = crate::spawn::unit_of(id).unwrap_or(id);
+        let role = crate::spawn::spawn_role(id);
+        let attempt = crate::spawn::attempt_of(id);
+        let req = SpawnRequest::new(unit, "s", role, attempt, "p");
+        debug_assert_eq!(req.id, id, "helper must reproduce the exact spawn id");
+        let mut e = req.to_event().unwrap();
+        e.recorded_at = at(secs);
+        e
+    }
+
+    /// A `SpawnResult` event answering `id`, recorded at `secs`.
+    fn spawn_result_at(id: &str, secs: u64) -> Event {
+        let mut e = SpawnResult::ok(id, "done").to_event().unwrap();
+        e.recorded_at = at(secs);
+        e
+    }
+
+    #[test]
+    fn spawn_timing_mean_is_zero_when_no_spawns_are_folded() {
+        assert_eq!(SpawnTiming::default().mean(), Duration::ZERO);
+    }
+
+    /// `project` pairs each recorded `SpawnRequested` with its `SpawnResult` by spawn id and
+    /// buckets the duration under the spawn's ROLE token - covering every role, not only the
+    /// review tiers (the implementer's own spawn folds too). An unanswered request (a dead
+    /// worker, parked with no recorded result) contributes to NO per-role aggregate and is
+    /// counted once in `unpaired_spawns` instead.
+    #[test]
+    fn project_pairs_spawn_requests_with_results_by_id_into_per_role_timing() {
+        let events = vec![
+            spawn_requested("u1/implementer#0", 0),
+            spawn_result_at("u1/implementer#0", 10),
+            spawn_requested("u1/adversary#0", 0),
+            spawn_result_at("u1/adversary#0", 4),
+            spawn_requested("u2/adversary#0", 100),
+            spawn_result_at("u2/adversary#0", 106),
+            // Parked, never resulted - a dead worker; must not enter any aggregate.
+            spawn_requested("u3/implementer#0", 0),
+        ];
+        let m = project(&events);
+
+        let implementer = m
+            .spawn_timing
+            .get("implementer")
+            .expect("implementer timing folded");
+        assert_eq!(implementer.count, 1);
+        assert_eq!(implementer.total, Duration::from_secs(10));
+        assert_eq!(implementer.mean(), Duration::from_secs(10));
+
+        let adversary = m
+            .spawn_timing
+            .get("adversary")
+            .expect("adversary timing folded");
+        assert_eq!(adversary.count, 2);
+        assert_eq!(adversary.total, Duration::from_secs(4 + 6));
+        assert_eq!(adversary.mean(), Duration::from_secs(5));
+
+        assert_eq!(
+            m.unpaired_spawns, 1,
+            "the unanswered u3 request must be counted as unpaired, not silently dropped"
+        );
+        let total_paired: u64 = m.spawn_timing.values().map(|t| t.count).sum();
+        assert_eq!(
+            total_paired, 3,
+            "the unpaired request must not enter any per-role count/total"
+        );
+    }
+
+    /// A spawn id can carry more than one recorded `SpawnResult` (a corrected re-record); the
+    /// LATEST one pairs with the request, mirroring `spawn::result_of`'s last-write-wins
+    /// semantics so the timing fold never disagrees with which result the replay driver treats
+    /// as authoritative.
+    #[test]
+    fn spawn_timing_pairs_the_latest_recorded_result_for_a_replayed_spawn() {
+        let events = vec![
+            spawn_requested("u1/lens:sdet#0", 0),
+            spawn_result_at("u1/lens:sdet#0", 5),
+            spawn_result_at("u1/lens:sdet#0", 20), // a later, corrected re-record
+        ];
+        let m = project(&events);
+        let lens = m.spawn_timing.get("lens:sdet").expect("lens timing folded");
+        assert_eq!(lens.count, 1);
+        assert_eq!(
+            lens.total,
+            Duration::from_secs(20),
+            "the LATEST recorded result must pair, not the first"
+        );
+    }
+
+    /// A `SpawnResult` with no matching `SpawnRequested` on this slice (e.g. the request fell
+    /// outside a scoped/truncated read) pairs with nothing and is silently ignored - it is not
+    /// double-counted as unpaired, since `unpaired_spawns` counts unanswered REQUESTS only.
+    #[test]
+    fn spawn_timing_ignores_a_result_with_no_matching_request() {
+        let m = project(&[spawn_result_at("orphan/implementer#0", 5)]);
+        assert!(m.spawn_timing.is_empty());
+        assert_eq!(m.unpaired_spawns, 0);
+    }
+
+    /// PRIMARY BLOCKER regression (adv-u61c9-all-mode-cross-run-id-collision-synthesizes-bogus-duration):
+    /// `spawn::spawn_id` carries no run component, and `rigger stats --all` folds the WHOLE
+    /// event stream unscoped by any `RunStarted` boundary - so a textual spawn id can be
+    /// reused across two independent runs (a re-proposed/relaunched unit is the ordinary shape
+    /// of this system, not a contrived edge case). Before the run-windowed pairing key, an
+    /// unanswered run-A request would pair with an unrelated run-B result sharing the same id
+    /// and synthesize a fabricated duration with no relation to any real spawn. Neither event
+    /// carries any run-id METADATA here - proving the window is derived from the stream's OWN
+    /// `RunStarted` boundaries, not from a stamp a real `SpawnResult` (recorded via `rigger
+    /// result`, a separate process) never carries in production.
+    #[test]
+    fn spawn_timing_never_pairs_a_cross_run_id_collision() {
+        let events = vec![
+            run_started("run-a"),
+            // run-a's request is never answered WITHIN run-a.
+            spawn_requested("u1/implementer#0", 0),
+            run_started("run-b"),
+            // run-b reuses the SAME textual spawn id for an unrelated result, far later.
+            spawn_result_at("u1/implementer#0", 1_000_010),
+        ];
+        let m = project(&events);
+        assert!(
+            m.spawn_timing.is_empty(),
+            "the unrelated run-b result must never pair with run-a's request and synthesize a \
+             bogus duration"
+        );
+        assert_eq!(
+            m.unpaired_spawns, 1,
+            "run-a's request has no SAME-WINDOW result, so it is reported unpaired - never \
+             silently dropped nor fabricated"
+        );
+    }
+
+    /// A spawn id legitimately reused across two INDEPENDENT runs (the exact scenario the
+    /// collision guard above must not over-exclude) still measures each run's OWN duration
+    /// correctly - the run-windowed key excludes only a MISMATCHED cross-run pairing, never a
+    /// same id recurring validly within its own run. Again, no event here carries any run-id
+    /// metadata - the window comes purely from the `RunStarted` boundaries in the stream.
+    #[test]
+    fn spawn_timing_pairs_a_reused_spawn_id_independently_per_run() {
+        let events = vec![
+            run_started("run-a"),
+            spawn_requested("u1/implementer#0", 0),
+            spawn_result_at("u1/implementer#0", 10),
+            run_started("run-b"),
+            spawn_requested("u1/implementer#0", 100),
+            spawn_result_at("u1/implementer#0", 108),
+        ];
+        let m = project(&events);
+        let implementer = m
+            .spawn_timing
+            .get("implementer")
+            .expect("implementer timing folded");
+        assert_eq!(
+            implementer.count, 2,
+            "both runs' own request+result pair independently"
+        );
+        assert_eq!(implementer.total, Duration::from_secs(10 + 8));
+        assert_eq!(m.unpaired_spawns, 0);
+    }
+
+    /// PRODUCTION-SHAPE regression: a `TYPE_SPAWN_REQUESTED` carries `META_RUN_ID` (stamped by
+    /// RunCtx's append chokepoint or `spawn::park_in_run`) but its `TYPE_SPAWN_RESULT` carries
+    /// NONE - exactly what a real `rigger result <id>` self-report produces, since
+    /// `spawn::record_result`/`record_result_if_absent` (a SEPARATE process from the
+    /// conductor) never stamp a run id. Keying the pairing fold on event METADATA instead of
+    /// stream position would make this ordinary, universal production shape unpairable - every
+    /// genuinely-answered spawn would misreport as a dead worker. The window-based key must
+    /// still pair them, since it never reads either event's own metadata.
+    #[test]
+    fn spawn_timing_pairs_a_request_with_run_id_metadata_against_a_result_with_none() {
+        let events = vec![
+            run_started("run-a"),
+            spawn_requested("u1/implementer#0", 0).with_meta(META_RUN_ID, "run-a"),
+            spawn_result_at("u1/implementer#0", 10), // no META_RUN_ID at all - the real shape
+        ];
+        let m = project(&events);
+        let implementer = m
+            .spawn_timing
+            .get("implementer")
+            .expect("the request/result pair must fold despite the metadata asymmetry");
+        assert_eq!(implementer.count, 1);
+        assert_eq!(implementer.total, Duration::from_secs(10));
+        assert_eq!(m.unpaired_spawns, 0);
+    }
+
+    /// REGRESSION (arch-u61c9-r2-runstarted-window-diverges-from-run-attribution): the window
+    /// boundary this fold advances on MUST agree with `crate::run::run_attribution`'s identical
+    /// forward fold over the same `TYPE_RUN_STARTED` events, since both derive "where one run
+    /// ends and the next begins" from the same stream. `run_attribution` only advances its
+    /// window when `RunStarted::from_event` successfully decodes the body (`src/run.rs:220`,
+    /// `if let Some(rs) = ...`) - a malformed/legacy-shaped body is simply ignored, like every
+    /// other fold in this crate. A boundary-advance keyed on the event TYPE alone, without
+    /// attempting the decode, would silently split a request/result pair that
+    /// `run_attribution` (and every other run-scoped reader) still treats as one run - exactly
+    /// the class of silent cross-window misattribution this criterion was already rejected
+    /// once for (`adj-u61c9-verdict-reject-untruthful-duration-aggregates`).
+    #[test]
+    fn spawn_timing_window_ignores_a_malformed_run_started_like_run_attribution_does() {
+        let events = vec![
+            run_started("run-a"),
+            spawn_requested("u1/implementer#0", 0),
+            // A malformed RunStarted body (missing the required `run` field) - `from_event`
+            // returns `None` for this, so `run_attribution` does NOT advance its window here.
+            ev(crate::run::TYPE_RUN_STARTED, "{}"),
+            spawn_result_at("u1/implementer#0", 10),
+        ];
+        let m = project(&events);
+        let implementer = m.spawn_timing.get("implementer").expect(
+            "a malformed RunStarted must not split the request/result into different windows - \
+             the pair still belongs to the SAME run run_attribution sees, so it must fold",
+        );
+        assert_eq!(implementer.count, 1);
+        assert_eq!(implementer.total, Duration::from_secs(10));
+        assert_eq!(
+            m.unpaired_spawns, 0,
+            "the request must not be reported unpaired due to a window split \
+             run_attribution itself never makes"
+        );
+    }
+
+    /// SECONDARY regression (adv-u61c9-same-batch-append-yields-silent-zero-duration): a
+    /// request and its result landing in the SAME store-append batch share one stamped
+    /// `recorded_at` (the store stamps one clock per batch, `sqlite.rs`), producing an EXACT,
+    /// error-free `Duration::ZERO` for a genuinely paired same-spawn request/result. This must
+    /// be treated as SUSPECT (folded into `unpaired_spawns`), never a silently-valid zero that
+    /// enters a mean.
+    #[test]
+    fn spawn_timing_excludes_a_same_batch_zero_duration_pair_as_suspect() {
+        let events = vec![
+            spawn_requested("u1/implementer#0", 5),
+            spawn_result_at("u1/implementer#0", 5),
+        ];
+        let m = project(&events);
+        assert!(
+            m.spawn_timing.is_empty(),
+            "a same-batch zero-duration pair must not enter any per-role aggregate"
+        );
+        assert_eq!(
+            m.unpaired_spawns, 1,
+            "a suspect (non-positive) duration is folded into unpaired_spawns, not silently \
+             zeroed into a mean"
+        );
+    }
+
+    /// SECONDARY regression (sdet-u61c9-clockskew-duration-sentinel-untested): a `SpawnResult`
+    /// recorded BEFORE its `SpawnRequested` (clock skew, or a replayed re-record) must fold the
+    /// same way as the same-batch zero case above - suspect, not a fabricated/silent zero.
+    #[test]
+    fn spawn_timing_excludes_a_clock_skew_negative_duration_pair_as_suspect() {
+        let events = vec![
+            spawn_requested("u1/implementer#0", 10),
+            spawn_result_at("u1/implementer#0", 4),
+        ];
+        let m = project(&events);
+        assert!(m.spawn_timing.is_empty());
+        assert_eq!(m.unpaired_spawns, 1);
     }
 
     #[test]
@@ -2095,9 +2645,109 @@ mod tests {
             TYPE_UNIT_STATUS,
             &format!(
                 r#"{{"id":"{id}","status":"canary","defect_class":"{class}","planted":{planted},"expected_reject":{expected_reject},"expected_tier":"","caught_by":[{caught}],"verdict_approved":{},"verdict_correct":{verdict_correct},"stable":{stable}}}"#,
-                !expected_reject
+                // `verdict_correct = approved != expected_reject` (src/canary.rs) inverted:
+                // `approved = verdict_correct != expected_reject`. NOT simply
+                // `!expected_reject` - that would silently claim every "wrong verdict" case
+                // approved, which is only true when expected_reject was true (a missed
+                // planted defect); a wrongly-rejected known-good control (expected_reject
+                // false, verdict_correct false) must resolve to approved=false instead.
+                verdict_correct != expected_reject
             ),
         )
+    }
+
+    /// Like [`canary_outcome`] but also carries a `findings_raised` per-tier map (the
+    /// FINDINGS VOLUME criterion's field), for the tests that fold that measure.
+    #[allow(clippy::too_many_arguments)]
+    fn canary_outcome_with_findings(
+        id: &str,
+        class: &str,
+        planted: bool,
+        expected_reject: bool,
+        caught_by: &[&str],
+        verdict_correct: bool,
+        stable: bool,
+        findings_raised: &[(&str, u64)],
+    ) -> Event {
+        let caught: String = caught_by
+            .iter()
+            .map(|t| format!("\"{t}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        let findings: String = findings_raised
+            .iter()
+            .map(|(tier, n)| format!("\"{tier}\":{n}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        ev(
+            TYPE_UNIT_STATUS,
+            &format!(
+                r#"{{"id":"{id}","status":"canary","defect_class":"{class}","planted":{planted},"expected_reject":{expected_reject},"expected_tier":"","caught_by":[{caught}],"verdict_approved":{},"verdict_correct":{verdict_correct},"stable":{stable},"findings_raised":{{{findings}}}}}"#,
+                // See canary_outcome's identical derivation for why this is not `!expected_reject`.
+                verdict_correct != expected_reject
+            ),
+        )
+    }
+
+    #[test]
+    fn project_canary_aggregates_findings_raised_per_tier_across_items() {
+        // Two planted items; each tier raised a different count on each - the aggregate
+        // must be the SUM per tier across the run, not the last item's count or a max.
+        let events = vec![
+            canary_run_marker(),
+            canary_outcome_with_findings(
+                "a",
+                "off-by-one",
+                true,
+                true,
+                &["lens"],
+                true,
+                true,
+                &[("lens", 2), ("adversary", 1)],
+            ),
+            canary_outcome_with_findings(
+                "b",
+                "resource-leak",
+                true,
+                true,
+                &["adversary"],
+                true,
+                true,
+                &[("lens", 1), ("adversary", 3)],
+            ),
+            // A known-good control still contributes to the volume total - findings
+            // volume is not restricted to planted items the way tier_catch is.
+            canary_outcome_with_findings(
+                "c",
+                "none",
+                false,
+                false,
+                &[],
+                true,
+                true,
+                &[("lens", 4), ("adversary", 0)],
+            ),
+        ];
+        let m = project_canary(&events);
+        assert_eq!(
+            m.findings_raised["lens"], 7,
+            "2 + 1 + 4 across the three items"
+        );
+        assert_eq!(
+            m.findings_raised["adversary"], 4,
+            "1 + 3 + 0 across the three items"
+        );
+    }
+
+    #[test]
+    fn project_canary_seeds_zero_findings_raised_for_both_tiers_on_an_empty_stream() {
+        let m = project_canary(&[]);
+        assert_eq!(
+            m.findings_raised.get("lens"),
+            Some(&0),
+            "an unmeasured tier reports an honest 0, not an absent key"
+        );
+        assert_eq!(m.findings_raised.get("adversary"), Some(&0));
     }
 
     #[test]
@@ -2189,6 +2839,134 @@ mod tests {
         assert_eq!(m.adjudicator_accuracy(), 0.0);
         assert_eq!(m.stability_rate(), 0.0);
         assert!(m.tier_catch.contains_key("lens") && m.tier_catch.contains_key("adversary"));
+        assert_eq!(m.unattributed_correct_rejects, 0);
+    }
+
+    /// spec 61, NO FAKE ZEROS criterion: a planted item the adjudicator correctly
+    /// rejected but whose `caught_by` came back empty counts toward
+    /// `unattributed_correct_rejects` - the catch attribution for it was never actually
+    /// measured, as distinct from a tier that looked and genuinely caught nothing. A
+    /// correctly-rejected item WITH attribution, and an incorrectly-approved item with
+    /// empty attribution, must NOT count - only the correct-rejection-plus-empty-caught_by
+    /// combination is the fake-zero source `format_canary_stats` needs to detect.
+    #[test]
+    fn project_canary_counts_correctly_rejected_items_with_empty_attribution() {
+        let events = vec![
+            canary_run_marker(),
+            // Correctly rejected, empty attribution - THE case this counts.
+            canary_outcome("a", "off-by-one", true, true, &[], true, true),
+            // Correctly rejected, but attributed to a tier - not a fake zero, excluded.
+            canary_outcome("b", "resource-leak", true, true, &["lens"], true, true),
+            // Adjudicator got it WRONG (approved a planted defect) despite empty
+            // attribution - a real miss, not an unmeasured one, excluded.
+            canary_outcome("c", "fail-open-guard", true, true, &[], false, true),
+            // Known-good control, correctly approved, empty attribution (there is no
+            // anchor to catch) - not a rejection at all, excluded.
+            canary_outcome("d", "none", false, false, &[], true, true),
+        ];
+        let m = project_canary(&events);
+        assert_eq!(
+            m.unattributed_correct_rejects, 1,
+            "only item 'a' is a correct rejection with empty attribution"
+        );
+    }
+
+    /// spec 61, FALSE POSITIVES criterion: a known-good control (`planted:false`) the
+    /// adjudicator INCORRECTLY rejected (`verdict_approved:false`) is a false positive -
+    /// rejecting a known-good control burns a remediation cycle and, repeated, escalates a
+    /// correct unit. `controls` counts every known-good item in the run (the denominator);
+    /// `control_false_positives` counts only the ones wrongly rejected. A planted item never
+    /// contributes to either, regardless of its own verdict.
+    #[test]
+    fn project_canary_counts_controls_and_false_positives() {
+        let events = vec![
+            canary_run_marker(),
+            // Known-good control, correctly approved - not a false positive.
+            canary_outcome("a", "none", false, false, &[], true, true),
+            // Known-good control, INCORRECTLY rejected - THE false-positive case.
+            canary_outcome("b", "none", false, false, &[], false, true),
+            // Another known-good control, also incorrectly rejected.
+            canary_outcome("c", "none", false, false, &[], false, true),
+            // A planted defect, correctly rejected - must not count as a control at all.
+            canary_outcome("d", "off-by-one", true, true, &["lens"], true, true),
+        ];
+        let m = project_canary(&events);
+        assert_eq!(m.controls, 3, "three known-good control items were scored");
+        assert_eq!(
+            m.control_false_positives, 2,
+            "two of the three controls were wrongly rejected"
+        );
+    }
+
+    #[test]
+    fn project_canary_on_an_empty_stream_has_no_controls_or_false_positives() {
+        let m = project_canary(&[]);
+        assert_eq!(m.controls, 0);
+        assert_eq!(m.control_false_positives, 0);
+    }
+
+    /// A MODEL PINNING criterion header event (spec 61 c7), matching what
+    /// `canary::record_header` writes.
+    fn canary_header_event(
+        binary_build: &str,
+        corpus_hash: &str,
+        resolved: &[(&str, &str)],
+    ) -> Event {
+        let models: String = resolved
+            .iter()
+            .map(|(tier, id)| format!("\"{tier}\":\"{id}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        ev(
+            TYPE_UNIT_STATUS,
+            &format!(
+                r#"{{"id":"b","status":"canary-header","binary_build":"{binary_build}","corpus_hash":"{corpus_hash}","resolved_models":{{{models}}}}}"#
+            ),
+        )
+    }
+
+    #[test]
+    fn project_canary_folds_the_header_events_binary_build_corpus_hash_and_resolved_models() {
+        let events = vec![
+            canary_run_marker(),
+            canary_outcome("a", "off-by-one", true, true, &["lens"], true, true),
+            canary_header_event(
+                "rigger 1.2.3 (build abcdef)",
+                "deadbeef",
+                &[("lens", "resolved-lens"), ("adversary", "resolved-adv")],
+            ),
+        ];
+        let m = project_canary(&events);
+        assert_eq!(m.binary_build, "rigger 1.2.3 (build abcdef)");
+        assert_eq!(m.corpus_hash, "deadbeef");
+        assert_eq!(
+            m.resolved_models.get("lens"),
+            Some(&"resolved-lens".to_string())
+        );
+        assert_eq!(
+            m.resolved_models.get("adversary"),
+            Some(&"resolved-adv".to_string())
+        );
+        // Seeded but never reported by the header this run - stays honestly unmeasured.
+        assert_eq!(
+            m.resolved_models.get(crate::spawn::ROLE_ADJUDICATOR),
+            Some(&String::new())
+        );
+        // The trailing header event is not miscounted as a scored item.
+        assert_eq!(m.items, 1);
+    }
+
+    #[test]
+    fn project_canary_on_a_legacy_stream_with_no_header_event_reports_empty_header_fields() {
+        let events = vec![
+            canary_run_marker(),
+            canary_outcome("a", "off-by-one", true, true, &["lens"], true, true),
+        ];
+        let m = project_canary(&events);
+        assert!(m.binary_build.is_empty());
+        assert!(m.corpus_hash.is_empty());
+        assert_eq!(m.resolved_models.get("lens"), Some(&String::new()));
+        assert_eq!(m.items, 1, "the legacy item still folds correctly");
     }
 
     // ---- spec-13b unit-1 model-drift monitor (cross-run resolved-model comparison) ----
@@ -2296,6 +3074,75 @@ mod tests {
         assert_eq!(d.current_run.as_deref(), Some("r3"));
         assert_eq!(d.changes.len(), 1);
         assert_eq!(d.changes[0].alias, "opus");
+    }
+
+    // --- Spec 61, DRIFT SEVERITY: a resolved-id change differing only in its trailing
+    // `-YYYYMMDD` date suffix is SNAPSHOT drift (same model, a fresher build); a change in
+    // the id's base is a real MODEL change. ---
+
+    fn change(previous: &str, current: &str) -> ModelChange {
+        ModelChange {
+            alias: "lens".to_string(),
+            previous: previous.to_string(),
+            current: current.to_string(),
+        }
+    }
+
+    #[test]
+    fn model_change_is_snapshot_drift_when_only_the_date_suffix_differs() {
+        assert!(
+            change("claude-sonnet-4-5-20250929", "claude-sonnet-4-5-20260210").is_snapshot_drift(),
+            "same base, a newer dated snapshot, is snapshot drift"
+        );
+    }
+
+    #[test]
+    fn model_change_is_not_snapshot_drift_when_the_base_differs() {
+        assert!(
+            !change("claude-opus-4-1", "claude-opus-4-8").is_snapshot_drift(),
+            "a differing base (no date suffix on either side) is a real model change"
+        );
+        assert!(
+            !change("claude-opus-4-1-20250929", "claude-sonnet-4-5-20250929").is_snapshot_drift(),
+            "a differing base with the SAME date suffix is still a real model change, not \
+             snapshot drift"
+        );
+    }
+
+    #[test]
+    fn model_change_treats_a_non_date_shaped_trailing_segment_as_part_of_the_base() {
+        // "v41"/"v42" are 3 characters, not 8 digits - not a date suffix - so the whole id is
+        // the base and this is correctly a base (model) change, not a snapshot bump that
+        // merely happens to look like a version bump.
+        assert!(!change("model-v41", "model-v42").is_snapshot_drift());
+    }
+
+    #[test]
+    fn model_drift_snapshot_only_is_true_iff_every_change_is_a_date_suffix_bump() {
+        let mut all_snapshot = ModelDrift {
+            previous_run: Some("r1".to_string()),
+            current_run: Some("r2".to_string()),
+            changes: vec![change(
+                "claude-sonnet-4-5-20250929",
+                "claude-sonnet-4-5-20260210",
+            )],
+        };
+        assert!(all_snapshot.snapshot_only());
+
+        // A second, base-differing change mixed in makes the WHOLE drift a real model
+        // change - one re-pointed tier is enough to warrant the panel.
+        all_snapshot
+            .changes
+            .push(change("claude-opus-4-1", "claude-opus-4-8"));
+        assert!(
+            !all_snapshot.snapshot_only(),
+            "any base-differing change disqualifies snapshot-only"
+        );
+
+        assert!(
+            !ModelDrift::default().snapshot_only(),
+            "no drift at all is not snapshot-only drift"
+        );
     }
 
     fn prog(id: &str, activity: &str) -> Event {

@@ -22,7 +22,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{TcpListener, TcpStream};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -95,20 +95,21 @@ fn chain_graph(len: usize) -> Graph {
 }
 
 /// Start `serve` on a FRESH ephemeral loopback port, fetch `GET <path>` once against a fixture-graph
-/// provider, and return the raw HTTP response - or `None` when THIS attempt lost the free-port
-/// handoff race (the same TOCTOU window `dash_decisions_progressive_disclosure` documents: the probe
-/// binds port 0, learns the port, releases it, and `serve` re-binds it, so under parallel load the
-/// released port can be re-taken before `serve` re-binds). A `None` is always a transient handoff
-/// loss, never a content failure: a cleanly-served response is returned whole so the caller's
-/// assertions run on it. Production `rigger dash` binds ONE stable port once and never drop-rebinds,
-/// so it is never exposed to this test-harness race.
+/// provider, and return the raw HTTP response - or `None` on a genuine socket-level failure.
+///
+/// The listener this attempt binds is HANDED to `serve_on`, never dropped and re-bound. That is
+/// load-bearing, not tidiness: the earlier shape (bind port 0, read the port, DROP the listener, let
+/// `serve` re-bind it) left the port free for the whole handoff window, so a sibling test's `bind(0)`
+/// in this same binary could be handed the port this attempt had just released. One `serve` then won
+/// the re-bind and the loser's client CONNECTED SUCCESSFULLY to it, reading a well-formed `200` whose
+/// body was the OTHER test's fixture graph - a CONTENT failure the connect-error retry could not see
+/// and the caller's assertions then read as a defect in the route (observed under parallel load as
+/// `find(id == "hub")` on a node list that never held a hub). Owning the port from `bind` through
+/// `serve_on` closes that window by construction: no other binder can be handed a port this process
+/// never released, so a response returned here is always this attempt's own server's.
 fn try_fetch_served(path: &str, graph: Graph) -> Option<String> {
-    let port = TcpListener::bind(("127.0.0.1", 0))
-        .ok()?
-        .local_addr()
-        .ok()?
-        .port();
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let listener = TcpListener::bind(("127.0.0.1", 0)).ok()?;
+    let addr = listener.local_addr().ok()?;
 
     // The `/api/graph` route now reads through the SEPARATE lazy graph provider (spec 45,
     // criterion 1), NOT the polled tuple's graph, so the fixture graph is what `graph_provider`
@@ -126,8 +127,8 @@ fn try_fetch_served(path: &str, graph: Graph) -> Option<String> {
         };
     let instances_provider = Vec::new;
     std::thread::spawn(move || {
-        let _ = dash::serve(
-            addr,
+        let _ = dash::serve_on(
+            listener,
             provider,
             graph_provider,
             calls_provider,
@@ -138,6 +139,8 @@ fn try_fetch_served(path: &str, graph: Graph) -> Option<String> {
         );
     });
 
+    // The port is already bound and listening, so this connect succeeds on its first pass; the budget
+    // survives only as a guard against a scheduler stall between the bind and the first accept.
     let deadline = Instant::now() + Duration::from_millis(1500);
     let mut client = loop {
         match TcpStream::connect(addr) {
@@ -160,9 +163,10 @@ fn try_fetch_served(path: &str, graph: Graph) -> Option<String> {
     }
 }
 
-/// Drive the hand-rolled dash server over a REAL loopback socket and fetch `GET <path>`, RETRYING the
-/// whole port handoff on a connection-level transient (see [`try_fetch_served`]). Each attempt is
-/// independent, so the guard is deterministic without weakening what it proves.
+/// Drive the hand-rolled dash server over a REAL loopback socket and fetch `GET <path>`, RETRYING on
+/// a socket-level transient (see [`try_fetch_served`], which owns its port from `bind` through
+/// `serve_on` so an attempt can never return another server's response). Each attempt is independent,
+/// so the guard is deterministic without weakening what it proves.
 fn fetch_served(path: &str, graph: &Graph) -> String {
     for _ in 0..200 {
         if let Some(resp) = try_fetch_served(path, graph.clone()) {
@@ -1643,16 +1647,14 @@ fn the_served_graph_route_reads_the_lazy_provider_only_and_never_on_the_state_po
         }
     };
 
-    // One serve instance drives THREE sequential requests, retried whole on the port-handoff race
-    // `try_fetch_served` documents - with fresh spy state per attempt so a lost handoff never leaks
-    // a count into the next try.
+    // One serve instance drives THREE sequential requests, retried whole on a socket-level transient
+    // - with fresh spy state per attempt so a lost attempt never leaks a count into the next try. The
+    // bound listener is HANDED to `serve_on` for the same reason [`try_fetch_served`] does it: a port
+    // this attempt never releases cannot be re-bound by a sibling test, so the counts read here are
+    // always this attempt's own spy's.
     let attempt = || -> Option<(String, usize, String, usize, String, usize)> {
-        let port = TcpListener::bind(("127.0.0.1", 0))
-            .ok()?
-            .local_addr()
-            .ok()?
-            .port();
-        let addr = SocketAddr::from(([127, 0, 0, 1], port));
+        let listener = TcpListener::bind(("127.0.0.1", 0)).ok()?;
+        let addr = listener.local_addr().ok()?;
 
         // The polled provider: the cheap run-scoped inputs the state poll / events feed ride. Its
         // graph slot is a DECOY (`polled-neighbor`) the `/api/graph` route must NOT read.
@@ -1677,8 +1679,8 @@ fn the_served_graph_route_reads_the_lazy_provider_only_and_never_on_the_state_po
         let instances_provider = Vec::new;
 
         std::thread::spawn(move || {
-            let _ = dash::serve(
-                addr,
+            let _ = dash::serve_on(
+                listener,
                 provider,
                 graph_provider,
                 calls_provider,
@@ -1689,8 +1691,8 @@ fn the_served_graph_route_reads_the_lazy_provider_only_and_never_on_the_state_po
             );
         });
 
-        // The FIRST connect retries within a budget for the port handoff; a later connect/IO failure
-        // aborts the whole attempt (None) so the caller rebuilds a fresh server + spy.
+        // The FIRST connect retries within a budget for the accept handoff; a later connect/IO
+        // failure aborts the whole attempt (None) so the caller rebuilds a fresh server + spy.
         let deadline = Instant::now() + Duration::from_millis(1500);
         let get = |path: &str, first: bool| -> Option<String> {
             let mut client = loop {

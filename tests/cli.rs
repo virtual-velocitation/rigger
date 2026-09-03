@@ -8,10 +8,11 @@
 use std::path::Path;
 use std::process::Command;
 
-/// The compiled `rigger` binary under test (Cargo sets this for integration tests).
-fn rigger_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_rigger")
-}
+// The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
+// `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
+// and every suite that spawns the product then dies with a bare NotFound.
+mod common;
+use common::rigger_bin;
 
 /// A throwaway project dir that is its own git repo, so `project_identity()` (which
 /// scopes the namespaced streams) is stable across the emit and the peers reads.
@@ -143,7 +144,7 @@ fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
 /// (stdout, stderr, success). Used by the `rigger validate` advisory tests to stub
 /// `RIGGER_NPM` (so `rigger setup` installs the workflow without a real npm).
 fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (String, String, bool) {
-    let mut cmd = Command::new(rigger_bin());
+    let mut cmd = common::rigger_courier();
     cmd.args(args).current_dir(cwd);
     // The step path auto-starts a persistent, detached run dashboard (spec 39, criterion 1);
     // opt out so these short-lived integration invocations never spawn a real dashboard
@@ -1387,6 +1388,150 @@ fn prompt_refuses_to_fabricate_a_store_when_none_exists() {
     );
 }
 
+/// Spec 77, criterion 2 (AGENT SCRATCH IS SPAWN-OWNED): `rigger scratch <spawn>` prints
+/// that spawn's own [`driver::replay::spawn_scratch_path`] container - the SAME dir the
+/// per-spawn reclaim (`cmd_result`'s `reclaim_spawn_scratch`) already reaps at the spawn's
+/// terminus (spec 34 criterion 1) - so a worker can discover its own scratch home at
+/// runtime instead of writing into an unbucketed literal. It resolves `scratch_root`/
+/// `run_id` through the IDENTICAL precedence `reclaim_spawn_scratch` uses (config workdir,
+/// then the live run's `RunStarted`), so the printed path can never drift from the one the
+/// reaper targets - proven here against the exact layout
+/// `a_spawns_scratch_is_reclaimed_the_moment_its_result_is_recorded_for_every_outcome`
+/// (spec 34's own reclaim test) hard-codes: `<root>/.rigger/tmp/agent-scratch/<run>/
+/// <injective-hex-encoded id>`.
+#[test]
+fn scratch_prints_the_spawns_own_rigger_assigned_container() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    // A run is live, so the printed container is run-scoped exactly as production reclaim
+    // resolves it - from the store's latest `RunStarted`.
+    seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
+
+    let (out, err, ok) = run_rigger(root, &["scratch", "u/implementer#0"]);
+    assert!(ok, "scratch must succeed for a live run; stderr: {err}");
+
+    let expected = root
+        .join(".rigger")
+        .join("tmp")
+        .join("agent-scratch")
+        .join("r1")
+        .join("u_2fimplementer_230");
+    assert_eq!(
+        out.trim(),
+        expected.display().to_string(),
+        "rigger scratch must print the exact spawn_scratch_path container, byte-identical \
+         to what reclaim_spawn_scratch reaps"
+    );
+}
+
+/// `rigger scratch` is a WORKER-INVOKED store-opening courier exactly like `rigger prompt`
+/// (it must read the live run's `RunStarted` to resolve `run_id`), so from a storeless cwd
+/// it must REFUSE - never fabricate a fresh empty `.rigger/events.db` and then print a
+/// bogus run-less path, stranding the worker's scratch under the wrong root.
+#[test]
+fn scratch_refuses_to_fabricate_a_store_when_none_exists() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["scratch", "u/implementer#0"]);
+    assert!(
+        !ok,
+        "scratch must refuse when there is no existing store; stderr: {err}"
+    );
+    assert!(
+        err.contains("no rigger store found") && err.contains("refusing to fabricate"),
+        "scratch must explain the refusal; got: {err:?}"
+    );
+    assert!(
+        !root.join(".rigger").join("events.db").exists(),
+        "scratch must NOT fabricate a store when it refuses"
+    );
+}
+
+/// `rigger scratch` with the wrong argument count is a usage error, not a panic or a
+/// silent no-op - mirrors the same shape `cmd_prompt`/`cmd_reported` enforce.
+#[test]
+fn scratch_requires_exactly_one_spawn_id() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+
+    let (_out, err, ok) = run_rigger(root, &["scratch"]);
+    assert!(!ok, "scratch with no id must fail");
+    assert!(
+        err.contains("expected exactly one spawn id"),
+        "got: {err:?}"
+    );
+
+    let (_out, err, ok) = run_rigger(root, &["scratch", "a", "b"]);
+    assert!(!ok, "scratch with two ids must fail");
+    assert!(
+        err.contains("expected exactly one spawn id"),
+        "got: {err:?}"
+    );
+}
+
+/// PERIPHERY: `rigger scratch <id>` and `rigger result <id>` converge on the ONE shared
+/// authority [`driver::replay::spawn_scratch_path`] - `cmd_scratch` resolves it fresh to
+/// print it, `cmd_result`'s `reclaim_spawn_scratch` resolves it again to reap it (spec 77
+/// criterion 2, spec 34 criterion 1). `scratch_prints_the_spawns_own_rigger_assigned_container`
+/// already proves `cmd_scratch`'s output matches the DOCUMENTED formula, but that is a
+/// hard-coded string on the test side; it cannot catch the two call sites drifting APART
+/// from each other while each still matches its own author's hard-coded expectation. This
+/// test proves the parity by REAL BEHAVIOR instead: ask `rigger scratch` for the path, drop
+/// debris at the EXACT path it printed (never a re-derived one), then record the spawn's
+/// result through the real courier and assert that same path is gone - the two commands
+/// agreeing with each other, not merely with a shared piece of prose.
+#[test]
+fn scratch_prints_the_exact_container_rigger_result_reclaims() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
+
+    let (out, err, ok) = run_rigger(root, &["scratch", "u/implementer#0"]);
+    assert!(ok, "scratch must succeed for a live run; stderr: {err}");
+    let scratch_dir = Path::new(out.trim());
+    std::fs::create_dir_all(scratch_dir).unwrap();
+    std::fs::write(scratch_dir.join("cargo-target-debris.rlib"), [0u8; 64]).unwrap();
+
+    let (out2, err2, ok2) = run_rigger(root, &["result", "u/implementer#0", "did the work"]);
+    assert!(
+        ok2,
+        "recording the result must succeed; stdout: {out2:?} stderr: {err2}"
+    );
+
+    assert!(
+        !scratch_dir.exists(),
+        "the exact container `rigger scratch` printed must be the one `rigger result` \
+         reclaims; {} still exists",
+        scratch_dir.display()
+    );
+}
+
+/// PERIPHERY boundary/edge case: `spawn_scratch_path`'s own doc comment names an EMPTY
+/// spawn id as the one shape its injective encoding cannot map to a real directory name, so
+/// it returns `None` rather than a fabricated placeholder a later reclaim could wrongly
+/// delete (no fixed placeholder can be proven disjoint from a real id's own mapped output).
+/// `rigger scratch` must surface that as a clear refusal - never a panic, and never a bogus
+/// printed path a worker could go on to `cd` into or point `CARGO_TARGET_DIR` at.
+#[test]
+fn scratch_refuses_a_degenerate_empty_spawn_id() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
+
+    let (out, err, ok) = run_rigger(root, &["scratch", ""]);
+    assert!(!ok, "scratch must refuse a degenerate empty spawn id");
+    assert!(
+        err.contains("does not name a usable scratch path"),
+        "got: {err:?}"
+    );
+    assert!(out.trim().is_empty(), "must print no path; got: {out:?}");
+}
+
 /// The paradigm defect (adv-result-wrong-cwd-fabricates-store): `rigger result` run from
 /// a unit-worktree-shaped cwd - a tracked `.rigger/workflow.yml` but NO machine-local
 /// `.rigger/events.db` - must REFUSE instead of fabricating a fresh dead store and printing
@@ -1696,16 +1841,17 @@ fn a_spawns_scratch_is_reclaimed_the_moment_its_result_is_recorded_for_every_out
 
         // The dedicated scratch rigger assigned each spawn, each populated with build debris.
         // The layout is the single authority `spawn_scratch_path`:
-        // `<root>/.rigger/tmp/agent-scratch/<run>/<sanitized id>` (the `/` and `#` in a spawn
-        // id collapse to `_`). One spawn will report (its scratch must be reclaimed); the
-        // sibling never reports (its scratch must be untouched).
+        // `<root>/.rigger/tmp/agent-scratch/<run>/<encoded id>` (the injective byte-hex
+        // encoding, spec 77 Design `d77-injective-scratch-naming`: `/` -> `_2f`, `#` -> `_23`).
+        // One spawn will report (its scratch must be reclaimed); the sibling never reports
+        // (its scratch must be untouched).
         let run_scratch = root
             .join(".rigger")
             .join("tmp")
             .join("agent-scratch")
             .join("r1");
-        let done = run_scratch.join("u_implementer_0");
-        let live = run_scratch.join("v_implementer_0");
+        let done = run_scratch.join("u_2fimplementer_230");
+        let live = run_scratch.join("v_2fimplementer_230");
         for d in [&done, &live] {
             std::fs::create_dir_all(d).unwrap();
             std::fs::write(d.join("cargo-target-debris.rlib"), [0u8; 64]).unwrap();
@@ -1733,6 +1879,462 @@ fn a_spawns_scratch_is_reclaimed_the_moment_its_result_is_recorded_for_every_out
             live.display()
         );
     }
+}
+
+/// Spec 77, criterion 2 (MUTATION SCRATCH IS REAPED): `cmd_result`'s per-spawn reclaim (spec
+/// 34, criterion 1) gains a REGISTERED SCRATCH ROOT beyond `agent-scratch` - the SPAWN-scoped
+/// mutation-testing dir the seeded implementer persona points `cargo mutants`' `TMPDIR` at
+/// (`driver::replay::mutation_scratch_path`: `$XDG_CACHE_HOME/rigger-mutants/<spawn>`, per spec
+/// 77 Design "mutation scratch is spawn-scoped, never unit-scoped"). The moment a spawn reports
+/// its OWN result (for every outcome, the same four shapes spec 34's own per-spawn test proves)
+/// its OWN mutation-scratch dir is deleted, while a sibling spawn with no recorded result keeps
+/// its own dir untouched, exactly like agent-scratch. A different spawn entirely, whether a
+/// different unit or a different lane/attempt/role of the SAME unit, is covered separately
+/// (see `two_speculation_lanes_of_the_same_unit_get_distinct_mutation_scratch_dirs` and
+/// `a_reviewers_result_never_reclaims_the_implementers_mutation_scratch`), since same-unit
+/// same-spawn cross-role/cross-lane sharing is exactly the axis the round-7 review reject found
+/// uncovered.
+#[test]
+fn a_spawns_mutation_scratch_is_reclaimed_the_moment_its_own_result_reports_for_every_outcome() {
+    let cases: &[(&str, &[&str])] = &[
+        ("success", &["result", "u/implementer#0", "did the work"]),
+        (
+            "reject-verdict",
+            &["result", "u/implementer#0", r#"{"verdict":"reject"}"#],
+        ),
+        ("error", &["result", "u/implementer#0", "boom", "--error"]),
+        (
+            "liveness-fault",
+            &[
+                "result",
+                "u/implementer#0",
+                "worker hung past its wall clock",
+                "--error",
+                "--meta",
+                r#"{"liveness_class":"infra"}"#,
+            ],
+        ),
+    ];
+
+    for (label, args) in cases {
+        let dir = temp_project();
+        let root = dir.path();
+        seed_store(root);
+        seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
+
+        // A dedicated cache home for this test case, so XDG_CACHE_HOME never points at the
+        // operator's real ~/.cache. Two DIFFERENT spawns' mutation-scratch dirs, each
+        // populated with build debris, keyed by their own FULL injectively-encoded spawn id
+        // (`u/implementer#0` and `v/implementer#0`).
+        let cache_home = tempfile::tempdir().unwrap();
+        let done_spawn_scratch = cache_home
+            .path()
+            .join("rigger-mutants")
+            .join("u_2fimplementer_230");
+        let live_spawn_scratch = cache_home
+            .path()
+            .join("rigger-mutants")
+            .join("v_2fimplementer_230");
+        for d in [&done_spawn_scratch, &live_spawn_scratch] {
+            std::fs::create_dir_all(d).unwrap();
+            std::fs::write(d.join("mutants-debris.out"), [0u8; 32]).unwrap();
+        }
+
+        // Record the outcome for spawn `u/implementer#0` through the real courier, with
+        // XDG_CACHE_HOME pointed at this case's throwaway cache home.
+        let (out, err, ok) = run_rigger_envs(
+            root,
+            args,
+            &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
+        );
+        assert!(
+            ok,
+            "[{label}] recording the result must succeed; stdout: {out:?} stderr: {err}"
+        );
+
+        // The reporting spawn's own mutation-scratch dir is GONE the moment its result
+        // landed...
+        assert!(
+            !done_spawn_scratch.exists(),
+            "[{label}] a spawn's registered mutation-scratch dir must be reclaimed the moment \
+             its own result is recorded; {} still exists",
+            done_spawn_scratch.display()
+        );
+        // ...while a DIFFERENT spawn, with no recorded result, keeps its own mutation-scratch
+        // untouched.
+        assert!(
+            live_spawn_scratch.exists() && live_spawn_scratch.join("mutants-debris.out").exists(),
+            "[{label}] a spawn with no recorded result must keep its own mutation-scratch; {} \
+             was wrongly reclaimed",
+            live_spawn_scratch.display()
+        );
+    }
+}
+
+/// Sibling of `a_spawns_mutation_scratch_is_reclaimed_the_moment_its_own_result_reports_for_every_outcome`,
+/// pinning the property spec 77's shift to SPAWN-scoped keying (Design "mutation scratch is
+/// spawn-scoped, never unit-scoped") introduces: only the IMPLEMENTER role ever populates a
+/// mutation-scratch dir (reviewers never run `cargo mutants`), and only the SAME spawn's own
+/// result reclaims its own leaf - a DIFFERENT role of the SAME unit+attempt must never resolve
+/// to (and so never reclaim) the implementer's leaf. This is the mirror image of the OLD
+/// bare-unit design's "any role reclaims" behavior, which the round-7 review reject found was
+/// exactly what let a fast-finishing sibling spawn's result SIGKILL a slower spawn's live
+/// `cargo mutants` subprocess sharing that one dir - under full-spawn-id keying no two distinct
+/// spawns (whatever their unit, attempt, or role) ever share a leaf, so this can no longer
+/// happen by construction, not merely by luck of test ordering.
+#[test]
+fn a_reviewers_result_never_reclaims_the_implementers_mutation_scratch() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
+
+    let cache_home = tempfile::tempdir().unwrap();
+    // The IMPLEMENTER's own populated mutation-scratch dir, standing in for a real `cargo
+    // mutants` run still in progress underneath it.
+    let implementer_scratch = cache_home
+        .path()
+        .join("rigger-mutants")
+        .join("u_2fimplementer_230");
+    std::fs::create_dir_all(&implementer_scratch).unwrap();
+    std::fs::write(implementer_scratch.join("mutants-debris.out"), [0u8; 32]).unwrap();
+
+    // The ADVERSARY role of the SAME unit+attempt reports - not the implementer role that ran
+    // mutants, and not a role that ever populated a mutation-scratch dir of its own.
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["result", "u/adversary#0", "no blocking findings"],
+        &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
+    );
+    assert!(
+        ok,
+        "recording the adversary's result must succeed; stdout: {out:?} stderr: {err}"
+    );
+
+    assert!(
+        implementer_scratch.exists() && implementer_scratch.join("mutants-debris.out").exists(),
+        "a reviewer's result must never reclaim (or SIGKILL a live process under) the \
+         implementer's own mutation-scratch dir for the same unit+attempt; {} was wrongly \
+         reclaimed",
+        implementer_scratch.display()
+    );
+}
+
+/// Regression for the spec-77 review reject (ADJUDICATOR VERDICT u77c2, diff d6aa314..b9dd0dd):
+/// `cmd_result`'s positional spawn id carries NO format validation beyond non-empty, and
+/// `unit = spawn_id.split('/').next()` (main.rs, `reclaim_spawn_scratch`) can itself equal
+/// `".."`- directly reachable as `rigger result ".." "<text>"`, no crafted event needed. Both
+/// `spawn_scratch_path` and `mutation_scratch_path` used to derive `<root>.join(marker_filename(
+/// id))` with `marker_filename` passing `.` through unchanged, so a `..` id resolved to the
+/// PARENT of the registered scratch root, and `reap_then_remove_dir`'s bare `remove_dir_all`
+/// deleted everything there - an unrelated sibling directory under the operator's real cache
+/// home, included. Prove the fix holds end to end, through the real binary: a `..` spawn id
+/// must reclaim only a `__`-named leaf UNDER the registered roots, never escape past them.
+#[test]
+fn a_dotdot_spawn_id_never_escapes_the_registered_scratch_roots() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
+
+    // A dedicated cache home, so XDG_CACHE_HOME never points at the operator's real
+    // ~/.cache. `rigger-mutants/` must exist on disk (a prior unit's `cargo mutants` run
+    // would have created it) for the OS to even resolve a `..` path THROUGH it - an
+    // absent intermediate directory makes `remove_dir_all` fail closed regardless of any
+    // escape, which would make this regression pass for the wrong reason. An unrelated
+    // sibling directory under `cache_home` stands in for real ambient cache data (some
+    // OTHER tool's cache) that a reaper must never touch.
+    let cache_home = tempfile::tempdir().unwrap();
+    let mutants_root = cache_home.path().join("rigger-mutants");
+    std::fs::create_dir_all(&mutants_root).unwrap();
+    std::fs::write(mutants_root.join("mutants-debris.out"), [0u8; 8]).unwrap();
+    let sibling = cache_home.path().join("some-other-tools-cache");
+    std::fs::create_dir_all(&sibling).unwrap();
+    std::fs::write(sibling.join("keep-me.txt"), b"do not delete").unwrap();
+
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["result", "..", "typo'd or hostile spawn id"],
+        &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
+    );
+    assert!(
+        ok,
+        "recording the result must still succeed (scratch reclaim is best-effort and never \
+         fails a recorded result); stdout: {out:?} stderr: {err}"
+    );
+
+    assert!(
+        cache_home.path().exists(),
+        "cache_home itself must never be deleted by a `..`-derived reclaim path"
+    );
+    assert!(
+        sibling.exists() && sibling.join("keep-me.txt").exists(),
+        "a `..` spawn id must never let the reclaim walk up out of the registered \
+         mutation-scratch root and delete an unrelated sibling under cache_home; {} was \
+         wrongly removed",
+        sibling.display()
+    );
+}
+
+/// Sibling of `a_dotdot_spawn_id_never_escapes_the_registered_scratch_roots`, proving the SAME
+/// shared-authority fix (`liveness::marker_filename` neutralizing an all-dots result) also
+/// holds for the OTHER call `reclaim_spawn_scratch` makes on the identical, unvalidated
+/// `spawn_id` two lines earlier: the pre-existing spec-34 per-spawn `agent-scratch` reclaim
+/// (`spawn_scratch_path`). This is not a hypothetical: an independent re-enumeration during the
+/// review that produced the fix reproduced this exact escape live on the UNFIXED code (a `..`
+/// spawn id resolved `spawn_scratch_path` to the PARENT of the run's `agent-scratch` root, and
+/// `reap_then_remove_dir`'s bare `remove_dir_all` wiped every other unit's live scratch
+/// alongside it) - and warned that a fix scoped only to the newly-added mutation-scratch call
+/// site would leave this pre-existing call site equally exploitable by the identical `rigger
+/// result ".."` input. The fix commit's own regression test re-drives the binary for the
+/// mutation-scratch (cache-home) half only; this test closes the matching periphery gap for the
+/// agent-scratch half, proving a sibling unit's live scratch survives the same `..` id through
+/// the real CLI.
+#[test]
+fn a_dotdot_spawn_id_never_escapes_the_pre_existing_agent_scratch_root_either() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
+
+    // The run's agent-scratch root, laid out exactly as spec 34's own test:
+    // `<root>/.rigger/tmp/agent-scratch/<run>/<sanitized id>`. A sibling unit's LIVE scratch
+    // stands in for the "every other unit's scratch" the adversary showed a `..` id could wipe
+    // through this call, one line before the mutation-scratch call the fix's own test covers.
+    let run_scratch = root
+        .join(".rigger")
+        .join("tmp")
+        .join("agent-scratch")
+        .join("r1");
+    let sibling = run_scratch.join("v_implementer_0");
+    std::fs::create_dir_all(&sibling).unwrap();
+    std::fs::write(sibling.join("cargo-target-debris.rlib"), [0u8; 64]).unwrap();
+
+    // A dedicated cache home too, so the SAME call's mutation-scratch half (reclaim_spawn_scratch
+    // always runs both halves) never touches the operator's real ~/.cache while this test drives
+    // the `..` id through both halves of the function at once.
+    let cache_home = tempfile::tempdir().unwrap();
+
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["result", "..", "typo'd or hostile spawn id"],
+        &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
+    );
+    assert!(
+        ok,
+        "recording the result must still succeed (scratch reclaim is best-effort and never \
+         fails a recorded result); stdout: {out:?} stderr: {err}"
+    );
+
+    assert!(
+        run_scratch.exists(),
+        "the run's agent-scratch root itself must never be deleted by a `..`-derived reclaim \
+         path"
+    );
+    assert!(
+        sibling.exists() && sibling.join("cargo-target-debris.rlib").exists(),
+        "a `..` spawn id must never let reclaim_spawn_scratch's pre-existing agent-scratch call \
+         walk up out of the run's agent-scratch root and delete a sibling unit's live scratch; \
+         {} was wrongly removed",
+        sibling.display()
+    );
+}
+
+/// Regression for the spec-77 review reject round 4 (ADJUDICATOR VERDICT u77c2 round 4): round
+/// 3's fix only neutralized an all-dots `marker_filename` result; at the time, a spawn id
+/// starting with `/` (e.g. `rigger result "/foo" "text"`, directly reachable - the `id`
+/// positional carries no format validation beyond non-empty) made `reclaim_spawn_scratch`'s
+/// OWN `unit = spawn_id.split('/').next()` extraction (main.rs) resolve to the EMPTY string,
+/// and `mutation_scratch_path(cache_home, "")` then collapsed via the documented
+/// `PathBuf::join("")` no-op to `cache_home/rigger-mutants` - the REGISTERED ROOT ITSELF, not a
+/// per-unit leaf under it - so `reap_then_remove_dir`'s reap-then-`remove_dir_all` wiped every
+/// OTHER unit's mutation scratch (and killed any of their still-running `cargo mutants`
+/// subprocesses) alongside the reporting unit's.
+///
+/// Round 8's spawn-scoped redesign (spec 77 Design "mutation scratch is spawn-scoped, never
+/// unit-scoped") removes the whole `unit = ...` extraction step this class of bug lived in:
+/// `reclaim_spawn_scratch` now feeds `mutation_scratch_path` the raw, always-non-empty
+/// `spawn_id` directly (`"/foo"` itself, not a substring extracted from it), so the failure
+/// mode this test regresses is now structurally unreachable through this call site, not merely
+/// guarded. Kept as a live end-to-end pin anyway: a leading-slash spawn id must still reclaim
+/// only its own distinct leaf, never the registered root itself.
+#[test]
+fn a_leading_slash_spawn_id_never_collapses_the_reclaim_to_its_registered_root() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
+
+    // A dedicated cache home, standing in for the operator's real ~/.cache. A sibling unit's
+    // LIVE mutation-scratch dir (as a genuine `cargo mutants` run would have left it) stands in
+    // for "every other unit's registered scratch" a collapsed-to-root reclaim would wipe.
+    let cache_home = tempfile::tempdir().unwrap();
+    let mutants_root = cache_home.path().join("rigger-mutants");
+    let sibling = mutants_root.join("v");
+    std::fs::create_dir_all(&sibling).unwrap();
+    std::fs::write(sibling.join("outcomes.json"), b"{}").unwrap();
+
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["result", "/foo", "typo'd or hostile spawn id"],
+        &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
+    );
+    assert!(
+        ok,
+        "recording the result must still succeed (scratch reclaim is best-effort and never \
+         fails a recorded result); stdout: {out:?} stderr: {err}"
+    );
+
+    assert!(
+        mutants_root.exists(),
+        "the registered rigger-mutants root itself must never be deleted by a leading-slash \
+         spawn id's reclaim"
+    );
+    assert!(
+        sibling.exists() && sibling.join("outcomes.json").exists(),
+        "a leading-slash spawn id must never let the empty extracted unit collapse the reclaim \
+         to the registered root and delete a sibling unit's live mutation scratch; {} was \
+         wrongly removed",
+        sibling.display()
+    );
+}
+
+/// Regression for the spec-77 review reject round 6 (ADJUDICATOR VERDICT u77c2 round 6), fixed
+/// per the round-7 spec Design decision `d77-injective-scratch-naming`: rounds 3 and 5 each
+/// substituted a FIXED placeholder for a degenerate `marker_filename` result (`"_empty_"` for
+/// empty, an all-dots result's own dots mapped to `_` for the walk-upward shape) - both wrong
+/// the same way, since the placeholder was drawn from the map's own reachable output alphabet,
+/// so it could never be proven disjoint from a REAL id's own mapped output (a real id literally
+/// named an underscore-run collided with either placeholder). Round 7 replaces the whole scheme
+/// with one INJECTIVE byte-hex encoding (every byte outside `[A-Za-z0-9-]`, `_` included,
+/// becomes `_` plus two lowercase hex digits) - collisions are closed by construction, not by a
+/// case-by-case guard. Round 8's spawn-scoped redesign feeds this encoding the raw spawn id
+/// directly (no unit/attempt extraction), so this test now drives it with a spawn id rather
+/// than a unit id, unchanged otherwise. Prove it end to end through the real binary: a real
+/// spawn id `"___"` (three underscores - the exact shape round 5's empty-sentinel and round
+/// 3's all-dots-to-underscore placeholders could each collide with) encodes to its own unique
+/// leaf (`_5f_5f_5f`) and keeps that leaf's live mutation-scratch dir untouched when an
+/// UNRELATED spawn reports with a degenerate id - an all-dots id of the identical length
+/// (`"..."`, the round-3 all-dots shape, which now encodes to the DIFFERENT leaf `_2e_2e_2e`)
+/// and, separately, a leading-slash id (the round-4/5 empty-unit shape, which resolves to its
+/// own distinct leaf rather than colliding with anything real).
+#[test]
+fn a_real_underscore_run_spawns_mutation_scratch_survives_an_unrelated_degenerate_spawn_id() {
+    let cases: &[(&str, &[&str])] = &[
+        (
+            "all-dots-same-length",
+            &["result", "...", "typo'd or hostile spawn id"],
+        ),
+        (
+            "leading-slash",
+            &["result", "/foo", "typo'd or hostile spawn id"],
+        ),
+    ];
+
+    for (label, args) in cases {
+        let dir = temp_project();
+        let root = dir.path();
+        seed_store(root);
+        seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
+
+        // A real spawn id literally three underscores, with a live mutation-scratch dir at the
+        // path `mutation_scratch_path` actually computes for it under the injective encoding
+        // (`_` escapes to `_5f`, so "___" -> "_5f_5f_5f") - exactly the shape round 5's
+        // "_empty_" placeholder and round 3's all-dots-to-underscore placeholder could each
+        // collide with under the OLD scheme.
+        let cache_home = tempfile::tempdir().unwrap();
+        let real_spawn_scratch = cache_home.path().join("rigger-mutants").join("_5f_5f_5f");
+        std::fs::create_dir_all(&real_spawn_scratch).unwrap();
+        std::fs::write(real_spawn_scratch.join("outcomes.json"), b"{}").unwrap();
+
+        let (out, err, ok) = run_rigger_envs(
+            root,
+            args,
+            &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
+        );
+        assert!(
+            ok,
+            "[{label}] recording the result must still succeed (scratch reclaim is \
+             best-effort and never fails a recorded result); stdout: {out:?} stderr: {err}"
+        );
+
+        assert!(
+            real_spawn_scratch.exists() && real_spawn_scratch.join("outcomes.json").exists(),
+            "[{label}] a real spawn id literally an underscore-run must keep its live \
+             mutation-scratch dir untouched by an unrelated degenerate spawn id; {} was \
+             wrongly removed",
+            real_spawn_scratch.display()
+        );
+    }
+}
+
+/// Regression for the spec-77 review reject round 7 (ADJUDICATOR VERDICT u77c2 round 7,
+/// upheld sdet-u77c2r7-mutation-scratch-key-collides-across-speculation-lanes and
+/// adv-u77c2r7-shared-lane-reap-sigkills-sibling-mutants-on-any-result), fixed per round 8's
+/// spec 77 Design amendment "mutation scratch is spawn-scoped, never unit-scoped":
+/// `speculation_width > 1` (spec 13, unit 3) runs K implementer candidates of the SAME unit
+/// CONCURRENTLY, each a DIFFERENT spawn `<unit>/implementer#<lane>` in its OWN worktree
+/// (`speculation_lane_worktree` suffixes the worktree `-spec{lane}` for exactly this reason).
+/// Before this fix `mutation_scratch_path` was keyed on the bare unit id alone, so every
+/// lane's `cargo mutants` TMPDIR (and `reclaim_spawn_scratch`'s reap target) collapsed onto
+/// ONE shared directory: the first lane to report its result reclaimed (and
+/// `reap_processes_rooted_under` SIGKILLed) a SIBLING lane's still-running mutation-testing
+/// tree out from under it - no malformed input needed, just two ordinary lanes of one
+/// speculating unit. Prove the fix through the real binary: lane 0 and lane 1 of the SAME
+/// unit `u` get DISTINCT registered mutation-scratch dirs (their own full spawn ids), and
+/// reporting lane 0's result reclaims ONLY lane 0's dir while lane 1's - still populated,
+/// standing in for a lane whose `cargo mutants` subprocess is still mid-build - survives
+/// untouched. This is the literal Done-when text ("a sibling spawn with no recorded result
+/// keeps its dir") for a sibling spawn of the SAME unit, not just a different unit.
+#[test]
+fn two_speculation_lanes_of_the_same_unit_get_distinct_mutation_scratch_dirs() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
+
+    // Two lanes of unit `u` (spawn_id(unit, role, lane) - identical unit, different
+    // attempt/lane, so their FULL spawn ids differ only in the trailing digit), each with a
+    // populated mutation-scratch dir standing in for a real `cargo mutants` run in progress
+    // under this lane's own TMPDIR.
+    let cache_home = tempfile::tempdir().unwrap();
+    let lane0_scratch = cache_home
+        .path()
+        .join("rigger-mutants")
+        .join("u_2fimplementer_230");
+    let lane1_scratch = cache_home
+        .path()
+        .join("rigger-mutants")
+        .join("u_2fimplementer_231");
+    for d in [&lane0_scratch, &lane1_scratch] {
+        std::fs::create_dir_all(d).unwrap();
+        std::fs::write(d.join("mutants-debris.out"), [0u8; 32]).unwrap();
+    }
+
+    // Lane 0 reports first - the fast-finishing candidate in a first-green-wins race.
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["result", "u/implementer#0", "did the work"],
+        &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
+    );
+    assert!(
+        ok,
+        "recording lane 0's result must succeed; stdout: {out:?} stderr: {err}"
+    );
+
+    assert!(
+        !lane0_scratch.exists(),
+        "lane 0's own registered mutation-scratch dir must be reclaimed the moment its \
+         result is recorded; {} still exists",
+        lane0_scratch.display()
+    );
+    assert!(
+        lane1_scratch.exists() && lane1_scratch.join("mutants-debris.out").exists(),
+        "a SIBLING lane of the SAME unit, with no recorded result of its own, must keep its \
+         mutation-scratch dir untouched - reporting lane 0 must never reclaim (or SIGKILL a \
+         live process under) lane 1's still-in-progress scratch; {} was wrongly reclaimed",
+        lane1_scratch.display()
+    );
 }
 
 /// Write a minimal `.rigger/workflow.yml` into `root` pinning `defaults.grounder` to
@@ -2525,7 +3127,7 @@ fn worktree_sweep_completes_before_any_add_within_one_step() {
     //   (2) the terminal-worktree sweep (`worktree::sweep_terminal`) - the REMOVE half;
     //   (3) the conductor run - the first code on the step path that ADDS a unit worktree.
     let lock_at = cmd_step
-        .find("acquire_step_lock()")
+        .find("acquire_step_lock(")
         .expect("cmd_step must acquire the step lock (the worktree-mutation serialization)");
     let sweep_at = cmd_step
         .find("worktree::sweep_terminal(")
@@ -2558,6 +3160,120 @@ fn worktree_sweep_completes_before_any_add_within_one_step() {
         sweep_at < add_at,
         "the terminal-worktree sweep must complete BEFORE the conductor adds any unit worktree; \
          found the conductor run at offset {add_at} before the sweep at {sweep_at} within cmd_step"
+    );
+}
+
+/// Spec 64, criterion 4 (`src/worktree.rs::sweep_terminal` learns liveness; its caller
+/// `cmd_step` in `src/main.rs` now folds `current_run_units(events).live_branches` and
+/// hands it in): the step-start terminal-worktree sweep must SPARE a unit that is still
+/// LIVE in the current run even though its branch tip is - trivially - an ancestor of the
+/// run branch (the empty-diff shape: nothing has been committed into the unit branch
+/// yet), while it must still RECLAIM an unrelated worktree in the IDENTICAL git shape
+/// whose branch belongs to no live unit of this run. The merged-only ancestry rule the
+/// sweep used before this criterion cannot tell these two apart on its own - both pass
+/// `merge-base --is-ancestor`.
+///
+/// Drives the REAL compiled binary (`rigger step`) twice with no courier result recorded
+/// for the unit in between, so the very seam this criterion changed (`cmd_step`'s
+/// step-start sweep call) runs a second time while the unit is still parked, waiting on
+/// its implementer's result. An UNCOMMITTED canary file written into each worktree after
+/// step 1 is the differentiator a bare "the dir still exists" check cannot give:
+/// `stage_worktree`'s own adopt-or-create machinery (`Worktree::create`) also runs at the
+/// top of every step for every in-flight unit and would silently RE-CREATE a
+/// wrongly-swept worktree from the unit branch's last COMMIT before this test's own
+/// assertions ever ran - masking exactly the bug this test exists to catch. A freshly
+/// re-created checkout carries no uncommitted file, so the canary surviving is proof the
+/// worktree was never removed at all, not proof it was removed and then rebuilt.
+#[test]
+fn step_start_sweep_spares_a_live_units_empty_diff_worktree_but_reclaims_a_dead_ancestor_leftover()
+{
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_reviewless_git_unit_workflow(root);
+
+    let scratch = root.join("scratchroot");
+    let tmp = scratch.to_str().unwrap();
+
+    // Step 1: the "solo" unit's implementer parks - a real, git-backed unit worktree is
+    // created now, checked out on `rigger/u/solo` at whatever `rigger-run` currently
+    // points to. Nothing has landed yet, so the branch tip trivially equals the run tip -
+    // the empty-diff shape this criterion targets.
+    let (out, err, ok) = run_rigger_envs(root, &["step"], &[("RIGGER_TMPDIR", tmp)]);
+    assert!(ok, "the first step must succeed; stderr:\n{err}");
+    assert!(
+        out.contains(r#""id":"solo/implementer#0""#) && out.contains(r#""done":false"#),
+        "step 1 must park the implementer; got: {out:?}"
+    );
+
+    let live_wt = scratch.join("rigger-wt-solo");
+    assert!(
+        live_wt.exists(),
+        "premise: a parked implementer must already have its unit worktree on disk: {}",
+        live_wt.display()
+    );
+    let live_canary = live_wt.join("canary-live.txt");
+    std::fs::write(&live_canary, "spared\n").unwrap();
+
+    // Plant an UNRELATED worktree in the exact same git shape: a branch whose tip is
+    // (trivially) an ancestor of `rigger-run`, registered under the same scratch root -
+    // but that belongs to NO unit this run ever started. From `sweep_terminal`'s own
+    // git-only view this is indistinguishable from the live unit's worktree above except
+    // for the one thing this criterion adds: it is absent from the current run's
+    // `live_branches`. Stands in for a crashed process's leftover registration without
+    // needing to actually kill a subprocess mid-flight to construct one.
+    let dead_wt = scratch.join("rigger-wt-leftover-orphan");
+    git_ok(
+        root,
+        &[
+            "worktree",
+            "add",
+            dead_wt.to_str().unwrap(),
+            "-b",
+            "rigger/u/leftover-orphan",
+            "rigger-run",
+        ],
+    );
+    let dead_canary = dead_wt.join("canary-dead.txt");
+    std::fs::write(&dead_canary, "reclaimed\n").unwrap();
+
+    // Step 2: no courier result was recorded for "solo/implementer#0", so it is still the
+    // very same outstanding spawn - and the run's `current_run_units` fold still reads it
+    // as LIVE. This step's OWN step-start sweep is the one under test.
+    let (out, err, ok) = run_rigger_envs(root, &["step"], &[("RIGGER_TMPDIR", tmp)]);
+    assert!(ok, "the second step must succeed; stderr:\n{err}");
+    assert!(
+        out.contains(r#""id":"solo/implementer#0""#) && out.contains(r#""done":false"#),
+        "step 2 must still be waiting on the very same outstanding implementer spawn, or \
+         this test proves nothing about the step-start sweep seeing it live; got: {out:?}"
+    );
+
+    // The LIVE unit's worktree survives - the canary proves it was never removed, not
+    // merely that a fresh one now happens to exist at the same path.
+    assert!(
+        live_canary.exists(),
+        "the step-start sweep must SPARE a live unit's worktree even though its branch \
+         tip is an ancestor of the run branch (the empty-diff shape); the canary is gone, \
+         so it was removed (and possibly silently rebuilt) despite the unit still being \
+         live; stderr:\n{err}"
+    );
+
+    // The UNRELATED, not-live worktree in the identical git shape is reclaimed.
+    assert!(
+        !dead_wt.exists(),
+        "the step-start sweep must still reclaim a worktree whose branch belongs to no \
+         live unit of this run, even in the identical empty-diff shape as the live one \
+         above; it survived under {}\nstderr:\n{err}",
+        dead_wt.display()
+    );
+    let list = git_out(root, &["worktree", "list", "--porcelain"]).unwrap_or_default();
+    assert!(
+        !list.contains("rigger/u/leftover-orphan"),
+        "the reclaimed worktree must also be DEREGISTERED from git, not just directory-\
+         deleted: {list}"
+    );
+    assert!(
+        list.contains("rigger/u/solo"),
+        "the live unit's worktree must still be registered with git: {list}"
     );
 }
 
@@ -2674,6 +3390,78 @@ fn native_driver_enforces_an_outer_wall_clock_that_surfaces_an_unbounded_spawn()
         run_worker.contains("report-hung:") && run_worker.contains("report-death:"),
         "both the outer-wall-clock (report-hung) and the dead-worker (report-death) paths must \
          route through the shared fault courier, not a second parallel implementation"
+    );
+}
+
+/// Spec 77, criterion 2 (AGENT SCRATCH IS SPAWN-OWNED): the SCRATCH POLICY prompt text the
+/// native driver builds for every worker must no longer point at the unbucketed
+/// `agent-scratch/` literal or the shared build-cache literal for a worker's OWN manual
+/// cargo - both produced top-level ad-hoc dirs no run/spawn owned (spec 77 Problem: 39G of
+/// `agent-scratch/u77c4-target`-shaped residue). It must instead direct the worker to
+/// `rigger scratch <spawn>` - the exact verb [`cmd_scratch`] implements - to fetch its OWN
+/// rigger-assigned container at runtime, mirroring how a worker already fetches its own
+/// prompt via `rigger prompt` (the driver cannot pass env to a workflow-driven agent, so a
+/// worker-invoked CLI lookup is the only way to hand it a spawn-scoped path).
+///
+/// A source-fixture drift guard (the driver cannot execute in the Rust test harness - see
+/// `rigger_js_source`'s own doc comment): pins the SCRATCH POLICY sentence's structure so a
+/// future edit cannot silently regress it back to a hardcoded, unbucketed literal.
+#[test]
+fn native_driver_scratch_policy_directs_the_worker_to_its_own_spawn_owned_container() {
+    let src = rigger_js_source();
+
+    let policy_at = src
+        .find("SCRATCH POLICY (hard rule):")
+        .expect("the driver must still build a SCRATCH POLICY sentence");
+    // The SCRATCH POLICY block is one or more concatenated template-literal lines, followed
+    // in the prompt-building chain by the pre-existing `heartbeat +` concatenation (spec 10) -
+    // a stable structural marker unrelated to this criterion. Isolating up to it keeps these
+    // assertions immune to unrelated prompt text elsewhere in the file - notably the step
+    // courier's OWN shared build-cache use at a completely different call site, which this
+    // criterion does not touch - while tolerating the SCRATCH POLICY text itself spanning
+    // however many lines it needs.
+    let policy_end = src[policy_at..]
+        .find("heartbeat +")
+        .map(|off| policy_at + off)
+        .expect("the SCRATCH POLICY block must still be followed by the heartbeat concatenation");
+    let policy = &src[policy_at..policy_end];
+
+    // The fix: the worker is told to fetch its OWN container via the new CLI verb, passing
+    // its OWN spawn id...
+    assert!(
+        policy.contains("rigger scratch"),
+        "SCRATCH POLICY must direct the worker to the `rigger scratch` verb to learn its \
+         own container: {policy}"
+    );
+    assert!(
+        policy.contains("${req.id}"),
+        "SCRATCH POLICY must pass the worker's OWN spawn id to `rigger scratch`: {policy}"
+    );
+    // ...manual CARGO_TARGET_DIR is still directed, now inside that same spawn-owned
+    // container...
+    assert!(
+        policy.contains("CARGO_TARGET_DIR"),
+        "SCRATCH POLICY must still direct manual CARGO_TARGET_DIR: {policy}"
+    );
+    // ...never the old unbucketed `agent-scratch/` literal that produced ad-hoc, no-owner
+    // top-level dirs (spec 77 Problem)...
+    assert!(
+        !policy.contains(".rigger/tmp/agent-scratch/"),
+        "SCRATCH POLICY must no longer point at the unbucketed agent-scratch/ literal: {policy}"
+    );
+    // ...and never the shared gate build-cache literal for a worker's OWN manual cargo (a
+    // different concern from the step courier's shared-cache use at a different call site).
+    assert!(
+        !policy.contains(".rigger/tmp/cargo-target"),
+        "SCRATCH POLICY must no longer point manual cargo at the shared build cache: {policy}"
+    );
+
+    // The shared build-cache literal used for the CONDUCTOR's OWN single `rigger step`
+    // invocation is a DIFFERENT concern (one serialized process, not concurrent workers) and
+    // must survive untouched by this fix.
+    assert!(
+        src.contains("CARGO_TARGET_DIR=${REPO}/.rigger/tmp/cargo-target rigger step"),
+        "the step courier's own shared build-cache invocation must be untouched by this fix"
     );
 }
 
@@ -2801,6 +3589,2784 @@ fn step_prints_a_disjoint_two_spawn_wave_then_reports_done() {
         !line.contains("escalated"),
         "a clean convergence (no escalated unit) must omit the escalated field; got: {line:?}"
     );
+    // Nor does a clean convergence carry the push-side `attention` array (spec 69, criterion
+    // 5): neither unit crossed any of the five watching-discipline thresholds, so the field
+    // is omitted entirely and the historical `{"wave":[],"done":true}` wire shape survives
+    // through the REAL compiled binary, not just the implementer's own direct-call
+    // `serde_json::to_string(&Step{..})` unit test.
+    assert!(
+        !line.contains("attention"),
+        "a clean convergence (nothing crossed a watching-discipline threshold) must omit \
+         the attention field; got: {line:?}"
+    );
+}
+
+/// Scaffold a project with ONE standalone review-only stage (`agents: [lens]`, no
+/// singular `agent`) - the `is_fan_out` shape `run_fan_out_stage` drives, the call site
+/// spec 64 criterion 1 closes the review-worktree park-teardown gap for. No `needs`, so
+/// it is ready in the very first wave. Deliberately carries NO `isolation: none`: a
+/// standalone review's throwaway worktree is minted unconditionally whenever a repo is
+/// configured (`review_only_worktree` checks only `self.deps.repo`, never the lens
+/// agent's own isolation setting), so the default (real, git-backed) isolation this
+/// test needs is just the field's absence.
+fn write_standalone_review_workflow(root: &Path) {
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("lens.md"),
+        "---\nid: lens\nmodel: sonnet\ntools: [Read]\n---\nReview it.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: reviewparktest
+defaults:
+  grounder: nop
+  budget: 60
+stages:
+  review:
+    agents: [lens]
+"#,
+    )
+    .unwrap();
+}
+
+/// Spec 64, criterion 1 (the review-worktree half of the split this unit OWNS): a
+/// standalone review stage's lens spawn PARKS - `rigger step` never runs an agent
+/// in-process, it is by construction the parked/stepwise driver - and the stage must
+/// KEEP its throwaway `rigger-review-*` worktree and branch on disk, not tear them
+/// down as `run_fan_out_stage` did unconditionally before this criterion's fix.
+///
+/// This is the TRUE PERIPHERY of that guarantee, not a restatement of it: the
+/// implementer's own tests (`conductor.rs`'s `mod tests`) call the library's `run()`
+/// directly, in ONE test process, against an internal `Stub` driver - they can prove
+/// the internal state machine keeps the worktree alive across the function call, but
+/// they cannot observe whether the guarantee holds at the boundary the spec exists
+/// for: "the parked agent runs BETWEEN conductor processes." This test drives the
+/// actual COMPILED BINARY as a real subprocess against a real git repo and inspects
+/// the result the only way an out-of-process agent (or an operator) could: reading
+/// the filesystem and asking `git` what is registered - nothing in a live Rust call
+/// stack is silently keeping state alive across the process boundary here. It is also
+/// the first CLI-level park test in this file to use REAL isolation at all: every
+/// other `rigger step` park scenario here deliberately sets `isolation: none` to stay
+/// offline and worktree-free, so none of them could have caught a regression here.
+#[test]
+fn step_parks_a_standalone_review_spawn_and_keeps_its_review_worktree() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_standalone_review_workflow(root);
+
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "step must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(r#""id":"review/lens:lens#0""#),
+        "the lens spawn must actually have parked in the wave, or this test proves \
+         nothing about a park; got: {line:?}"
+    );
+    assert!(
+        line.contains(r#""done":false"#),
+        "a spawn still awaiting a result is not a done run; got: {line:?}"
+    );
+
+    // The deterministic review-worktree naming (`conductor.rs`'s `review_worktree_dir`
+    // / `review_branch`, spec 06): `<scratch-root>/rigger-review-<stage>-<attempt>` on
+    // branch `rigger/review/<stage>-<attempt>`, scratch root defaulting to
+    // `<repo>/.rigger/tmp` (no `RIGGER_TMPDIR` set, no `defaults.workdir` configured).
+    let wt_dir = root
+        .join(".rigger")
+        .join("tmp")
+        .join("rigger-review-review-0");
+    assert!(
+        wt_dir.exists(),
+        "a parked standalone-review stage must KEEP its throwaway review worktree on \
+         disk: {}",
+        wt_dir.display()
+    );
+
+    // Registered with git, not just a leftover directory: a bare surviving dir whose
+    // `.git/worktrees` admin entry is gone is exactly the half-fixed state this
+    // criterion rules out (the SAME failure class `worktree_registered_on` guards
+    // against in the implementer's in-process tests, checked here from outside).
+    let list = git_out(root, &["worktree", "list", "--porcelain"])
+        .expect("git worktree list must succeed in the seeded repo");
+    assert!(
+        list.contains("rigger/review/review-0"),
+        "the kept review worktree must stay REGISTERED with git, checked out on its \
+         throwaway branch: {list}"
+    );
+}
+
+/// Spec 64, criterion 1 rounds 2-3 (adv-u1c1-r2-park-swap-swallows-concurrent-genuine-error):
+/// the concurrent-chunk masking defect the round-2/round-3 fixes close in
+/// `run_review_agents_concurrently`. The single-lens test above cannot see this at all - it has
+/// no sibling to race against. The implementer's own regression
+/// (`a_parked_lens_keeps_the_review_worktree_beside_a_sibling_degenerate_halt`, `conductor.rs`'s
+/// `mod tests`) proves the fix's ALGORITHM correct - which of two `Result`s collected into a
+/// `Vec` wins - with a synchronous, single-process `Stub` driver that decides the outcome from a
+/// fixed id set before `run()` is even called. It can never exercise the mechanism this
+/// criterion actually gates: [`rigger::driver::replay::ReplayDriver`] parks a spawn as a durable
+/// event, then REPLAYS it only once a LATER, SEPARATE process finds its result already in the
+/// log - so a real mixed chunk (one sibling genuinely dead, another still open) can only arise
+/// from an out-of-process courier resolving one before the other BETWEEN conductor invocations.
+///
+/// A single `rigger result --error` cannot reproduce a GENUINE terminal error here by itself: a
+/// replayed error on a review-tier spawn is spec 51's territory first - `run_reviewer` reads it
+/// as an infrastructure fault (an externally-killed reviewer, not a verdict) and RE-PARKS a
+/// fresh attempt rather than propagating it, bounded by `REVIEWER_RESPAWN_BOUND`. Exhausting
+/// every one of a lens's spawns this way converges on the SAME halt as an exhausted
+/// degenerate-reviewer (Gap 18) - `run_wave`'s dedicated `is_degenerate_reviewer` arm, the
+/// second genuine-error shape round 3 names - which is exactly the boundary condition this test
+/// drives to, deterministically, through the real binary: a courier that posts nothing but
+/// failures for lens "a"'s spawn and every one of its respawns, while lens "b" is left
+/// unanswered throughout and so re-parks in the SAME concurrent chunk on every step, including
+/// the final one that halts. Two requirements from that one real halt: it must surface LOUDLY
+/// (non-zero exit, the dead reviewer named on stderr) - round 2's swap-to-front bug could mask a
+/// co-chunked genuine error behind a sibling's park - AND the shared review worktree must
+/// survive anyway - round 1's original bug tore it down whenever the propagated result was not
+/// itself a park.
+#[test]
+fn step_halts_on_an_exhausted_reviewer_beside_a_parked_sibling_and_keeps_the_review_worktree() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    for id in ["a", "b"] {
+        std::fs::write(
+            rigger.join("agents").join(format!("{id}.md")),
+            format!("---\nid: {id}\nmodel: sonnet\ntools: [Read]\n---\nReview it.\n"),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: reviewracetest
+defaults:
+  grounder: nop
+  budget: 60
+stages:
+  review:
+    agents: [a, b]
+"#,
+    )
+    .unwrap();
+
+    // Step 1: neither lens has a recorded result yet, so the concurrent chunk parks BOTH -
+    // the real fan-out shape a two-lens review panel takes on nearly every unit.
+    let (out1, err1, ok1) = run_rigger(root, &["step"]);
+    assert!(ok1, "the first step must succeed; stderr: {err1}");
+    assert!(
+        out1.contains(r#""id":"review/lens:a#0""#) && out1.contains(r#""id":"review/lens:b#0""#),
+        "both lenses must actually have parked in the same wave, or this test proves nothing \
+         about a mixed chunk; got: {out1:?}"
+    );
+
+    // An out-of-process courier posts nothing but failures for "a" - its original spawn, then
+    // each deterministic `~retryN` respawn `run_reviewer` re-parks in turn (spec 51's
+    // reviewer-error-re-park) - while "b" is left unanswered throughout. `spawn_retry_id`'s
+    // exact naming (retry 0 is the plain id, retry N>0 appends `~retryN`) is asserted by
+    // `rigger::spawn`'s own doc tests; this loop reconstructs it rather than hardcoding the
+    // respawn bound, so it tracks whatever that bound is. Capped well above any real bound so a
+    // genuine infinite-repark regression fails LOUDLY here instead of hanging the suite.
+    let mut ok_step = true;
+    let mut last_err = String::new();
+    let mut retry = 0u32;
+    while ok_step {
+        assert!(
+            retry <= 8,
+            "the reviewer-error-repark loop did not halt within a sane number of rounds - \
+             either the respawn bound regressed or this test's premise is wrong"
+        );
+        let id = if retry == 0 {
+            "review/lens:a#0".to_string()
+        } else {
+            format!("review/lens:a#0~retry{retry}")
+        };
+        let (_o, err_r, ok_r) = run_rigger(
+            root,
+            &["result", &id, "boundary-genuine-crash-marker", "--error"],
+        );
+        assert!(
+            ok_r,
+            "recording a failure for {id:?} must succeed; stderr: {err_r}"
+        );
+        let (_out, err_s, ok_s) = run_rigger(root, &["step"]);
+        ok_step = ok_s;
+        last_err = err_s;
+        retry += 1;
+    }
+
+    // The exhausted reviewer must halt LOUDLY, naming the dead reviewer - not be silently
+    // masked by "b"'s park in the same final concurrent chunk (the round-2 defect).
+    assert!(
+        last_err.contains("\"review\"") && last_err.contains("\"a\"") && last_err.contains("lens"),
+        "the halt must name the exhausted reviewer (stage, tier, agent): {last_err}"
+    );
+
+    // The shared review worktree survives anyway - "b" genuinely parked in this same final
+    // chunk and resumes in exactly this tree from a later conductor process.
+    let wt_dir = root
+        .join(".rigger")
+        .join("tmp")
+        .join("rigger-review-review-0");
+    assert!(
+        wt_dir.exists(),
+        "a PARKED sibling must keep the shared review worktree even when a co-chunked lens \
+         exhausted into a loud halt, across a REAL process boundary: {}",
+        wt_dir.display()
+    );
+    let list = git_out(root, &["worktree", "list", "--porcelain"])
+        .expect("git worktree list must succeed in the seeded repo");
+    assert!(
+        list.contains("rigger/review/review-0"),
+        "the kept review worktree must stay REGISTERED with git: {list}"
+    );
+}
+
+/// Scaffold a project with ONE full unit stage - `agent: worker` (so a REAL, gated
+/// implementer runs and its OWN durable worktree is created), gated by a trivial inline
+/// `ok` gate, then reviewed by TWO lenses in its per-unit review panel. Unlike
+/// [`write_standalone_review_workflow`] (no `agent:`, `run_fan_out_stage`'s throwaway
+/// `rigger-review-*` worktree), this is the OTHER worktree kind spec 64 criterion 1
+/// covers: the unit's own durable `rigger-wt-<unit>` worktree on its `rigger/u/<unit>`
+/// branch, torn down (or not) by `run_stage`'s `parked_unwind` gate rather than
+/// `run_fan_out_stage`'s. No `isolation: none` on any agent, for the same reason
+/// [`write_standalone_review_workflow`] omits it: this test needs the real, git-backed
+/// worktree the round-4 regression tears down, not the offline no-worktree shape most
+/// other `step` fixtures deliberately choose.
+fn write_unit_review_lenses_workflow(root: &Path) {
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
+    )
+    .unwrap();
+    for id in ["a", "b"] {
+        std::fs::write(
+            rigger.join("agents").join(format!("{id}.md")),
+            format!("---\nid: {id}\nmodel: sonnet\ntools: [Read]\n---\nReview it.\n"),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: unitworktreeparktest
+defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok: { run: "true", kind: core }
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    on_pass: none
+    review:
+      lenses: [a, b]
+"#,
+    )
+    .unwrap();
+}
+
+/// Spec 64, criterion 1, round 4 (sdet-u1c1-r3-unit-worktree-torn-down-beside-genuine-park,
+/// upheld live by adv2-u1c1-r4-severe-finding-upheld-live): the MIRROR IMAGE, at the real
+/// binary boundary, of `step_halts_on_an_exhausted_reviewer_beside_a_parked_sibling_and_
+/// keeps_the_review_worktree` above - for the UNIT's own durable worktree rather than a
+/// standalone review's throwaway one.
+///
+/// Round 3 wired `run_review_agents_concurrently`'s out-of-band `any_parked` signal through
+/// to `run_fan_out_stage` (the review-worktree call site) but not through `review_unit` to
+/// `run_stage`'s own pre-existing `parked_unwind` gate (the unit-worktree call site) -
+/// `review_unit` passed the shared function a throwaway `AtomicBool` it never read, so
+/// `run_stage`'s `parked_unwind` derived solely from the single `Result`
+/// `run_single_stage` propagated. Round 3's own swap (prioritize a genuine terminal error
+/// over a co-chunked park, so the error is what a caller's `?` propagates) then had a side
+/// effect nobody had measured on THIS path: a lens that genuinely crashes correctly
+/// propagates its error, but the UNIT's own worktree was torn down out from under a
+/// SIBLING lens that is genuinely parked and will resume in that exact worktree from a
+/// later conductor process - the identical defect class spec 64 c1 exists to close, just
+/// recurring on the other worktree kind.
+///
+/// This is the TRUE PERIPHERY of round 4's fix, not a restatement of it: the implementer's
+/// own regression (`a_parked_lens_keeps_the_unit_worktree_beside_a_genuine_sibling_crash`,
+/// `conductor.rs`'s `mod tests`) proves the fix's ALGORITHM correct with a synchronous,
+/// single-process `Stub` driver that decides both lenses' outcomes from a fixed id set
+/// before `run()` is even called. It cannot exercise the mechanism this criterion actually
+/// gates: [`rigger::driver::replay::ReplayDriver`] parks a spawn as a durable event, then
+/// REPLAYS it only once a LATER, SEPARATE process finds its result already in the log - so
+/// a real mixed chunk (one sibling genuinely dead, another still open) can only arise from
+/// an out-of-process courier resolving one before the other BETWEEN conductor invocations.
+/// It also drives a REAL implementer through a REAL gate first, so the worktree under test
+/// is the unit's own durable checkpoint (`rigger-wt-solo` on `rigger/u/solo`), not a
+/// synthetic one a Stub driver never actually created on disk.
+///
+/// Lens "a" PARKS and is left unanswered every step (re-parking each time); lens "b" is
+/// exhausted via the same reviewer-error re-park mechanism (spec 51) round 2's test uses -
+/// a plain recorded error re-parks a fresh `~retryN` attempt (bounded by
+/// `REVIEWER_RESPAWN_BOUND`) until it converges on a genuine `is_degenerate_reviewer` halt.
+/// Two requirements from that one real halt: "b"'s exhaustion must surface LOUDLY (spec
+/// 19c), not be masked by "a"'s park in the same final concurrent chunk; and the UNIT's
+/// OWN worktree must survive anyway, because "a" genuinely parked and will resume in
+/// exactly this tree from a later conductor process.
+#[test]
+fn step_halts_on_an_exhausted_lens_beside_a_parked_sibling_and_keeps_the_unit_worktree() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_unit_review_lenses_workflow(root);
+
+    // Step 1: the unit is ready, so its implementer spawn parks - the real, git-backed
+    // isolation this fixture deliberately keeps means the unit's own durable worktree is
+    // created right here, before the implementer has even produced a diff.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/implementer#0""#) && out.contains(r#""done":false"#),
+        "step 1 parks the implementer; got: {out:?}"
+    );
+
+    let wt_dir = root.join(".rigger").join("tmp").join("rigger-wt-solo");
+    assert!(
+        wt_dir.exists(),
+        "a parked implementer must already have its unit worktree on disk (round 1's own \
+         criterion, load-bearing for the rest of this test): {}",
+        wt_dir.display()
+    );
+
+    // Write the implementer's "diff" directly into the worktree it was already handed -
+    // the shape a real out-of-process agent takes (it edits files in its assigned tree,
+    // then reports done), never a CLI-supplied patch.
+    std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
+    let (_o, err, ok) = run_rigger(
+        root,
+        &["result", "solo/implementer#0", "implemented the unit"],
+    );
+    assert!(
+        ok,
+        "recording the implementer result must succeed; stderr: {err}"
+    );
+
+    // Step 2: the implementer replays, the pre-gate commit lands the written file, the `ok`
+    // gate passes, and the per-unit review parks BOTH lenses in one concurrent chunk - the
+    // real fan-out shape a two-lens panel takes on nearly every unit.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the second step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/lens:a#0""#) && out.contains(r#""id":"solo/lens:b#0""#),
+        "both lenses must actually have parked in the same wave, or this test proves nothing \
+         about a mixed chunk; got: {out:?}"
+    );
+
+    // An out-of-process courier posts nothing but failures for "b" - its original spawn,
+    // then each deterministic `~retryN` respawn `run_reviewer` re-parks in turn (spec 51's
+    // reviewer-error-re-park) - while "a" is left unanswered throughout, so it re-parks in
+    // the same chunk on every step including the final one that halts. Capped well above
+    // any real bound so a genuine infinite-repark regression fails LOUDLY here instead of
+    // hanging the suite.
+    let mut ok_step = true;
+    let mut last_err = String::new();
+    let mut retry = 0u32;
+    while ok_step {
+        assert!(
+            retry <= 8,
+            "the reviewer-error-repark loop did not halt within a sane number of rounds - \
+             either the respawn bound regressed or this test's premise is wrong"
+        );
+        let id = if retry == 0 {
+            "solo/lens:b#0".to_string()
+        } else {
+            format!("solo/lens:b#0~retry{retry}")
+        };
+        let (_o, err_r, ok_r) = run_rigger(
+            root,
+            &["result", &id, "boundary-genuine-crash-marker", "--error"],
+        );
+        assert!(
+            ok_r,
+            "recording a failure for {id:?} must succeed; stderr: {err_r}"
+        );
+        let (_out, err_s, ok_s) = run_rigger(root, &["step"]);
+        ok_step = ok_s;
+        last_err = err_s;
+        retry += 1;
+    }
+
+    // The exhausted lens must halt LOUDLY, naming the dead reviewer - not be silently
+    // masked by "a"'s park in the same final concurrent chunk (the round-2 defect class,
+    // now proven closed on the unit-worktree call site round 4 fixes).
+    assert!(
+        last_err.contains("\"solo\"") && last_err.contains("\"b\"") && last_err.contains("lens"),
+        "the halt must name the exhausted reviewer (stage, tier, agent): {last_err}"
+    );
+
+    // The UNIT's OWN worktree survives anyway - "a" genuinely parked in this same final
+    // chunk and resumes in exactly this tree from a later conductor process. This is the
+    // round-4 regression: pre-round-4, "b"'s genuine halt correctly propagated but tore
+    // this SAME worktree down out from under "a"'s park.
+    assert!(
+        wt_dir.exists(),
+        "a PARKED sibling must keep the UNIT's own worktree even when a co-chunked lens \
+         exhausted into a loud halt, across a REAL process boundary: {}",
+        wt_dir.display()
+    );
+    let list = git_out(root, &["worktree", "list", "--porcelain"])
+        .expect("git worktree list must succeed in the seeded repo");
+    assert!(
+        list.contains("rigger/u/solo"),
+        "the kept unit worktree must stay REGISTERED with git, checked out on its durable \
+         unit branch: {list}"
+    );
+}
+
+/// Scaffold a project with ONE full unit stage - `agent: worker`, gated by a trivial
+/// always-passing inline gate, `on_pass: merge`, and NO review panel at all
+/// (`review.is_empty()`, "the historical implement-then-integrate behavior" `ReviewPanel`
+/// itself documents) - the minimal shape that reaches a genuine `Ok(true)` integrate. Real
+/// git isolation (no `isolation: none`, same reasoning as
+/// [`write_unit_review_lenses_workflow`]) so the unit's own durable `rigger-wt-<unit>`
+/// worktree on `rigger/u/<unit>` is the SAME checkpoint kind `run_stage`'s
+/// terminal-teardown gate covers.
+fn write_reviewless_git_unit_workflow(root: &Path) {
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: terminalintegratetest
+defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok: { run: "true", kind: core }
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    on_pass: merge
+"#,
+    )
+    .unwrap();
+}
+
+/// The escalating twin of [`write_reviewless_git_unit_workflow`]: identical shape, but
+/// `defaults.max_retries: 1` means `safety::remediate(0, 1)` escalates on the FIRST failed
+/// attempt (`bounded_then_escalates` in `src/safety.rs` pins that arithmetic), so a single
+/// crashed implementer spawn - never a park - is enough to drive the unit terminal without
+/// ever integrating.
+fn write_reviewless_git_escalating_unit_workflow(root: &Path) {
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: terminalescalatetest
+defaults:
+  grounder: nop
+  budget: 60
+  max_retries: 1
+gates:
+  ok: { run: "true", kind: core }
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    on_pass: merge
+"#,
+    )
+    .unwrap();
+}
+
+/// Spec 64, criterion 2 (TERMINAL TEARDOWN IS UNCHANGED), the "in both drivers" half no
+/// existing test measures at the real binary boundary. The implementer's own regression
+/// (`a_units_worktree_cache_and_branch_are_all_reclaimed_on_a_successful_integrate`,
+/// `conductor.rs`'s `mod tests`) proves the guarantee with a synchronous, single-process
+/// `Stub` driver whose spawn NEVER parks - `any_parked` starts false and stays false for the
+/// whole call, so that test cannot exercise the shape every REAL unit actually takes:
+/// [`rigger::driver::replay::ReplayDriver`] parks the implementer as a durable event on the
+/// FIRST `rigger step`, and only REPLAYS its result (posted by an out-of-process courier,
+/// here `rigger result`) on a LATER, SEPARATE process. This drives that real two-process
+/// lifecycle - park, then terminate - through the compiled binary against a real git repo,
+/// and inspects the result the only way an out-of-process operator could: the filesystem
+/// and `git`, never an internal helper.
+#[test]
+fn step_reclaims_the_units_worktree_and_deletes_its_branch_on_a_clean_integrate() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_reviewless_git_unit_workflow(root);
+
+    // Step 1: the unit is ready, so its implementer parks - the real, git-backed isolation
+    // means the unit's own durable worktree is created right here, before the implementer
+    // has produced any diff.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/implementer#0""#) && out.contains(r#""done":false"#),
+        "step 1 parks the implementer; got: {out:?}"
+    );
+
+    let wt_dir = root.join(".rigger").join("tmp").join("rigger-wt-solo");
+    assert!(
+        wt_dir.exists(),
+        "a parked implementer must already have its unit worktree on disk (load-bearing for \
+         the rest of this test): {}",
+        wt_dir.display()
+    );
+
+    // Write the implementer's "diff" directly into the worktree it was already handed - the
+    // shape a real out-of-process agent takes - then record its result.
+    std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
+    let (_o, err, ok) = run_rigger(
+        root,
+        &["result", "solo/implementer#0", "implemented the unit"],
+    );
+    assert!(
+        ok,
+        "recording the implementer result must succeed; stderr: {err}"
+    );
+
+    // Step 2: the implementer replays, the pre-gate commit lands the written file, the `ok`
+    // gate passes inline, there is no review panel to run, and with `on_pass: merge` the
+    // stage reaches a genuine TERMINAL `Ok(true)` in THIS process - through the real replay
+    // driver, across the process boundary step 1 opened.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the second step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""done":true"#),
+        "every spawn now has a result and the stage integrates, so the run converges; got: {out:?}"
+    );
+    assert!(
+        !out.contains("escalated"),
+        "a clean integrate must not carry an escalated unit; got: {out:?}"
+    );
+
+    // The unit's own worktree is gone...
+    assert!(
+        !wt_dir.exists(),
+        "the unit's worktree must be reclaimed after a clean integrate: {}",
+        wt_dir.display()
+    );
+    let list = git_out(root, &["worktree", "list", "--porcelain"]).unwrap_or_default();
+    assert!(
+        !list.contains("rigger-wt-solo"),
+        "the reclaimed worktree must be fully DEREGISTERED with git, not a stale admin entry \
+         pointing at a removed dir: {list}"
+    );
+
+    // ...and its durable branch is DELETED - the checkpoint already served its purpose (the
+    // merged work now lives on the run branch) - the one half of "identical to today's
+    // behavior" the implementer's own tests, calling `run()` directly in one process, never
+    // observe.
+    assert!(
+        git_out(
+            root,
+            &["rev-parse", "--verify", "-q", "refs/heads/rigger/u/solo"]
+        )
+        .is_none(),
+        "a successfully integrated unit's branch must be deleted, not left on disk"
+    );
+}
+
+/// Spec 64, criterion 2's other half at the real binary boundary - the mirror image of
+/// [`step_reclaims_the_units_worktree_and_deletes_its_branch_on_a_clean_integrate`] above,
+/// and of the implementer's own
+/// `a_units_worktree_is_reclaimed_but_its_branch_survives_a_terminal_escalation`
+/// (`conductor.rs`'s `mod tests`), which proves the same guarantee with a synchronous,
+/// single-process `Stub` driver that never parks at all. Here the implementer's crash is a
+/// REPLAYED `SpawnResult` a LATER process reads back (never a park), so remediation exhausts
+/// into `UnitEscalated` only once this second real process folds it - the shape the
+/// implementer's own comment notes no existing test could drive through a real repo. Only a
+/// successful `Ok(true)` integrate deletes the branch (`run_stage`, `src/conductor.rs`), and
+/// this path never reaches one, so the worktree must still be reclaimed while the branch
+/// survives as the human's evidence.
+#[test]
+fn step_reclaims_the_units_worktree_but_keeps_its_branch_on_a_terminal_escalation() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_reviewless_git_escalating_unit_workflow(root);
+
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/implementer#0""#) && out.contains(r#""done":false"#),
+        "step 1 parks the implementer; got: {out:?}"
+    );
+
+    let wt_dir = root.join(".rigger").join("tmp").join("rigger-wt-solo");
+    assert!(
+        wt_dir.exists(),
+        "a parked implementer must already have its unit worktree on disk (load-bearing for \
+         the rest of this test): {}",
+        wt_dir.display()
+    );
+
+    // The out-of-process courier reports a genuine crash, never a verdict.
+    let (_o, err, ok) = run_rigger(
+        root,
+        &[
+            "result",
+            "solo/implementer#0",
+            "boundary-genuine-crash-marker",
+            "--error",
+        ],
+    );
+    assert!(ok, "recording the crash must succeed; stderr: {err}");
+
+    // Step 2: the crash replays, `max_retries: 1` escalates on this FIRST failed attempt (no
+    // second implementer spawn), and the run reaches a fixpoint AROUND the escalated unit -
+    // terminal, never parked.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok,
+        "an escalation-fixpoint step still exits 0; stderr: {err}"
+    );
+    assert!(
+        out.contains(r#""done":true"#) && out.contains(r#""escalated":["solo"]"#),
+        "the crash must exhaust remediation into an escalated fixpoint; got: {out:?}"
+    );
+
+    // The unit's worktree is reclaimed exactly as a clean integrate's...
+    assert!(
+        !wt_dir.exists(),
+        "the unit's worktree must be reclaimed after a terminal escalation: {}",
+        wt_dir.display()
+    );
+    let list = git_out(root, &["worktree", "list", "--porcelain"]).unwrap_or_default();
+    assert!(
+        !list.contains("rigger-wt-solo"),
+        "the reclaimed worktree must be fully DEREGISTERED with git, not a stale admin entry \
+         pointing at a removed dir: {list}"
+    );
+
+    // ...but its branch SURVIVES as the human's evidence - only a successful integrate
+    // deletes it, and this unit never integrated.
+    assert!(
+        git_out(
+            root,
+            &["rev-parse", "--verify", "-q", "refs/heads/rigger/u/solo"]
+        )
+        .is_some(),
+        "an escalated unit's branch must be RETAINED, not deleted alongside its worktree"
+    );
+}
+
+/// Spec 64, criterion 3 (ensure-on-park, defense in depth: `Worktree::ensure_present` in
+/// `src/worktree.rs`, called from `run_single_stage` in `src/conductor.rs` immediately
+/// before `review_unit`): the conductor's next hand-off restores a unit worktree an
+/// out-of-band actor deleted, before the review tier's agent consumes it.
+///
+/// The implementer's own regression
+/// (`review_unit_restores_a_worktree_a_gate_deleted_out_of_band`, `conductor.rs`'s `mod
+/// tests`) proves the call site is reached, using a synchronous, single-process `Stub`
+/// driver and a `RecordingRunner` whose `run` fabricates the deletion entirely in memory -
+/// it never runs a real gate subprocess, never creates a real git-registered worktree, and
+/// so never exercises the REAL `Worktree::create` adopt-or-create machinery
+/// `ensure_present` actually calls to restore one. This test drives a REAL implementer
+/// into a REAL, git-backed unit worktree, then a REAL `sh -c` gate whose OWN command
+/// deletes that worktree directory wholesale (leaving its `.git/worktrees/<id>` admin
+/// entry behind - the "dir gone, admin entry stale" shape the historical fault took, per
+/// this spec's own Goal section) before reporting PASS, and checks purely from outside -
+/// filesystem existence, `git worktree list --porcelain`, and `git rev-parse` - that the
+/// lens spawn parked immediately afterward finds the worktree restored, registered, and
+/// checked out at the unit branch's current tip.
+///
+/// Round 2 also reads the real event store this run wrote to and checks the `verified`
+/// `UnitStatus`'s stamped `worktree_sha`, closing adjudication round 1's UPHELD reject
+/// (`sdet-u3c3-verified-sha-stamped-before-restore`: the sha was stamped BEFORE the
+/// restore, silently empty in exactly this scenario) at the same real-binary boundary,
+/// not just through the implementer's in-crate `Stub`-driven regression.
+#[test]
+fn step_restores_the_unit_worktree_a_gate_deletes_before_the_review_spawn() {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore};
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("agents").join("a.md"),
+        "---\nid: a\nmodel: sonnet\ntools: [Read]\n---\nReview it.\n",
+    )
+    .unwrap();
+
+    // A marker OUTSIDE the worktree (the scratch root itself, `.rigger/tmp`, which the
+    // deletion below never touches) self-reports whether the gate's own `rm -rf` really
+    // removed the directory it ran in - the non-vacuity check a single opaque subprocess
+    // call otherwise denies an outside observer.
+    let marker = rigger.join("tmp").join("gate-deleted-marker.txt");
+    let marker_str = marker.to_str().unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        format!(
+            r#"name: ensureonparktest
+defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok:
+    run: 'd=$(pwd); cd / && rm -rf "$d"; ( [ -d "$d" ] && echo present || echo absent ) > "{marker}"'
+    kind: core
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    on_pass: none
+    review:
+      lenses: [a]
+"#,
+            marker = marker_str
+        ),
+    )
+    .unwrap();
+
+    // Step 1: the unit is ready, so its implementer spawn parks - the real, git-backed
+    // isolation this fixture deliberately keeps means the unit's own durable worktree is
+    // created right here, before the implementer has produced anything.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/implementer#0""#) && out.contains(r#""done":false"#),
+        "step 1 parks the implementer; got: {out:?}"
+    );
+
+    let wt_dir = root.join(".rigger").join("tmp").join("rigger-wt-solo");
+    assert!(
+        wt_dir.exists(),
+        "premise: a parked implementer must already have its unit worktree on disk: {}",
+        wt_dir.display()
+    );
+
+    // Write the implementer's "diff" directly into the worktree it was already handed,
+    // the shape a real out-of-process agent takes, never a CLI-supplied patch.
+    std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
+
+    // Commit it immediately, ahead of `run_single_stage`'s own pre-gate commit (which
+    // only runs once step 2 below reaches this unit again). This is NOT modeling the
+    // implementer (a real agent never commits); it defends this test's premise against
+    // an UNRELATED, already out-of-scope hazard: the step-start sweep on this branch
+    // (`Worktree::sweep_terminal`) has no liveness conjunct yet (spec 64 criterion 4, a
+    // sibling unit not merged here) and force-removes any worktree whose branch has not
+    // yet diverged from the run branch - exactly this window, between `rigger result`
+    // and this unit's own first commit. A previously-recorded hazard in this same
+    // codebase names the identical fault and the identical mitigation (advance the
+    // branch past the run branch immediately, so `merge-base --is-ancestor` is false and
+    // the sweep skips it) - applied here so this test exercises ONLY criterion 3's own
+    // surface, never criterion 4's still-open gap.
+    for args in [&["add", "-A"][..], &["commit", "-q", "-m", "wip"]] {
+        let ok = Command::new("git")
+            .args(args)
+            .current_dir(&wt_dir)
+            .status()
+            .expect("git must be runnable")
+            .success();
+        assert!(
+            ok,
+            "git {args:?} must succeed committing the test's setup diff"
+        );
+    }
+
+    let (_o, err, ok) = run_rigger(
+        root,
+        &["result", "solo/implementer#0", "implemented the unit"],
+    );
+    assert!(
+        ok,
+        "recording the implementer result must succeed; stderr: {err}"
+    );
+
+    // Step 2: the implementer replays, the pre-gate commit lands the file, and the `ok`
+    // gate runs - as ITS OWN side effect it deletes the worktree wholesale, then still
+    // reports PASS (a real `rm -rf` exits 0). If `run_single_stage` did not restore the
+    // worktree via `Worktree::ensure_present` before spawning the review tier, the
+    // lens's assigned dir would be handed out already gone.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the second step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/lens:a#0""#) && out.contains(r#""done":false"#),
+        "step 2 must reach and park the review tier's lens spawn, or the gate never \
+         passed and this test proves nothing about ensure-on-park; got: {out:?}\n\
+         stderr: {err}"
+    );
+
+    // Non-vacuity: the gate's own command really did remove the worktree wholesale
+    // before the assertions below run, self-reported from a marker location the
+    // deletion itself never touches.
+    let marker_content = std::fs::read_to_string(&marker).unwrap_or_default();
+    assert_eq!(
+        marker_content.trim(),
+        "absent",
+        "premise: the gate's own rm -rf must actually have removed the worktree \
+         wholesale, or this test proves nothing about a restore: {marker_content:?}"
+    );
+
+    // The review tier's lens spawn found the worktree RESTORED, not the gone dir a
+    // gate-side deletion would otherwise hand out.
+    assert!(
+        wt_dir.exists(),
+        "the review tier's lens spawn must find the unit worktree restored: {}",
+        wt_dir.display()
+    );
+    let list = git_out(root, &["worktree", "list", "--porcelain"])
+        .expect("git worktree list must succeed in the seeded repo");
+    assert!(
+        list.contains("rigger/u/solo"),
+        "the restored worktree must be REGISTERED with git again, not just a leftover \
+         dir nobody re-added: {list}"
+    );
+
+    // Checked out at the unit branch's CURRENT tip (the implementer's own committed
+    // file), never rewound or re-created from an older point.
+    assert!(
+        wt_dir.join("work.rs").exists(),
+        "the restored worktree must be checked out at the implementer's own committed \
+         tip, containing its landed file: {}",
+        wt_dir.display()
+    );
+    let branch_tip = git_out(root, &["rev-parse", "rigger/u/solo"])
+        .expect("the unit branch must resolve a tip after the pre-gate commit");
+    let head_after = git_out(&wt_dir, &["rev-parse", "HEAD"]).expect(
+        "the restored worktree must resolve its own HEAD - a bare leftover dir with no \
+         `.git` admin link would fail this",
+    );
+    assert_eq!(
+        head_after, branch_tip,
+        "the restored worktree must be checked out at the SAME tip the durable unit \
+         branch carries - never rewound or re-created from an older point"
+    );
+
+    // Round 2 (adjudication reject sdet-u3c3-verified-sha-stamped-before-restore, UPHELD):
+    // the FIRST attempt stamped the `verified` event's `worktree_sha` BEFORE
+    // `ensure_present` restored the gate-deleted worktree, so `head_sha_of` silently read
+    // an absent directory and stamped an empty sha. The fix reordered the restore ahead of
+    // the stamp. Prove that reorder holds through the REAL binary, not just the
+    // implementer's own in-crate `Stub`-driven regression
+    // (`verified_worktree_sha_is_stamped_after_a_gate_side_deletion_is_restored`,
+    // `conductor.rs`'s `mod tests`): read the `verified` `UnitStatus` this same run just
+    // recorded, from the real sqlite-backed store this binary wrote to, and check its
+    // stamped `worktree_sha` is a real 40-hex sha agreeing with the restored tree's HEAD -
+    // never empty, never a stale snapshot taken during the deletion window.
+    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    let events = store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap();
+    let verified = events
+        .iter()
+        .find(|e| {
+            e.type_ == rigger::ledger::TYPE_UNIT_STATUS
+                && String::from_utf8_lossy(&e.data).contains(r#""status":"verified"#)
+        })
+        .expect("a verified status must have been recorded for the unit before review");
+    let verified_sha = verified
+        .meta
+        .get(rigger::conductor::META_WORKTREE_SHA)
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        verified_sha.len(),
+        40,
+        "the verified event's worktree_sha must be a real 40-hex sha, not empty - it must \
+         be stamped AFTER the gate-deleted worktree is restored, not before: {verified_sha:?}"
+    );
+    assert!(
+        verified_sha.chars().all(|c| c.is_ascii_hexdigit()),
+        "the stamped sha must be real hex: {verified_sha:?}"
+    );
+    assert_eq!(
+        verified_sha, head_after,
+        "the stamped sha must be the RESTORED tree's actual HEAD - the one the review tier \
+         is about to judge, not a snapshot taken during the deletion window"
+    );
+}
+
+/// Spec 64, criterion 3, adjudication round 2 (`adv-u3c3-ensure-present-covers-only-one-of-
+/// three-same-function-windows`, UPHELD): the round-1 fix's single `ensure_present` call
+/// site (guarded above) protects only the window before the review tier spawns. The SAME
+/// `run_single_stage` function reaches `integrate_and_emit` again, after a SECOND real
+/// gate run, on two more doors with no re-assert in between - the main loop's post-approval
+/// EXHAUSTIVE gate door being the one reachable end-to-end through the CLI without seeding
+/// events directly. Round 2 centralized the fix INSIDE `integrate_and_emit` itself (`src/
+/// conductor.rs`, right before `wt.changed_since_base()`), a single call shared by every
+/// dir-touching integrate door.
+///
+/// The implementer's own regression
+/// (`a_live_approved_unit_restores_a_worktree_the_integrate_door_exhaustive_gate_deleted`,
+/// `conductor.rs`'s `mod tests`) proves this using the in-process `Stub` driver and
+/// `RecordingRunner::deleting_worktree`, which fabricates the deletion in memory and never
+/// exercises the real `Worktree::create` adopt-or-create machinery or a real git merge.
+/// This test drives a REAL implementer into a REAL git-backed unit worktree, gets a REAL
+/// adjudicator approval, and only THEN lets a REAL `sh -c` gate - scoped with `inputs`
+/// that never match the (grounder-less, always-empty) blast radius, so it is skipped by
+/// every narrowed inner-loop run and fires for the FIRST time only at the exhaustive
+/// integrate door - delete the worktree wholesale before reporting PASS. If
+/// `integrate_and_emit` did not restore it first, `wt.changed_since_base()` would shell
+/// into a directory that no longer exists and the whole wave would collapse to a hard
+/// error (independently reproduced empirically by the adversary: `git -C <missing-dir>`
+/// exits 128, unrecognized by any of `run_stage`'s named sentinel arms) - strictly worse
+/// than the review-tier-only window the round-1 fix alone covers. Checked purely from
+/// outside: the step call must still finish cleanly (no halt, no collapsed wave), the unit
+/// must reach `integrated`, and the approved file must land in the base repo's working
+/// tree.
+#[test]
+fn step_integrates_after_the_exhaustive_gate_deletes_the_worktree_post_approval() {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore};
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("agents").join("judge.md"),
+        "---\nid: judge\nmodel: sonnet\ntools: [Read]\n---\nAdjudicate it.\n",
+    )
+    .unwrap();
+
+    // A marker OUTSIDE the worktree self-reports whether the door gate's own `rm -rf`
+    // really ran (and when) - the non-vacuity check a single opaque subprocess call
+    // otherwise denies an outside observer.
+    let marker = rigger.join("tmp").join("door-gate-deleted-marker.txt");
+    let marker_str = marker.to_str().unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        format!(
+            r#"name: ensureonparkintegratetest
+defaults:
+  grounder: nop
+  budget: 60
+gates:
+  door:
+    run: 'd=$(pwd); cd / && rm -rf "$d"; ( [ -d "$d" ] && echo present || echo absent ) > "{marker}"'
+    kind: core
+    inputs: [never-matches/**]
+stages:
+  solo:
+    agent: worker
+    gates: [door]
+    review:
+      adjudicator: judge
+"#,
+            marker = marker_str
+        ),
+    )
+    .unwrap();
+
+    // Step 1: the implementer parks; its real, git-backed unit worktree is created now.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/implementer#0""#) && out.contains(r#""done":false"#),
+        "step 1 parks the implementer; got: {out:?}"
+    );
+
+    let wt_dir = root.join(".rigger").join("tmp").join("rigger-wt-solo");
+    assert!(
+        wt_dir.exists(),
+        "premise: a parked implementer must already have its unit worktree on disk: {}",
+        wt_dir.display()
+    );
+
+    // Write the implementer's "diff" directly into the worktree it was already handed, and
+    // commit it immediately - the same premise-defending mitigation the sibling test above
+    // documents in full: it advances the unit branch past the run branch before the
+    // step-start sweep (spec 64 criterion 4, unmerged here) can see an undiverged tip.
+    std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
+    for args in [&["add", "-A"][..], &["commit", "-q", "-m", "wip"]] {
+        let ok = Command::new("git")
+            .args(args)
+            .current_dir(&wt_dir)
+            .status()
+            .expect("git must be runnable")
+            .success();
+        assert!(
+            ok,
+            "git {args:?} must succeed committing the test's setup diff"
+        );
+    }
+
+    let (_o, err, ok) = run_rigger(
+        root,
+        &["result", "solo/implementer#0", "implemented the unit"],
+    );
+    assert!(
+        ok,
+        "recording the implementer result must succeed; stderr: {err}"
+    );
+
+    // Step 2: the implementer replays and the pre-gate commit lands the file. The `door`
+    // gate is scoped with `inputs` that never intersect the unit's blast radius (no
+    // grounder is configured, so the radius is always empty) - the narrowed inner loop
+    // therefore SKIPS it entirely, and review proceeds straight to parking the adjudicator.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the second step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/adjudicator#0""#) && out.contains(r#""done":false"#),
+        "step 2 must gate (skipping the scoped door gate) and park the adjudicator; got: \
+         {out:?}\nstderr: {err}"
+    );
+    assert!(
+        !marker.exists(),
+        "premise: the door gate must NOT have run yet - it is scoped away from the empty \
+         blast radius in the narrowed inner loop, so this step must never have executed it"
+    );
+
+    // A real approve verdict.
+    let (_o, err, ok) = run_rigger(
+        root,
+        &["result", "solo/adjudicator#0", r#"{"verdict":"approve"}"#],
+    );
+    assert!(
+        ok,
+        "recording the adjudicator's approve must succeed; stderr: {err}"
+    );
+
+    // Step 3: the approve folds through. The main loop's post-approval path now runs the
+    // EXHAUSTIVE gate suite - the door gate's first and only real run - which deletes the
+    // worktree wholesale as its own side effect, then still reports PASS (a real `rm -rf`
+    // exits 0). `integrate_and_emit` must restore it via `Worktree::ensure_present` before
+    // `changed_since_base` reads it, or the whole wave collapses to a hard error instead of
+    // completing.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok,
+        "the integrate step must succeed - a missing self-heal collapses the wave to a \
+         hard error instead; stderr: {err}\nstdout: {out:?}"
+    );
+    assert!(
+        out.contains(r#""done":true"#) && !out.contains(r#""halted":"#),
+        "the approved unit must reach a clean, non-halted fixpoint; got: {out:?}"
+    );
+
+    // Non-vacuity: the door gate's own command really did remove the worktree wholesale.
+    let marker_content = std::fs::read_to_string(&marker).unwrap_or_default();
+    assert_eq!(
+        marker_content.trim(),
+        "absent",
+        "premise: the exhaustive door gate's own rm -rf must actually have removed the \
+         worktree wholesale, or this test proves nothing about a restore: {marker_content:?}"
+    );
+
+    // The unit reached `integrated`, not stuck or failed.
+    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    let events = store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_INTEGRATED),
+        "the unit must self-heal the exhaustive-gate-deleted worktree inside \
+         integrate_and_emit and reach `integrated`, not collapse the wave"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_FAILED
+                || e.type_ == rigger::ledger::TYPE_UNIT_ESCALATED),
+        "the self-heal must land cleanly - no failed or escalated unit"
+    );
+
+    // The approved work actually landed in the base repo's working tree.
+    assert!(
+        root.join("work.rs").exists(),
+        "the approved work must land in the base after integrate: {}",
+        root.display()
+    );
+}
+
+/// Spec 64, criterion 3, adjudication round 3 finding
+/// `adv-u3c3r3-reviewed-and-failed-sha-empty-sentinel-inversion` (UPHELD, approve-arm half,
+/// closed by round 4): round 2 fixed the empty-sha bug for the `verified` stamp
+/// (`step_restores_the_unit_worktree_a_gate_deletes_before_the_review_spawn` above), but
+/// left the SAME bug open at the `reviewed` stamp's own `head_sha_of` read. This proves the
+/// round-4 fix at the real-binary boundary, extending sha-stamp coverage from `verified` to
+/// `reviewed`, over a full three-tier panel with a between-`rigger-step` deletion repeated
+/// at every hand-off, so each restore is independently checked (dir existence, git
+/// registration, and HEAD-vs-branch-tip agreement) rather than trusted from one probe.
+///
+/// This does NOT discriminate round 4's specific NEW mechanism (the re-assert moved from
+/// one call before `review_unit` to one call per tier inside `run_reviewer`): every
+/// deletion here happens BETWEEN two `rigger step` processes, and `stage_worktree`'s
+/// pre-existing, already real-binary-tested adopt-or-create restore (round 1, see
+/// `step_restores_the_unit_worktree_a_gate_deletes_before_the_review_spawn`) runs once at
+/// the top of EVERY step invocation - healing any between-step deletion before review even
+/// begins, regardless of round 4. Verified empirically, not assumed: mutating OUT round 4's
+/// per-tier re-assert left this test GREEN (see the progress log and
+/// `run_end_to_end_restores_a_worktree_a_reviewer_agent_deletes_mid_review` below, which
+/// closes that specific gap through the synchronous CLI driver instead - the only path a
+/// deletion WITHIN one process, between two tiers, can occur through a real agent spawn).
+#[test]
+fn step_stamps_a_real_reviewed_sha_after_repeated_between_step_deletions() {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore};
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
+    )
+    .unwrap();
+    for (id, body) in [
+        ("a", "Review it."),
+        ("adv", "Try to break it."),
+        ("judge", "Adjudicate it."),
+    ] {
+        std::fs::write(
+            rigger.join("agents").join(format!("{id}.md")),
+            format!("---\nid: {id}\nmodel: sonnet\ntools: [Read]\n---\n{body}\n"),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: ensureonparktierstest
+defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok: { run: "true", kind: core }
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    on_pass: none
+    review:
+      lenses: [a]
+      adversary: adv
+      adjudicator: judge
+"#,
+    )
+    .unwrap();
+
+    let wt_dir = root.join(".rigger").join("tmp").join("rigger-wt-solo");
+
+    // Step 1: the implementer parks; its real, git-backed unit worktree is created now.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/implementer#0""#) && out.contains(r#""done":false"#),
+        "step 1 parks the implementer; got: {out:?}"
+    );
+    assert!(
+        wt_dir.exists(),
+        "premise: the unit worktree must exist after step 1: {}",
+        wt_dir.display()
+    );
+
+    // Write the implementer's "diff" directly into the worktree it was already handed, and
+    // commit it immediately - the same premise-defending mitigation the sibling tests above
+    // document in full (advances the unit branch past the run branch before the step-start
+    // sweep, which has no liveness conjunct yet, can see an undiverged tip).
+    std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
+    for args in [&["add", "-A"][..], &["commit", "-q", "-m", "wip"]] {
+        let ok = Command::new("git")
+            .args(args)
+            .current_dir(&wt_dir)
+            .status()
+            .expect("git must be runnable")
+            .success();
+        assert!(
+            ok,
+            "git {args:?} must succeed committing the test's setup diff"
+        );
+    }
+    let (_o, err, ok) = run_rigger(
+        root,
+        &["result", "solo/implementer#0", "implemented the unit"],
+    );
+    assert!(
+        ok,
+        "recording the implementer result must succeed; stderr: {err}"
+    );
+
+    // Step 2: the `ok` gate passes cleanly (no deletion of its own), and the review panel
+    // parks its FIRST tier, the lens.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the second step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/lens:a#0""#) && out.contains(r#""done":false"#),
+        "step 2 must park the lens; got: {out:?}\nstderr: {err}"
+    );
+    let (_o, err, ok) = run_rigger(root, &["result", "solo/lens:a#0", "reviewed: no blocker"]);
+    assert!(ok, "recording the lens result must succeed; stderr: {err}");
+
+    // OUT-OF-BAND DELETION 1: mimic an out-of-band actor removing the worktree in the real
+    // wall-clock gap between the lens tier resolving and the adversary tier's own spawn -
+    // exactly the window round 2's single before-`review_unit` re-assert left unprotected,
+    // and round 4's per-tier re-assert (moved into `run_reviewer`) now covers.
+    assert!(
+        wt_dir.exists(),
+        "premise: the worktree must exist before this deletion"
+    );
+    std::fs::remove_dir_all(&wt_dir).unwrap();
+    assert!(
+        !wt_dir.exists(),
+        "premise: the out-of-band deletion must actually have removed it"
+    );
+
+    // Step 3: the adversary tier's spawn must find the worktree RESTORED, not gone.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the third step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/adversary#0""#) && out.contains(r#""done":false"#),
+        "step 3 must park the adversary, finding the restored worktree, not collapse; got: \
+         {out:?}\nstderr: {err}"
+    );
+    assert!(
+        wt_dir.exists(),
+        "the adversary tier's spawn must find the unit worktree restored: {}",
+        wt_dir.display()
+    );
+    let list = git_out(root, &["worktree", "list", "--porcelain"])
+        .expect("git worktree list must succeed in the seeded repo");
+    assert!(
+        list.contains("rigger/u/solo"),
+        "the restored worktree must be REGISTERED with git again, not just a leftover dir: {list}"
+    );
+    let branch_tip = git_out(root, &["rev-parse", "rigger/u/solo"])
+        .expect("the unit branch must resolve a tip after the pre-gate commit");
+    let head_at_adversary = git_out(&wt_dir, &["rev-parse", "HEAD"])
+        .expect("the restored worktree must resolve its own HEAD");
+    assert_eq!(
+        head_at_adversary, branch_tip,
+        "the restored worktree must be checked out at the durable branch's actual tip"
+    );
+
+    let (_o, err, ok) = run_rigger(root, &["result", "solo/adversary#0", "tried and failed"]);
+    assert!(
+        ok,
+        "recording the adversary result must succeed; stderr: {err}"
+    );
+
+    // OUT-OF-BAND DELETION 2: the SAME window, one tier later - the adversary-to-adjudicator
+    // hand-off. Round 4's fix is a per-tier re-assert inside the ONE shared `run_reviewer`
+    // authority, so this must self-heal exactly like deletion 1 did, not just the second tier.
+    std::fs::remove_dir_all(&wt_dir).unwrap();
+    assert!(
+        !wt_dir.exists(),
+        "premise: the second out-of-band deletion must have removed it"
+    );
+
+    // Step 4: the adjudicator tier's spawn must ALSO find the worktree restored.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the fourth step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/adjudicator#0""#) && out.contains(r#""done":false"#),
+        "step 4 must park the adjudicator, finding the restored worktree; got: {out:?}\nstderr: \
+         {err}"
+    );
+    assert!(
+        wt_dir.exists(),
+        "the adjudicator tier's spawn must ALSO find the unit worktree restored, proving the \
+         re-assert runs before EVERY tier's spawn, not only the one right after the lens: {}",
+        wt_dir.display()
+    );
+    let list = git_out(root, &["worktree", "list", "--porcelain"])
+        .expect("git worktree list must succeed in the seeded repo");
+    assert!(
+        list.contains("rigger/u/solo"),
+        "the twice-restored worktree must still be REGISTERED with git: {list}"
+    );
+
+    let (_o, err, ok) = run_rigger(
+        root,
+        &["result", "solo/adjudicator#0", r#"{"verdict":"approve"}"#],
+    );
+    assert!(
+        ok,
+        "recording the adjudicator's approve must succeed; stderr: {err}"
+    );
+
+    // OUT-OF-BAND DELETION 3: closes the sibling finding's approve-arm half - the window
+    // between the adjudicator's own spawn returning approved and the `reviewed` event's
+    // `worktree_sha` stamp being read, which round 2 already fixed for the sibling
+    // `verified` stamp but round 3 found unfixed here.
+    std::fs::remove_dir_all(&wt_dir).unwrap();
+    assert!(
+        !wt_dir.exists(),
+        "premise: the third out-of-band deletion must have removed it"
+    );
+
+    // Step 5: the approve folds through (`on_pass: none`, so the unit reaches `reviewed`
+    // and stops - no further gate/integrate door to cross).
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok,
+        "the fifth step must succeed - a missing self-heal here would surface as a hard \
+         error reading the deleted tree's HEAD; stderr: {err}\nstdout: {out:?}"
+    );
+    assert!(
+        out.contains(r#""done":true"#),
+        "the reviewed, unmerged unit must reach a clean fixpoint; got: {out:?}"
+    );
+    // Note: `wt_dir` is gone again by now - a genuinely TERMINAL (non-parked) return tears
+    // the worktree down as ordinary end-of-stage cleanup (`run_stage`, unconditional on any
+    // non-parked result), unrelated to ensure-on-park. What this step must have done BEFORE
+    // that teardown is restore the tree long enough to stamp a real `reviewed_sha` - checked
+    // below via the recorded event, the only outside-observable evidence of that window.
+
+    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    let events = store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap();
+    let reviewed = events
+        .iter()
+        .find(|e| {
+            e.type_ == rigger::ledger::TYPE_UNIT_STATUS
+                && String::from_utf8_lossy(&e.data).contains(r#""status":"reviewed"#)
+        })
+        .expect("a reviewed status must have been recorded for the unit");
+    let reviewed_sha = reviewed
+        .meta
+        .get(rigger::conductor::META_WORKTREE_SHA)
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        reviewed_sha.len(),
+        40,
+        "the reviewed event's worktree_sha must be a real 40-hex sha, not empty - it must be \
+         stamped AFTER a re-assert restores whatever the adjudicator's own spawn (or an \
+         out-of-band actor) deleted, not a snapshot taken during the deletion window: \
+         {reviewed_sha:?}"
+    );
+    assert!(
+        reviewed_sha.chars().all(|c| c.is_ascii_hexdigit()),
+        "the stamped sha must be real hex: {reviewed_sha:?}"
+    );
+    assert_eq!(
+        reviewed_sha, branch_tip,
+        "the stamped sha must be the durable branch's actual tip - the RESTORED tree's real \
+         HEAD, not a snapshot taken during the deletion window"
+    );
+}
+
+/// Mirrors `step_stamps_a_real_reviewed_sha_after_repeated_between_step_deletions` above for
+/// the REJECT arm (`run_single_stage`'s `failed_sha` stamp on the review-reject
+/// `UnitFailed`, `adv-u3c3r3-reviewed-and-failed-sha-empty-sentinel-inversion`'s second
+/// sibling site, closed by round 4): the same empty-sha bug survives on a reject exactly as
+/// on an approve - the fold this field feeds (spec 11 unit 1's flip-flop detection) needs it
+/// real on EITHER verdict. Same scope note as the sibling test: this proves the STAMP is
+/// correct after a between-step restore (extending real-binary sha coverage to
+/// `failed_sha`), not round 4's specific per-tier mechanism - see that test's doc comment
+/// for why a between-step deletion cannot discriminate the two, and
+/// `run_end_to_end_restores_a_worktree_a_reviewer_agent_deletes_mid_review` for the test
+/// that does. The implementer's own regression
+/// (`failed_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored`,
+/// `conductor.rs`'s `mod tests`) proves the algorithm in-process; this drives a REAL
+/// adjudicator to a REJECT verdict through the real binary, deletes the worktree directly
+/// (out-of-band) between the recorded reject and the next step, and proves the resulting
+/// `UnitFailed` event's
+/// `worktree_sha` is a real 40-hex sha of the restored tree, never the empty sentinel a
+/// pre-round-4 binary would have stamped.
+#[test]
+fn step_stamps_a_real_failed_sha_after_a_deletion_before_the_reject_stamp() {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore};
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("agents").join("judge.md"),
+        "---\nid: judge\nmodel: sonnet\ntools: [Read]\n---\nAdjudicate it.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: ensureonparkfailedshatest
+defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok: { run: "true", kind: core }
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    on_pass: none
+    review:
+      adjudicator: judge
+"#,
+    )
+    .unwrap();
+
+    let wt_dir = root.join(".rigger").join("tmp").join("rigger-wt-solo");
+
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/implementer#0""#) && out.contains(r#""done":false"#),
+        "step 1 parks the implementer; got: {out:?}"
+    );
+
+    std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
+    for args in [&["add", "-A"][..], &["commit", "-q", "-m", "wip"]] {
+        let ok = Command::new("git")
+            .args(args)
+            .current_dir(&wt_dir)
+            .status()
+            .expect("git must be runnable")
+            .success();
+        assert!(
+            ok,
+            "git {args:?} must succeed committing the test's setup diff"
+        );
+    }
+    let (_o, err, ok) = run_rigger(
+        root,
+        &["result", "solo/implementer#0", "implemented the unit"],
+    );
+    assert!(
+        ok,
+        "recording the implementer result must succeed; stderr: {err}"
+    );
+
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the second step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/adjudicator#0""#) && out.contains(r#""done":false"#),
+        "step 2 must park the adjudicator; got: {out:?}\nstderr: {err}"
+    );
+
+    let (_o, err, ok) = run_rigger(
+        root,
+        &["result", "solo/adjudicator#0", r#"{"verdict":"reject"}"#],
+    );
+    assert!(
+        ok,
+        "recording the adjudicator's reject must succeed; stderr: {err}"
+    );
+
+    // OUT-OF-BAND DELETION: the window between the adjudicator's own spawn returning
+    // reject and the `failed_sha` read in `run_single_stage`'s remediation fall-through.
+    assert!(
+        wt_dir.exists(),
+        "premise: the worktree must exist before this deletion"
+    );
+    std::fs::remove_dir_all(&wt_dir).unwrap();
+    assert!(
+        !wt_dir.exists(),
+        "premise: the out-of-band deletion must actually have removed it"
+    );
+
+    // Step 3: the reject folds through remediation (a fresh implementer attempt parks) -
+    // either way this step must not collapse, and the UnitFailed event it records along the
+    // way must carry a real sha.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok,
+        "the third step must succeed - a missing self-heal here would surface as a hard \
+         error reading the deleted tree's HEAD; stderr: {err}\nstdout: {out:?}"
+    );
+
+    // The restored tree's own HEAD is the independent, outside-git ground truth for what
+    // the failed_sha stamp should read, read immediately after step 3 returns (before any
+    // further attempt has a chance to write to the same dir).
+    let head_after = git_out(&wt_dir, &["rev-parse", "HEAD"])
+        .expect("the restored worktree must resolve its own HEAD after step 3");
+
+    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    let events = store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap();
+    let failed = events
+        .iter()
+        .find(|e| e.type_ == rigger::ledger::TYPE_UNIT_FAILED)
+        .expect("a review-reject UnitFailed must have been recorded");
+    let failed_sha = failed
+        .meta
+        .get(rigger::conductor::META_WORKTREE_SHA)
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        failed_sha.len(),
+        40,
+        "the failed event's worktree_sha must be a real 40-hex sha, not empty - it must be \
+         stamped AFTER a re-assert restores the out-of-band-deleted tree, not a snapshot \
+         taken during the deletion window: {failed_sha:?}"
+    );
+    assert!(
+        failed_sha.chars().all(|c| c.is_ascii_hexdigit()),
+        "the stamped sha must be real hex: {failed_sha:?}"
+    );
+    assert_eq!(
+        failed_sha, head_after,
+        "the stamped sha must be the restored tree's actual HEAD, not a snapshot taken \
+         during the deletion window"
+    );
+}
+
+/// Spec 64, criterion 3, adjudication round 3 finding
+/// `adv-u3c3r3-ensure-present-covers-only-the-first-tier` (UPHELD, closed by round 4's
+/// `impl-u3c3-r4-reassert-centralized-in-run-reviewer`): the TRUE periphery of round 4's
+/// fix, not a restatement of it.
+///
+/// The window round 4 actually closes exists WITHIN one process, between two REAL
+/// synchronous agent spawns. The implementer's own in-crate regression
+/// (`review_tier_boundary_restores_a_worktree_a_prior_tier_deleted`, `conductor.rs`'s `mod
+/// tests`) proves the algorithm with a synchronous, single-process `Stub` driver whose OWN
+/// `spawn` call deletes the directory as a side effect. The stepwise/replay driver `rigger
+/// step` drives (every OTHER periphery test in this file) cannot reach this window: a
+/// genuinely NEW spawn always PARKS without touching the worktree, so every tier-to-tier
+/// hand-off crosses a real PROCESS boundary, and `stage_worktree`'s pre-existing,
+/// already-real-binary-tested adopt-or-create restore (round 1) runs once at the top of
+/// EVERY `rigger step` invocation - healing any out-of-band deletion BEFORE review even
+/// begins, regardless of round 4's fix. Verified empirically, not assumed: the sibling
+/// tests above document that they went GREEN under a mutation that disabled round 4's
+/// per-tier re-assert, before this test was written to close the actual gap.
+///
+/// This drives the REAL `cli::Driver` instead - the synchronous, subprocess-per-spawn path
+/// `rigger run` uses - with a fake `claude` executable substituted onto `PATH` (the same
+/// shimming technique `src/driver/cli.rs`'s own `spawn_shells_out_and_bridges_the_agents_
+/// emits` unit test uses for the driver alone, extended here through the whole compiled
+/// binary and a real git-backed unit worktree). The fake agent plays four roles, selected
+/// by a marker embedded in each agent's own persona (which `build_system_prompt` forwards
+/// verbatim into `--system-prompt`): the worker writes a file; the LENS - the review
+/// panel's own FIRST tier, standing in for the "review agents doing unprompted forensic
+/// self-repair" this spec's Goal section names as the motivating harm - deletes its own
+/// `$PWD` (the unit worktree) wholesale as a side effect of running, the identical shape
+/// `RecordingRunner::deleting_worktree` proves at the gate boundary but here at the
+/// review-TIER spawn boundary instead; the adversary and adjudicator behave normally. If
+/// `run_reviewer`'s per-tier re-assert does not run immediately before the ADVERSARY's
+/// spawn - the very next tier after the lens, in the SAME process - `Command::current_dir`
+/// on the now-missing directory fails at the OS boundary with a real ENOENT, which no
+/// sentinel arm in `run_stage` recognizes, and the whole `rigger run` process exits
+/// non-zero instead of completing.
+#[cfg(unix)]
+#[test]
+fn run_end_to_end_restores_a_worktree_a_reviewer_agent_deletes_mid_review() {
+    use std::os::unix::fs::PermissionsExt;
+
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore};
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nRIGGERTEST_WORKER: do the \
+         unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("agents").join("a.md"),
+        "---\nid: a\nmodel: sonnet\ntools: [Read]\n---\nRIGGERTEST_LENS_DELETE: review it.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("agents").join("adv.md"),
+        "---\nid: adv\nmodel: sonnet\ntools: [Read]\n---\nRIGGERTEST_ADVERSARY: try to break \
+         it.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("agents").join("judge.md"),
+        "---\nid: judge\nmodel: sonnet\ntools: [Read]\n---\nRIGGERTEST_ADJUDICATOR: adjudicate \
+         it.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: ensureonparkendtoendtest
+defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok: { run: "true", kind: core }
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    on_pass: none
+    review:
+      lenses: [a]
+      adversary: adv
+      adjudicator: judge
+"#,
+    )
+    .unwrap();
+
+    // A fake `claude` executable, substituted onto PATH ahead of the real system PATH. Its
+    // behavior is selected by a marker embedded in each agent's own persona (above), which
+    // the driver forwards verbatim into `--system-prompt`; the lens's own branch deletes
+    // its `$PWD` wholesale (mirroring a real gate's `rm -rf`, per the sibling gate-based
+    // tests above) before reporting, self-describing the deletion to `$RIGGERTEST_MARKER`
+    // (a location OUTSIDE the worktree the deletion itself never touches).
+    let fakebin = tempfile::tempdir().unwrap();
+    let claude_path = fakebin.path().join("claude");
+    std::fs::write(
+        &claude_path,
+        r#"#!/bin/sh
+sp=""
+next=0
+for a in "$@"; do
+  if [ "$next" = "1" ]; then
+    sp="$a"
+    next=0
+  fi
+  if [ "$a" = "--system-prompt" ]; then
+    next=1
+  fi
+done
+case "$sp" in
+  *RIGGERTEST_LENS_DELETE*)
+    d="$(pwd)"
+    cd / || exit 1
+    rm -rf "$d"
+    if [ -d "$d" ]; then echo present > "$RIGGERTEST_MARKER"; else echo absent > "$RIGGERTEST_MARKER"; fi
+    echo "reviewed: no blocker"
+    ;;
+  *RIGGERTEST_ADVERSARY*)
+    echo "tried and failed"
+    ;;
+  *RIGGERTEST_ADJUDICATOR*)
+    echo '{"verdict":"approve"}'
+    ;;
+  *RIGGERTEST_WORKER*)
+    echo "pub fn work() {}" > work.rs
+    ;;
+  *)
+    echo "fake-claude: unrecognized system prompt: $sp" 1>&2
+    exit 1
+    ;;
+esac
+"#,
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&claude_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&claude_path, perms).unwrap();
+
+    let marker = root.join("lens-deleted-marker.txt");
+    let path_env = format!(
+        "{}:{}",
+        fakebin.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["run"],
+        &[
+            ("PATH", &path_env),
+            ("RIGGERTEST_MARKER", marker.to_str().unwrap()),
+        ],
+    );
+    assert!(
+        ok,
+        "the end-to-end run must succeed - a missing per-tier self-heal surfaces as a real \
+         ENOENT spawning the adversary in the now-deleted worktree instead; stderr: {err}\n\
+         stdout: {out}"
+    );
+
+    // Non-vacuity: the lens's own fake-agent process really did delete the worktree
+    // wholesale, self-reported from a location outside the worktree the deletion itself
+    // never touches.
+    let marker_content = std::fs::read_to_string(&marker).unwrap_or_default();
+    assert_eq!(
+        marker_content.trim(),
+        "absent",
+        "premise: the lens's own process must actually have removed the worktree wholesale, \
+         or this test proves nothing about a restore: {marker_content:?}"
+    );
+
+    // The unit reached `reviewed`, not stuck, failed, or escalated - so the adversary and
+    // adjudicator tiers both really ran to completion in the SAME worktree the lens
+    // deleted, in the SAME process.
+    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    let events = store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap();
+    assert!(
+        events.iter().any(|e| {
+            e.type_ == rigger::ledger::TYPE_UNIT_STATUS
+                && String::from_utf8_lossy(&e.data).contains(r#""status":"reviewed"#)
+        }),
+        "the unit must self-heal the lens-deleted worktree before the adversary's own real \
+         subprocess spawn and reach `reviewed`, not collapse the run; events: {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_FAILED
+                || e.type_ == rigger::ledger::TYPE_UNIT_ESCALATED),
+        "the self-heal must land cleanly - no failed or escalated unit"
+    );
+}
+
+/// Spec 64 criterion 3, adjudication round 4 (`adv-u3c3r4-concurrent-lens-ensure-present-races-
+/// worktree-create`, `sdet-u3c3r4-concurrent-lenses-race-ensure-present-on-the-same-worktree`,
+/// `arch-u3c3r4-speculation-winner-sha-unguarded`, all UPHELD; fixed round 5 with a per-
+/// `Worktree` `reassert_mu` mutex and a pre-read `ensure_present()` call in
+/// `emit_speculation_winner_status`).
+///
+/// The implementer's own regressions
+/// (`worktree::tests::concurrent_ensure_present_on_a_deleted_worktree_never_races_create`,
+/// `conductor::tests::speculation_lenses_restore_a_gate_deleted_worktree_without_racing_and_stamp_the_winner_sha`)
+/// prove both fixes purely in-process: N real threads sharing a bare `Worktree`, and a
+/// `RecordingRunner`/`Stub` driver standing in for the gates and the review agents - never an
+/// actual `git worktree add` race between two REAL OS PROCESSES, nor the real `rigger run` ->
+/// `run_speculation` -> `emit_speculation_winner_status` call path through the compiled binary.
+///
+/// This drives it end to end: a `speculation_width: 2` unit with an UNSCOPED gate (`ok`, no
+/// `inputs`, so it runs at both the narrowed AND exhaustive gate doors - spec 64 c3 round 2's
+/// own technique) whose own `rm -rf` deletes candidate 0's worktree wholesale every time it
+/// runs, reviewed by a two-lens panel (`a`, `b`) that fans out as REAL concurrent OS threads,
+/// each spawning its own real `claude` subprocess (a fake shim substituted onto PATH, role-
+/// selected by a marker in each agent's own persona, mirroring the sibling end-to-end test
+/// above). Before round 5's fix, two real threads racing `Worktree::create`'s `git worktree
+/// add`/adopt path against the SAME dir is a genuine git race (not fabricated); and
+/// `emit_speculation_winner_status`'s `winner_sha` read - right after the exhaustive gate's
+/// SECOND deletion - had no re-assert guard of its own.
+#[test]
+fn run_speculation_restores_a_gate_deleted_worktree_across_concurrent_lenses_and_stamps_a_real_winner_sha(
+) {
+    use std::os::unix::fs::PermissionsExt;
+
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore};
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nRIGGERTEST_WORKER: do the \
+         unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("agents").join("a.md"),
+        "---\nid: a\nmodel: sonnet\ntools: [Read]\n---\nRIGGERTEST_LENS_A: review it.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("agents").join("b.md"),
+        "---\nid: b\nmodel: sonnet\ntools: [Read]\n---\nRIGGERTEST_LENS_B: review it.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("agents").join("judge.md"),
+        "---\nid: judge\nmodel: sonnet\ntools: [Read]\n---\nRIGGERTEST_ADJUDICATOR: adjudicate \
+         it.\n",
+    )
+    .unwrap();
+
+    // Two markers OUTSIDE the worktree self-report each gate's own `rm -rf` really running
+    // (and really removing the dir): `ok` is UNSCOPED (no `inputs`) so it runs for real in
+    // the NARROWED pass, before the lens fan-out - but a gate verdict replays from the SAME
+    // `(unit, attempt, gate)` key regardless of selection (spec 12, unit 1), so re-listing it
+    // would only REPLAY, not re-run, at the exhaustive pass. `door` is scoped with `inputs`
+    // that never intersect the always-empty (no grounder) blast radius (round 3's own
+    // technique, `step_integrates_after_the_exhaustive_gate_deletes_the_worktree_post_approval`
+    // above) - SKIPPED (not run, not cached) at the narrowed pass, so its FIRST real run lands
+    // at the exhaustive pass, right before the winner-sha read.
+    let narrowed_marker = rigger
+        .join("tmp")
+        .join("speculation-narrowed-deleted-marker.txt");
+    let exhaustive_marker = rigger
+        .join("tmp")
+        .join("speculation-exhaustive-deleted-marker.txt");
+    std::fs::create_dir_all(narrowed_marker.parent().unwrap()).unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        format!(
+            r#"name: ensureonparkspeculationwinnertest
+defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok:
+    run: 'd=$(pwd); cd / && rm -rf "$d"; ( [ -d "$d" ] && echo present || echo absent ) >> "{narrowed}"'
+  door:
+    run: 'd=$(pwd); cd / && rm -rf "$d"; ( [ -d "$d" ] && echo present || echo absent ) >> "{exhaustive}"'
+    inputs: [never-matches/**]
+stages:
+  solo:
+    agent: worker
+    gates: [ok, door]
+    on_pass: none
+    speculation_width: 2
+    review:
+      lenses: [a, b]
+      adjudicator: judge
+"#,
+            narrowed = narrowed_marker.to_str().unwrap(),
+            exhaustive = exhaustive_marker.to_str().unwrap(),
+        ),
+    )
+    .unwrap();
+
+    let fakebin = tempfile::tempdir().unwrap();
+    let claude_path = fakebin.path().join("claude");
+    std::fs::write(
+        &claude_path,
+        r#"#!/bin/sh
+sp=""
+next=0
+for a in "$@"; do
+  if [ "$next" = "1" ]; then
+    sp="$a"
+    next=0
+  fi
+  if [ "$a" = "--system-prompt" ]; then
+    next=1
+  fi
+done
+case "$sp" in
+  *RIGGERTEST_LENS_A*)
+    echo lensA >> "$RIGGERTEST_LENS_MARKER"
+    echo "reviewed: no blocker"
+    ;;
+  *RIGGERTEST_LENS_B*)
+    echo lensB >> "$RIGGERTEST_LENS_MARKER"
+    echo "reviewed: no blocker"
+    ;;
+  *RIGGERTEST_ADJUDICATOR*)
+    echo '{"verdict":"approve"}'
+    ;;
+  *RIGGERTEST_WORKER*)
+    echo "pub fn work() {}" > work.rs
+    ;;
+  *)
+    echo "fake-claude: unrecognized system prompt: $sp" 1>&2
+    exit 1
+    ;;
+esac
+"#,
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&claude_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&claude_path, perms).unwrap();
+
+    // Both lenses self-report having run into ONE shared file, OUTSIDE the worktree the
+    // gate's own deletion never touches - the non-vacuity check that they really are two
+    // independent real subprocesses, not one call standing in for both.
+    let lens_marker = root.join("lens-ran-marker.txt");
+    let path_env = format!(
+        "{}:{}",
+        fakebin.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["run"],
+        &[
+            ("PATH", &path_env),
+            ("RIGGERTEST_LENS_MARKER", lens_marker.to_str().unwrap()),
+        ],
+    );
+    assert!(
+        ok,
+        "the speculation run must succeed - a missing concurrent-lens serialization surfaces \
+         as a real git race, and a missing pre-read re-assert surfaces as an empty-sha stamp \
+         or a hard ENOENT instead; stderr: {err}\nstdout: {out}"
+    );
+
+    // Non-vacuity: both lenses really ran as their own real subprocess, concurrently sharing
+    // the SAME candidate worktree the gate deleted.
+    let lens_report = std::fs::read_to_string(&lens_marker).unwrap_or_default();
+    assert!(
+        lens_report.contains("lensA") && lens_report.contains("lensB"),
+        "premise: both lenses must actually have run as real concurrent processes against the \
+         same shared worktree, or this test proves nothing about the race: {lens_report:?}"
+    );
+
+    // Non-vacuity: BOTH doors really deleted the worktree wholesale - the unscoped `ok` gate
+    // for real at the narrowed pass (opening the concurrent-lens race window), and the
+    // `inputs`-scoped `door` gate for the FIRST time at the exhaustive pass (opening the
+    // winner-sha race window) - two DISTINCT real deletions, not one gate replayed twice.
+    let narrowed_report = std::fs::read_to_string(&narrowed_marker).unwrap_or_default();
+    assert_eq!(
+        narrowed_report.trim(),
+        "absent",
+        "premise: the unscoped `ok` gate must have deleted the worktree wholesale in the \
+         narrowed pass, before the lens fan-out, or this test proves nothing about the race: \
+         {narrowed_report:?}"
+    );
+    let exhaustive_report = std::fs::read_to_string(&exhaustive_marker).unwrap_or_default();
+    assert_eq!(
+        exhaustive_report.trim(),
+        "absent",
+        "premise: the `door` gate, skipped in the narrowed pass, must run for the first time \
+         in the exhaustive pass and delete the worktree wholesale right before the winner-sha \
+         read, or this test proves nothing about that guard: {exhaustive_report:?}"
+    );
+
+    // The candidate's worktree is restored and REGISTERED with git (not a leftover dir) after
+    // the run, checked out on its own unit branch.
+    let wt_dir = root.join(".rigger").join("tmp").join("rigger-wt-solo");
+    assert!(
+        wt_dir.is_dir(),
+        "the candidate worktree must be restored after the run: {}",
+        wt_dir.display()
+    );
+    let list = git_out(root, &["worktree", "list", "--porcelain"])
+        .expect("git worktree list must succeed in the seeded repo");
+    assert!(
+        list.contains(wt_dir.to_str().unwrap()),
+        "the restored candidate worktree must be REGISTERED with git, not a leftover dir: {list}"
+    );
+
+    // The deferred winner status carries a real 40-hex worktree_sha - the RESTORED tree's
+    // actual HEAD, not an empty sentinel snapshotted during the deletion window.
+    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    let events = store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap();
+    let verified = events
+        .iter()
+        .find(|e| {
+            e.type_ == rigger::ledger::TYPE_UNIT_STATUS
+                && String::from_utf8_lossy(&e.data).contains(r#""status":"verified"#)
+        })
+        .expect("the speculation winner's deferred verified status must have been recorded");
+    let winner_sha = verified
+        .meta
+        .get(rigger::conductor::META_WORKTREE_SHA)
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        winner_sha.len(),
+        40,
+        "the speculation winner's verified event must carry a real 40-hex worktree_sha, not \
+         empty - it must be stamped AFTER a re-assert restores whatever the exhaustive gate \
+         just deleted, not a snapshot taken during the deletion window: {winner_sha:?}"
+    );
+    assert!(
+        winner_sha.chars().all(|c| c.is_ascii_hexdigit()),
+        "the stamped sha must be real hex: {winner_sha:?}"
+    );
+    let head_after = git_out(&wt_dir, &["rev-parse", "HEAD"])
+        .expect("the restored worktree must resolve its own HEAD");
+    assert_eq!(
+        winner_sha, head_after,
+        "the stamped sha must be the RESTORED tree's actual HEAD"
+    );
+
+    assert!(
+        !events
+            .iter()
+            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_FAILED
+                || e.type_ == rigger::ledger::TYPE_UNIT_ESCALATED),
+        "the self-heal must land cleanly - no failed or escalated unit"
+    );
+}
+
+/// Spec 64 criterion 3, adjudication round 4 (`arch-u3c3r4-speculation-reject-sha-unguarded`,
+/// UPHELD; fixed round 5 with a pre-read `ensure_present()` call in
+/// `record_speculation_reject`). Mirrors
+/// `run_end_to_end_restores_a_worktree_a_reviewer_agent_deletes_mid_review` above for the
+/// SPECULATION candidate's review-reject arm: the implementer's own regression
+/// (`conductor::tests::speculation_reject_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored`)
+/// proves it purely in-process against a `Stub` driver; this drives it through the real
+/// compiled binary instead.
+///
+/// A `speculation_width: 2` unit with NO lenses (isolating this from the concurrent-lens
+/// mechanism the sibling test above already covers) whose adjudicator ALWAYS rejects AND
+/// deletes its own `$PWD` wholesale as a side effect before reporting - a real subprocess
+/// spawn deleting the worktree BETWEEN `review_unit`'s pre-spawn re-assert and
+/// `record_speculation_reject`'s `head_sha_of` read, the exact window round 5 closes. Both
+/// candidates lose (the same adjudicator persona rejects lane 0 AND lane 1), so the unit
+/// escalates - a legitimate terminal fixpoint, not a run failure (mirrors
+/// `step_carries_the_escalated_set_when_a_fixpoint_is_reached_with_a_wedged_unit`'s own
+/// exit-0-on-escalation contract).
+#[test]
+fn speculation_reject_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored_end_to_end(
+) {
+    use std::os::unix::fs::PermissionsExt;
+
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore};
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nRIGGERTEST_WORKER: do the \
+         unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("agents").join("judge.md"),
+        "---\nid: judge\nmodel: sonnet\ntools: [Read]\n---\nRIGGERTEST_ADJUDICATOR_REJECT_DELETE: \
+         adjudicate it.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: ensureonparkspeculationrejecttest
+defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok: { run: "true" }
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    on_pass: merge
+    speculation_width: 2
+    review:
+      adjudicator: judge
+"#,
+    )
+    .unwrap();
+
+    let fakebin = tempfile::tempdir().unwrap();
+    let claude_path = fakebin.path().join("claude");
+    std::fs::write(
+        &claude_path,
+        r#"#!/bin/sh
+sp=""
+next=0
+for a in "$@"; do
+  if [ "$next" = "1" ]; then
+    sp="$a"
+    next=0
+  fi
+  if [ "$a" = "--system-prompt" ]; then
+    next=1
+  fi
+done
+case "$sp" in
+  *RIGGERTEST_ADJUDICATOR_REJECT_DELETE*)
+    d="$(pwd)"
+    cd / || exit 1
+    rm -rf "$d"
+    if [ -d "$d" ]; then echo present >> "$RIGGERTEST_MARKER"; else echo absent >> "$RIGGERTEST_MARKER"; fi
+    echo '{"verdict":"reject"}'
+    ;;
+  *RIGGERTEST_WORKER*)
+    echo "pub fn work() {}" > work.rs
+    ;;
+  *)
+    echo "fake-claude: unrecognized system prompt: $sp" 1>&2
+    exit 1
+    ;;
+esac
+"#,
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&claude_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&claude_path, perms).unwrap();
+
+    let marker = root.join("adjudicator-deleted-marker.txt");
+    let path_env = format!(
+        "{}:{}",
+        fakebin.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["run"],
+        &[
+            ("PATH", &path_env),
+            ("RIGGERTEST_MARKER", marker.to_str().unwrap()),
+        ],
+    );
+    assert!(
+        ok,
+        "an all-candidates-rejected speculation group must still reach a clean escalated \
+         fixpoint (exit 0), not a hard failure; stderr: {err}\nstdout: {out}"
+    );
+
+    // Non-vacuity: the adjudicator's own real subprocess really did delete its candidate's
+    // worktree wholesale, self-reported from a location outside the worktree the deletion
+    // itself never touches - once per candidate (both lane 0 and lane 1 reject).
+    let marker_content = std::fs::read_to_string(&marker).unwrap_or_default();
+    let deletions: Vec<&str> = marker_content.lines().collect();
+    assert!(
+        deletions.len() >= 2 && deletions.iter().all(|l| l.trim() == "absent"),
+        "premise: the adjudicator's own process must actually have removed each candidate's \
+         worktree wholesale (one per lane), or this test proves nothing about a restore: \
+         {marker_content:?}"
+    );
+
+    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    let events = store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap();
+
+    // The group really escalated (both candidates lost) - the terminal state this test's
+    // premise depends on, not a run that silently found some other way to "succeed".
+    assert!(
+        events
+            .iter()
+            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_ESCALATED),
+        "premise: an always-rejecting adjudicator across both speculation candidates must \
+         escalate the unit, or this test proves nothing about the reject arm; events: {events:?}"
+    );
+
+    // At least one speculation-candidate reject carries a real 40-hex worktree sha - stamped
+    // AFTER a re-assert restored what the adjudicator's own spawn had just deleted, never a
+    // snapshot taken during the deletion window.
+    let status_key = format!(
+        "\"status\":\"{}\"",
+        rigger::conductor::STATUS_SPECULATION_REJECTED
+    );
+    let reject_with_sha = events.iter().find(|e| {
+        e.type_ == rigger::ledger::TYPE_UNIT_STATUS
+            && String::from_utf8_lossy(&e.data).contains(&status_key)
+            && e.meta
+                .get(rigger::conductor::META_WORKTREE_SHA)
+                .is_some_and(|s| s.len() == 40 && s.chars().all(|c| c.is_ascii_hexdigit()))
+    });
+    assert!(
+        reject_with_sha.is_some(),
+        "a speculation-candidate review-reject must carry a real 40-hex worktree sha even \
+         when the adjudicator's own spawn deleted the tree as its side effect - it must be \
+         stamped AFTER a re-assert restores it, not a snapshot taken during the deletion \
+         window; events: {events:?}"
+    );
+}
+
+/// Spec 64, criterion 3, adjudication round 5 finding
+/// `sdet-u3c3r5-resumed-reviewed-gate-failure-failed-sha-still-empty-sentinel` (UPHELD; fixed
+/// round 6 with the identical one-line guard already used at six sibling sites - `if let
+/// Some(w) = wt { w.ensure_present()?; }` - immediately before the `failed_sha` read at
+/// `run_single_stage`'s `ResumePhase::Reviewed` exhaustive-gate-FAILURE arm).
+///
+/// A unit whose PRIOR window recorded `reviewed` (the adjudicator already approved it; only
+/// the merge was interrupted) resumes straight to the integrate door on the VERY NEXT step,
+/// skipping implement and review entirely - so this arm is reached with NO agent spawn at all
+/// in this process, purely from a real git-backed unit branch (the prior window's durable
+/// checkpoint) plus a seeded `UnitStatus{"status":"reviewed"}` event standing in for the
+/// interrupted window's own recorded verdict. A throwaway first step BOOTSTRAPS the run (mints
+/// the real `RunStarted` every fold scopes through, and creates the unit's real worktree/branch
+/// at their deterministic path) - the seed then lands AFTER that boundary, in the SAME slice
+/// `resume_phase` folds, exactly like a real interrupted window's residue. Its resumed
+/// exhaustive re-gate (spec 12, unit 3: "done" is measured against the exhaustive suite even
+/// on a resumed approve) is real wall-clock time and the last thing that touches the worktree
+/// before the read this round guards - its own `sh -c` command deletes the worktree wholesale
+/// as a side effect, then reports FAIL (a real `rm -rf` followed by `exit 1`). Before round 6,
+/// `head_sha_of` read the now-missing dir and silently stamped an empty sentinel, the same
+/// class every sibling in this unit was rejected over.
+#[test]
+fn resumed_reviewed_unit_stamps_a_real_failed_sha_after_the_exhaustive_gates_own_deletion_is_restored(
+) {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore};
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
+    )
+    .unwrap();
+
+    // A marker OUTSIDE the worktree self-reports whether the gate's own `rm -rf` really ran -
+    // the non-vacuity check a single opaque subprocess call otherwise denies an outside
+    // observer.
+    let marker = rigger
+        .join("tmp")
+        .join("resumed-gate-fail-deleted-marker.txt");
+    let marker_str = marker.to_str().unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        format!(
+            r#"name: ensureonparkresumedgatefailtest
+defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok:
+    run: 'd=$(pwd); cd / && rm -rf "$d"; ( [ -d "$d" ] && echo present || echo absent ) > "{marker}"; exit 1'
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+"#,
+            marker = marker_str
+        ),
+    )
+    .unwrap();
+
+    // Step 1 (bootstrap): mints the run's `RunStarted` and creates the unit's real,
+    // git-backed worktree/branch at their deterministic path. Its own parked implementer is
+    // never resulted - it is simply abandoned, standing in for the prior window this test's
+    // premise depends on (a window whose OWN later steps carried it to `reviewed` and then
+    // died before the merge).
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the bootstrap step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/implementer#0""#),
+        "the bootstrap step must park the implementer, creating the unit's worktree; got: \
+         {out:?}"
+    );
+    let wt_dir = root.join(".rigger").join("tmp").join("rigger-wt-solo");
+    assert!(
+        wt_dir.exists(),
+        "premise: the bootstrap step must already have created the unit's worktree: {}",
+        wt_dir.display()
+    );
+
+    // The prior window's own committed work, written directly into the ALREADY-CREATED
+    // worktree and committed - the durable checkpoint a real interrupted window leaves on the
+    // unit's branch.
+    std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
+    git_ok(&wt_dir, &["add", "-A"]);
+    git_ok(
+        &wt_dir,
+        &[
+            "commit",
+            "-q",
+            "-m",
+            "prior window: implemented and reviewed",
+        ],
+    );
+    // Captured NOW, while the worktree is known to exist: `run_stage`'s own caller removes a
+    // unit's worktree DIR (never its branch) on any TERMINAL, non-parked return - including
+    // the `UnitFailed` this test drives - so the dir this test's own commit landed in will
+    // itself be gone again by the time the step below returns. The branch is the durable
+    // checkpoint; this sha is what a re-`ensure_present` checks the SAME branch back out to.
+    let expected_sha = git_out(&wt_dir, &["rev-parse", "HEAD"])
+        .expect("the committed worktree must resolve its own HEAD");
+
+    // The prior window's own recorded verdict: the unit is `reviewed`, only the merge is
+    // outstanding. Seeded AFTER the bootstrap step's `RunStarted`, so it lands in the SAME
+    // slice `resume_phase` folds (`current_run` scopes to the suffix from the latest
+    // `RunStarted` onward) - together with the committed branch above (`branch_has_work`),
+    // this is everything `resume_phase` needs to route the very next step straight into
+    // `ResumePhase::Reviewed`, with no implementer or review spawn in that process at all.
+    seed_run_events(
+        root,
+        &[("UnitStatus", r#"{"id":"solo","status":"reviewed"}"#)],
+    );
+
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok,
+        "a resumed unit whose exhaustive re-gate goes red must still complete the step \
+         cleanly (a recorded UnitFailed under bounded remediation - never a hard process \
+         failure); stderr: {err}\nstdout: {out}"
+    );
+
+    // Non-vacuity: the gate's own command really did remove the worktree wholesale.
+    let marker_content = std::fs::read_to_string(&marker).unwrap_or_default();
+    assert_eq!(
+        marker_content.trim(),
+        "absent",
+        "premise: the exhaustive gate's own rm -rf must actually have removed the worktree \
+         wholesale, or this test proves nothing about a restore: {marker_content:?}"
+    );
+
+    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    let events = store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap();
+    let failed = events
+        .iter()
+        .find(|e| e.type_ == rigger::ledger::TYPE_UNIT_FAILED)
+        .expect("the resumed unit's red exhaustive re-gate must record a UnitFailed");
+    let failed_sha = failed
+        .meta
+        .get(rigger::conductor::META_WORKTREE_SHA)
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        failed_sha.len(),
+        40,
+        "the failed event's worktree_sha must be a real 40-hex sha, not the empty sentinel a \
+         read taken during the deletion window would silently stamp: {failed_sha:?}"
+    );
+    assert!(
+        failed_sha.chars().all(|c| c.is_ascii_hexdigit()),
+        "the stamped sha must be real hex: {failed_sha:?}"
+    );
+    assert_eq!(
+        failed_sha, expected_sha,
+        "the stamped sha must be the RESTORED tree's actual HEAD, not a snapshot taken during \
+         the deletion window"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_INTEGRATED),
+        "a red exhaustive re-gate on resume must never integrate"
+    );
+}
+
+/// Spec 64, criterion 3, adjudication round 5 finding
+/// `adv-u3c3r5-two-more-unguarded-empty-sha-siblings` (UPHELD; fixed round 6 with the
+/// identical guard at `run_single_stage`'s `ResumePhase::Reviewed` `integration.blocked` arm).
+///
+/// The mirror image of the sibling test above: this time the resumed unit's exhaustive
+/// re-gate PASSES, so `run_single_stage` reaches `integrate_and_emit`, which merges the
+/// branch into the base repo and then re-gates the MERGED tree (spec 12, unit 5,
+/// `GateSelection::PostMerge`, run against `self.deps.repo` - a DIFFERENT directory than the
+/// unit worktree). An out-of-band actor deleting the unit worktree during that real wall-clock
+/// window is invisible to `integrate_and_emit`'s own internal re-assert (which ran BEFORE the
+/// post-merge re-gate, over the pre-merge tree) - so nothing protects the `failed_sha` read on
+/// this specific `integration.blocked` arm without round 6's fix. The gate command here is
+/// unscoped (no `inputs`), so it genuinely runs twice at two distinct verdict keys - once
+/// against the worktree (the exhaustive check, passes) and once against the merged base repo
+/// (the post-merge re-gate, fails and deletes the worktree as its side effect) - never a
+/// fabricated in-memory deletion. The base repo gets an unrelated commit of its own between
+/// the bootstrap and the resume, so the merge is a genuine three-way merge rather than a
+/// fast-forward - a fast-forward's merged tree is byte-identical to the worktree's own
+/// pre-merge tree, which would CACHE-HIT the exhaustive check's green verdict (spec 12, unit
+/// 1's content-address cache) and never run the post-merge command at all.
+#[test]
+fn resumed_reviewed_unit_stamps_a_real_failed_sha_after_the_post_merge_re_gates_own_deletion_is_restored(
+) {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore};
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
+    )
+    .unwrap();
+
+    // The unit's own deterministic worktree dir, computed the SAME way `rigger step` itself
+    // computes it - known up front so the gate script below can target it by an absolute
+    // path, exactly the "an out-of-band actor deletes the worktree" shape this arm guards
+    // against (never the gate deleting its OWN cwd, since the post-merge re-gate's cwd is the
+    // base repo, a different directory entirely).
+    let wt_dir = root.join(".rigger").join("tmp").join("rigger-wt-solo");
+    let wt_dir_str = wt_dir.to_str().unwrap();
+    // A flag OUTSIDE the worktree that survives its deletion: the gate's first real
+    // invocation (the pre-merge exhaustive check, run in the worktree) passes and sets it;
+    // its second real invocation (the post-merge re-gate, run in the base repo - a distinct
+    // verdict key, never cache-answered) finds it set, deletes the worktree, and fails.
+    let flag = rigger.join("tmp").join("postmerge-resumed-flag");
+    let flag_str = flag.to_str().unwrap();
+    let marker = rigger
+        .join("tmp")
+        .join("postmerge-resumed-deleted-marker.txt");
+    let marker_str = marker.to_str().unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        format!(
+            r#"name: ensureonparkresumedpostmergetest
+defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok:
+    run: 'if [ -f "{flag}" ]; then rm -rf "{wtdir}"; ( [ -d "{wtdir}" ] && echo present || echo absent ) > "{marker}"; exit 1; else touch "{flag}"; fi'
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+"#,
+            flag = flag_str,
+            wtdir = wt_dir_str,
+            marker = marker_str
+        ),
+    )
+    .unwrap();
+
+    // Step 1 (bootstrap): mints the run's `RunStarted` and creates the unit's real,
+    // git-backed worktree/branch at their deterministic path. Its own parked implementer is
+    // never resulted - it is simply abandoned, standing in for the prior window this test's
+    // premise depends on (a window whose OWN later steps carried it to `reviewed` and then
+    // died before the merge).
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the bootstrap step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/implementer#0""#),
+        "the bootstrap step must park the implementer, creating the unit's worktree; got: \
+         {out:?}"
+    );
+    assert!(
+        wt_dir.exists(),
+        "premise: the bootstrap step must already have created the unit's worktree: {}",
+        wt_dir.display()
+    );
+
+    // The prior window's own committed work, written directly into the ALREADY-CREATED
+    // worktree and committed - the durable checkpoint a real interrupted window leaves on the
+    // unit's branch.
+    std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
+    git_ok(&wt_dir, &["add", "-A"]);
+    git_ok(
+        &wt_dir,
+        &[
+            "commit",
+            "-q",
+            "-m",
+            "prior window: implemented and reviewed",
+        ],
+    );
+    // Captured NOW, while the worktree is known to exist: `run_stage`'s own caller removes a
+    // unit's worktree DIR (never its branch) on any TERMINAL, non-parked return - including
+    // the `UnitFailed` this test drives - so the dir this test's own commit landed in will
+    // itself be gone again by the time the step below returns. The branch is the durable
+    // checkpoint; this sha is what a re-`ensure_present` checks the SAME branch back out to.
+    let expected_sha = git_out(&wt_dir, &["rev-parse", "HEAD"])
+        .expect("the committed worktree must resolve its own HEAD");
+
+    // Advance the BASE repo's own checkout with an unrelated commit, so the unit's merge is a
+    // genuine three-way merge (both sides added a distinct file since their common ancestor)
+    // rather than a fast-forward. This is load-bearing for the content-address cache (spec 12,
+    // unit 1): a fast-forward merge's tree is byte-identical to the worktree's own pre-merge
+    // tree, so the post-merge re-gate would CACHE-HIT the exhaustive check's green verdict
+    // (same command, same tree digest) and never run the command a second time at all - never
+    // exercising the arm this test targets. A real divergence gives the merged tree its own
+    // distinct digest, forcing the post-merge re-gate to run for real.
+    std::fs::write(root.join("base-advanced.txt"), "unrelated base commit\n").unwrap();
+    // Add ONLY the new file, never `-A`: the unit's own worktree is a nested git checkout
+    // under `.rigger/tmp/`, and a broad `add -A` at the base repo's root would stage it as an
+    // embedded repository (a gitlink), corrupting the very tree this test drives a merge over.
+    git_ok(root, &["add", "base-advanced.txt"]);
+    git_ok(root, &["commit", "-q", "-m", "unrelated base advance"]);
+
+    // The prior window's own recorded verdict: the unit is `reviewed`, only the merge is
+    // outstanding. Seeded AFTER the bootstrap step's `RunStarted`, so it lands in the SAME
+    // slice `resume_phase` folds.
+    seed_run_events(
+        root,
+        &[("UnitStatus", r#"{"id":"solo","status":"reviewed"}"#)],
+    );
+
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok,
+        "a resumed unit whose post-merge re-gate goes red must still complete the step \
+         cleanly (a rolled-back merge and a recorded UnitFailed - never a hard process \
+         failure); stderr: {err}\nstdout: {out}"
+    );
+
+    // Non-vacuity: the post-merge re-gate's own command really did remove the worktree
+    // wholesale.
+    let marker_content = std::fs::read_to_string(&marker).unwrap_or_default();
+    assert_eq!(
+        marker_content.trim(),
+        "absent",
+        "premise: the post-merge re-gate's own rm -rf must actually have removed the \
+         worktree wholesale, or this test proves nothing about a restore: {marker_content:?}"
+    );
+
+    // The merge was rolled back (spec 12, unit 5): the base repo's own working tree must NOT
+    // carry the file a landed integration would have.
+    assert!(
+        !root.join("work.rs").exists(),
+        "a RED post-merge re-gate must roll the merge back - the file must never land in the \
+         base repo's working tree"
+    );
+
+    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    let events = store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap();
+    let failed = events
+        .iter()
+        .find(|e| e.type_ == rigger::ledger::TYPE_UNIT_FAILED)
+        .expect("the resumed unit's red post-merge re-gate must record a UnitFailed");
+    let failed_sha = failed
+        .meta
+        .get(rigger::conductor::META_WORKTREE_SHA)
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        failed_sha.len(),
+        40,
+        "the failed event's worktree_sha must be a real 40-hex sha, not the empty sentinel a \
+         read taken during the deletion window would silently stamp: {failed_sha:?}"
+    );
+    assert!(
+        failed_sha.chars().all(|c| c.is_ascii_hexdigit()),
+        "the stamped sha must be real hex: {failed_sha:?}"
+    );
+    assert_eq!(
+        failed_sha, expected_sha,
+        "the stamped sha must be the RESTORED tree's actual HEAD, not a snapshot taken during \
+         the deletion window"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_INTEGRATED),
+        "a rolled-back post-merge re-gate on resume must never integrate"
+    );
+}
+
+/// Spec 64, criterion 3, adjudication round 5 finding
+/// `adv-u3c3r5-two-more-unguarded-empty-sha-siblings` (UPHELD; fixed round 6 with
+/// `candidates[i].wt.ensure_present()` immediately before the `failed_sha` read at
+/// `run_speculation`'s own `integration.blocked` arm).
+///
+/// The THIRD sibling round 6 closes, on the SPECULATION surface this time: a
+/// `speculation_width: 2` unit whose winning candidate's post-merge re-gate goes red. The
+/// exhaustive post-merge re-gate that produces `blocked` here runs against `self.deps.repo`
+/// (the base repo), never re-touching `candidates[i].wt.dir` - so `integrate_and_emit`'s own
+/// internal re-assert (which ran BEFORE that re-gate, over the pre-merge worktree) cannot
+/// cover this read either. The unscoped `ok` gate's FIRST real invocation (candidate 0's
+/// pre-merge narrowed check) passes and arms a flag; every real invocation after that -
+/// candidate 0's own post-merge re-gate, and (a candidate 1 that also reaches its own
+/// post-merge door) candidate 1's - finds the flag armed, deletes candidate 0's worktree, and
+/// fails, so this drives the target arm at least once with no candidate ever winning: the
+/// group exhausts both candidates and ESCALATES, a legitimate terminal fixpoint (mirrors
+/// `speculation_reject_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored_end_to_end`'s
+/// own exit-0-on-escalation contract above), driven through the real, subprocess-per-spawn
+/// `rigger run` so both candidates' implementer and adjudicator spawns are real, synchronous
+/// subprocesses in the SAME process - never a fabricated in-memory deletion.
+#[test]
+fn run_speculation_stamps_a_real_failed_sha_after_the_post_merge_re_gates_own_deletion_is_restored()
+{
+    use std::os::unix::fs::PermissionsExt;
+
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore};
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nRIGGERTEST_WORKER: do the \
+         unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("agents").join("judge.md"),
+        "---\nid: judge\nmodel: sonnet\ntools: [Read]\n---\nRIGGERTEST_ADJUDICATOR: adjudicate \
+         it.\n",
+    )
+    .unwrap();
+
+    // Candidate 0 uses the unit's CANONICAL deterministic worktree/branch (the same dir a
+    // single-lane unit would use) - known up front so the gate script can target it directly,
+    // the "out-of-band actor deletes the worktree" shape this arm guards against.
+    let wt_dir0 = root.join(".rigger").join("tmp").join("rigger-wt-solo");
+    let wt_dir0_str = wt_dir0.to_str().unwrap();
+    let flag = rigger.join("tmp").join("spec-postmerge-flag");
+    let flag_str = flag.to_str().unwrap();
+    let marker = root.join("spec-postmerge-deleted-marker.txt");
+    let marker_str = marker.to_str().unwrap();
+    // Candidate 1's own implementer (see the fake `claude` below) advances the BASE repo with
+    // an unrelated commit of its own as a side effect, once candidate 0's already ran - this
+    // is load-bearing for the content-address cache (spec 12, unit 1): candidate 0's merge
+    // would otherwise be a clean FAST-FORWARD (nothing else ever touches the base repo), whose
+    // merged tree is byte-identical to its own pre-merge worktree tree - a digest match that
+    // would CACHE-HIT the narrowed check's green verdict and never run the post-merge command
+    // at all. Phase A completes both candidates' implementer spawns before Phase B evaluates
+    // either one, so this advance is already in place by the time candidate 0 reaches its
+    // merge.
+    let root_str = root.to_str().unwrap();
+    let lane0_marker = rigger.join("tmp").join("spec-lane0-implemented-marker");
+    let lane0_marker_str = lane0_marker.to_str().unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        format!(
+            r#"name: ensureonparkspeculationpostmergetest
+defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok:
+    run: 'if [ -f "{flag}" ]; then rm -rf "{wtdir0}"; ( [ -d "{wtdir0}" ] && echo present || echo absent ) > "{marker}"; exit 1; else touch "{flag}"; fi'
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    speculation_width: 2
+    review:
+      adjudicator: judge
+"#,
+            flag = flag_str,
+            wtdir0 = wt_dir0_str,
+            marker = marker_str
+        ),
+    )
+    .unwrap();
+
+    let fakebin = tempfile::tempdir().unwrap();
+    let claude_path = fakebin.path().join("claude");
+    std::fs::write(
+        &claude_path,
+        format!(
+            r#"#!/bin/sh
+sp=""
+next=0
+for a in "$@"; do
+  if [ "$next" = "1" ]; then
+    sp="$a"
+    next=0
+  fi
+  if [ "$a" = "--system-prompt" ]; then
+    next=1
+  fi
+done
+case "$sp" in
+  *RIGGERTEST_ADJUDICATOR*)
+    echo '{{"verdict":"approve"}}'
+    ;;
+  *RIGGERTEST_WORKER*)
+    echo "pub fn work() {{}}" > work.rs
+    if [ -f "{lane0_marker}" ]; then
+      echo "unrelated base commit" > "{root_dir}/base-advanced.txt"
+      git -C "{root_dir}" add base-advanced.txt
+      git -C "{root_dir}" commit -q -m "unrelated base advance (lane 1 side effect)"
+    else
+      touch "{lane0_marker}"
+    fi
+    ;;
+  *)
+    echo "fake-claude: unrecognized system prompt: $sp" 1>&2
+    exit 1
+    ;;
+esac
+"#,
+            lane0_marker = lane0_marker_str,
+            root_dir = root_str,
+        ),
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&claude_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&claude_path, perms).unwrap();
+
+    let path_env = format!(
+        "{}:{}",
+        fakebin.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let (out, err, ok) = run_rigger_envs(root, &["run"], &[("PATH", &path_env)]);
+    assert!(
+        ok,
+        "a speculation group whose only winnable merges break post-merge must still reach a \
+         clean escalated fixpoint (exit 0), not a hard failure; stderr: {err}\nstdout: {out}"
+    );
+
+    // Non-vacuity: the post-merge re-gate's own command really did remove candidate 0's
+    // worktree wholesale at least once.
+    let marker_content = std::fs::read_to_string(&marker).unwrap_or_default();
+    assert_eq!(
+        marker_content.trim(),
+        "absent",
+        "premise: the post-merge re-gate's own rm -rf must actually have removed the \
+         candidate worktree wholesale, or this test proves nothing about a restore: \
+         {marker_content:?}"
+    );
+
+    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    let events = store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap();
+
+    // The group really escalated (no candidate's merge survived its post-merge re-gate) - the
+    // terminal state this test's premise depends on.
+    assert!(
+        events
+            .iter()
+            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_ESCALATED),
+        "premise: a speculation group whose every winnable merge breaks post-merge must \
+         escalate the unit, or this test proves nothing about the blocked arm; events: \
+         {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_INTEGRATED),
+        "no candidate may integrate when every merge broke post-merge"
+    );
+
+    // Every UnitFailed this run recorded (candidate 0's post-merge block, and candidate 1's
+    // own if it also reached the same door) carries a real 40-hex worktree sha - stamped
+    // AFTER a re-assert restores what the post-merge re-gate's own spawn just deleted, never
+    // a snapshot taken during the deletion window. At least candidate 0's own (attempts:1)
+    // must be present.
+    let failed: Vec<_> = events
+        .iter()
+        .filter(|e| e.type_ == rigger::ledger::TYPE_UNIT_FAILED)
+        .collect();
+    assert!(
+        !failed.is_empty(),
+        "the blocked post-merge merge(s) must record at least one UnitFailed; events: \
+         {events:?}"
+    );
+    assert!(
+        failed
+            .iter()
+            .any(|e| String::from_utf8_lossy(&e.data).contains(r#""attempts":1"#)),
+        "candidate 0's own post-merge block must record a UnitFailed at attempts:1; events: \
+         {events:?}"
+    );
+    for e in &failed {
+        let sha = e
+            .meta
+            .get(rigger::conductor::META_WORKTREE_SHA)
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(
+            sha.len(),
+            40,
+            "every post-merge-blocked UnitFailed's worktree_sha must be a real 40-hex sha, \
+             not the empty sentinel a read taken during the deletion window would silently \
+             stamp: {sha:?} event={e:?}"
+        );
+        assert!(
+            sha.chars().all(|c| c.is_ascii_hexdigit()),
+            "the stamped sha must be real hex: {sha:?}"
+        );
+    }
 }
 
 /// Spec 50, criterion 2 (the REGISTRY lifecycle): `rigger step` REGISTERS this instance in the
@@ -3124,6 +6690,12 @@ fn step_carries_the_escalated_set_when_a_fixpoint_is_reached_with_a_wedged_unit(
         !line.contains("escalated"),
         "no unit has escalated yet, so the escalated field is omitted; got: {line:?}"
     );
+    // Spec 69, criterion 5: nothing has crossed a watching-discipline threshold on this
+    // first step either, so the push-side `attention` array is also omitted.
+    assert!(
+        !line.contains("attention"),
+        "no threshold has crossed yet, so the attention field is omitted; got: {line:?}"
+    );
 
     // Drain the implementer via a recorded SpawnResult (the `rigger result` channel).
     seed_run_events(
@@ -3153,6 +6725,45 @@ fn step_carries_the_escalated_set_when_a_fixpoint_is_reached_with_a_wedged_unit(
         line.contains(r#""escalated":["solo"]"#),
         "a fixpoint reached with an escalated unit must carry it in the escalated set; got: {line:?}"
     );
+    // Spec 69, criterion 5 (the step wire carries attention - THIS unit's own contract):
+    // the same real `rigger step` invocation that carries the escalated set must ALSO carry
+    // a push-side `attention` entry naming the escalation, through the compiled binary's
+    // actual stdout - not merely through `conductor::run` called directly in-process (the
+    // implementer's own `mod tests` in src/conductor.rs), which can never observe whether
+    // `cmd_step` truly wires `RunState::attention` onto the printed `Step`. `max_retries: 1`
+    // means this unit's first failure IS its escalation, so `worker-death-recurred` (which
+    // needs a SECOND failure) does not also fire here - this step isolates the `escalated`
+    // signal cleanly at the process boundary.
+    assert!(
+        line.contains(r#""attention":[{"kind":"escalated","unit":"solo","detail":"#),
+        "an escalated fixpoint must stamp an attention entry naming the escalated unit, on \
+         the real binary's own stdout; got: {line:?}"
+    );
+
+    // Step 3 (review u69c5, finding sdet-u69c5-escalated-resume-restamp-untested-but-
+    // verified-correct: no test drove a THIRD real `rigger step` after an escalation to
+    // prove the `escalated` signal does not re-stamp on a RESUMED process - only
+    // worker-death-recurred/stalled-frontier and budget-final-tenth had that real-process-
+    // boundary re-stamp guard coverage; this closes the gap). A FRESH process, nothing new
+    // recorded - the run is already at its fixpoint, unchanged. The LEVEL-triggered
+    // `escalated` set field must still re-surface (it reflects current truth every call,
+    // exactly like `halted`), but the EDGE-triggered `attention` array must be absent: the
+    // crossing already happened, once, in step 2 - "once per threshold crossing" (spec 69)
+    // is a property of the PERSISTED log a brand-new process re-derives, not Rust state the
+    // second process happened to carry forward.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "step 3 must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(r#""escalated":["solo"]"#),
+        "the LEVEL-triggered escalated set must still re-surface on a fresh process reading \
+         back the same store; got: {line:?}"
+    );
+    assert!(
+        !line.contains(r#""attention":"#),
+        "a fresh process reading a store where the escalation already happened must NOT \
+         re-stamp the EDGE-triggered attention entry; got: {line:?}"
+    );
 }
 
 /// Gap 13: a spawn-budget HALT must be LOUD, not indistinguishable from convergence.
@@ -3178,6 +6789,166 @@ fn step_prints_a_budget_halt_reason_when_the_breaker_trips() {
     assert!(
         line.contains(r#""halted":"budget exhausted: 1/1 spawns""#),
         "a tripped budget must print a halt reason distinct from convergence; got: {line:?}"
+    );
+    // Spec 69, criterion 5: a budget of 1 is ALSO its own final tenth (1 - 1/10 = 1,
+    // floored), so the SAME real step that halts must carry BOTH a run-scoped `halted`
+    // attention entry AND a `budget-final-tenth` one, in the fixed kind order (`halted`
+    // before `budget-final-tenth`) - a genuine co-occurrence on the compiled binary's own
+    // stdout, not two separate reports of one signal. This is what the implementer's own
+    // in-process `mod tests` (which call `conductor::run` directly) cannot show: whether
+    // `cmd_step` truly moves the live `RunState::attention` onto the printed `Step` rather
+    // than, say, only the `halted` field it was already carrying before this unit.
+    assert!(
+        line.contains(
+            r#""attention":[{"kind":"halted","detail":"budget exhausted: 1/1 spawns"},{"kind":"budget-final-tenth","detail":"1/1 spawns"}]"#
+        ),
+        "a budget halt that is also the budget's final tenth must stamp both run-scoped \
+         attention entries, in order, on the real binary's own stdout; got: {line:?}"
+    );
+}
+
+/// Spec 69, criterion 5, signal 2 (BUDGET half), "once per threshold crossing" - PROVEN
+/// ACROSS A REAL PROCESS BOUNDARY (review u69c5 round 2, cause genuine-defect). The
+/// implementer's own in-process unit test
+/// (`a_budget_halt_does_not_restamp_on_a_later_poll_with_nothing_new`, `src/conductor.rs`)
+/// proves the SIGNAL COMPUTATION against an in-memory `:memory:` store across two `run()`
+/// calls in ONE test process. It cannot prove what `step_prints_a_budget_halt_reason_when_
+/// the_breaker_trips` above proves for a SINGLE crossing: that a SECOND, fresh `rigger
+/// step` process - re-deriving `budget_exhausted_before` from a REAL SQLite file it just
+/// opened, not Rust state the first process happened to carry forward - agrees the
+/// crossing already happened and does not re-stamp.
+#[test]
+fn a_budget_halt_does_not_restamp_on_a_later_real_step_with_nothing_new() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_budget_one_two_stage_workflow(root);
+
+    // Step 1: `a` is admitted and parks, `b` is refused - the breaker trips, crossing both
+    // the budget halt and its own final-tenth threshold in the same call.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "step 1 must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(
+            r#""attention":[{"kind":"halted","detail":"budget exhausted: 1/1 spawns"},{"kind":"budget-final-tenth","detail":"1/1 spawns"}]"#
+        ),
+        "step 1 crosses the budget threshold and must stamp both entries; got: {line:?}"
+    );
+
+    // Step 2: a FRESH `rigger step` process, nothing new recorded. `a`'s spawn replays its
+    // still-unanswered park for free and `b` is refused again - the SAME spawn count on
+    // both sides of THIS call's own window, so the crossing gate does not re-fire. The
+    // LEVEL-triggered `halted` field correctly re-derives `Some(..)` (the breaker genuinely
+    // re-trips every call it is asked), but the EDGE-triggered `attention` array must be
+    // absent - proven here against a store this SECOND process opened fresh, not Rust
+    // state the first process happened to carry forward.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "step 2 must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(r#""halted":"budget exhausted: 1/1 spawns""#),
+        "the LEVEL-triggered halted field must still re-surface on a fresh process reading \
+         back the same store; got: {line:?}"
+    );
+    assert!(
+        !line.contains(r#""attention":"#),
+        "a fresh process reading a store where the crossing already happened must NOT \
+         re-stamp the EDGE-triggered attention entries; got: {line:?}"
+    );
+}
+
+/// Like [`write_budget_one_two_stage_workflow`] but a DEPENDENCY chain instead of two
+/// independent stages: `s2 needs s1`, so `s2` is not ready until `s1` INTEGRATES - the
+/// scenario where the budget count itself does not change on the call that genuinely
+/// halts (review u69c5 round 3, cause genuine-defect). `on_pass` is deliberately left
+/// unset (empty resolves to `merge` - §3.2) - `s2`'s readiness needs a real
+/// `UnitIntegrated`, which an `on_pass: none` unit (verified-but-never-merged) never
+/// emits, so `s2` would stay blocked forever and the run would falsely converge
+/// (`done: true`, nothing pending) rather than reach the genuine halt this test drives at.
+fn write_budget_one_dependency_workflow(root: &Path) {
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: steptest
+defaults:
+  grounder: nop
+  budget: 1
+stages:
+  s1:
+    agent: worker
+  s2:
+    agent: worker
+    needs: [s1]
+"#,
+    )
+    .unwrap();
+}
+
+/// Spec 69, criterion 5, signal 2 (BUDGET half), "once per threshold crossing" - a SECOND
+/// gap in the same signal (review u69c5 round 3, cause genuine-defect), proven ACROSS A
+/// REAL PROCESS BOUNDARY. The implementer's own in-process unit test
+/// (`a_delayed_budget_halt_after_a_dependency_unlocks_still_stamps`, `src/conductor.rs`)
+/// proves the fix's SIGNAL COMPUTATION against an in-memory store; this drives the exact
+/// same scenario through the compiled binary, a REAL on-disk SQLite store, and a REAL
+/// `rigger result` recorded by a SEPARATE process between the two steps - the round-3 fix
+/// gates the budget half on the durable `BudgetExhausted` event's presence in
+/// `prior_events`, and only a fresh process re-reading that event off disk (not Rust state
+/// a single long-lived process carried forward) proves the gate survives the process
+/// boundary the fix's whole rationale depends on.
+#[test]
+fn a_delayed_budget_halt_after_a_dependency_unlocks_still_stamps_on_a_real_process_boundary() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_budget_one_dependency_workflow(root);
+
+    // Step 1: only `s1` is ready (`s2` needs it). `s1`'s implementer parks; nothing else is
+    // ready to refuse, so the budget is reached (0 -> 1) WITHOUT tripping the breaker.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "step 1 must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(r#""id":"s1/implementer#0""#),
+        "step 1 must park s1's implementer; got: {line:?}"
+    );
+    assert!(
+        !line.contains(r#""halted":"#),
+        "reaching the budget count with nothing left to refuse must not halt yet; got: {line:?}"
+    );
+    assert!(
+        line.contains(r#""attention":[{"kind":"budget-final-tenth","detail":"1/1 spawns"}]"#),
+        "step 1 crosses the final-tenth spawn-count threshold (signal 4, unaffected by this \
+         fix) but must NOT stamp `halted` (signal 2): nothing was refused this call; \
+         got: {line:?}"
+    );
+
+    // A SEPARATE process records s1's real result - exactly a courier's `rigger result`
+    // call - so s1 integrates (no gates, `on_pass: none`) and unlocks s2.
+    let (_out, err, ok) = run_rigger(root, &["result", "s1/implementer#0", "done"]);
+    assert!(ok, "recording s1's result must succeed; stderr: {err}");
+
+    // Step 2: a FRESH `rigger step` process. s1 integrated, s2 becomes ready, and is
+    // REFUSED (budget already spent) - the call that GENUINELY halts, even though the
+    // spawn count itself does not change this call (`before_spawns == after_spawns == 1`).
+    // Must stamp `halted` exactly once, proving `budget_exhausted_before` correctly
+    // re-derives `false` (nothing tripped the breaker as of `prior_events`) from a store
+    // this brand-new process just opened off disk.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "step 2 must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(r#""halted":"budget exhausted: 1/1 spawns""#),
+        "step 2 must genuinely halt: s2 is refused; got: {line:?}"
+    );
+    assert!(
+        line.contains(r#""attention":[{"kind":"halted","detail":"budget exhausted: 1/1 spawns"}]"#),
+        "step 2 is the call that GENUINELY halts (s2 refused) and must stamp the entry, even \
+         though the spawn count itself is unchanged this call; got: {line:?}"
     );
 }
 
@@ -3265,10 +7036,22 @@ fn step_surfaces_a_hung_spawn_with_a_stale_marker_as_a_liveness_halt() {
         line.contains("infra") && line.contains("no remediation attempt"),
         "the halt must state infra classification and no-attempt-charged; got: {line:?}"
     );
+    // Spec 69, criterion 5, signal 2 (review u69c5, cause genuine-defect): a hung spawn's
+    // liveness halt must ALSO stamp a run-scoped `halted` entry on the generic `attention`
+    // channel, mirroring what the `halted` field above already surfaces - not visible only
+    // on the budget-breaker half of that union.
+    assert!(
+        line.contains(r#""attention":[{"kind":"halted","detail":"#),
+        "the hung halt must also stamp a run-scoped `halted` attention entry; got: {line:?}"
+    );
 
     // Step 3: re-step WITHOUT recording a result. The hung spawn is already answered by the
     // liveness fault, so it is NOT re-parked/re-run (no dup-exec) - its id must NOT reappear as
-    // a fresh wave item - and the halt RE-SURFACES so the stall stays visible every step.
+    // a fresh wave item. The LEVEL-triggered `halted` field re-surfaces (it reflects current
+    // truth every call, by design), but the EDGE-triggered `attention` entry does NOT re-stamp
+    // with nothing new crossed since step 2 already surfaced it - "once per threshold crossing"
+    // (spec 69, criterion 5's own text; review u69c5 round 2, finding
+    // adv-u69c5r2-halted-signal-restamps-every-poll-violates-once-per-crossing).
     let (out, err, ok) = run_rigger(root, &["step"]);
     assert!(ok, "the re-step must succeed; stderr: {err}");
     let line = out.trim();
@@ -3279,6 +7062,11 @@ fn step_surfaces_a_hung_spawn_with_a_stale_marker_as_a_liveness_halt() {
     assert!(
         json_string_field(line, "marker_path").is_none() && !line.contains(r#""wave":[{"#),
         "the answered hung spawn is not re-run (no fresh wave item / dup-exec); got: {line:?}"
+    );
+    assert!(
+        !line.contains(r#""attention":"#),
+        "the attention entry must NOT re-stamp on a later step with nothing new crossed - only \
+         the level-triggered `halted` field re-surfaces; got: {line:?}"
     );
 
     // Step 4: the operator re-drives the now-healthy agent and records a REAL result. Being
@@ -3298,8 +7086,209 @@ fn step_surfaces_a_hung_spawn_with_a_stale_marker_as_a_liveness_halt() {
         "recording a real result clears the liveness halt; got: {line:?}"
     );
     assert!(
+        !line.contains(r#""attention":"#),
+        "recording a real result must also clear the mirrored `halted` attention entry; got: {line:?}"
+    );
+    assert!(
         line.contains(r#""done":true"#),
         "the recovered run converges to a clean fixpoint; got: {line:?}"
+    );
+}
+
+/// Regression for the round-2/3 review reject (ADJUDICATOR VERDICT REJECT u77c2b, spec 77
+/// criterion 2 "MUTATION SCRATCH IS REAPED"): `liveness::sweep` records a hung spawn's fault
+/// via `spawn::record_result_if_absent` DIRECTLY, in-process (`src/liveness.rs`), never
+/// through `cmd_result` - so the ONLY production reclaim call site (`reclaim_spawn_scratch`,
+/// wired solely into `cmd_result`) never ran for it, leaking every hung spawn's registered
+/// mutation-scratch dir. The existing "for every outcome" test
+/// (`a_spawns_mutation_scratch_is_reclaimed_the_moment_its_own_result_reports_for_every_outcome`)
+/// labels one of its four cases "liveness-fault" but drives it via a synthetic
+/// `rigger result ... --error --meta liveness_class:infra` CLI call - structurally identical
+/// to the death-courier path, NOT to the sweep's own in-process record call - so it could
+/// never catch this gap. THIS test drives the REAL sweep path end to end: a genuine stale
+/// marker plus a real second `rigger step` (mirroring
+/// `step_surfaces_a_hung_spawn_with_a_stale_marker_as_a_liveness_halt`'s own shape), proving
+/// the hung spawn's own registered mutation-scratch dir is reclaimed the moment the sweep
+/// records its fault, while an unrelated spawn's own dir is untouched.
+#[test]
+fn step_reclaims_a_hung_spawns_mutation_scratch_the_moment_the_sweep_records_its_fault() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_liveness_workflow(root);
+
+    // A dedicated cache home, so XDG_CACHE_HOME never points at the operator's real ~/.cache.
+    let cache_home = tempfile::tempdir().unwrap();
+    let envs: &[(&str, &str)] = &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())];
+
+    // Step 1: the unit is ready, so its implementer parks in-flight (no result yet). The wave
+    // carries the RESOLVED marker path the worker would touch - the single authority the
+    // sweep also reads, so the test plants the marker exactly where the sweep will look.
+    let (out, err, ok) = run_rigger_envs(root, &["step"], envs);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(r#""id":"a/implementer#0""#),
+        "step 1 parks the implementer in-flight; got: {line:?}"
+    );
+    let marker_str =
+        json_string_field(line, "marker_path").expect("the wave carries the resolved marker path");
+    let marker = std::path::Path::new(&marker_str);
+
+    // Pre-populate the ABOUT-TO-HANG spawn's own registered mutation-scratch dir, standing in
+    // for a real `cargo mutants` run's build debris - and a DIFFERENT spawn's own dir (never
+    // parked by this run), which must stay untouched. Keyed by the injective byte-hex encoding
+    // (`/` -> `_2f`, `#` -> `_23`) `mutation_scratch_path` uses.
+    let hung_scratch = cache_home
+        .path()
+        .join("rigger-mutants")
+        .join("a_2fimplementer_230");
+    let other_scratch = cache_home
+        .path()
+        .join("rigger-mutants")
+        .join("z_2fimplementer_230");
+    for d in [&hung_scratch, &other_scratch] {
+        std::fs::create_dir_all(d).unwrap();
+        std::fs::write(d.join("mutants-debris.out"), [0u8; 32]).unwrap();
+    }
+
+    // Plant the SYNTHETIC STALE MARKER at the wire path (worker-write path == sweep-read path).
+    plant_stale_marker(marker);
+
+    // Step 2: the sweep finds the marker stale beyond the bound, classifies the spawn infra,
+    // and records the fault DIRECTLY via `record_result_if_absent` - never through
+    // `cmd_result` - exactly the path
+    // `step_surfaces_a_hung_spawn_with_a_stale_marker_as_a_liveness_halt` already pins for the
+    // halt surfacing. THIS is also the moment the fix under test reclaims the hung spawn's
+    // own registered mutation-scratch dir.
+    let (out, err, ok) = run_rigger_envs(root, &["step"], envs);
+    assert!(
+        ok,
+        "a liveness-halted step still prints its result and exits 0; stderr: {err}"
+    );
+    let line = out.trim();
+    assert!(
+        line.contains(r#""halted":"#) && line.contains("a/implementer#0"),
+        "the hung spawn must be surfaced as a halt naming it; got: {line:?}"
+    );
+    // The sweep's OWN "liveness swept" notice fires exactly when it found a NON-EMPTY stale
+    // set (never when nothing was stale) - pinning the polarity of that guard directly, not
+    // just its downstream reclaim effect, so a flipped condition there (printing on the WRONG
+    // branch) cannot silently regress unnoticed.
+    assert!(
+        err.contains("liveness swept 1 hung spawn"),
+        "the sweep must report the hung spawn it just found; stderr: {err}"
+    );
+
+    assert!(
+        !hung_scratch.exists(),
+        "the hung spawn's own registered mutation-scratch dir must be reclaimed the moment the \
+         liveness sweep records its fault, exactly like every other outcome that reaches \
+         `cmd_result`; {} still exists",
+        hung_scratch.display()
+    );
+    assert!(
+        other_scratch.exists() && other_scratch.join("mutants-debris.out").exists(),
+        "an unrelated spawn's own mutation-scratch dir must be untouched; {} was wrongly \
+         reclaimed",
+        other_scratch.display()
+    );
+}
+
+/// Sibling of `step_reclaims_a_hung_spawns_mutation_scratch_the_moment_the_sweep_records_its_fault`,
+/// covering the OTHER half of the shared reclaim authority's contract:
+/// `reclaim_spawn_registered_scratch` reaps TWO categories per spawn - the plain per-spawn
+/// `agent-scratch` dir (`spawn_scratch_path`, spec 34 criterion 1) AND the registered
+/// mutation-testing scratch dir (`mutation_scratch_path`, spec 77 criterion 2) - and
+/// `cmd_step`'s liveness-sweep call site invokes it for every spawn the sweep just found
+/// stale. The sibling test above proves the mutation-scratch half at this real sweep call
+/// site; the existing "for every outcome" test
+/// (`a_spawns_scratch_is_reclaimed_the_moment_its_result_is_recorded_for_every_outcome`)
+/// proves agent-scratch reclaim for a "liveness-fault" outcome only via the SYNTHETIC
+/// `rigger result ... --error --meta liveness_class:infra` courier call - structurally the
+/// death-courier path, never the sweep's own in-process `record_result_if_absent` call - so
+/// neither test alone proves agent-scratch is ALSO reclaimed at the real sweep call site.
+/// THIS test drives the real sweep path end to end (mirroring the mutation-scratch sibling's
+/// own shape) and asserts on the plain agent-scratch dir instead, so the shared authority's
+/// full two-category contract is proven at this call site, not just one category of it.
+#[test]
+fn step_reclaims_a_hung_spawns_agent_scratch_the_moment_the_sweep_records_its_fault() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_liveness_workflow(root);
+
+    // Step 1: the unit is ready, so its implementer parks in-flight (no result yet). The wave
+    // carries the RESOLVED marker path the worker would touch - the single authority the
+    // sweep also reads, so the test plants the marker exactly where the sweep will look.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(r#""id":"a/implementer#0""#),
+        "step 1 parks the implementer in-flight; got: {line:?}"
+    );
+    let marker_str =
+        json_string_field(line, "marker_path").expect("the wave carries the resolved marker path");
+    let marker = std::path::Path::new(&marker_str);
+
+    // `spawn_scratch_path` and `marker_path` are structurally IDENTICAL apart from their
+    // subdir name (`agent-scratch` vs `agent-live`, both `<scratch_root>/<subdir>/<run>/
+    // <encoded id>`) - deriving the hung spawn's agent-scratch dir by substituting the
+    // subdir in the wave's own marker path, rather than re-deriving run id/encoding by
+    // hand, keeps this test grounded in the SAME authority the sweep and worker share.
+    let hung_scratch =
+        std::path::PathBuf::from(marker_str.replace("/agent-live/", "/agent-scratch/"));
+    assert_ne!(
+        hung_scratch, marker,
+        "the substitution must actually land in agent-scratch, not agent-live; marker: {marker_str:?}"
+    );
+    // A DIFFERENT spawn's own agent-scratch dir (never parked by this run), which must stay
+    // untouched - a sibling under the SAME run subdir, keyed by the injective byte-hex
+    // encoding (`/` -> `_2f`, `#` -> `_23`) `spawn_scratch_path` uses.
+    let other_scratch = hung_scratch
+        .parent()
+        .expect("the hung spawn's agent-scratch dir has a run-scoped parent")
+        .join("z_2fimplementer_230");
+    for d in [&hung_scratch, &other_scratch] {
+        std::fs::create_dir_all(d).unwrap();
+        std::fs::write(d.join("cargo-target-debris.rlib"), [0u8; 64]).unwrap();
+    }
+
+    // Plant the SYNTHETIC STALE MARKER at the wire path (worker-write path == sweep-read path).
+    plant_stale_marker(marker);
+
+    // Step 2: the sweep finds the marker stale beyond the bound, classifies the spawn infra,
+    // and records the fault DIRECTLY via `record_result_if_absent` - never through
+    // `cmd_result` - exactly the path
+    // `step_surfaces_a_hung_spawn_with_a_stale_marker_as_a_liveness_halt` already pins for
+    // the halt surfacing. THIS is also the moment the fix under test reclaims the hung
+    // spawn's own plain agent-scratch dir.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok,
+        "a liveness-halted step still prints its result and exits 0; stderr: {err}"
+    );
+    let line = out.trim();
+    assert!(
+        line.contains(r#""halted":"#) && line.contains("a/implementer#0"),
+        "the hung spawn must be surfaced as a halt naming it; got: {line:?}"
+    );
+    assert!(
+        err.contains("liveness swept 1 hung spawn"),
+        "the sweep must report the hung spawn it just found; stderr: {err}"
+    );
+
+    assert!(
+        !hung_scratch.exists(),
+        "the hung spawn's own agent-scratch dir must be reclaimed the moment the liveness \
+         sweep records its fault, exactly like every other outcome that reaches \
+         `cmd_result`; {} still exists",
+        hung_scratch.display()
+    );
+    assert!(
+        other_scratch.exists() && other_scratch.join("cargo-target-debris.rlib").exists(),
+        "an unrelated spawn's own agent-scratch dir must be untouched; {} was wrongly \
+         reclaimed",
+        other_scratch.display()
     );
 }
 
@@ -3388,6 +7377,16 @@ fn step_surfaces_a_hung_unbounded_spawn_recorded_as_a_liveness_fault_by_the_driv
         line.contains("infra") && line.contains("no remediation attempt"),
         "the halt states infra classification and no-attempt-charged; got: {line:?}"
     );
+    // Round 4 (review u69c5 round 3, cause genuine-defect): this is the FIRST `rigger step`
+    // process able to observe a fault that a wholly separate process (the driver's
+    // out-of-band `rigger result --error` above) recorded strictly BETWEEN steps 1 and 2 -
+    // so it is a genuine NEW crossing and the push-side `attention` wire must carry it too,
+    // not just the pre-existing `halted` field.
+    assert!(
+        line.contains(r#""attention":[{"kind":"halted""#) && line.contains("a/implementer#0"),
+        "the FIRST step able to observe an out-of-band driver-recorded hang must stamp it on \
+         the attention wire (once per crossing); got: {line:?}"
+    );
 
     // Step 3: re-step without recording a real result - the fault ANSWERS the spawn, so it is
     // never re-run (no dup-exec) and the halt re-surfaces so the stall stays visible.
@@ -3402,6 +7401,13 @@ fn step_surfaces_a_hung_unbounded_spawn_recorded_as_a_liveness_fault_by_the_driv
         json_string_field(line, "marker_path").is_none() && !line.contains(r#""wave":[{"#),
         "the answered hung spawn is not re-run (no fresh wave item / dup-exec); got: {line:?}"
     );
+    // The SAME hang, still unresolved - not a new crossing, so `attention` stays empty (and
+    // thus omitted from the wire) even though `halted` correctly keeps re-surfacing every step.
+    assert!(
+        !line.contains(r#""attention":"#),
+        "a still-true, unchanged hang must not re-stamp attention on a later step (once per \
+         crossing); got: {line:?}"
+    );
 
     // Step 4: recording a REAL result (last-write-wins) supersedes the fault and the run converges.
     let (_o, err, ok) = run_rigger(
@@ -3415,6 +7421,151 @@ fn step_surfaces_a_hung_unbounded_spawn_recorded_as_a_liveness_fault_by_the_driv
     assert!(
         !line.contains(r#""halted":"#) && line.contains(r#""done":true"#),
         "a real result clears the halt and the run converges; got: {line:?}"
+    );
+    assert!(
+        !line.contains(r#""attention":"#),
+        "a recovered run must carry no attention entry either; got: {line:?}"
+    );
+}
+
+/// Spec 69, criterion 5 (review u69c5 round 5, cause genuine-defect, findings
+/// sdet-u69c5r4-repoless-cursor-restamps-every-step /
+/// adv-u69c5r4-confirm-sdet-repoless-restamp-empirically-proven): the SAME driver-recorded-hang
+/// scenario as `step_surfaces_a_hung_unbounded_spawn_recorded_as_a_liveness_fault_by_the_driver`
+/// above, but repo-less (`temp_repoless_project` - no `.git`, so `scratch_root` resolves to
+/// `None` and there is nowhere to persist the round-4 cross-process cursor). Before this
+/// round's fix, `pre_hung_ids` collapsed to empty on EVERY step in this path (a plain
+/// `Option::map`/`unwrap_or_default` over `scratch_root`) while `hung` itself is derived purely
+/// from the event log and is NOT gated on `scratch_root` - so `newly_hung` was true on every
+/// single step and the SAME still-unresolved hang restamped `attention` forever, the opposite
+/// failure direction from the crossing-swallowing bug this cursor mechanism exists to close.
+///
+/// The fix gates the crossing check itself on `scratch_root.is_some()`: with no scratch there
+/// is no boundary available at all to tell a genuine new crossing from a still-true restamp
+/// (every repo-less-reachable fault is recorded by a wholly separate `rigger result --error`
+/// process call that, by construction, always predates the observing step's own reads - unlike
+/// the scratch-present sweep, there is no in-process moment that precedes it), so `attention`
+/// carries NO hung-liveness entry in this path at all, on ANY step - never restamping, but also
+/// never firing. `step.halted` (fed from the SAME, ungated `hung` set) is completely
+/// unaffected and keeps halting loudly on every step, exactly as `a_liveness_fault_on_a_review_
+/// spawn_halts_instead_of_re_parking` already proves independently - this test's job is only
+/// the (previously broken) `attention` half.
+#[test]
+fn step_attention_never_restamps_a_hung_unbounded_spawn_when_repo_less() {
+    let dir = temp_repoless_project();
+    let root = dir.path();
+    write_unbounded_liveness_workflow(root);
+
+    // Step 1: the implementer parks in-flight, unbounded (no marker, nothing hung yet).
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(r#""id":"a/implementer#0""#),
+        "step 1 parks the implementer in-flight; got: {line:?}"
+    );
+
+    // The native driver's outer wall-clock records a liveness fault out of band, exactly as
+    // the git-repo sibling test above does.
+    let (_o, err, ok) = run_rigger(
+        root,
+        &[
+            "result",
+            "a/implementer#0",
+            "worker a/implementer#0 hung: ran past the outer wall-clock with no per-spawn max_wall_clock",
+            "--error",
+            "--meta",
+            r#"{"liveness_class":"infra"}"#,
+        ],
+    );
+    assert!(
+        ok,
+        "recording the driver's liveness fault must succeed; stderr: {err}"
+    );
+
+    // Step 2: the halt still surfaces loudly on the pre-existing, ungated `halted` field, but
+    // repo-less has no crossing boundary to seed `attention` from, so it stays omitted -
+    // consistently, not restamped-every-step as the pre-fix bug produced.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "step 2 must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(r#""halted":"#) && line.contains("a/implementer#0"),
+        "the hung unbounded spawn must surface as a halt naming it; got: {line:?}"
+    );
+    assert!(
+        !line.contains(r#""attention":"#),
+        "repo-less has no persisted crossing boundary, so attention must stay omitted rather \
+         than guess (right or wrong) at a genuine-new-crossing verdict; got: {line:?}"
+    );
+
+    // Step 3: the SAME hang, still unresolved - nothing new recorded. `halted` keeps
+    // re-surfacing (it is still true); `attention` stays consistently omitted, proving this is
+    // steady, deterministic behavior across repeated repo-less steps, not a fluke of step 2.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "step 3 must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(r#""halted":"#) && line.contains("a/implementer#0"),
+        "the halt re-surfaces on a later step; got: {line:?}"
+    );
+    assert!(
+        !line.contains(r#""attention":"#),
+        "attention must stay omitted on a later repo-less step too - never restamping the same \
+         still-true hang every step; got: {line:?}"
+    );
+}
+
+/// Spec 69, criterion 5 (review u69c5 round 5, cause genuine-defect, finding
+/// adv-u69c5r4-cursor-write-outruns-its-own-delivery): `println!` is `attention`'s ONLY
+/// delivery channel (it is never appended to the event log), so persisting the hung-attention
+/// cursor - which durably marks a crossing as "already surfaced" - must never run BEFORE the
+/// print that is the sole thing that actually surfaces it. A process death between the two
+/// calls (SIGKILL, OOM, a broken pipe to the driver) would otherwise permanently swallow a
+/// genuine new crossing no observer ever saw: the next step's `pre_hung_ids` would already
+/// contain the id, so `newly_hung` reads false forever after.
+///
+/// It is a SOURCE-TEXT assertion, not a behavior test - the same convention
+/// `worktree_sweep_completes_before_any_add_within_one_step` above uses for an identical
+/// "no test can force this exact interleaving without killing the process mid-line" problem:
+/// a crash between two adjacent statements is not something an integration test can inject
+/// deterministically, so the ordering itself is pinned directly in `cmd_step`'s own source
+/// text, at a bar a no-op cannot pass.
+#[test]
+fn the_hung_cursor_is_persisted_only_after_the_step_that_carries_it_is_printed() {
+    let src = main_rs_source();
+
+    let step_at = src
+        .find("fn cmd_step(args: &[String]) -> Res {")
+        .expect("main.rs must still define cmd_step, the `rigger step` lifecycle");
+    let step_end = src[step_at..]
+        .find("\nfn ")
+        .map(|off| step_at + off)
+        .expect("cmd_step must be followed by another top-level fn");
+    let cmd_step = &src[step_at..step_end];
+
+    let print_at = cmd_step
+        .find("println!(\"{}\", serde_json::to_string(&step)?)")
+        .expect(
+            "cmd_step must print the serialized Step - the sole delivery channel for `attention`",
+        );
+    let persist_at = cmd_step
+        .find("liveness::write_hung_cursor(")
+        .expect("cmd_step must persist the hung-attention cursor");
+
+    assert_eq!(
+        cmd_step
+            .matches("println!(\"{}\", serde_json::to_string(&step)?)")
+            .count(),
+        1,
+        "cmd_step must print the Step exactly once, so this pin stays unambiguous"
+    );
+    assert!(
+        print_at < persist_at,
+        "the Step must be printed (delivered to the driver) BEFORE the hung-attention cursor \
+         is durably persisted; found the cursor write at offset {persist_at} before the print \
+         at offset {print_at} within cmd_step - a crash between them would then permanently \
+         swallow a genuine new crossing no observer ever saw"
     );
 }
 
@@ -4021,6 +8172,1111 @@ fn run_teardown_reclaims_run_level_scratch_after_a_manual_review_is_integrated()
     );
 }
 
+/// Spec 77, criterion 3 (UNIT-TERMINAL REAP), the RESUME half: `gc_integrated_branches` (spec
+/// 38 criterion 1 - proven by
+/// `branch_gc_reclaims_integrated_units_and_retains_escalated_ones_on_resume` in
+/// `src/conductor.rs`) reclaims a terminal unit's branch/worktree, then (round 3) calls the
+/// SAME `reclaim_terminal_unit_mutation_scratch` helper every fresh-path teardown site now
+/// drives too, reaping every REGISTERED mutation-scratch dir that unit's own spawns populated
+/// (spec 77 criterion 2's `rigger-mutants` root), while a LIVE sibling unit's own registered
+/// scratch is spared - gated on the EXISTING sweep-liveness authority (only an `Integrated`
+/// unit is touched), never a new liveness notion of its own. See
+/// `a_units_registered_mutation_scratch_is_reaped_by_the_real_single_window_integrate_teardown`
+/// below for the DOMINANT fresh-path proof this test structurally cannot give, since "solo"
+/// integrates here via a hand-seeded `UnitIntegrated` event, never a real merge.
+///
+/// Mirrors `run_teardown_reclaims_run_level_scratch_after_a_manual_review_is_integrated`'s
+/// exact two-step shape (a real `rigger step` pauses "solo" for manual review, then a seeded
+/// `UnitIntegrated` lands and a second real `rigger step` folds it) so the reap fires through
+/// the REAL `gc_integrated_branches` seam, not a hand-called helper - plus a `sibling` unit
+/// seeded ONLY via events (no matching workflow stage, exactly like the in-process
+/// `branch_gc_reclaims_...` test's own "stuck" unit) that never integrates, so its own
+/// registered scratch must survive untouched.
+#[test]
+fn a_terminal_units_registered_mutation_scratch_is_reaped_while_a_live_siblings_survives() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_manual_review_workflow(root);
+
+    // Step 1: "solo" pauses for manual review (its only gate is manual autonomy).
+    let (_out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok,
+        "the first step must pause the sole unit for manual review; stderr:\n{err}"
+    );
+
+    // The human approves "solo" (a real UnitIntegrated lands it), and a LIVE sibling unit -
+    // known to the ledger only through its own events, exactly like the in-process
+    // `branch_gc_reclaims_...` test's "stuck" unit - never integrates.
+    seed_run_events(
+        root,
+        &[
+            ("UnitIntegrated", r#"{"id":"solo","commit":"deadbeef"}"#),
+            ("UnitStarted", r#"{"id":"sibling","agent":"worker"}"#),
+        ],
+    );
+
+    // Registered mutation-scratch for a spawn of EACH unit, under a throwaway cache home so
+    // XDG_CACHE_HOME never points at the operator's real ~/.cache.
+    let cache_home = tempfile::tempdir().unwrap();
+    let solo_scratch = cache_home
+        .path()
+        .join("rigger-mutants")
+        .join("solo_2fimplementer_230");
+    let sibling_scratch = cache_home
+        .path()
+        .join("rigger-mutants")
+        .join("sibling_2fimplementer_230");
+    for d in [&solo_scratch, &sibling_scratch] {
+        std::fs::create_dir_all(d).unwrap();
+        std::fs::write(d.join("mutants-debris.out"), [0u8; 32]).unwrap();
+    }
+
+    // Step 2: the resolved manual review folds to a clean fixpoint, running
+    // `gc_integrated_branches` over "solo" (now Integrated) and "sibling" (still not).
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["step"],
+        &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
+    );
+    assert!(
+        ok,
+        "the step after the manual review is integrated must still succeed; stdout: {out:?} \
+         stderr:\n{err}"
+    );
+
+    assert!(
+        !solo_scratch.exists(),
+        "the now-terminal (integrated) unit's registered mutation-scratch dir must be reaped \
+         by the SAME teardown that reclaims its worktree/branch; {} still exists",
+        solo_scratch.display()
+    );
+    assert!(
+        sibling_scratch.exists() && sibling_scratch.join("mutants-debris.out").exists(),
+        "a LIVE (non-terminal) sibling unit's own registered mutation-scratch must be spared \
+         by the sweep-liveness authority; {} was wrongly reclaimed",
+        sibling_scratch.display()
+    );
+}
+
+/// Spec 77, criterion 3 (UNIT-TERMINAL REAP), the DOMINANT fresh-path proof, round 3 fix for
+/// `adv-u77c3-mutation-scratch-reap-only-fires-on-resume-never-on-a-clean-single-window-
+/// integrate` (UPHELD): the round-2 build wired the reap ONLY into `gc_integrated_branches`,
+/// whose one production call site runs at the very TOP of `run()` against the PRIOR window's
+/// `RunState`, before the current window's own units even exist - the documented REPLAY half
+/// of the branch-GC rule. The overwhelming majority of real unit-terminal transitions instead
+/// go through the FRESH half: `run_stage`'s own non-parked teardown (conductor.rs), and every
+/// speculation winner/loser teardown - NONE of which ever reached the reap, so a unit that
+/// integrated within a single, uninterrupted `rigger run`/`rigger step` window never had its
+/// registered mutation scratch reaped at all. This test proves the round-3 fix closes exactly
+/// that: unlike the sibling test above (which reaches `Integrated` via a hand-seeded
+/// `UnitIntegrated` event, so "solo"'s real teardown path is NEVER driven and the test
+/// structurally cannot see this gap), "solo" here reaches `Ok(true)` for REAL - a real park, a
+/// real `SpawnResult` (seeded directly rather than through `rigger result`, so the per-spawn
+/// reclaim, spec 34 c1, never runs for this spawn either - reproducing exactly the crash
+/// window criterion 3 backstops: "the record landed, the reclaim never ran"), a real pre-gate
+/// commit, a real `ok` gate pass, and a real merge - all within the SAME second `rigger step`
+/// process that also tears down its worktree via the real `run_stage` `Ok(true)` branch.
+///
+/// Mirrors the pre-existing
+/// `step_reclaims_the_units_worktree_and_deletes_its_branch_on_a_clean_integrate`'s exact
+/// real-git-isolated, `on_pass: merge` shape (`write_reviewless_git_unit_workflow`), which
+/// already proves the worktree+branch ARE reclaimed on a clean single-window integrate; this
+/// test adds a registered mutation-scratch dir to that same real teardown and asserts it is
+/// ALSO gone.
+#[test]
+fn a_units_registered_mutation_scratch_is_reaped_by_the_real_single_window_integrate_teardown() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_reviewless_git_unit_workflow(root);
+
+    let scratch = root.join("scratchroot");
+    let tmp = scratch.to_str().unwrap();
+
+    // Step 1: "solo"'s implementer parks - a real, git-backed worktree exists now.
+    let (out, err, ok) = run_rigger_envs(root, &["step"], &[("RIGGER_TMPDIR", tmp)]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/implementer#0""#) && out.contains(r#""done":false"#),
+        "step 1 must park the implementer; got: {out:?}"
+    );
+    let wt_dir = scratch.join("rigger-wt-solo");
+    assert!(
+        wt_dir.exists(),
+        "premise: a parked implementer must already have its unit worktree on disk: {}",
+        wt_dir.display()
+    );
+
+    // The implementer's own diff, written directly into the worktree it was already handed.
+    std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
+
+    // Register the mutation-testing scratch this spawn's OWN `cargo mutants` run would have
+    // populated (spec 77 c2), under a throwaway cache home. The `SpawnResult` is seeded
+    // DIRECTLY into the store (never through the real `rigger result` CLI, mirroring
+    // `step_prints_a_disjoint_two_spawn_wave_then_reports_done`'s own pattern) so the per-spawn
+    // reclaim (`cmd_result`'s own call) never runs for this spawn - the ONLY thing that can
+    // reap this scratch is the unit-terminal teardown this test exists to prove.
+    let cache_home = tempfile::tempdir().unwrap();
+    let mutation_scratch = cache_home
+        .path()
+        .join("rigger-mutants")
+        .join("solo_2fimplementer_230");
+    std::fs::create_dir_all(&mutation_scratch).unwrap();
+    std::fs::write(mutation_scratch.join("mutants-debris.out"), [0u8; 32]).unwrap();
+    seed_run_events(
+        root,
+        &[(
+            "SpawnResult",
+            r#"{"id":"solo/implementer#0","output":"implemented the unit"}"#,
+        )],
+    );
+
+    // Step 2: the seeded result replays, the pre-gate commit lands the written file, the `ok`
+    // gate passes inline, there is no review panel, and with `on_pass: merge` the stage reaches
+    // a genuine TERMINAL `Ok(true)` in THIS SAME process - the REAL `run_stage` teardown, never
+    // a fabricated `UnitIntegrated` event and never a later resume process.
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["step"],
+        &[
+            ("RIGGER_TMPDIR", tmp),
+            ("XDG_CACHE_HOME", cache_home.path().to_str().unwrap()),
+        ],
+    );
+    assert!(ok, "the second step must succeed; stderr:\n{err}");
+    assert!(
+        out.contains(r#""done":true"#),
+        "every spawn now has a result and the stage integrates in this same step; got: {out:?}"
+    );
+
+    assert!(
+        !wt_dir.exists(),
+        "the unit's worktree must be reclaimed after a clean integrate: {}",
+        wt_dir.display()
+    );
+    assert!(
+        !mutation_scratch.exists(),
+        "the unit's own registered mutation-scratch dir must be reaped by the SAME real, \
+         single-window teardown that reclaims its worktree - not only on a later resume \
+         process; {} still exists",
+        mutation_scratch.display()
+    );
+}
+
+/// Spec 77, criterion 3 (UNIT-TERMINAL REAP), an `isolation: none` unit has NO worktree at all
+/// (it runs inline in the project cwd), yet its implementer can still populate registered
+/// mutation scratch (mutation efficacy is independent of build isolation) - proving the round-3
+/// fix's UNCONDITIONAL placement in `run_stage` (never gated on `wt.is_some()`) actually
+/// matters: a worktree-teardown-triggered-only reap (the shape the cargo-target-cache reap
+/// uses) would silently miss this unit entirely, since it never reaches `Worktree::remove` on
+/// ANY path. Real single-window `Ok(true)` integrate, same seeded-`SpawnResult` shape as the
+/// sibling test above.
+#[test]
+fn an_isolation_none_units_registered_mutation_scratch_is_reaped_by_the_real_single_window_integrate_teardown(
+) {
+    let dir = temp_repoless_project();
+    let root = dir.path();
+    // A single `isolation: none` stage, `on_pass: none` (no merge to attempt - there is no
+    // worktree), mirroring `write_two_stage_workflow`'s own stage shape but with only ONE
+    // stage so no spawn-budget contention is in play.
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: isolationnonereaptest
+defaults:
+  grounder: nop
+  budget: 60
+stages:
+  a:
+    agent: worker
+    on_pass: none
+"#,
+    )
+    .unwrap();
+
+    // Step 1: "a" is ready and isolation:none, so its implementer parks with NO worktree.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"a/implementer#0""#),
+        "step 1 must park a's implementer; got: {out:?}"
+    );
+
+    // Register the mutation-testing scratch "a"'s own spawn would have populated, then seed its
+    // result directly (never through `rigger result`, so the per-spawn reclaim never runs).
+    let cache_home = tempfile::tempdir().unwrap();
+    let mutation_scratch = cache_home
+        .path()
+        .join("rigger-mutants")
+        .join("a_2fimplementer_230");
+    std::fs::create_dir_all(&mutation_scratch).unwrap();
+    std::fs::write(mutation_scratch.join("mutants-debris.out"), [0u8; 32]).unwrap();
+    seed_run_events(
+        root,
+        &[(
+            "SpawnResult",
+            r#"{"id":"a/implementer#0","output":"did a"}"#,
+        )],
+    );
+
+    // Step 2: "a" replays to its `on_pass: none` terminal (verified-but-unmerged) state - a
+    // real, single-window terminal outcome with NO worktree ever created for it.
+    let (_out, err, ok) = run_rigger_envs(
+        root,
+        &["step"],
+        &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
+    );
+    assert!(ok, "the second step must succeed; stderr:\n{err}");
+
+    assert!(
+        !mutation_scratch.exists(),
+        "an isolation:none unit's own registered mutation-scratch dir must be reaped on its \
+         real single-window terminal teardown, even though it has no worktree to hook a reap \
+         onto: {}",
+        mutation_scratch.display()
+    );
+}
+
+/// Spec 77, criterion 3 (UNIT-TERMINAL REAP): every terminal-teardown call site (round 3)
+/// drives the ONE shared `reclaim_terminal_unit_mutation_scratch` helper (`src/conductor.rs`),
+/// which resolves the registered-scratch-root `cache_home` via `cache_home_from(XDG_CACHE_
+/// HOME, HOME)` and only enters `reclaim_unit_mutation_scratch` behind `if let Some(cache_
+/// home)` - so a HOMELESS environment (neither var set) takes the `None` arm for EVERY
+/// terminal unit, every step. No test anywhere else drives this arm: the pure-fn unit tests
+/// (`src/driver/replay.rs`) never see an `Option` at all (they call
+/// `reclaim_unit_mutation_scratch` with a real `&Path` directly), the pre-existing
+/// `branch_gc_reclaims_integrated_units_and_retains_escalated_ones_on_resume` unit test
+/// (spec 38) never touches `HOME`/`XDG_CACHE_HOME` so it runs with whatever real home the
+/// test process inherits, and this file's own sibling tests above always seed a resolvable
+/// `XDG_CACHE_HOME`. A regression that swapped the `if let Some` guard for an `.unwrap()` (or
+/// any other panic-on-`None` shape) would pass every one of those and only surface here, in
+/// the one homeless environment none of them construct.
+///
+/// Mirrors the established homeless-environment integration-test shape
+/// (`a_reap_on_idle_singleton_in_a_homeless_environment_serves_without_a_watcher`,
+/// `.env_remove` on the real spawned binary) rather than mutating process-global env vars
+/// in-process, which would race every other test in this shared test binary.
+///
+/// Non-vacuous: hand-verified by temporarily replacing the `if let Some(cache_home) = ...`
+/// guard in `src/conductor.rs::reclaim_terminal_unit_mutation_scratch` (round 3's shared
+/// helper) with an `.unwrap()`, confirming THIS test fails with a `None`-unwrap panic (`ok`
+/// false, a panic message on stderr) while every other test in this file's suite that reaches
+/// a unit-terminal teardown still passes (they all run with a resolvable real home), then
+/// reverting the change.
+#[test]
+fn a_terminal_units_mutation_scratch_reap_is_a_graceful_noop_in_a_homeless_environment() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_manual_review_workflow(root);
+
+    // Step 1: "solo" pauses for manual review, exactly like the sibling test above - this
+    // step keeps the test process's own real HOME, so seeding the project is unaffected.
+    let (_out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok,
+        "the first step must pause the sole unit for manual review; stderr:\n{err}"
+    );
+
+    // The human approves "solo" (a real UnitIntegrated lands it), matching the sibling test.
+    seed_run_events(
+        root,
+        &[("UnitIntegrated", r#"{"id":"solo","commit":"deadbeef"}"#)],
+    );
+
+    // Step 2: the SAME resolved-manual-review step as the sibling test, but the subprocess
+    // itself is made homeless (no HOME, no XDG_CACHE_HOME) so `gc_integrated_branches`'s own
+    // `cache_home` resolves to `None` for "solo", now Integrated. `XDG_STATE_HOME` is still
+    // redirected to a throwaway dir (matching `run_rigger_envs`'s own default) so the
+    // instance registry never touches the operator's real state home either.
+    let state = tempfile::tempdir().unwrap();
+    let out = common::rigger_courier()
+        .arg("step")
+        .current_dir(root)
+        .env_remove("HOME")
+        .env_remove("XDG_CACHE_HOME")
+        .env("RIGGER_NO_DASH", "1")
+        .env("XDG_STATE_HOME", state.path())
+        .output()
+        .expect("failed to spawn the rigger binary");
+    let ok = out.status.success();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        ok,
+        "a step that reclaims a terminal unit in a HOMELESS environment (no HOME, no \
+         XDG_CACHE_HOME) must still succeed - the registered-scratch reap has nowhere to \
+         look and must no-op, never panic; stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("panicked"),
+        "the homeless registered-scratch reap must never panic even on success exit; \
+         stderr:\n{stderr}"
+    );
+}
+
+/// Spec 77, criterion 3 (UNIT-TERMINAL REAP): the round-3 mechanical re-enumeration of the
+/// `reclaim_terminal_unit_mutation_scratch` call sites (`src/conductor.rs`) finds FOUR -
+/// `run_stage`'s fresh-path teardown and `gc_integrated_branches`'s resume path (both proven
+/// by the sibling tests above), plus `run_speculation`'s winner-integrate exit and its
+/// escalation-tail exit, neither of which any existing test drives. This closes the
+/// winner-integrate half: a REAL `speculation_width: 2` group (two real candidate implementer
+/// spawns, an adjudicator that always approves) where lane 0 wins for real - a genuine
+/// `on_pass: merge` merge through the compiled binary, never a hand-seeded `UnitIntegrated`.
+/// Registered mutation-scratch is seeded for BOTH lanes' own spawn ids before the run, proving
+/// the ONE call at the winner-integrate exit (`self.reclaim_terminal_unit_mutation_scratch(&st.
+/// name)`, keyed on the bare unit id every lane's own spawn id shares as its prefix) reaps
+/// every lane's own registered scratch together - not only the winner's.
+#[test]
+fn a_speculation_winners_registered_mutation_scratch_across_all_lanes_is_reaped_by_the_real_winner_integrate_teardown(
+) {
+    use std::os::unix::fs::PermissionsExt;
+
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore};
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nRIGGERTEST_WORKER: do the \
+         unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("agents").join("judge.md"),
+        "---\nid: judge\nmodel: sonnet\ntools: [Read]\n---\nRIGGERTEST_ADJUDICATOR: adjudicate \
+         it.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: specwinnermutationscratchreaptest
+defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok: { run: "true" }
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    on_pass: merge
+    speculation_width: 2
+    review:
+      adjudicator: judge
+"#,
+    )
+    .unwrap();
+
+    let fakebin = tempfile::tempdir().unwrap();
+    let claude_path = fakebin.path().join("claude");
+    std::fs::write(
+        &claude_path,
+        r#"#!/bin/sh
+sp=""
+next=0
+for a in "$@"; do
+  if [ "$next" = "1" ]; then
+    sp="$a"
+    next=0
+  fi
+  if [ "$a" = "--system-prompt" ]; then
+    next=1
+  fi
+done
+case "$sp" in
+  *RIGGERTEST_ADJUDICATOR*)
+    echo '{"verdict":"approve"}'
+    ;;
+  *RIGGERTEST_WORKER*)
+    echo "pub fn work() {}" > work.rs
+    ;;
+  *)
+    echo "fake-claude: unrecognized system prompt: $sp" 1>&2
+    exit 1
+    ;;
+esac
+"#,
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&claude_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&claude_path, perms).unwrap();
+
+    // Registered mutation-scratch for BOTH speculation lanes' own implementer spawns, under a
+    // throwaway cache home so `XDG_CACHE_HOME` never points at the operator's real `~/.cache`.
+    let cache_home = tempfile::tempdir().unwrap();
+    let lane0_scratch = cache_home
+        .path()
+        .join("rigger-mutants")
+        .join("solo_2fimplementer_230");
+    let lane1_scratch = cache_home
+        .path()
+        .join("rigger-mutants")
+        .join("solo_2fimplementer_231");
+    for d in [&lane0_scratch, &lane1_scratch] {
+        std::fs::create_dir_all(d).unwrap();
+        std::fs::write(d.join("mutants-debris.out"), [0u8; 32]).unwrap();
+    }
+
+    let path_env = format!(
+        "{}:{}",
+        fakebin.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["run"],
+        &[
+            ("PATH", &path_env),
+            ("XDG_CACHE_HOME", cache_home.path().to_str().unwrap()),
+        ],
+    );
+    assert!(
+        ok,
+        "a real speculation-width winner-integrate run must succeed; stderr: {err}\nstdout: \
+         {out}"
+    );
+
+    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    let events = store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_INTEGRATED),
+        "premise: the speculation group must reach a REAL winner-integrate, or this test proves \
+         nothing about that exit's own reap call; events: {events:?}"
+    );
+
+    assert!(
+        !lane0_scratch.exists(),
+        "the winning lane's own registered mutation-scratch dir must be reaped by the real \
+         winner-integrate teardown: {}",
+        lane0_scratch.display()
+    );
+    assert!(
+        !lane1_scratch.exists(),
+        "a LOSING lane's own registered mutation-scratch dir must ALSO be reaped by the SAME \
+         call - it is keyed on the shared unit id, covering every lane at once: {}",
+        lane1_scratch.display()
+    );
+}
+
+/// Spec 77, criterion 3 (UNIT-TERMINAL REAP): the escalation-tail half of the same
+/// mechanical re-enumeration (see the winner-integrate sibling test above for the full
+/// account). A REAL `speculation_width: 2` group where an adjudicator that always REJECTS
+/// loses both candidates, so the unit ESCALATES rather than integrating - a legitimate
+/// terminal fixpoint (mirrors
+/// `speculation_reject_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored_end_to_end`'s
+/// own exit-0-on-escalation contract). Registered mutation-scratch is seeded for both lanes
+/// before the run, proving the escalation-tail's own call
+/// (`self.reclaim_terminal_unit_mutation_scratch(&st.name)`, right before `Ok(false)`) reaps a
+/// group's registered scratch even when it NEVER integrates - a group that exhausts every
+/// candidate is still unit-terminal, not merely a group that wins.
+#[test]
+fn a_speculation_escalations_registered_mutation_scratch_across_all_lanes_is_reaped_by_the_real_escalation_tail_teardown(
+) {
+    use std::os::unix::fs::PermissionsExt;
+
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore};
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nRIGGERTEST_WORKER: do the \
+         unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("agents").join("judge.md"),
+        "---\nid: judge\nmodel: sonnet\ntools: [Read]\n---\nRIGGERTEST_ADJUDICATOR_REJECT: \
+         adjudicate it.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: specescalationmutationscratchreaptest
+defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok: { run: "true" }
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    on_pass: merge
+    speculation_width: 2
+    review:
+      adjudicator: judge
+"#,
+    )
+    .unwrap();
+
+    let fakebin = tempfile::tempdir().unwrap();
+    let claude_path = fakebin.path().join("claude");
+    std::fs::write(
+        &claude_path,
+        r#"#!/bin/sh
+sp=""
+next=0
+for a in "$@"; do
+  if [ "$next" = "1" ]; then
+    sp="$a"
+    next=0
+  fi
+  if [ "$a" = "--system-prompt" ]; then
+    next=1
+  fi
+done
+case "$sp" in
+  *RIGGERTEST_ADJUDICATOR_REJECT*)
+    echo '{"verdict":"reject"}'
+    ;;
+  *RIGGERTEST_WORKER*)
+    echo "pub fn work() {}" > work.rs
+    ;;
+  *)
+    echo "fake-claude: unrecognized system prompt: $sp" 1>&2
+    exit 1
+    ;;
+esac
+"#,
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&claude_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&claude_path, perms).unwrap();
+
+    let cache_home = tempfile::tempdir().unwrap();
+    let lane0_scratch = cache_home
+        .path()
+        .join("rigger-mutants")
+        .join("solo_2fimplementer_230");
+    let lane1_scratch = cache_home
+        .path()
+        .join("rigger-mutants")
+        .join("solo_2fimplementer_231");
+    for d in [&lane0_scratch, &lane1_scratch] {
+        std::fs::create_dir_all(d).unwrap();
+        std::fs::write(d.join("mutants-debris.out"), [0u8; 32]).unwrap();
+    }
+
+    let path_env = format!(
+        "{}:{}",
+        fakebin.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["run"],
+        &[
+            ("PATH", &path_env),
+            ("XDG_CACHE_HOME", cache_home.path().to_str().unwrap()),
+        ],
+    );
+    assert!(
+        ok,
+        "an all-candidates-rejected speculation group must still reach a clean escalated \
+         fixpoint (exit 0), not a hard failure; stderr: {err}\nstdout: {out}"
+    );
+
+    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    let events = store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_ESCALATED),
+        "premise: an always-rejecting adjudicator across both speculation candidates must \
+         escalate the unit, or this test proves nothing about the escalation-tail's own reap \
+         call; events: {events:?}"
+    );
+
+    assert!(
+        !lane0_scratch.exists(),
+        "an ESCALATED unit's own registered mutation-scratch (lane 0) must still be reaped by \
+         the escalation-tail teardown - a group that never integrates is still unit-terminal: {}",
+        lane0_scratch.display()
+    );
+    assert!(
+        !lane1_scratch.exists(),
+        "an ESCALATED unit's own registered mutation-scratch (lane 1) must still be reaped by \
+         the escalation-tail teardown: {}",
+        lane1_scratch.display()
+    );
+}
+
+/// Spec 77, criterion 3 (UNIT-TERMINAL REAP), round 4 fix for
+/// `adj-u77c3r6-verdict-reject-onpassnone-speculation-leak` (REJECT, UPHELD): the round-3
+/// mechanical re-enumeration named FOUR call sites but only wired three - the fresh-path
+/// `run_stage` teardown, `gc_integrated_branches`'s resume path, and `run_speculation`'s
+/// winner-INTEGRATE exit (all proven by the sibling tests above) - and silently left
+/// `run_speculation`'s THIRD exit, the `!integrates(st)` (`on_pass: none`) branch, uncalled.
+/// That branch is its own genuine unit-terminal fixpoint: the group settled on a winner
+/// (verified + approved), no later lane is ever attempted, yet `emit_speculation_winner_status`
+/// never emits `UnitIntegrated`, so the resume backstop in `gc_integrated_branches` (gated on
+/// `Status::Integrated`) can never catch this leak on a later resume either - a genuine
+/// permanent, unbounded leak, not merely a same-process gap.
+///
+/// A REAL `speculation_width: 2`, `on_pass: none` group (two real candidate implementer
+/// spawns, an adjudicator that always approves) where lane 0 wins for real through the
+/// compiled binary. Registered mutation-scratch is seeded for BOTH lanes' own spawn ids
+/// before the run, proving the `!integrates(st)` exit's own call
+/// (`self.reclaim_terminal_unit_mutation_scratch(&st.name)`, immediately before its
+/// `return Ok(false)`, mirroring the winner-integrate and escalation-tail siblings) reaps
+/// every lane's own registered scratch together, exactly like its two siblings - even though
+/// `on_pass: none` never merges and so never emits `UnitIntegrated`.
+#[test]
+fn a_speculation_on_pass_none_winners_registered_mutation_scratch_across_all_lanes_is_reaped_by_the_real_on_pass_none_exit_teardown(
+) {
+    use std::os::unix::fs::PermissionsExt;
+
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore};
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nRIGGERTEST_WORKER: do the \
+         unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("agents").join("judge.md"),
+        "---\nid: judge\nmodel: sonnet\ntools: [Read]\n---\nRIGGERTEST_ADJUDICATOR: adjudicate \
+         it.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: specOnPassNoneMutationScratchReapTest
+defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok: { run: "true" }
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    on_pass: none
+    speculation_width: 2
+    review:
+      adjudicator: judge
+"#,
+    )
+    .unwrap();
+
+    let fakebin = tempfile::tempdir().unwrap();
+    let claude_path = fakebin.path().join("claude");
+    std::fs::write(
+        &claude_path,
+        r#"#!/bin/sh
+sp=""
+next=0
+for a in "$@"; do
+  if [ "$next" = "1" ]; then
+    sp="$a"
+    next=0
+  fi
+  if [ "$a" = "--system-prompt" ]; then
+    next=1
+  fi
+done
+case "$sp" in
+  *RIGGERTEST_ADJUDICATOR*)
+    echo '{"verdict":"approve"}'
+    ;;
+  *RIGGERTEST_WORKER*)
+    echo "pub fn work() {}" > work.rs
+    ;;
+  *)
+    echo "fake-claude: unrecognized system prompt: $sp" 1>&2
+    exit 1
+    ;;
+esac
+"#,
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&claude_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&claude_path, perms).unwrap();
+
+    // Registered mutation-scratch for BOTH speculation lanes' own implementer spawns, under a
+    // throwaway cache home so `XDG_CACHE_HOME` never points at the operator's real `~/.cache`.
+    let cache_home = tempfile::tempdir().unwrap();
+    let lane0_scratch = cache_home
+        .path()
+        .join("rigger-mutants")
+        .join("solo_2fimplementer_230");
+    let lane1_scratch = cache_home
+        .path()
+        .join("rigger-mutants")
+        .join("solo_2fimplementer_231");
+    for d in [&lane0_scratch, &lane1_scratch] {
+        std::fs::create_dir_all(d).unwrap();
+        std::fs::write(d.join("mutants-debris.out"), [0u8; 32]).unwrap();
+    }
+
+    let path_env = format!(
+        "{}:{}",
+        fakebin.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["run"],
+        &[
+            ("PATH", &path_env),
+            ("XDG_CACHE_HOME", cache_home.path().to_str().unwrap()),
+        ],
+    );
+    assert!(
+        ok,
+        "an on_pass:none speculation winner must still reach a clean fixpoint (exit 0); \
+         stderr: {err}\nstdout: {out}"
+    );
+
+    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    let events = store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_STATUS
+                && String::from_utf8_lossy(&e.data).contains(r#""status":"verified"#)),
+        "premise: the on_pass:none group must reach a confirmed, verified winner, or this test \
+         proves nothing about that exit's own reap call; events: {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_ESCALATED
+                || e.type_ == rigger::ledger::TYPE_UNIT_INTEGRATED),
+        "premise: the winner must be reached through the `!integrates(st)` exit specifically - \
+         never the escalation tail (both candidates losing) and never a merge (on_pass:none \
+         never integrates) - or this test proves nothing about THIS exit's own reap call; \
+         events: {events:?}"
+    );
+
+    assert!(
+        !lane0_scratch.exists(),
+        "the winning lane's own registered mutation-scratch dir must be reaped by the real \
+         on_pass:none winner-exit teardown: {}",
+        lane0_scratch.display()
+    );
+    assert!(
+        !lane1_scratch.exists(),
+        "a LOSING lane's own registered mutation-scratch dir must ALSO be reaped by the SAME \
+         call - it is keyed on the shared unit id, covering every lane at once: {}",
+        lane1_scratch.display()
+    );
+}
+
+/// Spec 77, criterion 3 (UNIT-TERMINAL REAP), round 5 fix for
+/// `adj-u77c3r7-verdict-reject-resume-backstop-integrated-only-gap`: `gc_integrated_branches`'s
+/// resume-time reap of registered mutation scratch previously gated its per-unit loop on
+/// `Status::Integrated` alone - the SAME condition the branch/worktree teardown beside it uses -
+/// so it could never reach an ESCALATED unit (terminal, but never `Integrated`) or an
+/// `on_pass: none` speculation winner (settles permanently at `Verified`/`Reviewed` -
+/// `emit_speculation_winner_status` never emits `TYPE_UNIT_INTEGRATED` - so `ledger::RunState::
+/// is_terminal` can never see it either). A process that crashed strictly between either
+/// unit's terminal event durably recording and the FRESH-path exit's own synchronous reclaim
+/// call a few lines later would strand that scratch forever: this resume backstop was the ONLY
+/// thing that could ever revisit it, and it never did. Mirrors
+/// `branch_gc_reclaims_integrated_units_and_retains_escalated_ones_on_resume`'s exact shape
+/// (seed a prior-window unit's terminal event directly, with NO reclaim call ever having run
+/// for it, then assert a resume reaps it) - through the real binary (`seed_run_events`, never a
+/// hand-called helper) and widened to prove both new cases at once, PLUS a third unit proving
+/// the widened predicate is still narrow where it must be: `midflight` carries the workflow's
+/// default `on_pass` (integrates - a merge is still expected) and sits at `verified` too, but
+/// is neither terminal nor `on_pass: none`-settled, so its own registered scratch must survive
+/// the SAME resume step untouched (mutation efficacy round-5, killing the surviving
+/// `replace && with || in mutation_scratch_settled` mutant `outcomes.json` named: without this
+/// unit, nothing in the suite distinguishes the union's `&&` from an over-eager `||`, since
+/// `matches!(status, Verified|Reviewed) || (has a stage && !integrates)` would ALSO happen to
+/// reap both `stuck` and `solo` above - it takes a unit satisfying exactly ONE side of the `&&`
+/// to tell them apart).
+#[test]
+fn a_resumed_run_reaps_an_escalated_and_an_on_pass_none_settled_units_registered_mutation_scratch_not_just_an_integrated_ones(
+) {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: resumereaptest
+defaults:
+  grounder: nop
+  budget: 60
+  autonomy: manual
+gates:
+  human: { run: "true", kind: core }
+stages:
+  solo:
+    agent: worker
+    gates: [human]
+    on_pass: none
+  midflight:
+    agent: worker
+    needs: [solo]
+    gates: [human]
+"#,
+    )
+    .unwrap();
+
+    // Step 1: "solo" (the only READY stage, `on_pass: none`) pauses for manual review - a real
+    // `RunStarted` bootstrap, nothing terminal yet. "midflight" needs `solo` integrated, which
+    // never happens in this test (its `on_pass: none` guarantees it), so it is never scheduled
+    // and never interferes with the seeded state below.
+    let (_out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok,
+        "the first step must pause the sole ready unit for manual review; stderr:\n{err}"
+    );
+
+    // Seed directly, exactly like the in-process `branch_gc_reclaims_...` test's own "stuck"
+    // unit: an ESCALATED unit ("stuck", no matching workflow stage at all - `is_terminal`
+    // needs no stage lookup, so a pure ledger artifact suffices), "solo" ITSELF settled
+    // `verified` (never `UnitIntegrated`) - the `on_pass: none` speculation-winner checkpoint's
+    // own final status, reached here directly rather than by racing real candidates (already
+    // proven reachable for real by
+    // `a_speculation_on_pass_none_winners_registered_mutation_scratch_across_all_lanes_is_reaped_by_the_real_on_pass_none_exit_teardown`
+    // above - this test is about the RESUME backstop, not that exit's own call) - and
+    // "midflight" ALSO at `verified` (a real, ordinary mid-review checkpoint: implemented and
+    // gated, awaiting review/merge) to prove the widened predicate does not over-reach a
+    // same-status unit whose `on_pass` still integrates. None of the three events' own
+    // fresh-path reap ever ran, reproducing exactly the crash window this fix closes.
+    seed_run_events(
+        root,
+        &[
+            ("UnitEscalated", r#"{"id":"stuck"}"#),
+            ("UnitStatus", r#"{"id":"solo","status":"verified"}"#),
+            ("UnitStatus", r#"{"id":"midflight","status":"verified"}"#),
+        ],
+    );
+
+    // Registered mutation-scratch for a spawn of EACH unit, under a throwaway cache home so
+    // `XDG_CACHE_HOME` never points at the operator's real `~/.cache`.
+    let cache_home = tempfile::tempdir().unwrap();
+    let stuck_scratch = cache_home
+        .path()
+        .join("rigger-mutants")
+        .join("stuck_2fimplementer_230");
+    let solo_scratch = cache_home
+        .path()
+        .join("rigger-mutants")
+        .join("solo_2fimplementer_230");
+    let midflight_scratch = cache_home
+        .path()
+        .join("rigger-mutants")
+        .join("midflight_2fimplementer_230");
+    for d in [&stuck_scratch, &solo_scratch, &midflight_scratch] {
+        std::fs::create_dir_all(d).unwrap();
+        std::fs::write(d.join("mutants-debris.out"), [0u8; 32]).unwrap();
+    }
+
+    // Step 2: the resume backstop (`gc_integrated_branches`, run at the top of `run()`,
+    // before any wave) folds the prior log and must reap `stuck` and `solo` - neither is
+    // `Integrated` - while sparing `midflight`, which is neither terminal nor `on_pass: none`-
+    // settled and so is still expected to progress toward a real merge in a later step.
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["step"],
+        &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
+    );
+    assert!(
+        ok,
+        "the resume step must still succeed; stdout: {out:?} stderr:\n{err}"
+    );
+
+    assert!(
+        !stuck_scratch.exists(),
+        "an ESCALATED (terminal, but never Integrated) unit's registered mutation-scratch dir \
+         must be reaped on resume too: {}",
+        stuck_scratch.display()
+    );
+    assert!(
+        !solo_scratch.exists(),
+        "an on_pass:none unit settled at `verified` (never Integrated, never caught by \
+         is_terminal either) must have its registered mutation-scratch dir reaped on resume: {}",
+        solo_scratch.display()
+    );
+    assert!(
+        midflight_scratch.exists() && midflight_scratch.join("mutants-debris.out").exists(),
+        "an ordinary on_pass:merge unit mid-review at `verified` (neither terminal nor \
+         on_pass:none-settled) must have its registered mutation-scratch SPARED by the widened \
+         resume predicate, not just by units that are already Integrated: {}",
+        midflight_scratch.display()
+    );
+}
+
+/// Spec 77, criterion 3 (UNIT-TERMINAL REAP): `gc_integrated_branches`'s own doc comment
+/// (round 5) claims moving its call site to AFTER the deterministic decomposition baseline
+/// expansion matters specifically because "this repo's own implementer/sdet units are
+/// themselves baseline units" - a SPEC-DRIVEN run (`deps.criteria` non-empty), where
+/// `stages` starts the window with only the fan-out TEMPLATE stage and the real
+/// per-criterion baseline unit (carrying the template's `on_pass` value) is synthesized
+/// into `stages` only once `baseline_units` runs. Every sibling test proving
+/// `mutation_scratch_settled`'s `on_pass:none` arm
+/// (`a_speculation_on_pass_none_winners_registered_mutation_scratch_across_all_lanes_is_reaped_by_the_real_on_pass_none_exit_teardown`
+/// and `a_resumed_run_reaps_an_escalated_and_an_on_pass_none_settled_units_registered_mutation_scratch_not_just_an_integrated_ones`
+/// above) authors its `on_pass: none` unit directly as a hand-written workflow STAGE with
+/// an empty `--spec` (so `deps.criteria` is empty and the baseline-expansion block is a
+/// no-op) - none of them exercises a baseline unit AT ALL, so none of them can tell the
+/// documented call-site reorder apart from a version that never moved it: `stages.get(id)`
+/// would already have resolved either way. This test drives a REAL `--spec`-carrying run
+/// (a fan-out `implement` template, `on_pass: none`, one Done-when criterion) through TWO
+/// real `rigger step --spec ...` invocations - crossing an actual process boundary between
+/// them, exactly like the resume backstop's own production call site - and proves the
+/// SYNTHESIZED baseline unit's registered mutation-scratch is reaped on the second (resume)
+/// step, not silently exempted by `mutation_scratch_settled`'s conservative
+/// `stages.get(&u.id)` miss branch (which resolves a stage-less id's `integrates` to `true`,
+/// i.e. NOT reaped) the way it would be if the call still ran before expansion.
+#[test]
+fn a_resumed_spec_driven_runs_baseline_on_pass_none_unit_has_its_registered_mutation_scratch_reaped_too(
+) {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: baselineOnPassNoneReorderTest
+defaults:
+  grounder: nop
+  budget: 60
+  autonomy: manual
+gates:
+  human: { run: "true", kind: core }
+stages:
+  implement:
+    agent: worker
+    strategy: fan-out
+    gates: [human]
+    on_pass: none
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("spec.md"),
+        "# Spec\n\n## Done when\n\n- [ ] widget\n",
+    )
+    .unwrap();
+
+    // Step 1: `deps.criteria` is non-empty (`--spec spec.md`), so the conductor synthesizes
+    // exactly ONE baseline unit from the fan-out `implement` template for the sole criterion
+    // ("widget" slugs deterministically to `unit-1-widget`, per `unit_slug`), inheriting the
+    // template's `on_pass: none`. `autonomy: manual` means this step never launches a real
+    // agent process for it - it parks the baseline unit as a `ManualReview`, a real bootstrap
+    // through the compiled binary, nothing terminal yet.
+    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
+    assert!(
+        ok,
+        "the first spec-driven step must synthesize and pause the sole baseline unit for \
+         manual review; stderr:\n{err}\nstdout:\n{out}"
+    );
+    {
+        use rigger::eventstore::namespace::Namespaced;
+        use rigger::eventstore::sqlite::Store;
+        use rigger::eventstore::{Direction, EventStore};
+        let backend =
+            Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
+        let store = Namespaced::new(&backend, &run_stream_identity(root));
+        let events = store
+            .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+            .unwrap();
+        assert!(
+            events.iter().any(|e| e.type_ == "UnitStarted"
+                && String::from_utf8_lossy(&e.data).contains(r#""id":"unit-1-widget""#)),
+            "premise: the criterion must decompose to the deterministic baseline id \
+             `unit-1-widget`, or this test proves nothing about a SYNTHESIZED unit \
+             specifically; events: {events:?}"
+        );
+    }
+
+    // Seed the baseline unit's terminal `on_pass:none` checkpoint directly - exactly the
+    // sibling resume test's shape - reproducing a crash strictly between that event durably
+    // recording and the fresh-path exit's own synchronous reclaim call: no reclaim has run
+    // for this unit yet.
+    seed_run_events(
+        root,
+        &[(
+            "UnitStatus",
+            r#"{"id":"unit-1-widget","status":"verified"}"#,
+        )],
+    );
+
+    // Registered mutation-scratch for the baseline unit's own implementer spawn, under a
+    // throwaway cache home so `XDG_CACHE_HOME` never points at the operator's real
+    // `~/.cache`.
+    let cache_home = tempfile::tempdir().unwrap();
+    let scratch = cache_home
+        .path()
+        .join("rigger-mutants")
+        .join("unit-1-widget_2fimplementer_230");
+    std::fs::create_dir_all(&scratch).unwrap();
+    std::fs::write(scratch.join("mutants-debris.out"), [0u8; 32]).unwrap();
+
+    // Step 2: the SAME `--spec spec.md` is supplied again (a real resume re-supplies the
+    // spec exactly as the first step did), so the conductor re-synthesizes the identical
+    // baseline unit into `stages` BEFORE the resume backstop runs - the ordering the round-5
+    // doc comment claims is load-bearing for this exact case.
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["step", "--spec", "spec.md"],
+        &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
+    );
+    assert!(
+        ok,
+        "the resume step must still succeed; stdout: {out:?} stderr:\n{err}"
+    );
+    assert!(
+        !scratch.exists(),
+        "a SPEC-DRIVEN baseline unit's own registered mutation-scratch dir must be reaped on \
+         resume exactly like a hand-authored stage's would - the baseline unit only carries \
+         its real `on_pass: none` into `stages` once `baseline_units` has run, so the resume \
+         backstop must observe `stages` AFTER that expansion, not before: {}",
+        scratch.display()
+    );
+}
+
 /// `rigger stats` reports the LATEST run by default and `rigger stats --all` reports the
 /// historical aggregate over every run (spec 06, unit 1). Two runs are seeded through the
 /// real `rigger emit` courier: run 1 lands one clean unit, run 2 escalates one unit. The
@@ -4064,6 +9320,274 @@ fn stats_reports_the_latest_run_by_default_and_all_for_the_aggregate() {
     // A stray argument is still rejected.
     let (_o, _e, ok) = run_rigger(root, &["stats", "--bogus"]);
     assert!(!ok, "an unknown stats argument must be rejected");
+}
+
+/// Seed spawn-timing events (`SpawnRequested`/`SpawnResult`, built through the real
+/// `rigger::spawn` writer so the persisted bytes match production exactly) directly into the
+/// namespaced run stream, each row carrying an EXPLICIT, caller-controlled `recorded_at`
+/// (whole seconds since the epoch) - inserted via a direct rusqlite row, the same raw-SQL
+/// technique `seed_order_signature` uses for `revision`, applied here to `recorded_at`
+/// instead. `seed_run_events` (`Event::new`) always stamps the real wall clock, which can
+/// never produce a deterministic, assertable duration; this gives spec 61's SPAWN TIMING
+/// contract test (`rigger stats`'s rendered "X.Ys avg" text) a reproducible clock to render
+/// through the real compiled binary.
+fn seed_spawn_events_at(root: &Path, project: &str, rows: &[(rigger::eventstore::Event, i64)]) {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+
+    let rigger_dir = root.join(".rigger");
+    std::fs::create_dir_all(&rigger_dir).unwrap();
+    std::fs::write(rigger_dir.join("project.id"), format!("{project}\n")).unwrap();
+    let db = rigger_dir.join("events.db");
+    // Open through the real store first, so the schema is laid down exactly as the binary
+    // itself would lay it down (mirrors seed_order_signature).
+    Store::open(db.to_str().unwrap()).unwrap();
+    let stream = format!("{}run", Namespaced::prefix_for(project));
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    for (i, (event, recorded_at_secs)) in rows.iter().enumerate() {
+        let revision = (i + 1) as i64;
+        let nanos = recorded_at_secs * 1_000_000_000;
+        conn.execute(
+            "INSERT INTO events (stream, type, id, data, meta, valid_from, recorded_at, revision)
+             VALUES (?1, ?2, ?3, ?4, '{}', ?5, ?5, ?6)",
+            rusqlite::params![stream, event.type_, event.id, event.data, nanos, revision],
+        )
+        .unwrap();
+    }
+}
+
+/// Spec 61 c9, SPAWN TIMING, at the REAL compiled-binary boundary: `rigger stats` pairs each
+/// recorded spawn request with its result by spawn id and reports duration aggregates per
+/// role (count, total, mean), covering a role outside the review tiers (`implementer`) exactly
+/// as much as one inside them (`adversary`) - the tier-independent recording the implementer's
+/// own in-process test (`src/main.rs`'s
+/// `stats_lines_pairs_recorded_spawn_request_and_result_into_spawn_timing`, which calls
+/// `stats_lines` directly in the SAME crate, never spawning the product, and cannot assert
+/// exact durations since it relies on the real wall clock) does not reach: this drives the
+/// actual `rigger` PROCESS end to end, from raw persisted rows under a CONTROLLED clock, so the
+/// exact rendered "X.Ys avg / N spawns / X.Ys total" text is asserted byte-for-byte.
+#[test]
+fn stats_cli_renders_exact_per_role_spawn_timing_and_unpaired_disclosure() {
+    use rigger::spawn::{SpawnRequest, SpawnResult};
+
+    let dir = temp_project();
+    let root = dir.path();
+
+    let implementer_req = SpawnRequest::new("u1", "impl", "implementer", 0, "do it");
+    let adversary_req_a = SpawnRequest::new("u2", "review", "adversary", 0, "review it");
+    let adversary_req_b = SpawnRequest::new("u3", "review", "adversary", 0, "review it too");
+    let dead_req = SpawnRequest::new("u4", "impl", "implementer", 1, "never answered");
+
+    seed_spawn_events_at(
+        root,
+        "spawn-timing-proj",
+        &[
+            (implementer_req.to_event().unwrap(), 0),
+            (
+                SpawnResult::ok(&implementer_req.id, "done")
+                    .to_event()
+                    .unwrap(),
+                12,
+            ),
+            (adversary_req_a.to_event().unwrap(), 100),
+            (
+                SpawnResult::ok(&adversary_req_a.id, "done")
+                    .to_event()
+                    .unwrap(),
+                103,
+            ),
+            (adversary_req_b.to_event().unwrap(), 200),
+            (
+                SpawnResult::ok(&adversary_req_b.id, "done")
+                    .to_event()
+                    .unwrap(),
+                205,
+            ),
+            (dead_req.to_event().unwrap(), 300),
+        ],
+    );
+
+    let (out, err, ok) = run_rigger(root, &["stats"]);
+    assert!(
+        ok,
+        "stats must succeed over a store with only spawn events; stderr: {err}"
+    );
+
+    let implementer_line = format!("{:<20} 12.0s avg / 1 spawns / 12.0s total", "implementer");
+    assert!(
+        out.contains(&implementer_line),
+        "the non-review-tier role must render its exact aggregate; got:\n{out}"
+    );
+    let adversary_line = format!("{:<20} 4.0s avg / 2 spawns / 8.0s total", "adversary");
+    assert!(
+        out.contains(&adversary_line),
+        "the review-tier role must render its exact aggregate (3s+5s over 2 spawns = 4.0s \
+         mean); got:\n{out}"
+    );
+    assert!(
+        out.contains(
+            "(1 unpaired spawn request(s) excluded above - no recorded result (dead worker), \
+             or a paired result with a suspect non-positive duration)"
+        ),
+        "the never-answered request must be disclosed as unpaired; got:\n{out}"
+    );
+
+    let header_at = out
+        .find("spawn timing per agent")
+        .expect("aggregate header present");
+    let implementer_at = out.find(&implementer_line).unwrap();
+    let unpaired_at = out.find("unpaired spawn request").unwrap();
+    assert!(
+        header_at < implementer_at && implementer_at < unpaired_at,
+        "the header must precede the aggregates, which must precede the unpaired disclosure:\n{out}"
+    );
+}
+
+/// Round-3 regression (closes `adj-u61c9-verdict-reject-untruthful-duration-aggregates` /
+/// `adv-u61c9-all-mode-cross-run-id-collision-synthesizes-bogus-duration`) at the EXACT
+/// boundary the adversary used to reproduce the defect live: `rigger stats --all` folding a
+/// whole store spanning two runs. A textual spawn id is reused across two `RunStarted`
+/// boundaries - a re-proposed/relaunched unit reusing its auto-slugged id - with run 1's
+/// request never answered inside run 1, and run 2 genuinely reusing the same id with its own
+/// short-lived request/result pair. Before the run-windowed pairing key, this synthesized an
+/// ~11.6-day bogus duration (run 1's earliest request paired against run 2's latest result);
+/// the fixed binary must show run 2's genuine 5s pairing and disclose run 1's dangling
+/// request as unpaired, never a fabricated multi-day figure.
+#[test]
+fn stats_all_flag_never_pairs_a_cross_run_spawn_id_collision_into_a_bogus_duration() {
+    use rigger::spawn::{SpawnRequest, SpawnResult};
+
+    let dir = temp_project();
+    let root = dir.path();
+
+    // The SAME textual id in both runs.
+    let req = SpawnRequest::new("u1", "impl", "implementer", 0, "do it");
+    let run_started = |run: &str| {
+        rigger::eventstore::Event::new(
+            rigger::run::TYPE_RUN_STARTED,
+            format!(r#"{{"run":"{run}"}}"#).into_bytes(),
+        )
+    };
+
+    seed_spawn_events_at(
+        root,
+        "spawn-timing-crossrun-proj",
+        &[
+            (run_started("run-a"), 0),
+            // run-a's request is never answered inside run-a.
+            (req.to_event().unwrap(), 1),
+            (run_started("run-b"), 1_000_000),
+            // run-b reuses the id and genuinely answers it 5s later, inside run-b.
+            (req.to_event().unwrap(), 1_000_100),
+            (
+                SpawnResult::ok(&req.id, "done").to_event().unwrap(),
+                1_000_105,
+            ),
+        ],
+    );
+
+    let (out, err, ok) = run_rigger(root, &["stats", "--all"]);
+    assert!(ok, "stats --all must succeed; stderr: {err}");
+
+    assert!(
+        !out.contains("1000104.0s"),
+        "no bogus ~11.6-day duration (the pre-fix pairing of run-a's t=1 request against \
+         run-b's t=1,000,105 result, 1000104.0s) may ever render:\n{out}"
+    );
+    let implementer_line = format!("{:<20} 5.0s avg / 1 spawns / 5.0s total", "implementer");
+    assert!(
+        out.contains(&implementer_line),
+        "run-b's genuine, same-window 5s pairing must render exactly; got:\n{out}"
+    );
+    assert!(
+        out.contains("(1 unpaired spawn request(s) excluded above"),
+        "run-a's request, never answered WITHIN run-a, must be disclosed as unpaired - not \
+         silently absorbed by run-b's unrelated result; got:\n{out}"
+    );
+}
+
+/// Round-3 regression: the SUSPECT non-positive-duration guard, at the compiled-binary
+/// boundary, under BOTH shapes the fix guards against - a same-timestamp (same-batch) zero
+/// duration AND a clock-skew negative duration (a result recorded BEFORE its request) - each
+/// alongside a genuine positive-duration pair in the SAME role bucket. No existing CLI test
+/// ever seeds a genuinely suspect pair: the sibling test above only ever exercises the
+/// dead-worker (no result at all) unpaired path, so the "or a paired result with a suspect
+/// non-positive duration" clause of the rendered disclosure had no test actually triggering
+/// it through the real binary before this one.
+#[test]
+fn stats_cli_excludes_suspect_non_positive_duration_pairs_as_unpaired_not_zero() {
+    use rigger::spawn::{SpawnRequest, SpawnResult};
+
+    let dir = temp_project();
+    let root = dir.path();
+
+    let same_batch = SpawnRequest::new("u1", "impl", "implementer", 0, "same batch");
+    let skewed = SpawnRequest::new("u2", "impl", "implementer", 1, "skewed");
+    let genuine = SpawnRequest::new("u3", "impl", "implementer", 2, "genuine");
+
+    seed_spawn_events_at(
+        root,
+        "spawn-timing-suspect-proj",
+        &[
+            // Same timestamp: an exact, error-free zero duration.
+            (same_batch.to_event().unwrap(), 100),
+            (
+                SpawnResult::ok(&same_batch.id, "done").to_event().unwrap(),
+                100,
+            ),
+            // Result recorded BEFORE its request: clock skew, a negative duration.
+            (skewed.to_event().unwrap(), 200),
+            (SpawnResult::ok(&skewed.id, "done").to_event().unwrap(), 190),
+            // A genuine, measurably positive pair in the SAME role bucket.
+            (genuine.to_event().unwrap(), 300),
+            (
+                SpawnResult::ok(&genuine.id, "done").to_event().unwrap(),
+                307,
+            ),
+        ],
+    );
+
+    let (out, err, ok) = run_rigger(root, &["stats"]);
+    assert!(ok, "stats must succeed; stderr: {err}");
+
+    let implementer_line = format!("{:<20} 7.0s avg / 1 spawns / 7.0s total", "implementer");
+    assert!(
+        out.contains(&implementer_line),
+        "ONLY the genuine 7s pair may fold into the implementer aggregate - neither suspect \
+         pair may contribute a fabricated zero (or worse, a negative) to the count/mean; \
+         got:\n{out}"
+    );
+    assert!(
+        out.contains(
+            "(2 unpaired spawn request(s) excluded above - no recorded result (dead worker), \
+             or a paired result with a suspect non-positive duration)"
+        ),
+        "both suspect pairs (same-batch zero AND clock-skew negative) must be disclosed \
+         together as unpaired, exercising the clause a dead-worker-only seed never reaches; \
+         got:\n{out}"
+    );
+}
+
+/// The default "no recorded spawns" line renders through the real binary too, on a run whose
+/// stream holds ordinary events but no `SpawnRequested`/`SpawnResult` at all - the CLI-level
+/// counterpart of `format_stats_spawn_timing_reports_no_spawns_when_none_recorded`, which only
+/// exercises the pure formatter in-process, never a real store or the compiled binary.
+#[test]
+fn stats_cli_reports_no_recorded_spawns_when_the_run_has_none() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    seed_run_events(
+        root,
+        &[("RunStarted", r#"{"run":"r1","criteria":["spec"]}"#)],
+    );
+
+    let (out, err, ok) = run_rigger(root, &["stats"]);
+    assert!(ok, "stats must succeed; stderr: {err}");
+    assert!(
+        out.contains("spawn timing       (no recorded spawns)"),
+        "a run with ordinary events but zero spawns must say so plainly; got:\n{out}"
+    );
 }
 
 /// Every event the conductor emits carries the current run id in its metadata, and the
@@ -4213,6 +9737,87 @@ fn step_result_meta_stamps_the_resolved_model_on_the_replayed_units_events() {
                 .map(String::as_str),
             Some(model),
             "unit {unit}'s green event carries the worker-reported resolved model"
+        );
+    }
+}
+
+/// End-to-end through the CLI seam (spec 61 c10, AUTHORITATIVE MODEL IDENTITY): the OTHER
+/// half of the criterion the positive test above does not reach - "a spawn with no metadata
+/// id records none and reports as unmeasured rather than defaulted" AND "a conflicting
+/// agent-prose claim never enters the record". A worker's `rigger result <id> <output>` with
+/// NO `--meta` at all, whose `output` text happens to CONTAIN a resolved-model-shaped JSON
+/// fragment (the exact prose-claim shape `SpawnResult::resolved_model`'s own unit test pins
+/// at the pure-function level), must leave the persisted `green` event's
+/// `META_MODEL_RESOLVED` key ABSENT - never present-but-empty (a fake measurement of
+/// nothing) and never the prose text (a forged measurement). Only the unit-level pin in
+/// `spawn.rs` and the POSITIVE real-seam case above existed before this test; nothing drove
+/// the negative case through the real `rigger result` CLI command and back out of a real
+/// `events.db`.
+#[test]
+fn step_result_with_no_meta_omits_the_resolved_model_key_and_ignores_a_prose_claim_in_output() {
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore, Filter};
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+
+    // Both units park their implementer spawns.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""done":false"#),
+        "spawns still pending; got: {out:?}"
+    );
+
+    // Report unit a's result via the REAL `rigger result` command with NO `--meta` at all -
+    // but an `output` that carries a model-id-shaped JSON fragment, exactly the prose-claim
+    // shape an agent might type into its own free text. Unit b reports plainly, as a control.
+    let prose_output =
+        r#"done. by the way {"resolved_model":"a-model-i-am-lying-about"} is what I used"#;
+    let (_o, err, ok) = run_rigger(root, &["result", "a/implementer#0", prose_output]);
+    assert!(
+        ok,
+        "`rigger result` with no --meta must still succeed; stderr: {err}"
+    );
+    let (_o, err, ok) = run_rigger(root, &["result", "b/implementer#0", "done plainly"]);
+    assert!(
+        ok,
+        "`rigger result` with no --meta must still succeed; stderr: {err}"
+    );
+
+    // The recorded results replay to a fixpoint.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the second step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""done":true"#),
+        "every spawn answered; got: {out:?}"
+    );
+
+    let db_path = root.join(".rigger").join("events.db");
+    let backend = Store::open(db_path.to_str().unwrap()).unwrap();
+    let events = backend
+        .read_all(0, Direction::Forward, &Filter::default())
+        .unwrap();
+    for unit in ["a", "b"] {
+        let green = events
+            .iter()
+            .find(|e| {
+                e.type_ == rigger::ledger::TYPE_UNIT_STATUS && {
+                    let body = String::from_utf8_lossy(&e.data);
+                    body.contains(r#""status":"green""#)
+                        && body.contains(&format!(r#""id":"{unit}""#))
+                }
+            })
+            .unwrap_or_else(|| panic!("unit {unit} must have a green status event"));
+        assert!(
+            !green
+                .meta
+                .contains_key(rigger::conductor::META_MODEL_RESOLVED),
+            "unit {unit}'s green event must carry NO resolved-model key at all when the \
+             worker reported none via --meta - not an empty string (a fake measurement) and \
+             never a value pulled from the agent's own prose output; got meta: {:?}",
+            green.meta
         );
     }
 }
@@ -4560,7 +10165,7 @@ fn run_eventstore_kurrentdb_reaches_the_adapter_not_a_missing_feature_dead_end()
     // missing-connection guard - not an eager connect attempt against a leaked url - is the
     // path under test. RIGGER_NO_DASH keeps the step path from spawning a real dashboard
     // (spec 39); the failure fires before the dashboard would start anyway.
-    let out = Command::new(rigger_bin())
+    let out = common::rigger_courier()
         .args(["run", "--base", "HEAD", "--eventstore", "kurrentdb"])
         .current_dir(root)
         // Redirect the machine-global registry (spec 50, criterion 2) into the test's own temp
@@ -4608,7 +10213,7 @@ fn workflow_accepts_a_spec_and_a_base_flag() {
     let dir = temp_project();
     let root = dir.path();
 
-    let (_out, err, ok) = run_rigger(root, &["workflow", "specs/18.md", "--base", "my-feature"]);
+    let (out, err, ok) = run_rigger(root, &["workflow", "specs/18.md", "--base", "my-feature"]);
     assert!(!ok, "the un-provisioned shim still fails the command");
     assert!(
         !err.contains("expected at most one spec path"),
@@ -4618,6 +10223,15 @@ fn workflow_accepts_a_spec_and_a_base_flag() {
     assert!(
         err.contains("not provisioned") || err.contains("rigger setup"),
         "the failure must be the un-provisioned-driver error, proving --base parsed; got: {err:?}"
+    );
+    // DISCOVERABILITY (spec 66, criterion 5): `rigger workflow <spec>` is a real pre-launch
+    // surface that genuinely holds the spec path (unlike the SessionStart-only `rigger prime`
+    // hook), so it must print the spec-lint reminder BEFORE the driver launch fails - proving
+    // the reminder reaches this production invocation, not only a hand-typed `rigger prime`.
+    assert!(
+        out.contains("rigger validate specs/18.md"),
+        "`rigger workflow <spec>` must name `rigger validate <spec>` as a next step even when \
+         the un-provisioned driver launch fails afterward; got stdout:\n{out}"
     );
 }
 
@@ -5918,6 +11532,620 @@ fn validate_flags_tracked_rigger_files_with_uncommitted_modifications() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// `rigger validate` build.wrapper resolution (spec 65 unit 2, NO SILENT DEGRADE)
+// ---------------------------------------------------------------------------
+
+/// Set a test's `build:` block on a scaffolded project's `.rigger/workflow.yml`, REPLACING
+/// any `build:` the scaffold already wrote rather than blindly appending a second one:
+/// `rigger init` (spec 65 unit 5) now scaffolds `build:\n  wrapper: auto\n` on every fresh
+/// project, so a bare append would leave two top-level `build:` keys - a YAML parse error
+/// ("duplicate field `build`"), not the single resolved block each test below means to
+/// exercise.
+fn append_build_block(root: &Path, block: &str) {
+    let path = root.join(".rigger").join("workflow.yml");
+    let existing = std::fs::read_to_string(&path).unwrap();
+    let mut without_build = String::new();
+    let mut in_build = false;
+    for line in existing.lines() {
+        if line == "build:" {
+            in_build = true;
+            continue;
+        }
+        if in_build {
+            if line.trim().is_empty() || line.starts_with(' ') || line.starts_with('\t') {
+                continue; // still inside the scaffolded build: block (or its trailing blank)
+            }
+            in_build = false;
+        }
+        without_build.push_str(line);
+        without_build.push('\n');
+    }
+    std::fs::write(&path, without_build).unwrap();
+
+    use std::io::Write;
+    let mut wf = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap();
+    writeln!(wf, "{block}").unwrap();
+}
+
+/// The single directory that provides `bin` on the REAL `PATH`, panicking if `bin` cannot
+/// be found anywhere on it (a precondition of the tests below, not something they mean to
+/// exercise).
+fn real_path_dir_of(bin: &str) -> String {
+    std::env::var("PATH")
+        .unwrap_or_default()
+        .split(':')
+        .find(|dir| !dir.is_empty() && Path::new(dir).join(bin).exists())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| panic!("{bin} must be resolvable on the real PATH for this test"))
+}
+
+/// A minimal synthetic `PATH` carrying only what `rigger validate` itself needs (`git`, for
+/// its drift/residue advisories) - an ALLOWLIST, not a denylist, so it can never
+/// accidentally strip a directory `rigger validate` needs while still guaranteeing NEITHER
+/// known build-cache wrapper (`sccache`/`ccache`) is reachable, regardless of what the real
+/// machine running this test happens to have installed (some systems co-locate `ccache`
+/// with `git` in the same `/usr/bin`, which a directory-denylist filter could not tell
+/// apart).
+fn path_with_no_known_wrapper() -> String {
+    real_path_dir_of("git")
+}
+
+/// [`path_with_no_known_wrapper`] with a fake `name` executable staged in a fresh bin dir
+/// under `root` and prepended, so `name` resolves unambiguously as the ONLY wrapper-shaped
+/// binary on this synthetic `PATH`.
+fn path_with_fake_wrapper(root: &Path, name: &str) -> String {
+    let bindir = root.join("fake-wrapper-bin");
+    std::fs::create_dir_all(&bindir).unwrap();
+    let bin = bindir.join(name);
+    std::fs::write(&bin, "#!/bin/sh\nexit 0\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    format!("{}:{}", bindir.display(), path_with_no_known_wrapper())
+}
+
+/// A CONFIGURED (non-auto, non-off) `build.wrapper` absent from PATH fails `rigger
+/// validate` at run start (`config::load`'s `Config::validate` call), naming both the
+/// missing binary and the `build.wrapper` config key - a configured-explicit failure,
+/// never a silent degrade. Uses the real ambient PATH (the fake name is virtually certain
+/// to be absent from it), so no synthetic PATH is needed for this direction.
+#[test]
+fn validate_fails_at_run_start_when_a_named_build_wrapper_is_absent_from_path() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    append_build_block(
+        root,
+        "build:\n  wrapper: definitely-not-a-real-wrapper-rigger-cli-test\n",
+    );
+
+    let (out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        !ok,
+        "a named-but-absent build.wrapper must fail validate (run start); \
+         stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        err.contains("definitely-not-a-real-wrapper-rigger-cli-test"),
+        "the failure must name the missing binary; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("build.wrapper"),
+        "the failure must name the config key; stderr:\n{err}"
+    );
+}
+
+/// `build.wrapper: auto` finding NO known wrapper on PATH must never fail validate (a
+/// discovered-implicit degrade, not a configured-explicit failure) and must report "none"
+/// through `rigger validate`'s output - so a silently-skipped cache layer is SEEN, not
+/// invisible.
+#[test]
+fn validate_reports_none_when_auto_finds_no_known_wrapper_on_path() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    append_build_block(root, "build:\n  wrapper: auto\n");
+
+    let path = path_with_no_known_wrapper();
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
+    assert!(
+        ok,
+        "auto finding nothing must never fail validate; stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        out.lines().any(|l| l == "build wrapper: none"),
+        "auto with no known wrapper on PATH must report none through validate; \
+         stdout:\n{out}"
+    );
+}
+
+/// `build.wrapper: auto` finding a known wrapper on PATH resolves and reports its name
+/// through `rigger validate`'s output.
+#[test]
+fn validate_reports_the_resolved_wrapper_when_auto_finds_a_known_wrapper_on_path() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    append_build_block(root, "build:\n  wrapper: auto\n");
+
+    let path = path_with_fake_wrapper(root, "sccache");
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
+    assert!(
+        ok,
+        "a found wrapper must not fail validate; stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        out.lines().any(|l| l == "build wrapper: sccache"),
+        "auto finding sccache on PATH must report it through validate; stdout:\n{out}"
+    );
+}
+
+/// Spec 65 unit 5 (HONEST SURFACES), end to end through the real CLI: with a wrapper
+/// active AND a custom `max_concurrent`, `rigger validate` reports the wrapper, the cache
+/// dir it resolved to, AND the resolved budget - all three, not just the wrapper the
+/// earlier (spec 65 unit 2) test above already covers.
+#[test]
+fn validate_reports_cache_dir_and_budget_alongside_the_wrapper() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    let cache_dir = root.join("my-cache");
+    append_build_block(
+        root,
+        &format!(
+            "build:\n  wrapper: auto\n  cache_dir: {}\n  max_concurrent: 7\n",
+            cache_dir.display()
+        ),
+    );
+
+    let path = path_with_fake_wrapper(root, "sccache");
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
+    assert!(
+        ok,
+        "a found wrapper with a custom budget must not fail validate; \
+         stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        out.lines()
+            .any(|l| l == format!("build cache dir: {}", cache_dir.display())),
+        "the resolved cache dir must be reported; stdout:\n{out}"
+    );
+    assert!(
+        out.lines().any(|l| l == "build budget: 7"),
+        "the resolved max_concurrent budget must be reported; stdout:\n{out}"
+    );
+}
+
+/// With the wrapper layer off, `rigger validate` still reports the budget (it gates every
+/// compiler invocation regardless of the wrapper) but NO cache dir line - an inactive
+/// layer touches no cache dir, so a claimed one would be fabricated.
+#[test]
+fn validate_reports_budget_but_no_cache_dir_when_the_wrapper_is_off() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    append_build_block(root, "build:\n  wrapper: off\n  max_concurrent: 2\n");
+
+    let (out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(ok, "wrapper: off must not fail validate; stderr:\n{err}");
+    assert!(
+        out.lines().any(|l| l == "build wrapper: none"),
+        "an off wrapper reports none; stdout:\n{out}"
+    );
+    assert!(
+        out.lines().any(|l| l == "build budget: 2"),
+        "the budget is still reported with the wrapper off; stdout:\n{out}"
+    );
+    assert!(
+        !out.lines().any(|l| l.starts_with("build cache dir:")),
+        "an off wrapper must report no cache dir line at all; stdout:\n{out}"
+    );
+}
+
+/// SDET periphery (spec 65 unit 5, HONEST SURFACES): every wrapper-resolution test above
+/// OVERWRITES the scaffolded `build:` block with its own hand-typed one (via
+/// `append_build_block`) before running `validate` - none of them proves the real seam
+/// between `rigger init` WRITING the scaffold and `rigger validate` READING it. This test
+/// leaves a genuinely fresh `rigger init` output - `build:\n  wrapper: auto\n`, and
+/// nothing else - completely untouched, so it is the literal bytes the scaffold constant
+/// puts on disk (not a hand-retyped equivalent that could silently drift from it) driving
+/// resolution. It also pins the two defaults an unmodified `build:` section leaves
+/// implicit and that no other CLI test asserts a value for: the cache dir line reads
+/// `<state home>/rigger/build-cache` (`BuildConfig::cache_dir`'s own doc comment - empty
+/// resolves to this, not a fabricated or blank value) and the budget line reads `4`
+/// (`BuildConfig::max_concurrent`'s own doc comment - omitted resolves to 4, not the
+/// in-memory `Default::default()` zero).
+#[test]
+fn a_fresh_scaffolded_init_resolves_and_reports_through_validate_untouched() {
+    let dir = temp_project();
+    let root = dir.path();
+    let state_home = tempfile::tempdir().unwrap();
+    let state_home_str = state_home.path().to_str().unwrap();
+
+    let (_out, err, ok) = run_rigger_envs(root, &["init"], &[("XDG_STATE_HOME", state_home_str)]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let workflow_path = root.join(".rigger").join("workflow.yml");
+    let workflow = std::fs::read_to_string(&workflow_path).unwrap();
+    assert!(
+        workflow.contains("build:\n  wrapper: auto\n"),
+        "a fresh scaffold must declare build:\\n  wrapper: auto verbatim, byte for byte, \
+         with no other key implied; workflow.yml:\n{workflow}"
+    );
+
+    let path = path_with_fake_wrapper(root, "sccache");
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["validate"],
+        &[("PATH", &path), ("XDG_STATE_HOME", state_home_str)],
+    );
+    assert!(
+        ok,
+        "an unmodified fresh scaffold must validate cleanly; stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        out.lines().any(|l| l == "build wrapper: sccache"),
+        "the untouched scaffold's auto wrapper must resolve against PATH and report the \
+         name it found; stdout:\n{out}"
+    );
+    let expected_cache_dir = state_home.path().join("rigger").join("build-cache");
+    assert!(
+        out.lines()
+            .any(|l| l == format!("build cache dir: {}", expected_cache_dir.display())),
+        "the untouched scaffold's empty cache_dir must report the documented default \
+         <state home>/rigger/build-cache; stdout:\n{out}"
+    );
+    assert!(
+        out.lines().any(|l| l == "build budget: 4"),
+        "an unmodified build: section (bare wrapper key only, max_concurrent omitted) \
+         must report the documented default of 4, not the in-memory zero; stdout:\n{out}"
+    );
+}
+
+/// A cache-dir path guaranteed to be uncreatable: `<root>/blocker` is a plain FILE, so
+/// `create_dir_all("<root>/blocker/nested/cache")` fails because a path COMPONENT already
+/// exists as a non-directory - deterministic on every OS/user (no root/permission tricks a
+/// privileged test runner could bypass).
+fn uncreatable_cache_dir(root: &Path) -> std::path::PathBuf {
+    let blocker = root.join("blocker");
+    std::fs::write(&blocker, "not a directory").unwrap();
+    blocker.join("nested").join("cache")
+}
+
+/// A NAMED (non-auto) `build.wrapper` present on PATH but whose `build.cache_dir` cannot be
+/// created is also a configured-explicit failure (specs/65:26-28 decides both failure
+/// directions in the SAME Design sentence as the absent-binary case above) - `rigger
+/// validate` must fail at run start naming the dir and the `build.cache_dir` config key,
+/// never silently proceed with a cache that never actually writes anything.
+#[test]
+fn validate_fails_at_run_start_when_a_named_wrappers_cache_dir_cannot_be_created() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    let cache_dir = uncreatable_cache_dir(root);
+    append_build_block(
+        root,
+        &format!(
+            "build:\n  wrapper: sccache\n  cache_dir: {}\n",
+            cache_dir.display()
+        ),
+    );
+
+    let path = path_with_fake_wrapper(root, "sccache");
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
+    assert!(
+        !ok,
+        "a named wrapper's uncreatable cache dir must fail validate (run start); \
+         stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        err.contains(&cache_dir.to_string_lossy().into_owned()),
+        "the failure must name the cache dir; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("build.cache_dir"),
+        "the failure must name the config key; stderr:\n{err}"
+    );
+}
+
+/// `build.wrapper: auto` finding a known wrapper on PATH but whose cache dir cannot be
+/// created must never fail validate - a DISCOVERED-IMPLICIT degrade, mirroring auto finding
+/// no wrapper binary at all - and must report "none" (the whole layer skipped), so an
+/// operator SEES the cache is not actually live rather than trusting a resolved name that
+/// silently never worked.
+#[test]
+fn validate_reports_none_when_autos_discovered_wrapper_has_an_uncreatable_cache_dir() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    let cache_dir = uncreatable_cache_dir(root);
+    append_build_block(
+        root,
+        &format!(
+            "build:\n  wrapper: auto\n  cache_dir: {}\n",
+            cache_dir.display()
+        ),
+    );
+
+    let path = path_with_fake_wrapper(root, "sccache");
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
+    assert!(
+        ok,
+        "auto's uncreatable cache dir must never fail validate; stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        out.lines().any(|l| l == "build wrapper: none"),
+        "auto with an uncreatable cache dir must report none (the whole layer skipped) \
+         through validate; stdout:\n{out}"
+    );
+}
+
+/// A cache-dir path guaranteed to EXIST but be UNWRITABLE: created first, then chmod'd
+/// read+execute-only (0o555) - `create_dir_all` against it succeeds (a no-op against an
+/// already-existing dir, regardless of write permission), but writing INTO it fails with
+/// `PermissionDenied`. This is the realistic steady state for a persisted, shared cache dir
+/// (the machine-wide `default_cache_dir` every project reuses after the first one creates
+/// it) - unlike `uncreatable_cache_dir` above (a blocked path component), this is the only
+/// way to make a directory that EXISTS yet cannot be written into. It is exactly the
+/// sub-case `gate::ensure_cache_dir_writable` added on top of `uncreatable_cache_dir`'s
+/// bare-`create_dir_all` check. Unix-only: the mode bits are a POSIX concept.
+#[cfg(unix)]
+fn preexisting_unwritable_cache_dir(root: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = root.join("preexisting-cache");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    dir
+}
+
+/// A NAMED (non-auto) `build.wrapper` present on PATH whose `build.cache_dir` ALREADY
+/// EXISTS but is not WRITABLE is also a configured-explicit failure (spec 65 unit 2, NO
+/// SILENT DEGRADE) - mirrors
+/// `validate_fails_at_run_start_when_a_named_wrappers_cache_dir_cannot_be_created` above for
+/// the writability rather than creatability failure mode: a pre-existing dir makes
+/// `create_dir_all` alone a no-op success regardless of permission, so only a real write
+/// probe catches this, and nothing before this test proved that probe's failure reaches the
+/// real compiled binary's exit code. `rigger validate` must fail at run start naming the
+/// dir and the `build.cache_dir` config key, never silently proceed with a cache that turns
+/// out to never actually write anything.
+#[cfg(unix)]
+#[test]
+fn validate_fails_at_run_start_when_a_named_wrappers_cache_dir_is_preexisting_but_unwritable() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    let cache_dir = preexisting_unwritable_cache_dir(root);
+    append_build_block(
+        root,
+        &format!(
+            "build:\n  wrapper: sccache\n  cache_dir: {}\n",
+            cache_dir.display()
+        ),
+    );
+
+    let path = path_with_fake_wrapper(root, "sccache");
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
+    assert!(
+        !ok,
+        "a named wrapper's pre-existing-but-unwritable cache dir must fail validate (run \
+         start); stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        err.contains(&cache_dir.to_string_lossy().into_owned()),
+        "the failure must name the cache dir; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("build.cache_dir"),
+        "the failure must name the config key; stderr:\n{err}"
+    );
+}
+
+/// `build.wrapper: auto` finding a known wrapper on PATH but whose cache dir ALREADY EXISTS
+/// yet is not WRITABLE must never fail validate - a DISCOVERED-IMPLICIT degrade, mirroring
+/// `validate_reports_none_when_autos_discovered_wrapper_has_an_uncreatable_cache_dir` above
+/// for the writability rather than creatability failure mode - and must report "none" (the
+/// whole layer skipped), so an operator SEES the cache is not actually live rather than
+/// trusting a resolved name that silently never worked.
+#[cfg(unix)]
+#[test]
+fn validate_reports_none_when_autos_discovered_wrapper_has_a_preexisting_unwritable_cache_dir() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    let cache_dir = preexisting_unwritable_cache_dir(root);
+    append_build_block(
+        root,
+        &format!(
+            "build:\n  wrapper: auto\n  cache_dir: {}\n",
+            cache_dir.display()
+        ),
+    );
+
+    let path = path_with_fake_wrapper(root, "sccache");
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
+    assert!(
+        ok,
+        "auto's pre-existing-but-unwritable cache dir must never fail validate; \
+         stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        out.lines().any(|l| l == "build wrapper: none"),
+        "auto with a pre-existing-but-unwritable cache dir must report none (the whole \
+         layer skipped) through validate; stdout:\n{out}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// `rigger validate` build.mutation resolution (spec 73, ENABLED-BUT-ABSENT FAILS LOUD)
+// ---------------------------------------------------------------------------
+
+/// [`path_with_no_known_wrapper`] additionally VERIFIED to lack the mutation-efficacy
+/// binary too: unlike the wrapper case (an operator-chosen name, so a nonsense string is
+/// used against the real ambient PATH instead), `cargo-mutants`'s name is fixed and this
+/// repo's own development environment genuinely has it installed - so the git-only
+/// directory is the only way to exercise the absent-binary direction, and this asserts
+/// (rather than merely reasons in a doc comment) that it really is absent, so a
+/// coincidental co-location could never silently turn this into a false pass.
+fn path_with_no_cargo_mutants() -> String {
+    let dir = path_with_no_known_wrapper();
+    assert!(
+        !Path::new(&dir).join("cargo-mutants").exists(),
+        "the git-only directory {dir:?} unexpectedly also carries a cargo-mutants binary; \
+         this test needs a PATH that genuinely lacks the tool"
+    );
+    dir
+}
+
+/// A CONFIGURED `build.mutation: on` with no `cargo-mutants` resolvable on PATH fails
+/// `rigger validate` at run start (`config::load`'s `Config::validate` call), naming both
+/// the missing binary and the `build.mutation` config key - a configured-explicit failure,
+/// never a silent skip (spec 73). Mirrors
+/// `validate_fails_at_run_start_when_a_named_build_wrapper_is_absent_from_path` above.
+#[test]
+fn validate_fails_at_run_start_when_mutation_is_on_and_cargo_mutants_is_absent_from_path() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    append_build_block(root, "build:\n  mutation: on\n");
+
+    let path = path_with_no_cargo_mutants();
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
+    assert!(
+        !ok,
+        "build.mutation: on with no cargo-mutants on PATH must fail validate (run start); \
+         stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        err.contains("cargo-mutants"),
+        "the failure must name the missing binary; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("build.mutation"),
+        "the failure must name the config key; stderr:\n{err}"
+    );
+}
+
+/// The cross-module seam (spec 73): `Config::validate` (`config.rs`) and `cmd_validate`'s
+/// own reporting call (`main.rs`) both read `gate::resolve_mutation_layer` - by design,
+/// "never a second, independently re-derived check" (per the doc comments at both call
+/// sites). A black-box exit-code-and-stderr check alone cannot tell WHICH of the two calls
+/// actually produced the failure: `cmd_validate` prints the version line and a "config
+/// valid: ..." line to stdout BEFORE it ever reaches its own `resolve_mutation_layer` call,
+/// so if `Config::validate` ever stopped gating this (leaving only `cmd_validate`'s local
+/// call as a redundant backstop), this same scenario would still exit non-zero and still
+/// name the binary and the key - but only AFTER that partial stdout had already printed.
+/// Asserting stdout is EMPTY here proves the failure truly originates in `config::load`'s
+/// `Config::validate` call, before `cmd_validate`'s body runs at all - the single-authority
+/// guarantee that also makes every OTHER `config::load` caller (not just `validate`) fail
+/// at run start, not merely this one command's own report.
+#[test]
+fn validate_fails_before_any_output_when_mutation_is_on_and_cargo_mutants_is_absent() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    append_build_block(root, "build:\n  mutation: on\n");
+
+    let path = path_with_no_cargo_mutants();
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
+    assert!(
+        !ok,
+        "build.mutation: on with no cargo-mutants on PATH must fail validate; \
+         stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        out.is_empty(),
+        "the failure must originate in Config::validate (config::load), before cmd_validate \
+         prints anything - a non-empty stdout means some OTHER, later check caught this \
+         instead, which would leave every non-validate config::load caller unprotected; \
+         stdout:\n{out}"
+    );
+}
+
+/// `build.mutation: on` with `cargo-mutants` resolvable on PATH must not fail validate, and
+/// `rigger validate` must report the resolved setting through its output.
+#[test]
+fn validate_reports_mutation_on_when_cargo_mutants_is_resolvable() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    append_build_block(root, "build:\n  mutation: on\n");
+
+    let path = path_with_fake_wrapper(root, "cargo-mutants");
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
+    assert!(
+        ok,
+        "a resolvable cargo-mutants must not fail validate; stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        out.lines().any(|l| l == "build mutation: on"),
+        "a resolved-enabled mutation step must report on through validate; stdout:\n{out}"
+    );
+}
+
+/// An EXPLICIT `build.mutation: off` must validate successfully and report "off" even with
+/// `cargo-mutants` entirely absent from PATH - off never even probes PATH, so its absence
+/// can never surface as a failure (spec 73).
+#[test]
+fn validate_reports_mutation_off_without_probing_path_when_configured_off() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    append_build_block(root, "build:\n  mutation: off\n");
+
+    let path = path_with_no_cargo_mutants();
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
+    assert!(
+        ok,
+        "build.mutation: off must never fail validate regardless of PATH; \
+         stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        out.lines().any(|l| l == "build mutation: off"),
+        "an explicitly-off mutation step must report off through validate; stdout:\n{out}"
+    );
+}
+
+/// A fresh `rigger init` scaffold sets no `build.mutation` key at all, so it defaults to
+/// off - back-compat with every workflow committed before this key existed - and `rigger
+/// validate` reports that default through its output.
+#[test]
+fn validate_reports_mutation_off_by_default_on_a_fresh_scaffold() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let (out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "a fresh scaffold must validate; stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        out.lines().any(|l| l == "build mutation: off"),
+        "an unconfigured mutation step must default to off, reported through validate; \
+         stdout:\n{out}"
+    );
+}
+
 /// Spec 19c Unit 3: `rigger validate` WARNS (on stderr, without failing) when
 /// `defaults.max_wall_clock` is unbounded and a gating role carries no per-agent bound - so
 /// a hung gating agent that the liveness sweep never times out is visible at author time -
@@ -6033,11 +12261,18 @@ fn validate_spec_flags_shape_defects_as_named_advisories_and_is_silent_on_a_clea
         "the sub-bullet advisory must name the offending bullet; stderr:\n{err}"
     );
 
-    // A clean single-behavior spec: NO spec-shape advisory at all.
+    // A clean single-behavior spec: NO spec-shape advisory at all. Spec 66 (unit c3) adds
+    // an ownership (F1) check that also activates at three-plus criteria, so each checkbox
+    // here carries an explicit OWNS sentence - a genuinely clean spec is clean across BOTH
+    // the shape lint this test originally proved AND the newer ownership lint, not just
+    // the former.
     let clean_spec = "# Widget\n\n## Done when\n\n\
-         - [ ] the store passes the contract suite\n\
-         - [ ] the graph projector supersedes an older decision\n\
-         - [ ] the conductor integrates an approved unit\n";
+         - [ ] the store passes the contract suite. This criterion OWNS the contract \
+         coverage.\n\
+         - [ ] the graph projector supersedes an older decision. This criterion OWNS the \
+         supersede path.\n\
+         - [ ] the conductor integrates an approved unit. This criterion OWNS the \
+         integration step.\n";
     let clean_path = root.join("clean-spec.md");
     std::fs::write(&clean_path, clean_spec).unwrap();
 
@@ -6045,7 +12280,8 @@ fn validate_spec_flags_shape_defects_as_named_advisories_and_is_silent_on_a_clea
     assert!(ok, "validate must succeed on a clean spec; stderr:\n{err}");
     assert!(
         !err.contains("warning: spec "),
-        "a clean single-behavior spec must yield no spec-shape advisory; stderr:\n{err}"
+        "a clean single-behavior, fully-owned spec must yield no spec-lint advisory; \
+         stderr:\n{err}"
     );
 }
 
@@ -6137,6 +12373,635 @@ fn validate_reports_scratch_residue_with_sizes_as_a_non_failing_warning() {
     assert!(
         err.contains("(4.0K)") || err.contains("(4.5K)"),
         "the leftover worktree must carry a size; stderr:\n{err}"
+    );
+}
+
+/// Spec 77 criterion 6, FOOTPRINT ACCOUNTING, Done-when: on a fixture tree with seeded
+/// category sizes, `rigger validate` reports each category's total AND flags a dead-share
+/// threshold breach naming the reclaiming command, exit 0. Driving the real binary proves
+/// the config -> footprint-measurement -> stdout/stderr wiring end to end; the pure
+/// measuring/formatting functions are unit-tested in `src/main.rs`.
+#[test]
+fn validate_reports_footprint_by_category_and_flags_a_dead_share_breach() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    git_ok(root, &["add", "-A"]);
+    git_ok(root, &["commit", "-q", "-m", "scaffold"]);
+    seed_store(root); // a real store, so the store/backups categories have something to size
+
+    // A backup file, standing in for a prior repair/rotation - the store never auto-deletes
+    // these (spec 77 Global Constraint 4), so the category must be REPORTED but never
+    // flagged for reclaim.
+    std::fs::write(
+        root.join(".rigger").join("events.db.bak-20260101"),
+        [0u8; 64],
+    )
+    .unwrap();
+
+    // Point the scratch root and the mutation-scratch cache home at dirs this test controls,
+    // so the scan is hermetic (never touches the operator's real `~/.cache/rigger-mutants`).
+    let scratch = root.join("scratchroot");
+    let cache_home = root.join("cachehome");
+    std::fs::create_dir_all(&scratch).unwrap();
+    std::fs::create_dir_all(&cache_home).unwrap();
+
+    // Seed the SHARED build cache directly under the scratch root - a pure cache, so its
+    // whole size is dead share by design (spec 77 Design, criterion 5): this is the
+    // category the dead-share-breach half of this test exercises.
+    std::fs::create_dir_all(scratch.join("cargo-target")).unwrap();
+    std::fs::write(scratch.join("cargo-target").join("x.rlib"), [0u8; 4096]).unwrap();
+
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["validate"],
+        &[
+            ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
+            ("XDG_CACHE_HOME", cache_home.to_str().unwrap()),
+        ],
+    );
+    assert!(
+        ok,
+        "validate must exit 0 even while flagging a footprint advisory; stderr:\n{err}"
+    );
+
+    // Every category's total is reported, unconditionally, on stdout.
+    for category in [
+        "store",
+        "backups",
+        "shared build cache",
+        "per-unit caches",
+        "worktrees",
+        "registered scratch roots",
+    ] {
+        assert!(
+            out.contains(&format!("footprint: {category} ")),
+            "the {category} category must report its total; stdout:\n{out}"
+        );
+    }
+    assert!(
+        out.contains("footprint: shared build cache 4.0K"),
+        "the seeded build-cache size must be reported; stdout:\n{out}"
+    );
+
+    // The shared build cache's 100% dead share breaches the advisory threshold and names
+    // the reclaiming command, on stderr.
+    assert!(
+        err.contains("shared build cache is 100% dead"),
+        "the dead-share breach must be flagged; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("rigger reset --build-cache"),
+        "the flagged advisory must name the reclaiming command; stderr:\n{err}"
+    );
+
+    // The store/backups categories are never flagged - no rigger-owned reclaim command
+    // exists for them (spec 77 Global Constraint 4: never auto-deleted).
+    assert!(
+        !err.contains("store is") && !err.contains("backups is"),
+        "store/backups must never be flagged for reclaim; stderr:\n{err}"
+    );
+}
+
+/// Spec 77 criterion 6's "registered scratch roots" category is wired to the NEW public
+/// `driver::replay::mutation_scratch_root` (`<cache_home>/rigger-mutants`) rather than a
+/// second, independently-typed root literal - the sibling test above never puts any bytes
+/// under that specific subdir, so it cannot tell a correctly-wired root from one that
+/// silently measured the wrong directory (or nothing at all). This test seeds real content
+/// one level under the SAME cache-home/`rigger-mutants` shape the production leaf-naming
+/// (`mutation_scratch_path`) nests every spawn's tree under, and proves the reported total
+/// reflects it exactly - driving the real binary end to end, the pure size-measuring
+/// function being unit-tested in `src/main.rs`.
+#[test]
+fn validate_footprint_registered_scratch_roots_measures_the_real_mutation_scratch_root() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    git_ok(root, &["add", "-A"]);
+    git_ok(root, &["commit", "-q", "-m", "scaffold"]);
+
+    let scratch = root.join("scratchroot");
+    let cache_home = root.join("cachehome");
+    std::fs::create_dir_all(&scratch).unwrap();
+
+    // A stand-in mutation-scratch leaf, one level under `<cache_home>/rigger-mutants` -
+    // exactly the nesting `mutation_scratch_root`'s own doc comment names ("every spawn's
+    // leaf nests under this"). The leaf's exact NAME is irrelevant to this test (that
+    // encoding contract is pinned elsewhere); only its total size, and that it lives under
+    // the root the crate's own path authority computes, matters here.
+    let mutation_root = cache_home.join("rigger-mutants");
+    std::fs::create_dir_all(mutation_root.join("some-spawn-leaf")).unwrap();
+    std::fs::write(
+        mutation_root.join("some-spawn-leaf").join("x.tmp"),
+        [0u8; 777],
+    )
+    .unwrap();
+
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["validate"],
+        &[
+            ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
+            ("XDG_CACHE_HOME", cache_home.to_str().unwrap()),
+        ],
+    );
+    assert!(ok, "validate must exit 0; stderr:\n{err}");
+    assert!(
+        out.contains("footprint: registered scratch roots 777B"),
+        "the 777 bytes seeded under the real mutation_scratch_root path must be measured \
+         exactly - a wrong or unwired root would report 0B here even though the pure \
+         footprint_report function is separately unit-tested against a fixture path; \
+         stdout:\n{out}"
+    );
+}
+
+/// Spec 77 criterion 6 round 2 (`adj-u77c6-verdict-reject-unflaggable-highest-stakes-
+/// category`): "registered scratch roots" - the ONE category the spec's own Problem
+/// statement names as the worst observed leak - must be able to flag a dead-share breach
+/// like every other reclaimable category, not just report a total. `current_run_units` and
+/// `footprint_report`'s spawn-level classification are unit-tested directly in `src/main.rs`
+/// against in-memory events and a fixture path; THIS test proves the real seam none of that
+/// exercises - a genuine event STORE (`spawn::recorded`/`spawn::result_of` reading real
+/// `SpawnRequested`/`SpawnResult` rows through `runscope::current_run` scoping) driving real
+/// `rigger validate` stdout/stderr, over real fixture bytes written at the SAME paths
+/// production assigns via the crate's own path authorities (`spawn_scratch_path`,
+/// `mutation_scratch_path` - never a hand-encoded literal). Three spawns, mirroring exactly
+/// the distinctions `current_run_units_splits_live_spawns_from_answered_ones_scoped_to_the_
+/// current_run` pins at the fold level:
+/// - a LIVE spawn (requested in the current run, still unanswered) - spared;
+/// - an ANSWERED spawn (requested in the current run, a result recorded) - dead;
+/// - a PRIOR-RUN spawn (requested before the current run's own `RunStarted`, so outside its
+///   scope regardless of whether it was ever answered) - dead, the orphaned/hung-and-never-
+///   retried leak this category exists to surface
+///   (`adv-u77c2r8-mutation-scratch-orphan-on-never-reported-spawn`).
+#[test]
+fn validate_flags_registered_scratch_roots_dead_share_scoped_to_real_spawn_liveness_in_the_store() {
+    use rigger::driver::replay::{mutation_scratch_path, spawn_scratch_path};
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    git_ok(root, &["add", "-A"]);
+    git_ok(root, &["commit", "-q", "-m", "scaffold"]);
+    seed_store(root);
+
+    let live_id = "u-live/implementer#0";
+    let answered_id = "u-answered/implementer#0";
+    let prior_id = "u-prior/implementer#0";
+    seed_run_events(
+        root,
+        &[
+            // A PRIOR run, closed off by the CURRENT run's own later `RunStarted` -
+            // `u-prior`'s request sits outside the current run's scope even though no
+            // result was ever recorded for it (the hung/abandoned-run shape).
+            ("RunStarted", r#"{"run":"r1","criteria":["old"]}"#),
+            (
+                "SpawnRequested",
+                r#"{"id":"u-prior/implementer#0","unit":"u-prior","stage":"impl","prompt":"p"}"#,
+            ),
+            ("RunStarted", r#"{"run":"r2","criteria":["new"]}"#),
+            (
+                "SpawnRequested",
+                r#"{"id":"u-live/implementer#0","unit":"u-live","stage":"impl","prompt":"p"}"#,
+            ),
+            (
+                "SpawnRequested",
+                r#"{"id":"u-answered/implementer#0","unit":"u-answered","stage":"impl","prompt":"p"}"#,
+            ),
+            (
+                "SpawnResult",
+                r#"{"id":"u-answered/implementer#0","output":"done"}"#,
+            ),
+        ],
+    );
+
+    let scratch = root.join("scratchroot");
+    let cache_home = root.join("cachehome");
+    std::fs::create_dir_all(&scratch).unwrap();
+    std::fs::create_dir_all(&cache_home).unwrap();
+
+    let seed = |path: std::path::PathBuf, n: usize| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, vec![0u8; n]).unwrap();
+    };
+    // The LIVE spawn's own scratch, in both registered roots - spared.
+    seed(
+        spawn_scratch_path(scratch.to_str().unwrap(), "r2", live_id)
+            .unwrap()
+            .join("x"),
+        30,
+    );
+    seed(
+        mutation_scratch_path(&cache_home, live_id)
+            .unwrap()
+            .join("x"),
+        10,
+    );
+    // The ANSWERED spawn's own scratch - dead the moment its result landed.
+    seed(
+        spawn_scratch_path(scratch.to_str().unwrap(), "r2", answered_id)
+            .unwrap()
+            .join("x"),
+        60,
+    );
+    seed(
+        mutation_scratch_path(&cache_home, answered_id)
+            .unwrap()
+            .join("x"),
+        20,
+    );
+    // The PRIOR run's own orphaned spawn scratch - dead, never answered, never in scope.
+    seed(
+        spawn_scratch_path(scratch.to_str().unwrap(), "r1", prior_id)
+            .unwrap()
+            .join("x"),
+        90,
+    );
+    seed(
+        mutation_scratch_path(&cache_home, prior_id)
+            .unwrap()
+            .join("x"),
+        30,
+    );
+
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["validate"],
+        &[
+            ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
+            ("XDG_CACHE_HOME", cache_home.to_str().unwrap()),
+        ],
+    );
+    assert!(
+        ok,
+        "validate must exit 0 even while flagging a footprint advisory; stderr:\n{err}"
+    );
+
+    // Every seeded byte, live and dead together, across both registered roots.
+    assert!(
+        out.contains("footprint: registered scratch roots 240B"),
+        "stdout:\n{out}"
+    );
+    // Only the answered spawn's (60+20) and the prior run's orphaned spawn's (90+30) bytes
+    // count dead (200 of 240 = 83%) - the still-live spawn's 40 bytes (30+10) are spared,
+    // proving the dead-share classification is scoped by REAL spawn liveness read off the
+    // store, not the unit-liveness `scratch_footprint` already uses for the other categories.
+    assert!(
+        err.contains("registered scratch roots is 83% dead (200B of 240B reclaimable)"),
+        "stderr:\n{err}"
+    );
+    assert!(
+        err.contains(
+            "reclaimed automatically the next time `rigger result` is recorded for the owning spawn"
+        ),
+        "the advisory must name the real spawn-scoped reclaim path (this category is reclaimed \
+         by `cmd_result`, never by `rigger step`'s per-step orphan sweep, which explicitly \
+         never touches agent-scratch) rather than the unit-scoped `rigger step` hint the other \
+         categories use; stderr:\n{err}"
+    );
+}
+
+/// Round 2's fix (`d-u77c6r2-registered-scratch-roots-spawn-liveness-dead-bytes`) classified
+/// an `agent-scratch` leaf live-vs-dead by LEAF NAME ALONE, never by (run_id, leaf) -
+/// `sdet-u77c6r2-cross-run-leaf-collision-hides-the-highest-stakes-orphan` /
+/// `adj-u77c6r2-verdict-reject-cross-run-leaf-collision`: the moment a LATER run
+/// re-proposes the IDENTICAL unit/spawn id an EARLIER, abandoned run already used (the
+/// routine self-hosting pattern this very run's own units exhibit: a killed run followed by
+/// a fresh run that reuses the same unit-title slug), the earlier run's own orphaned
+/// `agent-scratch` tree was silently spared merely because its leaf name coincides with the
+/// current run's live spawn - exactly the killed-run-then-rerun shape spec 77's Problem
+/// statement names as the worst observed leak. This test seeds TWO run-id subdirs under the
+/// real `agent-scratch/<run-id>/<spawn-id>` nesting
+/// ([`rigger::driver::replay::spawn_scratch_path`]) that share one IDENTICAL spawn leaf
+/// name: one an orphan under an ABANDONED prior run (never answered), the other a
+/// genuinely live spawn under the CURRENT run - proving the real store-driven seam
+/// `validate_flags_registered_scratch_roots_dead_share_scoped_to_real_spawn_liveness_in_the_store`
+/// above never exercises (that test's three spawns all carry DISTINCT unit ids across its
+/// two runs).
+#[test]
+fn validate_flags_a_prior_abandoned_runs_orphan_even_when_a_later_run_reuses_the_identical_spawn_id(
+) {
+    use rigger::driver::replay::spawn_scratch_path;
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    git_ok(root, &["add", "-A"]);
+    git_ok(root, &["commit", "-q", "-m", "scaffold"]);
+    seed_store(root);
+
+    // The self-hosting re-proposal shape: both runs' spawns carry the IDENTICAL unit/attempt
+    // id, so they encode to the SAME agent-scratch leaf name.
+    let reused_id = "u-reused/implementer#2";
+    seed_run_events(
+        root,
+        &[
+            // The OLD run, abandoned (killed) before this spawn was ever answered - the
+            // hung/never-retried orphan this category exists to surface.
+            (
+                "RunStarted",
+                r#"{"run":"r-old-abandoned","criteria":["old"]}"#,
+            ),
+            (
+                "SpawnRequested",
+                r#"{"id":"u-reused/implementer#2","unit":"u-reused","stage":"impl","prompt":"p"}"#,
+            ),
+            // The CURRENT run begins, RE-PROPOSING the identical spawn id - still
+            // unanswered, genuinely in flight.
+            ("RunStarted", r#"{"run":"r-current","criteria":["new"]}"#),
+            (
+                "SpawnRequested",
+                r#"{"id":"u-reused/implementer#2","unit":"u-reused","stage":"impl","prompt":"p"}"#,
+            ),
+        ],
+    );
+
+    let scratch = root.join("scratchroot");
+    // An empty, hermetic cache-home - mirroring the sibling test above - so the mutation-
+    // scratch root the operator's REAL `$HOME/.cache/rigger-mutants` might hold never bleeds
+    // into this test's byte-exact assertions.
+    let cache_home = root.join("cachehome");
+    std::fs::create_dir_all(&scratch).unwrap();
+    std::fs::create_dir_all(&cache_home).unwrap();
+
+    let seed = |path: std::path::PathBuf, n: usize| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, vec![0u8; n]).unwrap();
+    };
+    // The OLD run's own orphaned scratch, under the OLD run's own run-id subdir.
+    seed(
+        spawn_scratch_path(scratch.to_str().unwrap(), "r-old-abandoned", reused_id)
+            .unwrap()
+            .join("orphan"),
+        500,
+    );
+    // The CURRENT run's own live spawn's scratch, under the CURRENT run's own run-id
+    // subdir - the SAME leaf name as the orphan above, but a genuinely different,
+    // in-flight resource that must be spared.
+    seed(
+        spawn_scratch_path(scratch.to_str().unwrap(), "r-current", reused_id)
+            .unwrap()
+            .join("live"),
+        5,
+    );
+
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["validate"],
+        &[
+            ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
+            ("XDG_CACHE_HOME", cache_home.to_str().unwrap()),
+        ],
+    );
+    assert!(
+        ok,
+        "validate must exit 0 even while flagging a footprint advisory; stderr:\n{err}"
+    );
+
+    // Every seeded byte, old orphan and current-run live spawn together.
+    assert!(
+        out.contains("footprint: registered scratch roots 505B"),
+        "stdout:\n{out}"
+    );
+    // Only the OLD run's orphaned 500 bytes count dead (99% of 505) - the CURRENT run's
+    // live spawn's 5 bytes are spared even though its leaf name is IDENTICAL to the dead
+    // orphan's. Before the round-3 fix this reported 0% dead (dead_bytes 0), the exact
+    // regression this test pins.
+    assert!(
+        err.contains("registered scratch roots is 99% dead (500B of 505B reclaimable)"),
+        "the prior abandoned run's orphan must be flagged dead even though a later run \
+         reuses the identical spawn id - classification must key off (run_id, leaf), never \
+         leaf name alone; stderr:\n{err}"
+    );
+}
+
+/// Spec 77 criterion 6's own added Done-when clause, over the AGENT SCRATCH IS SPAWN-OWNED
+/// Design bullet's named example: "a top-level ad-hoc dir directly under agent-scratch (no
+/// run/spawn owner) is reported as its own recognized-residue category with a reclaim
+/// command, never folded into a dead-run bucket". This drives the real binary end to end -
+/// the pure classification (`classify_agent_scratch`/`looks_like_run_container`) is
+/// unit-tested in `src/main.rs` - seeding a genuine `agent-scratch/<run>/<spawn>` container
+/// via the crate's own [`rigger::driver::replay::spawn_scratch_path`] authority ALONGSIDE a
+/// bare, top-level `agent-scratch/<name>` dir no spawn id ever produced (mirroring a leaked
+/// `CARGO_TARGET_DIR` pointed straight under `agent-scratch`, the Design bullet's own
+/// `agent-scratch/u77c4-target` example).
+#[test]
+fn validate_reports_a_top_level_adhoc_agent_scratch_dir_as_its_own_category_never_folded_into_registered_scratch_roots(
+) {
+    use rigger::driver::replay::spawn_scratch_path;
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    git_ok(root, &["add", "-A"]);
+    git_ok(root, &["commit", "-q", "-m", "scaffold"]);
+    seed_store(root);
+
+    let live_id = "u-live/implementer#0";
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["new"]}"#),
+            (
+                "SpawnRequested",
+                r#"{"id":"u-live/implementer#0","unit":"u-live","stage":"impl","prompt":"p"}"#,
+            ),
+        ],
+    );
+
+    let scratch = root.join("scratchroot");
+    let cache_home = root.join("cachehome");
+    std::fs::create_dir_all(&scratch).unwrap();
+    std::fs::create_dir_all(&cache_home).unwrap();
+
+    // The LIVE spawn's own well-formed container - via the crate's real path authority, not
+    // a hand-encoded literal - must stay spared and counted only in "registered scratch
+    // roots".
+    let live_path = spawn_scratch_path(scratch.to_str().unwrap(), "r1", live_id).unwrap();
+    std::fs::create_dir_all(&live_path).unwrap();
+    std::fs::write(live_path.join("x"), vec![0u8; 20]).unwrap();
+
+    // The ad-hoc, unowned dir: no `spawn_scratch_path` call ever produces this shape (a bare
+    // file sits directly inside it, exactly like a leaked CARGO_TARGET_DIR's own root-level
+    // files).
+    let adhoc = scratch.join("agent-scratch").join("u77c4-target");
+    std::fs::create_dir_all(&adhoc).unwrap();
+    std::fs::write(adhoc.join("CACHEDIR.TAG"), vec![0u8; 300]).unwrap();
+
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["validate"],
+        &[
+            ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
+            ("XDG_CACHE_HOME", cache_home.to_str().unwrap()),
+        ],
+    );
+    assert!(
+        ok,
+        "validate must exit 0 even while flagging a footprint advisory; stderr:\n{err}"
+    );
+
+    assert!(
+        out.contains("footprint: registered scratch roots 20B"),
+        "only the well-formed live container's bytes - the ad-hoc dir's must NOT appear \
+         here; stdout:\n{out}"
+    );
+    assert!(
+        out.contains("footprint: unowned agent scratch 300B"),
+        "the ad-hoc dir's bytes, reported on their own category; stdout:\n{out}"
+    );
+    assert!(
+        err.contains("unowned agent scratch is 100% dead"),
+        "the ad-hoc dir carries no run/spawn owner, so it is always fully reclaimable, and \
+         must be flagged - never silently folded into registered scratch roots' dead-run \
+         tally; stderr:\n{err}"
+    );
+    assert!(
+        !err.contains("registered scratch roots is"),
+        "the live spawn's own container is fully live (0% dead), so this category must not \
+         be flagged at all; stderr:\n{err}"
+    );
+}
+
+/// Spec 77 criterion 6's "worktrees" and "per-unit caches" categories reuse
+/// `scan_residue`'s already-classified entries for their DEAD half
+/// ([`footprint_report`]'s own doc comment: "the DEAD half of worktrees/per-unit-caches
+/// comes DIRECTLY from calling `scan_residue`"), while [`scratch_totals`] sums the SAME
+/// `rigger-wt-<slug>` / `cargo-target-<slug>` entries independently for the TOTAL half.
+/// Every other footprint CLI test in this cluster seeds only the registered-scratch-roots,
+/// shared-build-cache, store, backups, and unowned-agent-scratch categories - none of them
+/// ever places a `rigger-wt-*` worktree or a `cargo-target-<slug>` per-unit cache on disk,
+/// so the wiring between these two independently-walked functions and the real `rigger
+/// validate` binary is unexercised outside `src/main.rs`'s own unit tests (which drive
+/// `scratch_footprint` directly against a fixture path, never through `cmd_validate`). A
+/// drift between the two functions' name-prefix matching (e.g. `scratch_totals` summing a
+/// dir `scan_residue` no longer classifies as residue, or vice versa) would silently
+/// mis-total or mis-flag these categories while every existing test here stayed green -
+/// exactly what the inside-out unit tests are structurally blind to. This seeds one LIVE
+/// and one DEAD entry per category through the real event store (mirroring
+/// `validate_scopes_residue_to_the_current_run_flagging_a_prior_runs_abandoned_unit`'s own
+/// two-run shape) and proves the real binary's totals and dead-share advisories both
+/// reflect the DEAD entry's bytes only, never the live one's.
+#[test]
+fn validate_footprint_worktrees_and_per_unit_caches_measure_real_dead_and_live_entries_through_the_binary(
+) {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    git_ok(root, &["add", "-A"]);
+    git_ok(root, &["commit", "-q", "-m", "scaffold"]);
+    seed_store(root);
+
+    // A PRIOR run's own unit, abandoned mid-flight (never reaches a terminal state, but is
+    // scoped OUT of the current run's live set the moment a later `RunStarted` fires) - the
+    // exact shape `validate_scopes_residue_to_the_current_run_flagging_a_prior_runs_
+    // abandoned_unit` already proves for the "branches"/"worktrees" residue advisory; here
+    // it drives the FOOTPRINT totals/dead-share instead.
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r0","criteria":["prior spec"]}"#),
+            (
+                "UnitStarted",
+                r#"{"id":"unit-old","branch":"rigger/u/unit-old"}"#,
+            ),
+            ("RunStarted", r#"{"run":"r1","criteria":["current spec"]}"#),
+            (
+                "UnitStarted",
+                r#"{"id":"unit-new","branch":"rigger/u/unit-new"}"#,
+            ),
+        ],
+    );
+
+    let scratch = root.join("scratchroot");
+    let cache_home = root.join("cachehome");
+    std::fs::create_dir_all(&scratch).unwrap();
+    std::fs::create_dir_all(&cache_home).unwrap();
+
+    // The DEAD unit's worktree and per-unit cache - out of the current run's live scope.
+    std::fs::create_dir_all(scratch.join("rigger-wt-unit-old")).unwrap();
+    std::fs::write(
+        scratch.join("rigger-wt-unit-old").join("payload.bin"),
+        [0u8; 400],
+    )
+    .unwrap();
+    std::fs::create_dir_all(scratch.join("cargo-target-unit-old")).unwrap();
+    std::fs::write(
+        scratch.join("cargo-target-unit-old").join("lib.rlib"),
+        [0u8; 300],
+    )
+    .unwrap();
+
+    // The LIVE unit's worktree and per-unit cache - in flight in THIS run, so their bytes
+    // must be counted in each category's TOTAL but never in its DEAD share.
+    std::fs::create_dir_all(scratch.join("rigger-wt-unit-new")).unwrap();
+    std::fs::write(
+        scratch.join("rigger-wt-unit-new").join("payload.bin"),
+        [0u8; 20],
+    )
+    .unwrap();
+    std::fs::create_dir_all(scratch.join("cargo-target-unit-new")).unwrap();
+    std::fs::write(
+        scratch.join("cargo-target-unit-new").join("lib.rlib"),
+        [0u8; 10],
+    )
+    .unwrap();
+
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["validate"],
+        &[
+            ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
+            ("XDG_CACHE_HOME", cache_home.to_str().unwrap()),
+        ],
+    );
+    assert!(
+        ok,
+        "validate must exit 0 even while flagging footprint advisories; stderr:\n{err}"
+    );
+
+    // Totals cover BOTH the live and dead entries together (400 + 20 = 420, 300 + 10 = 310).
+    assert!(
+        out.contains("footprint: worktrees 420B"),
+        "the worktrees total must sum the live AND dead entries via scratch_totals's own \
+         independent walk; stdout:\n{out}"
+    );
+    assert!(
+        out.contains("footprint: per-unit caches 310B"),
+        "the per-unit-caches total must sum the live AND dead entries; stdout:\n{out}"
+    );
+
+    // Dead share is exactly the dead unit's bytes (400 of 420 = 95%, 300 of 310 = 96%) - the
+    // live unit's bytes are spared, never inflating either dead share.
+    assert!(
+        err.contains("worktrees is 95% dead (400B of 420B reclaimable)"),
+        "the worktrees dead share must reflect scan_residue's classification of ONLY the \
+         prior run's abandoned worktree, never the live one; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("per-unit caches is 96% dead (300B of 310B reclaimable)"),
+        "the per-unit-caches dead share must reflect ONLY the dead unit's cache; stderr:\n{err}"
+    );
+    // Both flagged categories name the unit-scoped reclaim path (`rigger step`'s own orphan
+    // sweep already reaches these two categories, unlike the spawn-scoped ones above).
+    assert!(
+        err.contains(
+            "reclaimed automatically by the next `rigger step`, or remove the listed dirs directly"
+        ),
+        "the unit-scoped reclaim hint must be named for the flagged worktrees/per-unit-caches \
+         advisories; stderr:\n{err}"
     );
 }
 
@@ -6863,17 +13728,20 @@ fn installed_workflow_courier_waits_on_an_auto_backgrounded_step() {
 }
 
 /// Spec 46, criterion 1 - PERIPHERY (setup -> gitignore-on-disk seam): the always-on dash
-/// writes two runtime breadcrumbs under `.rigger/` - `.rigger/dash.url` and
-/// `.rigger/dash.marker`. Left untracked-and-not-ignored in a consumer's repo they get swept
-/// into a unit worktree's commit by `git add`, then collide with the live dash's rewrites when
-/// the conductor merges the unit ("untracked working tree files would be overwritten"). The
-/// implementer's unit tests call `init_project` IN-PROCESS and assert the `.gitignore` CONTENT
-/// and the returned report - but neither drives the real `rigger setup` subcommand end-to-end
-/// (arg dispatch -> cmd_setup -> init_project -> file write), and neither proves that a real
-/// git actually HONORS the written lines. This test closes that boundary: it runs the built
-/// binary's `setup`, reads the on-disk `.gitignore` the consumer keeps, and then proves the
-/// actual collision-preventing behavior - a real `git check-ignore` treats both breadcrumbs as
-/// ignored, so a later `git add` never sweeps them into a unit commit.
+/// writes runtime breadcrumbs under `.rigger/` - `.rigger/dash.url`, `.rigger/dash.marker`,
+/// and, since round 8 (spec 69, `record_dash_attempt`), `.rigger/dash.attempt`. Left
+/// untracked-and-not-ignored in a consumer's repo they get swept into a unit worktree's commit
+/// by `git add`, then collide with the live dash's rewrites when the conductor merges the unit
+/// ("untracked working tree files would be overwritten"). The implementer's unit tests call
+/// `init_project` IN-PROCESS and assert the `.gitignore` CONTENT and the returned report - but
+/// neither drives the real `rigger setup` subcommand end-to-end (arg dispatch -> cmd_setup ->
+/// init_project -> file write), and neither proves that a real git actually HONORS the written
+/// lines. This test closes that boundary: it runs the built binary's `setup`, reads the
+/// on-disk `.gitignore` the consumer keeps, and then proves the actual collision-preventing
+/// behavior - a real `git check-ignore` treats all three breadcrumbs as ignored, so a later
+/// `git add` never sweeps them into a unit commit. (The round-8 breadcrumb was added to this
+/// test's own list after the round-8 fix itself only extended `init_project`'s in-process unit
+/// tests, never this end-to-end git-honors-it proof - sdet-u69c1-r8-periphery-reaccounting.)
 #[test]
 fn setup_gitignores_the_dash_breadcrumbs_and_git_honors_them_end_to_end() {
     let dir = temp_project();
@@ -6885,8 +13753,8 @@ fn setup_gitignores_the_dash_breadcrumbs_and_git_honors_them_end_to_end() {
     let (_out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
     assert!(ok, "rigger setup must succeed; stderr:\n{err}");
 
-    // 1. CLI -> init_project -> disk wiring: the consumer's on-disk `.gitignore` ignores BOTH
-    //    dash breadcrumbs, exactly as it does for the other machine-local installs.
+    // 1. CLI -> init_project -> disk wiring: the consumer's on-disk `.gitignore` ignores ALL
+    //    THREE dash breadcrumbs, exactly as it does for the other machine-local installs.
     let gitignore = std::fs::read_to_string(root.join(".gitignore"))
         .expect("rigger setup must write a .gitignore at the project root");
     assert!(
@@ -6897,8 +13765,12 @@ fn setup_gitignores_the_dash_breadcrumbs_and_git_honors_them_end_to_end() {
         gitignore.lines().any(|l| l.trim() == ".rigger/dash.marker"),
         "the installed .gitignore must ignore the dash marker breadcrumb; got:\n{gitignore}"
     );
+    assert!(
+        gitignore.lines().any(|l| l.trim() == ".rigger/dash.attempt"),
+        "the installed .gitignore must ignore the round-8 dash attempt breadcrumb; got:\n{gitignore}"
+    );
 
-    // 2. The actual collision-preventing behavior, end to end: create the two breadcrumbs the
+    // 2. The actual collision-preventing behavior, end to end: create the three breadcrumbs the
     //    live dash would write, then prove a REAL git treats each as ignored. `git check-ignore
     //    -q` exits 0 only for an ignored path, so a subsequent `git add -A` (which the conductor
     //    runs before committing a unit) never sweeps them in, and the "untracked working tree
@@ -6910,7 +13782,12 @@ fn setup_gitignores_the_dash_breadcrumbs_and_git_honors_them_end_to_end() {
     )
     .unwrap();
     std::fs::write(root.join(".rigger").join("dash.marker"), "7420\n1234\n").unwrap();
-    for breadcrumb in [".rigger/dash.url", ".rigger/dash.marker"] {
+    std::fs::write(root.join(".rigger").join("dash.attempt"), "r1").unwrap();
+    for breadcrumb in [
+        ".rigger/dash.url",
+        ".rigger/dash.marker",
+        ".rigger/dash.attempt",
+    ] {
         let ignored = Command::new("git")
             .args(["check-ignore", "-q", breadcrumb])
             .current_dir(root)
@@ -6932,9 +13809,10 @@ fn setup_gitignores_the_dash_breadcrumbs_and_git_honors_them_end_to_end() {
 /// `.git/info/exclude`); if setup let those decide what to append, an operator whose global
 /// excludes already cover `.claude/` and `.rigger/` would ship a `.gitignore` MISSING the
 /// dash-breadcrumb lines - and a teammate or CI cloning with a clean HOME would then let
-/// `git add` sweep `.rigger/dash.url` / `.rigger/dash.marker` into a unit commit, the exact
-/// "untracked working tree files would be overwritten" collision criterion 1 exists to
-/// prevent. This test runs the real `rigger setup` under a `GIT_CONFIG_GLOBAL` whose
+/// `git add` sweep `.rigger/dash.url` / `.rigger/dash.marker` / `.rigger/dash.attempt` (round
+/// 8, spec 69) into a unit commit, the exact "untracked working tree files would be
+/// overwritten" collision criterion 1 exists to prevent. This test runs the real `rigger
+/// setup` under a `GIT_CONFIG_GLOBAL` whose
 /// `core.excludesFile` already ignores `.claude/` and `.rigger/`, and asserts the committed
 /// `.gitignore` STILL carries every required line - so the shipped artifact is machine
 /// independent. It is a regression guard against re-introducing a machine-local ignore lookup
@@ -6998,6 +13876,7 @@ fn setup_writes_a_machine_independent_gitignore_under_a_hostile_global_config() 
         ".rigger/shim",
         ".rigger/dash.url",
         ".rigger/dash.marker",
+        ".rigger/dash.attempt",
     ] {
         assert!(
             gitignore.lines().any(|l| l.trim() == pattern),
@@ -7611,6 +14490,83 @@ fn stats_canary_reports_the_per_tier_scorecard_from_the_canary_stream() {
     );
 }
 
+/// FINDINGS VOLUME criterion (spec 61, unit u61c8): `CanaryOutcome` carries a per-tier
+/// findings-raised count distinct from `caught_by`, and `format_canary_stats` - the render
+/// function shared by `rigger stats --canary` and `rigger canary`'s own post-run summary -
+/// prints a findings-raised-by-tier section computed from `metrics::project_canary`'s fold
+/// over it. `format_canary_stats` is private to the binary crate, so it is reachable ONLY by
+/// driving the compiled binary (the implementer's own render tests, in `src/main.rs`, call
+/// it directly against a hand-built `CanaryMetrics` that was never produced by
+/// `project_canary` itself). This test seeds real per-item `findings_raised` maps into the
+/// namespaced canary stream - mirroring exactly how `CanaryOutcome::to_event` shapes them -
+/// and drives `rigger stats --canary`, proving the SUMMED total actually reaches stdout
+/// through the full decode -> fold -> render chain, not each seam's own isolated fixture.
+///
+/// One item (`"c"`) is seeded with the PRE-u61c8 wire shape - no `findings_raised` key at
+/// all, the same legacy payload `canary_findings_volume_periphery.rs` proves decodes on its
+/// own - mixed in alongside two items that do carry it, proving a decode-defaulted item
+/// contributes nothing rather than crashing the aggregate or corrupting the other items'
+/// contribution when they are folded together through the real binary.
+#[test]
+fn stats_canary_reports_the_findings_raised_total_summed_across_items() {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Event, EventStore, ExpectedRevision};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(&rigger).unwrap();
+    std::fs::write(rigger.join("project.id"), "findings-volume-proj\n").unwrap();
+
+    let backend = Store::open(rigger.join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, "findings-volume-proj");
+    let ty = rigger::ledger::TYPE_UNIT_STATUS;
+    let ev = |json: String| Event::new(ty, json.into_bytes());
+    let marker = ev(r#"{"id":"batch-1","status":"canary-run"}"#.to_string());
+    // Two items carrying the current wire shape (with `findings_raised`)...
+    let a = ev(
+        r#"{"id":"a","status":"canary","defect_class":"off-by-one","planted":true,"expected_reject":true,"expected_tier":"lens","caught_by":["lens"],"verdict_approved":false,"verdict_correct":true,"stable":true,"findings_raised":{"lens":2,"adversary":1}}"#
+            .to_string(),
+    );
+    let b = ev(
+        r#"{"id":"b","status":"canary","defect_class":"none","planted":false,"expected_reject":false,"expected_tier":"","caught_by":[],"verdict_approved":true,"verdict_correct":true,"stable":true,"findings_raised":{"lens":3,"adversary":0}}"#
+            .to_string(),
+    );
+    // ...and one item carrying the PRE-u61c8 shape (no findings_raised key at all), proving
+    // a legacy record folds in harmlessly rather than breaking the aggregate.
+    let c = ev(
+        r#"{"id":"c","status":"canary","defect_class":"resource-leak","planted":true,"expected_reject":true,"expected_tier":"adversary","caught_by":["adversary"],"verdict_approved":false,"verdict_correct":true,"stable":true}"#
+            .to_string(),
+    );
+    store
+        .append("canary", ExpectedRevision::Any, &[marker, a, b, c])
+        .unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["stats", "--canary"]);
+    assert!(ok, "stats --canary must succeed; stderr: {err}");
+    assert!(
+        out.contains("findings raised by tier (volume, informational):"),
+        "the findings-volume section must appear; got:\n{out}"
+    );
+    // lens: 2 (a) + 3 (b) + 0 (c, legacy/undecoded) = 5.
+    assert!(
+        out.contains(&format!("{:<16} 5", "lens")),
+        "lens's summed finding count across all three items; got:\n{out}"
+    );
+    // adversary: 1 (a) + 0 (b) + 0 (c, legacy/undecoded) = 1.
+    assert!(
+        out.contains(&format!("{:<16} 1", "adversary")),
+        "adversary's summed finding count across all three items; got:\n{out}"
+    );
+    // The legacy item's OTHER fields still fold correctly alongside the current-shape
+    // items - the missing findings_raised key does not corrupt the rest of the scorecard.
+    assert!(
+        out.contains("items scored       3 (2 planted, 2 defect class(es) cataloged)"),
+        "all three items, legacy shape included, are still scored; got:\n{out}"
+    );
+}
+
 /// `rigger stats --canary` on a project that has never run a canary says so clearly,
 /// rather than printing an empty/zero scorecard, and creates no false impression of a run.
 #[test]
@@ -7623,6 +14579,216 @@ fn stats_canary_on_a_project_with_no_canary_run_says_so() {
     assert!(
         out.contains("no canary run recorded yet"),
         "an un-canaried project is told to run `rigger canary`; got:\n{out}"
+    );
+}
+
+/// NO FAKE ZEROS criterion (spec 61, unit u61c2b): `format_canary_stats` - the render
+/// function shared by `rigger stats --canary` and `rigger canary`'s own post-run summary -
+/// prints `n/a` with a reason instead of a fake `0/N (0.0%)` for a tier whose catch count
+/// is zero AND the run recorded a correctly-rejected planted item with no measured
+/// attribution. `format_canary_stats` is private to the binary crate, so it is reachable
+/// ONLY by driving the compiled binary (the implementer's own render tests, in
+/// `src/main.rs`, call it directly against a hand-built `CanaryMetrics` that was never
+/// produced by `metrics::project_canary` itself). This test seeds the namespaced canary
+/// stream with a correctly-rejected item whose `caught_by` is empty (the "lens" tier's
+/// zero is now suspect) alongside a sibling item a DIFFERENT tier genuinely caught (its
+/// real rate must still render), and drives `rigger stats --canary`, proving the n/a
+/// substitution actually reaches stdout through the full decode -> fold -> render chain.
+///
+/// Assertions match on the EXACT rendered line, not a bare substring: a prior finding on
+/// this same render surface (the findings-raised line) showed that two lines sharing the
+/// same `{tier:<16}` padding prefix can make a short `contains()` check pass even when the
+/// line it was meant to pin is wrong.
+#[test]
+fn stats_canary_renders_na_for_a_tier_with_an_unattributed_correct_reject() {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Event, EventStore, ExpectedRevision};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(&rigger).unwrap();
+    std::fs::write(rigger.join("project.id"), "unattributed-proj\n").unwrap();
+
+    let backend = Store::open(rigger.join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, "unattributed-proj");
+    let ty = rigger::ledger::TYPE_UNIT_STATUS;
+    let ev = |json: String| Event::new(ty, json.into_bytes());
+    let marker = ev(r#"{"id":"batch-1","status":"canary-run"}"#.to_string());
+    // "a": correctly rejected by the lens tier's own account, but caught_by is EMPTY -
+    // the exact unmeasured-attribution shape the criterion exists to catch.
+    let a = ev(
+        r#"{"id":"a","status":"canary","defect_class":"off-by-one","planted":true,"expected_reject":true,"expected_tier":"lens","caught_by":[],"verdict_approved":false,"verdict_correct":true,"stable":true}"#
+            .to_string(),
+    );
+    // "b": correctly rejected, attributed to the adversary tier - a REAL measured catch,
+    // so the adversary tier's rate must still render honestly even in the same run.
+    let b = ev(
+        r#"{"id":"b","status":"canary","defect_class":"resource-leak","planted":true,"expected_reject":true,"expected_tier":"adversary","caught_by":["adversary"],"verdict_approved":false,"verdict_correct":true,"stable":true}"#
+            .to_string(),
+    );
+    store
+        .append("canary", ExpectedRevision::Any, &[marker, a, b])
+        .unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["stats", "--canary"]);
+    assert!(ok, "stats --canary must succeed; stderr: {err}");
+
+    let na_line = format!(
+        "    {:<16} n/a (1 correctly-rejected item(s) with no measured tier attribution)",
+        "lens",
+    );
+    assert!(
+        out.lines().any(|l| l == na_line),
+        "the lens tier's suspect zero must render as this exact n/a line; got:\n{out}"
+    );
+    let fake_zero_line = format!("    {:<16} 0/2 (0.0%)", "lens");
+    assert!(
+        !out.lines().any(|l| l == fake_zero_line),
+        "the fake-zero percentage line must never appear for the unmeasured tier; got:\n{out}"
+    );
+    let adversary_line = format!("    {:<16} 1/2 (50.0%)", "adversary");
+    assert!(
+        out.lines().any(|l| l == adversary_line),
+        "a tier with a real measured catch still renders its true rate in the same run; \
+         got:\n{out}"
+    );
+}
+
+/// The companion regression guard to the previous test, driven through the same compiled-
+/// binary seam: when EVERY correctly-rejected planted item in the run carries real
+/// attribution (no item has an empty `caught_by`), a tier that genuinely caught nothing
+/// must keep rendering the honest `0/N (0.0%)` - `unattributed_correct_rejects` must not
+/// swallow every zero into `n/a`. The implementer's own regression test for this only
+/// calls `format_canary_stats` directly against a hand-built `CanaryMetrics`; this proves
+/// the same guarantee survives the real decode -> fold -> render chain `rigger stats
+/// --canary` actually runs.
+#[test]
+fn stats_canary_still_renders_a_genuine_zero_when_every_reject_has_attribution() {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Event, EventStore, ExpectedRevision};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(&rigger).unwrap();
+    std::fs::write(rigger.join("project.id"), "genuine-zero-proj\n").unwrap();
+
+    let backend = Store::open(rigger.join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, "genuine-zero-proj");
+    let ty = rigger::ledger::TYPE_UNIT_STATUS;
+    let ev = |json: String| Event::new(ty, json.into_bytes());
+    let marker = ev(r#"{"id":"batch-1","status":"canary-run"}"#.to_string());
+    // Both planted items are correctly rejected and attributed to the adversary tier only
+    // - the lens tier genuinely caught nothing, but every correct reject IS attributed
+    // (just never to lens), so unattributed_correct_rejects stays 0.
+    let x = ev(
+        r#"{"id":"x","status":"canary","defect_class":"off-by-one","planted":true,"expected_reject":true,"expected_tier":"adversary","caught_by":["adversary"],"verdict_approved":false,"verdict_correct":true,"stable":true}"#
+            .to_string(),
+    );
+    let y = ev(
+        r#"{"id":"y","status":"canary","defect_class":"resource-leak","planted":true,"expected_reject":true,"expected_tier":"adversary","caught_by":["adversary"],"verdict_approved":false,"verdict_correct":true,"stable":true}"#
+            .to_string(),
+    );
+    store
+        .append("canary", ExpectedRevision::Any, &[marker, x, y])
+        .unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["stats", "--canary"]);
+    assert!(ok, "stats --canary must succeed; stderr: {err}");
+
+    let real_zero_line = format!("    {:<16} 0/2 (0.0%)", "lens");
+    assert!(
+        out.lines().any(|l| l == real_zero_line),
+        "a genuinely-measured zero catch rate must still print 0/N (0.0%); got:\n{out}"
+    );
+    let adversary_line = format!("    {:<16} 2/2 (100.0%)", "adversary");
+    assert!(
+        out.lines().any(|l| l == adversary_line),
+        "the adversary tier's real rate renders too; got:\n{out}"
+    );
+    assert!(
+        !out.to_lowercase().contains("n/a"),
+        "n/a must not appear anywhere when every correct reject carries attribution; \
+         got:\n{out}"
+    );
+}
+
+/// FALSE POSITIVES ARE FIRST-CLASS criterion (spec 61, unit u61c3): `CanaryMetrics` carries
+/// `controls`/`control_false_positives`, and `format_canary_stats` - the render function
+/// shared by `rigger stats --canary` and `rigger canary`'s own post-run summary - prints a
+/// control/false-positive line computed from `metrics::project_canary`'s fold over them.
+/// `format_canary_stats` is private to the binary crate, so it is reachable ONLY by driving
+/// the compiled binary (the implementer's own render tests, in `src/main.rs`, call it
+/// directly against a hand-built `CanaryMetrics` that was never produced by `project_canary`
+/// itself). This test seeds real per-item wire records into the namespaced canary stream -
+/// mirroring exactly how `CanaryOutcome::to_event` shapes them - with one planted item, one
+/// correctly-approved control, and TWO wrongly-rejected controls (proving the count sums
+/// rather than saturating), and drives `rigger stats --canary`, proving the control/false-
+/// positive line actually reaches stdout through the full decode -> fold -> render chain,
+/// not each seam's own isolated fixture.
+///
+/// Assertions match on the EXACT rendered line, not a bare substring - the same discipline
+/// the sibling NO FAKE ZEROS periphery tests use on this same render surface, after a prior
+/// finding showed a short `contains()` check can pass even when the line it was meant to pin
+/// is wrong.
+#[test]
+fn stats_canary_reports_the_control_false_positive_line() {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Event, EventStore, ExpectedRevision};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(&rigger).unwrap();
+    std::fs::write(rigger.join("project.id"), "false-positive-proj\n").unwrap();
+
+    let backend = Store::open(rigger.join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, "false-positive-proj");
+    let ty = rigger::ledger::TYPE_UNIT_STATUS;
+    let ev = |json: String| Event::new(ty, json.into_bytes());
+    let marker = ev(r#"{"id":"batch-1","status":"canary-run"}"#.to_string());
+    // "p1": a planted defect, correctly rejected - not a control at all.
+    let p1 = ev(
+        r#"{"id":"p1","status":"canary","defect_class":"off-by-one","planted":true,"expected_reject":true,"expected_tier":"lens","caught_by":["lens"],"verdict_approved":false,"verdict_correct":true,"stable":true}"#
+            .to_string(),
+    );
+    // "c1": a known-good control the panel gets right - approved, not a false positive.
+    let c1 = ev(
+        r#"{"id":"c1","status":"canary","defect_class":"none","planted":false,"expected_reject":false,"expected_tier":"","caught_by":[],"verdict_approved":true,"verdict_correct":true,"stable":true}"#
+            .to_string(),
+    );
+    // "c2" and "c3": known-good controls the panel WRONGLY rejects - two independent false
+    // positives, proving the render sums them rather than saturating at one.
+    let c2 = ev(
+        r#"{"id":"c2","status":"canary","defect_class":"none","planted":false,"expected_reject":false,"expected_tier":"","caught_by":[],"verdict_approved":false,"verdict_correct":false,"stable":true}"#
+            .to_string(),
+    );
+    let c3 = ev(
+        r#"{"id":"c3","status":"canary","defect_class":"none","planted":false,"expected_reject":false,"expected_tier":"","caught_by":[],"verdict_approved":false,"verdict_correct":false,"stable":true}"#
+            .to_string(),
+    );
+    store
+        .append("canary", ExpectedRevision::Any, &[marker, p1, c1, c2, c3])
+        .unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["stats", "--canary"]);
+    assert!(ok, "stats --canary must succeed; stderr: {err}");
+
+    let control_line =
+        "  control items      1/3 approved (2 false positive(s): known-good rejected)";
+    assert!(
+        out.lines().any(|l| l == control_line),
+        "the control/false-positive line must render with the summed counts (one of three \
+         controls approved, two false positives); got:\n{out}"
+    );
+    assert!(
+        out.contains("items scored       4 (1 planted, 1 defect class(es) cataloged)"),
+        "the planted defect is still scored normally alongside the three controls; \
+         got:\n{out}"
     );
 }
 
@@ -7659,6 +14825,340 @@ fn canary_rejects_unknown_arguments_and_a_missing_corpus() {
     assert!(
         err.contains("no items"),
         "the error explains the corpus is empty; stderr: {err}"
+    );
+}
+
+/// `rigger canary --jobs <n>` (spec 61 criterion 5, ITEM SHARDING AND THE JOBS CAP): the
+/// flag's validation is CLI glue this suite's sibling test above already pins for
+/// `--corpus`/`--if-model-changed`/an unknown flag, exercised here through the real binary
+/// the same way - a positive-integer check the library's `run_canary` never performs itself
+/// (its `jobs: usize` accepts 0 and degrades to a serial width), so this contract is
+/// ENTIRELY the binary's own arg-parsing responsibility and only observable by driving it.
+#[test]
+fn canary_rejects_a_non_positive_or_non_numeric_jobs_value() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    for bad in ["0", "-1", "not-a-number", ""] {
+        let (_o, err, ok) = run_rigger(root, &["canary", "--jobs", bad]);
+        assert!(!ok, "canary --jobs {bad:?} must be rejected");
+        assert!(
+            err.contains("--jobs"),
+            "the error names --jobs for input {bad:?}; stderr: {err}"
+        );
+    }
+}
+
+/// A well-formed `--jobs <n>` is accepted and does not disturb the OTHER flags around it:
+/// combined with a missing corpus dir, the failure is still the corpus error (not a --jobs
+/// error), proving the flag is consumed and validated ahead of corpus loading without
+/// leaking into or swallowing the unrelated corpus failure the sibling test above already
+/// pins for `--corpus` alone.
+#[test]
+fn canary_accepts_a_jobs_flag_alongside_other_flags() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_o, err, ok) = run_rigger(root, &["canary", "--jobs", "4", "--corpus", "no-such-dir"]);
+    assert!(
+        !ok,
+        "a missing corpus dir must still fail with --jobs present"
+    );
+    assert!(
+        err.contains("canary") && !err.contains("--jobs"),
+        "a valid --jobs must not itself be blamed for the (unrelated) corpus failure; \
+         stderr: {err}"
+    );
+}
+
+/// The `--jobs` usage-text shape is pinned as a white-box check against the private
+/// `USAGE_TEXT` string constant inside `src/main.rs`'s own unit tests
+/// (`usage_text_gives_the_jobs_flag_its_own_description_line`). That leaves an outside-in
+/// gap this suite's sibling `--jobs` tests above do not close either (they pin the FLAG's
+/// validation behavior, never the printed help TEXT): nothing proves the text actually
+/// reaches stdout/stderr of the compiled, installed `rigger` binary a real operator runs,
+/// as opposed to a string that merely looks right in the crate but could still be
+/// mis-wired into `usage()`, truncated, or mangled by output buffering. Drive the real
+/// binary's `help` command and assert the same two structural properties the unit test
+/// pins, but read off the actual process output.
+#[test]
+fn rigger_help_gives_the_jobs_flag_its_own_description_line_through_the_real_binary() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_o, err, ok) = run_rigger(root, &["help"]);
+    assert!(ok, "rigger help must succeed; stderr: {err}");
+
+    // The --jobs tag introduces its OWN description, not text describing something else.
+    let tag = "[--jobs <n>]";
+    let tag_pos = err
+        .find(tag)
+        .unwrap_or_else(|| panic!("printed help names the --jobs flag; stderr: {err}"));
+    let after_tag = err[tag_pos + tag.len()..].trim_start_matches(' ');
+    assert!(
+        after_tag.starts_with("caps the total concurrent review-panel spawns"),
+        "the --jobs tag in the real binary's help output must introduce its OWN \
+         description, not text describing something else: found {:?}",
+        &after_tag[..after_tag.len().min(80)]
+    );
+
+    // The pre-existing --corpus sentence is not split by a flag tag spliced into its middle.
+    let corpus_start = err
+        .find("(default ./canaries) and score per-tier catch rate")
+        .unwrap_or_else(|| panic!("printed help names the --corpus default; stderr: {err}"));
+    let corpus_end = err
+        .find("(read back with `rigger stats --canary`)")
+        .unwrap_or_else(|| panic!("printed help names the canary stats readback; stderr: {err}"));
+    let corpus_sentence = &err[corpus_start..corpus_end];
+    assert!(
+        !corpus_sentence.contains('['),
+        "no flag tag may be spliced into the middle of the --corpus sentence in the real \
+         binary's help output: {corpus_sentence:?}"
+    );
+}
+
+/// MODEL PINNING criterion (spec 61 c7): sibling of
+/// `rigger_help_gives_the_jobs_flag_its_own_description_line_through_the_real_binary` for the
+/// `--model <tier>=<id>` flag it sits directly beside in the same multiline `usage()` format!
+/// literal in `src/main.rs` - the exact literal a prior splice bug corrupted for `--jobs`
+/// (fixed and periphery-locked by `rigger_help_gives_the_jobs_flag_..`). Inserting a new flag
+/// tag immediately after `--jobs`'s description is exactly the edit shape that bug came from,
+/// so this closes the same outside-in gap for `--model`: nothing else proves the flag's help
+/// text reaches the compiled binary's actual `help` output, as opposed to a string that only
+/// looks right in the source. `--model`'s argument VALIDATION and RUNTIME behavior are
+/// covered elsewhere (`canary_rejects_a_malformed_or_unknown_tier_model_pin`,
+/// `canary_accepts_a_well_formed_model_pin_and_continues_parsing`,
+/// `tests/model_pinning_periphery.rs`); this test is solely about the printed help TEXT.
+#[test]
+fn rigger_help_gives_the_model_flag_its_own_description_line_through_the_real_binary() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_o, err, ok) = run_rigger(root, &["help"]);
+    assert!(ok, "rigger help must succeed; stderr: {err}");
+
+    // The --model tag introduces its OWN description, not text describing something else
+    // (in particular, not the --jobs description it is spliced directly after).
+    let tag = "[--model <tier>=<id>]";
+    let tag_pos = err
+        .find(tag)
+        .unwrap_or_else(|| panic!("printed help names the --model flag; stderr: {err}"));
+    let after_tag = err[tag_pos + tag.len()..].trim_start_matches(' ');
+    assert!(
+        after_tag.starts_with("pins a tier's (lens/adversary/adjudicator)"),
+        "the --model tag in the real binary's help output must introduce its OWN \
+         description, not text describing something else: found {:?}",
+        &after_tag[..after_tag.len().min(80)]
+    );
+
+    // The --model sentence itself reaches stdout/stderr whole, in order, with no other flag
+    // tag spliced into its middle.
+    let model_start = tag_pos;
+    let model_end = err
+        .find("header prints its resolved id")
+        .unwrap_or_else(|| panic!("printed help completes the --model sentence; stderr: {err}"));
+    let model_sentence = &err[model_start + tag.len()..model_end];
+    assert!(
+        !model_sentence.contains('['),
+        "no flag tag may be spliced into the middle of the --model sentence in the real \
+         binary's help output: {model_sentence:?}"
+    );
+
+    // The pre-existing --jobs sentence directly above is not truncated or split by the
+    // --model tag spliced in immediately after it.
+    let jobs_start = err
+        .find("caps the total concurrent review-panel spawns")
+        .unwrap_or_else(|| panic!("printed help names the --jobs description; stderr: {err}"));
+    let jobs_sentence = &err[jobs_start..tag_pos];
+    assert!(
+        jobs_sentence.trim_end().ends_with("width, floored at 2)"),
+        "the --jobs sentence must end intact, immediately followed (after only whitespace/\
+         indentation) by the --model tag on its own line, not merged or truncated: \
+         {jobs_sentence:?}"
+    );
+
+    // The following `rigger playbooks --rebuild` entry is not swallowed into the --model
+    // description either.
+    let playbooks_pos = err
+        .find("rigger playbooks --rebuild")
+        .unwrap_or_else(|| panic!("printed help names rigger playbooks; stderr: {err}"));
+    let between = &err[model_end..playbooks_pos];
+    assert!(
+        !between.contains('['),
+        "no stray flag tag may sit between the --model sentence and the next command entry: \
+         {between:?}"
+    );
+}
+
+/// MODEL PINNING criterion (spec 61 c7): `--model <tier>=<id>` argument validation is CLI
+/// glue exercised through the real binary, mirroring
+/// `canary_rejects_unknown_arguments_and_a_missing_corpus` - the happy-path pin resolution
+/// itself is covered end-to-end by the library runner test (`canary::apply_model_pins` /
+/// `canary::run_canary` with a scripted driver), which needs no live review agent.
+#[test]
+fn canary_rejects_a_malformed_or_unknown_tier_model_pin() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    // Missing the <tier>=<id> value entirely.
+    let (_o, err, ok) = run_rigger(root, &["canary", "--model"]);
+    assert!(!ok, "--model with no value must be rejected");
+    assert!(
+        err.contains("--model"),
+        "the error names the flag; stderr: {err}"
+    );
+
+    // No `=` separator.
+    let (_o, err, ok) = run_rigger(root, &["canary", "--model", "lensopus"]);
+    assert!(!ok, "a pin with no '=' must be rejected");
+    assert!(
+        err.contains("lensopus"),
+        "the error echoes the bad value; stderr: {err}"
+    );
+
+    // An unknown tier name.
+    let (_o, err, ok) = run_rigger(root, &["canary", "--model", "reviewer=opus"]);
+    assert!(!ok, "an unknown tier must be rejected");
+    assert!(
+        err.contains("reviewer") && err.contains("unknown tier"),
+        "the error names the bad tier; stderr: {err}"
+    );
+
+    // A known tier with an empty id.
+    let (_o, err, ok) = run_rigger(root, &["canary", "--model", "lens="]);
+    assert!(!ok, "an empty model id must be rejected");
+    assert!(
+        err.contains("empty"),
+        "the error says the id is empty; stderr: {err}"
+    );
+}
+
+/// A WELL-FORMED `--model <tier>=<id>` must be ACCEPTED - parsing consumes both the flag
+/// and its value and continues on to the next argument, rather than erroring on the flag or
+/// re-reading it. Proven by reaching the LATER empty-corpus error (arg parsing completed),
+/// mirroring how `canary_rejects_unknown_arguments_and_a_missing_corpus` uses that same
+/// error as the "parsing succeeded" signal.
+#[test]
+fn canary_accepts_a_well_formed_model_pin_and_continues_parsing() {
+    let dir = temp_project();
+    let root = dir.path();
+    let empty = root.join("empty-corpus");
+    std::fs::create_dir_all(&empty).unwrap();
+
+    let (_o, err, ok) = run_rigger(
+        root,
+        &[
+            "canary",
+            "--model",
+            "lens=sonnet",
+            "--corpus",
+            "empty-corpus",
+        ],
+    );
+    assert!(
+        !ok,
+        "the empty corpus still fails - this only pins the model"
+    );
+    assert!(
+        err.contains("no items"),
+        "parsing must advance past --model to reach the corpus-load error, not fail on (or \
+         loop on) the flag itself; stderr: {err}"
+    );
+
+    // Two repeated pins (different tiers) are both consumed correctly.
+    let (_o, err, ok) = run_rigger(
+        root,
+        &[
+            "canary",
+            "--model",
+            "lens=sonnet",
+            "--model",
+            "adversary=opus",
+            "--corpus",
+            "empty-corpus",
+        ],
+    );
+    assert!(!ok);
+    assert!(
+        err.contains("no items"),
+        "repeated --model pins must both be consumed; stderr: {err}"
+    );
+}
+
+/// MODEL PINNING criterion (spec 61 c7): the scorecard header - binary build, corpus hash,
+/// and every tier's resolved model id - reaches `rigger stats --canary`'s stdout through
+/// the FULL production chain: a real `CanaryHeader`-shaped wire event, decoded by
+/// `CanaryHeader::from_event`, folded by `metrics::project_canary`, and rendered by the
+/// (private, binary-only) `format_canary_stats`. The implementer's own render tests in
+/// `src/main.rs` call `format_canary_stats` directly against a hand-built `CanaryMetrics`
+/// that `project_canary` never produced; this drives the compiled binary end to end
+/// instead - the only way to reach `format_canary_stats` at all - mirroring
+/// `stats_canary_reports_the_findings_raised_total_summed_across_items`'s proof for the
+/// FINDINGS VOLUME criterion. The adversary tier is deliberately left out of the seeded
+/// header's `resolved_models`, mirroring a driver (the real blocking cli driver today) that
+/// never reported an id for it, so the honest "unmeasured" render is proven through a real
+/// event too, not just the implementer's hand-built fixture.
+#[test]
+fn stats_canary_reports_the_model_pinning_header_through_a_real_wire_event() {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Event, EventStore, ExpectedRevision};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(&rigger).unwrap();
+    std::fs::write(rigger.join("project.id"), "canary-pin-proj\n").unwrap();
+
+    let backend = Store::open(rigger.join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, "canary-pin-proj");
+    let ty = rigger::ledger::TYPE_UNIT_STATUS;
+    let ev = |json: String| Event::new(ty, json.into_bytes());
+
+    let marker = ev(r#"{"id":"batch-1","status":"canary-run"}"#.to_string());
+    let outcome = ev(
+        r#"{"id":"a","status":"canary","defect_class":"off-by-one","planted":true,"expected_reject":true,"expected_tier":"lens","caught_by":["lens"],"verdict_approved":false,"verdict_correct":true,"stable":true}"#
+            .to_string(),
+    );
+    // The exact wire shape `CanaryHeader::to_event` produces.
+    let header = ev(
+        r#"{"id":"batch-1","status":"canary-header","binary_build":"rigger 7.7.7 (build pin-test)","corpus_hash":"cafef00d","resolved_models":{"lens":"resolved-lens-x","adjudicator":"resolved-adj-y"}}"#
+            .to_string(),
+    );
+
+    store
+        .append("canary", ExpectedRevision::Any, &[marker, outcome, header])
+        .unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["stats", "--canary"]);
+    assert!(ok, "stats --canary must succeed; stderr: {err}");
+    assert!(
+        out.contains("binary build       rigger 7.7.7 (build pin-test)"),
+        "the real header event's binary build reaches stdout; got:\n{out}"
+    );
+    assert!(
+        out.contains("corpus hash        cafef00d"),
+        "the real header event's corpus hash reaches stdout; got:\n{out}"
+    );
+    assert!(
+        out.contains(&format!("{:<16} resolved-lens-x", "lens")),
+        "the lens tier's real resolved id reaches stdout; got:\n{out}"
+    );
+    assert!(
+        out.contains(&format!("{:<16} resolved-adj-y", "adjudicator")),
+        "the adjudicator's real resolved id reaches stdout; got:\n{out}"
+    );
+    assert!(
+        out.contains(&format!("{:<16} unmeasured", "adversary")),
+        "a tier the real header event never reported renders honestly as unmeasured, never \
+         fabricated or blank; got:\n{out}"
+    );
+    // A canary header event never perturbs the run stream.
+    let (run_out, _e, run_ok) = run_rigger(root, &["stats"]);
+    assert!(run_ok);
+    assert!(
+        run_out.contains("no runs recorded yet"),
+        "the header event never lands on the run stream either; got:\n{run_out}"
     );
 }
 
@@ -7766,6 +15266,140 @@ fn validate_warns_when_a_tier_resolved_model_repointed_between_runs() {
     );
 }
 
+/// Spec 61, DRIFT SEVERITY: `rigger validate`'s companion to
+/// `validate_warns_when_a_tier_resolved_model_repointed_between_runs` above - a snapshot-only
+/// date-suffix bump draws a soft ADVISORY (no `warning:` prefix, no "re-point" wording),
+/// never the mandate-style warning a real model-base change draws.
+#[test]
+fn validate_advises_softly_on_a_snapshot_only_date_suffix_bump() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_o, err, ok) = run_rigger(root, &["init"]);
+    assert!(
+        ok,
+        "rigger init must scaffold a valid config; stderr:\n{err}"
+    );
+    seed_two_runs_with_models(
+        root,
+        "drift-snapshot-bump",
+        "claude-sonnet-4-5-20250929",
+        "claude-sonnet-4-5-20260210",
+    );
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "validate still exits 0 on a snapshot-only bump; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("claude-sonnet-4-5-20250929") && err.contains("claude-sonnet-4-5-20260210"),
+        "the advisory still names both resolved ids; stderr:\n{err}"
+    );
+    assert!(
+        !err.to_lowercase().contains("resolved model id changed"),
+        "a snapshot bump does NOT draw the mandate-style re-point warning; stderr:\n{err}"
+    );
+}
+
+/// Seed `<root>/.rigger/events.db` with a stream whose position order and revision order
+/// DISAGREE (spec 71's signature `rigger validate` must detect) by inserting rows directly -
+/// bypassing the store's own revision assignment, the only way to reach this shape (a
+/// correctly functioning append always assigns `MAX(revision) + 1`, so it can never produce
+/// this on its own). Three rows land in stream `run`, in this insertion (position) order:
+/// revision 5, then revision 1, then revision 2 - each value is DISTINCT so
+/// `UNIQUE(stream, revision)` is satisfied (this is the actual on-disk shape a write that
+/// lands in a compaction-opened revision hole leaves: the row it targets is a hole, never a
+/// duplicate), but positions 2 and 3 both carry a revision at or below the stream's already-
+/// recorded maximum (5) - the two out-of-order rows the test asserts on.
+fn seed_order_signature(root: &Path, project: &str) {
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(&rigger).unwrap();
+    std::fs::write(rigger.join("project.id"), format!("{project}\n")).unwrap();
+    let db = rigger.join("events.db");
+    // Open through the real store first, so the schema is laid down exactly as the binary
+    // itself would lay it down.
+    rigger::eventstore::sqlite::Store::open(db.to_str().unwrap()).unwrap();
+    let stream = format!(
+        "{}run",
+        rigger::eventstore::namespace::Namespaced::prefix_for(project)
+    );
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    for revision in [5i64, 1, 2] {
+        conn.execute(
+            "INSERT INTO events (stream, type, id, data, meta, valid_from, recorded_at, revision)
+             VALUES (?1, 'Seed', ?2, X'7b7d', '{}', 0, 0, ?3)",
+            rusqlite::params![stream, format!("seed-{revision}"), revision],
+        )
+        .unwrap();
+    }
+}
+
+/// Spec 71 (`rigger validate` clause, VALIDATE DETECTS THE SIGNATURE): a stream whose
+/// position order and revision order disagree draws an advisory naming the stream, the
+/// out-of-order row count, and the repair doc, while the exit status stays unchanged
+/// (report-only - validate never repairs anything). A clean store draws nothing.
+#[test]
+fn validate_detects_a_stream_whose_position_order_and_revision_order_disagree() {
+    // The clean control first: an ordinary project draws no order-signature advisory.
+    let clean = temp_project();
+    let croot = clean.path();
+    let (_o, err, ok) = run_rigger(croot, &["init"]);
+    assert!(
+        ok,
+        "rigger init must scaffold a valid config; stderr:\n{err}"
+    );
+    let (out, err, ok) = run_rigger(croot, &["validate"]);
+    assert!(ok, "validate must succeed on a clean store; stderr:\n{err}");
+    assert!(
+        out.contains("config valid"),
+        "validate still prints its config summary; stdout:\n{out}"
+    );
+    assert!(
+        !err.to_lowercase()
+            .contains("position order and revision order"),
+        "a clean store must NOT draw the order-signature advisory; stderr:\n{err}"
+    );
+
+    // The seeded disagreement.
+    let dirty = temp_project();
+    let droot = dirty.path();
+    let (_o, err, ok) = run_rigger(droot, &["init"]);
+    assert!(
+        ok,
+        "rigger init must scaffold a valid config; stderr:\n{err}"
+    );
+    seed_order_signature(droot, "order-signature-project");
+    let (_out, err, ok) = run_rigger(droot, &["validate"]);
+    assert!(
+        ok,
+        "validate WARNS but still exits 0 on an order signature (report-only); stderr:\n{err}"
+    );
+    // Pinned to the exact reported values, not a loose digit match: `seed_order_signature`
+    // inserts revision 5 at position 1 (sets the running max), then revision 1 at position 2
+    // and revision 2 at position 3 - both out of order against the max of 5 - so the advisory
+    // MUST report exactly 2 row(s) spanning positions 2..=3 for stream `run`. A bare
+    // `err.contains('2')` would still pass on a wrong count or a shifted range (there are
+    // other digits in validate's output, e.g. the config summary and other advisories), so it
+    // proves nothing about the count/range the Done-when criterion actually requires.
+    assert!(
+        err.contains("stream run has 2 row(s)"),
+        "the advisory must name the stream and the exact out-of-order row count together; \
+         stderr:\n{err}"
+    );
+    assert!(
+        err.contains("positions 2..=3"),
+        "the advisory must name the exact affected position range; stderr:\n{err}"
+    );
+    assert!(
+        err.to_lowercase()
+            .contains("position order and revision order"),
+        "the advisory names the disagreement it detected; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("architecture.md"),
+        "the advisory names the repair doc; stderr:\n{err}"
+    );
+}
+
 /// Spec 13b, unit 1 (`rigger canary --if-model-changed` clause), the no-change control: an
 /// unchanged resolved model runs NO canary. The gate precedes the corpus load, so the missing
 /// `--corpus` is never even consulted - the command exits 0 having deliberately done nothing.
@@ -7821,24 +15455,220 @@ fn canary_if_model_changed_runs_when_a_tier_resolved_model_repointed() {
     );
 }
 
-/// Spec 18, criterion 8 (build provenance): `rigger version` and `rigger --version` must
-/// each report the crate version AND a build-provenance identifier - a git commit/describe
-/// id embedded at build time by `build.rs`. Without a self-serve version an agent cannot tell
-/// whether the installed binary matches the source, which is what makes the workflow-drift
-/// warning ambiguous.
+/// Spec 61, DRIFT SEVERITY (c11): a resolved-id change that differs ONLY in its trailing
+/// `-YYYYMMDD` date suffix - same model, a fresher snapshot - is classified as SNAPSHOT
+/// drift: `--if-model-changed` reports it on stdout and exits 0 WITHOUT running the panel,
+/// never reaching corpus loading (unlike a real re-point, which the sibling test
+/// `canary_if_model_changed_runs_when_a_tier_resolved_model_repointed` above proves still
+/// runs the panel even though its "claude-opus-4-1" -> "claude-opus-4-8" pair also differs).
+#[test]
+fn canary_if_model_changed_skips_a_snapshot_only_date_suffix_bump_without_running_the_panel() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_two_runs_with_models(
+        root,
+        "canary-snapshot-bump",
+        "claude-sonnet-4-5-20250929",
+        "claude-sonnet-4-5-20260210",
+    );
+    let (out, err, ok) = run_rigger(
+        root,
+        &["canary", "--if-model-changed", "--corpus", "no-such-dir"],
+    );
+    assert!(
+        ok,
+        "a same-model snapshot bump must exit 0 without running the panel; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("newer snapshot")
+            && out.contains("claude-sonnet-4-5-20250929")
+            && out.contains("claude-sonnet-4-5-20260210"),
+        "the skip names the tier and both resolved ids; stdout:\n{out}"
+    );
+    assert!(
+        !out.contains("running the panel"),
+        "no canary runs on a snapshot-only drift; stdout:\n{out}"
+    );
+    // Never reached corpus loading - the missing `--corpus` dir is never even consulted, the
+    // same short-circuit proof `canary_if_model_changed_skips_when_the_model_is_unchanged`
+    // uses for the no-change case.
+    assert!(
+        !err.contains("canary"),
+        "a snapshot-only drift must short-circuit before corpus loading; stderr:\n{err}"
+    );
+}
+
+/// The general form of `seed_two_runs_with_models` above, needed only when a test cares about
+/// MORE THAN ONE tier changing within the same drift - `seed_two_runs_with_models` hardcodes a
+/// single `opus` alias, which can never express DRIFT SEVERITY's "one real re-point disqualifies
+/// an otherwise-all-snapshot drift" rule (that rule only has a decision to make once at least
+/// two changes can disagree on shape). `changes` lists `(alias, prev_model, curr_model)` triples,
+/// one resolved-model event pair per tier per run, mirroring the same conductor stamps
+/// (`META_RUN_ID` + `META_MODEL_ALIAS` + `META_MODEL_RESOLVED` on a `green` `UnitStatus`).
+fn seed_two_runs_with_model_changes(root: &Path, project: &str, changes: &[(&str, &str, &str)]) {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Event, EventStore, ExpectedRevision};
+
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(&rigger).unwrap();
+    std::fs::write(rigger.join("project.id"), format!("{project}\n")).unwrap();
+
+    let backend = Store::open(rigger.join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, project);
+    let run_id = rigger::run::META_RUN_ID;
+    let alias_key = rigger::conductor::META_MODEL_ALIAS;
+    let resolved_key = rigger::conductor::META_MODEL_RESOLVED;
+    let started = |run: &str| {
+        Event::new(
+            rigger::run::TYPE_RUN_STARTED,
+            format!(r#"{{"run":"{run}"}}"#).into_bytes(),
+        )
+        .with_meta(run_id, run)
+    };
+    let green = |run: &str, alias: &str, model: &str| {
+        Event::new(
+            rigger::ledger::TYPE_UNIT_STATUS,
+            format!(r#"{{"id":"u-{alias}","status":"green"}}"#).into_bytes(),
+        )
+        .with_meta(run_id, run)
+        .with_meta(alias_key, alias)
+        .with_meta(resolved_key, model)
+    };
+
+    let mut events = vec![started("r1")];
+    for (alias, prev, _curr) in changes {
+        events.push(green("r1", alias, prev));
+    }
+    events.push(started("r2"));
+    for (alias, _prev, curr) in changes {
+        events.push(green("r2", alias, curr));
+    }
+
+    store
+        .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
+        .unwrap();
+}
+
+/// Spec 61, DRIFT SEVERITY (c11): a drift with TWO tiers - one a snapshot-only date-suffix
+/// bump, the other a real model-base re-point - runs the FULL mandate-style warning/panel path
+/// through the real `rigger validate` / `rigger canary --if-model-changed` binary, never the
+/// soft-advisory/skip path, because `ModelDrift::snapshot_only` disqualifies the whole drift
+/// the moment even one change carries a differing base. Neither existing CLI test proves this:
+/// `validate_advises_softly_on_a_snapshot_only_date_suffix_bump` and
+/// `canary_if_model_changed_skips_a_snapshot_only_date_suffix_bump_without_running_the_panel`
+/// each seed only ONE tier's drift (`seed_two_runs_with_models` cannot express a second,
+/// differently-shaped change), so a regression that classified snapshot-only as "at least one
+/// change looks like a snapshot bump" instead of "every change does" would pass every other
+/// test in this file while still misclassifying this exact case.
+#[test]
+fn validate_and_canary_run_the_full_warning_path_when_drift_mixes_a_snapshot_bump_with_a_real_repoint(
+) {
+    let changes: &[(&str, &str, &str)] = &[
+        (
+            "lens",
+            "claude-sonnet-4-5-20250929",
+            "claude-sonnet-4-5-20260210",
+        ),
+        ("opus", "claude-opus-4-1", "claude-opus-4-8"),
+    ];
+
+    let dir = temp_project();
+    let root = dir.path();
+    let (_o, err, ok) = run_rigger(root, &["init"]);
+    assert!(
+        ok,
+        "rigger init must scaffold a valid config; stderr:\n{err}"
+    );
+    seed_two_runs_with_model_changes(root, "drift-mixed", changes);
+
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "validate WARNS but still exits 0 on mixed drift; stderr:\n{err}"
+    );
+    assert!(
+        err.to_lowercase().contains("resolved model id changed") && err.contains("re-point"),
+        "one real repoint keeps the mandate-style warning even though the drift also carries a \
+         snapshot bump; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("lens")
+            && err.contains("claude-sonnet-4-5-20250929")
+            && err.contains("claude-sonnet-4-5-20260210"),
+        "the mixed warning still names the snapshot-bumped tier and both its ids; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("opus") && err.contains("claude-opus-4-1") && err.contains("claude-opus-4-8"),
+        "the mixed warning still names the re-pointed tier and both its ids; stderr:\n{err}"
+    );
+    assert!(
+        !err.to_lowercase().contains("advisory:") && !err.to_lowercase().contains("newer snapshot"),
+        "a mixed drift never takes the soft-advisory wording; stderr:\n{err}"
+    );
+
+    let (out, err, ok) = run_rigger(
+        root,
+        &["canary", "--if-model-changed", "--corpus", "no-such-dir"],
+    );
+    assert!(
+        out.contains("resolved model changed for lens")
+            && out.contains("resolved model changed for opus"),
+        "the gate opens and names both changed tiers even though one is only a snapshot bump; \
+         stdout:\n{out}"
+    );
+    assert!(
+        out.contains("running the panel"),
+        "one real repoint opens the gate even though the drift also carries a snapshot bump; \
+         stdout:\n{out}"
+    );
+    assert!(
+        !out.contains("skipping") && !out.contains("newer snapshot"),
+        "a mixed drift is never treated as a snapshot-only skip; stdout:\n{out}"
+    );
+    // Having opened the gate, the run proceeds into corpus loading (the missing `--corpus` is
+    // now consulted and fails), the same short-circuit proof
+    // `canary_if_model_changed_runs_when_a_tier_resolved_model_repointed` uses for a single
+    // real repoint.
+    assert!(
+        !ok && err.contains("canary"),
+        "the gate opened and the run reached corpus loading; stderr:\n{err}"
+    );
+}
+
+/// Spec 18, criterion 8 (build provenance), updated for spec 74: `rigger version` and
+/// `rigger --version` must each report the go-gitsemver-derived version AND a
+/// build-provenance identifier - a git commit/describe id embedded at build time by
+/// `build.rs`. Without a self-serve version an agent cannot tell whether the installed
+/// binary matches the source, which is what makes the workflow-drift warning ambiguous.
+///
+/// Spec 74 delegates the reported version to `go-gitsemver` at compile time (falling back
+/// to the bare crate semver plus an explicit `+unversioned` marker whenever that tool
+/// cannot run) - see `build/gitsemver.rs`. The derived value need NOT contain
+/// `CARGO_PKG_VERSION` as a substring once a real derivation succeeds (e.g. several
+/// commits past the last tag bump the minor or major), so this test pins the CLI output
+/// against `RIGGER_GITSEMVER_VERSION` - the exact embedded value, whichever arm produced
+/// it - never against the bare crate version. The derived-version VALUE itself (successful
+/// derivation vs. the `+unversioned` fallback) is proven at the derivation seam by
+/// `tests/gitsemver_derivation.rs` against fixture repositories and the real binary; this
+/// test only pins that the CLI's `version_line()` routes through it end to end.
 ///
 /// The build script's `cargo:rustc-env` applies to this integration-test crate too, so the
-/// test can pin the exact embedded values: the crate version (`CARGO_PKG_VERSION`, identical
-/// across the binary and this crate in one build) and the provenance token
+/// test can pin the exact embedded values: the derived version (`RIGGER_GITSEMVER_VERSION`,
+/// identical across the binary and this crate in one build) and the provenance token
 /// (`RIGGER_BUILD_PROVENANCE`, which `build.rs` guarantees non-empty). Both invocations must
 /// print BOTH, and must agree byte-for-byte so the two entry points cannot drift.
 #[test]
-fn version_and_dash_dash_version_report_crate_version_and_build_provenance() {
+fn version_and_dash_dash_version_report_the_derived_version_and_build_provenance() {
     let dir = temp_project();
     let root = dir.path();
 
-    let crate_version = env!("CARGO_PKG_VERSION");
+    let gitsemver_version = env!("RIGGER_GITSEMVER_VERSION");
     let provenance = env!("RIGGER_BUILD_PROVENANCE");
+    assert!(
+        !gitsemver_version.is_empty(),
+        "build.rs must embed a non-empty go-gitsemver-derived version"
+    );
     assert!(
         !provenance.is_empty(),
         "build.rs must embed a non-empty build-provenance id"
@@ -7848,8 +15678,8 @@ fn version_and_dash_dash_version_report_crate_version_and_build_provenance() {
         let (out, err, ok) = run_rigger(root, &invocation);
         assert!(ok, "`rigger {invocation:?}` must exit 0; stderr:\n{err}");
         assert!(
-            out.contains(crate_version),
-            "`rigger {invocation:?}` must report the crate version {crate_version}; stdout:\n{out}"
+            out.contains(gitsemver_version),
+            "`rigger {invocation:?}` must report the derived version {gitsemver_version}; stdout:\n{out}"
         );
         assert!(
             out.contains(provenance),
@@ -8198,16 +16028,132 @@ fn a_run_refuses_to_start_on_an_emit_only_gating_persona_and_starts_on_the_compl
     );
 }
 
-/// A currently-free loopback TCP port, found by binding an ephemeral port and immediately
-/// releasing it, so the spawned `rigger dash` binds successfully (never colliding with a
-/// parallel test or a real dash on `DEFAULT_PORT`) and is therefore a genuinely long-lived
-/// child rather than a process that exits on a bind conflict.
+/// Every loopback port THIS TEST BINARY has already handed out, in the order it handed them
+/// out. A TCP port is a process-global resource, so the record of which ones are already
+/// spoken for is process-global too - there is no caller to inject it into, because the
+/// resource being rationed is not owned by any caller.
+///
+/// It exists because a port a test has been HANDED is not a port the OS considers taken: a
+/// test reads an ephemeral port's number, releases the listener, and only then spawns the
+/// child that binds it, so between those two moments the OS is free to offer the very same
+/// port to a test running on another thread. Both then bind servers on one port: one wins,
+/// and the loser probes the WINNER's server. When the winner is one of this suite's
+/// deliberately silent holders, the loser's probe blocks to its read timeout and reports the
+/// server it spawned "never came up" - a red on an unchanged tree. The ledger closes exactly
+/// that window: a port handed out is never handed out again while its owner is still starting.
+static HANDED_OUT_LOOPBACK_PORTS: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
+
+/// How many ports [`reserved_loopback_listener`] will look at before giving up. Generous: a
+/// probe is only rejected when the OS offers a port this process ALREADY holds a reservation
+/// for, and needing more than this many fresh offers means the ephemeral range is exhausted -
+/// a machine condition a test must report, never quietly hand back a colliding port for.
+const LOOPBACK_PROBE_ATTEMPTS: usize = 128;
+
+/// The reservation decision itself, with the OS held at arm's length: keep asking `probe` for
+/// a port until it offers one absent from `handed_out`, record that one, and answer with it -
+/// or `None` when `attempts` offers were all already reserved.
+///
+/// `probe` yields `(port, holder)`: the port, and the live listener still HOLDING it, so a
+/// rejected offer is dropped (releasing the port) while the accepted one is handed on still
+/// bound. Pure with respect to the network - the caller supplies the binding - so the choice
+/// can be driven with an OS that offers the same port twice, which is the whole failure this
+/// exists to prevent and which no test can provoke from a real one on demand.
+fn reserve_first_unheld<H>(
+    handed_out: &mut Vec<u16>,
+    attempts: usize,
+    mut probe: impl FnMut() -> (u16, H),
+) -> Option<(u16, H)> {
+    (0..attempts).find_map(|_| {
+        let (port, holder) = probe();
+        (!handed_out.contains(&port)).then(|| {
+            handed_out.push(port);
+            (port, holder)
+        })
+    })
+}
+
+/// A bound loopback listener on a port no other test in this binary has been handed - the ONE
+/// authority every ephemeral bind in this file goes through, so no two tests are ever pointed
+/// at the same port (see [`HANDED_OUT_LOOPBACK_PORTS`]). Callers that need the port HELD (a
+/// deliberate non-dash holder) keep the returned listener; [`free_loopback_port`] drops it.
+fn reserved_loopback_listener() -> std::net::TcpListener {
+    // Poisoning carries no meaning here: the ledger is a plain list of numbers, consistent at
+    // every point a panic could unwind through, and a poisoned lock must not turn one test's
+    // failure into a cascade of unrelated ones.
+    let mut handed_out = HANDED_OUT_LOOPBACK_PORTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (_, listener) = reserve_first_unheld(&mut handed_out, LOOPBACK_PROBE_ATTEMPTS, || {
+        let listener =
+            std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind an ephemeral loopback port");
+        let port = listener.local_addr().expect("read the bound port").port();
+        (port, listener)
+    })
+    .unwrap_or_else(|| {
+        panic!(
+            "no loopback port free of this binary's own {} reservation(s) in \
+             {LOOPBACK_PROBE_ATTEMPTS} attempts - the ephemeral range is exhausted",
+            handed_out.len()
+        )
+    });
+    listener
+}
+
+/// A currently-free loopback TCP port, reserved for the caller and then released, so the
+/// server the caller spawns binds successfully (never colliding with a parallel test or a real
+/// dash on `DEFAULT_PORT`) and is therefore a genuinely long-lived child rather than a process
+/// that exits on a bind conflict.
 fn free_loopback_port() -> u16 {
-    std::net::TcpListener::bind(("127.0.0.1", 0))
-        .expect("bind an ephemeral loopback port")
+    reserved_loopback_listener()
         .local_addr()
         .expect("read the bound port")
         .port()
+}
+
+/// AN OS THAT OFFERS ONE PORT TWICE STILL HANDS TWO TESTS TWO PORTS.
+///
+/// The window this closes is not observable from the real network on demand - it needs the OS
+/// to re-offer a port between a test reading its number and the child binding it - so the
+/// choice is driven here against an OS that does exactly that, every time. Without the ledger
+/// both callers are handed `40001`, which is the shape that fails a green suite on an
+/// unchanged tree.
+#[test]
+fn a_loopback_port_already_handed_out_is_never_handed_out_a_second_time() {
+    let offers = [40001u16, 40001, 40002];
+    let mut offered = offers.iter().copied();
+    let mut probe = move || (offered.next().expect("the fixture offers enough ports"), ());
+
+    let mut handed_out = Vec::new();
+    let first = reserve_first_unheld(&mut handed_out, 8, &mut probe).expect("a first port");
+    let second = reserve_first_unheld(&mut handed_out, 8, &mut probe).expect("a second port");
+
+    assert_eq!(first.0, 40001, "the first caller takes the first offer");
+    assert_eq!(
+        second.0, 40002,
+        "the second caller must SKIP the re-offered {} and take the next free port",
+        first.0
+    );
+    assert_eq!(
+        handed_out,
+        vec![40001, 40002],
+        "both reservations are recorded, so a third caller skips them too"
+    );
+}
+
+/// A RESERVATION THAT CANNOT BE MADE IS REPORTED, NEVER FAKED.
+///
+/// Handing back a port the process already reserved would reintroduce the exact collision this
+/// authority exists to prevent, silently - so an exhausted probe answers `None` and the caller
+/// fails loudly instead.
+#[test]
+fn an_exhausted_probe_reserves_nothing_rather_than_re_handing_a_reserved_port() {
+    let mut handed_out = vec![40001u16];
+    let taken = reserve_first_unheld(&mut handed_out, 4, || (40001, ()));
+    assert!(
+        taken.is_none(),
+        "an OS with only an already-reserved port to offer must yield no reservation"
+    );
+    assert_eq!(handed_out, vec![40001], "and must record nothing new");
 }
 
 /// Spec 19b, unit 3 (no orphaned processes): a standalone long-lived `rigger` child - a
@@ -8221,7 +16167,7 @@ fn free_loopback_port() -> u16 {
 fn a_dropped_guard_reaps_a_standalone_rigger_dash() {
     use rigger::dash::ReapedChild;
     use std::io::Read;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     use std::time::Duration;
 
     // A repo-less/empty-store dir is enough: `rigger dash` reads an ABSENT events.db as an
@@ -8229,7 +16175,7 @@ fn a_dropped_guard_reaps_a_standalone_rigger_dash() {
     let proj = temp_project();
     let port = free_loopback_port();
 
-    let mut child = Command::new(rigger_bin())
+    let mut child = common::rigger_courier()
         .args(["dash", "--port", &port.to_string()])
         .current_dir(proj.path())
         .stdout(Stdio::piped())
@@ -8268,58 +16214,31 @@ fn a_dropped_guard_reaps_a_standalone_rigger_dash() {
     assert_eq!(n, 0, "a reaped `rigger dash` should have its stdout at EOF");
 }
 
-/// A minimal HTTP GET of a `http://127.0.0.1:<port>/` URL over a raw TCP socket (the test
-/// crate has no HTTP client), returning the response BODY on success. The dash answers with
-/// `Connection: close`, so `read_to_string` reads to EOF and terminates. Used to prove an
-/// auto-started dash is genuinely SERVING (not merely that a URL was recorded).
-fn http_get(url: &str) -> Option<String> {
-    use std::io::{Read, Write};
-    use std::time::{Duration, Instant};
-    let hostport = url.strip_prefix("http://")?.trim_end_matches('/');
-    // The dash's URL breadcrumb is written the instant the child is spawned, which can be
-    // BEFORE that child has bound its port - a connect during that startup window is refused.
-    // Retry the connect on a bounded deadline (the same poll-on-deadline pattern the caller
-    // already uses for the dash.url breadcrumb) so a transient connect-refused during startup
-    // is retried, not fatal; a connect that never succeeds within the deadline still fails
-    // LOUD (the safe direction), never a false green.
-    let deadline = Instant::now() + Duration::from_secs(15);
-    let mut stream = loop {
-        match std::net::TcpStream::connect(hostport) {
-            Ok(stream) => break stream,
-            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
-            Err(_) => return None,
-        }
-    };
-    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
-    write!(
-        stream,
-        "GET / HTTP/1.1\r\nHost: {hostport}\r\nConnection: close\r\n\r\n"
-    )
-    .ok()?;
-    let mut resp = String::new();
-    stream.read_to_string(&mut resp).ok()?;
-    let body_start = resp.find("\r\n\r\n").map(|i| i + 4).unwrap_or(0);
-    Some(resp[body_start..].to_string())
-}
+/// How long a probe keeps trying to get a complete response out of a just-spawned server
+/// before it gives up and reports that the server never came up.
+const SERVER_READY_SECS: u64 = 15;
 
-/// A minimal HTTP GET of an arbitrary `path` (e.g. `/api/instances`, `/api/state?instance=<id>`)
-/// on a loopback dash at `port`, returning the whole response (status line + headers + body) so a
-/// caller can assert BOTH the `200` status and the body content. Retries the connect on the same
-/// bounded startup deadline as [`http_get`], so a request during the dash's bind window is retried,
-/// never a false failure. `None` only when the dash never came up within the deadline.
-fn http_get_path(port: u16, path: &str) -> Option<String> {
+/// How long ONE attempt waits for the server to answer. Shorter than
+/// [`SERVER_READY_SECS`] on purpose: an attempt that stalls must leave the deadline room
+/// for further attempts, because "answered nothing yet" is what a server still coming up
+/// looks like.
+const ATTEMPT_READ_SECS: u64 = 3;
+
+/// ONE complete HTTP GET attempt of `path` at `hostport` over a raw TCP socket (the test
+/// crate has no HTTP client): connect, send, read to EOF, and answer with the WHOLE response
+/// (status line + headers + body). `None` means this ATTEMPT produced no complete response.
+///
+/// Every way an attempt can come up short is the same one answer - a refused connect, a
+/// failed write, a read that timed out, a peer that closed with nothing, or a reply with no
+/// header terminator - because to a caller probing a server that is still coming up they are
+/// all the same fact, and only [`http_probe`] decides when that stops being acceptable.
+fn http_attempt(hostport: &str, path: &str) -> Option<String> {
     use std::io::{Read, Write};
-    use std::time::{Duration, Instant};
-    let hostport = format!("127.0.0.1:{port}");
-    let deadline = Instant::now() + Duration::from_secs(15);
-    let mut stream = loop {
-        match std::net::TcpStream::connect(&hostport) {
-            Ok(stream) => break stream,
-            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
-            Err(_) => return None,
-        }
-    };
-    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+    use std::time::Duration;
+    let mut stream = std::net::TcpStream::connect(hostport).ok()?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(ATTEMPT_READ_SECS)))
+        .ok()?;
     write!(
         stream,
         "GET {path} HTTP/1.1\r\nHost: {hostport}\r\nConnection: close\r\n\r\n"
@@ -8327,7 +16246,53 @@ fn http_get_path(port: u16, path: &str) -> Option<String> {
     .ok()?;
     let mut resp = String::new();
     stream.read_to_string(&mut resp).ok()?;
-    Some(resp)
+    // A response without a header terminator is not a response: the peer accepted the
+    // connection and closed (or dribbled) without answering, which is a server that has not
+    // finished coming up, NOT a server that answered something unexpected.
+    resp.contains("\r\n\r\n").then_some(resp)
+}
+
+/// Poll `hostport` for `path` until a WHOLE response arrives, on a bounded deadline.
+///
+/// Bringing a server up is not one instant but a sequence - the child is spawned, then binds,
+/// then accepts, then answers - and a probe fired anywhere before the end of it comes back
+/// empty-handed for a reason that says nothing about whether the server works. Retrying only
+/// the CONNECT covers just the first of those steps: the kernel completes a handshake into the
+/// backlog the moment the port is bound, so a connect starts succeeding while the server is
+/// still too busy to answer, and a probe that gave up there reported a healthy server as dead
+/// on a loaded machine. So the whole exchange is what gets retried. A server that never
+/// answers within the deadline still fails LOUD (the safe direction), never a false green.
+fn http_probe(hostport: &str, path: &str) -> Option<String> {
+    use std::time::{Duration, Instant};
+    let deadline = Instant::now() + Duration::from_secs(SERVER_READY_SECS);
+    loop {
+        if let Some(resp) = http_attempt(hostport, path) {
+            return Some(resp);
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// A minimal HTTP GET of a `http://127.0.0.1:<port>/` URL, returning the response BODY on
+/// success. The dash answers with `Connection: close`, so the read runs to EOF and terminates.
+/// Used to prove an auto-started dash is genuinely SERVING (not merely that a URL was
+/// recorded). `None` only when the server never answered within [`http_probe`]'s deadline.
+fn http_get(url: &str) -> Option<String> {
+    let hostport = url.strip_prefix("http://")?.trim_end_matches('/');
+    let resp = http_probe(hostport, "/")?;
+    let body_start = resp.find("\r\n\r\n").map(|i| i + 4).unwrap_or(0);
+    Some(resp[body_start..].to_string())
+}
+
+/// A minimal HTTP GET of an arbitrary `path` (e.g. `/api/instances`, `/api/state?instance=<id>`)
+/// on a loopback dash at `port`, returning the whole response (status line + headers + body) so a
+/// caller can assert BOTH the `200` status and the body content. Polled on the same bounded
+/// startup deadline as [`http_get`]; `None` only when the dash never came up within it.
+fn http_get_path(port: u16, path: &str) -> Option<String> {
+    http_probe(&format!("127.0.0.1:{port}"), path)
 }
 
 /// Spec 19b, unit 1 (always-on dash + discoverability): whenever a driver has a run in
@@ -8341,7 +16306,7 @@ fn http_get_path(port: u16, path: &str) -> Option<String> {
 #[test]
 fn a_run_driver_auto_starts_a_reachable_dash_with_a_url_shown_in_status() {
     use std::io::Read;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     use std::time::{Duration, Instant};
 
     // A compliant git project a driver can start a run on: `grounder: nop` and a persona
@@ -8358,7 +16323,7 @@ fn a_run_driver_auto_starts_a_reachable_dash_with_a_url_shown_in_status() {
     // Start the workflow driver with its MCP stdin held OPEN, so the process stays a live run
     // in flight. NO opt-in flag is passed: the dash must come up regardless. `--base HEAD`
     // anchors the run branch off the repo's lone commit.
-    let mut child = Command::new(rigger_bin())
+    let mut child = common::rigger_courier()
         .args(["serve", "--base", "HEAD"])
         .current_dir(root)
         // Redirect the machine-global registry (spec 50, criterion 2) into the test's own temp
@@ -8419,6 +16384,513 @@ fn a_run_driver_auto_starts_a_reachable_dash_with_a_url_shown_in_status() {
     // Tear down: close MCP stdin so the driver finishes and reaps its dash.
     drop(child.stdin.take());
     let _ = child.wait();
+}
+
+/// Spec 69, criterion 4 ("`rigger status` never lies about the dash"): a recorded dash URL
+/// backed by a marker naming a port NOTHING serves is a stale breadcrumb from a crashed or
+/// killed dash - status must withhold the URL and print the truthful not-serving line instead,
+/// naming the marker's pid and both self-heal paths. No real dash or driver is started here;
+/// the store is seeded directly (as `release_ready_*` do) and the marker's port is one
+/// `free_loopback_port` reserved-then-released, so it is genuinely unbound at status-read time.
+#[test]
+fn status_reports_not_serving_when_the_recorded_marker_names_a_dead_dash() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+
+    let port = free_loopback_port();
+    let rigger_dir = root.join(".rigger");
+    std::fs::write(
+        rigger_dir.join("dash.url"),
+        format!("http://127.0.0.1:{port}/"),
+    )
+    .unwrap();
+    // The on-disk marker format is `port\npid\n` (`dash::DashMarker::serialize`).
+    std::fs::write(rigger_dir.join("dash.marker"), format!("{port}\n4242\n")).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["status"]);
+    assert!(ok, "rigger status must succeed; stderr:\n{err}");
+    assert!(
+        !out.contains(&format!("http://127.0.0.1:{port}/")),
+        "a dead marker must withhold the stale URL, never print it; stdout:\n{out}"
+    );
+    assert!(
+        out.contains("dashboard: not serving (marker names dead pid 4242)"),
+        "status must print the truthful not-serving line naming the marker's pid; stdout:\n{out}"
+    );
+    assert!(
+        out.contains("run 'rigger dash' or the next step restarts it"),
+        "the not-serving line must name both self-heal paths; stdout:\n{out}"
+    );
+
+    // `--json` carries the SAME truth (round 2: a real, testable assertion, not a vacuous
+    // one) - a `"dashboard"` object naming `"not_serving"` and the dead pid is appended to
+    // the (here empty) in-flight-agent array; the dead URL never appears anywhere in it.
+    let (json_out, json_err, json_ok) = run_rigger(root, &["status", "--json"]);
+    assert!(
+        json_ok,
+        "rigger status --json must succeed; stderr:\n{json_err}"
+    );
+    assert!(
+        !json_out.contains(&format!("http://127.0.0.1:{port}/")),
+        "`--json` must never carry the dead URL either; stdout:\n{json_out}"
+    );
+    let json_value: serde_json::Value = serde_json::from_str(&json_out)
+        .unwrap_or_else(|e| panic!("`--json` must print valid JSON: {e}; stdout:\n{json_out}"));
+    assert_eq!(
+        json_value,
+        serde_json::json!([{"dashboard": {"status": "not_serving", "pid": 4242}}]),
+        "`--json` must carry the not-serving truth as an appended dashboard entry; \
+         stdout:\n{json_out}"
+    );
+}
+
+/// Round 5 (adj-u62c1r4-verdict-reject-sentinel-pid-leaks-to-status,
+/// sdet-u62c1r4-display-only-still-violates-spec69c4-literal-text): the sibling above proves a
+/// REAL dead pid renders truthfully; this proves the [`dash::UNATTRIBUTED_PID`] SENTINEL (spec
+/// 62 round 4 - written by `spawn_run_dashboard_detached` when a port was confirmed serving but
+/// the real serving process could not be attributed) never renders as a fabricated "dead pid 0"
+/// once that same port has since stopped serving. Before this fix, `rigger status` printed
+/// literally that - a lie, since `0` is never a real, assigned, dying process pid - a direct
+/// violation of spec 69 criterion 4's "never lies about the dash" text. This must render
+/// EXACTLY like the no-matching-marker case: no pid named at all, in both the text line and
+/// `--json`'s `"pid"` field.
+#[test]
+fn status_never_names_the_unattributed_pid_sentinel_as_a_dead_process() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+
+    let port = free_loopback_port();
+    let rigger_dir = root.join(".rigger");
+    std::fs::write(
+        rigger_dir.join("dash.url"),
+        format!("http://127.0.0.1:{port}/"),
+    )
+    .unwrap();
+    // The documented sentinel (`dash::UNATTRIBUTED_PID` == 0), on-disk in the same
+    // `port\npid\n` shape `spawn_run_dashboard_detached` actually writes it in.
+    std::fs::write(rigger_dir.join("dash.marker"), format!("{port}\n0\n")).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["status"]);
+    assert!(ok, "rigger status must succeed; stderr:\n{err}");
+    assert!(
+        !out.contains(&format!("http://127.0.0.1:{port}/")),
+        "a dead marker must withhold the stale URL, never print it; stdout:\n{out}"
+    );
+    assert!(
+        !out.contains("marker names dead pid"),
+        "the sentinel pid must never be printed as a fabricated dead process - it was never a \
+         real, assigned pid; stdout:\n{out}"
+    );
+    assert!(
+        out.contains("dashboard: not serving (recorded url is unreachable)"),
+        "a sentinel-pid marker must render exactly like the no-matching-marker case; \
+         stdout:\n{out}"
+    );
+
+    let (json_out, json_err, json_ok) = run_rigger(root, &["status", "--json"]);
+    assert!(
+        json_ok,
+        "rigger status --json must succeed; stderr:\n{json_err}"
+    );
+    let json_value: serde_json::Value = serde_json::from_str(&json_out)
+        .unwrap_or_else(|e| panic!("`--json` must print valid JSON: {e}; stdout:\n{json_out}"));
+    assert_eq!(
+        json_value,
+        serde_json::json!([{"dashboard": {"status": "not_serving", "pid": null}}]),
+        "`--json` must carry `null`, never the sentinel `0`, as the pid; stdout:\n{json_out}"
+    );
+}
+
+/// Spec 69, criterion 4 - the SIBLING of the not-serving proof above, and the one branch no
+/// unit test can reach: `dash_status`'s own unit test injects a stand-in `still_serving`
+/// closure, so it proves the DECISION but never the WIRING - that `cmd_status` reads a real
+/// on-disk marker and hands its port to the real `dash::dash_serving_on` TCP probe. A real
+/// standalone `rigger dash` is spawned (as `a_dropped_guard_reaps_a_standalone_rigger_dash`
+/// does) so the marker names a port something GENUINELY answers; `rigger status` (a separate
+/// process) must keep trusting and printing the URL exactly as it did before this criterion,
+/// never confusing a live marker for a dead one.
+#[test]
+fn status_shows_the_url_when_the_recorded_marker_names_a_genuinely_serving_dash() {
+    use std::process::Stdio;
+
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+
+    let port = free_loopback_port();
+    let mut dash = common::rigger_courier()
+        .args(["dash", "--port", &port.to_string()])
+        .current_dir(root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn `rigger dash`");
+    // Wait for it to actually come up before writing its pid into the marker - a marker
+    // written before the dash finishes binding would race `dash_serving_on`'s probe.
+    if http_probe(&format!("127.0.0.1:{port}"), "/").is_none() {
+        let _ = dash.kill();
+        let _ = dash.wait();
+        panic!("the standalone `rigger dash` never came up on port {port}");
+    }
+    let pid = dash.id();
+
+    let rigger_dir = root.join(".rigger");
+    let url = format!("http://127.0.0.1:{port}/");
+    std::fs::write(rigger_dir.join("dash.url"), &url).unwrap();
+    // Same on-disk marker format as the not-serving sibling test above, but naming a port and
+    // pid that genuinely answer.
+    std::fs::write(rigger_dir.join("dash.marker"), format!("{port}\n{pid}\n")).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["status"]);
+    // `--json` carries the SAME truth (spec 69, criterion 4's third clause), so it is proven
+    // here too, before the dash is torn down (the JSON path probes the real marker port just
+    // as the text path does).
+    let (json_out, json_err, json_ok) = run_rigger(root, &["status", "--json"]);
+    let _ = dash.kill();
+    let _ = dash.wait();
+
+    assert!(ok, "rigger status must succeed; stderr:\n{err}");
+    assert!(
+        out.contains(&format!("dashboard: {url}")),
+        "a marker proven serving must keep the recorded URL trusted and shown, unchanged from \
+         before this criterion; stdout:\n{out}"
+    );
+
+    assert!(
+        json_ok,
+        "rigger status --json must succeed; stderr:\n{json_err}"
+    );
+    let json_value: serde_json::Value = serde_json::from_str(&json_out)
+        .unwrap_or_else(|e| panic!("`--json` must print valid JSON: {e}; stdout:\n{json_out}"));
+    assert_eq!(
+        json_value,
+        serde_json::json!([{"dashboard": {"status": "serving", "url": url}}]),
+        "`--json` must carry the serving truth as an appended dashboard entry; \
+         stdout:\n{json_out}"
+    );
+}
+
+/// Spec 69, criterion 4, round 2 (adv-u69c4-dash-status-verifies-wrong-port): a marker naming
+/// a DIFFERENT port than the recorded url describes some OTHER dash - two independent
+/// dash-starting paths write `dash.url` and `dash.marker` separately (one records a URL alone
+/// on a free-searched port, the other records both together on a fixed port) and neither is
+/// ever cleared, so a project that has used both can be left with breadcrumbs naming two
+/// different dashes. `dash_status`'s own unit test proves the DECISION in isolation; this
+/// proves the WIRING - that `cmd_status` reads the real on-disk pair and never lets a
+/// mismatched marker's own port/pid stand in for proof about the recorded url. The url's OWN
+/// port is a REAL, standalone `rigger dash` here (not just an unbound port), so this proves the
+/// round-1 harmful direction stays closed: a mismatched marker must never suppress a
+/// genuinely-alive url just because the marker itself points elsewhere.
+#[test]
+fn status_trusts_a_genuinely_alive_url_even_with_a_mismatched_marker() {
+    use std::process::Stdio;
+
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+
+    let url_port = free_loopback_port();
+    let mut dash = common::rigger_courier()
+        .args(["dash", "--port", &url_port.to_string()])
+        .current_dir(root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn `rigger dash`");
+    if http_probe(&format!("127.0.0.1:{url_port}"), "/").is_none() {
+        let _ = dash.kill();
+        let _ = dash.wait();
+        panic!("the standalone `rigger dash` never came up on port {url_port}");
+    }
+
+    let marker_port = free_loopback_port();
+    assert_ne!(
+        url_port, marker_port,
+        "the shared free_loopback_port ledger guarantees distinct ports"
+    );
+
+    let rigger_dir = root.join(".rigger");
+    let url = format!("http://127.0.0.1:{url_port}/");
+    std::fs::write(rigger_dir.join("dash.url"), &url).unwrap();
+    // A stale breadcrumb from the OTHER dash-starting path: a different, unbound port - the
+    // pid is a placeholder, never consulted (a mismatched marker's own port/pid play no part
+    // in the decision at all; only the url's own port is probed).
+    std::fs::write(
+        rigger_dir.join("dash.marker"),
+        format!("{marker_port}\n4242\n"),
+    )
+    .unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["status"]);
+    let (json_out, json_err, json_ok) = run_rigger(root, &["status", "--json"]);
+    let _ = dash.kill();
+    let _ = dash.wait();
+
+    assert!(ok, "rigger status must succeed; stderr:\n{err}");
+    assert!(
+        out.contains(&format!("dashboard: {url}")),
+        "a mismatched marker must never suppress a genuinely-alive url; stdout:\n{out}"
+    );
+    assert!(
+        !out.contains("not serving"),
+        "a mismatched marker must never be read as proof this url is dead - the false \
+         not-serving lie that would hide a working dashboard; stdout:\n{out}"
+    );
+
+    assert!(
+        json_ok,
+        "rigger status --json must succeed; stderr:\n{json_err}"
+    );
+    let json_value: serde_json::Value = serde_json::from_str(&json_out)
+        .unwrap_or_else(|e| panic!("`--json` must print valid JSON: {e}; stdout:\n{json_out}"));
+    assert_eq!(
+        json_value,
+        serde_json::json!([{"dashboard": {"status": "serving", "url": url}}]),
+        "`--json` must carry the SAME genuinely-alive truth; stdout:\n{json_out}"
+    );
+}
+
+/// Spec 69, criterion 4, round 3 (adv-u69c4r2-mismatched-marker-still-trusts-a-dead-url): the
+/// round-2 fix filtered a mismatched marker to "no marker" and fell into the SAME
+/// unconditional-trust branch a genuinely absent marker uses, so a genuinely DEAD recorded url
+/// paired with a mismatched-but-otherwise-live marker sailed straight through as trusted -
+/// EMPIRICALLY REPRODUCED against the built binary by the round-2 adversary. This proves the
+/// WIRING of the fix: `dash.url` names a port NOTHING serves (genuinely dead - no real dash
+/// bound there, unlike the round-2 test's two unbound-on-both-sides construction, which never
+/// actually exercised a probe of the url's own liveness), while `dash.marker` names a REAL,
+/// standalone, genuinely-alive `rigger dash` on a different port - so trusting the marker's own
+/// liveness for anything about the url would be exactly backwards. `rigger status` must
+/// withhold the dead url and print the truthful not-serving line, WITHOUT naming a pid (the
+/// marker's pid belongs to that other, genuinely-alive dash - printing it as "dead" here would
+/// be a second lie in the opposite direction).
+#[test]
+fn status_reports_not_serving_when_a_mismatched_marker_leaves_a_dead_url_unverified() {
+    use std::process::Stdio;
+
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+
+    let url_port = free_loopback_port();
+    let marker_port = free_loopback_port();
+    assert_ne!(
+        url_port, marker_port,
+        "the shared free_loopback_port ledger guarantees distinct ports"
+    );
+
+    let mut dash = common::rigger_courier()
+        .args(["dash", "--port", &marker_port.to_string()])
+        .current_dir(root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn `rigger dash`");
+    if http_probe(&format!("127.0.0.1:{marker_port}"), "/").is_none() {
+        let _ = dash.kill();
+        let _ = dash.wait();
+        panic!("the standalone `rigger dash` never came up on port {marker_port}");
+    }
+    let marker_pid = dash.id();
+
+    let rigger_dir = root.join(".rigger");
+    // Genuinely dead: url_port was reserved-then-released by `free_loopback_port` and nothing
+    // else binds it, so it is unbound at status-read time.
+    let url = format!("http://127.0.0.1:{url_port}/");
+    std::fs::write(rigger_dir.join("dash.url"), &url).unwrap();
+    // Names the OTHER, genuinely-alive dash - a real, live, but unrelated pid/port.
+    std::fs::write(
+        rigger_dir.join("dash.marker"),
+        format!("{marker_port}\n{marker_pid}\n"),
+    )
+    .unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["status"]);
+    let (json_out, json_err, json_ok) = run_rigger(root, &["status", "--json"]);
+    let _ = dash.kill();
+    let _ = dash.wait();
+
+    assert!(ok, "rigger status must succeed; stderr:\n{err}");
+    assert!(
+        !out.contains(&url),
+        "a genuinely dead url must never be printed as trusted, even with a live-but-\
+         mismatched marker recorded; stdout:\n{out}"
+    );
+    assert!(
+        out.contains(
+            "dashboard: not serving (recorded url is unreachable) - run 'rigger \
+                       dash' or the next step restarts it"
+        ),
+        "status must print the truthful not-serving line, naming no pid (the mismatched \
+         marker's pid belongs to a different, live dash); stdout:\n{out}"
+    );
+    assert!(
+        !out.contains(&marker_pid.to_string()),
+        "the mismatched marker's pid must never be printed as though it belonged to this \
+         dead url; stdout:\n{out}"
+    );
+
+    assert!(
+        json_ok,
+        "rigger status --json must succeed; stderr:\n{json_err}"
+    );
+    let json_value: serde_json::Value = serde_json::from_str(&json_out)
+        .unwrap_or_else(|e| panic!("`--json` must print valid JSON: {e}; stdout:\n{json_out}"));
+    assert_eq!(
+        json_value,
+        serde_json::json!([{"dashboard": {"status": "not_serving", "pid": null}}]),
+        "`--json` must carry the same truth: not serving, with no fabricated pid; \
+         stdout:\n{json_out}"
+    );
+}
+
+/// Spec 69, criterion 4's third clause, the baseline: a project that has never recorded a
+/// dash gets `--json` output BYTE-IDENTICAL to before this criterion - a bare array of the
+/// in-flight agents (empty here, nothing in flight), with no `"dashboard"` entry appended.
+/// `dash_status_json` returning `None` for [`dash::DashStatus::Absent`] is proven in isolation
+/// by the unit test in `src/main.rs`; this proves the wiring never appends an entry when
+/// `cmd_status` has nothing to report.
+#[test]
+fn status_json_appends_no_dashboard_entry_when_none_was_ever_recorded() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+
+    let (json_out, err, ok) = run_rigger(root, &["status", "--json"]);
+    assert!(ok, "rigger status --json must succeed; stderr:\n{err}");
+    assert_eq!(
+        json_out.trim(),
+        "[]",
+        "no recorded dash and no in-flight agents -> the unchanged empty array, byte-identical \
+         to before this criterion; stdout:\n{json_out}"
+    );
+}
+
+/// Spec 69, criterion 4's third clause, the case every `--json` test above left untried: a
+/// POPULATED in-flight-agent array with the dashboard entry appended alongside it - the exact
+/// shape `workflows/rigger.js`'s liveness courier (`livenessAgeSeconds`, line 218) parses in
+/// production (`Array.isArray(arr) ? arr.find(a => a.id === id) : null`). Every prior `--json`
+/// test in this file seeds NO in-flight spawn, so the append onto a real, non-empty array -
+/// the actual shape the courier reads - was untested: a bug that corrupted an EXISTING entry
+/// while appending (or appended before rather than after, or let the dashboard entry's lack
+/// of an `id` key collide with a real spawn id) would have passed every existing assertion
+/// here. This seeds one real in-flight spawn (a `SpawnRequested` with no matching result, the
+/// exact frontier shape `progress::consolidate` reads) alongside a trusted recorded dash URL
+/// (no marker - the unverified-but-trusted path, so no real dash process is needed to prove
+/// this particular seam), and proves: the array keeps EXACTLY the agent entry's fields
+/// untouched, the dashboard object is the one APPENDED entry, and a courier doing the real
+/// `arr.find(a => a.id === id)` lookup finds the agent - never the dashboard object, which
+/// carries no `id` at all.
+#[test]
+fn status_json_appends_the_dashboard_entry_after_a_real_in_flight_agent() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["c"]}"#),
+            (
+                "SpawnRequested",
+                r#"{"id":"a/implementer#0","unit":"a","stage":"implementer","prompt":"do it"}"#,
+            ),
+        ],
+    );
+
+    let port = free_loopback_port();
+    let url = format!("http://127.0.0.1:{port}/");
+    std::fs::write(root.join(".rigger").join("dash.url"), &url).unwrap();
+
+    let (json_out, err, ok) = run_rigger(root, &["status", "--json"]);
+    assert!(ok, "rigger status --json must succeed; stderr:\n{err}");
+    let json_value: serde_json::Value = serde_json::from_str(&json_out)
+        .unwrap_or_else(|e| panic!("`--json` must print valid JSON: {e}; stdout:\n{json_out}"));
+    let arr = json_value
+        .as_array()
+        .unwrap_or_else(|| panic!("`--json` must print a bare array; stdout:\n{json_out}"));
+    assert_eq!(
+        arr.len(),
+        2,
+        "one real in-flight agent plus one appended dashboard entry, never fewer or more \
+         (a corrupting append would drop or duplicate an entry); stdout:\n{json_out}"
+    );
+
+    // The exact lookup `workflows/rigger.js:218` performs: `arr.find(a => a.id === id)`. It
+    // must find the REAL agent entry, with its fields untouched by the append, and it must
+    // never match the dashboard entry (which carries no `id` field at all).
+    let agent = arr
+        .iter()
+        .find(|a| a.get("id").and_then(|v| v.as_str()) == Some("a/implementer#0"))
+        .unwrap_or_else(|| {
+            panic!(
+                "the courier's `arr.find(a => a.id === id)` must locate the real in-flight \
+                 agent, untouched by the dashboard append; stdout:\n{json_out}"
+            )
+        });
+    assert_eq!(
+        agent.get("unit").and_then(|v| v.as_str()),
+        Some("a"),
+        "the agent entry's own fields must survive the append unchanged; stdout:\n{json_out}"
+    );
+    assert_eq!(
+        agent.get("stage").and_then(|v| v.as_str()),
+        Some("implementer"),
+        "the agent entry's own fields must survive the append unchanged; stdout:\n{json_out}"
+    );
+    assert!(
+        agent.get("dashboard").is_none(),
+        "the real agent entry must never carry a `dashboard` key; stdout:\n{json_out}"
+    );
+
+    // The dashboard entry itself: present, carries the trusted url, and is the one OTHER
+    // array element (never confusable with the agent entry above - neither key overlaps).
+    let dashboard = arr
+        .iter()
+        .find(|a| a.get("dashboard").is_some())
+        .unwrap_or_else(|| {
+            panic!("the appended dashboard entry must be present; stdout:\n{json_out}")
+        });
+    assert_eq!(
+        dashboard,
+        &serde_json::json!({"dashboard": {"status": "serving", "url": url}}),
+        "the appended dashboard entry must carry the trusted url, coexisting with the real \
+         agent entry; stdout:\n{json_out}"
+    );
+    assert!(
+        dashboard.get("id").is_none(),
+        "the dashboard entry must carry no `id` field, so it can never be mistaken for an \
+         agent by the courier's id lookup; stdout:\n{json_out}"
+    );
+}
+
+/// Spec 69, criterion 4, the human-readable sibling `status_json_appends_no_dashboard_entry_
+/// when_none_was_ever_recorded` above left unproven: [`dash::DashStatus::Absent`] renders to
+/// `None` and prints nothing is pinned in isolation by `dash_status_line`'s own unit test in
+/// `src/main.rs`, and the `--json` array stays byte-identical `[]` is proven end-to-end above -
+/// but nothing yet drove the REAL `cmd_status` text path (recorded-url lookup, marker read,
+/// `dash::dash_status`, then `dash_status_line`) through the built binary when a project has
+/// never recorded a dash at all. Every other status test in this file only asserts a line IS
+/// present via `contains`, so a wiring bug that wrongly printed a "dashboard:" line in the
+/// Absent case (e.g. probing a stray recorded url from a stale fixture, or a `None` mishandled
+/// as `NotServing`) would pass every existing assertion undetected.
+#[test]
+fn status_prints_no_dashboard_line_when_none_was_ever_recorded() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+
+    let (out, err, ok) = run_rigger(root, &["status"]);
+    assert!(ok, "rigger status must succeed; stderr:\n{err}");
+    assert!(
+        !out.contains("dashboard:"),
+        "no dash was ever recorded, so the text output must carry no dashboard line at all; \
+         stdout:\n{out}"
+    );
 }
 
 /// spec 22, criterion 2 (the ACCEPT arm - sibling to the refuse arm proven directly in
@@ -8539,6 +17011,63 @@ fn docs_renders_the_skill_and_handbook_with_code_facts_verbatim() {
     assert!(ok2);
     assert_eq!(std::fs::read_to_string(&skill_path).unwrap(), skill);
     assert_eq!(std::fs::read_to_string(&handbook_path).unwrap(), handbook);
+}
+
+/// Spec 68, criterion 1 (the render pipeline covers the WHOLE registry, end to end): `rigger
+/// docs` renders EVERY entry in `rigger::docs::skill_registry` - not only the pre-existing
+/// `using-rigger` skill the sibling test above drives, but the second, generalized entry
+/// `planning-a-spec` too - to its own committed path, carrying its own loadable frontmatter,
+/// its authoring recipe, AND the operator-binary prohibition every registry skill is stamped
+/// with structurally. Driving the real binary proves the registry generalization
+/// (`write_docs` looping over `skill_registry()`) actually reaches a SECOND skill, not just
+/// the one the pre-generalization implementation already handled - the class of regression an
+/// in-process unit test that only checks set membership (names/paths match) cannot catch: a
+/// loop that silently renders the first entry twice, or a path bug specific to a
+/// two-or-more-entry registry, would still satisfy a length/name check but ship the wrong
+/// bytes here.
+#[test]
+fn docs_renders_every_registry_skill_including_planning_a_spec() {
+    let proj = temp_project();
+    let root = proj.path();
+
+    let (stdout, stderr, ok) = run_rigger(root, &["docs"]);
+    assert!(ok, "rigger docs must succeed; stderr: {stderr}");
+    assert!(
+        stdout.contains("skills/planning-a-spec/SKILL.md"),
+        "rigger docs must report rendering the SECOND registry entry too; got: {stdout}"
+    );
+
+    let planning_path = root.join("skills/planning-a-spec/SKILL.md");
+    let planning = std::fs::read_to_string(&planning_path)
+        .expect("rigger docs must have written the planning-a-spec skill to disk");
+
+    assert!(
+        planning.starts_with("---\nname: planning-a-spec\n"),
+        "the second registry entry must open with its own loadable frontmatter; got: {}",
+        &planning[..planning.len().min(60)]
+    );
+    assert!(
+        planning.contains("**1. Ground the Goal in evidence.**")
+            && planning.contains("**7. Preflight, then launch.**"),
+        "the rendered planning-a-spec skill must carry its authoring recipe; got:\n{planning}"
+    );
+    // The operator-binary prohibition (spec 68, Design) is stamped on EVERY registry entry
+    // structurally, including a skill whose body carries no code-derived facts to interpolate.
+    assert!(
+        planning.contains("## Operator binary boundary")
+            && planning.contains("never installs, replaces, or modifies the operator's"),
+        "the rendered planning-a-spec skill must carry the operator-binary prohibition; \
+         got:\n{planning}"
+    );
+
+    // Byte-stable across runs (the drift check depends on it).
+    let (_o2, _e2, ok2) = run_rigger(root, &["docs"]);
+    assert!(ok2);
+    assert_eq!(
+        std::fs::read_to_string(&planning_path).unwrap(),
+        planning,
+        "a second render of the second registry entry must be byte-identical"
+    );
 }
 
 /// Spec 46, criterion 2 (the pre-run graph-hygiene guidance ships to CONSUMERS, end to
@@ -8759,6 +17288,224 @@ fn validate_fails_when_the_committed_using_rigger_docs_drift_and_passes_when_in_
     );
 }
 
+/// Spec 68, criterion 1 (the docs-drift GATE covers the WHOLE registry, end to end): `rigger
+/// validate` FAILS when the committed `planning-a-spec` skill - the second, generalized
+/// registry entry - drifts from a fresh render, even while the pre-existing `using-rigger`
+/// skill and the handbook stay perfectly in sync; and it stays SILENT about the untouched
+/// original entry. The sibling
+/// `validate_fails_when_the_committed_using_rigger_docs_drift_and_passes_when_in_sync` test
+/// proves the ORIGINAL entry is still gated; this one proves the gate was not merely widened
+/// to accept a second file without actually CHECKING it - a regression the implementer's own
+/// in-process `install_and_docs_each_cover_exactly_the_registry_no_more_no_less` unit test
+/// (which only proves `docs_drift`'s CALLER loops over the registry's names, not that each
+/// iteration's byte comparison is wired to the right file) would not catch.
+#[test]
+fn validate_docs_drift_gate_covers_the_second_registry_entry() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_o, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    let (_o, err, ok) = run_rigger(root, &["docs"]);
+    assert!(ok, "rigger docs must succeed; stderr:\n{err}");
+
+    let planning_path = root.join("skills/planning-a-spec/SKILL.md");
+    let using_rigger_path = root.join("skills/using-rigger/SKILL.md");
+    assert!(
+        planning_path.exists(),
+        "rigger docs must have written the second registry entry"
+    );
+
+    // IN SYNC -> validate passes.
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "validate must pass when every registry entry is in sync; stderr:\n{err}"
+    );
+
+    // Drift ONLY the second registry entry; the original entry and the handbook stay fresh.
+    append_line(&planning_path, "hand-edited line the render never emits");
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        !ok,
+        "validate must FAIL when the SECOND registry entry drifts, even though the original \
+         entry is untouched; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("skills/planning-a-spec/SKILL.md") && err.contains("rigger docs"),
+        "the drift failure must name the drifted second entry and the `rigger docs` fix; \
+         stderr:\n{err}"
+    );
+    assert!(
+        !err.contains("skills/using-rigger/SKILL.md"),
+        "the untouched original entry must NOT be reported as drifted; stderr:\n{err}"
+    );
+
+    // Re-render restores sync -> validate passes again (the gate is not stuck failing).
+    let (_o, _e, ok) = run_rigger(root, &["docs"]);
+    assert!(ok, "re-rendering the docs must succeed");
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "validate must pass again once the second entry's drift is re-rendered; stderr:\n{err}"
+    );
+    assert!(
+        using_rigger_path.exists(),
+        "the original entry was never touched and must still exist"
+    );
+}
+
+/// Spec 66, criterion 2 (the render pipeline covers the WHOLE handbook-page list, end to
+/// end): `rigger docs` renders EVERY entry in the binary's handbook-page list - not only the
+/// pre-existing `using-rigger.md` discipline chapter, but the second, generalized entry
+/// `docs/handbook/planning-field-guide.md` too - carrying its real failure-catalog content.
+/// This mirrors `docs_renders_every_registry_skill_including_planning_a_spec` (spec 68,
+/// criterion 1) one layer over: THAT test proves the SKILL registry's generalization reaches
+/// a second skill; this one proves the separate HANDBOOK-PAGE list's generalization reaches
+/// a second handbook page. Driving the real binary proves the whole composition path
+/// (docs_context -> render_planning_field_guide -> write) actually produces the committed
+/// file an author commits and the drift check re-renders against - the class of regression
+/// an in-process test that only checks the returned path list (names/paths match, but the
+/// loop silently re-renders entry 1 twice, or writes entry 2's bytes to entry 1's path)
+/// cannot catch.
+#[test]
+fn docs_renders_the_planning_field_guide_second_handbook_page() {
+    let proj = temp_project();
+    let root = proj.path();
+
+    let (stdout, stderr, ok) = run_rigger(root, &["docs"]);
+    assert!(ok, "rigger docs must succeed; stderr: {stderr}");
+    assert!(
+        stdout.contains("using-rigger.md") && stdout.contains("planning-field-guide.md"),
+        "rigger docs must report rendering BOTH handbook pages; got: {stdout}"
+    );
+
+    let handbook_path = root.join("docs/handbook/using-rigger.md");
+    let guide_path = root.join("docs/handbook/planning-field-guide.md");
+    assert!(
+        handbook_path.exists(),
+        "the pre-existing handbook chapter must still be rendered"
+    );
+    let handbook = std::fs::read_to_string(&handbook_path)
+        .expect("the pre-existing handbook chapter must still be readable");
+    let guide = std::fs::read_to_string(&guide_path)
+        .expect("rigger docs must have written the second handbook page to disk");
+
+    // The rendered file carries the field guide's real content, not a stub or the wrong
+    // entry's bytes: its title, its full F1-F9 failure catalog (every class, not a subset),
+    // the mid-run amendment protocol, and the measured-outcomes close.
+    assert!(
+        guide.starts_with("# Planning a loop run: the field guide"),
+        "the guide must open with its own title; got: {}",
+        &guide[..guide.len().min(60)]
+    );
+    for class in [
+        "### F1 - Duplicated or ambiguously-owned units",
+        "### F2 - Bundled criteria",
+        "### F3 - The self-contradictory spec",
+        "### F4 - Open dispositions",
+        "### F5 - State that lives in the wrong place",
+        "### F6 - Criteria that cannot survive verbatim copying",
+        "### F7 - Unpinned environment",
+        "### F8 - Infra noise misread as semantic failure",
+        "### F9 - Unbounded claim surface",
+    ] {
+        assert!(
+            guide.contains(class),
+            "the rendered guide must carry catalog class {class:?}; got:\n{guide}"
+        );
+    }
+    assert!(
+        guide.contains("## Amending a spec mid-run")
+            && guide.contains("## What good looks like, measured"),
+        "the rendered guide must carry the amendment protocol and the measured-outcomes \
+         close; got:\n{guide}"
+    );
+
+    // Byte-stable across runs (the drift check depends on it), and the untouched first entry
+    // is undisturbed by rendering the second.
+    let (_o2, _e2, ok2) = run_rigger(root, &["docs"]);
+    assert!(ok2);
+    assert_eq!(
+        std::fs::read_to_string(&guide_path).unwrap(),
+        guide,
+        "a second render of the second handbook-page entry must be byte-identical"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&handbook_path).unwrap(),
+        handbook,
+        "the untouched first entry is byte-identical after rendering the second"
+    );
+}
+
+/// Spec 66, criterion 2 (the docs-drift GATE covers the WHOLE handbook-page list, end to
+/// end): `rigger validate` FAILS when the committed planning field guide - the second entry
+/// in the binary's handbook-page list - drifts from a fresh render, even while the
+/// pre-existing `using-rigger.md` chapter and every registry skill stay perfectly in sync;
+/// and it stays SILENT about those untouched outputs. Mirrors
+/// `validate_docs_drift_gate_covers_the_second_registry_entry` (spec 68, criterion 1) for the
+/// separate handbook-page list: proves the drift gate was not merely widened to accept a
+/// second handbook file without actually CHECKING it byte-for-byte - a class the
+/// implementer's in-process `docs_drift` unit test (which drives `docs_drift` by calling the
+/// Rust function directly, never through the built binary's argument parsing and exit-code
+/// plumbing) cannot rule out.
+#[test]
+fn validate_docs_drift_gate_covers_the_planning_field_guide_page() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_o, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    let (_o, err, ok) = run_rigger(root, &["docs"]);
+    assert!(ok, "rigger docs must succeed; stderr:\n{err}");
+
+    let guide_path = root.join("docs/handbook/planning-field-guide.md");
+    let handbook_path = root.join("docs/handbook/using-rigger.md");
+    let skill_path = root.join("skills/using-rigger/SKILL.md");
+    assert!(
+        guide_path.exists(),
+        "rigger docs must have written the planning field guide handbook page"
+    );
+
+    // IN SYNC -> validate passes.
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "validate must pass when every handbook page is in sync; stderr:\n{err}"
+    );
+
+    // Drift ONLY the planning field guide; the pre-existing handbook and the skill stay fresh.
+    append_line(&guide_path, "hand-edited line the render never emits");
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        !ok,
+        "validate must FAIL when the planning field guide drifts, even though the original \
+         handbook chapter is untouched; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("docs/handbook/planning-field-guide.md") && err.contains("rigger docs"),
+        "the drift failure must name the drifted guide and the `rigger docs` fix; stderr:\n{err}"
+    );
+    assert!(
+        !err.contains("docs/handbook/using-rigger.md")
+            && !err.contains("skills/using-rigger/SKILL.md"),
+        "the untouched handbook chapter and skill must NOT be reported as drifted; stderr:\n{err}"
+    );
+
+    // Re-render restores sync -> validate passes again (the gate is not stuck failing).
+    let (_o, _e, ok) = run_rigger(root, &["docs"]);
+    assert!(ok, "re-rendering the docs must succeed");
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "validate must pass again once the guide's drift is re-rendered; stderr:\n{err}"
+    );
+    assert!(
+        handbook_path.exists() && skill_path.exists(),
+        "the untouched original entries were never disturbed and must still exist"
+    );
+}
+
 /// Spec 20, unit 3 (setup install + project overlay, end to end): `rigger setup` installs
 /// the rendered `using-rigger` skill as a file DISTINCT from the `/rigger` workflow, and a
 /// project overlay adds this repo's specifics (base branch, specs location) into the
@@ -8831,6 +17578,1209 @@ fn setup_installs_the_using_rigger_skill_with_project_overlay() {
         committed.contains("origin/main") && !committed.contains("origin/trunk"),
         "the committed shared source keeps the default base ref; the overlay only \
          customized the install"
+    );
+}
+
+/// Spec 68, criterion 1 (the INSTALL seam covers the WHOLE registry, end to end): `rigger
+/// setup` installs EVERY entry in the registry into the consumer project, not only the
+/// pre-existing `using-rigger` skill - `planning-a-spec` lands at its own installed path,
+/// carrying the operator-binary prohibition, and setup REPORTS installing it. A no-op rerun
+/// leaves the second entry untouched (no report line, no moved mtime), exactly like the
+/// original one. Driving the real binary proves the install seam (`install_skills` looping
+/// over `skill_registry()`) was actually generalized, not just the render/drift seams the
+/// sibling tests above cover - install is a THIRD, independent consumer of the registry (its
+/// own function, its own loop over `(name, InstallOutcome)` pairs), so a bug specific to that
+/// loop (installing only the first entry, or reusing one `InstallOutcome` across every entry)
+/// would pass every other test in this file and only show up here.
+#[test]
+fn setup_installs_every_registry_skill_into_the_consumer_project() {
+    let proj = temp_project();
+    let root = proj.path();
+
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+
+    let using_rigger_installed = root.join(".claude/skills/using-rigger/SKILL.md");
+    let planning_installed = root.join(".claude/skills/planning-a-spec/SKILL.md");
+    assert!(
+        using_rigger_installed.exists(),
+        "setup must still install the original registry entry"
+    );
+    assert!(
+        planning_installed.exists(),
+        "setup must ALSO install the second, generalized registry entry at \
+         .claude/skills/planning-a-spec/SKILL.md"
+    );
+    assert!(
+        out.contains("planning-a-spec skill")
+            && out.contains(".claude/skills/planning-a-spec/SKILL.md"),
+        "setup must report installing the second registry entry too; got:\n{out}"
+    );
+
+    let installed = std::fs::read_to_string(&planning_installed)
+        .expect("the second registry entry was installed");
+    assert!(
+        installed.starts_with("---\nname: planning-a-spec\n"),
+        "the installed second entry is a loadable skill; got: {}",
+        &installed[..installed.len().min(60)]
+    );
+    assert!(
+        installed.contains("## Operator binary boundary"),
+        "the installed second entry must carry the operator-binary prohibition too; \
+         got:\n{installed}"
+    );
+
+    // Re-running setup on an up-to-date project is a true no-op for BOTH entries, not just the
+    // original one - no file's mtime moves and no install/refresh line is printed for it.
+    let before = std::fs::metadata(&planning_installed)
+        .unwrap()
+        .modified()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let (out2, err2, ok2) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok2, "a no-op setup rerun must succeed; stderr:\n{err2}");
+    assert!(
+        !out2.contains("installed the planning-a-spec skill")
+            && !out2.contains("refreshed the drifted planning-a-spec skill"),
+        "an already-current second entry must not be reported as installed/refreshed; \
+         got:\n{out2}"
+    );
+    let after = std::fs::metadata(&planning_installed)
+        .unwrap()
+        .modified()
+        .unwrap();
+    assert_eq!(
+        before, after,
+        "an up-to-date second entry must not even move its mtime"
+    );
+}
+
+/// The five per-operation skill names spec 68, criterion 2 adds to the registry (rigger-docs,
+/// rigger-validate, and rigger-setup already loop over `skill_registry()` generically as of
+/// spec 68, criterion 1 - shared by the three tests below).
+const PER_OPERATION_SKILL_NAMES: [&str; 5] = [
+    "rigger-reset-store",
+    "rigger-build-graph",
+    "rigger-reindex",
+    "rigger-resume-a-run",
+    "rigger-handle-an-escalation",
+];
+
+/// Spec 68, criterion 2 (the render pipeline reaches all FIVE new registry entries, end to
+/// end): `rigger docs` renders every per-operation skill spec 68, criterion 2 adds - not just
+/// the pre-existing `using-rigger`/`planning-a-spec` pair the sibling tests above drive - each
+/// to its own committed `skills/<name>/SKILL.md` path, with its own loadable frontmatter and
+/// the structurally-stamped operator-binary prohibition. The sibling
+/// `docs_renders_every_registry_skill_including_planning_a_spec` test proved the render
+/// pipeline reaches a SECOND entry; it never drove the five entries THIS unit adds, so a
+/// path-wiring bug specific to one of them (skill_source_rel mapping a name to the wrong
+/// directory, or a registry entry silently dropped from the loop) would satisfy every existing
+/// binary-driving test and only show up here. The implementer's own in-process
+/// `write_docs_writes_every_registry_skill_plus_the_handbook` and
+/// `install_and_docs_each_cover_exactly_the_registry_no_more_no_less` tests (src/main.rs) call
+/// `write_docs`/`install_skills` directly in-process; this drives the actual COMPILED binary
+/// and reads back what it wrote to disk, which an in-process call cannot prove.
+#[test]
+fn docs_renders_every_per_operation_skill_through_the_compiled_binary() {
+    let proj = temp_project();
+    let root = proj.path();
+
+    let (stdout, stderr, ok) = run_rigger(root, &["docs"]);
+    assert!(ok, "rigger docs must succeed; stderr: {stderr}");
+
+    for name in PER_OPERATION_SKILL_NAMES {
+        let rel = format!("skills/{name}/SKILL.md");
+        assert!(
+            stdout.contains(&rel),
+            "rigger docs must report rendering {name} at {rel}; got: {stdout}"
+        );
+
+        let path = root.join(&rel);
+        let rendered = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("rigger docs must have written {rel}: {e}"));
+        assert!(
+            rendered.starts_with(&format!("---\nname: {name}\n")),
+            "{name}: must open with its own loadable frontmatter; got: {}",
+            &rendered[..rendered.len().min(60)]
+        );
+        assert!(
+            rendered.contains("## Procedure") && rendered.contains("## Anti-move"),
+            "{name}: rendered skill must carry its Procedure and Anti-move sections; \
+             got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("## Operator binary boundary")
+                && rendered.contains("never installs, replaces, or modifies the operator's"),
+            "{name}: rendered skill must carry the structurally-stamped operator-binary \
+             prohibition; got:\n{rendered}"
+        );
+
+        // Byte-stable across runs (the drift check the next test relies on depends on this).
+        let (_o2, _e2, ok2) = run_rigger(root, &["docs"]);
+        assert!(ok2, "a second `rigger docs` run must succeed");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            rendered,
+            "{name}: a second render must be byte-identical"
+        );
+    }
+}
+
+/// Spec 68, criterion 2 (the docs-drift GATE covers all FIVE new entries individually, end to
+/// end): `rigger validate` fails when exactly ONE per-operation skill has drifted, names that
+/// skill (and no other registry member), and passes again once it is re-rendered - proven for
+/// EACH of the five in turn, not just one representative. The sibling
+/// `validate_docs_drift_gate_covers_the_second_registry_entry` test proved the gate was
+/// genuinely wired (not just widened to accept a second file without checking it) for
+/// `planning-a-spec`; that same class of per-file wiring bug could affect any ONE of these
+/// five committed paths independently (`docs_drift` builds its check list by mapping each
+/// registry name through `skill_source_rel`, so a copy-paste mistake in that mapping for a
+/// single entry would only be caught by exercising that entry's own path, not by exercising
+/// any other).
+#[test]
+fn validate_docs_drift_gate_covers_each_per_operation_skill() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_o, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    let (_o, err, ok) = run_rigger(root, &["docs"]);
+    assert!(ok, "rigger docs must succeed; stderr:\n{err}");
+
+    // Baseline: every committed doc, including all five new entries, starts in sync.
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "validate must pass when every registry entry (including the five new ones) is in \
+         sync; stderr:\n{err}"
+    );
+
+    for name in PER_OPERATION_SKILL_NAMES {
+        let path = root.join(format!("skills/{name}/SKILL.md"));
+        assert!(
+            path.exists(),
+            "rigger docs must have written {name}'s skill"
+        );
+
+        append_line(&path, "hand-edited line the render never emits");
+        let (_out, err, ok) = run_rigger(root, &["validate"]);
+        assert!(!ok, "validate must FAIL when {name} drifts; stderr:\n{err}");
+        assert!(
+            err.contains(&format!("skills/{name}/SKILL.md")) && err.contains("rigger docs"),
+            "the drift failure must name the drifted {name} skill and the `rigger docs` fix; \
+             stderr:\n{err}"
+        );
+        for other in PER_OPERATION_SKILL_NAMES
+            .iter()
+            .filter(|other| **other != name)
+        {
+            assert!(
+                !err.contains(&format!("skills/{other}/SKILL.md")),
+                "{name} alone drifted, but the failure also names untouched {other}; \
+                 stderr:\n{err}"
+            );
+        }
+        assert!(
+            !err.contains("skills/using-rigger/SKILL.md")
+                && !err.contains("skills/planning-a-spec/SKILL.md"),
+            "{name} alone drifted, but the failure also names an untouched pre-existing \
+             registry entry; stderr:\n{err}"
+        );
+
+        // Re-render restores sync for every entry -> validate passes again before the next
+        // iteration drifts a different one.
+        let (_o, _e, ok) = run_rigger(root, &["docs"]);
+        assert!(ok, "re-rendering the docs must succeed");
+        let (_out, err, ok) = run_rigger(root, &["validate"]);
+        assert!(
+            ok,
+            "validate must pass again once {name}'s drift is re-rendered; stderr:\n{err}"
+        );
+    }
+}
+
+/// Spec 68, criterion 2 (the INSTALL seam reaches all FIVE new entries, end to end): `rigger
+/// setup` installs every per-operation skill into the consumer project at its own
+/// `.claude/skills/<name>/SKILL.md` path, carrying the operator-binary prohibition, and
+/// reports installing it; a no-op rerun leaves every one of them untouched (no report line, no
+/// moved mtime). The sibling `setup_installs_every_registry_skill_into_the_consumer_project`
+/// test proved the install seam (`install_skills` looping over `skill_registry()`) reaches a
+/// second entry; install is its own function with its own loop, independent from the
+/// docs/render and validate/drift seams the two tests above cover, so a bug specific to that
+/// loop (skipping an entry, or reusing one `InstallOutcome`/one rendered body across several
+/// entries) would pass every other test in this file and only show up by checking each
+/// installed file's own name and content here.
+#[test]
+fn setup_installs_every_per_operation_skill_into_the_consumer_project() {
+    let proj = temp_project();
+    let root = proj.path();
+
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+
+    let mut installed_before = Vec::new();
+    for name in PER_OPERATION_SKILL_NAMES {
+        let installed_path = root.join(format!(".claude/skills/{name}/SKILL.md"));
+        assert!(
+            installed_path.exists(),
+            "setup must install {name} at .claude/skills/{name}/SKILL.md"
+        );
+        assert!(
+            out.contains(&format!("installed the {name} skill"))
+                && out.contains(&format!(".claude/skills/{name}/SKILL.md")),
+            "setup must report installing {name}; got:\n{out}"
+        );
+
+        let installed = std::fs::read_to_string(&installed_path)
+            .unwrap_or_else(|e| panic!("{name} was installed: {e}"));
+        assert!(
+            installed.starts_with(&format!("---\nname: {name}\n")),
+            "the installed {name} skill must be loadable; got: {}",
+            &installed[..installed.len().min(60)]
+        );
+        assert!(
+            installed.contains("## Operator binary boundary"),
+            "the installed {name} skill must carry the operator-binary prohibition too; \
+             got:\n{installed}"
+        );
+
+        let mtime = std::fs::metadata(&installed_path)
+            .unwrap()
+            .modified()
+            .unwrap();
+        installed_before.push((name, installed_path, mtime));
+    }
+
+    // A no-op rerun leaves every one of the five untouched: no install/refresh report line,
+    // and not even a moved mtime.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let (out2, err2, ok2) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok2, "a no-op setup rerun must succeed; stderr:\n{err2}");
+    for (name, installed_path, before) in installed_before {
+        assert!(
+            !out2.contains(&format!("installed the {name} skill"))
+                && !out2.contains(&format!("refreshed the drifted {name} skill")),
+            "an already-current {name} must not be reported as installed/refreshed; \
+             got:\n{out2}"
+        );
+        let after = std::fs::metadata(&installed_path)
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert_eq!(
+            before, after,
+            "an up-to-date {name} must not even move its mtime"
+        );
+    }
+}
+
+/// The three watch-discipline skill names spec 69, criterion 1 adds to the registry
+/// (`rigger docs`, `rigger validate`, and `rigger setup` already loop over `skill_registry()`
+/// generically, as `PER_OPERATION_SKILL_NAMES`'s own comment above notes - shared by the
+/// three tests below, mirroring that const's own trio one family later).
+const WATCHING_DISCIPLINE_SKILL_NAMES: [&str; 3] = [
+    "rigger-watch-a-run",
+    "rigger-restore-the-dash",
+    "rigger-diagnose-churn",
+];
+
+/// Spec 69, criterion 1 (the render pipeline reaches all THREE new registry entries, end to
+/// end, through the COMPILED binary): `rigger docs` renders every watch-discipline skill to
+/// its own committed `skills/<name>/SKILL.md`, with its own loadable frontmatter, its
+/// Procedure/Anti-move sections, and the structurally-stamped operator-binary prohibition.
+/// The implementer's own in-process `write_docs_writes_every_registry_skill_plus_the_handbook`
+/// and `install_and_docs_each_cover_exactly_the_registry_no_more_no_less` tests (src/main.rs)
+/// call `write_docs`/`install_skills` directly in-process against `skill_registry()` itself,
+/// which proves the pipeline is registry-generic but can never prove what the COMPILED binary
+/// actually writes to disk for THESE three names specifically - the sibling
+/// `docs_renders_every_per_operation_skill_through_the_compiled_binary` test proved the
+/// binary-driven render pipeline for the five-member family added by spec 68; it never drove
+/// this family, so a path-wiring bug specific to one of these three (`skill_source_rel`
+/// mapping a name to the wrong directory, or a registry entry silently dropped from the
+/// loop) would satisfy every existing binary-driving test and only show up here. This test
+/// also pins each skill's own runtime-interpolated content (the five signal names and the
+/// poll interval `rigger-watch-a-run` reads from `crate::watch`, the hung-holder/singleton
+/// language `rigger-restore-the-dash` carries, and the finding-audit/infra-separation
+/// language `rigger-diagnose-churn` carries) all the way through the render-to-disk seam, not
+/// just the render function's own return value the unit tests already check in-process.
+#[test]
+fn docs_renders_every_watching_discipline_skill_through_the_compiled_binary() {
+    let proj = temp_project();
+    let root = proj.path();
+
+    let (stdout, stderr, ok) = run_rigger(root, &["docs"]);
+    assert!(ok, "rigger docs must succeed; stderr: {stderr}");
+
+    for name in WATCHING_DISCIPLINE_SKILL_NAMES {
+        let rel = format!("skills/{name}/SKILL.md");
+        assert!(
+            stdout.contains(&rel),
+            "rigger docs must report rendering {name} at {rel}; got: {stdout}"
+        );
+
+        let path = root.join(&rel);
+        let rendered = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("rigger docs must have written {rel}: {e}"));
+        assert!(
+            rendered.starts_with(&format!("---\nname: {name}\n")),
+            "{name}: must open with its own loadable frontmatter; got: {}",
+            &rendered[..rendered.len().min(60)]
+        );
+        assert!(
+            rendered.contains("## Procedure") && rendered.contains("## Anti-move"),
+            "{name}: rendered skill must carry its Procedure and Anti-move sections; \
+             got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("## Operator binary boundary")
+                && rendered.contains("never installs, replaces, or modifies the operator's"),
+            "{name}: rendered skill must carry the structurally-stamped operator-binary \
+             prohibition; got:\n{rendered}"
+        );
+
+        // Byte-stable across runs (the drift check the next test relies on depends on this).
+        let (_o2, _e2, ok2) = run_rigger(root, &["docs"]);
+        assert!(ok2, "a second `rigger docs` run must succeed");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            rendered,
+            "{name}: a second render must be byte-identical"
+        );
+    }
+
+    // Each skill's own runtime-pinned content reaches the file the compiled binary actually
+    // wrote - not just the render function's in-process return value.
+    let watch_a_run = std::fs::read_to_string(root.join("skills/rigger-watch-a-run/SKILL.md"))
+        .expect("rigger docs wrote rigger-watch-a-run");
+    for signal_name in [
+        "escalated blockers",
+        "heartbeat staleness",
+        "dash liveness",
+        "reject-recurrence trend",
+        "frontier progress",
+    ] {
+        assert!(
+            watch_a_run.contains(signal_name),
+            "rigger-watch-a-run on disk must name signal {signal_name:?}; got:\n{watch_a_run}"
+        );
+    }
+    assert!(
+        watch_a_run.contains("ARM") && watch_a_run.contains("rigger watch"),
+        "rigger-watch-a-run on disk must tell the reader to ARM `rigger watch`; \
+         got:\n{watch_a_run}"
+    );
+
+    let restore_the_dash =
+        std::fs::read_to_string(root.join("skills/rigger-restore-the-dash/SKILL.md"))
+            .expect("rigger docs wrote rigger-restore-the-dash");
+    assert!(
+        restore_the_dash.contains("HUNG-HOLDER") && restore_the_dash.contains("SINGLETON"),
+        "rigger-restore-the-dash on disk must carry the hung-holder and singleton diagnosis; \
+         got:\n{restore_the_dash}"
+    );
+    assert!(
+        restore_the_dash.contains("rigger dash"),
+        "rigger-restore-the-dash on disk must name the real restart command; \
+         got:\n{restore_the_dash}"
+    );
+
+    let diagnose_churn =
+        std::fs::read_to_string(root.join("skills/rigger-diagnose-churn/SKILL.md"))
+            .expect("rigger docs wrote rigger-diagnose-churn");
+    assert!(
+        diagnose_churn.contains("FINDING AUDIT")
+            && diagnose_churn.contains("SEPARATE")
+            && diagnose_churn.contains("INFRA"),
+        "rigger-diagnose-churn on disk must carry the finding-audit and infra-separation \
+         steps; got:\n{diagnose_churn}"
+    );
+    assert!(
+        diagnose_churn.contains("planning-a-spec") && diagnose_churn.contains("churn signature"),
+        "rigger-diagnose-churn on disk must cross-link the churn-signature table rather than \
+         duplicate it; got:\n{diagnose_churn}"
+    );
+}
+
+/// Spec 69, criterion 1 (the docs-drift GATE covers all THREE new entries individually, end
+/// to end, through the compiled binary): `rigger validate` fails when exactly ONE
+/// watch-discipline skill has drifted, names that skill (and no other registry member -
+/// neither a sibling watch-discipline skill nor a pre-existing entry from an earlier family),
+/// and passes again once it is re-rendered - proven for EACH of the three in turn. Mirrors
+/// the sibling `validate_docs_drift_gate_covers_each_per_operation_skill` test's rationale:
+/// `docs_drift` builds its check list by mapping each registry name through
+/// `skill_source_rel`, so a copy-paste mistake in that mapping for any ONE of these three
+/// entries would only be caught by exercising that entry's own path, not by exercising any
+/// other - and only a real subprocess run proves the compiled binary's exit status and
+/// stderr wording, which the implementer's in-process tests never invoke.
+#[test]
+fn validate_docs_drift_gate_covers_each_watching_discipline_skill() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_o, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    let (_o, err, ok) = run_rigger(root, &["docs"]);
+    assert!(ok, "rigger docs must succeed; stderr:\n{err}");
+
+    // Baseline: every committed doc, including all three watch-discipline entries, starts in
+    // sync.
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "validate must pass when every registry entry (including the three watch-discipline \
+         ones) is in sync; stderr:\n{err}"
+    );
+
+    for name in WATCHING_DISCIPLINE_SKILL_NAMES {
+        let path = root.join(format!("skills/{name}/SKILL.md"));
+        assert!(
+            path.exists(),
+            "rigger docs must have written {name}'s skill"
+        );
+
+        append_line(&path, "hand-edited line the render never emits");
+        let (_out, err, ok) = run_rigger(root, &["validate"]);
+        assert!(!ok, "validate must FAIL when {name} drifts; stderr:\n{err}");
+        assert!(
+            err.contains(&format!("skills/{name}/SKILL.md")) && err.contains("rigger docs"),
+            "the drift failure must name the drifted {name} skill and the `rigger docs` fix; \
+             stderr:\n{err}"
+        );
+        for other in WATCHING_DISCIPLINE_SKILL_NAMES
+            .iter()
+            .filter(|other| **other != name)
+        {
+            assert!(
+                !err.contains(&format!("skills/{other}/SKILL.md")),
+                "{name} alone drifted, but the failure also names untouched sibling {other}; \
+                 stderr:\n{err}"
+            );
+        }
+        for other in PER_OPERATION_SKILL_NAMES {
+            assert!(
+                !err.contains(&format!("skills/{other}/SKILL.md")),
+                "{name} alone drifted, but the failure also names an untouched \
+                 per-operation-family entry {other}; stderr:\n{err}"
+            );
+        }
+        assert!(
+            !err.contains("skills/using-rigger/SKILL.md")
+                && !err.contains("skills/planning-a-spec/SKILL.md"),
+            "{name} alone drifted, but the failure also names an untouched pre-existing \
+             registry entry; stderr:\n{err}"
+        );
+
+        // Re-render restores sync for every entry -> validate passes again before the next
+        // iteration drifts a different one.
+        let (_o, _e, ok) = run_rigger(root, &["docs"]);
+        assert!(ok, "re-rendering the docs must succeed");
+        let (_out, err, ok) = run_rigger(root, &["validate"]);
+        assert!(
+            ok,
+            "validate must pass again once {name}'s drift is re-rendered; stderr:\n{err}"
+        );
+    }
+}
+
+/// Spec 69, criterion 1 (the INSTALL seam reaches all THREE new entries, end to end, through
+/// the compiled binary): `rigger setup` installs every watch-discipline skill into the
+/// consumer project at its own `.claude/skills/<name>/SKILL.md` path, carrying the
+/// operator-binary prohibition, and reports installing it; a no-op rerun leaves every one of
+/// them untouched (no report line, no moved mtime). Mirrors the sibling
+/// `setup_installs_every_per_operation_skill_into_the_consumer_project` test's rationale:
+/// install is its own function with its own loop (`install_skills`), independent from the
+/// docs/render and validate/drift seams the two tests above cover, so a bug specific to that
+/// loop (skipping an entry, or reusing one `InstallOutcome`/one rendered body across several
+/// entries) would pass every other test in this file and only show up by checking each
+/// installed file's own name and content here.
+#[test]
+fn setup_installs_every_watching_discipline_skill_into_the_consumer_project() {
+    let proj = temp_project();
+    let root = proj.path();
+
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+
+    let mut installed_before = Vec::new();
+    for name in WATCHING_DISCIPLINE_SKILL_NAMES {
+        let installed_path = root.join(format!(".claude/skills/{name}/SKILL.md"));
+        assert!(
+            installed_path.exists(),
+            "setup must install {name} at .claude/skills/{name}/SKILL.md"
+        );
+        assert!(
+            out.contains(&format!("installed the {name} skill"))
+                && out.contains(&format!(".claude/skills/{name}/SKILL.md")),
+            "setup must report installing {name}; got:\n{out}"
+        );
+
+        let installed = std::fs::read_to_string(&installed_path)
+            .unwrap_or_else(|e| panic!("{name} was installed: {e}"));
+        assert!(
+            installed.starts_with(&format!("---\nname: {name}\n")),
+            "the installed {name} skill must be loadable; got: {}",
+            &installed[..installed.len().min(60)]
+        );
+        assert!(
+            installed.contains("## Operator binary boundary"),
+            "the installed {name} skill must carry the operator-binary prohibition too; \
+             got:\n{installed}"
+        );
+
+        let mtime = std::fs::metadata(&installed_path)
+            .unwrap()
+            .modified()
+            .unwrap();
+        installed_before.push((name, installed_path, mtime));
+    }
+
+    // A no-op rerun leaves every one of the three untouched: no install/refresh report line,
+    // and not even a moved mtime.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let (out2, err2, ok2) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok2, "a no-op setup rerun must succeed; stderr:\n{err2}");
+    for (name, installed_path, before) in installed_before {
+        assert!(
+            !out2.contains(&format!("installed the {name} skill"))
+                && !out2.contains(&format!("refreshed the drifted {name} skill")),
+            "an already-current {name} must not be reported as installed/refreshed; \
+             got:\n{out2}"
+        );
+        let after = std::fs::metadata(&installed_path)
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert_eq!(
+            before, after,
+            "an up-to-date {name} must not even move its mtime"
+        );
+    }
+}
+
+/// Spec 69, criterion 1 (WATCH SKILLS RENDER TRUE, proven against the ACTUAL compiled
+/// `rigger watch --once`, not merely trusted from the render function's own prose): whenever
+/// the COMMITTED `rigger-restore-the-dash` skill claims (verbatim) that "`rigger watch
+/// --once` ... verifies the recorded marker by actually probing its port, and prints a
+/// `dash liveness` line naming the dead PID when nothing answers there", that claim must be TRUE
+/// of the real binary, not merely asserted in prose - so this drives the real `rigger watch
+/// --once` through the exact "dead marker" scenario the skill describes (a
+/// `.rigger/dash.marker` naming a definitely-dead pid on a definitely-unbound loopback port,
+/// the same file `cmd_watch` actually reads) and checks the output against the skill's own
+/// literal promise. The check is GATED on the skill still making that specific claim (read
+/// fresh from the compiled binary's own `rigger docs` output) rather than fixed here as a
+/// hardcoded expectation: this test's job is proving the shipped PROSE never outruns the
+/// shipped CODE, not prescribing which of the two a future round corrects to close the gap -
+/// so a round that instead rewrites the claim to describe different real behavior leaves this
+/// test nothing to check, and it passes cleanly, exactly as it should. This is the corrected
+/// successor of an earlier version of this same test that pinned the identical promise
+/// against `rigger status` instead: `cmd_status` (src/main.rs) has no liveness check at all
+/// (that is sibling criterion u69c4's territory, not yet integrated here), so the skill text
+/// was rewritten to point operators at the check that is ALREADY true today - `rigger watch
+/// --once`, confirmed live above `cmd_watch`'s own marker-read-and-probe (src/main.rs, near
+/// `dash::DashMarker::read`/`dash::dash_serving_on`) - and this test now pins THAT claim
+/// instead of the one that no longer ships.
+/// `docs_renders_every_watching_discipline_skill_through_the_compiled_binary` above only
+/// proves the skill's rendered TEXT is stable and structurally complete; it cannot catch text
+/// describing a command behavior the command does not actually have, which is a boundary bug
+/// this criterion's own Done-when text ("command references accuracy-pinned") exists to catch
+/// one level deeper than a bare subcommand name.
+#[test]
+fn watch_once_output_matches_what_restore_the_dash_promises_about_a_dead_marker() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    let (_o, err, ok) = run_rigger(root, &["docs"]);
+    assert!(ok, "rigger docs must succeed; stderr:\n{err}");
+    let restore_the_dash =
+        std::fs::read_to_string(root.join("skills/rigger-restore-the-dash/SKILL.md"))
+            .expect("rigger docs wrote rigger-restore-the-dash");
+    let claims_watch_once_verifies_the_marker = restore_the_dash.contains(
+        "verifies the recorded marker by actually probing its port, and prints a `dash \
+         liveness` line naming the dead PID when nothing answers there",
+    );
+    if !claims_watch_once_verifies_the_marker {
+        // The shipped skill no longer makes this specific claim - nothing left to enforce.
+        return;
+    }
+
+    // A definitely-unbound loopback port (reserved-then-released, per this file's own
+    // `free_loopback_port` convention) and an impossible pid (`u32::MAX`, the same
+    // "impossible pid" value `pid_is_alive_reports_self_and_rejects_an_impossible_pid`,
+    // src/dash.rs, already pins) - so nothing on this machine answers on the port and no
+    // process holds the pid. `cmd_watch` reads ONLY `.rigger/dash.marker` for this signal
+    // (no `.rigger/dash.url` breadcrumb involved), so seeding just the marker exactly
+    // matches what the compiled binary actually consumes.
+    let dead_port = free_loopback_port();
+    let dead_pid = u32::MAX;
+    DashMarker {
+        port: dead_port,
+        pid: dead_pid,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the dash marker");
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 even with a dead dash marker; stderr:\n{err}"
+    );
+
+    // The skill's literal promise: a `dash liveness` line naming the dead pid.
+    assert!(
+        out.contains("dash liveness") && out.contains(&dead_pid.to_string()),
+        "rigger-restore-the-dash promises `rigger watch --once` prints a `dash liveness` \
+         line naming the dead pid {dead_pid} for a marker like this one - either the skill \
+         overclaims what the compiled binary does, or `rigger watch`'s own dash-liveness \
+         signal has regressed; got:\n{out}"
+    );
+}
+
+/// Round 5 (adj-u62c1r4-verdict-reject-sentinel-pid-leaks-to-status): the sibling above proves a
+/// REAL dead pid renders truthfully for the marker-only, no-`dash.url`-at-all arm (`watch_poll`'s
+/// `(None, Some(m))` match arm, src/main.rs) - the shape `rigger step`'s own drive path writes.
+/// That arm reads `m.pid` straight from the marker with no `dash::pid_if_port_matches` call in
+/// between (there is no url port to compare against), so it was NOT one of the two sites the
+/// round-4 reject named by line range, but it is the same leak: a marker carrying
+/// [`dash::UNATTRIBUTED_PID`] (spec 62 round 4's documented sentinel) would still render "marker
+/// names dead pid 0" here, the identical fabricated-process lie the round-4 reject called
+/// blocking. Proves the sentinel is filtered at this construction site too.
+#[test]
+fn watch_once_never_names_the_unattributed_pid_sentinel_when_no_url_is_recorded() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    let dead_port = free_loopback_port();
+    DashMarker {
+        port: dead_port,
+        pid: rigger::dash::UNATTRIBUTED_PID,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the sentinel-pid dash marker");
+    assert!(
+        !root.join(".rigger/dash.url").exists(),
+        "this fixture must leave no dash.url behind - that is the exact shape under test"
+    );
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 against a marker-only sentinel-pid dash; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("dash liveness") && out.contains(&dead_port.to_string()),
+        "the dead marker port itself is a genuine anomaly and must still be reported, sentinel \
+         pid or not; got:\n{out}"
+    );
+    assert!(
+        !out.contains("marker names dead pid"),
+        "the sentinel pid must never be printed as a fabricated dead process - it was never a \
+         real, assigned pid; got:\n{out}"
+    );
+    assert!(
+        out.contains("no matching marker, no pid"),
+        "a sentinel-pid marker must render exactly like the no-matching-marker case; got:\n{out}"
+    );
+}
+
+/// Round-3 reject cause (adv-u69c1r3-watch-once-inherits-marker-absent-blindspot), closed:
+/// the sibling test above only seeds `.rigger/dash.marker`, the shape ONLY the `rigger step`
+/// drive path ever writes. `rigger run` and `rigger serve` (`spawn_run_dashboard` /
+/// `spawn_run_dashboard_detached`, src/main.rs) write ONLY `.rigger/dash.url`, never a
+/// marker - 2 of the 3 real dash-launching drivers. Before the round-4 fix, `watch_poll`
+/// mapped an absent marker straight to `DashProbe::NotRecorded`, which `detect()` never
+/// turns into an anomaly, so `rigger watch --once` printed NOTHING for this exact,
+/// empirically-reproduced shape (verified by the round-3 adversary against the real
+/// binary). This drives that identical shape - a `dash.url` naming a definitely-unbound
+/// loopback port, with NO `dash.marker` file at all - through the real compiled binary and
+/// proves it now reports the dead dash, not silence.
+///
+/// Unlike its marker-present sibling, this is NOT gated on a specific skill-prose string:
+/// it pins the underlying MECHANISM (`watch_poll`'s marker-absent fallback to the recorded
+/// URL's own port) directly, the same way `watch_once_on_a_freshly_initialized_store_reports_nothing_and_exits_cleanly`
+/// pins the clean-store path unconditionally - a future prose rewrite has nothing to do
+/// with whether this specific driver shape is actually caught.
+#[test]
+fn watch_once_reports_a_dead_dash_when_only_the_url_breadcrumb_is_recorded_and_no_marker_exists() {
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    // Exactly what `spawn_run_dashboard`/`spawn_run_dashboard_detached` write on `rigger run`
+    // / `rigger serve`: `.rigger/dash.url`, and nothing else - no `.rigger/dash.marker`.
+    let dead_port = free_loopback_port();
+    std::fs::write(
+        root.join(".rigger/dash.url"),
+        format!("http://127.0.0.1:{dead_port}/"),
+    )
+    .expect("seed the dash.url breadcrumb");
+    assert!(
+        !root.join(".rigger/dash.marker").exists(),
+        "this fixture must leave no marker behind - that is the exact shape under test"
+    );
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 even with a dead, marker-less dash url; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("dash liveness") && out.contains(&dead_port.to_string()),
+        "a dash.url naming a dead port with NO marker must still be reported - either \
+         watch_poll's marker-absent fallback regressed, or it was never reached; got:\n{out}"
+    );
+    assert!(
+        !out.contains("marker names dead pid"),
+        "with no marker recorded there is no pid to name - a marker-present phrasing here \
+         means a pid was invented rather than genuinely read; got:\n{out}"
+    );
+}
+
+/// The other half of the marker-absent fallback: a GENUINELY LIVE dash reached only
+/// through the URL breadcrumb (still no marker) must read as `Serving`, not merely "not
+/// verifiably dead". The sibling test above only proves the dead-port half; mutation
+/// testing (round-4 mutation-efficacy accounting) found `dash::dash_serving_on(port)` in
+/// `watch_poll`'s marker-absent branch hardcoded to `false` survived every test in the
+/// suite - nothing drove a real, answering dash through this exact fallback path, so a
+/// regression that always reported it as dead would have gone undetected. Spins up a real
+/// `rigger dash`, records ONLY its URL (the `rigger run` / `rigger serve` shape - no
+/// marker), and asserts `rigger watch --once` reports no anomaly.
+#[test]
+fn watch_once_reports_nothing_when_a_real_dash_serves_the_url_only_recorded_port() {
+    use std::process::Stdio;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    let dash_port = free_loopback_port();
+    let url = format!("http://127.0.0.1:{dash_port}/");
+    let mut dash = common::rigger_courier()
+        .args(["dash", "--port", &dash_port.to_string()])
+        .current_dir(root)
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn a serving `rigger dash`");
+    if !matches!(http_get(&url), Some(body) if body.contains("rigger dash")) {
+        let _ = dash.kill();
+        let _ = dash.wait();
+        panic!("the serving `rigger dash` never came up at {url}");
+    }
+
+    // Exactly the marker-absent shape: only `.rigger/dash.url` recorded, no
+    // `.rigger/dash.marker` - the URL points at a port a REAL dash answers on.
+    std::fs::write(root.join(".rigger/dash.url"), &url).expect("seed the dash.url breadcrumb");
+    assert!(
+        !root.join(".rigger/dash.marker").exists(),
+        "this fixture must leave no marker behind - that is the exact shape under test"
+    );
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+
+    // Reap the dash BEFORE asserting so a failure never leaks a dashboard.
+    let _ = dash.kill();
+    let _ = dash.wait();
+
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 against a genuinely live, marker-less dash; stderr:\n{err}"
+    );
+    assert!(
+        out.trim().is_empty(),
+        "a dash genuinely serving the URL-only recorded port (no marker) must report NO dash \
+         liveness anomaly - either the marker-absent fallback never probes for real, or it \
+         misreads a live dash as dead; got:\n{out}"
+    );
+}
+
+/// Round-4 reject (adv-u69c1r4-dash-anomaly-permanent-false-positive), round-5 fix: `.rigger/
+/// dash.marker` and `.rigger/dash.url` are project-level singleton files never removed once
+/// their dash exits, so a project's FIRST run leaves a dead marker behind forever - and
+/// before the round-5 fix, every LATER `rigger watch --once` in that same project reported a
+/// permanent false "dash liveness" anomaly, even after a run finished successfully with no
+/// dash-launching process left to be dead. `watch::detect`'s own unit test
+/// (`a_done_run_never_reports_a_dead_dash_either`, src/watch.rs) proves the pure function
+/// gates Signal 3 on `!run.done()`, mirroring Signal 2's existing gate two lines above it -
+/// but that test builds `WatchInputs` directly in-process and never proves `watch_poll`
+/// (the real I/O seam: `require_store_dir`, the marker file read, the dash probe) and
+/// `cmd_watch`'s dedup/print loop actually wire a real DONE run's events through to that
+/// gate. This drives the identical marker-present dead-dash shape
+/// `watch_once_output_matches_what_restore_the_dash_promises_about_a_dead_marker` above
+/// pins for an UNFINISHED run, but through a DONE run's real store, and proves the compiled
+/// binary reports nothing - the boundary the round-4 adversary finding demanded. Confirmed
+/// this reproduces the round-4 defect: reverted to `ec4c316` (round-4 HEAD, before the
+/// `!run.done()` gate existed) this test fails, printing a "dash liveness" line naming the
+/// dead pid for a run whose every unit already integrated.
+#[test]
+fn watch_once_reports_no_dash_anomaly_for_a_done_run_even_with_a_dead_marker() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    // A done run: one unit started and integrated, no failed deferred gate - exactly
+    // `ledger::Run::done`'s own three conjuncts (non-empty, all-integrated, no deferred
+    // gate failure).
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["spec 69"]}"#),
+            ("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+            ("UnitIntegrated", r#"{"id":"u1","commit":"abc"}"#),
+        ],
+    );
+
+    // The exact dead-marker shape the unfinished-run sibling test seeds: a definitely-unbound
+    // loopback port and an impossible pid, so nothing on this machine answers on the port and
+    // no process holds the pid.
+    let dead_port = free_loopback_port();
+    let dead_pid = u32::MAX;
+    DashMarker {
+        port: dead_port,
+        pid: dead_pid,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the dash marker");
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 on a done run with a dead dash marker; stderr:\n{err}"
+    );
+    assert!(
+        out.trim().is_empty(),
+        "a DONE run's stale dash marker must report NO dash liveness anomaly - the run \
+         finished and its dash exited on purpose, which is success, not a dead dash; \
+         got:\n{out}"
+    );
+}
+
+/// Round-5 reject cause (adv2-u69c1-r5-uphold-sdet-second-run-stale-marker), round-6 fix: the
+/// round-5 `!run.done()` gate above only scopes the CURRENTLY WATCHED run's own done-ness -
+/// `.rigger/dash.marker` is a project-level singleton NEVER removed once its dash exits (same
+/// fact the sibling test above relies on), so a FRESH, NOT-DONE run that never itself touched
+/// the dash still inherited an EARLIER, already-done run's stale dead marker as a false
+/// anomaly. This is the exact shape sdet-u69c1-r5-second-run-stale-marker-false-positive and
+/// adv2-u69c1-r5-uphold-sdet-second-run-stale-marker independently reproduced against the real
+/// binary: seed a done run r1 with a dead marker, THEN a fresh not-done run r2 with zero
+/// dash-related activity of its own, and prove `rigger watch --once` reports nothing for r2 -
+/// the marker predates r2's own `RunStarted`, so it cannot be r2's own breadcrumb. Per
+/// adv2-u69c1-r5-root-cause-marker-lacks-run-identity, the fix does not reshape
+/// `DashMarker` (spec 39's idempotent-start-on-step contract needs the marker to persist
+/// ACROSS runs by design); it compares the breadcrumb file's own mtime against this run's own
+/// `RunStarted` moment instead - a separate per-run fact, not a mutation of the shared marker.
+#[test]
+fn watch_once_reports_no_dash_anomaly_for_a_fresh_run_that_inherits_an_earlier_runs_dead_marker() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    // r1: done (one unit started and integrated, no failed deferred gate) - `ledger::Run::
+    // done`'s own three conjuncts, exactly as the sibling test above seeds it.
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["spec 69"]}"#),
+            ("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+            ("UnitIntegrated", r#"{"id":"u1","commit":"abc"}"#),
+        ],
+    );
+
+    // r1's dash died and left its marker behind - the project-level singleton is never
+    // removed on exit. The exact dead-marker shape both sibling tests above seed: a
+    // definitely-unbound loopback port and an impossible pid.
+    let dead_port = free_loopback_port();
+    let dead_pid = u32::MAX;
+    DashMarker {
+        port: dead_port,
+        pid: dead_pid,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the dash marker");
+
+    // A filesystem-mtime safety margin: r2's own `RunStarted` (recorded_at is stamped at
+    // nanosecond precision by the store, but the marker file's mtime is whatever the
+    // filesystem grants) must land strictly AFTER the marker write on any filesystem's
+    // mtime granularity, so the fix under test - comparing the marker's mtime against r2's
+    // own run-start moment - sees an unambiguous order rather than a coin-flip tie.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    // r2: fresh, NOT done, and never itself touched the dash - zero dash-related activity
+    // of its own. Nothing wrote or refreshed `.rigger/dash.marker` after r2 began; a real
+    // r2 whose own step path called `ensure_run_dashboard` would have rewritten it.
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r2","criteria":["spec 69"]}"#),
+            ("UnitStarted", r#"{"id":"u2","agent":"worker"}"#),
+        ],
+    );
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 for a fresh run inheriting an earlier run's dead \
+         marker; stderr:\n{err}"
+    );
+    assert!(
+        out.trim().is_empty(),
+        "a fresh, not-done run that never touched the dash must report NO dash liveness \
+         anomaly for a marker an EARLIER, already-done run left behind - the marker predates \
+         this run's own RunStarted, so it cannot be this run's own breadcrumb; got:\n{out}"
+    );
+}
+
+/// SDET periphery gap (round-6 accounting): every existing binary-level dash-liveness test
+/// exercises either the SUPPRESS side of the round-6 mtime comparison (the sibling above:
+/// breadcrumb strictly OLDER than `run_started_at`) or the UNKNOWN side (no `RunStarted`
+/// seeded at all, so `run_started_at` is `None` and the burden-of-proof-toward-reporting
+/// default fires regardless of the comparison). None drove the third, most ordinary case
+/// through the real compiled binary: a fresh, NOT-DONE run whose OWN dash breadcrumb is
+/// written AFTER its own `RunStarted` and then genuinely dies.
+///
+/// This IS the real call order, confirmed against the compiled binary (round-8
+/// investigation, not merely read from source): `cmd_step` calls `enforce_definition_pin`
+/// (which mints a brand-new run's `RunStarted` via `runscope::ensure_started_pinned` /
+/// `start_fresh` when the store has none yet) BEFORE it calls `ensure_run_dashboard` - so on
+/// a project's first-ever step, `RunStarted.recorded_at` lands measurably before the dash
+/// marker's own mtime, not after. (`rigger run` / `rigger serve` share the identical shape via
+/// `fresh_run_if_requested`, called before `start_run_dashboard`.) The sibling
+/// `watch_once_reports_a_real_steps_own_dash_after_the_step_process_has_long_since_exited`
+/// test below proves this end to end through a REAL `rigger step` and a REAL killed dash
+/// process, with no synthetic event seeding at all - the authoritative confirmation this
+/// synthetic-seeding test's own comment here would otherwise only assert.
+///
+/// `watch::detect`'s own unit test
+/// (`a_dead_dash_url_with_no_marker_is_reported_without_inventing_a_pid`, src/watch.rs)
+/// pins this at the pure-function level by constructing `WatchInputs` directly in-process,
+/// but that is structurally blind to `watch_poll`'s real wiring (src/main.rs): the
+/// `run_events.first().map(|e| e.recorded_at)` read and the `mtime_of` filesystem read that
+/// feed `run_started_at`/`dash_breadcrumb_written_at`. An inverted comparison there (`<`
+/// flipped to `<=`/`>`, or `mtime_of` reading the wrong file) would silently swallow every
+/// LIVE run's own genuinely dead dash - the single most common real anomaly this signal
+/// exists to catch - while every other test in this file kept passing, since none of them
+/// pin the "both known, breadcrumb newer" direction against the real binary. This closes
+/// that gap: seeds a fresh, not-done run's `RunStarted`, waits past the sleep margin the
+/// sibling tests use, THEN writes the dead marker (so its mtime unambiguously postdates
+/// `run_started_at`), and proves `rigger watch --once` still reports it. Since round 8, this
+/// exercises the fallback path specifically (`dash_attempted_this_run` is `false` here - this
+/// test never calls the real dash-ensure code path that would set it - so the report comes
+/// entirely from the pre-existing `dash_breadcrumb_written_at`/`run_started_at` comparison,
+/// unchanged by the round-8 fix).
+#[test]
+fn watch_once_reports_this_runs_own_dead_marker_when_written_after_its_run_started() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    // r1: fresh and NOT done (started, one unit still in flight) - the run whose own dash
+    // this marker belongs to.
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["spec 69"]}"#),
+            ("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+        ],
+    );
+
+    // The same filesystem-mtime safety margin the fresh-run sibling test above uses, so the
+    // marker's mtime lands unambiguously AFTER r1's own `RunStarted.recorded_at` rather than
+    // risking a coin-flip tie on a coarse-grained filesystem clock.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    // The dash launched moments into r1's own run and then died - exactly the shape
+    // `ensure_run_dashboard` leaves (marker written once, near run start, never refreshed
+    // while the dash stays up). A definitely-unbound loopback port and an impossible pid,
+    // the same dead-marker shape every sibling test in this file seeds.
+    let dead_port = free_loopback_port();
+    let dead_pid = u32::MAX;
+    DashMarker {
+        port: dead_port,
+        pid: dead_pid,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the dash marker");
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 on a fresh run with its own dead dash marker; \
+         stderr:\n{err}"
+    );
+    assert!(
+        out.contains("dash liveness") && out.contains(&dead_pid.to_string()),
+        "a fresh, not-done run's OWN dead dash marker - written strictly AFTER this run's own \
+         RunStarted, so it cannot be mistaken for an inherited earlier run's stale breadcrumb \
+         - must still be reported; either the round-6 mtime comparison misreads this ordinary \
+         case as inherited, or the wiring feeding it `run_started_at`/`dash_breadcrumb_written_at` \
+         has regressed; got:\n{out}"
+    );
+}
+
+/// Round-8 fix, `watch_poll`'s own wiring (src/main.rs) for `dash_attempted_this_run`: the
+/// sibling `watch_once_reports_a_real_steps_own_dash_after_the_step_process_has_long_since_exited`
+/// test above drives the REAL `ensure_run_dashboard` write site end to end, but in every real
+/// production shape the timestamp FALLBACK (`dash_breadcrumb_written_at`/`run_started_at`)
+/// independently reaches the same "report it" answer too (this file's own investigation proved
+/// the marker always postdates RunStarted for a real run's own attempt) - so that test cannot,
+/// by itself, prove `watch_poll`'s `.rigger/dash.attempt` READ and run-id MATCH
+/// (`main.rs::watch_poll`, the `std::fs::read_to_string(loc.file(DASH_ATTEMPT_FILE))...
+/// attempted_run == run_id` expression) is actually load-bearing: a mutant that broke JUST that
+/// expression (e.g. inverting the `==`, deleting the `!attempted_run.is_empty()` guard, or an
+/// `&&`/`||` flip) would still pass it via the independently-correct fallback. This test closes
+/// that gap by constructing the ONE shape where the two signals DISAGREE - synthetically, since
+/// no real production sequence can produce it (this file's own investigation again): a marker
+/// whose mtime PROVABLY PREDATES `RunStarted` (the fallback alone would suppress, exactly the
+/// shape `watch_once_reports_no_dash_anomaly_for_a_fresh_run_that_inherits_an_earlier_runs_dead_
+/// marker` above proves suppresses), but with `.rigger/dash.attempt` naming this EXACT run,
+/// written directly (not through a real `ensure_run_dashboard` call, which never produces this
+/// ordering) - proving the report fires ONLY because `dash_attempted_this_run` genuinely
+/// overrode the fallback, not coincidentally.
+#[test]
+fn watch_once_reports_a_dead_marker_predating_run_started_when_dash_attempt_names_this_run() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    // The dead marker, written FIRST - the same definitely-unbound loopback port and
+    // impossible pid every sibling test in this file seeds.
+    let dead_port = free_loopback_port();
+    let dead_pid = u32::MAX;
+    DashMarker {
+        port: dead_port,
+        pid: dead_pid,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the dash marker");
+
+    // The same filesystem-mtime safety margin the inherited-marker sibling test above uses, so
+    // r1's own `RunStarted` lands unambiguously AFTER the marker write.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    // r1: fresh and NOT done, seeded AFTER the marker - the exact "predates this run" shape
+    // `watch_once_reports_no_dash_anomaly_for_a_fresh_run_that_inherits_an_earlier_runs_dead_
+    // marker` above proves the FALLBACK ALONE suppresses.
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["spec 69"]}"#),
+            ("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+        ],
+    );
+
+    // The critical breadcrumb: `.rigger/dash.attempt` names r1 directly - simulating what a
+    // real `ensure_run_dashboard` call would have written this run, WITHOUT actually calling
+    // it (which would rewrite the marker with a fresh mtime and defeat the very ordering this
+    // test needs). This is the one fact `watch_poll` must read and match against r1's own id.
+    std::fs::write(root.join(".rigger/dash.attempt"), "r1").expect("seed the dash attempt marker");
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 against a predating marker whose dash.attempt names \
+         this run; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("dash liveness") && out.contains(&dead_pid.to_string()),
+        "a marker that LOOKS like it predates this run's own RunStarted must still be reported \
+         when .rigger/dash.attempt explicitly names this exact run - proving watch_poll's own \
+         file-read-and-match wiring (not merely the pure watch::detect fallback comparison, \
+         which alone would suppress this exact shape) is what forced the report; got:\n{out}"
+    );
+}
+
+/// SDET periphery gap, round-8 accounting (sdet-u69c1-r8-mutation-accounting-correction):
+/// EMPIRICALLY VERIFIED, not theoretical - the round-8 mutation-accounting decision
+/// (`u69c1r8-mutation-accounting`) claims `src/main.rs:6347` col 64 (`replace && with ||` in
+/// the `dash_attempted_this_run` expression, `!attempted_run.is_empty() && attempted_run ==
+/// run_id`) is CAUGHT. It is not: hand-applying exactly that mutation, rebuilding the release
+/// binary, and rerunning the full dash-liveness suite leaves every existing test green,
+/// including its own sibling `watch_once_reports_a_dead_marker_predating_run_started_when_
+/// dash_attempt_names_this_run` above and the real end-to-end
+/// `watch_once_reports_a_real_steps_own_dash_after_the_step_process_has_long_since_exited`
+/// below. The reason: every existing test that writes `.rigger/dash.attempt` at all writes a
+/// run id that MATCHES the run being watched, so `!attempted_run.is_empty()` (true for ANY
+/// nonempty content, matching or not) already forces the same `true` the real `==` comparison
+/// would - the `||` mutant is indistinguishable from correct code on every shape any current
+/// test drives. The one shape that DOES discriminate them - a nonempty `.rigger/dash.attempt`
+/// naming a DIFFERENT run than the one currently watched - was untested.
+///
+/// This closes it: the identical "predates this run" marker/timestamp shape the sibling test
+/// above uses (so the timestamp fallback alone would suppress), but `.rigger/dash.attempt`
+/// names a run this test never seeds ("some-other-run") instead of the watched run "r1" -
+/// modeling a real production shape (an EARLIER or unrelated run's own step attempted a dash,
+/// stamping the breadcrumb, before this fresh run ever touched it). `rigger watch --once`
+/// must report NOTHING: a foreign, non-matching `dash_attempted_this_run` fact must never
+/// override the fallback, only a genuine same-run match may. Under the `&&`-with-`||` mutant
+/// above, `!is_empty()` alone would force `dash_attempted_this_run = true` here regardless of
+/// the mismatch, wrongly reporting an anomaly - proving this test kills the mutant the
+/// existing suite could not.
+#[test]
+fn watch_once_suppresses_a_predating_marker_when_dash_attempt_names_a_different_run() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    // The dead marker, written FIRST - the identical shape the sibling match test above seeds.
+    let dead_port = free_loopback_port();
+    let dead_pid = u32::MAX;
+    DashMarker {
+        port: dead_port,
+        pid: dead_pid,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the dash marker");
+
+    // The same filesystem-mtime safety margin every sibling test in this file uses, so r1's
+    // own `RunStarted` lands unambiguously AFTER the marker write - the fallback comparison
+    // alone would suppress this exact shape.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    // r1: fresh and NOT done, seeded AFTER the marker - the run this watch is scoped to.
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["spec 69"]}"#),
+            ("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+        ],
+    );
+
+    // The critical difference from the sibling match test: `.rigger/dash.attempt` names a
+    // DIFFERENT, nonempty run id - never "r1", the run actually being watched. A real
+    // `ensure_run_dashboard`/`start_run_dashboard` call from r1's own step path would have
+    // written "r1" here; this models that no such call ever happened for r1 (the breadcrumb
+    // is foreign), so the explicit fact must stay silent and defer to the timestamp fallback.
+    std::fs::write(root.join(".rigger/dash.attempt"), "some-other-run")
+        .expect("seed a foreign dash attempt marker");
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 against a predating marker whose dash.attempt names \
+         a different run; stderr:\n{err}"
+    );
+    assert!(
+        out.trim().is_empty(),
+        "a dash.attempt breadcrumb naming a DIFFERENT run than the one being watched must NOT \
+         force reporting - only a genuine same-run match may override the timestamp fallback, \
+         and here the fallback alone suppresses (the marker predates r1's own RunStarted); \
+         got:\n{out}"
     );
 }
 
@@ -8920,7 +18870,7 @@ fn stage_rigger_shim(root: &Path) -> String {
     let shim = bindir.join("rigger");
     std::fs::write(
         &shim,
-        format!("#!/bin/sh\nexec \"{}\" \"$@\"\n", rigger_bin()),
+        format!("#!/bin/sh\nexec \"{}\" \"$@\"\n", rigger_bin().display()),
     )
     .unwrap();
     #[cfg(unix)]
@@ -8932,52 +18882,10 @@ fn stage_rigger_shim(root: &Path) -> String {
     format!("{}:{}", bindir.display(), orig_path)
 }
 
-/// Spec 24, crit 1 (install + regenerate-then-stage-into-the-commit, end to end): in a repo
-/// that ALREADY TRACKS the rendered docs (rigger's own self-hosting repo), `rigger setup`
-/// installs a git pre-commit hook that, on `git commit`, runs `rigger docs` and stages the
-/// changed rendered outputs (the `using-rigger` skill + the handbook discipline chapter) into
-/// that SAME commit - so a commit that changes a documented code fact carries its freshly
-/// rendered docs. Drives the REAL `rigger` binary and REAL git, with a `rigger` shim on PATH
-/// at commit time (the hook invokes `rigger` by name, per spec 24).
-#[test]
-fn setup_precommit_hook_regenerates_and_stages_docs_when_the_repo_tracks_them() {
-    let proj = temp_git_project_with_commit();
-    let root = proj.path();
-
-    // `rigger setup` installs the pre-commit hook (npm stubbed so the shim step needs no npm).
-    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
-    assert!(
-        out.contains("pre-commit hook"),
-        "setup must report installing the pre-commit hook; got:\n{out}"
-    );
-
-    // The hook is installed, executable, and carries rigger's docs-regenerating block.
-    let hook_path = root.join(".git/hooks/pre-commit");
-    assert!(
-        hook_path.exists(),
-        "setup must install .git/hooks/pre-commit"
-    );
-    let hook = std::fs::read_to_string(&hook_path).unwrap();
-    assert!(
-        hook.contains("rigger docs") && hook.contains("skills/using-rigger/SKILL.md"),
-        "the hook regenerates the docs and stages the rendered outputs; got:\n{hook}"
-    );
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&hook_path).unwrap().permissions().mode();
-        assert!(
-            mode & 0o111 != 0,
-            "the hook must be executable so git runs it; mode {mode:o}"
-        );
-    }
-
-    // Make this a rigger SELF-HOSTING repo: TRACK stale committed copies of both rendered
-    // outputs so the hook has a real, tracked change to freshen. Commit the seed with
-    // `--no-verify` so the just-installed hook does NOT fire here - the seed must stay
-    // genuinely STALE, otherwise the final "not STALE" assertion could pass vacuously (the
-    // docs were already fresh) instead of proving the FINAL commit's hook regenerated them.
+/// Seed genuinely STALE tracked copies of both rendered docs under `root`, committed with
+/// `--no-verify` so a just-installed hook does NOT fire on the seed itself. Shared by the
+/// spec 70 fixtures below that need real, tracked drift for the hook to detect.
+fn seed_stale_tracked_docs(root: &Path) {
     const STALE: &str = "STALE DOC - not a real render\n";
     for rel in [
         "skills/using-rigger/SKILL.md",
@@ -8999,9 +18907,8 @@ fn setup_precommit_hook_regenerates_and_stages_docs_when_the_repo_tracks_them() 
         root,
         &["commit", "-q", "--no-verify", "-m", "seed stale docs"],
     );
-
-    // Guard against a vacuous pass: HEAD must carry the STALE bytes right after the seed, so a
-    // later "not STALE" assertion can only hold if the FINAL commit's hook did the regenerate.
+    // Guard against a vacuous pass in every caller: HEAD must carry the STALE bytes right after
+    // the seed, so a later "the hook detected drift" assertion can only hold for real.
     let seeded_skill =
         git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
     assert!(
@@ -9009,48 +18916,265 @@ fn setup_precommit_hook_regenerates_and_stages_docs_when_the_repo_tracks_them() 
         "the --no-verify seed must commit the STALE docs unchanged so the discrimination is \
          real, not vacuous; got:\n{seeded_skill}"
     );
+}
+
+/// Turn `root` into a rigger SELF-HOSTING repo whose tracked docs are already the TRUE fresh
+/// render: `rigger setup` (npm stubbed) installs the hook, then a real `rigger docs` run seeds
+/// both outputs, committed with `--no-verify` so the just-installed hook does not fire on its
+/// own seed. Because the seed comes from the SAME compiled binary the hook later runs (via
+/// `stage_rigger_shim`), the hook's own re-render at commit time is byte-identical to what is
+/// already staged - the "matching render" fixture spec 70 crit 1 needs.
+fn setup_selfhosting_repo_with_fresh_docs(root: &Path) {
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+    assert!(
+        out.contains("pre-commit hook"),
+        "setup must install the pre-commit hook; got:\n{out}"
+    );
+    let (_out, err, ok) = run_rigger(root, &["docs"]);
+    assert!(
+        ok,
+        "rigger docs must succeed while seeding a fresh render; stderr:\n{err}"
+    );
+    git_ok(
+        root,
+        &[
+            "add",
+            "skills/using-rigger/SKILL.md",
+            "docs/handbook/using-rigger.md",
+        ],
+    );
+    git_ok(
+        root,
+        &["commit", "-q", "--no-verify", "-m", "seed fresh docs"],
+    );
+}
+
+/// Spec 70, crit 1 (THE HOOK REFUSES INSTEAD OF REWRITING, end to end): OWNS the hook behavior.
+/// In a self-hosting repo whose tracked docs have drifted from a fresh render, the managed
+/// pre-commit hook must REFUSE the commit - naming the drifted files, the rendering binary's
+/// path AND its build provenance, and the two remedies - rather than silently staging its own
+/// re-render over them. This is the exact defect that cost three rejected attempts on one unit
+/// (a binary older than the tree re-rendering committed docs to the OLD text and silently
+/// staging them, stripping a branch's rendered changes from every later commit). Drives the
+/// REAL `rigger` binary (via a `rigger` shim on PATH, spec 24) and REAL git.
+#[test]
+fn setup_precommit_hook_refuses_when_the_staged_render_has_drifted() {
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+    assert!(
+        out.contains("pre-commit hook"),
+        "setup must report installing the pre-commit hook; got:\n{out}"
+    );
+    let hook_path = root.join(".git/hooks/pre-commit");
+    assert!(
+        hook_path.exists(),
+        "setup must install .git/hooks/pre-commit"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&hook_path).unwrap().permissions().mode();
+        assert!(
+            mode & 0o111 != 0,
+            "the hook must be executable so git runs it; mode {mode:o}"
+        );
+    }
+
+    // Make this a rigger SELF-HOSTING repo with genuinely STALE tracked docs.
+    seed_stale_tracked_docs(root);
 
     // A `rigger` shim on PATH at commit time - the hook invokes `rigger` BY NAME.
     let commit_path = stage_rigger_shim(root);
 
-    // Make an UNRELATED tracked change and commit it. The pre-commit hook regenerates the
-    // docs and stages them into THIS commit, alongside the unrelated change.
+    // Make an UNRELATED tracked change and attempt to commit it.
     std::fs::write(root.join("code.txt"), "a documented code fact changed\n").unwrap();
     git_ok(root, &["add", "code.txt"]);
-    let commit_ok = Command::new("git")
+    let out = Command::new("git")
         .args(["commit", "-q", "-m", "change a documented fact"])
         .current_dir(root)
         .env("PATH", &commit_path)
-        .status()
-        .expect("git must be runnable")
-        .success();
+        .env_remove("CARGO_TARGET_DIR")
+        .output()
+        .expect("git must be runnable");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
     assert!(
-        commit_ok,
-        "the commit must succeed - the hook must never block it"
+        !out.status.success(),
+        "a drifted render must REFUSE the commit, not silently let it through; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("skills/using-rigger/SKILL.md")
+            && stderr.contains("docs/handbook/using-rigger.md"),
+        "the refusal must name BOTH drifted files; stderr:\n{stderr}"
+    );
+    let shim_rigger = root.join("shim-bin").join("rigger");
+    assert!(
+        stderr.contains(shim_rigger.to_str().unwrap()),
+        "the refusal must name the rendering binary's PATH; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("build "),
+        "the refusal must name the rendering binary's BUILD PROVENANCE (`rigger version`); \
+         stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.to_lowercase().contains("reinstall") && stderr.contains("tree-built"),
+        "the refusal must name the two remedies - re-render with the tree-built binary, or \
+         reinstall; stderr:\n{stderr}"
     );
 
-    // The freshly regenerated docs RODE the same commit: HEAD carries both rendered outputs
-    // AND the unrelated change, and the committed docs are the FRESH render (not the stale
-    // seed the hook replaced), proving the regenerated docs ride the commit that changed a
-    // documented fact.
-    let tree = git_out(root, &["ls-tree", "-r", "--name-only", "HEAD"]).unwrap_or_default();
-    assert!(
-        tree.contains("code.txt")
-            && tree.contains("skills/using-rigger/SKILL.md")
-            && tree.contains("docs/handbook/using-rigger.md"),
-        "the commit must carry the unrelated change AND both regenerated docs; tree:\n{tree}"
-    );
-    let committed_skill =
+    // Nothing landed: HEAD still carries the STALE seed, not a silently-substituted re-render.
+    let committed =
         git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
     assert!(
-        committed_skill.contains("name: using-rigger") && !committed_skill.contains("STALE DOC"),
-        "the commit must carry the FRESH render of the skill, not the stale seed; got:\n{committed_skill}"
+        committed.contains("STALE DOC"),
+        "a refused commit must not land - HEAD must still carry the stale seed; got:\n{committed}"
     );
-    let committed_handbook =
-        git_out(root, &["show", "HEAD:docs/handbook/using-rigger.md"]).unwrap_or_default();
+    // And nothing was re-staged: the hook never ran `git add`, so the freshly re-rendered
+    // working-tree copy (written by the hook's own `rigger docs`) is only an unstaged edit.
+    let staged = git_out(root, &["diff", "--cached", "--name-only"]).unwrap_or_default();
     assert!(
-        !committed_handbook.is_empty() && !committed_handbook.contains("STALE DOC"),
-        "the commit must carry the FRESH render of the handbook, not the stale seed; got:\n{committed_handbook}"
+        !staged.contains("SKILL.md") && !staged.contains("using-rigger.md"),
+        "the hook must never stage its own re-render; staged files:\n{staged}"
+    );
+}
+
+/// Spec 70, crit 1 (a MATCHING render passes silently, end to end): the flip side of refusing
+/// instead of rewriting. When the committed docs are ALREADY the fresh render, the hook must
+/// change nothing and let the commit through exactly as before this fix - no warning, no
+/// refusal, no touched doc content. Drives the REAL `rigger` binary and REAL git.
+#[test]
+fn setup_precommit_hook_passes_untouched_when_the_render_matches() {
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    setup_selfhosting_repo_with_fresh_docs(root);
+    let fresh_skill_before =
+        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+    assert!(
+        fresh_skill_before.contains("name: using-rigger"),
+        "the seed must be a real fresh render, not a stub; got:\n{fresh_skill_before}"
+    );
+
+    let commit_path = stage_rigger_shim(root);
+    std::fs::write(root.join("code.txt"), "an unrelated change\n").unwrap();
+    git_ok(root, &["add", "code.txt"]);
+    let out = Command::new("git")
+        .args(["commit", "-q", "-m", "unrelated change"])
+        .current_dir(root)
+        .env("PATH", &commit_path)
+        .env_remove("CARGO_TARGET_DIR")
+        .output()
+        .expect("git must be runnable");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "a matching render must pass the commit through untouched; stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("refusing"),
+        "a matching render must never print a refusal; stderr:\n{stderr}"
+    );
+
+    let tree = git_out(root, &["ls-tree", "-r", "--name-only", "HEAD"]).unwrap_or_default();
+    assert!(
+        tree.contains("code.txt"),
+        "the unrelated change must ride the commit; tree:\n{tree}"
+    );
+    let committed_after =
+        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+    assert_eq!(
+        committed_after, fresh_skill_before,
+        "the already-fresh doc must land byte-identical - the hook must not touch it"
+    );
+}
+
+/// Spec 68, criterion 1 (the fast pre-commit hook's scope is a DELIBERATE non-generalization,
+/// end to end): the commit-time hook still compares ONLY the `using-rigger` skill and the
+/// handbook chapter - spec 70's pre-existing, hand-enumerated scope - and was NOT widened to
+/// walk the whole registry (`rigger validate` is the gate that covers every registry entry;
+/// see `validate_docs_drift_gate_covers_the_second_registry_entry` above). This matters MORE,
+/// not less, now that `write_docs` was generalized: the hook's own internal `rigger docs` call
+/// (it re-renders before comparing) now rewrites EVERY registry file on disk as a side effect,
+/// including `planning-a-spec` - so this test also re-pins spec 70's "never stages anything
+/// itself" invariant across that wider write: an untracked, hand-edited `planning-a-spec`
+/// working-tree copy must survive the hook's internal re-render UNABSORBED by git (never
+/// silently added to an unrelated commit), and the commit must never be blocked or slowed by
+/// it, exactly as if the hook had never touched it at all.
+#[test]
+fn setup_precommit_hook_never_drift_checks_or_stages_a_registry_entry_outside_its_scope() {
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    setup_selfhosting_repo_with_fresh_docs(root);
+
+    // `setup_selfhosting_repo_with_fresh_docs` only tracks the two spec-70 files; the second
+    // registry entry that `rigger docs` also wrote during the fixture is left UNTRACKED - the
+    // exact state an operator mid-edit on a new skill would be in.
+    let planning_path = root.join("skills/planning-a-spec/SKILL.md");
+    assert!(
+        planning_path.exists(),
+        "the fixture's `rigger docs` call must have written the second registry entry too"
+    );
+    let status_before = git_out(
+        root,
+        &["status", "--porcelain", "skills/planning-a-spec/SKILL.md"],
+    )
+    .unwrap_or_default();
+    assert!(
+        status_before.starts_with("??"),
+        "the second registry entry must start UNTRACKED (never staged by the fixture); \
+         got:\n{status_before}"
+    );
+
+    // Simulate an operator's in-progress, unstaged hand-edit to it.
+    std::fs::write(&planning_path, "WIP hand-edit, not a render\n").unwrap();
+
+    let commit_path = stage_rigger_shim(root);
+    std::fs::write(root.join("code.txt"), "an unrelated change\n").unwrap();
+    git_ok(root, &["add", "code.txt"]);
+    let out = Command::new("git")
+        .args(["commit", "-q", "-m", "unrelated change"])
+        .current_dir(root)
+        .env("PATH", &commit_path)
+        .env_remove("CARGO_TARGET_DIR")
+        .output()
+        .expect("git must be runnable");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        out.status.success(),
+        "the commit must succeed - the hook must never drift-check or block on a registry \
+         entry outside its fixed scope; stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.to_lowercase().contains("refusing"),
+        "the hook must never refuse over a registry entry it does not scope; stderr:\n{stderr}"
+    );
+
+    let tree = git_out(root, &["ls-tree", "-r", "--name-only", "HEAD"]).unwrap_or_default();
+    assert!(
+        tree.contains("code.txt"),
+        "the unrelated change must ride the commit; tree:\n{tree}"
+    );
+    assert!(
+        !tree.contains("planning-a-spec"),
+        "the out-of-scope registry entry must NEVER be staged/committed by the hook's internal \
+         re-render, even though that render rewrote its bytes on disk; tree:\n{tree}"
+    );
+    // It stays exactly as untracked as before - the hook's internal `rigger docs` call may
+    // have rewritten its BYTES, but git's view of it (untracked) is unchanged.
+    let status_after = git_out(
+        root,
+        &["status", "--porcelain", "skills/planning-a-spec/SKILL.md"],
+    )
+    .unwrap_or_default();
+    assert!(
+        status_after.starts_with("??"),
+        "the out-of-scope entry must still be untracked after the commit, unabsorbed by it; \
+         got:\n{status_after}"
     );
 }
 
@@ -9096,6 +19220,7 @@ fn setup_precommit_hook_stays_inert_in_an_operator_repo() {
         .args(["commit", "-q", "-m", "operator changes their own code"])
         .current_dir(root)
         .env("PATH", &commit_path)
+        .env_remove("CARGO_TARGET_DIR")
         .status()
         .expect("git must be runnable")
         .success();
@@ -9134,38 +19259,13 @@ fn setup_precommit_hook_stays_inert_in_an_operator_repo() {
 /// to do on the next ordinary commit, so any later "not STALE" / "still STALE" assertion actually
 /// discriminates whether that commit's hook regenerated the docs.
 fn setup_selfhosting_repo_with_stale_docs(root: &Path) {
-    const STALE: &str = "STALE DOC - not a real render\n";
     let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
     assert!(ok, "rigger setup must succeed; stderr:\n{err}");
     assert!(
         out.contains("pre-commit hook"),
         "setup must install the pre-commit hook; got:\n{out}"
     );
-    for rel in [
-        "skills/using-rigger/SKILL.md",
-        "docs/handbook/using-rigger.md",
-    ] {
-        let p = root.join(rel);
-        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-        std::fs::write(&p, STALE).unwrap();
-    }
-    git_ok(
-        root,
-        &[
-            "add",
-            "skills/using-rigger/SKILL.md",
-            "docs/handbook/using-rigger.md",
-        ],
-    );
-    git_ok(
-        root,
-        &["commit", "-q", "--no-verify", "-m", "seed stale docs"],
-    );
-    let seeded = git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
-    assert!(
-        seeded.contains("STALE DOC"),
-        "the --no-verify seed must commit the STALE docs so discrimination is real; got:\n{seeded}"
-    );
+    seed_stale_tracked_docs(root);
 }
 
 /// A `PATH` built from the ambient `PATH` with every directory that contains a `rigger` binary
@@ -9194,7 +19294,7 @@ fn stage_failing_docs_rigger_shim(root: &Path) -> String {
         format!(
             "#!/bin/sh\nif [ \"$1\" = docs ]; then\n  echo 'boom: rigger docs failed' 1>&2\n  \
              exit 1\nfi\nexec \"{}\" \"$@\"\n",
-            rigger_bin()
+            rigger_bin().display()
         ),
     )
     .unwrap();
@@ -9205,6 +19305,329 @@ fn stage_failing_docs_rigger_shim(root: &Path) -> String {
     }
     let orig_path = std::env::var("PATH").unwrap_or_default();
     format!("{}:{}", bindir.display(), orig_path)
+}
+
+/// Place a copy of the REAL compiled `rigger` binary (the one this very test suite runs) at
+/// `root`'s own local target dir (`./target/debug/rigger`) - spec 75's "this working tree's
+/// own local target" candidate, the highest-priority tree-built candidate that needs no env
+/// var. Simulates a worktree that has `cargo build`'d ITS OWN current code, so the hook has a
+/// tree-built binary to prefer over whatever sits on PATH.
+fn stage_tree_built_binary(root: &Path) {
+    let dir = root.join("target").join("debug");
+    std::fs::create_dir_all(&dir).unwrap();
+    let dest = dir.join("rigger");
+    std::fs::copy(rigger_bin(), &dest)
+        .unwrap_or_else(|e| panic!("copy the tree-built binary to {}: {e}", dest.display()));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+/// Stage a `rigger` on `PATH` that is a STALE binary standing in for an old build from before
+/// this worktree's own code changed a rendered fact: `command -v rigger` succeeds, but its
+/// `docs` subcommand writes fixed OLD text (never the real renderer) and its `version`
+/// subcommand names itself as a stale build - never delegating to the real compiled binary, so
+/// it genuinely cannot produce the tree's current render no matter what invokes it. Pairs with
+/// [`stage_tree_built_binary`] to prove candidate PREFERENCE (spec 75): present alongside a
+/// tree-built candidate it must lose to; present ALONE it is the only binary reachable at all,
+/// so a fresh-vs-staged mismatch is unavoidable. Returns a `PATH` with the shim dir prepended.
+fn stage_stale_rigger_shim(root: &Path) -> String {
+    let bindir = root.join("shim-bin");
+    std::fs::create_dir_all(&bindir).unwrap();
+    let shim = bindir.join("rigger");
+    std::fs::write(
+        &shim,
+        "#!/bin/sh\n\
+case \"$1\" in\n\
+  docs)\n\
+    printf 'STALE DOC - not a real render\\n' > skills/using-rigger/SKILL.md\n\
+    printf 'STALE DOC - not a real render\\n' > docs/handbook/using-rigger.md\n\
+    exit 0\n\
+    ;;\n\
+  version)\n\
+    echo 'rigger 0.0.0-stale-test-shim'\n\
+    exit 0\n\
+    ;;\n\
+esac\n\
+exit 1\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let orig_path = std::env::var("PATH").unwrap_or_default();
+    format!("{}:{}", bindir.display(), orig_path)
+}
+
+/// Spec 75, crit 2 (a MATCHING render passes via the tree-built binary, end to end): OWNS the
+/// end-to-end hook behavior (crit 1 owns the candidate order and its rendering in the
+/// template - `precommit_block_resolves_a_tree_built_binary_before_path` proves that
+/// textually). A commit in a worktree whose code adds a rendered fact - here, the tree's own
+/// local target build - PASSES when that build is present and its render matches the staged
+/// docs, even though `PATH` carries only a STALE `rigger` that would render a MISMATCH. A pass
+/// can only happen by the hook genuinely PREFERRING the tree-built candidate over PATH: if it
+/// fell back to PATH instead, the stale shim's render would drift against the staged fresh
+/// docs and this same commit would be refused (proven by the sibling refusal test below).
+#[test]
+fn setup_precommit_hook_prefers_the_trees_own_built_binary_over_a_stale_path_rigger() {
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    setup_selfhosting_repo_with_fresh_docs(root);
+    let fresh_skill_before =
+        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+    assert!(
+        fresh_skill_before.contains("name: using-rigger"),
+        "the seed must be a real fresh render, not a stub; got:\n{fresh_skill_before}"
+    );
+
+    stage_tree_built_binary(root);
+    let commit_path = stage_stale_rigger_shim(root);
+    std::fs::write(
+        root.join("code.txt"),
+        "a rendered fact this worktree's code added\n",
+    )
+    .unwrap();
+    git_ok(root, &["add", "code.txt"]);
+    let out = Command::new("git")
+        .args(["commit", "-q", "-m", "add a rendered fact"])
+        .current_dir(root)
+        .env("PATH", &commit_path)
+        .env_remove("CARGO_TARGET_DIR")
+        .output()
+        .expect("git must be runnable");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "a tree-built binary present must PASS the commit even though PATH is stale; \
+         stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("refusing"),
+        "a tree-built binary whose render matches the staged docs must never refuse; \
+         stderr:\n{stderr}"
+    );
+
+    let tree = git_out(root, &["ls-tree", "-r", "--name-only", "HEAD"]).unwrap_or_default();
+    assert!(
+        tree.contains("code.txt"),
+        "the worktree's own change must ride the commit; tree:\n{tree}"
+    );
+    let committed_after =
+        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+    assert_eq!(
+        committed_after, fresh_skill_before,
+        "the already-fresh doc must land byte-identical - the tree-built binary's render \
+         matched what was staged"
+    );
+}
+
+/// Spec 75, crit 2 (the SAME commit shape REFUSES with only a stale PATH rigger, end to end):
+/// the flip side of the preference test above, proving the safe-closed direction. With no
+/// tree-built candidate anywhere (no local target build this time) and PATH carrying only the
+/// same stale shim, the hook has nothing to invoke but a binary that cannot reproduce the
+/// tree's current render - so the fresh docs already staged now drift against ITS render, and
+/// the commit is refused exactly as an ordinary drift would be, never silently let through for
+/// lack of a better binary.
+#[test]
+fn setup_precommit_hook_refuses_the_same_commit_shape_with_only_a_stale_path_rigger() {
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    setup_selfhosting_repo_with_fresh_docs(root);
+    let fresh_skill_before =
+        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+    assert!(
+        fresh_skill_before.contains("name: using-rigger"),
+        "the seed must be a real fresh render, not a stub; got:\n{fresh_skill_before}"
+    );
+
+    // No tree-built candidate staged anywhere this time - only the stale PATH rigger.
+    let commit_path = stage_stale_rigger_shim(root);
+    std::fs::write(
+        root.join("code.txt"),
+        "a rendered fact this worktree's code added\n",
+    )
+    .unwrap();
+    git_ok(root, &["add", "code.txt"]);
+    let out = Command::new("git")
+        .args(["commit", "-q", "-m", "add a rendered fact"])
+        .current_dir(root)
+        .env("PATH", &commit_path)
+        .env_remove("CARGO_TARGET_DIR")
+        .output()
+        .expect("git must be runnable");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "with only a stale PATH rigger the same commit shape must still be REFUSED; \
+         stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("skills/using-rigger/SKILL.md")
+            && stderr.contains("docs/handbook/using-rigger.md"),
+        "the refusal must name both docs the stale render drifted from; stderr:\n{stderr}"
+    );
+
+    let committed =
+        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+    assert_eq!(
+        committed, fresh_skill_before,
+        "a refused commit must not land - HEAD must still carry the fresh seed, not the stale \
+         render"
+    );
+    let staged = git_out(root, &["diff", "--cached", "--name-only"]).unwrap_or_default();
+    assert!(
+        !staged.contains("SKILL.md") && !staged.contains("using-rigger.md"),
+        "the hook must never stage its own stale re-render; staged files:\n{staged}"
+    );
+}
+
+/// Place a copy of the REAL compiled `rigger` binary at the UNIT-DERIVED candidate path
+/// (spec 75's `<git-common-dir>/../.rigger/tmp/cargo-target-<unit>/debug/rigger`), keyed off
+/// `main_repo_root` (the MAIN checkout's own root, never the linked worktree itself - the
+/// candidate is resolved relative to `git-common-dir`, which for a linked worktree points
+/// back at the main repo's `.git`, not a directory inside the worktree).
+fn stage_unit_derived_binary(main_repo_root: &Path, unit: &str) {
+    let dir = main_repo_root
+        .join(".rigger")
+        .join("tmp")
+        .join(format!("cargo-target-{unit}"))
+        .join("debug");
+    std::fs::create_dir_all(&dir).unwrap();
+    let dest = dir.join("rigger");
+    std::fs::copy(rigger_bin(), &dest)
+        .unwrap_or_else(|e| panic!("copy the tree-built binary to {}: {e}", dest.display()));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+/// Spec 75, crit 2, closing a gap this unit's own periphery accounting left open
+/// (sdet-u75c2-unit-derived-candidate-never-executed): the two tests above exercise only the
+/// "own local target" tier (`stage_tree_built_binary`, `./target/debug/rigger`) - a plain,
+/// non-worktree temp git project can never even reach the UNIT-DERIVED tier, because
+/// `basename $(git rev-parse --show-toplevel)` never matches `rigger-wt-*` there. Every real
+/// unit gate in this loop runs inside exactly such a worktree - this very test suite is
+/// compiled from one - so the unit-derived tier is the candidate spec 75 was written to serve
+/// FIRST, not an edge case, yet nothing before this test ever drove it through a real `git
+/// worktree add` and real `/bin/sh` execution. Uses a genuinely linked worktree named
+/// `rigger-wt-probeunit`, whose `git-common-dir` resolves back to the MAIN checkout's `.git`
+/// (verified: that is exactly how this very spawn's own worktree resolves), and proves
+/// discrimination twice over in the SAME worktree: first REFUSED with nothing but the stale
+/// PATH shim (proving the hook genuinely fires inside a linked worktree at all - without this
+/// half, a hook that silently never ran there would make the pass below vacuous), then the
+/// identical staged commit PASSES once the unit-derived binary is staged at the path the hook
+/// computes relative to `git-common-dir`.
+#[test]
+fn setup_precommit_hook_prefers_a_unit_derived_binary_in_a_real_linked_worktree_over_a_stale_path_rigger(
+) {
+    let main = temp_git_project_with_commit();
+    let main_root = main.path();
+    setup_selfhosting_repo_with_fresh_docs(main_root);
+    let fresh_skill_before =
+        git_out(main_root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+    assert!(
+        fresh_skill_before.contains("name: using-rigger"),
+        "the seed must be a real fresh render, not a stub; got:\n{fresh_skill_before}"
+    );
+
+    let wt_parent = tempfile::tempdir().expect("create a parent dir for the linked worktree");
+    let wt_path = wt_parent.path().join("rigger-wt-probeunit");
+    git_ok(
+        main_root,
+        &[
+            "worktree",
+            "add",
+            wt_path.to_str().expect("utf8 worktree path"),
+            "-b",
+            "probeunit-branch",
+        ],
+    );
+
+    let commit_path = stage_stale_rigger_shim(&wt_path);
+    std::fs::write(
+        wt_path.join("code.txt"),
+        "a rendered fact this worktree's code added\n",
+    )
+    .unwrap();
+    git_ok(&wt_path, &["add", "code.txt"]);
+
+    // Round 1: no unit-derived candidate staged anywhere yet, and this worktree has no local
+    // target build either - only the stale PATH shim is reachable, so this must REFUSE exactly
+    // like the plain (non-worktree) fixture above, proving the hook genuinely runs here.
+    let out1 = Command::new("git")
+        .args(["commit", "-q", "-m", "add a rendered fact"])
+        .current_dir(&wt_path)
+        .env("PATH", &commit_path)
+        .env_remove("CARGO_TARGET_DIR")
+        .output()
+        .expect("git must be runnable");
+    let stderr1 = String::from_utf8_lossy(&out1.stderr);
+    assert!(
+        !out1.status.success(),
+        "with no unit-derived candidate staged, a linked worktree with only a stale PATH \
+         rigger must still be REFUSED, same as the plain-project fixture; stderr:\n{stderr1}"
+    );
+    assert!(
+        stderr1.contains("skills/using-rigger/SKILL.md")
+            && stderr1.contains("docs/handbook/using-rigger.md"),
+        "the round-1 refusal must name both drifted docs; stderr:\n{stderr1}"
+    );
+    let staged1 = git_out(&wt_path, &["diff", "--cached", "--name-only"]).unwrap_or_default();
+    assert!(
+        staged1.contains("code.txt"),
+        "the refused round-1 commit must leave code.txt staged, unreverted; staged:\n{staged1}"
+    );
+
+    // Round 2: same staged snapshot, now WITH the unit-derived candidate staged at the path
+    // relative to `main_root`'s own `.git` (never inside the worktree) - the only thing that
+    // changed between rounds is this candidate's presence.
+    stage_unit_derived_binary(main_root, "probeunit");
+    let out2 = Command::new("git")
+        .args(["commit", "-q", "-m", "add a rendered fact"])
+        .current_dir(&wt_path)
+        .env("PATH", &commit_path)
+        .env_remove("CARGO_TARGET_DIR")
+        .output()
+        .expect("git must be runnable");
+    let stderr2 = String::from_utf8_lossy(&out2.stderr);
+    assert!(
+        out2.status.success(),
+        "the unit-derived candidate must be found and PREFERRED over the stale PATH rigger \
+         once staged; stderr:\n{stderr2}"
+    );
+    assert!(
+        !stderr2.contains("refusing"),
+        "a matching unit-derived render must never refuse; stderr:\n{stderr2}"
+    );
+
+    let tree = git_out(&wt_path, &["ls-tree", "-r", "--name-only", "HEAD"]).unwrap_or_default();
+    assert!(
+        tree.contains("code.txt"),
+        "the worktree's own change must ride the commit; tree:\n{tree}"
+    );
+    let committed_after =
+        git_out(&wt_path, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+    assert_eq!(
+        committed_after, fresh_skill_before,
+        "the already-fresh doc must land byte-identical - the unit-derived binary's render \
+         matched what was staged"
+    );
+
+    git_ok(
+        main_root,
+        &[
+            "worktree",
+            "remove",
+            "--force",
+            wt_path.to_str().expect("utf8 worktree path"),
+        ],
+    );
 }
 
 /// Spec 24, crit 2 (idempotency, end to end): the hook is SAFE to live in everyone's
@@ -9249,9 +19672,11 @@ fn setup_precommit_hook_is_idempotent_no_duplicate_block_on_rerun() {
 /// modal hand-written / sample pre-commit hook ends in a terminal `exit 0`. rigger chains its
 /// block onto it WITHOUT clobbering it, and - crucially - rigger's block still RUNS: it is
 /// inserted BEFORE the existing hook body (which ends in `exit 0`), so a `git commit` runs BOTH
-/// the pre-existing hook AND rigger's docs regeneration. Regression-guards
+/// the pre-existing hook AND rigger's docs check. Regression-guards
 /// adv-u24-1r-chained-terminal-hook-shadows-rigger-block-silently (d24-11): appending rigger's
-/// block after such a hook would let the `exit 0` silently shadow it.
+/// block after such a hook would let the `exit 0` silently shadow it. Uses the MATCHING-render
+/// fixture (spec 70, crit 1) rather than a stale one, since a REFUSED commit never reaches the
+/// chained hook at all by design - this test isolates the chaining/ordering property alone.
 #[test]
 fn setup_precommit_hook_chains_after_a_terminal_exit_hook_and_still_runs() {
     let proj = temp_git_project_with_commit();
@@ -9269,8 +19694,10 @@ fn setup_precommit_hook_chains_after_a_terminal_exit_hook_and_still_runs() {
     }
 
     // `rigger setup` chains its block onto the pre-existing hook; then make it self-hosting with
-    // stale tracked docs so the final commit's hook has real work.
-    setup_selfhosting_repo_with_stale_docs(root);
+    // ALREADY-FRESH tracked docs so the final commit's hook finds no drift and falls through.
+    setup_selfhosting_repo_with_fresh_docs(root);
+    let fresh_skill_before =
+        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
 
     // The chained hook carries BOTH the user hook's command and rigger's block.
     let hook = std::fs::read_to_string(&user_hook).unwrap();
@@ -9286,12 +19713,13 @@ fn setup_precommit_hook_chains_after_a_terminal_exit_hook_and_still_runs() {
         .args(["commit", "-q", "-m", "change a documented fact"])
         .current_dir(root)
         .env("PATH", &commit_path)
+        .env_remove("CARGO_TARGET_DIR")
         .status()
         .expect("git must be runnable")
         .success();
     assert!(
         commit_ok,
-        "the commit must succeed - the hook must never block it"
+        "a matching render must let the commit through - the hook must never block it"
     );
 
     // The PRE-EXISTING hook still ran (its side effect is present)...
@@ -9299,24 +19727,26 @@ fn setup_precommit_hook_chains_after_a_terminal_exit_hook_and_still_runs() {
         root.join("USER_HOOK_RAN").exists(),
         "the pre-existing hook must still run when chained"
     );
-    // ...AND rigger's block ALSO ran despite the existing hook's terminal `exit 0`: HEAD carries
-    // the FRESH render, not the stale seed. A terminal-shadow bug (append-after) would break this.
+    // ...AND rigger's block ALSO ran despite the existing hook's terminal `exit 0`: it checked
+    // the docs (no drift found) and fell through, landing the SAME fresh bytes unchanged. A
+    // terminal-shadow bug (append-after) would have skipped rigger's block entirely, which this
+    // cannot distinguish from "ran and found nothing to do" - the reachability is proven by the
+    // block-position assertion above; this proves it did not somehow corrupt what it read.
     let committed =
         git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
-    assert!(
-        committed.contains("name: using-rigger") && !committed.contains("STALE DOC"),
-        "rigger's block must still regenerate the docs even though the existing hook ends in \
-         `exit 0`; got:\n{committed}"
+    assert_eq!(
+        committed, fresh_skill_before,
+        "rigger's block must leave an already-fresh doc byte-identical; got:\n{committed}"
     );
 }
 
-/// Spec 24, crit 2 (staging scope, end to end): the hook stages ONLY the two rendered doc
-/// outputs, never any other working-tree file. With an UNTRACKED junk file and an UNSTAGED edit
-/// to an unrelated tracked file both present in the worktree, an ordinary commit rides the two
-/// regenerated docs plus only the change the operator staged - the junk file is never committed
-/// and the unstaged edit does not ride the commit; both are left untouched in the worktree.
+/// Spec 70, crit 1 (comparison scope, end to end): the hook reads and compares ONLY the two
+/// rendered doc outputs; it never touches any other working-tree file. Since the hook no longer
+/// stages anything at all (it only ever refuses or falls through), an UNTRACKED junk file and an
+/// UNSTAGED edit to an unrelated tracked file both stay exactly as the operator left them across
+/// a commit whose docs are already the fresh render.
 #[test]
-fn setup_precommit_hook_stages_only_the_rendered_docs() {
+fn setup_precommit_hook_never_touches_unrelated_files() {
     let proj = temp_git_project_with_commit();
     let root = proj.path();
 
@@ -9328,41 +19758,40 @@ fn setup_precommit_hook_stages_only_the_rendered_docs() {
         &["commit", "-q", "--no-verify", "-m", "add other.txt"],
     );
 
-    setup_selfhosting_repo_with_stale_docs(root);
+    setup_selfhosting_repo_with_fresh_docs(root);
     let commit_path = stage_rigger_shim(root);
 
-    // Working-tree noise the hook must NOT stage: an UNTRACKED junk file and an UNSTAGED edit to
+    // Working-tree noise the hook must NOT touch: an UNTRACKED junk file and an UNSTAGED edit to
     // a tracked file.
     std::fs::write(root.join("junk.txt"), "not for the commit\n").unwrap();
     std::fs::write(root.join("other.txt"), "MODIFIED but not staged\n").unwrap();
 
-    // Stage ONE unrelated change and commit; the hook stages the two docs on top of it.
+    // Stage ONE unrelated change and commit; the docs are already fresh so nothing else happens.
     std::fs::write(root.join("trigger.txt"), "trigger\n").unwrap();
     git_ok(root, &["add", "trigger.txt"]);
     let commit_ok = Command::new("git")
         .args(["commit", "-q", "-m", "trigger"])
         .current_dir(root)
         .env("PATH", &commit_path)
+        .env_remove("CARGO_TARGET_DIR")
         .status()
         .expect("git must be runnable")
         .success();
-    assert!(commit_ok, "the commit must succeed");
+    assert!(commit_ok, "a matching render must let the commit through");
 
     let tree = git_out(root, &["ls-tree", "-r", "--name-only", "HEAD"]).unwrap_or_default();
     assert!(
-        tree.contains("trigger.txt")
-            && tree.contains("skills/using-rigger/SKILL.md")
-            && tree.contains("docs/handbook/using-rigger.md"),
-        "the commit must carry the staged change AND both regenerated docs; tree:\n{tree}"
+        tree.contains("trigger.txt"),
+        "the staged change must ride the commit; tree:\n{tree}"
     );
     assert!(
         !tree.contains("junk.txt"),
-        "the hook must NOT stage an unrelated untracked file; tree:\n{tree}"
+        "the hook must never stage an unrelated untracked file; tree:\n{tree}"
     );
     let committed_other = git_out(root, &["show", "HEAD:other.txt"]).unwrap_or_default();
     assert_eq!(
         committed_other, "original",
-        "the hook must not stage an unrelated tracked file's unstaged modification; got:\n{committed_other}"
+        "the hook must never stage an unrelated tracked file's unstaged modification; got:\n{committed_other}"
     );
     // The worktree noise is left untouched.
     assert!(
@@ -9393,6 +19822,7 @@ fn setup_precommit_hook_warns_and_proceeds_when_rigger_is_unavailable() {
         .args(["commit", "-q", "-m", "change with rigger off PATH"])
         .current_dir(root)
         .env("PATH", &path)
+        .env_remove("CARGO_TARGET_DIR")
         .output()
         .expect("git must be runnable");
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -9401,8 +19831,9 @@ fn setup_precommit_hook_warns_and_proceeds_when_rigger_is_unavailable() {
         "the commit must succeed - the hook must never block it; stderr:\n{stderr}"
     );
     assert!(
-        stderr.contains("rigger not on PATH"),
-        "the hook must WARN that rigger is unavailable; stderr:\n{stderr}"
+        stderr.contains("no rigger binary found"),
+        "the hook must WARN that rigger is unavailable (checked every tree-built candidate \
+         AND PATH, spec 75); stderr:\n{stderr}"
     );
     let committed =
         git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
@@ -9429,6 +19860,7 @@ fn setup_precommit_hook_warns_and_proceeds_when_rigger_docs_errors() {
         .args(["commit", "-q", "-m", "change while rigger docs errors"])
         .current_dir(root)
         .env("PATH", &path)
+        .env_remove("CARGO_TARGET_DIR")
         .output()
         .expect("git must be runnable");
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -9490,6 +19922,7 @@ fn setup_precommit_hook_stays_inert_when_only_one_doc_is_tracked() {
         .args(["commit", "-q", "-m", "change with only the skill tracked"])
         .current_dir(root)
         .env("PATH", &commit_path)
+        .env_remove("CARGO_TARGET_DIR")
         .status()
         .expect("git must be runnable")
         .success();
@@ -9515,6 +19948,187 @@ fn setup_precommit_hook_stays_inert_when_only_one_doc_is_tracked() {
     assert!(
         !tree.contains(HANDBOOK_REL),
         "the untracked handbook must never ride the commit; tree:\n{tree}"
+    );
+}
+
+/// Spec 70, crit 1 (a REFUSAL aborts the WHOLE hook, including anything chained after it, end
+/// to end): rigger's block is inserted BEFORE a pre-existing hook's body (spec 24 chaining), and
+/// its `exit 1` on a detected drift is deliberately NOT cooperative - `precommit_block`'s own doc
+/// comment states it "must abort the whole hook (including anything chained after it), because a
+/// commit that is about to be refused should not go on to run further gates." No existing test
+/// drives this: the chaining test
+/// (`setup_precommit_hook_chains_after_a_terminal_exit_hook_and_still_runs`) deliberately swaps
+/// to a MATCHING-render fixture specifically to stay off the refusal path, so this exact safety
+/// claim has zero coverage until this test. Drives the refusal path with a pre-existing chained
+/// hook present and proves its body never runs.
+#[test]
+fn setup_precommit_hook_refusal_aborts_a_chained_hook_body() {
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+
+    // A pre-existing pre-commit hook that leaves a detectable side effect if it runs.
+    let hooks = root.join(".git/hooks");
+    std::fs::create_dir_all(&hooks).unwrap();
+    let user_hook = hooks.join("pre-commit");
+    std::fs::write(&user_hook, "#!/bin/sh\ntouch USER_HOOK_RAN\nexit 0\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&user_hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    // `rigger setup` chains its block BEFORE the existing hook body (spec 24); seed genuinely
+    // STALE tracked docs so the final commit's hook has real drift to refuse.
+    let (setup_out, setup_err, setup_ok) =
+        run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(setup_ok, "rigger setup must succeed; stderr:\n{setup_err}");
+    assert!(
+        setup_out.contains("pre-commit hook"),
+        "setup must install the pre-commit hook; got:\n{setup_out}"
+    );
+    seed_stale_tracked_docs(root);
+
+    let hook = std::fs::read_to_string(&user_hook).unwrap();
+    assert!(
+        hook.contains("touch USER_HOOK_RAN") && hook.contains("rigger docs"),
+        "the chained hook must preserve the user hook AND carry rigger's block; got:\n{hook}"
+    );
+
+    let commit_path = stage_rigger_shim(root);
+    std::fs::write(root.join("code.txt"), "a documented fact changed\n").unwrap();
+    git_ok(root, &["add", "code.txt"]);
+    let out = Command::new("git")
+        .args(["commit", "-q", "-m", "change a documented fact"])
+        .current_dir(root)
+        .env("PATH", &commit_path)
+        .env_remove("CARGO_TARGET_DIR")
+        .output()
+        .expect("git must be runnable");
+
+    assert!(
+        !out.status.success(),
+        "a drifted render must refuse the commit even with a chained hook present"
+    );
+    assert!(
+        !root.join("USER_HOOK_RAN").exists(),
+        "a refusal must abort the WHOLE hook script before reaching the chained body that \
+         follows rigger's block - the pre-existing hook's side effect must never appear"
+    );
+}
+
+/// Spec 70, crit 1 (a refusal names ONLY the file that actually drifted, end to end): the hook
+/// judges each tracked doc independently (`git diff --quiet -- "$doc"` runs per file), and only a
+/// file that differs is added to the refusal's file list. Every existing refusal fixture drifts
+/// BOTH docs at once, so none can discriminate "names every tracked file" from "names only the
+/// drifted ones". This fixture drifts ONLY the handbook, leaving the skill genuinely fresh, and
+/// proves the refusal names the handbook alone.
+#[test]
+fn setup_precommit_hook_refusal_names_only_the_drifted_file() {
+    const HANDBOOK_REL: &str = "docs/handbook/using-rigger.md";
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    setup_selfhosting_repo_with_fresh_docs(root);
+    let fresh_skill =
+        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+
+    // Drift ONLY the handbook back to a stale committed copy; the skill stays the true fresh
+    // render committed by `setup_selfhosting_repo_with_fresh_docs`.
+    std::fs::write(root.join(HANDBOOK_REL), "STALE DOC - not a real render\n").unwrap();
+    git_ok(root, &["add", HANDBOOK_REL]);
+    git_ok(
+        root,
+        &[
+            "commit",
+            "-q",
+            "--no-verify",
+            "-m",
+            "drift only the handbook",
+        ],
+    );
+    let seeded_handbook =
+        git_out(root, &["show", &format!("HEAD:{HANDBOOK_REL}")]).unwrap_or_default();
+    assert!(
+        seeded_handbook.contains("STALE DOC") && !fresh_skill.contains("STALE DOC"),
+        "the fixture must leave exactly one doc stale and the other genuinely fresh"
+    );
+
+    let commit_path = stage_rigger_shim(root);
+    std::fs::write(root.join("code.txt"), "a documented fact changed\n").unwrap();
+    git_ok(root, &["add", "code.txt"]);
+    let out = Command::new("git")
+        .args(["commit", "-q", "-m", "change a documented fact"])
+        .current_dir(root)
+        .env("PATH", &commit_path)
+        .env_remove("CARGO_TARGET_DIR")
+        .output()
+        .expect("git must be runnable");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        !out.status.success(),
+        "a single drifted doc must still refuse the commit; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(HANDBOOK_REL),
+        "the refusal must name the drifted handbook; stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("skills/using-rigger/SKILL.md"),
+        "the refusal must NOT name the still-fresh skill - only the actually drifted file; \
+         stderr:\n{stderr}"
+    );
+}
+
+/// Spec 70, crit 1 (the refused working tree already carries the fresh render, end to end): the
+/// hook runs `rigger docs` BEFORE it compares, so by the time it refuses, the fresh render is
+/// already sitting in the working tree as an unstaged edit - the printed remedy ("re-render with
+/// the tree-built binary ... then git add the result") only makes sense if that render is
+/// already there. No existing test reads the raw working-tree file after a refusal (only HEAD
+/// and the index are checked); this proves the operator does not need to re-run `rigger docs`
+/// themselves to recover.
+#[test]
+fn setup_precommit_hook_refusal_leaves_the_fresh_render_in_the_working_tree() {
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+    assert!(
+        out.contains("pre-commit hook"),
+        "setup must install the pre-commit hook; got:\n{out}"
+    );
+    seed_stale_tracked_docs(root);
+
+    let commit_path = stage_rigger_shim(root);
+    std::fs::write(root.join("code.txt"), "a documented fact changed\n").unwrap();
+    git_ok(root, &["add", "code.txt"]);
+    let commit_out = Command::new("git")
+        .args(["commit", "-q", "-m", "change a documented fact"])
+        .current_dir(root)
+        .env("PATH", &commit_path)
+        .env_remove("CARGO_TARGET_DIR")
+        .output()
+        .expect("git must be runnable");
+    assert!(
+        !commit_out.status.success(),
+        "the drifted render must refuse the commit"
+    );
+
+    // The raw working-tree file (NOT `git show HEAD:...`, NOT the index) must already hold the
+    // fresh render the hook's own `rigger docs` call wrote before comparing - not the stale seed.
+    let working_tree_skill =
+        std::fs::read_to_string(root.join("skills/using-rigger/SKILL.md")).unwrap();
+    assert!(
+        working_tree_skill.contains("name: using-rigger")
+            && !working_tree_skill.contains("STALE DOC"),
+        "the working tree must already carry the fresh render after a refusal, so the printed \
+         remedy's `git add` step has real fresh content to stage; got:\n{working_tree_skill}"
+    );
+    // And it is genuinely UNSTAGED - the hook never ran `git add` on its own re-render.
+    let unstaged = git_out(root, &["diff", "--name-only"]).unwrap_or_default();
+    assert!(
+        unstaged.contains("skills/using-rigger/SKILL.md"),
+        "the fresh render in the working tree must be an unstaged edit, not already staged; \
+         diff --name-only:\n{unstaged}"
     );
 }
 
@@ -9856,13 +20470,6 @@ fn read_dash_marker(root: &Path) -> Option<(u16, u32)> {
     Some((port, pid))
 }
 
-/// Best-effort kill+reap of a process by pid, so a test that drove the step path into starting
-/// a real, DETACHED `rigger dash` never leaves it orphaned. Ignores every error: the pid may
-/// already be gone, which is exactly the state we want.
-fn reap_pid(pid: u32) {
-    let _ = Command::new("kill").arg("-9").arg(pid.to_string()).status();
-}
-
 /// Run `rigger step` in `root` with the always-on step dash ENABLED - the RIGGER_NO_DASH
 /// opt-out explicitly REMOVED from the environment (so an ambient opt-out in CI cannot mask the
 /// behavior under test) - returning (stdout, stderr). Used by the spec-39/50 step-path dash
@@ -9876,7 +20483,7 @@ fn reap_pid(pid: u32) {
 /// an ephemeral port. Two calls with the SAME `dash_port` model the same run's successive steps
 /// (they must find the one dash the first step started); distinct ports model independent runs.
 fn run_step_dash_enabled(root: &Path, dash_port: u16) -> (String, String) {
-    let out = Command::new(rigger_bin())
+    let out = common::rigger_courier()
         .args(["step"])
         .current_dir(root)
         // Redirect the machine-global registry (spec 50, criterion 2) into the test's own temp
@@ -9943,7 +20550,7 @@ fn step_auto_starts_one_persistent_dash_and_a_second_step_starts_none() {
     // of its loopback URL returns the read-only page. Reap before failing so nothing leaks.
     let url = format!("http://127.0.0.1:{port1}/");
     if !matches!(http_get(&url), Some(body) if body.contains("rigger dash")) {
-        reap_pid(pid1);
+        common::terminate_pid(pid1);
         panic!("the auto-started step dash at {url} did not serve its page");
     }
 
@@ -9953,10 +20560,10 @@ fn step_auto_starts_one_persistent_dash_and_a_second_step_starts_none() {
 
     // Reap every dash this test could have started BEFORE asserting, so a failed assertion
     // never leaves an orphaned dashboard behind.
-    reap_pid(pid1);
+    common::terminate_pid(pid1);
     if let Some((_, pid2)) = marker2 {
         if pid2 != pid1 {
-            reap_pid(pid2);
+            common::terminate_pid(pid2);
         }
     }
 
@@ -10022,7 +20629,7 @@ fn step_dash_binds_exactly_the_rigger_dash_port_override() {
     let served_at_override = matches!(http_get(&url), Some(body) if body.contains("rigger dash"));
 
     // Reap the real detached dash BEFORE any assertion, so a failed assertion never leaks it.
-    reap_pid(pid);
+    common::terminate_pid(pid);
 
     assert_eq!(
         marker_port, dash_port,
@@ -10034,6 +20641,549 @@ fn step_dash_binds_exactly_the_rigger_dash_port_override() {
         served_at_override,
         "a real detached dash must be genuinely serving at the injected RIGGER_DASH_PORT={dash_port} \
          - the override must reach the actual bind, not just the recorded marker value"
+    );
+}
+
+/// Spec 62, criterion 1 (MARKER FOLLOWS BIND), through the BUILT binary: a step whose detached
+/// dash spawn can never confirm a bind - its `RIGGER_DASH_PORT` names a port genuinely HELD by
+/// another process - records NO `.rigger/dash.marker` and leaves a PRE-EXISTING marker
+/// byte-for-byte untouched; the step still runs to completion (a printed wave), degrading to
+/// headless rather than blocking. This closes the class of defect the marker-follows-bind
+/// design guards against: a marker surviving a failed bind and naming a dash that never
+/// actually came up.
+///
+/// The in-crate unit tests (`wait_for_dash_bind_*`, `ensure_run_dashboard_at_writes_no_marker_
+/// when_the_real_spawn_never_confirms_a_bind` in `src/main.rs`) prove the DECISION - the
+/// injected-closure ordering, and the pure `wait_for_dash_bind` state machine against a real
+/// held port - but only the real seam wired through `cargo test`'s own harness binary, which
+/// can never recognize `dash` as a subcommand and so can only ever reach the EARLY-EXIT arm of
+/// `wait_for_dash_bind`, never a genuine `AddrInUse` from the actual `rigger dash` subcommand.
+/// Only driving the real, BUILT `rigger` binary against a held port proves the production
+/// `spawn_dash_child_process -> cmd_dash -> dash::bind_singleton` wiring: the spawned child
+/// itself observes the conflict, exits promptly, and `ensure_run_dashboard_at`'s existing
+/// `Err` arm (already correct) writes nothing - the write-ordering this criterion owns, proven
+/// end to end rather than only at the injected seam.
+///
+/// The held port is a plain `TcpListener` that never calls `accept()`: it does not answer the
+/// dash header, so the spawned child's own `dash::bind_singleton` sees a genuine, non-dash
+/// `AddrInUse` conflict (never mistaken for an already-serving rigger dash) and exits with an
+/// error immediately - this test therefore completes in well under
+/// `DASH_BIND_CONFIRM_WINDOW` rather than waiting out the production timeout.
+///
+/// Spec 62 round 2 fix (adv-u62c3-diagnosis-unreachable-from-step-path-auto-start): the
+/// headless-degrade line the step prints for THIS exact scenario must now also name the held
+/// port's holder - this test's own pid, since it holds the port itself - closing the gap an
+/// adjudicator's reject upheld: before the fix, this same scenario, driven through this same
+/// real step path, produced only the generic "could not auto-start the dashboard" line with no
+/// pid, no process state, and no remedy, even though the manual `rigger dash` CLI arm already
+/// named all three for the identical port conflict.
+// Hermetic against a real machine dash: the ensure port is pinned to this test's own ephemeral,
+// pre-held port (never the fixed 7420 a genuine always-on dash holds on the self-hosting box),
+// so it exercises the real ensure/bind-failure path without fighting that machine dash - the
+// same reason the other step-path dash tests in this section need no `serial` key.
+#[test]
+fn step_writes_no_dash_marker_and_leaves_a_stale_one_untouched_when_the_bind_never_confirms() {
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    write_two_stage_workflow(root);
+
+    // Hold the target port ourselves: the spawned `rigger dash --port <p>` child can never bind
+    // it, so it can never confirm serving - the bind-never-confirms shape at the real binary.
+    let held = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let dash_port = held.local_addr().unwrap().port();
+
+    // A pre-existing marker this failed start must leave COMPLETELY untouched (spec 62: "a
+    // failed bind leaves the prior marker byte-for-byte untouched and writes nothing").
+    let marker_path = root.join(".rigger").join("dash.marker");
+    std::fs::create_dir_all(marker_path.parent().unwrap()).unwrap();
+    std::fs::write(&marker_path, "40002\n999999\n").unwrap();
+
+    let (out, err) = run_step_dash_enabled(root, dash_port);
+    drop(held);
+
+    assert!(
+        out.contains(r#""wave":"#),
+        "a bind that never confirms still lets the step run to completion (a printed wave) - \
+         headless degrade, never a blocked step; stdout: {out:?} stderr: {err:?}"
+    );
+    assert_eq!(
+        read_dash_marker(root),
+        Some((40002, 999_999)),
+        "a bind that never confirmed must leave the pre-existing marker byte-for-byte untouched; \
+         stderr:\n{err}"
+    );
+    assert!(
+        err.contains("could not auto-start the dashboard"),
+        "a bind that never confirmed must announce the headless degrade, never a fabricated \
+         success; stderr:\n{err}"
+    );
+    assert!(
+        !err.contains("serving this run"),
+        "a bind that never confirmed must never announce a dash as serving; stderr:\n{err}"
+    );
+    if Path::new("/proc").is_dir() {
+        let my_pid = std::process::id().to_string();
+        // Checked as the exact `by pid {N}` attribution phrase, not a raw pid-string substring
+        // test: this project's mandatory pid-namespace test sandbox (.cargo/pidns-runner.sh)
+        // runs this test binary AS PID 1 of its own fresh namespace, so a raw substring check
+        // would be vacuous - "1" trivially matches inside the loopback address "127.0.0.1"
+        // regardless of what the diagnosis actually reports.
+        assert!(
+            err.contains(&format!("by pid {my_pid}")),
+            "spec 62 round 2 (adv-u62c3-diagnosis-unreachable-from-step-path-auto-start): the \
+             step path's own headless-degrade message must name the held port's holder - this \
+             test process's own pid - not just the generic 'could not auto-start' line; \
+             stderr:\n{err}"
+        );
+        assert!(
+            err.contains(&dash_port.to_string()),
+            "the diagnosis must always name the held address; stderr:\n{err}"
+        );
+    }
+}
+
+/// Spec 62, criterion 2 (SELF-HEAL) end-to-end at the BUILT binary: a `.rigger/dash.marker`
+/// naming a DEAD pid whose recorded port nothing answers is REPLACED by the next `rigger step`,
+/// not left stale forever. The in-crate unit tests
+/// (`ensure_run_dashboard_at_self_heals_a_marker_naming_a_dead_pid` in `src/main.rs`) prove the
+/// DECISION against the real `dash_marker_serving` predicate, but inject a fake `start()`
+/// closure that never spawns a real process; only driving the real `cmd_step ->
+/// ensure_run_dashboard -> spawn_run_dashboard_detached` wiring proves a genuine dash actually
+/// comes up and its marker actually lands on disk in place of the stale one - the same
+/// unit-test-proves-the-decision / real-binary-proves-the-wiring split criterion 1's own
+/// periphery tests in this section already establish.
+///
+/// `stale_port` is reserved-then-released (never `dash_port`, the fresh dash's own target), so
+/// nothing answers it and the pre-step marker is genuinely dead, not merely arbitrary.
+///
+/// The started dash is a real, long-lived detached process. `read_dash_marker` returning `Some`
+/// is ITSELF already past the point a dash exists (spec 62 criterion 1, MARKER FOLLOWS BIND: a
+/// marker only ever exists after a genuine successful bind), so this test probes the dash's
+/// liveness and reaps it by pid IMMEDIATELY after that read succeeds - before the `assert_ne!`,
+/// `assert_eq!`, and `assert!(err...)` checks that follow - mirroring the reap-before-assert
+/// discipline the `step_auto_starts_one_persistent_dash_and_a_second_step_starts_none` sibling
+/// test in this same file already follows: a failed assertion never leaves an orphaned dashboard
+/// behind.
+// Hermetic against a real machine dash: pins the ensure port to its own ephemeral
+// `free_loopback_port` (never the fixed 7420 a genuine always-on dash holds on the self-hosting
+// box) - the same reason the other step-path dash tests in this section need no `serial` key.
+#[test]
+fn step_self_heals_a_stale_marker_naming_a_dead_pid() {
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    write_two_stage_workflow(root);
+    let dash_port = free_loopback_port();
+    let stale_port = free_loopback_port();
+
+    let marker_path = root.join(".rigger").join("dash.marker");
+    std::fs::create_dir_all(marker_path.parent().unwrap()).unwrap();
+    std::fs::write(&marker_path, format!("{stale_port}\n999999\n")).unwrap();
+
+    let (out, err) = run_step_dash_enabled(root, dash_port);
+    assert!(
+        out.contains(r#""wave":"#),
+        "the step must run to completion (a printed wave) past the self-heal seam; \
+         stdout: {out:?} stderr: {err:?}"
+    );
+    let (port, pid) = read_dash_marker(root)
+        .unwrap_or_else(|| panic!("self-heal must record a fresh marker; stderr:\n{err}"));
+
+    // A real dash is now alive: probe it (a GENUINE serving process, not merely a written
+    // record) and reap it by pid BEFORE any assertion below that could panic, so a failed
+    // assertion never leaves it orphaned.
+    let url = format!("http://127.0.0.1:{port}/");
+    let served = matches!(http_get(&url), Some(body) if body.contains("rigger dash"));
+    common::terminate_pid(pid);
+
+    assert_ne!(
+        (port, pid),
+        (stale_port, 999_999),
+        "self-heal must replace the stale dead-pid record, not leave it byte-for-byte; \
+         stderr:\n{err}"
+    );
+    assert_eq!(
+        port, dash_port,
+        "the replacement marker must name this test's own fresh dash port; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("serving this run"),
+        "self-heal starting a fresh dash must announce it as newly serving; stderr:\n{err}"
+    );
+    assert!(
+        served,
+        "the self-healed dash at {url} did not serve its page"
+    );
+}
+
+/// Spec 62, criterion 2 (SELF-HEAL), the SECOND Done-when form: a `.rigger/dash.marker` naming a
+/// LIVE pid (this very test process, unambiguously alive) whose recorded port nothing answers is
+/// replaced exactly like the dead-pid form above - `dash_marker_serving` never reads the pid
+/// field at all, only probes the port (`ensure_run_dashboard_at_self_heals_a_marker_naming_a_
+/// live_pid_whose_port_is_unserved` proves this at the unit level with a fake `start()`), so a
+/// genuinely-alive-but-unrelated pid must never suppress self-heal at the real binary either.
+/// Distinct from the dead-pid test above precisely because pid liveness itself is never
+/// load-bearing for this decision, only the port's own probe is - this drives that claim through
+/// the real `cmd_step -> ensure_run_dashboard -> spawn_run_dashboard_detached` wiring, not just
+/// the injected-`start()` unit test.
+///
+/// The started dash is a real, long-lived detached process. `read_dash_marker` returning `Some`
+/// is ITSELF already past the point a dash exists (spec 62 criterion 1, MARKER FOLLOWS BIND: a
+/// marker only ever exists after a genuine successful bind), so this test probes the dash's
+/// liveness and reaps it by pid IMMEDIATELY after that read succeeds - before the `assert_ne!`,
+/// `assert_eq!`, and `assert!(err...)` checks that follow - mirroring the reap-before-assert
+/// discipline the `step_auto_starts_one_persistent_dash_and_a_second_step_starts_none` sibling
+/// test in this same file already follows: a failed assertion never leaves an orphaned dashboard
+/// behind.
+// Hermetic against a real machine dash: pins the ensure port to its own ephemeral
+// `free_loopback_port` (never the fixed 7420 a genuine always-on dash holds on the self-hosting
+// box) - the same reason the other step-path dash tests in this section need no `serial` key.
+#[test]
+fn step_self_heals_a_stale_marker_naming_a_live_pid_whose_port_is_unserved() {
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    write_two_stage_workflow(root);
+    let dash_port = free_loopback_port();
+    let stale_port = free_loopback_port();
+    let live_pid = std::process::id();
+
+    let marker_path = root.join(".rigger").join("dash.marker");
+    std::fs::create_dir_all(marker_path.parent().unwrap()).unwrap();
+    std::fs::write(&marker_path, format!("{stale_port}\n{live_pid}\n")).unwrap();
+
+    let (out, err) = run_step_dash_enabled(root, dash_port);
+    assert!(
+        out.contains(r#""wave":"#),
+        "the step must run to completion (a printed wave) past the self-heal seam; \
+         stdout: {out:?} stderr: {err:?}"
+    );
+    let (port, pid) = read_dash_marker(root)
+        .unwrap_or_else(|| panic!("self-heal must record a fresh marker; stderr:\n{err}"));
+
+    // A real dash is now alive: probe it (a GENUINE serving process, not merely a written
+    // record) and reap it by pid BEFORE any assertion below that could panic, so a failed
+    // assertion never leaves it orphaned.
+    let url = format!("http://127.0.0.1:{port}/");
+    let served = matches!(http_get(&url), Some(body) if body.contains("rigger dash"));
+    common::terminate_pid(pid);
+
+    assert_ne!(
+        (port, pid),
+        (stale_port, live_pid),
+        "a live-but-unrelated pid must never suppress self-heal - only the port's own probe \
+         decides whether the recorded dash is still serving; stderr:\n{err}"
+    );
+    assert_eq!(
+        port, dash_port,
+        "the replacement marker must name this test's own fresh dash port; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("serving this run"),
+        "self-heal starting a fresh dash must announce it as newly serving; stderr:\n{err}"
+    );
+    assert!(
+        served,
+        "the self-healed dash at {url} did not serve its page"
+    );
+}
+
+/// Spec 62 round 2 (adv-u62c1-marker-pid-not-the-serving-pid-on-singleton-race), through the
+/// BUILT binary: the LOSING side of a REAL concurrent singleton-bind race must record a marker
+/// naming the WINNER's actual serving pid, never the losing side's own (already-exited-without-
+/// binding) child pid.
+///
+/// The winner is brought FULLY up and genuinely serving, deterministically with no scheduling
+/// coin flip, BEFORE the step ever spawns its own dash - so the step's own detached spawn is
+/// GUARANTEED to lose: its `bind_singleton` sees `AddrInUse`, recognizes the winner via the dash
+/// header, and exits WITHOUT ever binding (spec 50, criterion 1's `AlreadyServing` arm). Before
+/// this fix, `wait_for_dash_bind` observed the winner's port already answering and returned
+/// `true`, and `spawn_run_dashboard_detached` wrote the LOSING child's OWN (already-exited,
+/// never-bound) pid into the marker - naming a process that never served anything. The fix asks
+/// the port itself who is REALLY serving (`dash::dash_serving_pid_on`) rather than trusting the
+/// locally-spawned pid, so the marker must name the winner's pid exactly.
+///
+/// The winner is a real, long-lived detached process; it is reaped BEFORE the assertions so a
+/// failed assertion never leaks a dashboard.
+#[test]
+fn step_losing_a_real_singleton_race_records_the_winners_pid_not_its_own_dead_childs() {
+    use std::process::Stdio;
+
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    write_two_stage_workflow(root);
+    let dash_port = free_loopback_port();
+    let url = format!("http://127.0.0.1:{dash_port}/");
+
+    // The WINNER: a real, serving `rigger dash` fully up BEFORE the step ever spawns its own -
+    // so the step's own detached spawn is deterministically the LOSING side of the race.
+    let mut winner = common::rigger_courier()
+        .args(["dash", "--port", &dash_port.to_string()])
+        .current_dir(root)
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn the winning `rigger dash`");
+    let winner_pid = winner.id();
+
+    if !matches!(http_get(&url), Some(body) if body.contains("rigger dash")) {
+        let _ = winner.kill();
+        let _ = winner.wait();
+        panic!("the winning `rigger dash` never came up at {url}");
+    }
+
+    // The LOSER: `rigger step`'s own always-on ensure spawns a SECOND `rigger dash` at the same
+    // fixed address for this fresh project (no local marker exists yet); it must lose the race,
+    // recognize the winner, and exit without binding.
+    let (out, err) = run_step_dash_enabled(root, dash_port);
+
+    let marker = read_dash_marker(root);
+    let _ = winner.kill();
+    let _ = winner.wait();
+
+    assert!(
+        out.contains(r#""wave":"#),
+        "the step must still run to completion even though its OWN dash spawn lost the race; \
+         stdout: {out:?} stderr: {err:?}"
+    );
+    let (marker_port, marker_pid) = marker.unwrap_or_else(|| {
+        panic!(
+            "a step that loses a real singleton race must still record a marker for the dash \
+             that IS actually serving; stderr:\n{err}"
+        )
+    });
+    assert_eq!(
+        marker_port, dash_port,
+        "the marker must name the port the winner actually serves"
+    );
+    assert_eq!(
+        marker_pid, winner_pid,
+        "the marker must name the WINNER's real serving pid, never the losing side's own \
+         (already-exited-without-binding) child pid; stderr:\n{err}"
+    );
+}
+
+/// Spec 62 round 4 fix point (adj-u62c1r3-verdict-reject-idempotency-regression): the round-3
+/// refuse-only fix wrote NO marker at all when a genuinely-serving winner's pid could not be
+/// attributed - correctly closing round 2's version-skew fallback
+/// (adj-u62c1r2-verdict-reject-version-skew-fallback), but as a side effect leaving
+/// `ensure_run_dashboard_at` nothing to short-circuit on: every LATER step of the run repeated
+/// the entire spawn/probe/attribute cycle forever, never reaching spec 39 criterion 1's no-op
+/// invariant. The fix records a marker naming the winner's real port and the documented
+/// `rigger::dash::UNATTRIBUTED_PID` sentinel instead of either extreme - never a value this call
+/// cannot prove (round 2's mistake), and never nothing at all (round 3's mistake).
+///
+/// The winner here is a raw stand-in, deliberately NOT a real `rigger dash` process: it answers
+/// the dash header (so the step's own spawned child's `bind_singleton` recognizes it as
+/// already-serving and exits cleanly without binding, and `wait_for_dash_bind` confirms the port
+/// answers) but NEVER sends the pid header at all - the exact shape of a version-skewed or
+/// foreign dash winning the race, not a scheduling coincidence.
+///
+/// The idempotency half of this same fix point - a SECOND consecutive step against this same
+/// winner must not repeat any of this - is proven separately by
+/// `step_against_a_pid_header_less_winner_is_idempotent_across_two_consecutive_steps` below.
+#[test]
+fn step_losing_a_race_against_a_pid_header_less_winner_records_a_sentinel_marker() {
+    use std::io::Write;
+
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    write_two_stage_workflow(root);
+    let dash_port = free_loopback_port();
+
+    // The WINNER stand-in: answers the dash header (so the race resolves cleanly) but never the
+    // pid header (so the serving pid can never be attributed) - simulating a pre-round-2 or
+    // foreign dash already holding the fixed address before this step ever spawns its own.
+    let listener = std::net::TcpListener::bind(("127.0.0.1", dash_port))
+        .expect("failed to bind the stand-in winner's port");
+    std::thread::spawn(move || {
+        for mut s in listener.incoming().flatten() {
+            let _ = s.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\n{}: probe\r\nConnection: close\r\n\r\n",
+                    rigger::dash::DASH_HEADER
+                )
+                .as_bytes(),
+            );
+        }
+    });
+
+    let (out, err) = run_step_dash_enabled(root, dash_port);
+
+    assert!(
+        out.contains(r#""wave":"#),
+        "the step must still run to completion even though its own dash spawn lost the race to \
+         an unattributable winner; stdout: {out:?} stderr: {err:?}"
+    );
+    assert_eq!(
+        read_dash_marker(root),
+        Some((dash_port, rigger::dash::UNATTRIBUTED_PID)),
+        "a loser that cannot attribute the real winner's serving pid (no X-Rigger-Dash-Pid on \
+         the wire at all) must still record a marker - naming the winner's real port and the \
+         documented sentinel pid, never its own already-exited child's pid and never nothing at \
+         all (recording nothing forecloses the next step's idempotent short-circuit); \
+         stderr:\n{err}"
+    );
+    assert!(
+        err.contains("serving this run"),
+        "a genuinely-serving (if unattributable) winner must be announced as serving, never the \
+         headless-degrade message a true start failure gets; stderr:\n{err}"
+    );
+    assert!(
+        !err.contains("could not auto-start the dashboard"),
+        "a dash IS serving here (confirmed by the winner answering the dash header) - this must \
+         never be reported as a failed auto-start; stderr:\n{err}"
+    );
+}
+
+/// Spec 62 round 4's own fix point, the idempotency half
+/// (adj-u62c1r3-verdict-reject-idempotency-regression's fix point (1)): a SECOND, consecutive
+/// step against the SAME pid-header-less winner must find the marker the first step recorded,
+/// confirm the winner is still serving via a single port probe, and short-circuit there - never
+/// spawning a second child, never re-probing for a pid, never rewriting the marker. This is the
+/// exact invariant the round-3 refuse-only fix broke: writing no marker on the first step left
+/// nothing for a second step to find, so it repeated the ENTIRE spawn/wait/attribute cycle every
+/// single time (spec 39 criterion 1's "the second and every later step of a run is a no-op,
+/// never a second dash or a port fight" - violated).
+///
+/// Proven two ways: (1) the marker is byte-for-byte unchanged after the second step (nothing
+/// re-wrote it), and (2) the winner's listener sees exactly ONE connection during the second
+/// step - the lone `dash_marker_serving` port probe `ensure_run_dashboard_at` makes before
+/// deciding `AlreadyServing`. A regression back to the round-3 shape (or any other path that
+/// re-attempts a full spawn) would instead drive the child's own `bind_singleton` AddrInUse
+/// check, the parent's `wait_for_dash_bind` poll loop, AND a second `dash_serving_pid_on` probe -
+/// several connections, never just one.
+#[test]
+fn step_against_a_pid_header_less_winner_is_idempotent_across_two_consecutive_steps() {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    write_two_stage_workflow(root);
+    let dash_port = free_loopback_port();
+
+    let connections = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&connections);
+    let listener = std::net::TcpListener::bind(("127.0.0.1", dash_port))
+        .expect("failed to bind the stand-in winner's port");
+    std::thread::spawn(move || {
+        for mut s in listener.incoming().flatten() {
+            counter.fetch_add(1, Ordering::SeqCst);
+            let _ = s.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\n{}: probe\r\nConnection: close\r\n\r\n",
+                    rigger::dash::DASH_HEADER
+                )
+                .as_bytes(),
+            );
+        }
+    });
+
+    // First step: no marker exists yet, so this step's own spawn loses the race and (per the
+    // round-4 fix proven above) records a sentinel marker naming the winner's port.
+    let (out1, err1) = run_step_dash_enabled(root, dash_port);
+    assert!(
+        out1.contains(r#""wave":"#),
+        "the first step must run to completion; stdout: {out1:?} stderr: {err1:?}"
+    );
+    let first_marker = read_dash_marker(root).unwrap_or_else(|| {
+        panic!(
+            "the first step must record a sentinel marker for the confirmed-serving, \
+             unattributable winner; stderr:\n{err1}"
+        )
+    });
+    assert_eq!(
+        first_marker,
+        (dash_port, rigger::dash::UNATTRIBUTED_PID),
+        "the first step's marker must name the winner's real port and the sentinel pid"
+    );
+
+    // Isolate the second step's own network activity from the first step's (which necessarily
+    // makes several connections: the losing child's own AddrInUse/dash-recognition probe, the
+    // parent's wait_for_dash_bind confirmation, and the pid-attribution probe).
+    connections.store(0, Ordering::SeqCst);
+
+    // Second, consecutive step against the SAME winner and the SAME project (same run): the
+    // marker the first step recorded still names a port that is still serving, so this must be
+    // the idempotent no-op - never a second spawn.
+    let (out2, err2) = run_step_dash_enabled(root, dash_port);
+    assert!(
+        out2.contains(r#""wave":"#),
+        "the second step must also run to completion; stdout: {out2:?} stderr: {err2:?}"
+    );
+    assert_eq!(
+        read_dash_marker(root),
+        Some(first_marker),
+        "the marker must be byte-for-byte unchanged after the idempotent second step - a \
+         rewrite would mean `start` was called again instead of short-circuiting"
+    );
+    assert!(
+        !err2.contains("serving this run"),
+        "the idempotent no-op step starts nothing, so it must not announce a fresh start; \
+         stderr:\n{err2}"
+    );
+    assert!(
+        !err2.contains("could not auto-start the dashboard"),
+        "the idempotent no-op step must never report a failed start either; stderr:\n{err2}"
+    );
+    assert_eq!(
+        connections.load(Ordering::SeqCst),
+        1,
+        "a truly idempotent no-op step touches the winner's port exactly once - the single \
+         `dash_marker_serving` probe `ensure_run_dashboard_at` makes before short-circuiting to \
+         AlreadyServing. Anything more means the full spawn/wait/attribute cycle ran again \
+         (the round-3 regression this test pins against)"
+    );
+}
+
+/// Spec 62 round 2 (adv-u62c1-marker-pid-not-the-serving-pid-on-singleton-race): the new public
+/// probe `rigger::dash::dash_serving_pid_on` reports a REAL, separately-compiled `rigger dash`
+/// process's own OS-reported pid - proven against the actual product binary as the server, not
+/// only the implementer's own in-crate unit tests (`dash_serving_pid_on_reports_the_pid_a_real_
+/// dash_response_names` et al in `src/dash.rs`), which can only ever stand up a FAKE listener
+/// inside the SAME test process and so structurally can never observe a genuine cross-process
+/// `X-Rigger-Dash-Pid` round trip - the same class of gap a real subprocess closes that the
+/// bind-confirmation periphery test above already closes for criterion 1.
+///
+/// This is the direct PRODUCER-side lock on this criterion's public API surface. It complements,
+/// never duplicates, `step_losing_a_real_singleton_race_records_the_winners_pid_not_its_own_dead_
+/// childs` above: that test proves a CONSUMER (`spawn_run_dashboard_detached`, compiled into the
+/// SAME binary as its caller) reads the header correctly end to end through a whole `step`: a
+/// defect that flipped the header's write side while the consumer ALSO happened to misread it in
+/// a compensating way could still pass that test by coincidence. This test pins the probe
+/// function's own return value directly against an externally observed, independently known pid
+/// (`Child::id()`), with no such compensating path available.
+#[test]
+fn dash_serving_pid_on_reports_a_real_separately_compiled_dashs_own_pid() {
+    use std::process::Stdio;
+
+    let proj = temp_project();
+    let port = free_loopback_port();
+    let mut dash = common::rigger_courier()
+        .args(["dash", "--port", &port.to_string()])
+        .current_dir(proj.path())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn `rigger dash`");
+    let dash_pid = dash.id();
+
+    if !matches!(http_get_path(port, "/"), Some(resp) if resp.contains("rigger dash")) {
+        let _ = dash.kill();
+        let _ = dash.wait();
+        panic!("the spawned `rigger dash` never came up on port {port}");
+    }
+
+    let reported = rigger::dash::dash_serving_pid_on(port);
+    let _ = dash.kill();
+    let _ = dash.wait();
+
+    assert_eq!(
+        reported,
+        Some(dash_pid),
+        "dash_serving_pid_on must report the REAL, separately-compiled dash's own OS pid \
+         ({dash_pid}), never a stale, zero, or otherwise wrong value; got {reported:?}"
     );
 }
 
@@ -10065,6 +21215,15 @@ fn step_honors_the_rigger_no_dash_opt_out() {
         !err.contains("serving this run"),
         "under RIGGER_NO_DASH the step announces no dash; stderr:\n{err}"
     );
+    // Round-8 fix (spec 69): `record_dash_attempt` is called only PAST the opt-out's early
+    // return in `ensure_run_dashboard` - an opted-out step attempts no dash at all, so there is
+    // nothing this run to vouch for. The doc comment on `ensure_run_dashboard` claims this
+    // explicitly; this closes the periphery gap on that claim, driven through a real step.
+    assert!(
+        !root.join(".rigger").join("dash.attempt").exists(),
+        "under RIGGER_NO_DASH the step must record NO dash attempt breadcrumb either - the \
+         opt-out skips record_dash_attempt along with the dash itself; one was written"
+    );
 }
 
 /// Spec 50, criterion 4 (opt-out): the CONFIG opt-out `dash: off` in workflow.yml suppresses the
@@ -10093,7 +21252,7 @@ fn step_honors_the_config_dash_off_opt_out() {
     // RIGGER_NO_DASH REMOVED so ONLY `dash: off` can suppress the dash; the state dir is redirected
     // so the run's registration lands in the test's own tree, never the operator's real one; and the
     // ensure port is pinned to an ephemeral loopback port so a regression never binds the fixed 7420.
-    let out = Command::new(rigger_bin())
+    let out = common::rigger_courier()
         .args(["step"])
         .current_dir(root)
         .env("XDG_STATE_HOME", root)
@@ -10107,7 +21266,7 @@ fn step_honors_the_config_dash_off_opt_out() {
     // If the opt-out regressed, a real dash started at the fixed port and recorded a marker: reap
     // it BEFORE asserting so a failing assertion never leaks a dashboard.
     if let Some((_, pid)) = read_dash_marker(root) {
-        reap_pid(pid);
+        common::terminate_pid(pid);
     }
 
     assert!(
@@ -10122,6 +21281,13 @@ fn step_honors_the_config_dash_off_opt_out() {
     assert!(
         !stderr.contains("serving this run"),
         "under `dash: off` the step announces no dash; stderr:\n{stderr}"
+    );
+    // Round-8 fix (spec 69): the config opt-out returns from `ensure_run_dashboard` before
+    // `record_dash_attempt` runs too, exactly like the env opt-out above - no dash breadcrumb
+    // of any kind for an opted-out step.
+    assert!(
+        !root.join(".rigger").join("dash.attempt").exists(),
+        "under `dash: off` the step must record NO dash attempt breadcrumb either; one was written"
     );
     // The run still proceeded normally: it registered its instance (criterion 2) even with the
     // dash opted out, proving the opt-out drops only the dash, not the run.
@@ -10265,14 +21431,14 @@ fn a_step_started_dash_is_detached_and_outlives_its_step_process() {
     // it - keeping this test off criterion 1's idempotency ground while never leaking a dash.
     if let Some((_, pid2)) = read_dash_marker(root) {
         if pid2 != pid {
-            reap_pid(pid2);
+            common::terminate_pid(pid2);
         }
     }
     let alive_after_step2 = rigger::dash::pid_is_alive(pid);
     let served_after_step2 = matches!(http_get(&url), Some(body) if body.contains("rigger dash"));
 
     // Reap the original detached dash BEFORE asserting, so a failure never leaves it orphaned.
-    reap_pid(pid);
+    common::terminate_pid(pid);
 
     assert!(
         out2.contains(r#""wave":"#),
@@ -10325,6 +21491,23 @@ fn write_live_instance(regdir: &std::path::Path, project: &str, root: &str) {
     rigger::registry::write(regdir, &inst).expect("write a live registry instance");
 }
 
+/// Write a registry instance for `project` at `root` with a heartbeat already at the unix epoch -
+/// hopelessly stale from the moment it is written, unlike [`write_live_instance`]'s fresh
+/// `now_ms()` heartbeat. Used to prove a property a fresh-then-ages-out entry cannot: a registered
+/// project whose registry entry was NEVER live during the watcher's own lifetime.
+fn write_stale_instance(regdir: &std::path::Path, project: &str, root: &str) {
+    use rigger::registry::{Instance, StoreIdentity};
+    let inst = Instance {
+        project: project.to_string(),
+        root: root.to_string(),
+        store: StoreIdentity::Local {
+            path: format!("{root}/.rigger/events.db"),
+        },
+        heartbeat_ms: 0,
+    };
+    rigger::registry::write(regdir, &inst).expect("write a stale registry instance");
+}
+
 /// Spec 50, criterion 5 end-to-end, through the BUILT binary: a detached `rigger dash --reap-on-idle`
 /// (the exact flag the ensure path passes) keeps serving WHILE a registered instance heartbeats, and
 /// SELF-REAPS once the registry empties - leaving no orphaned dash on a quiet machine. Nothing in
@@ -10339,7 +21522,7 @@ fn write_live_instance(regdir: &std::path::Path, project: &str, root: &str) {
 fn a_reap_on_idle_singleton_serves_while_an_instance_heartbeats_then_reaps_when_the_registry_empties(
 ) {
     use std::io::Read;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{mpsc, Arc};
     use std::time::Duration;
@@ -10363,7 +21546,7 @@ fn a_reap_on_idle_singleton_serves_while_an_instance_heartbeats_then_reaps_when_
     });
 
     let port = free_loopback_port();
-    let mut child = Command::new(rigger_bin())
+    let mut child = common::rigger_courier()
         .args(["dash", "--port", &port.to_string(), "--reap-on-idle"])
         .env("XDG_STATE_HOME", &xdg)
         // Poll fast and treat an instance heartbeat older than 2s as idle, so the self-reap is
@@ -10436,7 +21619,7 @@ fn a_reap_on_idle_singleton_serves_while_an_instance_heartbeats_then_reaps_when_
 #[test]
 fn a_reap_on_idle_singleton_survives_one_run_ending_while_another_project_is_live() {
     use std::io::Read;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{mpsc, Arc};
     use std::time::Duration;
@@ -10463,7 +21646,7 @@ fn a_reap_on_idle_singleton_survives_one_run_ending_while_another_project_is_liv
     let hb_b = spawn_heartbeat("proj-b", "/home/dev/proj-b", stop_b.clone());
 
     let port = free_loopback_port();
-    let mut child = Command::new(rigger_bin())
+    let mut child = common::rigger_courier()
         .args(["dash", "--port", &port.to_string(), "--reap-on-idle"])
         .env("XDG_STATE_HOME", &xdg)
         .env("RIGGER_DASH_REAP_POLL_MS", "150")
@@ -10542,7 +21725,7 @@ fn a_reap_on_idle_singleton_survives_one_run_ending_while_another_project_is_liv
 #[test]
 fn a_reap_on_idle_singleton_does_not_reap_before_any_instance_has_registered() {
     use std::io::Read;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{mpsc, Arc};
     use std::time::Duration;
@@ -10553,7 +21736,7 @@ fn a_reap_on_idle_singleton_does_not_reap_before_any_instance_has_registered() {
     let regdir = rigger::registry::instances_dir(state.path());
 
     let port = free_loopback_port();
-    let mut child = Command::new(rigger_bin())
+    let mut child = common::rigger_courier()
         .args(["dash", "--port", &port.to_string(), "--reap-on-idle"])
         .env("XDG_STATE_HOME", &xdg)
         // A tiny window so that WITHOUT the guard the empty registry would reap almost immediately -
@@ -10626,6 +21809,684 @@ fn a_reap_on_idle_singleton_does_not_reap_before_any_instance_has_registered() {
     assert_eq!(n, 0, "a self-reaped dash should have its stdout at EOF");
 }
 
+/// Write (or refresh) a liveness marker file at `path`, creating its parent directory as needed.
+/// Rewriting an existing file refreshes its mtime - the direct-filesystem analogue of a spawn's
+/// own heartbeat touch (spec 10), used here to simulate a live agent without spawning a real
+/// worker process. Stands in for the raw `touch` a real agent performs; the marker's CONTENT is
+/// never read by anything, only its mtime.
+fn touch_marker(path: &std::path::Path) {
+    std::fs::create_dir_all(path.parent().unwrap()).expect("create marker parent dir");
+    std::fs::write(path, b"").expect("write liveness marker");
+}
+
+/// Spec 62, criterion 5 (SINGLETON SURVIVES LIVE WORK, OWNS the idle judgment) end to end,
+/// through the BUILT binary: a `rigger dash --reap-on-idle` must NOT self-reap while a fresh
+/// in-flight AGENT liveness marker is present, even once the machine-global instance REGISTRY has
+/// genuinely aged out and gone empty - the exact gap the registry-only decision (spec 50 criterion
+/// 5, proven by the sibling tests above) left open: an agent mid-build with no recent courier call
+/// keeps its own liveness marker fresh (spec 10's heartbeat) without necessarily refreshing the
+/// registry on the same cadence. Only once BOTH the registry AND the agent liveness marker have
+/// gone quiet does the singleton reap - proving this criterion's own OWNED idle judgment, not
+/// just the registry-only judgment the sibling tests already lock in.
+///
+/// The registry instance is written ONCE (never re-heartbeated), so it ages out on its own past
+/// the fast test window - the "aged-out registry" the Done-when text names. A background thread
+/// keeps a SEPARATE liveness marker fresh under a temp scratch root (`RIGGER_TMPDIR`), standing in
+/// for a real spawn's own heartbeat touch, until the test lets it go idle too.
+#[test]
+fn a_reap_on_idle_singleton_survives_a_fresh_agent_liveness_marker_after_the_registry_ages_out() {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
+
+    // A machine-global registry the dash and the test share.
+    let state = tempfile::tempdir().unwrap();
+    let xdg = state.path().to_str().unwrap().to_string();
+    let regdir = rigger::registry::instances_dir(state.path());
+
+    // A hermetic scratch root the dash resolves via `RIGGER_TMPDIR`, so its agent-liveness scan
+    // (`rigger::liveness::any_marker_fresh`) reads exactly what this test writes and nothing from
+    // the real repo's own `.rigger/tmp`.
+    let scratch = tempfile::tempdir().unwrap();
+    let scratch_root = scratch.path().to_str().unwrap().to_string();
+    let marker_path =
+        rigger::liveness::marker_path(&scratch_root, "run-1", "u1c1/implementer#0").unwrap();
+
+    // ONE registry write, never refreshed: it ages out on its own once the fast test window
+    // elapses - the "aged-out registry" half of the criterion, driven with no ongoing heartbeat.
+    write_live_instance(&regdir, "proj-a", "/home/dev/proj-a");
+
+    // The agent liveness marker starts fresh and is kept fresh by a background thread - the "fresh
+    // in-flight agent liveness signal" half of the criterion.
+    touch_marker(&marker_path);
+    let stop = Arc::new(AtomicBool::new(false));
+    let marker_thread_path = marker_path.clone();
+    let marker_stop = stop.clone();
+    let heartbeat = std::thread::spawn(move || {
+        while !marker_stop.load(Ordering::Relaxed) {
+            touch_marker(&marker_thread_path);
+            std::thread::sleep(Duration::from_millis(150));
+        }
+    });
+
+    let port = free_loopback_port();
+    let mut child = common::rigger_courier()
+        .args(["dash", "--port", &port.to_string(), "--reap-on-idle"])
+        .env("XDG_STATE_HOME", &xdg)
+        .env("RIGGER_TMPDIR", &scratch_root)
+        // Same fast poll/stale envs as the registry-only tests: the registry entry above ages
+        // out within ~2s, and (were the agent-liveness signal absent) the singleton would reap
+        // almost immediately after - a strong signal if it wrongly does.
+        .env("RIGGER_DASH_REAP_POLL_MS", "150")
+        .env("RIGGER_DASH_REAP_STALE_SECS", "2")
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn `rigger dash --reap-on-idle`");
+    let mut out = child.stdout.take().expect("dash stdout is piped");
+
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 1];
+        let n = out.read(&mut buf).unwrap_or(0);
+        let _ = tx.send(n);
+    });
+
+    if !matches!(http_get(&format!("http://127.0.0.1:{port}/")), Some(body) if body.contains("rigger dash"))
+    {
+        stop.store(true, Ordering::Relaxed);
+        let _ = heartbeat.join();
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("the `rigger dash --reap-on-idle` never served its page");
+    }
+
+    // Well past the registry's 2s window (several poll intervals beyond it), with the marker
+    // thread still refreshing: the registry alone has gone empty, but the agent liveness signal
+    // is fresh, so the singleton must NOT reap. A read here is exactly the gap this criterion
+    // closes - reaping out from under a live agent whose courier cadence lapsed.
+    if rx.recv_timeout(Duration::from_millis(3500)).is_ok() {
+        stop.store(true, Ordering::Relaxed);
+        let _ = heartbeat.join();
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!(
+            "the singleton self-reaped while the registry was empty but a fresh in-flight agent \
+             liveness marker was still present - the idle judgment must see the agent, not just \
+             the registry"
+        );
+    }
+    // Still genuinely serving (not merely a blocked-but-dead pipe).
+    assert!(
+        matches!(http_get(&format!("http://127.0.0.1:{port}/")), Some(body) if body.contains("rigger dash")),
+        "the singleton must still serve while the agent liveness marker is fresh"
+    );
+
+    // Now let the agent liveness marker go idle too: with BOTH signals quiet, the singleton
+    // reaps exactly as spec 50 criterion 5 always has.
+    stop.store(true, Ordering::Relaxed);
+    heartbeat.join().expect("marker heartbeat thread joins");
+
+    let reaped = rx.recv_timeout(Duration::from_secs(12));
+    let _ = child.kill();
+    let _ = child.wait();
+    let n = reaped.expect(
+        "the singleton did not SELF-REAP within 12s after BOTH the registry and the agent \
+         liveness marker went idle - a genuinely quiet machine's dash must not leak",
+    );
+    assert_eq!(n, 0, "a self-reaped dash should have its stdout at EOF");
+}
+
+/// Spec 62, criterion 5 - the SAME survives-live-work guarantee as the test above, but launched
+/// from a directory with NO git repository above it at all. `cmd_dash`'s own scratch-root
+/// resolution derives `git_repo()` first and, before this fix, treated an EMPTY `git_repo()` as a
+/// hard "no scratch root, ever": it skipped `worktree::scratch_root_from_env` (and therefore
+/// `RIGGER_TMPDIR`) entirely, rather than letting that resolver's own env-override-first
+/// precedence handle a repo-less cwd - which it already does correctly on its own
+/// (`scratch_root_path`'s first match arm answers `RIGGER_TMPDIR` regardless of `repo`). A
+/// `rigger` invocation with no git repository above its cwd is not exotic: it is exactly what a
+/// whole-tree copy that excludes `.git` produces - including this project's OWN
+/// `cargo mutants --in-diff` scratch-tree build (spec 78's mutation-efficacy step every
+/// implementer runs), which is how this gap was actually found: a mutation baseline run failed
+/// this criterion's own sibling test above ONLY when run from that git-less copy, never from a
+/// real git worktree. A git-less launch silently blinding the self-reap watcher to its OWN
+/// launching project's agent-liveness marker is a real, reachable production gap, not a
+/// test-only corner.
+#[test]
+fn a_reap_on_idle_singleton_survives_a_fresh_agent_liveness_marker_with_no_git_repo_at_launch() {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
+
+    // A machine-global registry the dash and the test share.
+    let state = tempfile::tempdir().unwrap();
+    let xdg = state.path().to_str().unwrap().to_string();
+    let regdir = rigger::registry::instances_dir(state.path());
+
+    // A hermetic scratch root the dash resolves via `RIGGER_TMPDIR` alone - `cwd`, below, is
+    // deliberately NEVER `git init`-ed, so `git_repo()` resolves empty and the only way the dash
+    // can find this scratch root at all is by honoring `RIGGER_TMPDIR` even with an empty repo.
+    let scratch = tempfile::tempdir().unwrap();
+    let scratch_root = scratch.path().to_str().unwrap().to_string();
+    let marker_path =
+        rigger::liveness::marker_path(&scratch_root, "run-1", "u1c1/implementer#0").unwrap();
+
+    // A cwd with NO `.git` anywhere above it (a bare `tempfile::tempdir()`, never `git init`-ed) -
+    // exactly what a git-excluding whole-tree copy launches `rigger dash` from.
+    let cwd = tempfile::tempdir().unwrap();
+
+    // ONE registry write, never refreshed: it ages out on its own once the fast test window
+    // elapses - the "aged-out registry" half of the criterion, driven with no ongoing heartbeat.
+    write_live_instance(&regdir, "proj-a", "/home/dev/proj-a");
+
+    // The agent liveness marker starts fresh and is kept fresh by a background thread - the "fresh
+    // in-flight agent liveness signal" half of the criterion.
+    touch_marker(&marker_path);
+    let stop = Arc::new(AtomicBool::new(false));
+    let marker_thread_path = marker_path.clone();
+    let marker_stop = stop.clone();
+    let heartbeat = std::thread::spawn(move || {
+        while !marker_stop.load(Ordering::Relaxed) {
+            touch_marker(&marker_thread_path);
+            std::thread::sleep(Duration::from_millis(150));
+        }
+    });
+
+    let port = free_loopback_port();
+    let mut child = common::rigger_courier()
+        .args(["dash", "--port", &port.to_string(), "--reap-on-idle"])
+        .current_dir(cwd.path())
+        .env("XDG_STATE_HOME", &xdg)
+        .env("RIGGER_TMPDIR", &scratch_root)
+        // Same fast poll/stale envs as the sibling test above.
+        .env("RIGGER_DASH_REAP_POLL_MS", "150")
+        .env("RIGGER_DASH_REAP_STALE_SECS", "2")
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn `rigger dash --reap-on-idle`");
+    let mut out = child.stdout.take().expect("dash stdout is piped");
+
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 1];
+        let n = out.read(&mut buf).unwrap_or(0);
+        let _ = tx.send(n);
+    });
+
+    if !matches!(http_get(&format!("http://127.0.0.1:{port}/")), Some(body) if body.contains("rigger dash"))
+    {
+        stop.store(true, Ordering::Relaxed);
+        let _ = heartbeat.join();
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("the `rigger dash --reap-on-idle` never served its page");
+    }
+
+    // Well past the registry's 2s window, with the marker thread still refreshing: the registry
+    // alone has gone empty, but the agent liveness signal is fresh under `RIGGER_TMPDIR` - which
+    // must be honored even though `cwd` has no git repository above it.
+    if rx.recv_timeout(Duration::from_millis(3500)).is_ok() {
+        stop.store(true, Ordering::Relaxed);
+        let _ = heartbeat.join();
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!(
+            "the singleton self-reaped from a git-less launch even though a fresh in-flight \
+             agent liveness marker was present under RIGGER_TMPDIR - a repo-less cwd must not \
+             blind the idle judgment to an explicit RIGGER_TMPDIR override"
+        );
+    }
+    assert!(
+        matches!(http_get(&format!("http://127.0.0.1:{port}/")), Some(body) if body.contains("rigger dash")),
+        "the singleton must still serve while the agent liveness marker is fresh"
+    );
+
+    // Now let the agent liveness marker go idle too: with BOTH signals quiet, the singleton
+    // reaps exactly as spec 50 criterion 5 always has - even without a git repo.
+    stop.store(true, Ordering::Relaxed);
+    heartbeat.join().expect("marker heartbeat thread joins");
+
+    let reaped = rx.recv_timeout(Duration::from_secs(12));
+    let _ = child.kill();
+    let _ = child.wait();
+    let n = reaped.expect(
+        "the singleton did not SELF-REAP within 12s after BOTH the registry and the agent \
+         liveness marker went idle - a genuinely quiet machine's dash must not leak",
+    );
+    assert_eq!(n, 0, "a self-reaped dash should have its stdout at EOF");
+}
+
+/// Spec 62, criterion 5 round 2 (adjudication `adj-u62c5-verdict-reject-cross-project-blindness`,
+/// finding `adv-u62c5-agent-liveness-scoped-to-launching-project-only`): the idle judgment must
+/// see a fresh agent-liveness marker on ANY registered project, not only the one whose CWD
+/// happened to launch the machine-wide singleton. This is the CROSS-project sibling of
+/// `a_reap_on_idle_singleton_survives_a_fresh_agent_liveness_marker_after_the_registry_ages_out`
+/// above (same-project): here the fresh marker belongs to a SECOND, entirely different project
+/// (its own root, its own derived scratch path - never `RIGGER_TMPDIR`, which this test reserves
+/// for isolating the LAUNCHING project's own scratch root from the real repo this test binary
+/// runs inside) whose OWN registry entry is written ONCE and never refreshed, so it ages out on
+/// its own past the fast test window - reproducing the adversary's empirical repro (two
+/// registered projects, both registries aged out, one project's own agent-liveness marker still
+/// fresh) as a permanent regression test.
+#[test]
+fn a_reap_on_idle_singleton_survives_a_second_registered_projects_fresh_agent_liveness_marker() {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
+
+    // A machine-global registry the dash and the test share.
+    let state = tempfile::tempdir().unwrap();
+    let xdg = state.path().to_str().unwrap().to_string();
+    let regdir = rigger::registry::instances_dir(state.path());
+
+    // The LAUNCHING project's own scratch root: hermetic and left EMPTY (no marker ever written
+    // there), so its own agent-liveness signal reads false throughout - isolating the assertion
+    // to the SECOND project's marker alone, and keeping this test off the real repo's own live
+    // `agent-live` markers (this test binary runs inside an actual, in-use rigger checkout).
+    let own_scratch = tempfile::tempdir().unwrap();
+    let own_scratch_root = own_scratch.path().to_str().unwrap().to_string();
+
+    // The SECOND registered project: its own root, holding NO `.rigger/workflow.yml` (so its
+    // derived scratch root falls to the plain `<root>/.rigger/tmp` default rung - the same
+    // resolution its own `rigger` would use for itself, per `foreign_instance_scratch_root`),
+    // entirely distinct from `own_scratch_root` above and never touched by `RIGGER_TMPDIR`.
+    let other_project = tempfile::tempdir().unwrap();
+    let other_root = other_project.path().to_str().unwrap().to_string();
+    let other_scratch_root = format!("{other_root}/.rigger/tmp");
+    let other_marker_path =
+        rigger::liveness::marker_path(&other_scratch_root, "run-1", "u2c1/implementer#0").unwrap();
+
+    // ONE registry write for the second project, never refreshed: it ages out on its own past
+    // the fast test window - the "both registries aged out" half of the adversary's repro.
+    write_live_instance(&regdir, "proj-b", &other_root);
+
+    // The second project's own agent liveness marker starts fresh and is kept fresh by a
+    // background thread - the live-agent-on-a-different-project half of the repro.
+    touch_marker(&other_marker_path);
+    let stop = Arc::new(AtomicBool::new(false));
+    let marker_thread_path = other_marker_path.clone();
+    let marker_stop = stop.clone();
+    let heartbeat = std::thread::spawn(move || {
+        while !marker_stop.load(Ordering::Relaxed) {
+            touch_marker(&marker_thread_path);
+            std::thread::sleep(Duration::from_millis(150));
+        }
+    });
+
+    let port = free_loopback_port();
+    let mut child = common::rigger_courier()
+        .args(["dash", "--port", &port.to_string(), "--reap-on-idle"])
+        .env("XDG_STATE_HOME", &xdg)
+        .env("RIGGER_TMPDIR", &own_scratch_root)
+        .env("RIGGER_DASH_REAP_POLL_MS", "150")
+        .env("RIGGER_DASH_REAP_STALE_SECS", "2")
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn `rigger dash --reap-on-idle`");
+    let mut out = child.stdout.take().expect("dash stdout is piped");
+
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 1];
+        let n = out.read(&mut buf).unwrap_or(0);
+        let _ = tx.send(n);
+    });
+
+    if !matches!(http_get(&format!("http://127.0.0.1:{port}/")), Some(body) if body.contains("rigger dash"))
+    {
+        stop.store(true, Ordering::Relaxed);
+        let _ = heartbeat.join();
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("the `rigger dash --reap-on-idle` never served its page");
+    }
+
+    // Well past the second project's 2s registry window (several poll intervals beyond it), with
+    // its marker thread still refreshing: BOTH registries are now empty (the launching project
+    // was never registered at all; proj-b's own entry aged out and was pruned), but proj-b's own
+    // agent liveness marker is fresh under ITS OWN scratch root - the singleton must NOT reap. A
+    // read here is exactly the cross-project blindness this criterion round closes.
+    if rx.recv_timeout(Duration::from_millis(3500)).is_ok() {
+        stop.store(true, Ordering::Relaxed);
+        let _ = heartbeat.join();
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!(
+            "the singleton self-reaped while a DIFFERENT registered project's own agent \
+             liveness marker was still fresh - the idle judgment must see every registered \
+             project's agent liveness, not only the launching project's own"
+        );
+    }
+    // Still genuinely serving (not merely a blocked-but-dead pipe).
+    assert!(
+        matches!(http_get(&format!("http://127.0.0.1:{port}/")), Some(body) if body.contains("rigger dash")),
+        "the singleton must still serve while the OTHER project's agent liveness marker is fresh"
+    );
+
+    // Now let the second project's agent liveness marker go idle too: with every signal quiet,
+    // the singleton reaps exactly as spec 50 criterion 5 always has.
+    stop.store(true, Ordering::Relaxed);
+    heartbeat.join().expect("marker heartbeat thread joins");
+
+    let reaped = rx.recv_timeout(Duration::from_secs(12));
+    let _ = child.kill();
+    let _ = child.wait();
+    let n = reaped.expect(
+        "the singleton did not SELF-REAP within 12s after the second project's agent liveness \
+         marker went idle too - a genuinely quiet machine's dash must not leak",
+    );
+    assert_eq!(n, 0, "a self-reaped dash should have its stdout at EOF");
+}
+
+/// Spec 62, criterion 5 round 2 (sdet finding
+/// `sdet-u62c5r2-known-roots-read-all-vs-read-live-untested-at-call-site`, upheld and strengthened
+/// by `adv-u62c5r2-uphold-known-roots-read-all-untested-strengthened-with-repro`): the property
+/// that justifies `registry::read_all` existing as its own function at all. Unlike the sibling
+/// cross-project test above - whose foreign registry entry starts FRESH and only ages out DURING
+/// the test, so both `read_all` and `read_live` would return it on the watcher's very first poll,
+/// leaving the call site's choice between them unobserved - here the foreign project's registry
+/// entry is written with a heartbeat already at the unix epoch: hopelessly stale BEFORE the dash
+/// is even spawned. Were `watch_and_self_reap_on_idle`'s `known_roots` grown from `read_live`'s
+/// pruned result instead of `read_all`'s, this entry would never appear in `live` on ANY poll -
+/// its root would never be learned, `foreign_instance_scratch_root` would never be checked for it,
+/// and the singleton would reap right out from under its own genuinely fresh agent-liveness
+/// marker.
+///
+/// A THIRD, separate project (`proj-latch`) supplies the `ever_seen_live` startup latch exactly as
+/// the very first sibling test above does for its own project: written once, fresh, and never
+/// refreshed, so it is briefly live on the watcher's earliest polls and then ages out on its own -
+/// isolating the assertion to the SECOND project's agent-liveness signal alone once its registry
+/// entry, too, has gone quiet (`live_instances` reaches zero from BOTH projects, so only
+/// `agent_live` can still be keeping the singleton alive).
+#[test]
+fn a_reap_on_idle_singleton_survives_a_foreign_agent_liveness_marker_whose_own_registry_entry_was_already_stale_before_the_watchers_first_poll(
+) {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
+
+    // A machine-global registry the dash and the test share.
+    let state = tempfile::tempdir().unwrap();
+    let xdg = state.path().to_str().unwrap().to_string();
+    let regdir = rigger::registry::instances_dir(state.path());
+
+    // The LAUNCHING project's own scratch root: hermetic and left EMPTY (no marker ever written
+    // there), isolating the assertion to the SECOND project's marker alone.
+    let own_scratch = tempfile::tempdir().unwrap();
+    let own_scratch_root = own_scratch.path().to_str().unwrap().to_string();
+
+    // A THIRD project supplies the `ever_seen_live` startup latch: written once, fresh, and never
+    // refreshed - it is live on the watcher's earliest polls and ages out on its own past the fast
+    // test window, exactly the one-time-write-then-decay shape the very first sibling test above
+    // uses for its own project.
+    let latch_project = tempfile::tempdir().unwrap();
+    let latch_root = latch_project.path().to_str().unwrap().to_string();
+    write_live_instance(&regdir, "proj-latch", &latch_root);
+
+    // The SECOND, foreign project: its registry entry is written ONCE with a heartbeat already at
+    // the unix epoch - hopelessly stale before the dash is even spawned, so `read_live` would
+    // prune it, and never return it, on its very first poll. Never refreshed.
+    let other_project = tempfile::tempdir().unwrap();
+    let other_root = other_project.path().to_str().unwrap().to_string();
+    let other_scratch_root = format!("{other_root}/.rigger/tmp");
+    let other_marker_path =
+        rigger::liveness::marker_path(&other_scratch_root, "run-1", "u2c1/implementer#0").unwrap();
+    write_stale_instance(&regdir, "proj-b", &other_root);
+
+    // The second project's own agent liveness marker starts fresh and is kept fresh by a
+    // background thread for the WHOLE test - the live-agent-under-an-already-stale-registry-entry
+    // signal this test exists to prove is still seen.
+    touch_marker(&other_marker_path);
+    let stop = Arc::new(AtomicBool::new(false));
+    let marker_thread_path = other_marker_path.clone();
+    let marker_stop = stop.clone();
+    let heartbeat = std::thread::spawn(move || {
+        while !marker_stop.load(Ordering::Relaxed) {
+            touch_marker(&marker_thread_path);
+            std::thread::sleep(Duration::from_millis(150));
+        }
+    });
+
+    let port = free_loopback_port();
+    let mut child = common::rigger_courier()
+        .args(["dash", "--port", &port.to_string(), "--reap-on-idle"])
+        .env("XDG_STATE_HOME", &xdg)
+        .env("RIGGER_TMPDIR", &own_scratch_root)
+        .env("RIGGER_DASH_REAP_POLL_MS", "150")
+        .env("RIGGER_DASH_REAP_STALE_SECS", "2")
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn `rigger dash --reap-on-idle`");
+    let mut out = child.stdout.take().expect("dash stdout is piped");
+
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 1];
+        let n = out.read(&mut buf).unwrap_or(0);
+        let _ = tx.send(n);
+    });
+
+    if !matches!(http_get(&format!("http://127.0.0.1:{port}/")), Some(body) if body.contains("rigger dash"))
+    {
+        stop.store(true, Ordering::Relaxed);
+        let _ = heartbeat.join();
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("the `rigger dash --reap-on-idle` never served its page");
+    }
+
+    // Well past the 2s window (several poll intervals beyond it): `proj-latch`'s one-time
+    // registration has aged out and been pruned (it satisfied `ever_seen_live` on its early live
+    // polls, then dropped `live_instances` back to zero), and `proj-b`'s registry entry was
+    // ALREADY stale before the dash even started, so it never contributed a single live poll
+    // either. With the marker thread still refreshing `proj-b`'s own agent-liveness marker, the
+    // singleton must NOT reap - a read here is exactly the gap this test closes: `known_roots`
+    // must have learned `proj-b`'s root from `read_all` (which returns a stale entry too) rather
+    // than `read_live` (which would have pruned it unseen on poll 1 and never told the watcher
+    // this project existed at all).
+    if rx.recv_timeout(Duration::from_millis(3500)).is_ok() {
+        stop.store(true, Ordering::Relaxed);
+        let _ = heartbeat.join();
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!(
+            "the singleton self-reaped even though a registered project's own agent liveness \
+             marker was still fresh - its registry entry being ALREADY stale on the watcher's \
+             very first poll must not make that project invisible to the agent-liveness check"
+        );
+    }
+    // Still genuinely serving (not merely a blocked-but-dead pipe).
+    assert!(
+        matches!(http_get(&format!("http://127.0.0.1:{port}/")), Some(body) if body.contains("rigger dash")),
+        "the singleton must still serve while the OTHER project's agent liveness marker is fresh, \
+         even though its own registry entry was already stale before the watcher ever polled"
+    );
+
+    // Now let the second project's agent liveness marker go idle too: with every signal quiet,
+    // the singleton reaps exactly as spec 50 criterion 5 always has.
+    stop.store(true, Ordering::Relaxed);
+    heartbeat.join().expect("marker heartbeat thread joins");
+
+    let reaped = rx.recv_timeout(Duration::from_secs(12));
+    let _ = child.kill();
+    let _ = child.wait();
+    let n = reaped.expect(
+        "the singleton did not SELF-REAP within 12s after the second project's agent liveness \
+         marker went idle too - a genuinely quiet machine's dash must not leak",
+    );
+    assert_eq!(n, 0, "a self-reaped dash should have its stdout at EOF");
+}
+
+/// Spec 62, criterion 5 round 4 (`adv-u62c5r4-known-roots-prune-race-with-instances-provider`):
+/// the ACTUAL race the test above cannot see, because it never calls `GET /api/instances` at all.
+/// Here an `/api/instances` poll - the most reachable of the three non-watcher registry readers
+/// (any open browser tab on the dash landing page) - is fired IMMEDIATELY once the dash is
+/// confirmed serving, deliberately racing the self-reap watcher's own first tick (a generous poll
+/// interval makes the landing GET win deterministically). Before the fix, that poll's `read_live`
+/// would delete the foreign project's hopelessly-stale-from-the-start registry entry from disk
+/// before the watcher's OWN `read_all` had ever captured its root into `known_roots` - permanently
+/// blinding the singleton to that project's still-fresh agent liveness marker and letting it reap
+/// out from under a genuinely live agent. After the fix (`registry::read_live_no_prune`), the
+/// landing poll filters the entry out of ITS OWN response without ever deleting it, so the entry
+/// survives on disk for the watcher's next `read_all` tick to capture, and the singleton keeps
+/// serving for as long as the foreign agent marker stays fresh.
+#[test]
+fn a_landing_poll_racing_the_watchers_first_tick_does_not_erase_a_foreign_projects_only_route_into_known_roots(
+) {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
+
+    // A machine-global registry the dash and the test share.
+    let state = tempfile::tempdir().unwrap();
+    let xdg = state.path().to_str().unwrap().to_string();
+    let regdir = rigger::registry::instances_dir(state.path());
+
+    // The LAUNCHING project's own scratch root: hermetic and left EMPTY (no marker ever written
+    // there), isolating the assertion to the foreign project's marker alone.
+    let own_scratch = tempfile::tempdir().unwrap();
+    let own_scratch_root = own_scratch.path().to_str().unwrap().to_string();
+
+    // A THIRD project supplies the `ever_seen_live` startup latch (see the test above for why this
+    // one-time-write-then-decay shape isolates the assertion to the SECOND project's marker alone).
+    let latch_project = tempfile::tempdir().unwrap();
+    let latch_root = latch_project.path().to_str().unwrap().to_string();
+    write_live_instance(&regdir, "proj-latch", &latch_root);
+
+    // The SECOND, foreign project: hopelessly stale from the moment it is written (heartbeat at the
+    // unix epoch), so the very FIRST reader to touch it - this test's own early `/api/instances`
+    // poll, below - sees it as stale, exactly the moment the pre-fix `read_live` would have pruned
+    // it.
+    let other_project = tempfile::tempdir().unwrap();
+    let other_root = other_project.path().to_str().unwrap().to_string();
+    let other_scratch_root = format!("{other_root}/.rigger/tmp");
+    let other_marker_path =
+        rigger::liveness::marker_path(&other_scratch_root, "run-1", "u2c1/implementer#0").unwrap();
+    let other_inst = rigger::registry::Instance {
+        project: "proj-b".to_string(),
+        root: other_root.clone(),
+        store: rigger::registry::StoreIdentity::Local {
+            path: format!("{other_root}/.rigger/events.db"),
+        },
+        heartbeat_ms: 0,
+    };
+    rigger::registry::write(&regdir, &other_inst).expect("write the stale foreign entry");
+    let other_entry_path = regdir.join(format!("{}.json", other_inst.id()));
+
+    // The second project's own agent liveness marker starts fresh and is kept fresh by a
+    // background thread for the WHOLE test - the live-agent-under-an-already-stale-registry-entry
+    // signal this test exists to prove survives the earlier landing-poll race too.
+    touch_marker(&other_marker_path);
+    let stop = Arc::new(AtomicBool::new(false));
+    let marker_thread_path = other_marker_path.clone();
+    let marker_stop = stop.clone();
+    let heartbeat = std::thread::spawn(move || {
+        while !marker_stop.load(Ordering::Relaxed) {
+            touch_marker(&marker_thread_path);
+            std::thread::sleep(Duration::from_millis(150));
+        }
+    });
+
+    let port = free_loopback_port();
+    // A generous poll interval: the racing `/api/instances` GET below must land well before the
+    // watcher's own FIRST tick (`thread::sleep(poll)` then its `read_all`/`read_live` pair), so the
+    // race this test exists to win is decided deterministically in the landing poll's favor.
+    let mut child = common::rigger_courier()
+        .args(["dash", "--port", &port.to_string(), "--reap-on-idle"])
+        .env("XDG_STATE_HOME", &xdg)
+        .env("RIGGER_TMPDIR", &own_scratch_root)
+        .env("RIGGER_DASH_REAP_POLL_MS", "900")
+        .env("RIGGER_DASH_REAP_STALE_SECS", "2")
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn `rigger dash --reap-on-idle`");
+    let mut out = child.stdout.take().expect("dash stdout is piped");
+
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 1];
+        let n = out.read(&mut buf).unwrap_or(0);
+        let _ = tx.send(n);
+    });
+
+    // THE RACE: hit `/api/instances` the instant the dash is confirmed serving - long before the
+    // watcher's own first `poll` tick (900ms) can fire.
+    let landing = http_get_path(port, "/api/instances");
+    if landing
+        .as_deref()
+        .is_none_or(|l| !l.contains("HTTP/1.1 200"))
+    {
+        stop.store(true, Ordering::Relaxed);
+        let _ = heartbeat.join();
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("the dash never served /api/instances: {landing:?}");
+    }
+
+    // THE FIX ITSELF: that early landing poll must not have deleted the foreign entry's file - had
+    // it, the watcher's own `read_all` tick (still to come) would never learn `proj-b`'s root.
+    assert!(
+        other_entry_path.exists(),
+        "an `/api/instances` poll racing the watcher's first tick deleted the foreign project's \
+         registry entry ({other_entry_path:?}) - permanently erasing its only route into \
+         `known_roots`"
+    );
+
+    // Well past several poll intervals: `proj-latch` has aged out (having satisfied `ever_seen_live`
+    // on its early live polls, then dropping `live_instances` back to zero) and `proj-b`'s entry was
+    // stale from the start, so registry liveness alone reaches zero. With the marker thread still
+    // refreshing `proj-b`'s own agent-liveness marker, the singleton must NOT reap - proving
+    // `known_roots` DID learn `proj-b`'s root from the watcher's own `read_all` despite the earlier
+    // landing-poll race.
+    if rx.recv_timeout(Duration::from_millis(3500)).is_ok() {
+        stop.store(true, Ordering::Relaxed);
+        let _ = heartbeat.join();
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!(
+            "the singleton self-reaped even though a registered project's own agent liveness \
+             marker was still fresh - the earlier `/api/instances` race must not have blinded \
+             `known_roots` to that project's root"
+        );
+    }
+    assert!(
+        matches!(http_get(&format!("http://127.0.0.1:{port}/")), Some(body) if body.contains("rigger dash")),
+        "the singleton must still be genuinely serving, not merely a blocked-but-dead pipe"
+    );
+
+    // Now let the foreign project's agent liveness marker go idle too: every signal quiet -> reap.
+    stop.store(true, Ordering::Relaxed);
+    heartbeat.join().expect("marker heartbeat thread joins");
+
+    let reaped = rx.recv_timeout(Duration::from_secs(12));
+    let _ = child.kill();
+    let _ = child.wait();
+    let n = reaped.expect(
+        "the singleton did not SELF-REAP within 12s after the foreign project's agent liveness \
+         marker went idle too - a genuinely quiet machine's dash must not leak",
+    );
+    assert_eq!(n, 0, "a self-reaped dash should have its stdout at EOF");
+}
+
 /// Spec 50, criterion 5 - the flag GATE through the BUILT binary: a `rigger dash` WITHOUT
 /// `--reap-on-idle` starts NO watcher, so it never self-reaps even on a quiet machine with an EMPTY
 /// registry. The guard-bound `rigger run` / `run_workflow` dash relies on this: its `ReapedChild`
@@ -10633,7 +22494,7 @@ fn a_reap_on_idle_singleton_does_not_reap_before_any_instance_has_registered() {
 #[test]
 fn a_dash_without_reap_on_idle_never_self_reaps_on_a_quiet_machine() {
     use std::io::Read;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -10646,7 +22507,7 @@ fn a_dash_without_reap_on_idle_never_self_reaps_on_a_quiet_machine() {
     // NOTE: no `--reap-on-idle`. A fast poll and a tiny window are set so that IF a watcher ran at
     // all it would reap almost immediately - making the ABSENCE of a reap a strong signal the flag
     // genuinely gates the watcher off.
-    let mut child = Command::new(rigger_bin())
+    let mut child = common::rigger_courier()
         .args(["dash", "--port", &port.to_string()])
         .env("XDG_STATE_HOME", &xdg)
         .env("RIGGER_DASH_REAP_POLL_MS", "100")
@@ -10703,7 +22564,7 @@ fn a_dash_without_reap_on_idle_never_self_reaps_on_a_quiet_machine() {
 #[test]
 fn a_reap_on_idle_singleton_in_a_homeless_environment_serves_without_a_watcher() {
     use std::io::Read;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -10719,7 +22580,7 @@ fn a_reap_on_idle_singleton_in_a_homeless_environment_serves_without_a_watcher()
     // poll and 1s window mean that IF a watcher had started against ANY (necessarily empty) registry
     // it would self-reap within ~1s, so the ABSENCE of a reap is a strong signal the homeless seam
     // gated the watcher off, not that the window was simply too long.
-    let mut child = Command::new(rigger_bin())
+    let mut child = common::rigger_courier()
         .args(["dash", "--port", &port.to_string(), "--reap-on-idle"])
         .current_dir(root)
         .env_remove("XDG_STATE_HOME")
@@ -10767,13 +22628,15 @@ fn a_reap_on_idle_singleton_in_a_homeless_environment_serves_without_a_watcher()
     );
 }
 
-/// Spec 50, criterion 5 - the PUBLIC contract of the new decision function at the CRATE BOUNDARY.
-/// `dash::should_reap_singleton` is the exported domain core the singleton's watcher polls; the
-/// dash.rs unit test proves it white-box (inside the module), and the integration tests above drive
-/// it end-to-end through the built binary. This pins its contract at the PUBLIC `rigger::dash`
-/// boundary an EXTERNAL caller sees - that the function is exported and its truth table holds -
-/// independent of any watcher wiring: reap IFF a live instance has EVER been seen AND none remains,
-/// so a positive live count never reaps and a not-yet-seen (startup) empty registry keeps serving.
+/// Spec 50, criterion 5 (spec 62, criterion 5) - the PUBLIC contract of the new decision function
+/// at the CRATE BOUNDARY. `dash::should_reap_singleton` is the exported domain core the
+/// singleton's watcher polls; the dash.rs unit test proves it white-box (inside the module), and
+/// the integration tests above drive it end-to-end through the built binary. This pins its
+/// contract at the PUBLIC `rigger::dash` boundary an EXTERNAL caller sees - that the function is
+/// exported and its truth table holds - independent of any watcher wiring: reap IFF a live
+/// instance has EVER been seen, none remains, AND no agent liveness signal is fresh, so a positive
+/// live count never reaps, a not-yet-seen (startup) empty registry keeps serving, and a fresh
+/// agent liveness signal keeps serving even once the registry itself has gone quiet.
 #[test]
 fn should_reap_singleton_public_contract_holds_at_the_crate_boundary() {
     use rigger::dash::should_reap_singleton;
@@ -10781,29 +22644,160 @@ fn should_reap_singleton_public_contract_holds_at_the_crate_boundary() {
     // Startup guard: no live instance has EVER been seen yet, so keep serving regardless of the
     // current count - a just-ensured singleton must not reap before its ensuring run registers.
     assert!(
-        !should_reap_singleton(0, false),
+        !should_reap_singleton(0, false, false),
         "a never-seen empty registry must keep serving (the startup-race guard)"
     );
     assert!(
-        !should_reap_singleton(1, false),
+        !should_reap_singleton(1, false, false),
         "a positive live count never reaps, whatever the seen flag"
     );
 
     // A live instance keeps the singleton serving once one has been seen (this project's run or any
     // other's - a positive count means at least one run needs the dash).
     assert!(
-        !should_reap_singleton(1, true),
+        !should_reap_singleton(1, true, false),
         "one live instance keeps the singleton serving"
     );
     assert!(
-        !should_reap_singleton(5, true),
+        !should_reap_singleton(5, true, false),
         "several live instances keep the singleton serving"
     );
 
-    // Machine idle: at least one live instance was seen and none remains live -> reap.
+    // Machine idle: at least one live instance was seen and none remains live, and no agent
+    // liveness signal is fresh -> reap.
     assert!(
-        should_reap_singleton(0, true),
-        "seen-then-empty is a genuinely quiet machine: the singleton reaps"
+        should_reap_singleton(0, true, false),
+        "seen-then-empty with no agent signal is a genuinely quiet machine: the singleton reaps"
+    );
+
+    // Spec 62 criterion 5's own addition: a fresh agent liveness signal withholds the reap even
+    // once the registry has gone quiet - the idle judgment sees the agent, not just the registry.
+    assert!(
+        !should_reap_singleton(0, true, true),
+        "a fresh agent liveness signal keeps the singleton serving even with an aged-out registry"
+    );
+}
+
+/// Spec 62, criterion 5 - the PUBLIC contract of [`rigger::liveness::any_marker_fresh`] at the
+/// CRATE BOUNDARY, mirroring `should_reap_singleton_public_contract_holds_at_the_crate_boundary`
+/// above for its sibling new pub fn in this same unit. `src/liveness.rs`'s own module tests prove
+/// the function white-box (inside the module, including its recursive walk and unreadable-entry
+/// degrade); `a_reap_on_idle_singleton_survives_a_fresh_agent_liveness_marker_after_the_registry_ages_out`
+/// proves it end to end through the real watcher inside the built binary. Neither calls the
+/// function directly from OUTSIDE the module the way an external caller does - this test does,
+/// pinning that `rigger::liveness::any_marker_fresh` is exported and its truth table holds at the
+/// public `rigger::liveness` boundary, independent of any watcher wiring: false for an empty or
+/// never-populated scratch root, true for a marker touched within `max_age`, and false once that
+/// same marker has aged past it - the exact three-way contract `should_reap_singleton` is wired to
+/// consume as its `agent_live` input.
+#[test]
+fn any_marker_fresh_public_contract_holds_at_the_crate_boundary() {
+    use rigger::liveness::{any_marker_fresh, marker_path};
+    use std::time::{Duration, SystemTime};
+
+    let bound = Duration::from_secs(900);
+    let now = SystemTime::now();
+
+    // A repo-less caller: the same empty-scratch-root degrade every other liveness reader gives,
+    // proven here at the public fn itself rather than only via its private helper.
+    assert!(
+        !any_marker_fresh("", now, bound),
+        "an empty scratch root must read as no live agent"
+    );
+
+    // A real scratch root that has never had a marker directory created under it: nothing to find.
+    let scratch = tempfile::tempdir().unwrap();
+    let root = scratch.path().to_str().unwrap();
+    assert!(
+        !any_marker_fresh(root, now, bound),
+        "a scratch root with no agent-live directory must read as no live agent"
+    );
+
+    // A marker just written under the SAME nested `<root>/agent-live/<run>/<spawn>` shape
+    // `marker_path` builds (the one other public fn this module already exports) is fresh.
+    let path = marker_path(root, "run-1", "u1c1/implementer#0").unwrap();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, b"").unwrap();
+    assert!(
+        any_marker_fresh(root, now, bound),
+        "a just-written marker within max_age must read as a live agent"
+    );
+
+    // The same marker, judged from far enough past its real mtime to fall outside a tiny bound,
+    // reads as no live agent - the contract `should_reap_singleton`'s idle judgment depends on.
+    let far_future = now + Duration::from_secs(3600);
+    assert!(
+        !any_marker_fresh(root, far_future, Duration::from_secs(1)),
+        "a marker older than max_age must not read as a live agent signal"
+    );
+}
+
+/// Spec 62, criterion 5 round 2 - the PUBLIC contract of [`rigger::registry::read_all`] at the
+/// CRATE BOUNDARY, mirroring `any_marker_fresh_public_contract_holds_at_the_crate_boundary` above
+/// for this round's new pub fn. `src/registry.rs`'s own module tests prove it white-box (inside
+/// the module: a stale entry survives and is never deleted, every root comes back regardless of
+/// freshness, an absent directory is an empty registry not an error);
+/// `a_reap_on_idle_singleton_survives_a_second_registered_projects_fresh_agent_liveness_marker`
+/// proves it end to end through the real watcher inside the built binary. Neither calls the
+/// function directly from OUTSIDE the module the way an external caller does - this test does,
+/// pinning that `rigger::registry::read_all` is exported and holds the ONE contract
+/// `foreign_instance_scratch_root`'s caller depends on that `read_live` does NOT give it: a STALE
+/// entry (long past any idle window) comes back too, and comes back UNCHANGED on disk - unlike
+/// `read_live`, which would both drop it from the returned set and delete its file.
+#[test]
+fn read_all_public_contract_holds_at_the_crate_boundary() {
+    use rigger::registry::{self, Instance, StoreIdentity};
+
+    let state = tempfile::tempdir().unwrap();
+    let regdir = registry::instances_dir(state.path());
+
+    // No `write` has ever touched this directory: an absent registry is empty, not an error.
+    assert!(
+        registry::read_all(&regdir).is_empty(),
+        "an absent instances directory must read as an empty registry, not an error"
+    );
+
+    // A hopelessly stale entry - `read_live` would prune this outright (and delete its file).
+    let stale = Instance {
+        project: "proj-stale".to_string(),
+        root: "/stale/root".to_string(),
+        store: StoreIdentity::Local {
+            path: "/stale/root/.rigger/events.db".to_string(),
+        },
+        heartbeat_ms: 0,
+    };
+    let stale_path = registry::write(&regdir, &stale).unwrap();
+
+    assert_eq!(
+        registry::read_all(&regdir),
+        vec![stale.clone()],
+        "read_all returns a stale entry verbatim, with no freshness filter"
+    );
+    assert!(
+        stale_path.exists(),
+        "read_all must never delete an entry, stale or not - unlike read_live's prune side effect"
+    );
+
+    // A second, live entry: read_all returns BOTH, the fresh and the hopelessly stale alike.
+    let live = Instance {
+        project: "proj-live".to_string(),
+        root: "/live/root".to_string(),
+        store: StoreIdentity::Local {
+            path: "/live/root/.rigger/events.db".to_string(),
+        },
+        heartbeat_ms: registry::now_ms(),
+    };
+    registry::write(&regdir, &live).unwrap();
+
+    let mut roots: Vec<String> = registry::read_all(&regdir)
+        .into_iter()
+        .map(|i| i.root)
+        .collect();
+    roots.sort();
+    assert_eq!(
+        roots,
+        vec!["/live/root".to_string(), "/stale/root".to_string()],
+        "read_all returns every registered root regardless of heartbeat freshness"
     );
 }
 
@@ -10867,7 +22861,7 @@ fn a_real_rigger_step_session_detaches_the_dash_from_the_step_command_process_gr
     // Run `rigger step` as its OWN process-group leader: `process_group(0)` makes the step a group
     // leader whose PGID equals its PID - the exact shape of a foreground command the courier's
     // harness later tears down by group. RIGGER_NO_DASH is removed so the always-on dash starts.
-    let mut step = Command::new(rigger_bin())
+    let mut step = common::rigger_courier()
         .args(["step"])
         .current_dir(root)
         // Redirect the machine-global registry (spec 50, criterion 2) into the test's own temp
@@ -10897,7 +22891,7 @@ fn a_real_rigger_step_session_detaches_the_dash_from_the_step_command_process_gr
     // The dash is a GENUINE serving process (not a stale marker or a recycled pid): confirm it
     // serves its page before observing its group. Reap on failure so nothing leaks.
     if !matches!(http_get(&url), Some(body) if body.contains("rigger dash")) {
-        reap_pid(dash_pid);
+        common::terminate_pid(dash_pid);
         panic!("the step-started dash at {url} did not serve its page");
     }
 
@@ -10905,7 +22899,7 @@ fn a_real_rigger_step_session_detaches_the_dash_from_the_step_command_process_gr
     let dash_pgid = proc_pgid_of(dash_pid);
 
     // Reap the detached dash BEFORE asserting, so a failed assertion never leaves it orphaned.
-    reap_pid(dash_pid);
+    common::terminate_pid(dash_pid);
 
     assert_eq!(
         dash_pgid, dash_pid,
@@ -10947,7 +22941,7 @@ fn dash_is_a_fixed_address_singleton_a_second_invocation_reports_and_exits_clean
     let url = format!("http://127.0.0.1:{port}/");
 
     // FIRST dash: bind the address and wait until it genuinely serves its page.
-    let mut first = Command::new(rigger_bin())
+    let mut first = common::rigger_courier()
         .args(["dash", "--port", &port.to_string()])
         .current_dir(root)
         .env_remove("RIGGER_NO_DASH")
@@ -10966,7 +22960,7 @@ fn dash_is_a_fixed_address_singleton_a_second_invocation_reports_and_exits_clean
     // own) and must NOT bind a second port. It reports the existing address and exits 0. Poll
     // `try_wait` on a bounded deadline so a regression that DID enter the serve loop fails LOUD
     // (a hang caught by the deadline) rather than hanging the whole suite.
-    let mut second = Command::new(rigger_bin())
+    let mut second = common::rigger_courier()
         .args(["dash", "--port", &port.to_string()])
         .current_dir(root)
         .env_remove("RIGGER_NO_DASH")
@@ -11109,7 +23103,7 @@ fn dash_landing_lists_instances_and_attach_serves_each_instance_store() {
     // proves attach reads the SELECTED store, not the dash's cwd.
     let neutral = temp_project();
     let port = free_loopback_port();
-    let mut dash = Command::new(rigger_bin())
+    let mut dash = common::rigger_courier()
         .args(["dash", "--port", &port.to_string()])
         .current_dir(neutral.path())
         .env("XDG_STATE_HOME", xdg)
@@ -11270,7 +23264,7 @@ fn dash_attach_unknown_or_since_gone_instance_serves_empty_not_the_local_run() {
 
     // The dash serves its OWN project (cwd = own_root); the registry it discovers is the sandbox.
     let port = free_loopback_port();
-    let mut dash = Command::new(rigger_bin())
+    let mut dash = common::rigger_courier()
         .args(["dash", "--port", &port.to_string()])
         .current_dir(own_root)
         .env("XDG_STATE_HOME", xdg)
@@ -11327,20 +23321,25 @@ fn dash_attach_unknown_or_since_gone_instance_serves_empty_not_the_local_run() {
     );
 }
 
-/// Spec 50, criterion 3, the STALE-PRUNE reaching the periphery AND the landing's WIRE CONTRACT,
-/// through the BUILT binary. `registry::read_live` prunes any entry whose heartbeat has gone stale
-/// past the idle window, and BOTH the `/api/instances` landing provider and the attach resolver
-/// consume it - so a stale (dead) instance must not appear in the landing, and selecting a stale
-/// id must degrade to empty. The happy-path test registers only fresh entries, so neither the
-/// prune nor the exact serialized field names the page's JS reads are exercised here.
+/// Spec 50, criterion 3, the STALE-FILTER reaching the periphery AND the landing's WIRE CONTRACT,
+/// through the BUILT binary - spec 62 criterion 5 round 4
+/// (`adv-u62c5r4-known-roots-prune-race-with-instances-provider`): `registry::read_live_no_prune`
+/// FILTERS OUT any entry whose heartbeat has gone stale past the idle window WITHOUT deleting it,
+/// and BOTH the `/api/instances` landing provider and the attach resolver consume it - so a stale
+/// (dead) instance must not appear in the landing, and selecting a stale id must degrade to empty,
+/// while its registry FILE must survive on disk for the self-reap watcher's own `read_all` tick to
+/// still find (deletion is reserved exclusively to that watcher's own `read_live` tick, never to
+/// an unsynchronized per-request reader like this landing poll). The happy-path test registers only
+/// fresh entries, so neither the filter nor the exact serialized field names the page's JS reads
+/// are exercised here.
 ///
 /// A LIVE instance (fresh heartbeat) and a STALE one (heartbeat well past `DEFAULT_IDLE_MS`) are
 /// registered into one sandboxed registry. On the built dash, `/api/instances` lists the LIVE
-/// instance and NOT the stale one (pruned by the read) and carries every one of the six
-/// `InstanceView` wire keys the landing page reads; and `?instance=<stale id>` degrades to an
-/// empty run (the stale entry was pruned before resolve).
+/// instance and NOT the stale one (filtered out, but its file left on disk) and carries every one
+/// of the six `InstanceView` wire keys the landing page reads; and `?instance=<stale id>` degrades
+/// to an empty run (the stale entry was filtered out before resolve, never deleted).
 #[test]
-fn dash_landing_prunes_stale_instances_and_pins_the_wire_contract() {
+fn dash_landing_filters_stale_instances_without_pruning_and_pins_the_wire_contract() {
     use rigger::registry;
     use std::process::Stdio;
 
@@ -11376,7 +23375,7 @@ fn dash_landing_prunes_stale_instances_and_pins_the_wire_contract() {
 
     let neutral = temp_project();
     let port = free_loopback_port();
-    let mut dash = Command::new(rigger_bin())
+    let mut dash = common::rigger_courier()
         .args(["dash", "--port", &port.to_string()])
         .current_dir(neutral.path())
         .env("XDG_STATE_HOME", xdg)
@@ -11398,15 +23397,27 @@ fn dash_landing_prunes_stale_instances_and_pins_the_wire_contract() {
         landing.contains("HTTP/1.1 200"),
         "the landing endpoint answers 200: {landing}"
     );
-    // The LIVE instance is listed with its attach id; the STALE one is pruned, absent from both
-    // the landing's project labels and its selectable ids.
+    // The LIVE instance is listed with its attach id; the STALE one is filtered out, absent from
+    // both the landing's project labels and its selectable ids.
     assert!(
         landing.contains(&live_project) && landing.contains(live_id.as_str()),
         "the landing lists the live instance {live_project} with its attach id: {landing}"
     );
     assert!(
         !landing.contains(&stale_project) && !landing.contains(stale_id.as_str()),
-        "a stale instance is pruned from the landing, never shown as attachable: {landing}"
+        "a stale instance is filtered from the landing, never shown as attachable: {landing}"
+    );
+    // THE ROUND-4 FIX ITSELF: the stale instance's registry FILE must still be on disk after this
+    // `/api/instances` poll - `read_live_no_prune` filters it out of the response without ever
+    // deleting it. A per-request landing poll deleting a foreign project's entry is exactly the
+    // race `adv-u62c5r4-known-roots-prune-race-with-instances-provider` found: it could win against
+    // the self-reap watcher's own `read_all` tick and permanently erase the only place that
+    // project's root is ever learned from.
+    let stale_entry_path = regdir.join(format!("{stale_id}.json"));
+    assert!(
+        stale_entry_path.exists(),
+        "a `/api/instances` poll must never delete a stale registry entry's file from disk - \
+         deletion is reserved to the self-reap watcher's own tick: {stale_entry_path:?}"
     );
 
     // The WIRE CONTRACT: the landing body carries every field name the page's JS reads to label
@@ -11427,8 +23438,9 @@ fn dash_landing_prunes_stale_instances_and_pins_the_wire_contract() {
         );
     }
 
-    // Selecting the stale id resolves against the pruned registry, so it degrades to an empty run
-    // (a 200 with no units), never the stale instance's content and never a 500.
+    // Selecting the stale id resolves against a registry read that filters it out (never deletes
+    // it), so it degrades to an empty run (a 200 with no units), never the stale instance's
+    // content and never a 500.
     assert!(
         stale_state.contains("HTTP/1.1 200") && !stale_state.contains("HTTP/1.1 500"),
         "a stale selector degrades to an empty state, never an error: {stale_state}"
@@ -11489,7 +23501,7 @@ fn dash_attach_to_shared_instance_never_creates_a_store_under_its_root() {
 
     let neutral = temp_project();
     let port = free_loopback_port();
-    let mut dash = Command::new(rigger_bin())
+    let mut dash = common::rigger_courier()
         .args(["dash", "--port", &port.to_string()])
         .current_dir(neutral.path())
         .env("XDG_STATE_HOME", xdg)
@@ -11587,7 +23599,7 @@ fn dash_attach_to_shared_instance_reads_its_own_store_not_the_dash_process_kurre
 
     let neutral = temp_project();
     let port = free_loopback_port();
-    let mut dash = Command::new(rigger_bin())
+    let mut dash = common::rigger_courier()
         .args(["dash", "--port", &port.to_string()])
         .current_dir(neutral.path())
         .env("XDG_STATE_HOME", xdg)
@@ -11633,7 +23645,6 @@ fn dash_attach_to_shared_instance_reads_its_own_store_not_the_dash_process_kurre
 #[test]
 fn dash_on_a_port_held_by_a_non_dash_process_fails_loud_and_never_drifts() {
     use std::io::Read;
-    use std::net::TcpListener;
     use std::process::Stdio;
     use std::time::{Duration, Instant};
 
@@ -11644,10 +23655,10 @@ fn dash_on_a_port_held_by_a_non_dash_process_fails_loud_and_never_drifts() {
     // process squatting the address. Keeping the bound listener in scope holds the port for the
     // whole `rigger dash` run; the singleton probe connects into its backlog, reads nothing, and
     // times out - so the holder is correctly NOT recognized as a dash.
-    let holder = TcpListener::bind(("127.0.0.1", 0)).expect("bind a non-dash holder");
+    let holder = reserved_loopback_listener();
     let port = holder.local_addr().unwrap().port();
 
-    let mut dash = Command::new(rigger_bin())
+    let mut dash = common::rigger_courier()
         .args(["dash", "--port", &port.to_string()])
         .current_dir(root)
         .env_remove("RIGGER_NO_DASH")
@@ -11730,7 +23741,7 @@ fn many_claimants_racing_a_live_serving_singleton_all_defer_cleanly() {
     let url = format!("http://127.0.0.1:{port}/");
 
     // The WINNER: a real, serving `rigger dash` process holding the address.
-    let mut winner = Command::new(rigger_bin())
+    let mut winner = common::rigger_courier()
         .args(["dash", "--port", &port.to_string()])
         .current_dir(root)
         .env_remove("RIGGER_NO_DASH")
@@ -11853,7 +23864,7 @@ fn every_dash_response_carries_the_rigger_dash_recognition_header() {
     let port = free_loopback_port();
     let url = format!("http://127.0.0.1:{port}/");
 
-    let mut dash = Command::new(rigger_bin())
+    let mut dash = common::rigger_courier()
         .args(["dash", "--port", &port.to_string()])
         .current_dir(root)
         .env_remove("RIGGER_NO_DASH")
@@ -11937,7 +23948,6 @@ fn every_dash_response_carries_the_rigger_dash_recognition_header() {
 #[test]
 fn the_dash_singleton_probe_stays_bounded_against_a_dribbling_holder() {
     use std::io::{Read, Write};
-    use std::net::TcpListener;
     use std::process::Stdio;
     use std::time::{Duration, Instant};
 
@@ -11945,7 +23955,7 @@ fn the_dash_singleton_probe_stays_bounded_against_a_dribbling_holder() {
     let root = proj.path();
 
     // Bind the port and hold it for the whole run, so `rigger dash`'s bind is a genuine conflict.
-    let holder = TcpListener::bind(("127.0.0.1", 0)).expect("bind a hostile dribbling holder");
+    let holder = reserved_loopback_listener();
     let port = holder.local_addr().unwrap().port();
 
     // A worker that ACCEPTS the one singleton-probe connection (bounded so it never blocks
@@ -11984,7 +23994,7 @@ fn the_dash_singleton_probe_stays_bounded_against_a_dribbling_holder() {
         // `holder` drops here, releasing the port - only after the probe has already concluded.
     });
 
-    let mut dash = Command::new(rigger_bin())
+    let mut dash = common::rigger_courier()
         .args(["dash", "--port", &port.to_string()])
         .current_dir(root)
         .env_remove("RIGGER_NO_DASH")
@@ -12055,7 +24065,6 @@ fn the_dash_singleton_probe_stays_bounded_against_a_dribbling_holder() {
 #[test]
 fn dash_serving_on_recognizes_a_real_dash_and_rejects_a_non_dash_holder() {
     use rigger::dash::dash_serving_on;
-    use std::net::TcpListener;
     use std::process::Stdio;
 
     // Case 1 - a REAL serving `rigger dash`: `dash_serving_on` must recognize it (TRUE).
@@ -12063,7 +24072,7 @@ fn dash_serving_on_recognizes_a_real_dash_and_rejects_a_non_dash_holder() {
     let root = proj.path();
     let dash_port = free_loopback_port();
     let url = format!("http://127.0.0.1:{dash_port}/");
-    let mut dash = Command::new(rigger_bin())
+    let mut dash = common::rigger_courier()
         .args(["dash", "--port", &dash_port.to_string()])
         .current_dir(root)
         .env_remove("RIGGER_NO_DASH")
@@ -12081,7 +24090,7 @@ fn dash_serving_on_recognizes_a_real_dash_and_rejects_a_non_dash_holder() {
     // Case 2 - a NON-dash holder that never answers the probe: `dash_serving_on` must reject it
     // (FALSE), bounded by its own read timeouts (the silent-holder half of the boundedness the
     // dribble test drives). Keeping the listener in scope holds the port for the whole probe.
-    let non_dash = TcpListener::bind(("127.0.0.1", 0)).expect("bind a non-dash holder");
+    let non_dash = reserved_loopback_listener();
     let non_dash_port = non_dash.local_addr().unwrap().port();
     let recognized_non_dash = dash_serving_on(non_dash_port);
 
@@ -12099,5 +24108,2283 @@ fn dash_serving_on_recognizes_a_real_dash_and_rejects_a_non_dash_holder() {
         !recognized_non_dash,
         "dash_serving_on must NOT recognize a non-dash holder that never sends the recognition \
          header - only a genuine dash earns the singleton defer"
+    );
+}
+
+/// Spec 73, criterion 2 - the implementer persona's seeded MUTATION ACCOUNTING CONTRACT.
+///
+/// Spec 73 resolved a nine-round plan-critique deadlock (rule 7: no unit can ever own a
+/// Markdown blast radius, since the symbols grounder never indexes `.md` content and
+/// `UnitProposed` carries no explicit blast-radius field - see the decision chain ending
+/// in `d73-escalation-config-vs-code`) by SEEDING the mutation-step and accounting-
+/// contract prose directly into `.rigger/agents/rust-engineer.md` as operator
+/// configuration. Spec 73's units therefore own DRIFT-GUARD TESTS that READ that seeded
+/// text and PIN it - never edit it. This criterion (2) OWNS the ACCOUNTING half of the
+/// contract: a deterministically ordered `DecisionMade`, one entry per mutant, all five
+/// status vocabularies (caught, missed-killed naming the killing test, missed-justified
+/// with a reason, unviable, timeout), the diff base, the mutant total, and the provably-
+/// empty case for a diff touching no Rust file. Criterion 1 (u73c1) owns the STEP-
+/// PLACEMENT half (when the step runs, the diff-vs-merge-base `cargo mutants` invocation,
+/// the kill-or-justify disposition on a missed mutant) - this test deliberately asserts
+/// none of those substrings, so each criterion's drift-guard fails for its own reason
+/// only and neither can mask the other's regression.
+///
+/// Reads the committed file via `CARGO_MANIFEST_DIR` (the same CWD-independent pattern
+/// `architecture_current_surface.rs` and `ci_lanes.rs` already use for their own
+/// committed-file pins) and compares against WHITESPACE-NORMALIZED text, so the pin
+/// survives an incidental rewrap of the persona's prose and fails only on a real content
+/// change. It is deliberately NOT feature-gated: it parses a text file and touches no
+/// backend symbol, so it runs identically in both feature lanes.
+fn rust_engineer_persona_text() -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(".rigger")
+        .join("agents")
+        .join("rust-engineer.md");
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
+}
+
+/// Collapse all whitespace runs (including newlines) to a single space, so a phrase that
+/// wraps across physical lines in the committed Markdown still matches a one-line needle.
+fn normalize_ws(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Every fragment the accounting contract (spec 73 criterion 2) requires, each a literal
+/// (whitespace-normalized) substring of the seeded persona text today. The pin fails
+/// loudly, naming exactly which fragment went missing, the moment any one of them is
+/// reworded away or dropped.
+const ACCOUNTING_CONTRACT_FRAGMENTS: &[(&str, &str)] = &[
+    (
+        "the event type (no new event type; rides DecisionMade)",
+        "one DecisionMade (no new event type)",
+    ),
+    (
+        "the deterministic-ordering guarantee",
+        "deterministically ordered",
+    ),
+    (
+        "the one-entry-per-mutant cardinality",
+        "one entry per mutant",
+    ),
+    ("the caught status", "caught"),
+    ("the missed-killed status", "missed-killed"),
+    (
+        "missed-killed names the killing test",
+        "naming the killing test",
+    ),
+    ("the missed-justified status", "missed-justified"),
+    ("missed-justified carries a reason", "with reason"),
+    ("the unviable status", "unviable"),
+    ("the timeout status", "unviable | timeout,"),
+    ("the diff-base field", "the diff base"),
+    ("the mutant-total field", "the mutant total"),
+    (
+        "the no-Rust-file provably-empty case",
+        "A diff touching no Rust file records a provably-empty accounting",
+    ),
+    (
+        "the empty accounting is never a skipped step",
+        "never a skipped step",
+    ),
+];
+
+#[test]
+fn rust_engineer_persona_pins_the_mutation_accounting_contract() {
+    let text = normalize_ws(&rust_engineer_persona_text());
+
+    let missing: Vec<String> = ACCOUNTING_CONTRACT_FRAGMENTS
+        .iter()
+        .filter(|(_, fragment)| !text.contains(fragment))
+        .map(|(what, fragment)| format!("{what}  (missing: {fragment:?})"))
+        .collect();
+
+    assert!(
+        missing.is_empty(),
+        ".rigger/agents/rust-engineer.md must pin the mutation ACCOUNTING contract spec 73 \
+         criterion 2 owns - a deterministically ordered DecisionMade, one entry per mutant, \
+         all five statuses (caught, missed-killed naming the test, missed-justified with a \
+         reason, unviable, timeout), the diff base, the mutant total, and the provably-empty \
+         no-Rust-file case - so drift in the operator-seeded persona fails this suite instead \
+         of silently diverging from the spec it satisfies. Missing fragments: {missing:#?}"
+    );
+}
+
+/// Round-8 fix, closing sdet-u69c1r7-fresh-run-own-dead-dash-suppressed-by-mint-order /
+/// adv-u69c1r7-mint-order-bug-is-structural-not-a-coverage-gap for real: every sibling dash-
+/// liveness test in this file seeds `RunStarted` and the dash marker DIRECTLY via
+/// `seed_run_events`/`DashMarker::write` - never through the real `ensure_run_dashboard` call
+/// `cmd_step` actually makes. Round 7's own "confirmation" probe did the same (its own report
+/// describes "appends RunStarted/UnitStarted" after seeding the marker - a direct event-stream
+/// write, not a real step) and asserted that ordering was "the real production order" without
+/// ever driving the compiled binary's actual `cmd_step` call chain to check. It is not: read
+/// directly, `cmd_step` calls `enforce_definition_pin` (which mints a brand-new run's
+/// `RunStarted` via `runscope::ensure_started_pinned`/`start_fresh`) BEFORE it calls
+/// `ensure_run_dashboard` - confirmed against the compiled binary during this round's
+/// investigation (a fresh run's `RunStarted.recorded_at` lands measurably BEFORE its own dash
+/// marker's mtime, not after).
+///
+/// Rather than re-litigate that causality claim, this test sidesteps it entirely: it drives a
+/// REAL `rigger step` (the real `ensure_run_dashboard` -> `record_dash_attempt` -> real,
+/// detached `rigger dash` child), kills that real dash process so its marker names a genuinely
+/// dead pid, and proves `rigger watch --once` reports it. This is authoritative regardless of
+/// which way the timestamps land, because the round-8 fix (`DASH_ATTEMPT_FILE` /
+/// `WatchInputs::dash_attempted_this_run`) makes the report an explicit run-id fact, not a
+/// wall-clock inference - so this test exercises the REAL write site end to end, the one layer
+/// no pure `watch::detect` unit test (necessarily built on synthetic `WatchInputs`) can reach.
+#[test]
+fn watch_once_reports_a_real_steps_own_dash_after_the_step_process_has_long_since_exited() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    let dash_port = free_loopback_port();
+
+    // A real `rigger step`: this project's FIRST step, so `ensure_run_dashboard` runs on the
+    // exact fresh-run boundary round 7 flagged, spawning a real, detached `rigger dash` and
+    // recording BOTH `.rigger/dash.marker` (port + pid) and `.rigger/dash.attempt` (this run's
+    // id, via `record_dash_attempt`). The step process itself has already exited by the time
+    // this line returns - only the detached dash and the two breadcrumbs it left behind
+    // survive, exactly the shape a driver leaves between steps.
+    let (_out, err) = run_step_dash_enabled(root, dash_port);
+    let (_port, pid) = read_dash_marker(root)
+        .unwrap_or_else(|| panic!("step must record a dash marker; stderr:\n{err}"));
+
+    assert!(
+        std::fs::read_to_string(root.join(".rigger/dash.attempt")).is_ok(),
+        "a real step's own ensure_run_dashboard call must record .rigger/dash.attempt \
+         (record_dash_attempt); without it this test cannot exercise the round-8 fact at all"
+    );
+
+    // Kill the real dash this run itself just spawned, so the NEXT probe finds a genuinely dead
+    // pid on the recorded port - not a synthetic marker, an actual process this test terminated.
+    common::terminate_pid(pid);
+    // Best-effort wait for the port to actually free up, so the probe below cannot race a
+    // not-yet-reaped socket into a false "still serving" read.
+    for _ in 0..50 {
+        if !rigger::dash::dash_serving_on(dash_port) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    let (out, watch_err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 against this run's own just-killed dash; \
+         stderr:\n{watch_err}"
+    );
+    assert!(
+        out.contains("dash liveness") && out.contains(&pid.to_string()),
+        "a run's OWN dash, started by its OWN real step and then killed, must be reported \
+         regardless of any timestamp ordering between the marker write and this run's \
+         RunStarted - the round-8 dash_attempted_this_run fact (an explicit run-id match, not a \
+         wall-clock inference) must force this even if a future refactor ever changed which \
+         side of RunStarted the dash-ensure call lands on; got:\n{out}"
+    );
+}
+
+/// The mismatched-marker case for `watch_poll`'s dash probe (the round-9 escalation
+/// remedy, adv-u69c1r9-watch-poll-dashprobe-diverges-from-dash-status-mismatch-handling):
+/// when BOTH breadcrumbs exist and the on-disk marker's port differs from the recorded
+/// dash.url's, the probe must follow `dash::dash_status`'s canonical handling - the URL's
+/// own port is what gets probed and reported, and the mismatched marker's pid is NEVER
+/// named as though it belonged to this url. Both ports are definitely-unbound loopback
+/// ports (the same reserve-then-release convention as the dead-marker test above), so the
+/// url's port is genuinely dead and must be the one the report names.
+#[test]
+fn watch_once_never_names_a_mismatched_markers_pid_for_the_recorded_urls_port() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    let url_port = free_loopback_port();
+    let marker_port = loop {
+        let p = free_loopback_port();
+        if p != url_port {
+            break p;
+        }
+    };
+    let impossible_pid = u32::MAX;
+    std::fs::write(
+        root.join(".rigger/dash.url"),
+        format!("http://127.0.0.1:{url_port}/"),
+    )
+    .expect("seed dash.url");
+    DashMarker {
+        port: marker_port,
+        pid: impossible_pid,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the mismatched dash marker");
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(ok, "rigger watch --once must exit 0; stderr:\n{err}");
+    assert!(
+        out.contains(&format!("port {url_port}")),
+        "the dash liveness report must probe and name the recorded dash.url's own port \
+         ({url_port}), the canonical dash_status target; got:\n{out}"
+    );
+    assert!(
+        !out.contains(&impossible_pid.to_string()),
+        "a mismatched marker's pid must never be named as this url's; got:\n{out}"
+    );
+    assert!(
+        !out.contains(&format!("port {marker_port}")),
+        "the mismatched marker's own port must not be reported as the dash's; got:\n{out}"
+    );
+}
+
+/// Round-9 escalation-remedy reject (adj-u69c1r9-verdict-reject upholding
+/// adv-u69c1-mismatched-marker-suppression-borrows-wrong-files-mtime): the mismatched-marker
+/// arm above always sourced `dash_breadcrumb_written_at` from the MARKER's mtime, even in this
+/// exact branch where the marker's port does NOT match the url's own port and the
+/// classification is driven entirely by the url (the sibling test above proves the url's port
+/// is what gets probed and reported, never the marker's). That contradicts the function's own
+/// doc comment, which requires the mtime gathered to be "of WHICHEVER file actually backed the
+/// classification... so the two can never point at different files" (src/main.rs, the comment
+/// above the `(recorded, marker)` match). Sourcing the wrong file's mtime lets a STALE marker
+/// that predates this run's own `RunStarted` wrongly suppress a FRESH, currently-dead url that
+/// this run's own dash-launching invocation wrote AFTER `RunStarted` - exactly the multi-process
+/// shape `main.rs`'s own doc comment on `ensure_run_dashboard` describes ("two concurrent
+/// harnesses each get their own [port]"), not a contrived edge case: both breadcrumb files are
+/// project-level singletons never removed once their dash exits, so an old marker outliving a
+/// fresh url write is ordinary.
+///
+/// This seeds exactly that shape: a stale marker written BEFORE `RunStarted` (so the
+/// pre-existing `breadcrumb_predates_this_run` fallback would suppress if it read the marker's
+/// mtime, the identical ordering
+/// `watch_once_reports_no_dash_anomaly_for_a_fresh_run_that_inherits_an_earlier_runs_dead_marker`
+/// above proves suppresses for the marker-only arm), then a DIFFERENT, later invocation writes a
+/// fresh `dash.url` naming a different, currently-dead port AFTER `RunStarted`. No
+/// `.rigger/dash.attempt` is written at all, so the round-8 same-run short-circuit
+/// (`dash_attempted_this_run`) is not what makes this report - only the timestamp fallback is in
+/// play, and it must read the URL's own mtime (fresh, postdating `RunStarted`), not the stale
+/// marker's, to reach the correct "report it" answer.
+#[test]
+fn watch_once_reports_a_mismatched_dead_url_when_only_the_stale_marker_predates_run_started() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    // The stale marker, written FIRST, before this run's own RunStarted - the same
+    // predates-this-run shape the inherited-marker sibling test proves suppresses when it is
+    // the file backing the classification. Here it must NOT back the classification, since the
+    // url's own port is what gets probed below.
+    let marker_port = free_loopback_port();
+    let marker_pid = u32::MAX;
+    DashMarker {
+        port: marker_port,
+        pid: marker_pid,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the stale, pre-run dash marker");
+
+    // The same filesystem-mtime safety margin every sibling test in this file uses, so this
+    // run's own RunStarted lands unambiguously AFTER the marker write.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["spec 69"]}"#),
+            ("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+        ],
+    );
+
+    // Another margin so the fresh url write below lands unambiguously AFTER RunStarted too -
+    // it must read as this run's OWN breadcrumb, not an inherited one.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    // A DIFFERENT dash-launching invocation than the one that wrote the marker: a fresh
+    // dash.url, written after RunStarted, naming a different, currently-dead port. No
+    // dash.marker rewrite here - the marker on disk stays the stale one from before RunStarted,
+    // and its port differs from this url's, so this is the mismatched-marker arm.
+    let url_port = free_loopback_port();
+    assert_ne!(
+        url_port, marker_port,
+        "the ledger must never repeat a port within one test"
+    );
+    std::fs::write(
+        root.join(".rigger/dash.url"),
+        format!("http://127.0.0.1:{url_port}/"),
+    )
+    .expect("seed the fresh dash.url");
+
+    // No .rigger/dash.attempt at all: the round-8 same-run short-circuit must play no part in
+    // this report - only the timestamp fallback, correctly sourced from the url's own mtime.
+    assert!(!root.join(".rigger/dash.attempt").exists());
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 for a mismatched marker/url pair; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("dash liveness") && out.contains(&format!("port {url_port}")),
+        "a fresh dash.url written AFTER this run's own RunStarted must be reported as a dead \
+         dash even though the on-disk marker is stale and mismatched - the mtime backing the \
+         predates-this-run comparison must come from the url that actually decided the \
+         classification, not the marker that did not; got:\n{out}"
+    );
+    assert!(
+        !out.contains(&marker_pid.to_string()),
+        "the stale, mismatched marker's pid must never be named as this url's; got:\n{out}"
+    );
+}
+
+/// Round 5 (adj-u62c1r4-verdict-reject-sentinel-pid-leaks-to-status,
+/// sdet-u62c1r4-unattributed-pid-sentinel-renders-as-a-fabricated-dead-pid): the MATCHING-port
+/// counterpart of the mismatched-marker sibling above, over the sentinel pid instead of a real
+/// one. `.rigger/dash.marker` and `.rigger/dash.url` name the SAME port (so `pid_if_port_matches`
+/// returns `Some`, taking the well-formed-url, port-matching sub-branch of `watch_poll`'s
+/// `(Some(url), Some(m))` arm - `main.rs` ~7196-7213), and the marker's pid is
+/// [`dash::UNATTRIBUTED_PID`] (spec 62 round 4's documented sentinel) rather than a real dead
+/// pid. Before this fix, `watch_poll` handed that raw `0` straight into
+/// `watch::DashProbe::NotServing`, which `watch::detect` then rendered as "marker names dead pid
+/// 0" - a lie, since `0` was never a real, assigned, dying process. Proves the anomaly is still
+/// reported (the dead port itself is genuine and must not be swallowed), but with no fabricated
+/// pid named - rendering exactly like the no-matching-marker case
+/// (`watch_once_reports_a_dead_dash_when_only_the_url_breadcrumb_is_recorded_and_no_marker_exists`
+/// above already pins that exact phrasing for the genuinely-marker-less shape; this proves the
+/// sentinel-pid shape renders identically, never inventing a pid of its own).
+#[test]
+fn watch_once_never_names_the_unattributed_pid_sentinel_as_a_dead_process() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    // A fresh, not-done run whose own dash this marker+url belong to - the same shape
+    // `watch_once_reports_this_runs_own_dead_marker_when_written_after_its_run_started` uses, so
+    // the round-6 predates-this-run suppression plays no part and the report comes straight from
+    // the live probe.
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["spec 62"]}"#),
+            ("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+        ],
+    );
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    let dead_port = free_loopback_port();
+    DashMarker {
+        port: dead_port,
+        pid: rigger::dash::UNATTRIBUTED_PID,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the sentinel-pid dash marker");
+    std::fs::write(
+        root.join(".rigger/dash.url"),
+        format!("http://127.0.0.1:{dead_port}/"),
+    )
+    .expect("seed the matching dash.url");
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 on a sentinel-pid marker; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("dash liveness") && out.contains(&format!("port {dead_port}")),
+        "the dead port itself is a genuine anomaly and must still be reported, sentinel pid or \
+         not; got:\n{out}"
+    );
+    assert!(
+        !out.contains("marker names dead pid"),
+        "the sentinel pid must never be printed as a fabricated dead process - it was never a \
+         real, assigned pid; got:\n{out}"
+    );
+    assert!(
+        out.contains("no matching marker, no pid"),
+        "a sentinel-pid marker must render exactly like the no-matching-marker case; got:\n{out}"
+    );
+}
+
+/// Round 5 (adv-u62c1r4-fix-direction-would-break-watch-mtime-provenance-if-filtered-at-pid-if-
+/// port-matches): the fix for the sibling test above filters the sentinel pid ONLY at the value
+/// handed to `watch::DashProbe::NotServing`, never inside `dash::pid_if_port_matches` itself -
+/// because `watch_poll`'s `port_matches` (which selects whether `dash_breadcrumb_written_at`
+/// sources from the marker's mtime or the url's) is derived from that SAME call's `is_some()`.
+/// Proves that derivation is intact: a port-matching sentinel marker written STALE (before this
+/// run's own `RunStarted`) with a URL naming the SAME port written FRESH (after `RunStarted`,
+/// simulating a second process rewriting only the url) still gets suppressed by the
+/// predates-this-run check - which only happens if `written_at` is sourced from the STALE
+/// marker's mtime, not the FRESH url's. Had the sentinel been filtered inside
+/// `pid_if_port_matches` instead (turning a genuinely matching marker into an apparent
+/// mismatch), `port_matches` would flip to `false` and `written_at` would wrongly source from
+/// the fresh `url_path`, reporting an anomaly here where none should fire - reintroducing the
+/// wrong-file's-mtime defect class closed at round 9
+/// (adv-u69c1-mismatched-marker-suppression-borrows-wrong-files-mtime).
+#[test]
+fn watch_once_still_sources_written_at_from_the_marker_for_a_port_matching_sentinel() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    let dead_port = free_loopback_port();
+    DashMarker {
+        port: dead_port,
+        pid: rigger::dash::UNATTRIBUTED_PID,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the stale, sentinel-pid dash marker");
+
+    // The same filesystem-mtime safety margin every sibling test in this file uses, so this
+    // run's own RunStarted lands unambiguously AFTER the marker write.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["spec 62"]}"#),
+            ("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+        ],
+    );
+
+    // Another margin so the fresh url write below lands unambiguously AFTER RunStarted too.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    // Names the SAME port as the stale marker (port-matching, unlike round 9's mismatched
+    // sibling) - a second invocation rewriting only the url breadcrumb, never touching the
+    // marker already on disk.
+    std::fs::write(
+        root.join(".rigger/dash.url"),
+        format!("http://127.0.0.1:{dead_port}/"),
+    )
+    .expect("seed the fresh, port-matching dash.url");
+
+    assert!(!root.join(".rigger/dash.attempt").exists());
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 for a port-matching sentinel marker; stderr:\n{err}"
+    );
+    assert!(
+        out.trim().is_empty(),
+        "a port-matching marker written BEFORE this run's own RunStarted must suppress the \
+         report via the predates-this-run check reading the MARKER's mtime (stale) - if \
+         `written_at` instead read the fresh url's mtime, this would wrongly report; got:\n{out}"
+    );
+}
+
+/// SDET periphery gap first flagged at round 9 (sdet-u69c1r9-malformed-url-marker-fallback-
+/// untested) and reconfirmed still open through attempt 2/round 10
+/// (sdet-u69c1-attempt2-malformed-url-marker-fallback-still-untested,
+/// adv-u69c1-attempt2-gates-independently-reverified): `watch_poll`'s `(Some(url), Some(m))`
+/// dash-probe arm (src/main.rs) branches on `dash::url_port(&url)`. The `Some(url_port)`
+/// sub-branch (a well-formed url) is pinned by the mismatched-marker siblings above, but the
+/// `None` sub-branch - an UNPARSEABLE or foreign `dash.url` with a marker still on disk - falls
+/// back to probing the MARKER's own port directly and, unlike the well-formed sub-branch, DOES
+/// name the marker's pid (there is no url port left to prefer instead). Every existing
+/// marker-plus-url fixture in this file writes a well-formed `http://127.0.0.1:<port>/` url, so
+/// this fallback sub-branch has never been exercised by any test; a mutant that deleted this
+/// arm entirely, or made it silently classify as `NotRecorded`/`Serving` regardless of the
+/// marker probe, would pass the full suite.
+#[test]
+fn watch_once_falls_back_to_the_marker_when_the_recorded_url_is_unparseable() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    // A malformed dash.url - no `://` scheme separator at all, so `dash::url_port`'s
+    // `split("://").nth(1)` finds nothing to parse; the same "foreign or malformed" input its
+    // own doc comment names as unparseable, never guessed at.
+    std::fs::write(root.join(".rigger/dash.url"), "not-a-url")
+        .expect("seed the malformed dash.url");
+
+    // The only other breadcrumb: a marker naming a definitely-unbound loopback port, so the
+    // fallback probe of the marker's OWN port reads dead.
+    let dead_port = free_loopback_port();
+    let dead_pid = u32::MAX;
+    DashMarker {
+        port: dead_port,
+        pid: dead_pid,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the dash marker");
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 against an unparseable dash.url with a marker present; \
+         stderr:\n{err}"
+    );
+    assert!(
+        out.contains("dash liveness")
+            && out.contains(&dead_pid.to_string())
+            && out.contains(&dead_port.to_string()),
+        "an unparseable dash.url must fall back to probing the marker's own port and name its \
+         pid - the same report a marker-only fixture would produce, not silence and not a \
+         url-shaped report; got:\n{out}"
+    );
+}
+
+/// Round 5 (adj-u62c1r4-verdict-reject-sentinel-pid-leaks-to-status): the sibling above proves a
+/// REAL dead pid renders truthfully through the unparseable-`dash.url` fallback arm (`watch_poll`'s
+/// `(Some(url), Some(m))` arm's `None` sub-branch on `dash::url_port(&url)`, src/main.rs) - which,
+/// like the marker-only arm, reads `m.pid` straight from the marker with no
+/// `dash::pid_if_port_matches` call in between (there is no parseable url port to compare
+/// against). It was NOT one of the two sites the round-4 reject named by line range, but it is
+/// the same leak: a marker carrying [`dash::UNATTRIBUTED_PID`] (spec 62 round 4's documented
+/// sentinel) would still render "marker names dead pid 0" here. Proves the sentinel is filtered
+/// at this construction site too.
+#[test]
+fn watch_once_never_names_the_unattributed_pid_sentinel_when_the_url_is_unparseable() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    std::fs::write(root.join(".rigger/dash.url"), "not-a-url")
+        .expect("seed the malformed dash.url");
+
+    let dead_port = free_loopback_port();
+    DashMarker {
+        port: dead_port,
+        pid: rigger::dash::UNATTRIBUTED_PID,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the sentinel-pid dash marker");
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 against an unparseable dash.url with a sentinel-pid \
+         marker; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("dash liveness") && out.contains(&dead_port.to_string()),
+        "the dead marker port itself is a genuine anomaly and must still be reported, sentinel \
+         pid or not; got:\n{out}"
+    );
+    assert!(
+        !out.contains("marker names dead pid"),
+        "the sentinel pid must never be printed as a fabricated dead process - it was never a \
+         real, assigned pid; got:\n{out}"
+    );
+    assert!(
+        out.contains("no matching marker, no pid"),
+        "a sentinel-pid marker must render exactly like the no-matching-marker case; got:\n{out}"
+    );
+}
+
+/// Round-12 fix (arch-u69c1-duplicate-url-port-parser / arch-u69c1r11-pidmatch-and-
+/// urlparser-duplication-still-unfixed / adv-u69c1r11-elevate-pidmatch-remedy-now):
+/// `watch_poll`'s marker-absent arm (src/main.rs, the `(Some(url), None)` match arm) used to
+/// call its own private `port_from_dash_url`, which took the LAST colon in the WHOLE url -
+/// only agreeing with `dash::url_port`'s scheme-and-path-aware parse on the single documented
+/// no-path `http://127.0.0.1:<port>/` shape, and diverging (silently failing to parse at all)
+/// on any recorded url with a colon appearing somewhere after the port, e.g. inside a path
+/// segment. `port_from_dash_url` is gone; this arm now calls `dash::url_port` directly, the
+/// crate's one implementation (also used by `dash_status`). No existing fixture in this file
+/// ever wrote a `dash.url` whose path contains a colon (grepped: every seeded url is a bare
+/// `http://127.0.0.1:<port>/` or `.../api/state` shape), so this exact divergence class was
+/// never driven through the compiled binary. This seeds a `dash.url` naming a
+/// definitely-unbound loopback port followed by a path segment containing a colon, with NO
+/// marker recorded (the `rigger run` / `rigger serve` shape), and proves the port is still
+/// correctly extracted and reported dead. Confirmed this reproduces the pre-round-12 defect:
+/// against the old `port_from_dash_url` (`url.rsplit_once(':')` over the whole string), the
+/// last colon in this fixture's url falls inside the path, so the parse yields a non-numeric
+/// tail and fails outright - the arm falls through to `DashProbe::NotRecorded` and `rigger
+/// watch --once` prints nothing at all for a genuinely dead, recorded dash.
+#[test]
+fn watch_once_parses_the_urls_port_past_a_colon_in_the_path_with_no_marker() {
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    let dead_port = free_loopback_port();
+    std::fs::write(
+        root.join(".rigger/dash.url"),
+        format!("http://127.0.0.1:{dead_port}/run:abc"),
+    )
+    .expect("seed the dash.url breadcrumb");
+    assert!(
+        !root.join(".rigger/dash.marker").exists(),
+        "this fixture must leave no marker behind - that is the exact shape under test"
+    );
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 against a dead, marker-less dash url whose path \
+         contains a colon; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("dash liveness") && out.contains(&dead_port.to_string()),
+        "a dash.url whose path contains a colon after the port must still have its port \
+         correctly parsed and reported dead - the old last-colon-in-the-whole-url parser \
+         (removed round 12) would have taken the colon inside \"run:abc\" instead, failed to \
+         parse a numeric port at all, and silently reported nothing; got:\n{out}"
+    );
+}
+
+/// The sibling of the test above for `watch_poll`'s OTHER changed call site: the
+/// `(Some(url), Some(m))` match arm (src/main.rs) also used to call `port_from_dash_url` and
+/// now calls `dash::url_port` directly, a textually separate line from the marker-absent
+/// arm's - a mutation or reversion could regress this call site alone and leave the sibling
+/// arm's test (and every existing well-formed-url fixture, none of which puts a colon in the
+/// path) blind to it, exactly the "one arm fixed, the duplicate elsewhere left behind" shape
+/// this unit's own history repeats (round 10 fixed the mtime symptom but left the pid-match
+/// classifier duplicated; the adversary named that pattern explicitly at
+/// arch-u69c1-r10-pid-match-duplication-is-the-recurring-drift-source). Deliberately a
+/// MISMATCHED marker (different port than the url), not a matching one: a matching marker's
+/// pid is named identically whichever code path decides it (the correct
+/// `dash::url_port`-then-`pid_if_port_matches` route, or the OLD parser's total parse
+/// failure falling back to probing the marker's own port directly - confirmed empirically,
+/// see below), so that shape cannot discriminate old from new behavior here. A genuine port
+/// mismatch can: this seeds a colon-bearing-path `dash.url` naming one definitely-unbound
+/// loopback port and a marker naming a DIFFERENT one, and proves the report names the URL's
+/// own (correctly-parsed) port and never the mismatched marker's port or pid - mirroring
+/// `watch_once_never_names_a_mismatched_markers_pid_for_the_recorded_urls_port` above, but
+/// through a url shape that only reaches the `Some(url_port)` sub-branch (and hence
+/// `pid_if_port_matches` at all) once `dash::url_port` correctly parses past the path colon.
+/// Confirmed this reproduces the pre-round-12 defect: reverted to the old
+/// `port_from_dash_url` (`main.rs` at `a6f8a18`, this unit's prior tip), the whole-string
+/// last-colon parse fails on this fixture's url (its tail is non-numeric), so the arm falls
+/// into the UNPARSEABLE-url branch and probes the MISMATCHED marker's OWN port directly
+/// instead - reporting the marker's port and its impossible pid, exactly the wrong dash, and
+/// never the url's own port at all.
+#[test]
+fn watch_once_never_names_a_mismatched_markers_pid_when_the_urls_path_contains_a_colon() {
+    use rigger::dash::DashMarker;
+
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    let url_port = free_loopback_port();
+    let marker_port = loop {
+        let p = free_loopback_port();
+        if p != url_port {
+            break p;
+        }
+    };
+    let impossible_pid = u32::MAX;
+    std::fs::write(
+        root.join(".rigger/dash.url"),
+        format!("http://127.0.0.1:{url_port}/run:abc"),
+    )
+    .expect("seed the dash.url breadcrumb");
+    DashMarker {
+        port: marker_port,
+        pid: impossible_pid,
+    }
+    .write(&root.join(".rigger/dash.marker"))
+    .expect("seed the mismatched dash marker");
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(
+        ok,
+        "rigger watch --once must exit 0 against a dead dash url whose path contains a colon, \
+         with a mismatched marker present; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("dash liveness") && out.contains(&format!("port {url_port}")),
+        "the dash liveness report must probe and name the recorded dash.url's own port \
+         ({url_port}), parsed past the colon in its path - either dash::url_port regressed at \
+         this call site, or the url was wrongly treated as unparseable and the mismatched \
+         marker's own port substituted for it; got:\n{out}"
+    );
+    assert!(
+        !out.contains(&impossible_pid.to_string()),
+        "a mismatched marker's pid must never be named as this url's, even when the url's \
+         path contains a colon; got:\n{out}"
+    );
+    assert!(
+        !out.contains(&format!("port {marker_port}")),
+        "the mismatched marker's own port must not be reported as the dash's; got:\n{out}"
+    );
+}
+
+// --- Spec 66, criterion 5: DISCOVERABILITY - `rigger prime` names the spec lint ---
+//
+// `rigger prime` is the pre-launch surface installed as the Claude Code SessionStart hook -
+// the first thing that runs when a session (about to drive `/rigger <spec>`) begins. When it
+// is given a spec path it must mention `rigger validate <spec>` (the spec lint, spec 18/66) as
+// a next step, so the mechanical pre-launch check is discovered rather than found by accident.
+// Bare `rigger prime` (the hook's actual installed invocation, which knows no spec) must stay
+// exactly as it was: no lint mention.
+
+#[test]
+fn prime_with_no_spec_path_never_mentions_the_spec_lint() {
+    let proj = temp_project();
+    let root = proj.path();
+
+    let (out, err, ok) = run_rigger(root, &["prime"]);
+    assert!(ok, "bare `rigger prime` must succeed; stderr:\n{err}");
+    assert!(
+        !out.contains("rigger validate"),
+        "bare `rigger prime` (no spec path given) must not mention the spec lint; got:\n{out}"
+    );
+}
+
+#[test]
+fn prime_given_a_spec_path_names_the_spec_lint_as_a_next_step() {
+    let proj = temp_project();
+    let root = proj.path();
+
+    // No store seeded: `cmd_prime` takes its absent-db early-return path (mirroring
+    // cmd_stats's NO_RUNS_MESSAGE guard) - the spec-lint reminder must still appear there,
+    // since a project with no run history yet is exactly when the reminder matters most.
+    let (out, err, ok) = run_rigger(root, &["prime", "specs/42-widgets.md"]);
+    assert!(
+        ok,
+        "`rigger prime <spec>` against a never-run project must succeed; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("rigger validate specs/42-widgets.md"),
+        "given a spec path, `rigger prime` must name `rigger validate <spec>` as a next \
+         step even on the no-runs-yet path; got:\n{out}"
+    );
+}
+
+#[test]
+fn prime_given_a_spec_path_names_the_spec_lint_alongside_recent_decisions() {
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    // A seeded-but-empty store takes cmd_prime's OTHER path (the "recent decisions"
+    // listing, here empty -> "(none yet)") - the reminder must appear there too, not only
+    // on the absent-db early return, so both of cmd_prime's paths stay in lock-step.
+    let (out, err, ok) = run_rigger(root, &["prime", "specs/42-widgets.md"]);
+    assert!(
+        ok,
+        "`rigger prime <spec>` against a seeded-but-empty store must succeed; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("# Rigger: recent decisions"),
+        "a seeded (even empty) store must take the recent-decisions path, not the \
+         absent-db one; got:\n{out}"
+    );
+    assert!(
+        out.contains("rigger validate specs/42-widgets.md"),
+        "given a spec path, `rigger prime` must name `rigger validate <spec>` as a next \
+         step on the recent-decisions path too; got:\n{out}"
+    );
+}
+
+/// The realistic invocation the two paths above only approximate: a project with ACTUAL
+/// recorded decisions (not an empty store falling to "(none yet)"). Structurally this walks
+/// the same final `if let Some(spec) = spec_path` line as the empty-store test above, but it
+/// is the one combination neither existing test drives - real decision content plus the spec
+/// arg together - so it is the only case that can catch the reminder line landing in the
+/// wrong place (e.g. interleaved between decisions, or lost past the top-10 cutoff) rather
+/// than appended once, after every decision line.
+#[test]
+fn prime_given_a_spec_path_names_the_spec_lint_after_real_decision_content() {
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+
+    for (id, summary) in [("d-one", "first decision"), ("d-two", "second decision")] {
+        let (_out, err, ok) = run_rigger(
+            root,
+            &[
+                "emit",
+                "DecisionMade",
+                &format!(r#"{{"id":"{id}","summary":"{summary}","governs":["x.rs"]}}"#),
+            ],
+        );
+        assert!(
+            ok,
+            "seeding {id} via `rigger emit` must succeed; stderr:\n{err}"
+        );
+    }
+
+    let (out, err, ok) = run_rigger(root, &["prime", "specs/42-widgets.md"]);
+    assert!(
+        ok,
+        "`rigger prime <spec>` against a store with real decisions must succeed; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("- d-one: first decision") && out.contains("- d-two: second decision"),
+        "both seeded decisions must be listed; got:\n{out}"
+    );
+    let decisions_at = out
+        .find("- d-two: second decision")
+        .expect("decision line present");
+    let reminder_at = out
+        .find("rigger validate specs/42-widgets.md")
+        .expect("spec-lint reminder present");
+    assert!(
+        reminder_at > decisions_at,
+        "the spec-lint reminder must be appended AFTER the real decision listing, not \
+         interleaved with it or lost above it; got:\n{out}"
+    );
+    assert_eq!(
+        out.matches("rigger validate specs/42-widgets.md").count(),
+        1,
+        "the reminder must appear exactly once, not once per decision; got:\n{out}"
+    );
+}
+
+// --- Spec 66, criterion 5 (round 2): DISCOVERABILITY reaches the REAL pre-launch entries ---
+//
+// `rigger prime` above is the SessionStart hook, but the hook is always invoked with ZERO
+// args (src/hooks.rs pins the literal `rigger prime` string) - so in production it NEVER
+// carries a spec path and the reminder wired there alone never reaches an operator. The two
+// surfaces that DO hold the parsed spec path at the real pre-launch moment are `run_cli`
+// (`rigger run <spec>`) and `cmd_workflow` (`rigger workflow <spec>`); these tests drive the
+// compiled binary through both, proving the reminder reaches an actual production invocation
+// rather than only a hand-typed `rigger prime <spec>`.
+
+/// `rigger run <spec>` names the spec lint even when the run goes on to refuse for an
+/// unrelated reason (no reachable base) - the reminder is printed before any of that
+/// downstream machinery runs, so it survives every failure path, not only a successful run.
+#[test]
+fn run_given_a_spec_path_names_the_spec_lint_as_a_next_step() {
+    // `temp_project()` is a `git init` with NO commit: an unborn HEAD, nothing to branch
+    // from, so `--base origin/does-not-exist` deterministically refuses fast (spec 38,
+    // criterion 2) with no agent ever spawned. A real spec file with one Done-when checkbox
+    // is required so `load_criteria` succeeds and the run actually reaches that base check.
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    std::fs::create_dir_all(root.join("specs")).unwrap();
+    std::fs::write(
+        root.join("specs/42-widgets.md"),
+        "# 42 widgets\n\n## Done when\n\n- [ ] a test proves widgets work\n",
+    )
+    .unwrap();
+
+    let (out, err, ok) = run_rigger(
+        root,
+        &[
+            "run",
+            "specs/42-widgets.md",
+            "--base",
+            "origin/does-not-exist",
+        ],
+    );
+    assert!(
+        !ok,
+        "the no-reachable-base refusal must still fire after the reminder prints; stdout: \
+         {out:?} stderr: {err:?}"
+    );
+    assert!(
+        err.contains("no reachable base"),
+        "sanity: this must be the same no-reachable-base refusal the base test pins; got: {err:?}"
+    );
+    assert!(
+        out.contains("rigger validate specs/42-widgets.md"),
+        "`rigger run <spec>` must name `rigger validate <spec>` as a next step, proving the \
+         reminder reaches this real pre-launch entry (not only `rigger prime`); got stdout:\n{out}"
+    );
+}
+
+/// Bare `rigger run` (no spec positional) must never mention the spec lint - mirroring
+/// `rigger prime`'s no-arg behavior, so the reminder only ever appears when a spec is
+/// genuinely in play.
+#[test]
+fn run_with_no_spec_path_never_mentions_the_spec_lint() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+
+    let (out, _err, _ok) = run_rigger(root, &["run", "--base", "origin/does-not-exist"]);
+    assert!(
+        !out.contains("rigger validate"),
+        "bare `rigger run` (no spec path given) must not mention the spec lint; got:\n{out}"
+    );
+}
+
+/// Bare `rigger workflow` (no spec positional) must never mention the spec lint, mirroring
+/// `rigger run`'s and `rigger prime`'s no-arg behavior.
+#[test]
+fn workflow_with_no_spec_path_never_mentions_the_spec_lint() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (out, _err, _ok) = run_rigger(root, &["workflow"]);
+    assert!(
+        !out.contains("rigger validate"),
+        "bare `rigger workflow` (no spec path given) must not mention the spec lint; got:\n{out}"
+    );
+}
+
+// --- Spec 66, criterion 5 (round 3): DISCOVERABILITY reaches `rigger step` - the PRIMARY,
+// most-used consumer (the native `/rigger <spec>` workflow's driver; see `cmd_step`'s own doc
+// comment). `run_cli` and `cmd_workflow` above hold the spec path at a one-shot launch moment,
+// but `cmd_step` is what actually reruns the pre-launch check on, so it must name the lint too -
+// on STDERR, never stdout, because `cmd_step` prints exactly one line of `{wave,done}` JSON on
+// stdout that a driver parses (see `acquire_step_lock`'s and `cmd_step`'s own doc comments); a
+// stdout reminder would corrupt that single-line contract.
+
+/// `rigger step --spec <path>` names the spec lint on STDERR, and stdout still carries nothing
+/// but the single-line `{wave,done}` JSON the driver parses - proving the reminder reaches the
+/// primary loop-driving surface without corrupting its wire contract.
+#[test]
+fn step_given_a_spec_path_names_the_spec_lint_on_stderr_without_corrupting_the_wave_json() {
+    let dir = temp_repoless_project();
+    let root = dir.path();
+    // A single stage whose `coverage:` matches the spec's one criterion VERBATIM, so the
+    // coverage gate (conductor::coverage_gap) is satisfied and the step actually reaches
+    // the wave-printing path instead of refusing on an unrelated criterion-coverage error -
+    // this test is about the reminder and the stdout wire contract, not decomposition.
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        "name: steptest\ndefaults:\n  grounder: nop\n  budget: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n    coverage: \"a test proves the thing works\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("specs.md"),
+        "# S\n\n## Done when\n\n- [ ] a test proves the thing works\n",
+    )
+    .unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["step", "--spec", "specs.md"]);
+    assert!(ok, "the step must still succeed; stderr: {err}");
+    assert!(
+        err.contains("rigger validate specs.md"),
+        "`rigger step --spec <path>` must name `rigger validate <path>` as a next step on \
+         stderr; got stderr:\n{err}"
+    );
+    let line = out.trim();
+    assert!(
+        !line.contains("rigger validate"),
+        "the reminder must NEVER leak onto stdout - that channel carries only the wave JSON a \
+         driver parses; got stdout:\n{out}"
+    );
+    assert!(
+        line.lines().count() == 1,
+        "stdout must still be exactly the one JSON line, not split by an interleaved reminder; \
+         got stdout:\n{out}"
+    );
+    let parsed: serde_json::Value =
+        serde_json::from_str(line).expect("stdout must still be valid, uncorrupted JSON");
+    assert!(
+        parsed.get("wave").is_some(),
+        "the parsed JSON must still carry the wave field; got: {parsed:?}"
+    );
+}
+
+/// `rigger step` with no `--spec` given must never mention the spec lint, mirroring `rigger
+/// run`'s and `rigger workflow`'s no-arg behavior (spec 66, criterion 5).
+#[test]
+fn step_with_no_spec_path_never_mentions_the_spec_lint() {
+    let dir = temp_repoless_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the step must succeed; stderr: {err}");
+    assert!(
+        !out.contains("rigger validate") && !err.contains("rigger validate"),
+        "bare `rigger step` (no --spec given) must not mention the spec lint anywhere; got \
+         stdout:\n{out}\nstderr:\n{err}"
+    );
+}
+
+/// `cmd_step`'s own doc comment and its inline placement comment both claim the reminder is
+/// "printed FIRST... so the reminder survives every downstream refusal or failure path -
+/// mirroring `run_cli`'s and `cmd_workflow`'s placement." `run_cli`'s analogous claim has a
+/// dedicated test (`run_given_a_spec_path_names_the_spec_lint_as_a_next_step`, spec 66 round
+/// 2) that proves the reminder survives a downstream no-reachable-base refusal; `cmd_step`'s
+/// round-4 tests above only cover the success path and the no-`--spec` path, leaving that
+/// specific "survives a downstream refusal" claim unverified for this third call site. This
+/// closes that gap the same way: an unborn-HEAD repo with an unresolvable `--base` makes
+/// `rigger step` fail loudly on the no-reachable-base gate (spec 38, criterion 2), which
+/// fires strictly AFTER the reminder is printed - so a passing reminder assertion here proves
+/// the print-before-refuse ordering the doc comment claims, not merely that the reminder
+/// exists somewhere in the binary's output.
+#[test]
+fn step_given_a_spec_path_names_the_spec_lint_even_when_the_step_then_refuses_for_no_reachable_base(
+) {
+    // `temp_project()` is a `git init` with NO commit: an unborn HEAD, nothing to branch
+    // from, so `--base origin/does-not-exist` deterministically refuses fast (spec 38,
+    // criterion 2), mirroring `run_given_a_spec_path_names_the_spec_lint_as_a_next_step`
+    // above and `step_refuses_when_there_is_no_reachable_base` elsewhere in this file.
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    std::fs::create_dir_all(root.join("specs")).unwrap();
+    std::fs::write(
+        root.join("specs/42-widgets.md"),
+        "# 42 widgets\n\n## Done when\n\n- [ ] a test proves widgets work\n",
+    )
+    .unwrap();
+
+    let (out, err, ok) = run_rigger(
+        root,
+        &[
+            "step",
+            "--spec",
+            "specs/42-widgets.md",
+            "--base",
+            "origin/does-not-exist",
+        ],
+    );
+    assert!(
+        !ok,
+        "the no-reachable-base refusal must still fire after the reminder prints; stdout: \
+         {out:?} stderr: {err:?}"
+    );
+    assert!(
+        err.contains("no reachable base"),
+        "sanity: this must be the same no-reachable-base refusal `step_refuses_when_there_is_no_reachable_base` \
+         pins; got: {err:?}"
+    );
+    assert!(
+        err.contains("rigger validate specs/42-widgets.md"),
+        "`rigger step --spec <path>` must name `rigger validate <path>` on stderr even when the \
+         step goes on to refuse for an unrelated downstream reason (proving the reminder is \
+         printed first and survives every failure path, not only a successful step); got \
+         stderr:\n{err}"
+    );
+}
+
+// --- Spec 66, criterion 4: ONE LINT AUTHORITY - the in-run call site ---
+//
+// Criterion 3 wired the spec-lint into `cmd_validate` (the standalone, PRE-LAUNCH `rigger
+// validate <spec>` command) only. These tests drive the compiled binary through the real
+// IN-RUN entries instead - `rigger run` and `rigger step`, which both call the shared
+// `load_criteria` - proving the same advisories surface there too, from the identical
+// `spec::spec_lint_advisories` implementation (never a second, parallel parser). Both use
+// the established `--base origin/does-not-exist` trick: a fresh repo has an unborn HEAD,
+// so the no-reachable-base refusal fires deterministically, with no agent ever spawned -
+// but ONLY after `load_criteria` has already run and printed its advisories, so the
+// refusal proves nothing about the lint firing FIRST while still keeping the test fast
+// and hermetic.
+
+/// `rigger run <spec>` surfaces the SAME `multi-behavior` advisory (with the same
+/// recommendation wording) that `rigger validate <spec>` prints pre-launch - proving the
+/// in-run call site shares `cmd_validate`'s implementation rather than re-deriving it -
+/// and stays silent on a clean spec, exactly like the pre-launch surface.
+#[test]
+fn run_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    std::fs::create_dir_all(root.join("specs")).unwrap();
+
+    let bad_spec = "# 42 widgets\n\n## Done when\n\n\
+         - [ ] the daemon starts on boot, and it writes a pidfile, and it rotates the log \
+         nightly\n";
+    std::fs::write(root.join("specs/42-widgets.md"), bad_spec).unwrap();
+
+    let (_out, err, ok) = run_rigger(
+        root,
+        &[
+            "run",
+            "specs/42-widgets.md",
+            "--base",
+            "origin/does-not-exist",
+        ],
+    );
+    assert!(
+        !ok,
+        "the no-reachable-base refusal must still fire after the in-run lint prints; \
+         stderr:\n{err}"
+    );
+    assert!(
+        err.contains("no reachable base"),
+        "sanity: this must be the same no-reachable-base refusal the base test pins; got: {err:?}"
+    );
+    assert!(
+        err.contains("multi-behavior"),
+        "`rigger run <spec>` must surface the SAME `multi-behavior` spec-lint advisory \
+         `rigger validate <spec>` emits pre-launch, proving the in-run call site shares the \
+         one implementation, not a second parallel parser; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("one observable behavior per criterion"),
+        "the in-run advisory must carry the SAME recommendation wording as the pre-launch \
+         one; stderr:\n{err}"
+    );
+
+    // A clean, single-behavior spec: no spec-lint advisory at all, even though the run
+    // still refuses for the unrelated no-reachable-base reason.
+    let clean_spec = "# 43 widgets\n\n## Done when\n\n- [ ] the store passes the contract suite\n";
+    std::fs::write(root.join("specs/43-widgets.md"), clean_spec).unwrap();
+    let (_out, err, ok) = run_rigger(
+        root,
+        &[
+            "run",
+            "specs/43-widgets.md",
+            "--base",
+            "origin/does-not-exist",
+        ],
+    );
+    assert!(!ok, "clean-spec run must still refuse on no-reachable-base");
+    assert!(
+        !err.contains("warning: spec "),
+        "a clean single-behavior spec must yield no spec-lint advisory on the in-run call \
+         site either; stderr:\n{err}"
+    );
+}
+
+/// `rigger step --spec <path>` - the ONE command the documented primary native `/rigger
+/// <spec>` workflow ever actually invokes - reaches the same in-run call site as `rigger
+/// run`, since both route through the shared `load_criteria`. Proves the wiring reaches
+/// the real primary path, not only the standalone CLI's `rigger run`, and that the
+/// advisory lands ALONGSIDE (not instead of) criterion 5's own "go run rigger validate"
+/// reminder already pinned above.
+#[test]
+fn step_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    std::fs::create_dir_all(root.join("specs")).unwrap();
+
+    let bad_spec = "# 42 widgets\n\n## Done when\n\n\
+         - [ ] the daemon starts on boot, and it writes a pidfile, and it rotates the log \
+         nightly\n";
+    std::fs::write(root.join("specs/42-widgets.md"), bad_spec).unwrap();
+
+    let (_out, err, ok) = run_rigger(
+        root,
+        &[
+            "step",
+            "--spec",
+            "specs/42-widgets.md",
+            "--base",
+            "origin/does-not-exist",
+        ],
+    );
+    assert!(
+        !ok,
+        "the no-reachable-base refusal must still fire after the in-run lint prints; \
+         stderr:\n{err}"
+    );
+    // `cmd_step` already prints a generic reminder line (criterion 5) that itself names
+    // "multi-behavior" as a lint CATEGORY, so asserting on that substring alone would pass
+    // even if the in-run advisory below were never wired - a tautology, not a proof. The
+    // recommendation wording is what only a FIRED advisory carries; it is absent from the
+    // generic reminder, so this is the discriminating check (mirrors the `rigger run`
+    // sibling test's own second assertion above).
+    assert!(
+        err.contains("one observable behavior per criterion"),
+        "`rigger step --spec <path>` - the primary native-workflow entry - must surface the \
+         SAME multi-behavior spec-lint advisory (with its recommendation wording, not just \
+         the generic reminder's category name) that `rigger validate` emits pre-launch; \
+         stderr:\n{err}"
+    );
+}
+
+/// `rigger run --driver workflow <spec>` (and, identically, `rigger serve <spec>` - both
+/// dispatch straight into the SAME `run_workflow`) is `load_criteria`'s third real call
+/// site (main.rs:3119), alongside `run_cli` and `cmd_step` above - `load_criteria`'s own
+/// doc comment names it as a covered production entry, but neither of the two tests above
+/// drives this call site: `run_workflow_refuses_when_there_is_no_reachable_base` (this same
+/// file) omits the spec positional entirely, so `load_criteria` never reaches the lint
+/// branch there. This closes that gap: drives the compiled binary through the direct
+/// (no-Node-shim) workflow dispatch with a spec path in play, proving the SAME advisory
+/// `rigger validate <spec>` prints pre-launch also surfaces here, from the identical
+/// `spec::spec_lint_advisories` implementation - not a fourth, parallel parser - and stays
+/// silent on a clean spec. `run_workflow` now ALSO prints criterion 5's generic reminder
+/// (the escalation remedy for adj-u66c5-rebuild-verdict-reject-dead-consumer), whose text
+/// itself contains "multi-behavior" - so the in-run-lint assertion below matches on the
+/// advisory's own class label ("F2 bundling"), which the reminder never carries, keeping
+/// the assertion discriminating.
+#[test]
+fn run_driver_workflow_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    std::fs::create_dir_all(root.join("specs")).unwrap();
+
+    let bad_spec = "# 42 widgets\n\n## Done when\n\n\
+         - [ ] the daemon starts on boot, and it writes a pidfile, and it rotates the log \
+         nightly\n";
+    std::fs::write(root.join("specs/42-widgets.md"), bad_spec).unwrap();
+
+    let (_out, err, ok) = run_rigger(
+        root,
+        &[
+            "run",
+            "--driver",
+            "workflow",
+            "specs/42-widgets.md",
+            "--base",
+            "origin/does-not-exist",
+        ],
+    );
+    assert!(
+        !ok,
+        "the no-reachable-base refusal must still fire after the in-run lint prints; \
+         stderr:\n{err}"
+    );
+    assert!(
+        err.contains("rigger workflow") && err.contains("no reachable base"),
+        "sanity: this must be the same `rigger workflow`-labelled no-reachable-base refusal \
+         `run_workflow_refuses_when_there_is_no_reachable_base` pins; got: {err:?}"
+    );
+    assert!(
+        err.contains("F2 bundling"),
+        "`rigger run --driver workflow <spec>` must surface the SAME `F2 bundling` \
+         spec-lint advisory `rigger validate <spec>` emits pre-launch, proving `run_workflow` \
+         - the third `load_criteria` call site, and the one `rigger serve <spec>` shares - \
+         reaches the same shared implementation, not a fourth parallel parser (asserted on \
+         the class label, which criterion 5's reminder text never carries); stderr:\n{err}"
+    );
+    assert!(
+        err.contains("one observable behavior per criterion"),
+        "the in-run advisory must carry the SAME recommendation wording as the pre-launch \
+         one; stderr:\n{err}"
+    );
+
+    // A clean, single-behavior spec: no spec-lint advisory at all, even though the run
+    // still refuses for the unrelated no-reachable-base reason.
+    let clean_spec = "# 43 widgets\n\n## Done when\n\n- [ ] the store passes the contract suite\n";
+    std::fs::write(root.join("specs/43-widgets.md"), clean_spec).unwrap();
+    let (_out, err, ok) = run_rigger(
+        root,
+        &[
+            "run",
+            "--driver",
+            "workflow",
+            "specs/43-widgets.md",
+            "--base",
+            "origin/does-not-exist",
+        ],
+    );
+    assert!(!ok, "clean-spec run must still refuse on no-reachable-base");
+    assert!(
+        !err.contains("warning: spec "),
+        "a clean single-behavior spec must yield no spec-lint advisory on the `run_workflow` \
+         in-run call site either; stderr:\n{err}"
+    );
+}
+
+// --- Spec 66, criterion 5: REMINDER DEDUP - the pid-scoped parent-to-child contract ---
+//
+// `spec_lint_reminder_should_print`/`spec_lint_reminder_suppressed` (src/main.rs) gate every
+// reminder print above on `RIGGER_SPEC_LINT_REMINDER_PID`: suppressed ONLY when the value
+// parses and equals the process's REAL direct OS parent id
+// (`std::os::unix::process::parent_id`). Spawning the compiled binary as a child of THIS test
+// process (via `run_rigger_envs`, which builds `Command::new` directly - no shell in between)
+// makes that real parent id exactly `std::process::id()` read right here, so these tests
+// exercise the real seam, not a mock of it. Each of the three reminder-printing surfaces gets
+// both directions: a genuinely nested invocation (the sentinel names OUR pid) stays silent,
+// and ambient pollution from an unrelated tree (the sentinel is present but names some OTHER
+// pid) still prints - a bare presence check would wrongly suppress the second case, which is
+// exactly the class two earlier rounds tried and a reviewer rejected (see this repo's spec 66
+// Design section).
+
+/// A genuinely nested `rigger step` - its real direct OS parent (this test process) already
+/// printed and passed its own pid down - stays silent on both stdout and stderr.
+#[test]
+fn step_reminder_is_suppressed_when_env_names_the_real_direct_parent_pid() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    std::fs::create_dir_all(root.join("specs")).unwrap();
+    std::fs::write(
+        root.join("specs/42-widgets.md"),
+        "# 42 widgets\n\n## Done when\n\n- [ ] a test proves widgets work\n",
+    )
+    .unwrap();
+
+    let own_pid = std::process::id().to_string();
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &[
+            "step",
+            "--spec",
+            "specs/42-widgets.md",
+            "--base",
+            "origin/does-not-exist",
+        ],
+        &[("RIGGER_SPEC_LINT_REMINDER_PID", own_pid.as_str())],
+    );
+    assert!(
+        !ok,
+        "the no-reachable-base refusal must still fire; stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        err.contains("no reachable base"),
+        "sanity: same no-reachable-base refusal the base test pins; got: {err:?}"
+    );
+    assert!(
+        !out.contains("rigger validate") && !err.contains("rigger validate"),
+        "a `step` genuinely nested under this test process must stay silent when the sentinel \
+         names our real pid; got stdout:\n{out}\nstderr:\n{err}"
+    );
+}
+
+/// Ambient env pollution from an unrelated process tree - the sentinel is present but names
+/// some OTHER pid, not this test's own real direct parent id - must never suppress.
+#[test]
+fn step_reminder_prints_despite_env_naming_a_foreign_pid() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    std::fs::create_dir_all(root.join("specs")).unwrap();
+    std::fs::write(
+        root.join("specs/42-widgets.md"),
+        "# 42 widgets\n\n## Done when\n\n- [ ] a test proves widgets work\n",
+    )
+    .unwrap();
+
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &[
+            "step",
+            "--spec",
+            "specs/42-widgets.md",
+            "--base",
+            "origin/does-not-exist",
+        ],
+        // A large, arbitrary sentinel - never this binary's real direct parent. NOT `"1"`:
+        // `.cargo/pidns-runner.sh` (spec 78) runs every test binary as pid 1 of its OWN
+        // fresh pid namespace, so `"1"` would genuinely equal the spawned rigger
+        // subprocess's real parent id here and wrongly suppress the reminder.
+        &[("RIGGER_SPEC_LINT_REMINDER_PID", "999999")],
+    );
+    assert!(
+        !ok,
+        "the no-reachable-base refusal must still fire; stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        err.contains("rigger validate specs/42-widgets.md"),
+        "ambient env pollution naming a foreign pid must never suppress the reminder; got \
+         stderr:\n{err}"
+    );
+}
+
+/// A genuinely nested `rigger run <spec>` stays silent when the sentinel names our real pid.
+#[test]
+fn run_reminder_is_suppressed_when_env_names_the_real_direct_parent_pid() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    std::fs::create_dir_all(root.join("specs")).unwrap();
+    std::fs::write(
+        root.join("specs/42-widgets.md"),
+        "# 42 widgets\n\n## Done when\n\n- [ ] a test proves widgets work\n",
+    )
+    .unwrap();
+
+    let own_pid = std::process::id().to_string();
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &[
+            "run",
+            "specs/42-widgets.md",
+            "--base",
+            "origin/does-not-exist",
+        ],
+        &[("RIGGER_SPEC_LINT_REMINDER_PID", own_pid.as_str())],
+    );
+    assert!(
+        !ok,
+        "the no-reachable-base refusal must still fire; stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        err.contains("no reachable base"),
+        "sanity: same no-reachable-base refusal the base test pins; got: {err:?}"
+    );
+    assert!(
+        !out.contains("rigger validate"),
+        "a `run` genuinely nested under this test process must stay silent when the sentinel \
+         names our real pid; got stdout:\n{out}"
+    );
+}
+
+/// Ambient env pollution naming a foreign pid must never suppress `rigger run <spec>`'s
+/// reminder.
+#[test]
+fn run_reminder_prints_despite_env_naming_a_foreign_pid() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    std::fs::create_dir_all(root.join("specs")).unwrap();
+    std::fs::write(
+        root.join("specs/42-widgets.md"),
+        "# 42 widgets\n\n## Done when\n\n- [ ] a test proves widgets work\n",
+    )
+    .unwrap();
+
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &[
+            "run",
+            "specs/42-widgets.md",
+            "--base",
+            "origin/does-not-exist",
+        ],
+        // A large, arbitrary sentinel - never this binary's real direct parent. NOT `"1"`:
+        // `.cargo/pidns-runner.sh` (spec 78) runs every test binary as pid 1 of its OWN
+        // fresh pid namespace, so `"1"` would genuinely equal the spawned rigger
+        // subprocess's real parent id here and wrongly suppress the reminder.
+        &[("RIGGER_SPEC_LINT_REMINDER_PID", "999999")],
+    );
+    assert!(
+        !ok,
+        "the no-reachable-base refusal must still fire; stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        out.contains("rigger validate specs/42-widgets.md"),
+        "ambient env pollution naming a foreign pid must never suppress the reminder; got \
+         stdout:\n{out}"
+    );
+}
+
+/// A genuinely nested `rigger workflow <spec>` stays silent when the sentinel names our real
+/// pid - `cmd_workflow` prints (or stays silent) before `locate_shim`, so no shim need be
+/// provisioned in this temp project for the reminder check itself to be exercised; the launch
+/// still fails right after (no shim), proving the reminder ran on the real pre-launch path.
+#[test]
+fn workflow_reminder_is_suppressed_when_env_names_the_real_direct_parent_pid() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let own_pid = std::process::id().to_string();
+    let (out, _err, ok) = run_rigger_envs(
+        root,
+        &["workflow", "specs/42-widgets.md"],
+        &[("RIGGER_SPEC_LINT_REMINDER_PID", own_pid.as_str())],
+    );
+    assert!(
+        !ok,
+        "no shim is provisioned in this temp project, so the workflow launch must still fail \
+         (locate_shim) after the reminder check runs"
+    );
+    assert!(
+        !out.contains("rigger validate"),
+        "a `workflow` genuinely nested under this test process must stay silent when the \
+         sentinel names our real pid; got stdout:\n{out}"
+    );
+}
+
+/// Ambient env pollution naming a foreign pid must never suppress `rigger workflow <spec>`'s
+/// reminder.
+#[test]
+fn workflow_reminder_prints_despite_env_naming_a_foreign_pid() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (out, _err, ok) = run_rigger_envs(
+        root,
+        &["workflow", "specs/42-widgets.md"],
+        // A large, arbitrary sentinel - never this binary's real direct parent. NOT `"1"`:
+        // `.cargo/pidns-runner.sh` (spec 78) runs every test binary as pid 1 of its OWN
+        // fresh pid namespace, so `"1"` would genuinely equal the spawned rigger
+        // subprocess's real parent id here and wrongly suppress the reminder.
+        &[("RIGGER_SPEC_LINT_REMINDER_PID", "999999")],
+    );
+    assert!(
+        !ok,
+        "no shim is provisioned, so the workflow launch must still fail"
+    );
+    assert!(
+        out.contains("rigger validate specs/42-widgets.md"),
+        "ambient env pollution naming a foreign pid must never suppress the reminder; got \
+         stdout:\n{out}"
+    );
+}
+
+/// The escalation remedy's own regression guard (adj-u66c5-rebuild-verdict-reject-dead-
+/// consumer, sdet-u66c5-no-regression-test-guards-run-workflow-reminder-silence):
+/// `run_workflow` - the surface the /rigger workflow itself launches through - prints
+/// criterion 5's reminder when a spec path is in play, and the pid-scoped REMINDER DEDUP
+/// contract holds on this surface in both directions: a foreign/ambient sentinel value
+/// still prints, and a value naming this process's real direct parent (the test process,
+/// which spawns the binary as its direct OS child) suppresses.
+#[test]
+fn run_driver_workflow_prints_the_spec_lint_reminder_and_honors_the_pid_scoped_dedup() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    std::fs::create_dir_all(root.join("specs")).unwrap();
+    std::fs::write(
+        root.join("specs/42-widgets.md"),
+        "# 42 widgets\n\n## Done when\n\n- [ ] the daemon starts on boot\n",
+    )
+    .unwrap();
+    let args = [
+        "run",
+        "--driver",
+        "workflow",
+        "specs/42-widgets.md",
+        "--base",
+        "origin/does-not-exist",
+    ];
+
+    // No sentinel: the reminder prints (on stderr, keeping the shim's stdout clean).
+    let (_out, err, _ok) = run_rigger(root, &args);
+    assert!(
+        err.contains("next: `rigger validate specs/42-widgets.md`"),
+        "run_workflow must print criterion 5's reminder when a spec path is in play - the \
+         omission this unit was rejected for twice; stderr:\n{err}"
+    );
+
+    // Foreign sentinel (a pid that is not this binary's direct parent): still prints.
+    let (_out, err, _ok) =
+        run_rigger_envs(root, &args, &[("RIGGER_SPEC_LINT_REMINDER_PID", "999999")]);
+    assert!(
+        err.contains("next: `rigger validate specs/42-widgets.md`"),
+        "an ambient/foreign sentinel value must not suppress run_workflow's reminder; \
+         stderr:\n{err}"
+    );
+
+    // Genuine parent sentinel: this test process spawns the binary as its direct OS
+    // child, so naming our own pid is the real nested-invocation shape - suppressed.
+    let parent = std::process::id().to_string();
+    let (_out, err, _ok) = run_rigger_envs(
+        root,
+        &args,
+        &[("RIGGER_SPEC_LINT_REMINDER_PID", parent.as_str())],
+    );
+    assert!(
+        !err.contains("next: `rigger validate"),
+        "a sentinel naming the binary's real direct parent must suppress the reminder on \
+         this surface exactly as on the other three; stderr:\n{err}"
+    );
+}
+
+/// Companion to `run_driver_workflow_prints_the_spec_lint_reminder_and_honors_the_pid_scoped_dedup`,
+/// pinning the half that test's `(_out, ..)` destructuring never inspects: `run_workflow`'s own
+/// doc comment names stdout as "the shim-captured stdout protocol stream" the reminder must
+/// never touch, so an `eprintln!` -> `println!` typo on this call site - the exact class this
+/// unit has shipped twice before, `fresh_run_if_requested`'s `--fresh` stdout leak and the
+/// workflow-chain double-print regression (`arch-u66c5r8-workflow-chain-double-prints-the-
+/// reminder`) - would ship silently through the sibling test alone. Checked across all three
+/// pid-sentinel directions: printing (bare and foreign-sentinel) must land on stderr only, and
+/// a suppressed reminder must be absent from both streams, not merely relocated to stdout.
+#[test]
+fn run_driver_workflow_reminder_never_reaches_stdout_in_any_pid_sentinel_direction() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    std::fs::create_dir_all(root.join("specs")).unwrap();
+    std::fs::write(
+        root.join("specs/42-widgets.md"),
+        "# 42 widgets\n\n## Done when\n\n- [ ] the daemon starts on boot\n",
+    )
+    .unwrap();
+    let args = [
+        "run",
+        "--driver",
+        "workflow",
+        "specs/42-widgets.md",
+        "--base",
+        "origin/does-not-exist",
+    ];
+
+    // No sentinel: the reminder prints, but must never appear on stdout.
+    let (out, err, _ok) = run_rigger(root, &args);
+    assert!(
+        err.contains("next: `rigger validate specs/42-widgets.md`"),
+        "sanity: the reminder must still print on stderr; stderr:\n{err}"
+    );
+    assert!(
+        !out.contains("rigger validate"),
+        "run_workflow's reminder must never reach stdout - that stream is the live MCP \
+         stdio transport a stray human-readable line would corrupt; stdout:\n{out}"
+    );
+
+    // Foreign sentinel: still prints, still must stay off stdout.
+    let (out, err, _ok) =
+        run_rigger_envs(root, &args, &[("RIGGER_SPEC_LINT_REMINDER_PID", "999999")]);
+    assert!(
+        err.contains("next: `rigger validate specs/42-widgets.md`"),
+        "sanity: an ambient/foreign sentinel must not suppress the reminder; stderr:\n{err}"
+    );
+    assert!(
+        !out.contains("rigger validate"),
+        "a foreign sentinel must not push the reminder onto stdout either; stdout:\n{out}"
+    );
+
+    // Genuine parent sentinel: suppressed entirely - confirm it is absent from BOTH streams,
+    // not merely relocated to stdout instead of dropped.
+    let parent = std::process::id().to_string();
+    let (out, err, _ok) = run_rigger_envs(
+        root,
+        &args,
+        &[("RIGGER_SPEC_LINT_REMINDER_PID", parent.as_str())],
+    );
+    assert!(
+        !out.contains("rigger validate") && !err.contains("rigger validate"),
+        "a suppressed reminder must be absent from both streams; stdout:\n{out}\nstderr:\n{err}"
+    );
+}
+
+/// The adjudicator's escalation-remedy verdict (adj-u66c5-escalation-remedy-verdict-reject-
+/// adjacent-fresh-leak, UPHOLDING adv-u66c5-escalation-remedy-fresh-println-still-leaks-
+/// stdout): `fresh_run_if_requested`'s own `--fresh` notice was STILL an unconditional
+/// `println!` even after `run_workflow` learned to keep its reminder off stdout three lines
+/// above it - the same MCP-stdio-corruption invariant this unit's own doc comments assert,
+/// violated by the one line the sibling test above never inspects. Reproduced here through
+/// the real compiled binary exactly as the adjudicator did: `rigger run --driver workflow
+/// --base HEAD --fresh` with a genuinely reachable base (so the run gets PAST the refuse
+/// checks and actually reaches `fresh_run_if_requested`) and a deliberately-unknown grounder
+/// name (so `select_grounder`, called immediately after, fails fast and deterministically -
+/// no reliance on the MCP loop's stdin-EOF timing to end the process). No spec positional is
+/// passed, so the DISCOVERABILITY reminder itself never fires and cannot be confused with the
+/// `--fresh` notice under test.
+#[test]
+fn run_driver_workflow_fresh_notice_never_reaches_stdout() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    // Swap the working grounder for one `select_grounder` rejects, so the run fails fast and
+    // deterministically right after `fresh_run_if_requested` returns - never entering the
+    // MCP-serving loop at all, so this test can never hang on stdin.
+    std::fs::write(
+        root.join(".rigger").join("workflow.yml"),
+        "name: steptest\ndefaults:\n  grounder: totally-bogus-grounder-xyz\n  budget: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n  b:\n    agent: worker\n    on_pass: none\n",
+    )
+    .unwrap();
+
+    let (out, err, ok) = run_rigger(
+        root,
+        &["run", "--driver", "workflow", "--base", "HEAD", "--fresh"],
+    );
+    assert!(
+        !ok,
+        "the bogus grounder makes the served run fail right after the --fresh notice \
+         (expected); stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        err.contains("began a new run"),
+        "sanity: the --fresh notice must still fire (on stderr) even though the run then \
+         fails at grounder selection; stderr:\n{err}"
+    );
+    assert!(
+        !out.contains("began a new run"),
+        "run_workflow's own --fresh notice must never reach stdout - that stream is the live \
+         MCP stdio transport this unit's own doc comments say a stray human-readable line \
+         would corrupt, exactly as already enforced for the reminder three lines above it; \
+         stdout:\n{out}"
+    );
+}
+
+/// Sibling of [`run_driver_workflow_fresh_notice_never_reaches_stdout`], pinning the OTHER
+/// half so the fix does not overcorrect: `rigger run --driver cli --fresh` is the normal
+/// human-facing standalone path, so its `--fresh` notice must keep printing on stdout exactly
+/// as before this fix - never regressed to stderr just because the sibling driver moved.
+#[test]
+fn run_driver_cli_fresh_notice_still_prints_on_stdout() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    std::fs::write(
+        root.join(".rigger").join("workflow.yml"),
+        "name: steptest\ndefaults:\n  grounder: totally-bogus-grounder-xyz\n  budget: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n  b:\n    agent: worker\n    on_pass: none\n",
+    )
+    .unwrap();
+
+    let (out, err, ok) = run_rigger(
+        root,
+        &["run", "--driver", "cli", "--base", "HEAD", "--fresh"],
+    );
+    assert!(
+        !ok,
+        "the bogus grounder makes the run fail right after the --fresh notice (expected); \
+         stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        out.contains("began a new run"),
+        "`rigger run --driver cli --fresh`'s notice is normal human-facing output and must \
+         keep printing on stdout, unchanged by the workflow-driver stdout fix; stdout:\n{out}"
+    );
+}
+
+// --- Spec 62, criterion 3: HELD-PORT DIAGNOSIS ---
+
+/// Spec 62, criterion 3 (HELD-PORT DIAGNOSIS): a bind failure against a port held by an
+/// UNRELATED (non-dash) process names the holder - PID and process state, when the `/proc`
+/// surface can discover them - rather than the bare `Address already in use` an unadorned
+/// `io::Error` would report. This test's own process (running `cargo test`) is itself the
+/// holder: it binds the port directly and keeps the listener alive across the `rigger dash`
+/// invocation, so the discovered pid must be THIS test process's own.
+#[test]
+fn cmd_dash_names_the_running_holder_of_a_plain_held_port() {
+    if !Path::new("/proc").is_dir() {
+        // The `/proc`-surface discovery is Unix/Linux-only by design (spec 62 Notes); elsewhere
+        // only the held-address report is guaranteed, which this test does not probe for.
+        return;
+    }
+    let held = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = held.local_addr().unwrap().port();
+    let root = temp_project();
+
+    let (out, err, ok) = run_rigger(root.path(), &["dash", "--port", &port.to_string()]);
+    drop(held);
+
+    assert!(
+        !ok,
+        "a genuinely held port must fail, not silently succeed; stdout:\n{out}\nstderr:\n{err}"
+    );
+    let my_pid = std::process::id().to_string();
+    // Checked as the exact `by pid {N}` attribution phrase, not a raw pid-string substring test:
+    // this project's mandatory pid-namespace test sandbox (.cargo/pidns-runner.sh) runs this
+    // test binary AS PID 1 of its own fresh namespace, so a raw substring check would be vacuous
+    // - "1" trivially matches inside the loopback address "127.0.0.1" regardless of what the
+    // diagnosis actually reports.
+    assert!(
+        err.contains(&format!("by pid {my_pid}")),
+        "the diagnosis must name THIS test process's pid ({my_pid}) as the holder; \
+         stderr:\n{err}"
+    );
+    assert!(
+        err.contains(&port.to_string()),
+        "the diagnosis must always name the held address; stderr:\n{err}"
+    );
+    assert!(
+        !err.to_lowercase().contains("resume"),
+        "a running (non-stopped) holder must not get the stopped-listener diagnosis; \
+         stderr:\n{err}"
+    );
+}
+
+/// Spec 62, criterion 3 (HELD-PORT DIAGNOSIS) is scoped to a GENUINELY held port
+/// (`AddrInUse`) only - `cmd_dash`'s guard (`e.kind() == AddrInUse`) must leave every OTHER
+/// bind failure passing through with its ORIGINAL `io::Error` text, unenriched, rather than
+/// wrongly claiming a phantom holder. Port `1` (reserved, `tcpmux`) is a portable, deterministic
+/// non-`AddrInUse` failure: binding it without `CAP_NET_BIND_SERVICE` fails `PermissionDenied`,
+/// a DIFFERENT error kind than a held port. Running as root (or with the capability granted)
+/// would make the bind SUCCEED instead, silently defeating this guard the way `chmod 000` would
+/// for a file-permission test (this file's own established more-portable-than-chmod-000
+/// precedent, `validate_residue_scan_surfaces_an_unreadable_store_conn_never_misreporting_live_worktrees`),
+/// so this test probes for that directly and skips rather than false-passing when it cannot
+/// reproduce a genuine non-`AddrInUse` failure here.
+#[test]
+fn cmd_dash_leaves_a_non_addrinuse_bind_error_unenriched() {
+    // Confirm THIS environment can even reproduce a non-AddrInUse bind failure on port 1
+    // before trusting the real invocation below to prove anything about the guard.
+    match std::net::TcpListener::bind(("127.0.0.1", 1)) {
+        Ok(_) => return, // privileged (root/capability) here - this guard cannot be exercised
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => return, // someone already holds it
+        Err(_) => {}
+    }
+
+    let root = temp_project();
+    let (out, err, ok) = run_rigger(root.path(), &["dash", "--port", "1"]);
+    assert!(
+        !ok,
+        "binding the reserved port 1 without privilege must fail; stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        !err.contains("is already in use"),
+        "a non-AddrInUse bind failure must pass through its ORIGINAL io::Error unenriched, \
+         never the held-port diagnosis meant for AddrInUse alone; stderr:\n{err}"
+    );
+}
+
+/// Spec 62, criterion 3 (HELD-PORT DIAGNOSIS), the headline scenario the spec itself names: a
+/// job-control-STOPPED predecessor keeps its listening socket bound - the kernel completed the
+/// TCP handshake into the backlog - but its process never calls `accept()` again, so a plain
+/// port probe just hangs. A real `rigger dash` is spawned, confirmed genuinely serving, then
+/// stopped with `SIGSTOP` (mirroring `crate::reap`'s own `kill(1)`-based signalling, never
+/// `libc`); a second `rigger dash` against the SAME port must fail naming the first one's pid,
+/// its STOPPED state, and the resume-or-kill remedy - never a bare `Address already in use`.
+#[test]
+fn cmd_dash_gives_the_stopped_listener_diagnosis_naming_resume_or_kill() {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    if !Path::new("/proc").is_dir() {
+        return;
+    }
+
+    let root = temp_project();
+    let port = free_loopback_port();
+    let mut holder = common::rigger_courier()
+        .args(["dash", "--port", &port.to_string()])
+        .current_dir(root.path())
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn the holder `rigger dash`");
+    let holder_pid = holder.id();
+    let mut holder_out = holder.stdout.take().expect("holder dash stdout is piped");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 1];
+        let n = holder_out.read(&mut buf).unwrap_or(0);
+        let _ = tx.send(n);
+    });
+
+    if !matches!(
+        http_get(&format!("http://127.0.0.1:{port}/")),
+        Some(body) if body.contains("rigger dash")
+    ) {
+        let _ = holder.kill();
+        let _ = holder.wait();
+        panic!("the holder `rigger dash` never came up serving on port {port}");
+    }
+
+    // SIGSTOP the holder - a real job-control stop, exactly the scenario spec 62 names. Via
+    // `common::stop_pid` (tests/common/mod.rs), the sanctioned test-side signal call - never a
+    // shelled-out `kill` (the `no-os-kill` gate's exemption is scoped to that one file, not to
+    // arbitrary shell-outs anywhere a test needs a stop signal).
+    if !common::stop_pid(holder_pid) {
+        let _ = holder.kill();
+        let _ = holder.wait();
+        panic!("failed to SIGSTOP the holder pid {holder_pid}");
+    }
+
+    // Confirm the stop actually landed (state `T` in `/proc/<pid>/stat`) before racing the
+    // second dash against it - a little scheduling jitter is normal, not a defect.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut confirmed_stopped = false;
+    while Instant::now() < deadline {
+        let state = std::fs::read_to_string(format!("/proc/{holder_pid}/stat"))
+            .ok()
+            .and_then(|stat| {
+                stat.rsplit_once(')')
+                    .and_then(|(_, rest)| rest.split_whitespace().next().map(str::to_string))
+            });
+        if state.as_deref() == Some("T") {
+            confirmed_stopped = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    if !confirmed_stopped {
+        let _ = holder.kill();
+        let _ = holder.wait();
+        panic!("the holder pid {holder_pid} never reached the STOPPED (T) state in /proc");
+    }
+
+    let (out, err, ok) = run_rigger(root.path(), &["dash", "--port", &port.to_string()]);
+
+    // Reap the (still-stopped) holder BEFORE asserting so a failure never leaks a process;
+    // `Child::kill` sends SIGKILL, which terminates a stopped process unconditionally.
+    let _ = holder.kill();
+    let _ = holder.wait();
+    let _ = rx.recv_timeout(Duration::from_secs(5));
+
+    assert!(
+        !ok,
+        "a second dash against a stopped holder's port must fail; stdout:\n{out}\nstderr:\n{err}"
+    );
+    let pid_str = holder_pid.to_string();
+    assert!(
+        err.contains(&pid_str),
+        "the diagnosis must name the stopped holder's pid ({pid_str}); stderr:\n{err}"
+    );
+    assert!(
+        err.contains(&port.to_string()),
+        "the diagnosis must always name the held address; stderr:\n{err}"
+    );
+    let lower = err.to_lowercase();
+    assert!(
+        lower.contains("resume") && lower.contains("kill"),
+        "a STOPPED holder must get the explicit resume-or-kill diagnosis; stderr:\n{err}"
+    );
+    assert!(
+        lower.contains("stop"),
+        "the diagnosis should name the STOPPED state explicitly; stderr:\n{err}"
+    );
+}
+
+/// Spec 62, criterion 3 (HELD-PORT DIAGNOSIS) - the PUBLIC contract of
+/// [`rigger::dash::describe_held_port`] at the CRATE BOUNDARY, mirroring how this file already
+/// pins `rigger::dash`'s other pub items (`DashMarker`, `dash_serving_pid_on`, `DASH_HEADER`,
+/// `UNATTRIBUTED_PID`) directly rather than only through a spawned `rigger dash` process. The
+/// three `cmd_dash_*` tests above prove the function end to end through ONE specific call path
+/// (`cmd_dash`'s `AddrInUse` arm), always with a genuine holder present; none calls
+/// `rigger::dash::describe_held_port` itself from outside its module, and none exercises the
+/// "nothing holds this port" half of its truth table (`cmd_dash` only ever reaches it after a
+/// real `AddrInUse`, so that half is structurally unreachable through the CLI). This test
+/// closes both gaps directly: the function is exported and callable at the public boundary,
+/// and its two-way contract holds independent of the `cmd_dash` wiring - a port THIS test
+/// process holds names its own pid, and a port confirmed unheld by anything on the machine
+/// names none while still always naming the address.
+#[test]
+fn describe_held_port_public_contract_holds_at_the_crate_boundary() {
+    use rigger::dash::describe_held_port;
+
+    // Held: bind a listener in this process and describe its own address - the discovered
+    // holder must be THIS test process. Checked as the exact `by pid {N}` attribution phrase
+    // [`format_held_port`] (src/dash.rs) renders, not a raw pid-string substring test: this
+    // project's mandatory pid-namespace test sandbox (.cargo/pidns-runner.sh, every test binary
+    // here runs AS PID 1 of its own fresh namespace) makes a raw `contains(&pid.to_string())`
+    // meaningless, since "1" is trivially a substring of the loopback address "127.0.0.1" that
+    // appears in every rendered message regardless of what it actually reports.
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let held_addr = listener.local_addr().unwrap();
+    let held_msg = describe_held_port(held_addr);
+    assert!(
+        held_msg.contains(&held_addr.to_string()),
+        "must always name the held address; got: {held_msg}"
+    );
+    if Path::new("/proc").is_dir() {
+        let my_pid = std::process::id();
+        assert!(
+            held_msg.contains(&format!("by pid {my_pid}")),
+            "must name this test process's own pid as the holder; got: {held_msg}"
+        );
+    }
+    drop(listener);
+
+    // Unheld: learn a free port and release it before describing it - nothing rebinds it in
+    // between, so the crate-boundary call must report no holder while still naming the address.
+    // Same exact-phrase check as above, for the same reason (pid 1 under the mandatory
+    // pid-namespace sandbox would otherwise make a raw substring check vacuous, not a genuine
+    // no-self-attribution proof).
+    let free_addr = {
+        let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        probe.local_addr().unwrap()
+    };
+    let unheld_msg = describe_held_port(free_addr);
+    assert!(
+        unheld_msg.contains(&free_addr.to_string()),
+        "must always name the address even with no holder; got: {unheld_msg}"
+    );
+    if Path::new("/proc").is_dir() {
+        let my_pid = std::process::id();
+        assert!(
+            !unheld_msg.contains(&format!("by pid {my_pid}")),
+            "an unheld port must not name this (or any) process as its holder; \
+             got: {unheld_msg}"
+        );
+    }
+}
+
+/// Spec 62 round 2 fix (adv-u62c3-diagnosis-unreachable-from-step-path-auto-start), the headline
+/// scenario spec 62's own Goal names, reproduced through the STEP PATH rather than the manual
+/// `rigger dash` CLI arm the sibling `cmd_dash_gives_the_stopped_listener_diagnosis_naming_
+/// resume_or_kill` test above already covers: a job-control-STOPPED predecessor keeps its
+/// listening socket bound. A `rigger step` whose OWN always-on auto-start targets that exact
+/// port must fail naming the stopped holder's pid, its STOPPED state, and the resume-or-kill
+/// remedy - never only the generic "could not auto-start the dashboard" line the pre-fix code
+/// gave on this path. This is the exact reproduction the adjudicator's reject cited: "an
+/// operator running an ordinary `rigger step`/`rigger run` loop whose dash auto-start hits
+/// exactly the stopped-predecessor scenario spec 62's Goal names sees only the generic
+/// headless-degrade line - never the pid, never the process state, never the resume-or-kill
+/// remedy."
+#[test]
+fn step_names_the_stopped_holder_when_the_step_paths_own_auto_start_hits_the_predecessor_scenario()
+{
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    if !Path::new("/proc").is_dir() {
+        return;
+    }
+
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    write_two_stage_workflow(root);
+    let dash_port = free_loopback_port();
+
+    // The predecessor: a real, genuinely serving `rigger dash` on the SAME port the step's own
+    // always-on ensure will target below.
+    let mut holder = common::rigger_courier()
+        .args(["dash", "--port", &dash_port.to_string()])
+        .current_dir(root)
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn the holder `rigger dash`");
+    let holder_pid = holder.id();
+    let mut holder_out = holder.stdout.take().expect("holder dash stdout is piped");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 1];
+        let n = holder_out.read(&mut buf).unwrap_or(0);
+        let _ = tx.send(n);
+    });
+
+    if !matches!(
+        http_get(&format!("http://127.0.0.1:{dash_port}/")),
+        Some(body) if body.contains("rigger dash")
+    ) {
+        let _ = holder.kill();
+        let _ = holder.wait();
+        panic!("the holder `rigger dash` never came up serving on port {dash_port}");
+    }
+
+    // SIGSTOP the holder - a real job-control stop, exactly the scenario spec 62's Goal names.
+    // Via `common::stop_pid` (tests/common/mod.rs), the sanctioned test-side signal call.
+    if !common::stop_pid(holder_pid) {
+        let _ = holder.kill();
+        let _ = holder.wait();
+        panic!("failed to SIGSTOP the holder pid {holder_pid}");
+    }
+
+    // Confirm the stop actually landed (state `T` in `/proc/<pid>/stat`) before racing the
+    // step's own dash spawn against it.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut confirmed_stopped = false;
+    while Instant::now() < deadline {
+        let state = std::fs::read_to_string(format!("/proc/{holder_pid}/stat"))
+            .ok()
+            .and_then(|stat| {
+                stat.rsplit_once(')')
+                    .and_then(|(_, rest)| rest.split_whitespace().next().map(str::to_string))
+            });
+        if state.as_deref() == Some("T") {
+            confirmed_stopped = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    if !confirmed_stopped {
+        let _ = holder.kill();
+        let _ = holder.wait();
+        panic!("the holder pid {holder_pid} never reached the STOPPED (T) state in /proc");
+    }
+
+    // The step path's OWN always-on ensure, targeting the SAME stopped-holder's port - the
+    // production seam this fix threads the diagnosis through.
+    let (out, err) = run_step_dash_enabled(root, dash_port);
+
+    // Reap the (still-stopped) holder BEFORE asserting so a failure never leaks a process;
+    // `Child::kill` sends SIGKILL, which terminates a stopped process unconditionally.
+    let _ = holder.kill();
+    let _ = holder.wait();
+    let _ = rx.recv_timeout(Duration::from_secs(5));
+
+    assert!(
+        out.contains(r#""wave":"#),
+        "the step must still run to completion (a printed wave) even though its own dash \
+         auto-start hit a stopped predecessor - headless degrade, never a blocked step; \
+         stdout: {out:?} stderr: {err:?}"
+    );
+    let pid_str = holder_pid.to_string();
+    assert!(
+        err.contains(&pid_str),
+        "the step path's OWN headless-degrade message must name the stopped predecessor's pid \
+         ({pid_str}), not only the generic 'could not auto-start' line; stderr:\n{err}"
+    );
+    assert!(
+        err.contains(&dash_port.to_string()),
+        "the diagnosis must always name the held address; stderr:\n{err}"
+    );
+    let lower = err.to_lowercase();
+    assert!(
+        lower.contains("resume") && lower.contains("kill"),
+        "a STOPPED predecessor must get the explicit resume-or-kill diagnosis on the step path \
+         too, not only the manual `rigger dash` CLI arm; stderr:\n{err}"
+    );
+    assert!(
+        lower.contains("stop"),
+        "the diagnosis should name the STOPPED state explicitly; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("could not auto-start the dashboard"),
+        "the generic headless-degrade line must still be present alongside the richer \
+         diagnosis; stderr:\n{err}"
+    );
+}
+
+/// Spec 62, criterion 3 (HELD-PORT DIAGNOSIS) - the PUBLIC contract of
+/// [`rigger::dash::describe_held_port_if_confirmed`] at the CRATE BOUNDARY, mirroring
+/// `describe_held_port_public_contract_holds_at_the_crate_boundary` above for its round-3
+/// sibling (spec 62 round 3 fix, adj-u62c3r2-verdict-reject-non-addrinuse-mislabel). This
+/// function's contract is `Option<String>`: `Some` ONLY when a holder is independently
+/// confirmed, `None` when nothing can be confirmed holding the port - never a claim the
+/// discovery has not itself confirmed. Its real production role (spec 62 round 5 fix,
+/// adj-u62c3r5-verdict-reject-stale-caller-doc-survives-tests) is exclusively as
+/// `describe_held_port`'s message-only wrapper: `describe_held_port`'s one production caller
+/// is `cmd_dash`'s manual `rigger dash` CLI arm (`src/main.rs`), reached only after
+/// `bind_singleton` has itself already confirmed a genuine `AddrInUse`. The step-path
+/// auto-start, `wait_for_dash_bind_or_diagnose` (`src/main.rs`), calls `held_port_holder`
+/// directly instead (round 4), never this function, since it also needs the raw discovered
+/// pid; see that function's own doc. No test in this file calls
+/// `rigger::dash::describe_held_port_if_confirmed` directly from outside its module before this
+/// one; the WIRING through `describe_held_port` is proved by the `cmd_dash_*` tests and by
+/// `describe_held_port_public_contract_holds_at_the_crate_boundary` above, but neither pins
+/// THIS function's own public contract independent of that wrapping - the same gap
+/// `describe_held_port_public_contract_holds_at_the_crate_boundary` closed for its sibling at
+/// round 1.
+#[test]
+fn describe_held_port_if_confirmed_public_contract_holds_at_the_crate_boundary() {
+    use rigger::dash::describe_held_port_if_confirmed;
+
+    // Held: bind a listener in this process and describe its own address - a holder IS
+    // independently confirmable, so this must resolve Some and name THIS test process.
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let held_addr = listener.local_addr().unwrap();
+    if Path::new("/proc").is_dir() {
+        let held_msg = describe_held_port_if_confirmed(held_addr)
+            .expect("a port this test process holds must resolve Some, not None");
+        assert!(
+            held_msg.contains(&held_addr.to_string()),
+            "must always name the held address; got: {held_msg}"
+        );
+        // Checked as the exact `by pid {N}` attribution phrase, not a raw pid-string substring
+        // test: this project's mandatory pid-namespace test sandbox (.cargo/pidns-runner.sh,
+        // every test binary here runs AS PID 1 of its own fresh namespace) makes a raw substring
+        // check vacuous, since "1" trivially matches inside the loopback address "127.0.0.1"
+        // regardless of what the message actually reports.
+        assert!(
+            held_msg.contains(&format!("by pid {}", std::process::id())),
+            "must name this test process's own pid as the holder; got: {held_msg}"
+        );
+    }
+    drop(listener);
+
+    // Unheld: learn a free port and release it before describing it - nothing rebinds it in
+    // between, so nothing can be independently confirmed holding it: the crate-boundary call
+    // must resolve None, never a claim, unlike `describe_held_port`'s always-Some contract.
+    let free_addr = {
+        let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        probe.local_addr().unwrap()
+    };
+    if Path::new("/proc").is_dir() {
+        assert_eq!(
+            describe_held_port_if_confirmed(free_addr),
+            None,
+            "a port nothing holds must resolve None at the crate boundary - the exact \
+             false-positive round 3 exists to close, never surfaced through the public contract"
+        );
+    }
+}
+
+/// Spec 62 round 4 fix (adj-u62c3r3-verdict-reject-child-self-attribution) - the PUBLIC contract
+/// of [`rigger::dash::held_port_holder`] at the CRATE BOUNDARY, mirroring the two sibling
+/// crate-boundary tests above. `held_port_holder` is a NEW pub item this round (it did not exist
+/// before round 4): `describe_held_port_if_confirmed` already exposed the RENDERED MESSAGE half
+/// of this discovery, but no pub item exposed the RAW PID half - the exact thing
+/// `wait_for_dash_bind_or_diagnose` (main.rs, private) now needs so it can compare a discovered
+/// holder's pid against its own known spawned pid before choosing the "already in use" framing,
+/// rather than trusting the message text alone. No test in this file calls
+/// `rigger::dash::held_port_holder` directly before this one - the only exercise of this exact
+/// discovery anywhere in the tree is `describe_held_port_if_confirmed`'s own crate-boundary test
+/// above (which now delegates to `held_port_holder` internally per its updated doc, but proves
+/// only the message string) and the implementer's own private-function unit test in
+/// `src/main.rs` `mod tests`
+/// (`wait_for_dash_bind_or_diagnose_never_self_attributes_its_own_still_starting_spawn`, which
+/// proves the self-attribution BRANCH but never calls `held_port_holder` itself from outside its
+/// module). This test closes that gap directly: the function is exported and callable at the
+/// public boundary, its raw-pid contract is what a caller doing identity comparison actually
+/// needs (not just a human-readable string), and it stays consistent with its
+/// `describe_held_port_if_confirmed` sibling - two independently pub functions built on the same
+/// underlying discovery must never disagree on what they report.
+#[test]
+fn held_port_holder_public_contract_holds_at_the_crate_boundary() {
+    use rigger::dash::{describe_held_port_if_confirmed, held_port_holder};
+
+    // Held: bind a listener in this process and query its own address - the discovered pid must
+    // be THIS test process's own, returned as a raw u32 a caller can compare for identity, not
+    // only embedded somewhere inside a message string.
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let held_addr = listener.local_addr().unwrap();
+    if Path::new("/proc").is_dir() {
+        let my_pid = std::process::id();
+        let (holder_pid, held_msg) = held_port_holder(held_addr)
+            .expect("a port this test process holds must resolve Some, not None");
+        assert_eq!(
+            holder_pid, my_pid,
+            "the raw pid half of the tuple must be THIS test process's own pid, directly \
+             comparable by a caller without parsing the message text"
+        );
+        assert!(
+            held_msg.contains(&held_addr.to_string()),
+            "the message half must always name the held address; got: {held_msg}"
+        );
+        assert!(
+            held_msg.contains(&format!("by pid {my_pid}")),
+            "the message half must name the holder pid too - checked as the exact `by pid {{N}}` \
+             attribution phrase, not a raw pid-string substring test: this project's mandatory \
+             pid-namespace test sandbox (.cargo/pidns-runner.sh, every test binary here runs AS \
+             PID 1 of its own fresh namespace) makes a raw substring check vacuous, since \"1\" \
+             trivially matches inside the loopback address \"127.0.0.1\" regardless of what the \
+             message actually reports; got: {held_msg}"
+        );
+        // Sibling-consistency: `describe_held_port_if_confirmed` is defined in terms of
+        // `held_port_holder` (round 4) precisely so the two can never drift apart - a
+        // crate-boundary check that they agree is exactly what would catch a future edit that
+        // broke that delegation without touching either function's own doc.
+        assert_eq!(
+            describe_held_port_if_confirmed(held_addr),
+            Some(held_msg),
+            "held_port_holder's message half and describe_held_port_if_confirmed's own \
+             return must agree - they are documented as sharing one discovery"
+        );
+    }
+    drop(listener);
+
+    // Unheld: learn a free port and release it before querying it - nothing rebinds it in
+    // between, so nothing can be independently confirmed holding it: the crate-boundary call
+    // must resolve None, the same "never a claim without confirmation" contract its sibling
+    // holds, and must stay consistent with that sibling's own None resolution for the identical
+    // address. Unlike the pid-attribution message checks above, `None`-equality here does not
+    // depend on any pid value at all, so it needs no special handling under the pid-namespace
+    // test sandbox.
+    let free_addr = {
+        let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        probe.local_addr().unwrap()
+    };
+    if Path::new("/proc").is_dir() {
+        assert_eq!(
+            held_port_holder(free_addr),
+            None,
+            "a port nothing holds must resolve None at the crate boundary - never a fabricated \
+             pid for a caller that will use it to make a self-attribution decision"
+        );
+        assert_eq!(
+            describe_held_port_if_confirmed(free_addr),
+            None,
+            "the two sibling pub functions must agree on the unheld case too"
+        );
+    }
+}
+
+/// Spec 62 round 3 fix (adj-u62c3r2-verdict-reject-non-addrinuse-mislabel), through the BUILT
+/// binary's own step path, mirroring `cmd_dash_leaves_a_non_addrinuse_bind_error_unenriched`
+/// above for the manual CLI arm's sibling scenario: a step-path auto-start bind failure
+/// UNRELATED to any genuinely held port (the reserved port 1 without privilege, a real
+/// `PermissionDenied`, never `AddrInUse`) must never be framed as "already in use". Round 2
+/// shipped exactly this false claim on the step path (adjudicator repro:
+/// `RIGGER_DASH_PORT=1` produced "...already in use (holding process not found)" for a port
+/// nothing held); round 3 closed it with `dash::describe_held_port_if_confirmed`, but the only
+/// regression test the round-3 commit added for this exact path
+/// (`ensure_run_dashboard_at_never_claims_a_phantom_holder_for_an_unheld_port`, src/main.rs mod
+/// tests) calls the private `ensure_run_dashboard_at` directly in-process - it never drives the
+/// actual compiled `rigger` binary through `rigger step`, the real crate boundary this file
+/// exists to guard, the same distinction `cmd_dash_leaves_a_non_addrinuse_bind_error_unenriched`
+/// draws for the manual arm. This test closes that real-binary gap for the step path.
+#[test]
+fn step_leaves_a_non_addrinuse_bind_error_unenriched() {
+    // Confirm THIS environment can even reproduce a non-AddrInUse bind failure on port 1 before
+    // trusting the real step invocation below to prove anything about the guard - mirrors the
+    // manual-CLI sibling test's own guard verbatim.
+    match std::net::TcpListener::bind(("127.0.0.1", 1)) {
+        Ok(_) => return, // privileged (root/capability) here - this guard cannot be exercised
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => return, // someone already holds it
+        Err(_) => {}
+    }
+
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    write_two_stage_workflow(root);
+
+    let (out, err) = run_step_dash_enabled(root, 1);
+
+    assert!(
+        out.contains(r#""wave":"#),
+        "a non-AddrInUse bind failure still lets the step run to completion (a printed wave) - \
+         headless degrade, never a blocked step; stdout: {out:?} stderr: {err:?}"
+    );
+    assert!(
+        !err.contains("is already in use"),
+        "a non-AddrInUse bind failure must never claim the port is already in use - the exact \
+         false positive round 2 shipped and round 3's describe_held_port_if_confirmed gate \
+         closes; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("could not auto-start the dashboard"),
+        "a bind failure of any kind must still announce the headless degrade; stderr:\n{err}"
     );
 }

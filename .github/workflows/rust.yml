@@ -5,6 +5,15 @@ on:
     branches: [main]
   pull_request:
 
+# The cargo test runner (.cargo/pidns-runner.sh) wraps every test binary in a user+pid
+# namespace and FAILS CLOSED where one cannot be created. A hosted CI runner is a
+# throwaway VM with no operator session to protect, and Ubuntu's AppArmor restricts
+# unprivileged user namespaces there, so opt out explicitly - at the workflow level, so
+# EVERY job that runs a test binary inherits it (the kurrentdb job failed exactly this
+# way when the opt-out lived only in build-test). Never set this on a workstation.
+env:
+  RIGGER_PIDNS: "off"
+
 jobs:
   # The default build now INCLUDES turbovec (it is a default cargo feature), so this
   # job builds + tests the real semantic grounder. Turbovec pulls the ONNX runtime
@@ -24,9 +33,24 @@ jobs:
       FASTEMBED_CACHE_DIR: ${{ github.workspace }}/.fastembed_cache
     steps:
       - uses: actions/checkout@v4
+        with:
+          # go-gitsemver derives the embedded version from tag history (Mainline mode
+          # walks to the nearest reachable tag), so a shallow, tagless checkout would
+          # derive garbage; full history keeps the derivation identical to a workstation.
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      # The version-derivation periphery tests assert this binary's embedded version is
+      # genuinely derived (not +unversioned), which requires go-gitsemver on PATH when the
+      # test binary is BUILT (spec 74: derivation is delegated, go-gitsemver.yml is the
+      # config authority). Pinned to the version verified on the workstation.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+      - name: install go-gitsemver (version derivation, spec 74)
+        run: go install github.com/MyCarrier-DevOps/go-gitsemver@v1.11.0
       - uses: Swatinem/rust-cache@v2
         with:
           # rust-cache restores the compiled `ort-sys` crate but NOT ort's downloaded ONNX
@@ -46,6 +70,13 @@ jobs:
             ${{ github.workspace }}/.fastembed_cache
       - name: install OpenBLAS (turbovec is in the default build)
         run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
+      # The build-environment tests assert against the REAL PATH: config validation
+      # requires `cargo-mutants` resolvable while the repo's own workflow.yml has
+      # build.mutation on, and the build-environment-authority test requires the
+      # `sccache` wrapper it configures to exist. Install both as prebuilt binaries.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants,sccache
       - name: fmt
         run: cargo fmt --check
       - name: clippy (turbovec, default features)

@@ -79,65 +79,176 @@ pub fn free_port_from(start: u16) -> io::Result<u16> {
 /// endpoint - the recognition rides the root page every dash already serves.
 pub const DASH_HEADER: &str = "X-Rigger-Dash";
 
-/// Whether a rigger dash is ALREADY serving on loopback `port` (spec 50, criterion 1). Drives
-/// one `GET /` and returns `true` only when the response carries the [`DASH_HEADER`] response
-/// header, so an unrelated process that merely holds the port is NEVER mistaken for a dash. Any
-/// connect / write / read failure, or a header-less response, returns `false`. Bounded by short
-/// timeouts so a dead, slow, or silent holder cannot stall the caller. `std`-only, so it is
-/// identical on the default and `--no-default-features` lanes.
-pub fn dash_serving_on(port: u16) -> bool {
+/// The response header carrying the pid of whichever process is ACTUALLY holding the accept
+/// loop that answered this response (spec 62 round 2:
+/// adv-u62c1-marker-pid-not-the-serving-pid-on-singleton-race). Every dash response carries it
+/// (see `Response::write_to`), stamped fresh from `std::process::id()` at write time by the
+/// process that is genuinely serving - never a value plumbed in from outside. This is what lets
+/// [`dash_serving_pid_on`] answer "who is REALLY serving this port" directly from the wire,
+/// rather than a caller having to assume its own locally-spawned child is the one that bound it:
+/// in a fixed-address singleton race (spec 50, criterion 4) the LOSING side's own spawned
+/// `rigger dash` recognizes `bind_singleton`'s `AlreadyServing` arm and exits without ever
+/// binding, so `dash_serving_on(port)` answering `true` proves only that SOMETHING is serving,
+/// never that it was the caller's own spawn - the caller needs the served pid itself to attribute
+/// a marker correctly.
+pub const DASH_HEADER_PID: &str = "X-Rigger-Dash-Pid";
+
+/// Connects to loopback `port`, issues a bare `GET /`, and reads the response HEAD (the status
+/// line and headers) into a buffer - the ONE probe-a-loopback-port-for-a-bounded-dash-response
+/// implementation both [`dash_serving_on`] and [`dash_serving_pid_on`] drive
+/// (arch-u62c1-dash-serving-pid-on-duplicates-the-probe-read-loop, spec 62 round 2): before this
+/// extraction each carried its own copy of this exact connect/write-timeout/deadline/cap/read-loop
+/// machinery, a second parallel implementation of the same concern the one-mutation-authority
+/// rule exists to prevent.
+///
+/// Bounded THREE independent ways so a dead, slow, or hostile holder can NEVER stall the caller:
+///   * an overall wall-clock DEADLINE across the whole head - the per-read timeout is reset to
+///     the REMAINING budget each iteration. This is the load-bearing bound: a holder that
+///     dribbles bytes just under a fixed per-read timeout while NEVER sending a newline would
+///     reset a per-read-only timeout forever and never complete a line, so only a bound on the
+///     TOTAL read defeats it;
+///   * a TOTAL byte cap - a real HTTP header block is small, so an endless within-a-line dribble
+///     is bounded in volume (memory) even inside the deadline;
+///   * the blank end-of-headers line ([`head_block_ended`]) - once the header block is fully read,
+///     stop rather than keep reading a body, so a genuine non-dash conflict fails fast.
+///
+/// `stop_early` is consulted after every chunk arrives; the instant it returns `true` the
+/// accumulated head is returned WITHOUT waiting for the rest of the header block - this is what
+/// lets [`dash_serving_on`] short-circuit the moment it recognizes [`DASH_HEADER`], while
+/// [`dash_serving_pid_on`] (which needs the FULL block, since [`DASH_HEADER_PID`] can arrive on a
+/// LATER line) passes a predicate that never fires early.
+///
+/// Returns `None` on any connect/write/read failure, or once the deadline elapses before the
+/// header block ends (and before `stop_early` fires) - the caller then reports its own failure
+/// sentinel (`false` / `None`), never distinguishing WHY the probe failed. Returns `Some(head)`
+/// once EITHER `stop_early` fires, OR the header block ends, OR the byte cap is reached, OR the
+/// peer closes the connection - in every one of those cases the caller inspects `head` itself to
+/// decide what it found (mirroring each original function's own "decide on exactly what arrived"
+/// handling of a peer close).
+fn probe_dash_head(port: u16, mut stop_early: impl FnMut(&[u8]) -> bool) -> Option<Vec<u8>> {
     use std::io::Read;
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(500)) else {
-        return false;
-    };
-    let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
-    if stream
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(500)).ok()?;
+    stream
+        .set_write_timeout(Some(Duration::from_millis(500)))
+        .ok()?;
+    stream
         .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-        .is_err()
-    {
-        return false;
-    }
-    // Read only the response head (status line + headers), bounded THREE independent ways so a
-    // dead, slow, or hostile holder can NEVER stall the caller:
-    //   * an overall wall-clock DEADLINE across the whole head - the per-read timeout is reset to
-    //     the REMAINING budget each iteration. This is the load-bearing bound: a holder that
-    //     dribbles bytes just under a fixed per-read timeout while NEVER sending a newline would
-    //     reset a per-read-only timeout forever and never complete a line, so only a bound on the
-    //     TOTAL read defeats it;
-    //   * a TOTAL byte cap - a real HTTP header block is small, so an endless within-a-line dribble
-    //     is bounded in volume (memory) even inside the deadline;
-    //   * the blank end-of-headers line - once the header block is fully read WITHOUT the marker,
-    //     stop rather than keep reading a body, so a genuine non-dash conflict fails fast.
-    // Matching stays line-anchored and case-insensitive: only a line that STARTS with the header
-    // name counts, so the marker cannot be spoofed by the same text inside another header's value.
-    let needle = format!("{DASH_HEADER}:").to_ascii_lowercase();
+        .ok()?;
+
     let deadline = std::time::Instant::now() + Duration::from_millis(750);
     const MAX_HEAD_BYTES: usize = 8 * 1024;
     let mut head: Vec<u8> = Vec::with_capacity(512);
     let mut buf = [0u8; 512];
     loop {
-        let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) else {
-            return false; // overall deadline elapsed
-        };
+        let remaining = deadline.checked_duration_since(std::time::Instant::now())?;
         if remaining.is_zero() || stream.set_read_timeout(Some(remaining)).is_err() {
-            return false;
+            return None;
         }
         match stream.read(&mut buf) {
-            // Closed before / at the end of the head: decide on exactly what arrived.
-            Ok(0) => return head_has_header_line(&head, needle.as_bytes()),
+            Ok(0) => return Some(head), // closed: caller decides on exactly what arrived
             Ok(n) => {
                 head.extend_from_slice(&buf[..n]);
-                if head_has_header_line(&head, needle.as_bytes()) {
-                    return true;
-                }
-                if head.len() >= MAX_HEAD_BYTES || head_block_ended(&head) {
-                    return false; // head too large, or the headers ended without the marker
+                if stop_early(&head) || head.len() >= MAX_HEAD_BYTES || head_block_ended(&head) {
+                    return Some(head);
                 }
             }
-            Err(_) => return false, // a slow/silent holder times out here, or the peer reset
+            Err(_) => return None, // a slow/silent holder times out here, or the peer reset
         }
+    }
+}
+
+/// Whether a rigger dash is ALREADY serving on loopback `port` (spec 50, criterion 1). Drives
+/// one `GET /` (via [`probe_dash_head`]) and returns `true` only when the response carries the
+/// [`DASH_HEADER`] response header, so an unrelated process that merely holds the port is NEVER
+/// mistaken for a dash. Any connect / write / read failure, or a header-less response, returns
+/// `false`. Bounded by short timeouts so a dead, slow, or silent holder cannot stall the caller.
+/// `std`-only, so it is identical on the default and `--no-default-features` lanes.
+///
+/// Matching stays line-anchored and case-insensitive ([`head_has_header_line`]): only a line that
+/// STARTS with the header name counts, so the marker cannot be spoofed by the same text inside
+/// another header's value. The `stop_early` predicate passed to `probe_dash_head` IS this same
+/// match test, so the probe returns the instant the header line is seen - this function never
+/// waits out the rest of the header block once it already has its answer.
+pub fn dash_serving_on(port: u16) -> bool {
+    let needle = format!("{DASH_HEADER}:").to_ascii_lowercase();
+    probe_dash_head(port, |head| head_has_header_line(head, needle.as_bytes()))
+        .is_some_and(|head| head_has_header_line(&head, needle.as_bytes()))
+}
+
+/// The pid ACTUALLY serving loopback `port` right now, or `None` when no rigger dash answers
+/// there (spec 62 round 2: adv-u62c1-marker-pid-not-the-serving-pid-on-singleton-race). Confirms
+/// dash-ness the SAME way [`dash_serving_on`] does - the [`DASH_HEADER`] marker must be present,
+/// so an unrelated listener holding the port is never mistaken for a dash naming a pid - and
+/// then reads [`DASH_HEADER_PID`]'s value off that SAME response. This is what lets a caller ask
+/// the port itself who is REALLY serving it, instead of assuming its own locally-spawned child
+/// is the one that bound it: in a fixed-address singleton race (spec 50, criterion 4) the LOSING
+/// side's own spawned `rigger dash` recognizes `bind_singleton`'s `AlreadyServing` arm and exits
+/// without ever binding, so `dash_serving_on(port)` answering `true` proves only that SOMETHING
+/// is serving, never that it was the caller's own spawn.
+///
+/// `None` is returned not only when nothing (or something non-dash) answers, but ALSO in the
+/// STEADY STATE when a genuine rigger dash answers [`DASH_HEADER`] but never sends
+/// [`DASH_HEADER_PID`] at all - a build that predates this header, or a foreign dash-shaped
+/// responder. Callers must never treat that `None` as narrowly timing-related and fall back to a
+/// GUESSED value of their own, the way a round-2 draft of `spawn_run_dashboard_detached` once did
+/// (spec 62 round 2 fix point, adj-u62c1r2-verdict-reject-version-skew-fallback - rejected): the
+/// ONLY production caller instead records the documented [`UNATTRIBUTED_PID`] sentinel on this
+/// `None`, never a value it cannot prove.
+///
+/// Shares [`probe_dash_head`] with [`dash_serving_on`] but passes a `stop_early` that never fires:
+/// [`DASH_HEADER_PID`] can arrive on a LATER line than [`DASH_HEADER`], so extracting a value
+/// needs the full header block every time, unlike `dash_serving_on`'s early exit. Bounded
+/// identically to `dash_serving_on` otherwise (the same connect/write timeouts, the same overall
+/// deadline, and the same total-byte cap, because both run through the same probe), so this can
+/// never hang or misbehave where that proven probe would not - a dead, slow, or hostile holder
+/// still resolves to `None` within the same bound.
+pub fn dash_serving_pid_on(port: u16) -> Option<u32> {
+    let dash_needle = format!("{DASH_HEADER}:").to_ascii_lowercase();
+    let pid_needle = format!("{DASH_HEADER_PID}:").to_ascii_lowercase();
+    let head = probe_dash_head(port, |_| false)?;
+    if !head_has_header_line(&head, dash_needle.as_bytes()) {
+        return None; // not a rigger dash at all - never guess a pid from an unrelated listener
+    }
+    header_line_value(&head, pid_needle.as_bytes())?
+        .parse()
+        .ok()
+}
+
+/// The value substring of the FIRST line in `head` whose NAME matches `needle_lower` (e.g.
+/// `x-rigger-dash-pid:`), trimmed - or `None` when no line matches. Case-insensitive and
+/// anchored to a line start, mirroring [`head_has_header_line`]'s own matching exactly so the
+/// two can never disagree about which line is "the" header.
+fn header_line_value<'a>(head: &'a [u8], needle_lower: &[u8]) -> Option<&'a str> {
+    if needle_lower.is_empty() {
+        return None;
+    }
+    let mut start = 0usize;
+    loop {
+        if start >= head.len() {
+            return None;
+        }
+        let line_end = head[start..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map(|rel| start + rel)
+            .unwrap_or(head.len());
+        let line = &head[start..line_end];
+        if line.len() >= needle_lower.len()
+            && line[..needle_lower.len()]
+                .iter()
+                .zip(needle_lower)
+                .all(|(b, n)| b.to_ascii_lowercase() == *n)
+        {
+            return std::str::from_utf8(&line[needle_lower.len()..])
+                .ok()
+                .map(str::trim);
+        }
+        if line_end >= head.len() {
+            return None;
+        }
+        start = line_end + 1;
     }
 }
 
@@ -222,8 +333,56 @@ pub fn bind_singleton(addr: SocketAddr) -> io::Result<SingletonBind> {
 pub struct DashMarker {
     /// The loopback port the recorded dash bound.
     pub port: u16,
-    /// The PID of the recorded dash process, used to check whether it is still serving.
+    /// The PID of the recorded dash process. Informational only for display (e.g. `rigger
+    /// watch`'s dead-dash report naming which pid stopped answering) - every liveness /
+    /// idempotency decision made OVER a marker ([`dash_start_needed`]'s `still_serving`,
+    /// [`dash_status`]) re-probes the marker's PORT, never this field, so a stale or
+    /// unattributable value here can never wrongly suppress or fabricate a start. May be
+    /// [`UNATTRIBUTED_PID`] when the port was confirmed serving but the real serving process
+    /// could not be identified - never a guessed real pid.
     pub pid: u32,
+}
+
+/// The documented sentinel [`DashMarker::pid`] value recorded when a dash is confirmed serving
+/// a port but the real serving process's pid could not be attributed (spec 62 round 4,
+/// adj-u62c1r3-verdict-reject-idempotency-regression) - `spawn_run_dashboard_detached`'s only
+/// production write site for it. `0` is never a real OS pid (the kernel reserves it; no process
+/// is ever assigned it), so it can never collide with, or be mistaken for, an actual serving
+/// process, and [`pid_is_alive`] naturally reads it as not alive - the safe direction.
+///
+/// Recording THIS rather than refusing to write any marker at all is what keeps the step path's
+/// idempotent no-op working even when the winning dash's pid can never be named: the marker's
+/// PORT (which `dash_start_needed`/`dash_marker_serving` actually probe; neither ever reads this
+/// pid) is enough for the next `step` to recognize this dash as already serving. A round-3 fix
+/// that instead wrote NO marker at all in this exact case regressed spec 39 criterion 1's
+/// no-op-on-later-steps invariant, repeating the full spawn/probe/attribute cycle on every later
+/// step forever.
+///
+/// Self-heal (spec 62 criterion 2, u62c2) is scoped to DEAD or stale markers only
+/// (`d-u62c1-unattributable-serving-disposition`): it never proactively revisits a marker whose
+/// port is STILL serving, sentinel pid or not - `dash_start_needed`'s still-serving short-circuit
+/// answers `false` before `start()` is ever called, so nothing rewrites the on-disk record while
+/// THIS exact dash instance keeps answering. Correction to a real pid, if one ever becomes
+/// attributable, can only happen on this same instance's NEXT full stop-then-restart cycle (a
+/// fresh `start()` call reached once the port genuinely stops answering) - never while it keeps
+/// serving.
+pub const UNATTRIBUTED_PID: u32 = 0;
+
+/// The one shared filter for every DISPLAY site that renders a marker's raw pid (spec 62 round
+/// 5, adj-u62c1r4-verdict-reject-sentinel-pid-leaks-to-status): maps [`UNATTRIBUTED_PID`] to
+/// `None` so it renders identically to the already-correct no-matching-marker case, and passes
+/// any other value through unchanged. This must be called ONLY at the point a pid is handed to
+/// something that prints or serializes it ([`dash_status`]'s `NotServing` construction,
+/// `watch_poll`'s three `watch::DashProbe::NotServing` construction sites in `src/main.rs`) -
+/// NEVER upstream of a liveness/idempotency decision such as [`pid_if_port_matches`], whose
+/// `Some`/`None` also drives which file's mtime `watch_poll` trusts for
+/// `dash_breadcrumb_written_at`; filtering there would turn a genuinely port-matching sentinel
+/// marker into an apparent mismatch and reintroduce the wrong-file's-mtime defect class closed
+/// at round 9 (adv-u69c1-mismatched-marker-suppression-borrows-wrong-files-mtime). One function
+/// for this one concern rather than four hand-rolled `.filter(|&p| p != UNATTRIBUTED_PID)`
+/// copies, so a future fifth display site cannot forget it.
+pub fn displayable_pid(pid: Option<u32>) -> Option<u32> {
+    pid.filter(|&p| p != UNATTRIBUTED_PID)
 }
 
 impl DashMarker {
@@ -267,13 +426,321 @@ pub fn pid_is_alive(pid: u32) -> bool {
     Path::new("/proc").join(pid.to_string()).is_dir()
 }
 
+/// The inode of the socket bound to `port` in `/proc/net/tcp` (the dash only ever binds IPv4
+/// loopback - spec 62's own loopback-only charter). One row per socket:
+/// `sl local_address rem_address st tx:rx tr:tm retrnsmt uid timeout inode ...`,
+/// whitespace-separated, header row skipped; `local_address` is `<hex-ip>:<hex-port>` in the
+/// kernel's own hex formatting. Matching on the PORT alone (not the ip half) is correct here: a
+/// bind to `0.0.0.0:<port>` reserves every interface including loopback, so it is EXACTLY as
+/// much a conflict for [`bind_singleton`]'s loopback bind as a same-address holder, and must be
+/// diagnosed the same way. `None` when `/proc/net/tcp` is absent/unreadable (a non-Linux
+/// platform) or no row's port matches - [`pid_holding_port`]'s "holder undiscoverable" case.
+fn tcp_listen_inode_for_port(port: u16) -> Option<u64> {
+    let text = std::fs::read_to_string("/proc/net/tcp").ok()?;
+    let port_hex = format!("{port:04X}");
+    for line in text.lines().skip(1) {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let Some(local_address) = fields.get(1) else {
+            continue;
+        };
+        let Some((_, local_port)) = local_address.split_once(':') else {
+            continue;
+        };
+        if !local_port.eq_ignore_ascii_case(&port_hex) {
+            continue;
+        }
+        if let Some(inode) = fields.get(9).and_then(|s| s.parse().ok()) {
+            return Some(inode);
+        }
+    }
+    None
+}
+
+/// The pid of the process HOLDING `port` on this machine right now, discovered via the Linux
+/// `/proc` surface (spec 62, criterion 3 - HELD-PORT DIAGNOSIS): read the kernel's own
+/// listening-socket table ([`tcp_listen_inode_for_port`]) for the inode bound to `port`, then
+/// scan every process's open file descriptors (`/proc/<pid>/fd/*`) for the matching
+/// `socket:[<inode>]` link - the same technique `lsof`/`ss` use, done here directly over
+/// `std::fs` (no `libc`, no new dependency) so it compiles identically on both feature lanes.
+/// Best-effort throughout, mirroring [`crate::reap::processes_rooted_under`]'s own established
+/// `/proc`-scanning discipline: a platform without `/proc`, a permission-denied `fd` dir, or a
+/// holder that exits mid-scan all degrade to `None` - never a panic, never a guess.
+fn pid_holding_port(port: u16) -> Option<u32> {
+    let inode = tcp_listen_inode_for_port(port)?;
+    let proc = Path::new("/proc");
+    let entries = std::fs::read_dir(proc).ok()?;
+    let needle = format!("socket:[{inode}]");
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name.to_str().and_then(|n| n.parse::<u32>().ok()) else {
+            continue;
+        };
+        let Ok(fds) = std::fs::read_dir(proc.join(&name).join("fd")) else {
+            continue;
+        };
+        for fd in fds.flatten() {
+            if let Ok(link) = std::fs::read_link(fd.path()) {
+                if link.to_str() == Some(needle.as_str()) {
+                    return Some(pid);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The single-character process state of `pid` from `/proc/<pid>/stat` - `R` running, `S`
+/// sleeping, `D` uninterruptible sleep, `T` stopped by job control, `t` stopped under a
+/// tracer, `Z` zombie, and so on (see `proc(5)`). Parses the same field layout every
+/// `/proc/<pid>/stat` reader in this codebase already relies on (`pid (comm) state ...`, split
+/// AFTER the last `)` since `comm` may itself embed spaces or parens) - `std`-only, no `libc`.
+/// `None` when the pid is gone or `/proc` is unreadable, the same graceful-degrade discipline
+/// as [`pid_is_alive`].
+fn process_state(pid: u32) -> Option<char> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    stat.rsplit_once(')')?
+        .1
+        .split_whitespace()
+        .next()?
+        .chars()
+        .next()
+}
+
+/// Render the HELD-PORT DIAGNOSIS (spec 62, criterion 3) for a bind failure at `addr`, given
+/// whatever [`pid_holding_port`]/[`process_state`] discovered about the holder - the PURE half,
+/// kept separate from the `/proc` reads so the message text is directly testable without
+/// spawning a process. ALWAYS names `addr` (spec 62 Notes: "other platforms still get the
+/// held-address report" - a bind failure must never surface as a bare, unexplained exit). When
+/// the holder's pid is known, names it; when its state is ALSO known, names that too. A `T`/`t`
+/// (stopped) holder gets the explicit diagnosis this criterion exists for: a stopped listener
+/// keeps the port bound - the kernel still completes the TCP handshake into its backlog - but
+/// its process never calls `accept()`, so a client HANGS instead of getting a clean refusal;
+/// naming the fix (resume or kill that pid) rather than leaving the operator to guess why the
+/// port looks phantom-held.
+fn format_held_port(addr: SocketAddr, holder: Option<(u32, Option<char>)>) -> String {
+    match holder {
+        None => format!("address {addr} is already in use (holding process not found)"),
+        Some((pid, Some('T' | 't'))) => format!(
+            "address {addr} is already in use by pid {pid}, which is STOPPED - a stopped \
+             listener keeps the port bound but its process never accepts a connection; resume \
+             or kill pid {pid} to free the port"
+        ),
+        Some((pid, Some(state))) => {
+            format!("address {addr} is already in use by pid {pid} (state {state})")
+        }
+        Some((pid, None)) => {
+            format!("address {addr} is already in use by pid {pid} (state not discoverable)")
+        }
+    }
+}
+
+/// The impure half of the HELD-PORT DIAGNOSIS (spec 62, criterion 3): discover whatever this
+/// machine's `/proc` surface can prove about the process holding `addr`'s port, and render it
+/// via [`format_held_port`]. `pub` - `cmd_dash` (`src/main.rs`) is the one production caller,
+/// reporting THIS as the `Err` it surfaces when [`bind_singleton`] finds the address genuinely
+/// held by a non-dash process (a real rigger dash already on this address resolves to
+/// `AlreadyServing` instead, so a caller only ever reaches this on a genuine conflict). Because
+/// that precondition already holds at the call site (the OS itself confirmed `AddrInUse`), a
+/// `None` holder here is safe to render as [`format_held_port`]'s "already in use (holding
+/// process not found)" - occupancy is already a given, `/proc` has merely failed to attribute
+/// it. Built on [`describe_held_port_if_confirmed`], whose `None` this arm is the ONE place
+/// allowed to promote to that wording, precisely because this caller's precondition licenses
+/// it and no other caller's does. Best-effort throughout: a platform without `/proc`, or a
+/// holder that exits mid-scan, degrades to the "holding process not found" report - never a
+/// panic and never a bare, unexplained exit (spec 62 Notes).
+pub fn describe_held_port(addr: SocketAddr) -> String {
+    describe_held_port_if_confirmed(addr).unwrap_or_else(|| format_held_port(addr, None))
+}
+
+/// The raw `(pid, rendered message)` pair [`describe_held_port_if_confirmed`] resolves from a
+/// SINGLE `/proc` discovery - exposed separately (spec 62 round 4 fix,
+/// adj-u62c3r3-verdict-reject-child-self-attribution) because a caller sometimes needs the
+/// discovered pid ITSELF, not only the human-readable message about it. The one such caller is
+/// `wait_for_dash_bind_or_diagnose` (`src/main.rs`, extracted out of `spawn_run_dashboard_detached`
+/// in this same round - see that function's own doc, adj-u62c3r4-independently-confirmed-stale-caller-doc):
+/// when its own `wait_for_dash_bind` gives up, it must tell a genuinely competing external process
+/// apart from its OWN just-spawned child having merely bound the port slower than the startup
+/// window allows - a distinction only the raw pid (compared against the spawn's already-known
+/// pid, its `spawned_pid` parameter), never the rendered message text, can carry.
+/// Splitting this out is also what lets [`describe_held_port_if_confirmed`] and this function
+/// share the exact same discovery rather than each re-running [`pid_holding_port`] independently:
+/// two scans of a live, mutable `/proc` could in principle disagree (a holder can appear or
+/// vanish between them); one discovery, consumed both ways, cannot.
+///
+/// `None` under the identical "nothing independently confirmed" gate as
+/// [`describe_held_port_if_confirmed`] - see that function's doc for why an unconfirmed holder
+/// must never be promoted to a claim.
+pub fn held_port_holder(addr: SocketAddr) -> Option<(u32, String)> {
+    let pid = pid_holding_port(addr.port())?;
+    Some((pid, format_held_port(addr, Some((pid, process_state(pid))))))
+}
+
+/// A message-only view of [`held_port_holder`]'s `(pid, message)` pair - defined in terms of it
+/// (round 4) so the two can never drift apart. This keeps the spec 62 round 3 fix
+/// (adj-u62c3r2-verdict-reject-non-addrinuse-mislabel) gate intact: `None` when nothing can be
+/// independently confirmed holding `addr`'s port via `/proc` ([`pid_holding_port`]), `Some` with
+/// the full pid/state message when something can - never asserting occupancy [`held_port_holder`]
+/// has not itself confirmed.
+///
+/// `pub` (cross-crate: `src/main.rs` is a separate binary crate that depends on this library) -
+/// its production caller chain is [`describe_held_port`] -> `cmd_dash`'s manual `rigger dash` CLI
+/// arm (`src/main.rs`), reached only AFTER `bind_singleton` has itself already confirmed a
+/// genuine `AddrInUse` from that call's OWN bind attempt. This function's `None`-gates-a-claim
+/// discipline was originally written for a DIFFERENT caller - the step-path auto-start, which has
+/// no such upstream confirmation available (its bind attempt runs inside a detached child whose
+/// `io::Error` never reaches the parent, `Stdio::null()`, spec 44) - but round 4
+/// (adj-u62c3r3-verdict-reject-child-self-attribution) rewired that caller,
+/// `wait_for_dash_bind_or_diagnose` (`src/main.rs`), to call [`held_port_holder`] directly instead
+/// of through this function, since it also needs the raw pid (to rule out self-attribution; see
+/// [`held_port_holder`]'s own doc), not just a rendered message. The gate itself did not move -
+/// it lives in [`held_port_holder`], which both callers ultimately share - only which named
+/// function each caller reaches it through did. This wrapper is kept for
+/// [`describe_held_port`]'s already-confirmed case and any future confirmed-precondition caller
+/// that only needs the message, never the pid.
+pub fn describe_held_port_if_confirmed(addr: SocketAddr) -> Option<String> {
+    held_port_holder(addr).map(|(_, msg)| msg)
+}
+
+/// The loopback port embedded in a recorded dash URL (`http://127.0.0.1:<port>/`, the only
+/// shape any dash-starting path writes - [`crate`]'s `spawn_run_dashboard` and
+/// `spawn_run_dashboard_detached` both format it this way). `None` for anything that does not
+/// parse as `scheme://host:port...` with a valid `u16` port, so a malformed or foreign URL is
+/// treated as unparseable rather than guessed at - the safe direction [`dash_status`] takes for
+/// every other ambiguous input.
+///
+/// This is the ONE url-port parser shared by the library (`dash_status` below) and the `rigger`
+/// binary's `watch_poll` (spec 69, round 11 architecture/adversary review,
+/// `arch-u69c1-duplicate-url-port-parser`). `watch_poll` (`src/main.rs`) used to hand-roll a
+/// second, DIVERGENT copy (`port_from_dash_url`, last-colon-in-the-whole-url) that only agreed
+/// with this scheme-and-path-aware parser on the single documented no-path URL shape; it now
+/// calls this fn directly instead. `pub`, not `pub(crate)`: the binary is a separate crate that
+/// depends on this library crate, so a `pub(crate)` item here would be invisible to it.
+pub fn url_port(url: &str) -> Option<u16> {
+    let after_scheme = url.split("://").nth(1)?;
+    let host_port = after_scheme.split('/').next().unwrap_or(after_scheme);
+    host_port.rsplit_once(':')?.1.parse().ok()
+}
+
+/// The port-match-then-name-pid rule (spec 69, round 11 architecture/adversary review,
+/// `arch-u69c1-pid-match-rule-duplicated-dash-status-watch-poll` /
+/// `adv-u69c1-pid-match-duplication-verified-and-escalated`): a marker's `pid` is only ever
+/// attributable to `port` when the marker's OWN port matches it - a marker naming some OTHER
+/// dash's port carries a pid that belongs to an unrelated process, never this one's. `dash_status`
+/// and `watch_poll` (`src/main.rs`) both need exactly this rule when deciding whether to name a
+/// pid, so it is factored here as the crate's one implementation rather than each hand-rolling its
+/// own copy (round 9's `adv-u69c1r9-watch-poll-dashprobe-diverges-from-dash-status-mismatch-
+/// handling` was a real, adjudicator-upheld regression traced to exactly that duplication).
+/// `pub`, not `pub(crate)`: `watch_poll` lives in the `rigger` BINARY, a separate crate from
+/// this library, so `pub(crate)` here would not reach it.
+pub fn pid_if_port_matches(marker: &DashMarker, port: u16) -> Option<u32> {
+    (marker.port == port).then_some(marker.pid)
+}
+
+/// The truthful presentation of the dash breadcrumb `rigger status` shows (spec 69, criterion
+/// 4: "`rigger status` never lies about the dash"). A recorded URL alone is not proof the dash
+/// is still up - a crashed or killed process leaves the breadcrumb behind on disk - so this
+/// weighs it against the per-project [`DashMarker`] and a serving predicate before deciding
+/// what a caller may trust.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DashStatus {
+    /// No dash URL has ever been recorded for this project - nothing to show.
+    Absent,
+    /// A URL is recorded and TRUSTED: either a probe PROVES it is still serving, or no marker
+    /// exists to check against and it is left unverified. An absent marker reads as
+    /// "unverifiable", never "dead" - the marker LIFECYCLE is a separate concern (spec 62), and
+    /// more than one dash-starting path (the guard-bound `rigger run` / `rigger serve` dash)
+    /// records a URL but no marker at all, so treating "no marker" as "dead" would falsely
+    /// report a genuinely live dash as down.
+    Serving(String),
+    /// A probe PROVED the recorded URL's own port is not serving - the lie this criterion
+    /// closes: the recorded URL is withheld, so an operator is never sent chasing it.
+    NotServing {
+        /// The pid a MATCHING marker names, when one is recorded (`Some`). A marker whose port
+        /// names some OTHER dash never supplies this: its pid belongs to an unrelated process,
+        /// not the one that used to serve this URL, so printing it would be a second lie in the
+        /// other direction (round 3, adv-u69c4r2-mismatched-marker-still-trusts-a-dead-url).
+        pid: Option<u32>,
+    },
+}
+
+/// Decide [`DashStatus`] from the two on-disk breadcrumbs and an injected port-serving probe
+/// (spec 69, criterion 4). Pure, so both the trusted-URL and the caught-lie outcomes are
+/// provable without a real dashboard process; the production caller (`rigger status`) injects
+/// [`dash_serving_on`] directly - the SAME underlying probe the step path's own idempotent-start
+/// decision ([`dash_start_needed`]) verifies through, so `rigger status` and the step path can
+/// never disagree about whether a recorded dash is alive.
+///
+/// Round 2 (adv-u69c4-dash-status-verifies-wrong-port): a marker only PROVES `recorded_url`'s
+/// liveness when its port MATCHES the port embedded in that URL - two independent
+/// dash-starting paths write `dash.url` and `dash.marker` separately (one writes a URL alone
+/// on a free-searched port, the other writes both together on a fixed port) and neither is
+/// ever cleared, so a project that has used both can be left with breadcrumbs naming two
+/// different dashes.
+///
+/// Round 3 (adv-u69c4r2-mismatched-marker-still-trusts-a-dead-url): the round-2 fix stopped a
+/// mismatched marker's OWN liveness standing in as proof about `recorded_url`, but then fell
+/// back to filtering the marker to `None` and taking the SAME unconditional-trust branch a
+/// genuinely absent marker uses - which is not "nothing to check": a marker that exists but
+/// names a different dash is a positive signal something IS being tracked, it just cannot prove
+/// THIS url. So a genuinely dead `recorded_url` paired with a mismatched-but-otherwise-live
+/// marker sailed straight through as trusted, unverified. The fix: probe `url_port(&url)`
+/// itself directly whenever no MATCHING marker exists to prove it. A marker that is truly
+/// ABSENT still skips the probe and stays trusted unconditionally (the guard-bound `rigger run`
+/// / `rigger serve` dash never writes one at all, so treating its absence as suspicious would
+/// falsely distrust the one path that is documented to have none - spec 62 owns making that
+/// path write one, not this criterion). A mismatched marker no longer gets that free pass: its
+/// port differs from `port`, so the branch below probes `port` (the URL's own) regardless, and
+/// only a genuinely matching marker's pid is ever named in the [`DashStatus::NotServing`] this
+/// returns - a mismatched marker's pid is never printed as though it belonged to this URL.
+pub fn dash_status(
+    recorded_url: Option<String>,
+    marker: Option<DashMarker>,
+    port_serving: impl Fn(u16) -> bool,
+) -> DashStatus {
+    let Some(url) = recorded_url else {
+        return DashStatus::Absent;
+    };
+    let Some(marker) = marker else {
+        // Nothing recorded to check against at all - unverifiable but trusted, unchanged.
+        return DashStatus::Serving(url);
+    };
+    let Some(port) = url_port(&url) else {
+        // A recorded URL this crate never wrote (foreign or malformed) - unparseable, so
+        // unverifiable, the same safe direction taken for every other ambiguous input here.
+        return DashStatus::Serving(url);
+    };
+    // A pid is only ever named when the marker's port MATCHES this url's - a mismatched
+    // marker's pid belongs to some other, unrelated dash and must never be printed as though it
+    // were this url's. Shared with `watch_poll` (`src/main.rs`) via [`pid_if_port_matches`] so
+    // the rule is implemented exactly once in the crate.
+    let pid = pid_if_port_matches(&marker, port);
+    if port_serving(port) {
+        DashStatus::Serving(url)
+    } else {
+        // Round 5 (adj-u62c1r4-verdict-reject-sentinel-pid-leaks-to-status): filtered HERE, at
+        // the display construction site, never inside `pid_if_port_matches` itself, via the one
+        // shared `displayable_pid` (see its doc for why). A pid of `UNATTRIBUTED_PID` names no
+        // real process - `spawn_run_dashboard_detached` (`src/main.rs`) records it only to keep
+        // the marker's PORT usable for idempotency, and documents that no reader may treat it as
+        // a real pid. Printing it unfiltered here would render "marker names dead pid 0" for a
+        // process that was never assigned that pid - a literal violation of spec 69 criterion 4's
+        // "never lies about the dash" text.
+        DashStatus::NotServing {
+            pid: displayable_pid(pid),
+        }
+    }
+}
+
 /// The idempotency decision for the step drive path (spec 39, criterion 1): given the
 /// per-project [`DashMarker`] recorded on disk (if any) and a predicate reporting whether a
 /// recorded dash is STILL serving, returns `true` iff the step must START a run dashboard -
 /// i.e. NONE is already serving. A marker naming a still-serving dash short-circuits to
 /// `false`, so the second and every later `step` of a run is a no-op, never a second dash
 /// or a port fight. `still_serving` is injected so the decision is provable without a real
-/// dash process; production passes [`pid_is_alive`] over the marker's pid.
+/// dash process; production passes a probe over [`dash_serving_on`] (a marker left by a
+/// self-reaped or pid-recycled dash must never masquerade as still serving on a bare pid
+/// check) - the SAME underlying probe [`dash_status`]'s truthful presentation verifies
+/// through, so the two decisions can never disagree about whether a recorded dash is alive.
 pub fn dash_start_needed(
     marker: Option<DashMarker>,
     still_serving: impl Fn(DashMarker) -> bool,
@@ -284,22 +751,31 @@ pub fn dash_start_needed(
     }
 }
 
-/// The self-reap decision for the machine-level SINGLETON dashboard (spec 50, criterion 5):
-/// given the count of registered instances currently LIVE and whether the watcher has EVER
-/// observed a live instance, returns `true` iff the singleton should REAP ITSELF now - so a quiet
-/// machine leaves no orphaned dash. This is the domain core the detached dash's watcher polls; the
-/// watcher owns only the I/O (reading the machine-global instance registry, sleeping, and exiting
-/// on `true`), so the DECISION is provable here without a real dashboard process or a real run.
+/// The self-reap decision for the machine-level SINGLETON dashboard (spec 50, criterion 5;
+/// spec 62, criterion 5): given the count of registered instances currently LIVE, whether the
+/// watcher has EVER observed a live instance, and whether a fresh AGENT liveness signal is
+/// present, returns `true` iff the singleton should REAP ITSELF now - so a quiet machine leaves
+/// no orphaned dash. This is the domain core the detached dash's watcher polls; the watcher owns
+/// only the I/O (reading the machine-global instance registry, scanning the local project's
+/// agent-liveness markers, sleeping, and exiting on `true`), so the DECISION is provable here
+/// without a real dashboard process or a real run.
 ///
 /// This RETARGETS spec 39's per-run trigger ("my run went idle") at the singleton ("NOTHING has
 /// been registered or alive for the idle window"). The dash is no longer a per-run, per-project
-/// process watching its OWN run's liveness markers: it is one machine-level process that serves
-/// every registered instance and outlives any single run, so its liveness signal is the discovery
-/// [`crate::registry`] - not one run's `agent-live` heartbeat. `live_instances` is the length of
-/// [`crate::registry::read_live`], which already applies the idle window (an instance counts as
-/// live only while its heartbeat is fresher than the window; a reader prunes the rest), so "no live
-/// instance" means EVERY registered instance's heartbeat has aged past the idle window and none was
-/// refreshed within it.
+/// process watching only its OWN run's liveness markers: it is one machine-level process that
+/// serves every registered instance and outlives any single run, so its PRIMARY liveness signal
+/// is the discovery [`crate::registry`], not one run's `agent-live` heartbeat. `live_instances`
+/// is the length of [`crate::registry::read_live`], which already applies the idle window (an
+/// instance counts as live only while its heartbeat is fresher than the window; a reader prunes
+/// the rest), so "no live instance" means EVERY registered instance's heartbeat has aged past the
+/// idle window and none was refreshed within it.
+///
+/// Spec 62 criterion 5 adds a SECOND, independent signal on top of that registry view: `rigger
+/// progress` / `emit` / `result` couriers refresh the registry (spec 62 criterion 4), but an
+/// agent's OWN liveness-marker touch (spec 10's heartbeat, e.g. mid-build with no courier call in
+/// between) does not - so a registry that has genuinely aged out can still be sitting under a
+/// project with a live, working agent. The idle judgment must see that agent, not just the
+/// registry: it does, through `agent_live`.
 ///
 /// - `live_instances`: how many registered instances are currently live (heartbeat within the idle
 ///   window). Greater than zero means at least one run - on THIS project or any other, local or a
@@ -311,12 +787,33 @@ pub fn dash_start_needed(
 ///   path just ensured reads zero live instances until its ensuring run writes its registry entry,
 ///   and it must NOT reap on those first empty polls before the entry lands. Once any live instance
 ///   has been seen, a return to zero is genuine machine idle and reaps. The safe direction on
-///   uncertainty (never yet seen a live instance) is to keep serving.
-pub fn should_reap_singleton(live_instances: usize, ever_seen_live: bool) -> bool {
-    // Reap only once the watcher has seen a live instance AND none remains live: a quiet machine.
-    // A positive count never reaps (a live run - any project's - keeps the singleton serving), and
-    // an empty registry that has never yet held a live instance keeps serving (the startup guard).
-    ever_seen_live && live_instances == 0
+///   uncertainty (never yet seen a live instance) is to keep serving. Scoped to the REGISTRY only
+///   (unchanged by criterion 5): the agent-liveness signal has no analogous startup race to guard
+///   (an absent marker degrades to `agent_live: false`, the same safe-to-check-again-next-poll
+///   default the registry's own absent-directory read already uses).
+/// - `agent_live`: whether the SAME liveness authority `rigger status` presents - a per-spawn
+///   `agent-live` marker ([`crate::liveness::any_marker_fresh`]) - shows a fresh signal right now,
+///   for the launching project OR (spec 62 criterion 5 round 2) ANY other currently- or
+///   formerly-registered project the watcher has ever seen (`watch_and_self_reap_on_idle`'s own
+///   doc comment covers the per-project derivation and its `known_roots` durability). `true`
+///   withholds the reap even when the registry has genuinely gone quiet, because a live agent
+///   working under a lapsed courier cadence - on this project or any other one the singleton
+///   outlives - is still real work in flight. This function itself stays agnostic to WHERE the
+///   signal came from; it takes one already-folded boolean.
+///
+/// A genuinely quiet machine - registry empty past the startup guard AND no fresh agent liveness
+/// signal - reaps exactly as spec 50 criterion 5 always has.
+pub fn should_reap_singleton(
+    live_instances: usize,
+    ever_seen_live: bool,
+    agent_live: bool,
+) -> bool {
+    // Reap only once the watcher has seen a live instance, none remains live, AND no agent is
+    // signalling liveness directly: a quiet machine. A positive count never reaps (a live run -
+    // any project's - keeps the singleton serving); an empty registry that has never yet held a
+    // live instance keeps serving (the startup guard); and a fresh agent liveness signal keeps
+    // serving even once the registry itself has aged out (spec 62 criterion 5).
+    ever_seen_live && live_instances == 0 && !agent_live
 }
 
 /// What the dash's data provider yields per request: the run's events, its context subgraph,
@@ -351,7 +848,8 @@ pub struct InstanceView {
 }
 
 /// Project the live registry entries into the landing view's rows (spec 50, criterion 3), sorted
-/// deterministically (by project, then root) because [`crate::registry::read_live`] returns entries
+/// deterministically (by project, then root) because its production caller's
+/// [`crate::registry::read_live_no_prune`] (like its pruning sibling `read_live`) returns entries
 /// in an unspecified filesystem order. Pure and credential-free: every field is copied from the
 /// already-redacted [`crate::registry::Instance`], so no connection secret can reach the view.
 pub fn instance_views(instances: &[crate::registry::Instance], now_ms: u64) -> Vec<InstanceView> {
@@ -3299,17 +3797,23 @@ impl Response {
     /// Write this response as HTTP/1.1 with `Connection: close`, so a bare client knows
     /// the body ends at the connection close (no keep-alive bookkeeping). Every response
     /// carries the [`DASH_HEADER`] marker so a second `rigger dash` invocation can recognize
-    /// an already-serving singleton on the port (spec 50, criterion 1).
+    /// an already-serving singleton on the port (spec 50, criterion 1), AND the
+    /// [`DASH_HEADER_PID`] marker naming THIS process's own pid (`std::process::id()`, read
+    /// fresh at write time - never plumbed in from outside) so a caller can learn WHO is
+    /// actually serving, not merely THAT something is (spec 62 round 2:
+    /// adv-u62c1-marker-pid-not-the-serving-pid-on-singleton-race).
     fn write_to(&self, w: &mut impl Write) -> io::Result<()> {
         let header = format!(
             "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\
-             {}: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+             {}: {}\r\n{}: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
             self.status,
             self.reason(),
             self.content_type,
             self.body.len(),
             DASH_HEADER,
             env!("CARGO_PKG_VERSION"),
+            DASH_HEADER_PID,
+            std::process::id(),
         );
         w.write_all(header.as_bytes())?;
         w.write_all(&self.body)?;
@@ -4259,15 +4763,23 @@ mod tests {
     #[test]
     #[serial_test::serial(dash_default_port)]
     fn bind_singleton_short_circuits_on_an_already_serving_rigger_dash() {
+        use std::sync::mpsc;
         use std::time::Instant;
 
         // Bring a REAL dash up on an ephemeral port and wait until it answers as a dash.
-        let port = TcpListener::bind(("127.0.0.1", 0))
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
-        let addr = SocketAddr::from(([127, 0, 0, 1], port));
+        //
+        // The port is discovered by binding it and is HELD by that same listener all the way into
+        // `serve_on` - it is never released and re-bound. Discovering a port by binding it,
+        // DROPPING the listener and re-binding the number is a time-of-check/time-of-use race:
+        // in the window between the drop and the re-bind, any `bind(0)` on the machine (a sibling
+        // test, or a second agent running this same suite in another worktree) can be handed the
+        // just-freed port. `serve` then fails AddrInUse and this test, which only ever observes
+        // the port, burns its whole deadline and reports a misleading "never came up".
+        // `serve_on` is the same race-free seam production uses: `bind_singleton` returns the
+        // listener it bound (`SingletonBind::Bound`) and the caller serves on THAT listener.
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let port = addr.port();
         let provider = |_instance: Option<&str>| -> Result<DashInputs, String> {
             Ok((Vec::new(), Graph::default(), Vec::new(), HashMap::new()))
         };
@@ -4277,9 +4789,13 @@ mod tests {
             |_: Option<&str>, _: &[String], _: crate::contextgraph::Direction, _: i64, _: &str| {
                 crate::contextgraph::CallGraph::default()
             };
+        // A dash that FAILS instead of serving reports its error here, so the failure surfaces
+        // LOUD and named (spec 19c) rather than as a silent stall that only shows up much later
+        // as an unexplained deadline.
+        let (serve_failed, serve_failure) = mpsc::channel();
         std::thread::spawn(move || {
-            let _ = serve(
-                addr,
+            if let Err(e) = serve_on(
+                listener,
                 provider,
                 graph_provider,
                 calls_provider,
@@ -4287,7 +4803,9 @@ mod tests {
                 3,
                 "rigger-run",
                 "origin/main",
-            );
+            ) {
+                let _ = serve_failed.send(e.to_string());
+            }
         });
 
         // Condition-based readiness with a LOAD-PROOF bound: under the fully parallel suite
@@ -4296,6 +4814,9 @@ mod tests {
         // not an expectation - the loop exits the moment the dash answers (typically <100ms).
         let deadline = Instant::now() + Duration::from_secs(60);
         while !dash_serving_on(port) {
+            if let Ok(e) = serve_failure.try_recv() {
+                panic!("the dash on port {port} failed instead of serving: {e}");
+            }
             assert!(
                 Instant::now() < deadline,
                 "the dash never came up on port {port} within the deadline"
@@ -4393,6 +4914,226 @@ mod tests {
                  (the per-read-only timeout never bounds a newline-less dribble)"
             ),
         }
+    }
+
+    /// Spec 62 round 3 mutation-efficacy follow-up (probe_dash_head extraction,
+    /// arch-u62c1-dash-serving-pid-on-duplicates-the-probe-read-loop): `probe_dash_head`'s
+    /// `stop_early(&head) || head.len() >= MAX_HEAD_BYTES || head_block_ended(&head)` must fire
+    /// `dash_serving_on`'s early exit the INSTANT `stop_early` (the `DASH_HEADER` match) is true,
+    /// regardless of the other two conditions - a `||` -> `&&` flip on the FIRST operator ties
+    /// the early exit to `head.len() >= MAX_HEAD_BYTES` too (virtually never true for a small
+    /// response), silently falling back to waiting for `head_block_ended` (or the deadline) on
+    /// every real dash. `dash_serving_on_is_bounded_against_a_byte_dribbling_holder` cannot catch
+    /// this: its holder never sends `DASH_HEADER` at all, so `stop_early` is false there under
+    /// EITHER version - the flip is invisible unless a holder sends the header FIRST and then
+    /// never completes the header block, isolating whether recognition happens on the header
+    /// line itself or only once the whole block (or the deadline) resolves.
+    ///
+    /// This holder does exactly that: it sends a genuine `DASH_HEADER` line immediately, then
+    /// dribbles harmlessly forever WITHOUT ever sending the terminating blank line. Correct code
+    /// recognizes the header and returns `true` almost immediately (well under the probe's own
+    /// 750ms deadline); the mutated `&&` never short-circuits on a small response, so it falls
+    /// through to `head_block_ended` (never true here) and idles out to `false` only once the
+    /// full deadline elapses - both distinctly different from "fast `true`", so a generous
+    /// wall-clock bound well under the deadline separates them without racing a specific millisecond.
+    #[test]
+    fn dash_serving_on_recognizes_the_header_fast_even_if_the_holder_never_finishes_the_block() {
+        use std::sync::mpsc;
+        use std::time::Instant;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for mut s in listener.incoming().flatten() {
+                // The real dash header, sent whole, immediately - then an endless newline-less
+                // dribble that never reaches the terminating blank line.
+                if s.write_all(format!("HTTP/1.1 200 OK\r\n{DASH_HEADER}: probe\r\n").as_bytes())
+                    .is_err()
+                {
+                    continue;
+                }
+                let _ = s.flush();
+                loop {
+                    if s.write_all(b"a").is_err() || s.flush().is_err() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        });
+
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let start = Instant::now();
+            let served = dash_serving_on(port);
+            let _ = tx.send((served, start.elapsed()));
+        });
+        match rx.recv_timeout(Duration::from_secs(2)) {
+            Ok((served, elapsed)) => {
+                assert!(
+                    served,
+                    "a genuine DASH_HEADER line must be recognized even though the holder never \
+                     finishes the header block"
+                );
+                assert!(
+                    elapsed < Duration::from_millis(500),
+                    "recognizing DASH_HEADER must short-circuit almost immediately, well under \
+                     the probe's own 750ms deadline - it took {elapsed:?}, which is only \
+                     possible if the early exit degraded into waiting out the block or the \
+                     deadline instead"
+                );
+            }
+            Err(_) => panic!(
+                "dash_serving_on HUNG against a header-then-dribble holder - it never returned \
+                 within 2s"
+            ),
+        }
+    }
+
+    /// Spec 62 round 2 (adv-u62c1-marker-pid-not-the-serving-pid-on-singleton-race):
+    /// `dash_serving_pid_on` reports the pid a REAL rigger-dash-shaped response names via
+    /// [`DASH_HEADER_PID`] - the whole point being that a caller can learn WHO is actually
+    /// serving a port without assuming it is whichever process the caller itself happens to have
+    /// spawned. A fake listener stands in for the winner of a singleton race, answering with an
+    /// ARBITRARY pid value in the header (never the test process's own pid), so a pass here can
+    /// only be explained by the probe reading the header off the wire, not by any coincidental
+    /// match with `std::process::id()`.
+    #[test]
+    fn dash_serving_pid_on_reports_the_pid_a_real_dash_response_names() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let winner_pid: u32 = 424_242; // deliberately NOT this test process's own pid
+        std::thread::spawn(move || {
+            for mut s in listener.incoming().flatten() {
+                let _ = s.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\n{DASH_HEADER}: probe\r\n{DASH_HEADER_PID}: \
+                         {winner_pid}\r\nConnection: close\r\n\r\n"
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        assert_eq!(
+            dash_serving_pid_on(port),
+            Some(winner_pid),
+            "the probe must report the EXACT pid the response names via X-Rigger-Dash-Pid"
+        );
+    }
+
+    /// Spec 62 round 2 mutation-efficacy follow-up (adv-u62c1-marker-pid-not-the-serving-pid-on-
+    /// singleton-race): [`dash_serving_pid_on`]'s read loop has its own local byte-cap constant
+    /// and a `head.len() >= <cap>` termination check, both of which matter, not merely
+    /// `head_block_ended` - a response whose header block is genuinely LARGER than the
+    /// fixed-size read buffer forces multiple `read` calls to assemble, so a wrong cap (too
+    /// small, or the comparison direction flipped) truncates the head BEFORE the real
+    /// [`DASH_HEADER_PID`] line ever arrives, well short of the block's actual end.
+    ///
+    /// The response here is ~2KB: status line, then ~2000 bytes of an unrelated padding header
+    /// (never matching either needle), THEN the real `DASH_HEADER`/`DASH_HEADER_PID` lines. Two
+    /// structural facts make the assertion robust regardless of exact OS-level TCP chunking:
+    /// (1) the read loop's own buffer is a fixed 512-byte array, so `Read::read` can never
+    /// return more than 512 bytes in one call - reaching the real content (past byte ~2030)
+    /// PROVABLY requires at least 4 calls; (2) since 1032 (`8 * 1024` mis-computed as `8 + 1024`
+    /// or `8 / 1024`) and the flipped-comparison cap are both far below 2030 while the real cap
+    /// (8192) is far above it, a wrong cap is GUARANTEED to trip - monotonically, on whichever
+    /// read call first crosses it - strictly before the padding ends, while the correct cap
+    /// never trips at all (this response never reaches 8192 bytes) and the loop instead runs to
+    /// completion exactly once `head_block_ended` sees the real trailing blank line.
+    #[test]
+    fn dash_serving_pid_on_assembles_a_head_that_spans_many_read_calls() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let winner_pid: u32 = 424_243; // deliberately NOT this test process's own pid
+        let padding = "A".repeat(2000);
+        std::thread::spawn(move || {
+            for mut s in listener.incoming().flatten() {
+                let _ = s.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nX-Padding: {padding}\r\n{DASH_HEADER}: \
+                         probe\r\n{DASH_HEADER_PID}: {winner_pid}\r\nConnection: \
+                         close\r\n\r\n"
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        assert_eq!(
+            dash_serving_pid_on(port),
+            Some(winner_pid),
+            "a head spanning many read() calls must still be fully assembled and parsed - \
+             a premature length-cap break truncates it before the real header lines arrive"
+        );
+    }
+
+    /// The false direction, mirroring `dash_serving_on_is_false_for_a_non_dash_listener`: a
+    /// listener that answers but carries no [`DASH_HEADER`] at all (an unrelated process holding
+    /// the port) must never be mistaken for a dash naming a pid, even if it happens to send a
+    /// same-shaped header by coincidence-free construction here (it sends none).
+    #[test]
+    fn dash_serving_pid_on_is_none_for_a_non_dash_listener() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for mut s in listener.incoming().flatten() {
+                let _ = s.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi",
+                );
+            }
+        });
+        assert_eq!(
+            dash_serving_pid_on(port),
+            None,
+            "a non-dash listener must never be reported as naming a serving pid"
+        );
+    }
+
+    /// Nothing listening at all must resolve to `None`, never a stale or default pid - mirrors
+    /// `dash_serving_on`'s false-on-no-connection direction.
+    #[test]
+    fn dash_serving_pid_on_is_none_when_nothing_answers() {
+        let port = free_port_from(45000).expect("a free loopback port must be available");
+        assert_eq!(dash_serving_pid_on(port), None);
+    }
+
+    /// The sentinel arm of `dash_serving_pid_on`'s own `.parse().ok()` (spec 62 round 2, SDET
+    /// lens periphery: neither the mutation-efficacy accounting recorded in
+    /// `d-u62c1-mutation-accounting-round2` nor any existing test in this file exercises this
+    /// exact path - `cargo-mutants`' default mutator set never touches a `Result::ok()` call on
+    /// a std `.parse()`, so this arm is invisible to that tool and only a hand-written test
+    /// closes it). A listener that DOES carry a genuine `DASH_HEADER` (so the "is this even a
+    /// dash" check at the top of the function passes) but whose `DASH_HEADER_PID` value is not a
+    /// valid `u32` must resolve to `None`, never panic and never silently coerce to some other
+    /// value (e.g. `0`) - a malformed or truncated pid header must never be reported as a real
+    /// pid a caller could act on. A round-2 draft of the one production call site,
+    /// `spawn_run_dashboard_detached`, once used `dash_serving_pid_on(port).unwrap_or(pid)` -
+    /// this exact `None` was what let that (since-rejected,
+    /// adj-u62c1r2-verdict-reject-version-skew-fallback) fallback engage instead of recording a
+    /// nonsense pid. The current call site no longer falls back to a guessed pid at all: it
+    /// records the documented [`UNATTRIBUTED_PID`] sentinel on this `None` instead - so this
+    /// test's lasting job is proving `dash_serving_pid_on` itself never manufactures a value
+    /// from unparseable input, regardless of what any caller later does with the `None`.
+    #[test]
+    fn dash_serving_pid_on_is_none_when_the_pid_header_value_is_not_a_number() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for mut s in listener.incoming().flatten() {
+                let _ = s.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\n{DASH_HEADER}: probe\r\n{DASH_HEADER_PID}: \
+                         not-a-number\r\nConnection: close\r\n\r\n"
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        assert_eq!(
+            dash_serving_pid_on(port),
+            None,
+            "a non-numeric X-Rigger-Dash-Pid value must resolve to None, never panic or \
+             coerce to a default pid"
+        );
     }
 
     /// Spec 50, criterion 1 (cold-race loser): when two dashes bind the fixed address at once, the
@@ -7734,6 +8475,181 @@ mod tests {
         );
     }
 
+    // --- Spec 62, criterion 3: HELD-PORT DIAGNOSIS ---
+
+    #[test]
+    fn format_held_port_always_names_the_address_even_with_no_holder() {
+        let addr: SocketAddr = "127.0.0.1:7450".parse().unwrap();
+        let msg = format_held_port(addr, None);
+        assert!(
+            msg.contains("127.0.0.1:7450"),
+            "the held address must always appear, even when the holder is undiscoverable; \
+             got: {msg}"
+        );
+        assert!(
+            !msg.to_lowercase().contains("resume"),
+            "an undiscoverable holder must never invent a stopped-listener diagnosis; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn format_held_port_names_the_pid_and_state_for_a_running_holder() {
+        let addr: SocketAddr = "127.0.0.1:7451".parse().unwrap();
+        let msg = format_held_port(addr, Some((4242, Some('R'))));
+        assert!(msg.contains("127.0.0.1:7451"), "got: {msg}");
+        assert!(
+            msg.contains("4242"),
+            "must name the holder's pid; got: {msg}"
+        );
+        assert!(
+            msg.contains('R'),
+            "must name the discoverable state; got: {msg}"
+        );
+        assert!(
+            !msg.to_lowercase().contains("resume"),
+            "a running (non-stopped) holder must not get the stopped-listener diagnosis; \
+             got: {msg}"
+        );
+    }
+
+    #[test]
+    fn format_held_port_names_the_pid_alone_when_its_state_is_not_discoverable() {
+        let addr: SocketAddr = "127.0.0.1:7452".parse().unwrap();
+        let msg = format_held_port(addr, Some((4343, None)));
+        assert!(msg.contains("127.0.0.1:7452"), "got: {msg}");
+        assert!(
+            msg.contains("4343"),
+            "must still name the holder's pid; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn format_held_port_gives_the_stopped_listener_diagnosis_naming_resume_or_kill() {
+        for state in ['T', 't'] {
+            let addr: SocketAddr = "127.0.0.1:7453".parse().unwrap();
+            let msg = format_held_port(addr, Some((5454, Some(state))));
+            assert!(msg.contains("127.0.0.1:7453"), "got: {msg}");
+            assert!(
+                msg.contains("5454"),
+                "must name the stopped holder's pid; got: {msg}"
+            );
+            let lower = msg.to_lowercase();
+            assert!(
+                lower.contains("resume") && lower.contains("kill"),
+                "a stopped ({state:?}) holder must name resume-or-kill explicitly; got: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn pid_holding_port_finds_the_pid_of_a_listener_bound_in_this_process() {
+        if !Path::new("/proc").is_dir() {
+            return;
+        }
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert_eq!(
+            pid_holding_port(port),
+            Some(std::process::id()),
+            "the /proc scan must find THIS process as the holder of its own listener"
+        );
+        drop(listener);
+    }
+
+    #[test]
+    fn pid_holding_port_is_none_for_a_port_nothing_is_listening_on() {
+        if !Path::new("/proc").is_dir() {
+            return;
+        }
+        // Learn a free port and release it - nothing rebinds it, so no /proc/net/tcp row
+        // should name it.
+        let port = TcpListener::bind(("127.0.0.1", 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        assert_eq!(
+            pid_holding_port(port),
+            None,
+            "an unheld port must have no holder"
+        );
+    }
+
+    #[test]
+    fn describe_held_port_names_this_process_when_it_holds_the_port_itself() {
+        if !Path::new("/proc").is_dir() {
+            return;
+        }
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let msg = describe_held_port(addr);
+        // Checked as the exact `by pid {N}` attribution phrase, not a raw pid-string substring
+        // test: this project's mandatory pid-namespace test sandbox (.cargo/pidns-runner.sh,
+        // every test binary here runs AS PID 1 of its own fresh namespace) makes a raw substring
+        // check vacuous, since "1" trivially matches inside the loopback address "127.0.0.1"
+        // regardless of what the message actually reports.
+        assert!(
+            msg.contains(&format!("by pid {}", std::process::id())),
+            "describe_held_port must name this test process's own pid as the holder; got: {msg}"
+        );
+        assert!(msg.contains(&addr.to_string()), "got: {msg}");
+        drop(listener);
+    }
+
+    /// Spec 62 round 3 fix (adj-u62c3r2-verdict-reject-non-addrinuse-mislabel): unlike
+    /// [`describe_held_port`] (whose one production caller, `cmd_dash`, only ever reaches it
+    /// AFTER the OS has already confirmed `AddrInUse`, so a `None` holder there still means a
+    /// genuine-but-unattributed conflict), [`describe_held_port_if_confirmed`] is defined in
+    /// terms of [`held_port_holder`] (round 4), which independently confirms occupancy via
+    /// `/proc` before naming a holder rather than trusting any caller's precondition - it must
+    /// never promote an unconfirmed holder to a claim regardless of who calls it. This is what let
+    /// round 4 rewire the step-path auto-start (`wait_for_dash_bind_or_diagnose`, `src/main.rs`,
+    /// whose bind attempt runs in a detached child with no observable `io::Error` at all, so it
+    /// has no upstream confirmation of its own to lean on) onto [`held_port_holder`] directly
+    /// without weakening this gate. A port a real listener holds must still resolve `Some`, naming
+    /// this test process's own pid.
+    #[test]
+    fn describe_held_port_if_confirmed_names_the_holder_when_independently_confirmed() {
+        if !Path::new("/proc").is_dir() {
+            return;
+        }
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let msg = describe_held_port_if_confirmed(addr)
+            .expect("a port a real listener holds must resolve Some, not None");
+        // Same exact-phrase check as `describe_held_port_names_this_process_when_it_holds_the_
+        // port_itself` above, for the same pid-namespace-sandbox reason.
+        assert!(
+            msg.contains(&format!("by pid {}", std::process::id())),
+            "must name this test process's own pid as the holder; got: {msg}"
+        );
+        assert!(msg.contains(&addr.to_string()), "got: {msg}");
+        drop(listener);
+    }
+
+    /// Spec 62 round 3 fix (adj-u62c3r2-verdict-reject-non-addrinuse-mislabel): the defect the
+    /// adjudicator reproduced - a bind failure unrelated to any real conflict (permission error,
+    /// slow machine, config problem) getting the false "already in use" framing anyway. A port
+    /// NOTHING holds must resolve `None`, giving the caller nothing to falsely claim.
+    #[test]
+    fn describe_held_port_if_confirmed_is_none_when_nothing_holds_the_port() {
+        if !Path::new("/proc").is_dir() {
+            return;
+        }
+        let addr: SocketAddr = {
+            let probe = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            probe.local_addr().unwrap()
+        };
+        // The listener above is already dropped by the time this line runs - nothing rebinds
+        // its port, so no /proc/net/tcp row should name a holder.
+        assert_eq!(
+            describe_held_port_if_confirmed(addr),
+            None,
+            "a port nothing holds must never be described as held - the exact false-positive \
+             this round's fix exists to close"
+        );
+    }
+
     #[test]
     fn dash_start_needed_is_true_when_none_serving_and_false_when_one_serves() {
         let m = DashMarker { port: 7442, pid: 7 };
@@ -7755,6 +8671,165 @@ mod tests {
     }
 
     #[test]
+    fn dash_status_trusts_a_url_with_no_marker_and_catches_a_marker_that_lies() {
+        let m = DashMarker {
+            port: 7442,
+            pid: 4242,
+        };
+        let url = "http://127.0.0.1:7442/".to_string();
+
+        // No URL ever recorded -> Absent, and the probe is never even consulted (nothing to
+        // verify).
+        assert_eq!(
+            dash_status(None, Some(m), |_| panic!(
+                "must not probe when there is no recorded URL"
+            )),
+            DashStatus::Absent,
+            "no recorded dash -> Absent"
+        );
+
+        // A recorded URL with NO marker to check against is TRUSTED as-is, with NO probe - the
+        // guard-bound `rigger run` / `rigger serve` dash records a URL but no marker at all
+        // (spec 62 owns the marker lifecycle), so an absent marker must never read as "dead".
+        assert_eq!(
+            dash_status(Some(url.clone()), None, |_| panic!(
+                "must not probe when there is no marker to verify"
+            )),
+            DashStatus::Serving(url.clone()),
+            "a recorded URL with no marker to verify is trusted unchanged"
+        );
+
+        // A MATCHING marker whose port the probe PROVES is serving -> the URL is trusted.
+        assert_eq!(
+            dash_status(Some(url.clone()), Some(m), |p| {
+                assert_eq!(p, 7442, "must probe the matching marker's own port");
+                true
+            }),
+            DashStatus::Serving(url.clone()),
+            "a marker proven serving -> the recorded URL is trusted"
+        );
+
+        // A MATCHING marker whose port the probe PROVES is NOT serving -> the lie this
+        // criterion closes: no URL, just the pid the matching marker names.
+        assert_eq!(
+            dash_status(Some(url), Some(m), |p| {
+                assert_eq!(p, 7442, "must probe the matching marker's own port");
+                false
+            }),
+            DashStatus::NotServing { pid: Some(4242) },
+            "a marker proven dead -> not serving, naming its pid"
+        );
+    }
+
+    /// Round 5 (adj-u62c1r4-verdict-reject-sentinel-pid-leaks-to-status,
+    /// sdet-u62c1r4-unattributed-pid-sentinel-renders-as-a-fabricated-dead-pid): a marker
+    /// carrying [`UNATTRIBUTED_PID`] (spec 62 round 4's documented sentinel, recorded when a
+    /// port was confirmed serving but the real serving process could not be identified) names no
+    /// real process. Before this fix, `dash_status` handed that raw `0` straight through into
+    /// `NotServing { pid: Some(0) }`, which every display site then printed as "marker names dead
+    /// pid 0" - a literal lie, since `0` was never assigned to, or the pid of, any real process.
+    /// This proves `dash_status` itself filters it to `None` at the point it constructs
+    /// `NotServing`, so it renders identically to the already-correct no-matching-marker case.
+    #[test]
+    fn dash_status_never_names_the_unattributed_pid_sentinel_as_a_dead_process() {
+        let sentinel = DashMarker {
+            port: 7442,
+            pid: UNATTRIBUTED_PID,
+        };
+        let url = "http://127.0.0.1:7442/".to_string();
+
+        assert_eq!(
+            dash_status(Some(url), Some(sentinel), |p| {
+                assert_eq!(p, 7442, "must probe the matching marker's own port");
+                false
+            }),
+            DashStatus::NotServing { pid: None },
+            "a sentinel-pid marker proven dead must name NO pid, not the sentinel value \
+             itself - the sentinel was never a real, assigned pid"
+        );
+    }
+
+    #[test]
+    fn url_port_parses_the_recorded_shape_and_rejects_anything_else() {
+        assert_eq!(url_port("http://127.0.0.1:7420/"), Some(7420));
+        assert_eq!(url_port("http://127.0.0.1:7420"), Some(7420));
+        assert_eq!(url_port("http://127.0.0.1:7420/api/state"), Some(7420));
+        assert_eq!(url_port(""), None, "empty is not a URL");
+        assert_eq!(url_port("not-a-url"), None, "no scheme -> unparseable");
+        assert_eq!(
+            url_port("http://127.0.0.1/"),
+            None,
+            "no port at all -> unparseable"
+        );
+        assert_eq!(
+            url_port("http://127.0.0.1:not-a-port/"),
+            None,
+            "a non-numeric port -> unparseable"
+        );
+        assert_eq!(
+            url_port("http://127.0.0.1:99999/"),
+            None,
+            "a port past u16::MAX -> unparseable"
+        );
+    }
+
+    /// Round 2 (adv-u69c4-dash-status-verifies-wrong-port): a marker naming a DIFFERENT port
+    /// than the recorded url describes some OTHER dash, not this one - its OWN liveness must
+    /// never stand in as proof about the url either direction (that would wrongly vouch for a
+    /// dead url, or wrongly hide a genuinely live one).
+    ///
+    /// Round 3 (adv-u69c4r2-mismatched-marker-still-trusts-a-dead-url): the round-2 fix filtered
+    /// a mismatched marker to `None` and fell into the SAME unconditional-trust branch a
+    /// genuinely absent marker uses - "nothing to check" - which let a genuinely DEAD url sail
+    /// through as trusted whenever a mismatched marker happened to be recorded (empirically
+    /// reproduced against the built binary; see the finding). A mismatched marker is a positive
+    /// "something is tracked" signal, not "nothing to check": it must trigger a REAL probe of
+    /// the url's own port, and never let the marker's own (unrelated) port or pid substitute for
+    /// one.
+    #[test]
+    fn dash_status_probes_the_urls_own_port_when_the_marker_names_a_different_dash() {
+        let url = "http://127.0.0.1:7442/".to_string();
+        // Names a completely different port (9999) than the url (7442) - and a pid that
+        // belongs to that OTHER, unrelated dash, not this url's.
+        let mismatched = DashMarker {
+            port: 9999,
+            pid: 5555,
+        };
+
+        // The url's OWN port genuinely answers -> trusted. The probe must be asked about the
+        // url's port (7442), never the mismatched marker's unrelated port (9999) - proving the
+        // marker's own liveness plays no part in the decision either direction.
+        assert_eq!(
+            dash_status(Some(url.clone()), Some(mismatched), |p| {
+                assert_eq!(
+                    p, 7442,
+                    "must probe the url's own port, never the mismatched marker's"
+                );
+                true
+            }),
+            DashStatus::Serving(url.clone()),
+            "a mismatched marker must never suppress a genuinely-alive url"
+        );
+
+        // The url's OWN port genuinely does NOT answer -> not serving, with NO pid: the
+        // mismatched marker's pid names an unrelated (possibly still-alive) dash and must
+        // never be printed as though it belonged to this dead url - the exact lie round 3
+        // closes (round 2 left this direction open: a genuinely dead url paired with a
+        // mismatched marker sailed through as trusted).
+        assert_eq!(
+            dash_status(Some(url.clone()), Some(mismatched), |p| {
+                assert_eq!(
+                    p, 7442,
+                    "must probe the url's own port, never the mismatched marker's"
+                );
+                false
+            }),
+            DashStatus::NotServing { pid: None },
+            "a mismatched marker must not let a genuinely dead url sail through as trusted"
+        );
+    }
+
+    #[test]
     fn should_reap_singleton_reaps_only_when_no_registered_instance_is_live() {
         // Spec 50, criterion 5: the machine-level singleton reaps itself ONLY when nothing is
         // registered-and-alive - and never before it has seen its first live instance (the
@@ -7763,35 +8838,71 @@ mod tests {
         // Startup: the ensuring run has not yet written its registry entry, so the watcher reads
         // ZERO live instances on its first polls. It must NOT reap before that entry lands.
         assert!(
-            !should_reap_singleton(0, false),
+            !should_reap_singleton(0, false, false),
             "a just-ensured singleton that has not yet seen any live instance must not reap"
         );
 
         // A live instance is registered (this project's run, or any other's): keep serving.
         assert!(
-            !should_reap_singleton(1, true),
+            !should_reap_singleton(1, true, false),
             "one live registered instance keeps the singleton serving"
         );
         // The multi-instance headline: one project's run ending while ANOTHER's is still live
         // leaves the count > 0, so the singleton survives.
         assert!(
-            !should_reap_singleton(2, true),
+            !should_reap_singleton(2, true, false),
             "several live instances keep the singleton serving"
         );
 
         // Every registered instance's heartbeat has aged past the idle window (so `read_live`
-        // pruned them all) and the watcher HAS seen a live instance before: a quiet machine ->
-        // reap.
+        // pruned them all), the watcher HAS seen a live instance before, and there is no agent
+        // liveness signal either: a quiet machine -> reap.
         assert!(
-            should_reap_singleton(0, true),
+            should_reap_singleton(0, true, false),
             "no live instance, after at least one was seen, reaps the singleton"
         );
 
         // A count > 0 that was never marked seen cannot occur in the watcher (a non-empty read
         // flips the flag first), but the decision stays safe: a positive count never reaps.
         assert!(
-            !should_reap_singleton(1, false),
+            !should_reap_singleton(1, false, false),
             "a positive live count never reaps regardless of the seen flag"
+        );
+    }
+
+    #[test]
+    fn should_reap_singleton_never_reaps_while_a_fresh_agent_liveness_signal_is_present() {
+        // Spec 62, criterion 5 (SINGLETON SURVIVES LIVE WORK, OWNS the idle judgment): the
+        // reap decision now requires BOTH the registry AND the agent liveness signal to be
+        // quiet - a registry that has aged out (empty, but was once seen live) must NOT reap
+        // while a fresh in-flight agent liveness marker is present.
+        assert!(
+            !should_reap_singleton(0, true, true),
+            "an aged-out registry with a fresh agent liveness signal must not reap"
+        );
+        // With BOTH quiet, it reaps exactly as today.
+        assert!(
+            should_reap_singleton(0, true, false),
+            "an aged-out registry with no agent liveness signal reaps exactly as before"
+        );
+        // A live registered instance keeps serving regardless of the agent signal either way.
+        assert!(
+            !should_reap_singleton(1, true, false),
+            "a live registered instance keeps serving even with no agent liveness signal"
+        );
+        assert!(
+            !should_reap_singleton(1, true, true),
+            "a live registered instance plus a live agent signal still keeps serving"
+        );
+        // The startup-race guard is unchanged: never reaps before any instance has been seen,
+        // agent signal or not.
+        assert!(
+            !should_reap_singleton(0, false, false),
+            "the startup guard still holds with no agent signal"
+        );
+        assert!(
+            !should_reap_singleton(0, false, true),
+            "the startup guard still holds even with a live agent signal"
         );
     }
 

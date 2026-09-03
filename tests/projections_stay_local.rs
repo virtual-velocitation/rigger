@@ -123,10 +123,10 @@ fn the_graph_and_progress_projections_open_via_the_local_sqlite_constructors() {
 // while the event LOG goes to the server. Gracefully skipped when no container runtime.
 // =======================================================================================
 
-/// The compiled `rigger` binary under test (Cargo sets this for integration tests).
-fn rigger_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_rigger")
-}
+// The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
+// `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
+// and every suite that spawns the product then dies with a bare NotFound.
+mod common;
 
 /// The project identity the binary resolves for `root` (the git top-level basename, or the
 /// tracked `.rigger/project.id`) - the identity that namespaces the LOCAL progress projection,
@@ -226,7 +226,7 @@ fn graph_build_against_the_server_keeps_graph_db_local_and_the_log_on_the_server
         // Build the graph with ONLY the server configured (no `--eventstore` flag) - the surface a
         // server-backed project uses. The event LOG is resolved through `resolve_store` (-> server);
         // the graph PROJECTION is opened directly as local sqlite.
-        let out = Command::new(rigger_bin())
+        let out = common::rigger_courier()
             .args(["graph", "build"])
             .current_dir(root)
             .env("KURRENTDB_CONN", &conn)
@@ -282,8 +282,13 @@ fn progress_against_the_server_keeps_progress_db_local_and_the_log_on_the_server
 
         // A bare `rigger progress` - no `--eventstore` flag - the exact surface a worker uses. It
         // resolves the run store (-> server, read-only, to scope the report) and appends to the
-        // SEPARATE progress store, which must stay LOCAL sqlite.
-        let out = Command::new(rigger_bin())
+        // SEPARATE progress store, which must stay LOCAL sqlite. `XDG_STATE_HOME` is redirected
+        // to a per-call temp dir (spec 62, "couriers count as activity"): `progress` now
+        // refreshes the machine-global instance registry too, so an unredirected call here would
+        // otherwise seed a phantom, since-deleted-tempdir entry into the operator's real
+        // `~/.local/state/rigger/instances`.
+        let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
+        let out = common::rigger_courier()
             .args([
                 "progress",
                 "u5-projections/implementer#0",
@@ -292,6 +297,7 @@ fn progress_against_the_server_keeps_progress_db_local_and_the_log_on_the_server
             .current_dir(root)
             .env("KURRENTDB_CONN", &conn)
             .env("RIGGER_NO_DASH", "1")
+            .env("XDG_STATE_HOME", state.path())
             .output()
             .expect("spawn rigger progress");
         assert!(

@@ -43,10 +43,10 @@ use std::process::{Command, Output};
 
 use tempfile::TempDir;
 
-/// The compiled `rigger` binary under test (Cargo sets this for integration tests).
-fn rigger_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_rigger")
-}
+// The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
+// `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
+// and every suite that spawns the product then dies with a bare NotFound.
+mod common;
 
 /// A throwaway project: its own git repo (so identity resolves exactly as a real project's does)
 /// with an empty `.rigger/` and no event log yet. The `TempDir` is returned so it outlives the
@@ -71,12 +71,17 @@ fn local_event_log(root: &Path) -> PathBuf {
 /// self-report uses, and the one whose store the single authority must keep aligned with the
 /// run's. `conn` sets `KURRENTDB_CONN` (`Some("")` sets it empty; `None` removes it so the case
 /// is truly unset regardless of the ambient environment). `RIGGER_NO_DASH` keeps the run's
-/// dashboard from starting under test.
+/// dashboard from starting under test. `XDG_STATE_HOME` is redirected to a per-call temp dir
+/// (spec 62, "couriers count as activity"): `result` now refreshes the machine-global instance
+/// registry too, so an unredirected call here would otherwise seed a phantom, since-deleted-
+/// tempdir entry into the operator's real `~/.local/state/rigger/instances`.
 fn run_bare_result(root: &Path, conn: Option<&str>) -> Output {
-    let mut cmd = Command::new(rigger_bin());
+    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
+    let mut cmd = common::rigger_courier();
     cmd.args(["result", "u/impl#0", "--error", "a self-report"])
         .current_dir(root)
         .env("RIGGER_NO_DASH", "1")
+        .env("XDG_STATE_HOME", state.path())
         .env_remove("KURRENTDB_CONN");
     if let Some(c) = conn {
         cmd.env("KURRENTDB_CONN", c);
@@ -183,7 +188,7 @@ fn an_empty_kurrentdb_conn_is_treated_as_unset_not_a_server_with_no_address() {
 /// truly unset regardless of the ambient environment); `RIGGER_NO_DASH` keeps the run's dashboard
 /// from starting under test.
 fn run_read(root: &Path, args: &[&str], conn: Option<&str>) -> Output {
-    let mut cmd = Command::new(rigger_bin());
+    let mut cmd = common::rigger_courier();
     cmd.args(args)
         .current_dir(root)
         .env("RIGGER_NO_DASH", "1")

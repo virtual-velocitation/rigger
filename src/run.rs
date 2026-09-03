@@ -316,7 +316,9 @@ fn record_rebase(store: &dyn EventStore, run: &str, old: &str, new: &str) -> Res
         .with_meta(META_RUN_ID, run)
         .with_meta(META_DEFINITION, new)
         .with_meta(META_DEFINITION_PRIOR, old);
-    store.append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&ev))?;
+    store
+        .append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&ev))?
+        .one(&format!("the definition re-pin of run {run}"))?;
     Ok(())
 }
 
@@ -453,7 +455,9 @@ pub fn start_fresh(
     let ev = started
         .to_event()
         .map_err(|e| Error::Backend(format!("serialize RunStarted: {e}")))?;
-    store.append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&ev))?;
+    store
+        .append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&ev))?
+        .one(&format!("the {TYPE_RUN_STARTED} of run {}", started.run))?;
     Ok(started.run)
 }
 
@@ -1031,6 +1035,41 @@ mod tests {
             effective_definition(current_run(&events)),
             "hash-B",
             "the current run's pin is the fresh boundary's, not run 1's"
+        );
+    }
+    /// A RUN BOUNDARY NOBODY CAN LOCATE IS NOT A BOUNDARY, and this module writes the two
+    /// events every later read of the log is partitioned by.
+    ///
+    /// Both writes used to hand their append report to `?;` and throw it away, which
+    /// compiled unchanged when the port stopped promising a position. A store that wrote
+    /// nothing then handed `ensure_started` a run id for a run the log does not contain,
+    /// and every later `current_run_id` / `current_run_base` / attribution read would
+    /// partition the stream against a boundary that was never recorded - silently, and for
+    /// the whole run. So both ask the same authority the other single-event seams ask.
+    #[test]
+    fn a_run_boundary_the_store_did_not_write_is_never_reported_as_started() {
+        let silent = crate::eventstore::SilentStore;
+
+        let err = start_fresh(&silent, &["build the thing".to_string()], "hash-A", "")
+            .expect_err("a run whose RunStarted was never written has not started");
+        let message = err.to_string();
+        assert!(
+            message.contains("nothing"),
+            "the failure says the store wrote nothing rather than handing back a run id \
+             for a boundary the log does not hold: {message}"
+        );
+        assert!(
+            message.contains(TYPE_RUN_STARTED),
+            "and names the event whose write was lost: {message}"
+        );
+
+        let err = record_rebase(&silent, "run-1", "hash-A", "hash-B")
+            .expect_err("a supersession nobody can locate has not superseded anything");
+        let message = err.to_string();
+        assert!(
+            message.contains("nothing") && message.contains("run-1"),
+            "the re-pin that was never recorded says so, and names the run whose definition \
+             would otherwise read as advanced: {message}"
         );
     }
 }

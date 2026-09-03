@@ -268,11 +268,24 @@ impl<'a> Server<'a> {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
+        // AUTHORITATIVE MODEL IDENTITY (spec 61 c10 round 2): the shim's runWorkflow
+        // reports the resolved model id it observed from the Agent SDK's own
+        // structured terminal metadata as `meta.resolved_model` - the SAME wire key
+        // the stepwise `rigger result --meta '{"resolved_model": ..}'` convention uses
+        // ([`spawn::META_RESOLVED_MODEL`]). Read it here and pass it straight through
+        // to the driver so it lands on `AgentResult::resolved_model` instead of being
+        // silently dropped; empty when the shim reported none (never guessed).
+        let resolved_model = args
+            .get("meta")
+            .and_then(|m| m.get(crate::spawn::META_RESOLVED_MODEL))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
         // An unknown / stale id means no spawn is waiting on this result. Report
         // it as invalid-params rather than swallowing it: silent success here
         // would leave the real spawn blocked forever (the shim thinks it
         // delivered a result it never did).
-        if self.driver.result(id, output, error) {
+        if self.driver.result(id, output, error, resolved_model) {
             // The served spawn is done; no later emit belongs to it (the next `rigger_next`
             // names the next spawn). Clear only when THIS spawn is the one being served, so a
             // stale/unknown-id result never unstamps the live spawn's emits.
@@ -386,7 +399,10 @@ impl<'a> Server<'a> {
                 .map_err(|e| ToolError::internal(e.to_string()))?
                 .wave;
             for w in &frontier {
-                let path = crate::liveness::marker_path(&self.scratch_root, &run_id, &w.id);
+                let Some(path) = crate::liveness::marker_path(&self.scratch_root, &run_id, &w.id)
+                else {
+                    continue;
+                };
                 if let Ok(age) = std::fs::metadata(&path)
                     .and_then(|md| md.modified())
                     .map(|mtime| now.duration_since(mtime).map(|d| d.as_secs()).unwrap_or(0))
@@ -426,7 +442,12 @@ const EMITTABLE_TYPES: [&str; 4] = [
     crate::conductor::TYPE_UNIT_PROPOSED,
 ];
 
-/// Returns the appended event's [`Position`], so a caller can report it.
+/// Returns the [`Position`] the store issued for the appended event, so a caller can
+/// report it - or the failure a store that wrote nothing has earned
+/// ([`crate::eventstore::Appended::one`]). The fold below is downstream of that position
+/// and unreachable without it: the graph's applied ledger is keyed BY position, so folding
+/// at a position the store never issued would mark that location applied forever and
+/// swallow the genuine event recorded there.
 pub fn emit_event(
     store: &dyn EventStore,
     stream: &str,
@@ -473,6 +494,7 @@ pub fn emit_event(
 
     let pos = store
         .append(stream, ExpectedRevision::Any, std::slice::from_ref(&event))
+        .and_then(|appended| appended.one(&format!("the {typ} on {stream:?}")))
         .map_err(|e| e.to_string())?;
     // Fold the appended event into the live graph (when wired), so a ReviewFinding
     // or DecisionMade an agent emits becomes retrievable through `graph_context` by
@@ -779,6 +801,83 @@ mod tests {
                 .tool_result(&json!({"id": sibling_id, "output": "done"}))
                 .unwrap();
         });
+    }
+
+    /// Reject-fix (spec 61 c10 round 2): the prior round's `meta.resolved_model` never
+    /// reached a real driver because `tool_result` dropped `args.meta` entirely and
+    /// `workflow::Driver::result` hardcoded `resolved_model: String::new()`. This drives
+    /// the REAL `mcpserver.rs::tool_result` (not a mock server, unlike shim.test.mjs's
+    /// coverage) exactly as a `rigger serve` / `rigger run --driver workflow` spawn does:
+    /// the conductor side calls `AgentDriver::spawn` and blocks on its `AgentResult`; the
+    /// shim side pulls the request via `rigger_next` and reports it via `rigger_result`
+    /// with `meta.resolved_model` set, precisely the shape `runWorkflow` in shim.mjs
+    /// sends. Proves the id lands on the `AgentResult` the conductor actually receives -
+    /// the production sink this criterion owns end to end, not a test double's mock.
+    #[test]
+    fn tool_result_meta_resolved_model_reaches_the_real_agent_result() {
+        use crate::conductor::{AgentDriver, AgentResult, SpawnOpts};
+        use crate::config::AgentDef;
+        use std::time::{Duration, Instant};
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+        let server = Server::new(&driver, &store, "run", &peers);
+
+        let spawn_id = "u/implementer#0";
+        let outcome: Mutex<Option<Result<AgentResult, crate::conductor::Error>>> = Mutex::new(None);
+
+        std::thread::scope(|s| {
+            // The conductor side: exactly what `run_single_stage` does - call
+            // `AgentDriver::spawn` and block until the shim reports a result.
+            s.spawn(|| {
+                let emit = |_: &str, _: Value| Ok(());
+                let r = driver.spawn(
+                    &AgentDef {
+                        id: "impl".into(),
+                        ..Default::default()
+                    },
+                    "implement it",
+                    &SpawnOpts {
+                        id: spawn_id.to_string(),
+                        ..Default::default()
+                    },
+                    &emit,
+                );
+                *outcome.lock().unwrap() = Some(r);
+            });
+
+            // The shim side: rigger_next (retry until queued) then rigger_result with
+            // meta.resolved_model, exactly the shape shim.mjs's runWorkflow builds when
+            // `resolvedModelFromUsage` observed exactly one authoritative model id.
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                let next = server.tool_next().unwrap();
+                if next["id"] == spawn_id {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "spawn was never queued");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            server
+                .tool_result(&json!({
+                    "id": spawn_id,
+                    "output": "done",
+                    "meta": {"resolved_model": "claude-opus-4-8-20260101"}
+                }))
+                .unwrap();
+        });
+
+        let result = outcome
+            .into_inner()
+            .unwrap()
+            .expect("the conductor's spawn() must have returned")
+            .expect("a successful rigger_result must not error the spawn");
+        assert_eq!(
+            result.resolved_model, "claude-opus-4-8-20260101",
+            "meta.resolved_model from the real tool_result call must reach the \
+             AgentResult the conductor receives from AgentDriver::spawn, not be dropped"
+        );
     }
 
     #[test]
@@ -1305,6 +1404,33 @@ mod tests {
         assert_eq!(
             resp["error"]["code"], -32602,
             "tools/call without params.name is invalid params: {resp}"
+        );
+    }
+    /// AN EMIT THE STORE DID NOT WRITE IS NOT AN EMIT. This is the channel every agent
+    /// records its decisions and findings on, and the whole point of recording them is that
+    /// a CONCURRENT agent reads them; a decision that never landed reads to its author as
+    /// recorded and is invisible to everyone else.
+    ///
+    /// The absence used to come back as `Ok(None)` - a success whose meaning each caller
+    /// decided for itself - so the seam asks the one authority instead. The graph fold is
+    /// downstream of that answer and is unreachable without a position, which is the
+    /// property that keeps the applied ledger from ever marking a location applied that the
+    /// store did not issue.
+    #[test]
+    fn an_emit_the_store_did_not_write_is_reported_as_lost_and_folds_nothing() {
+        let args = json!({
+            "type": crate::contextgraph::TYPE_DECISION_MADE,
+            "data": {"id": "d1", "summary": "a decision"},
+        });
+        let message = emit_event(&crate::eventstore::SilentStore, "run", None, &args)
+            .expect_err("a decision nobody can find was not emitted");
+        assert!(
+            message.contains("nothing"),
+            "the failure says the store wrote nothing: {message}"
+        );
+        assert!(
+            message.contains(crate::contextgraph::TYPE_DECISION_MADE),
+            "and names the event that was lost: {message}"
         );
     }
 }

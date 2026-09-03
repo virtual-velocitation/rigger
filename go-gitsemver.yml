@@ -1,0 +1,20 @@
+# Spec 74: the single config authority for go-gitsemver (github.com/MyCarrier-DevOps/
+# go-gitsemver), which build.rs invokes at compile time to derive `rigger version`
+# (see build/gitsemver.rs). rigger never reimplements the bump algorithm - this file is
+# the only place its behavior is configured.
+#
+# Mainline: the highest bump among the commits since the last tag is applied once, with
+# the commit count folded into build metadata (avoids version inflation from a run of
+# small commits). Commit-message conventions (Conventional Commits' feat:/fix:/feat!:,
+# and `+semver:` directives) are left at their defaults.
+mode: Mainline
+tag-prefix: v
+# The default fallback base (1.0.0) outranks any real 0.x tag because base selection
+# takes the maximum across strategies; 0.0.0 makes a discovered tag always win.
+base-version: 0.0.0
+# rigger-run is this project's mainline: no pre-release branch label on it.
+branches:
+  main:
+    regex: ^(main|master|rigger-run)$
+    is-mainline: true
+    tag: ""

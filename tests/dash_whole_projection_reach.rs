@@ -27,7 +27,7 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 
 use rigger::contextgraph::sqlite::Projector;
@@ -239,19 +239,21 @@ fn code_ingest_db(dir: &std::path::Path, identity: &str) -> String {
     path
 }
 
-/// Start `serve` on a FRESH ephemeral loopback port whose graph provider is the REAL whole-projection
-/// read - `Projector::open(db).whole()`, byte-for-byte what the production `dash_read_whole_graph`
-/// does - over a file-backed graph.db, while the polled state provider carries an EMPTY run-seeded
-/// graph (the never-built repo). Fetch `GET <path>` once and return the raw response, or `None` on the
-/// free-port handoff race (bind :0, learn the port, release, `serve` re-binds - a transient the caller
-/// retries). Production `rigger dash` binds one stable port once and is never exposed to this race.
+/// Start the dash server on a FRESH ephemeral loopback port whose graph provider is the REAL
+/// whole-projection read - `Projector::open(db).whole()`, byte-for-byte what the production
+/// `dash_read_whole_graph` does - over a file-backed graph.db, while the polled state provider
+/// carries an EMPTY run-seeded graph (the never-built repo). Fetch `GET <path>` once and return the
+/// raw response, or `None` on a genuine socket-level failure.
+///
+/// The listener this attempt binds is HANDED to `serve_on`, never dropped and re-bound. Releasing it
+/// first would leave the port free for the whole handoff window, so a sibling test's `bind(0)` in
+/// this same binary could be handed it; one `serve` then wins the re-bind and the loser's client
+/// CONNECTS SUCCESSFULLY to it and reads the OTHER test's fixture - a content failure no
+/// connect-error retry can see, reddening only on a loaded machine. Owning the port from `bind`
+/// through `serve_on` closes that window by construction.
 fn try_fetch_whole_served(graph_db: &str, identity: &str, path: &str) -> Option<String> {
-    let port = TcpListener::bind(("127.0.0.1", 0))
-        .ok()?
-        .local_addr()
-        .ok()?
-        .port();
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let listener = TcpListener::bind(("127.0.0.1", 0)).ok()?;
+    let addr = listener.local_addr().ok()?;
 
     // The SEPARATE lazy graph provider (spec 45, criteria 1+2): opens the projection and reads the
     // WHOLE graph on a graph request - the exact read production wires into `/api/graph`.
@@ -280,8 +282,8 @@ fn try_fetch_whole_served(graph_db: &str, identity: &str, path: &str) -> Option<
     let instances_provider = Vec::new;
 
     std::thread::spawn(move || {
-        let _ = dash::serve(
-            addr,
+        let _ = dash::serve_on(
+            listener,
             provider,
             graph_provider,
             calls_provider,

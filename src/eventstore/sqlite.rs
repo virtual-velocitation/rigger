@@ -4,16 +4,18 @@
 //! revision)` index give optimistic concurrency; `$all` is `ORDER BY position`.
 
 use std::collections::BTreeMap;
+use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rusqlite::{params, Connection, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 use super::{
-    Direction, Error, Event, EventStore, ExpectedRevision, Filter, Position, Revision,
-    Subscription, NO_STREAM,
+    Appended, ContentIdentity, Direction, Error, Event, EventStore, ExpectedRevision, Filter,
+    Position, Revision, Subscription, GUARD_DEGRADED_NO_INDEX, GUARD_DEGRADED_UNDETERMINED,
+    META_GUARD_DEGRADED, NO_STREAM,
 };
 
 const SCHEMA: &str = "
@@ -36,10 +38,119 @@ CREATE INDEX IF NOT EXISTS idx_events_stream ON events(stream);
 
 const COLS: &str = "position, stream, type, id, data, meta, valid_from, recorded_at, revision";
 
+/// The stem every content-key index name is built on. The index's DEFINITION carries the
+/// configured metadata key (that is what `json_extract` reads), so its NAME carries it
+/// too: a second policy configured with a different key gets its OWN artifact instead of
+/// silently inheriting - and degrading against - the first policy's. See
+/// [`Store::content_key_index_name`].
+const CONTENT_KEY_INDEX_STEM: &str = "idx_events_content_key";
+
+/// A hard ceiling on the number of index seeks ONE latest-generation probe may spend.
+///
+/// The walk below advances one CONTENT GENERATION per step, so this bounds the probe by
+/// the number of generations a single subject has recorded, never by the size of the log
+/// or of that subject's history in events. It exists so "bounded" is a property of the
+/// CODE rather than of the data: a subject whose recorded history somehow exceeds it
+/// leaves the probe undetermined, and an undetermined probe does NOT suppress - it
+/// appends, which is the fail-safe direction.
+const LATEST_GENERATION_STEPS: usize = 1024;
+
 /// Store is the SQLite-backed EventStore. The connection is shared (Arc) so a
 /// subscription's polling thread reads the same database the writers append to.
 pub struct Store {
     conn: Arc<Mutex<Connection>>,
+    /// The configured content-identity policy and the SQL rendered from it, or `None`
+    /// for a store with no guard (which appends everything through).
+    guard: Option<Guard>,
+}
+
+/// The configured guard: the policy, the index its probes require, the probe
+/// statements, and whether that index is THERE - all rendered from the policy ONCE, at
+/// configuration time, so the text the query planner sees can never drift from the
+/// indexed expression (they are built from the same key expression).
+///
+/// The readiness latch lives HERE, beside the policy it is a fact about, and not on the
+/// [`Store`]. A latch on the store is a second field that can disagree with the first:
+/// reconfiguring a handle replaces the policy, and a latch left behind then reports
+/// "the index is ready" about an index that policy never built - so the guard believes
+/// it is seeking an index while every probe walks the table, under the append's write
+/// lock. Held on the guard, the latch is created with the policy and dies with it:
+/// there is no second value to reset and nothing to keep in step.
+struct Guard {
+    identity: ContentIdentity,
+    /// The name of the index the probes seek, derived from the configured metadata key.
+    index_name: String,
+    /// The exact `CREATE INDEX` text this policy requires, spelled as SQLite STORES it
+    /// in `sqlite_master` (no `IF NOT EXISTS`), so a committed definition can be
+    /// compared to it verbatim.
+    index_ddl: String,
+    /// `SELECT EXISTS(...)`: is this exact content key already recorded, on an event
+    /// of a covered type?
+    recorded_sql: String,
+    /// ONE step of the generation walk: the first covered content key at or after a lower
+    /// bound and below an upper bound, TOGETHER WITH when that key was last recorded.
+    /// Both halves come from one index seek, and from ONE type test - so the type gate
+    /// cannot be present for the candidate and absent for its date.
+    step_sql: String,
+    /// Whether THIS policy's content-key index is COMMITTED, with the definition this
+    /// policy renders. Latched true only after that definition has been read back out
+    /// of `sqlite_master` in its own statement, so a build that was rolled back can
+    /// never leave the handle believing the index is there: an unlatched guard
+    /// re-checks (and re-attempts) on the next append. While it is false the guard
+    /// suppresses NOTHING - see [`Store::redundant_flags`].
+    index_ready: AtomicBool,
+}
+
+/// Whether the guard is in a position to JUDGE one particular append - decided BEFORE
+/// the append's write transaction opens, because settling it is what may have to build
+/// an index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Readiness {
+    /// Nothing to judge: no policy configured, or nothing in this batch that the
+    /// configured policy covers. Not a degradation - the guard was not asked.
+    Idle,
+    /// The content-key index this policy needs is committed, so every probe is a seek.
+    Indexed,
+    /// The guard COVERS something in this batch and has no usable index. It suppresses
+    /// nothing (a probe without the index is a table walk under the write lock, which
+    /// costs more than the duplication it removes), and it says so: see
+    /// [`GUARD_DEGRADED_NO_INDEX`].
+    Unindexed,
+}
+
+/// What a bounded latest-generation walk ESTABLISHED about one subject.
+///
+/// `Absent` and `Undetermined` are deliberately different values even though neither
+/// suppresses. `Absent` is an answer - this subject has recorded no generation - and it
+/// is the normal state of every subject the log has not seen. `Undetermined` is the
+/// walk admitting it ran out of budget before it could answer, which is the guard
+/// failing to do its job, and a guard that fails silently is the failure mode this
+/// layer has already been rebuilt for once. Keeping them apart is what lets the append
+/// record the second and stay quiet about the first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Latest {
+    /// The generation this subject is currently at.
+    At(String),
+    /// The subject has no recorded generation on this stream.
+    Absent,
+    /// The walk exceeded its step budget, so the current generation is not known.
+    Undetermined,
+}
+
+/// One append's suppression verdicts, and what the guard COULD NOT DO while taking them.
+///
+/// The two travel together because they are decided together and are both facts about
+/// the same append: the flags say which events the store may skip, and `degraded` says
+/// whether those flags were taken by a guard that was actually able to judge. A caller
+/// cannot get one without the other, which is what keeps a degradation from being
+/// dropped on the floor between the probe and the write.
+struct Verdicts {
+    /// One verdict per handed event, in input order.
+    redundant: Vec<bool>,
+    /// Why the guard was not judging, when it was not - one of
+    /// [`GUARD_DEGRADED_NO_INDEX`] / [`GUARD_DEGRADED_UNDETERMINED`], stamped under
+    /// [`META_GUARD_DEGRADED`] onto the covered events this append writes.
+    degraded: Option<&'static str>,
 }
 
 impl Store {
@@ -49,7 +160,495 @@ impl Store {
         conn.execute_batch(SCHEMA).map_err(be)?;
         Ok(Store {
             conn: Arc::new(Mutex::new(conn)),
+            guard: None,
         })
+    }
+
+    /// Configure the content-identity guard: appending an event of a covered type
+    /// whose content key is already recorded AS ITS SUBJECT'S LATEST GENERATION
+    /// becomes a storage no-op.
+    ///
+    /// This is defense in depth UNDER the ingest sink's own project-scoped dedup, so a
+    /// regression above the port can never re-bloat the log, and it applies the SAME
+    /// latest-per-subject test the sink does - never a wider ever-recorded one. An
+    /// ever-recorded test would swallow a REVERT: content returned to a generation the
+    /// subject has since moved past is a CHANGE, its re-append is not redundant, and
+    /// suppressing it would strand the projection on the superseded generation with no
+    /// recovery, because re-folding the log would replay the same suppression.
+    ///
+    /// The recorded state this tests is THE LOG'S, asked of the content keys the log
+    /// ALREADY carries: no new event type, no new metadata, no backfill, and a fresh
+    /// process's first append gets the same answer as a long-lived one's thousandth.
+    /// (An in-memory seen-set would answer neither: the duplication this exists to
+    /// stop is cross-PROCESS.)
+    ///
+    /// Configuring touches no connection and issues no statement - it is a pure value
+    /// change - so a read-only or maintenance path may construct through here without
+    /// ever writing the store it opened. The index the probes seek is created lazily, on
+    /// the first append that could actually be suppressed, and until it is COMMITTED the
+    /// guard suppresses nothing: every probe is an index seek by construction, and a
+    /// guard that fell back to walking the table would cost more, under the write lock,
+    /// than the duplication it removes.
+    pub fn with_content_identity(mut self, identity: ContentIdentity) -> Self {
+        let key = key_expr(identity.meta_key());
+        let types = type_list(identity.types());
+        let index_name = Self::content_key_index_name(identity.meta_key());
+        self.guard = Some(Guard {
+            index_ddl: Self::content_key_index_ddl(&index_name, identity.meta_key()),
+            index_name,
+            recorded_sql: format!(
+                "SELECT EXISTS(SELECT 1 FROM events \
+                 WHERE {key} = ?1 AND stream = ?2 AND type IN ({types}))"
+            ),
+            step_sql: format!(
+                "SELECT {key}, MAX(position) FROM events \
+                 WHERE stream = ?1 AND {key} >= ?2 AND {key} < ?3 AND type IN ({types}) \
+                 GROUP BY {key} ORDER BY {key} ASC LIMIT 1"
+            ),
+            identity,
+            // A NEW policy starts with a NEW latch, unlatched. This is the whole
+            // reconfiguration story: there is no flag left over from the policy this
+            // one replaces, so nothing has to be reset and nothing can be forgotten.
+            index_ready: AtomicBool::new(false),
+        });
+        self
+    }
+
+    /// The name of the content-key index a policy configured with `meta_key` requires.
+    ///
+    /// The name CARRIES the metadata key, because the index's definition does: the
+    /// indexed expression is `json_extract(meta, '$."<meta_key>"')`, so an index built
+    /// for one policy answers no question at all for a policy configured with another
+    /// key. A fixed name would let the second policy silently inherit the first's
+    /// artifact - every probe then falls off the index and walks the table, which is
+    /// exactly the silent degradation this guard exists to end. A digest rides along so
+    /// two keys that sanitize to the same identifier still get distinct artifacts.
+    fn content_key_index_name(meta_key: &str) -> String {
+        let sanitized: String = meta_key
+            .chars()
+            .take(24)
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect();
+        format!(
+            "{CONTENT_KEY_INDEX_STEM}_{sanitized}_{:016x}",
+            fnv1a64(meta_key)
+        )
+    }
+
+    /// The DDL for the content-key index `name` under a policy keyed on `meta_key`.
+    ///
+    /// WHAT THIS ARTIFACT COSTS, stated because this store exists to BOUND the log. It
+    /// carries a content key - a path-and-hash string, not a small integer - for every
+    /// row it indexes, so it is a real addition to the store's size. It is worth that
+    /// only against what it removes: the duplication it stops is UNBOUNDED (the whole
+    /// derived index re-appended per run, measured at 39.5x), so a bounded cost buys a
+    /// growth rate. On a log that never receives a duplicate append it is pure
+    /// overhead, which is why it is built LAZILY - a store nobody appends covered
+    /// events to never pays for it at all - and why RECLAIMING it is a named
+    /// responsibility rather than an accident: see
+    /// [`Store::ensure_content_key_index`], which sweeps every content-key index that
+    /// is not the configured policy's.
+    ///
+    /// Spelled WITHOUT `IF NOT EXISTS` on purpose: SQLite strips that clause when it
+    /// stores a definition in `sqlite_master`, so omitting it makes this text exactly
+    /// what a committed index reads back as - which is what lets
+    /// [`Store::ensure_content_key_index`] compare the COMMITTED DEFINITION rather than
+    /// trust a name.
+    ///
+    /// `(stream, <content key>, position)` in that order, because that is the shape the
+    /// probes ask for: the stream is an equality (the project boundary), the content key
+    /// is an equality for the recorded probe and a half-open RANGE for the walk's step,
+    /// and the position rides along so a key's last recording is read off the index
+    /// itself rather than out of the table.
+    fn content_key_index_ddl(name: &str, meta_key: &str) -> String {
+        format!(
+            "CREATE INDEX {name} ON events(stream, {}, position)",
+            key_expr(meta_key)
+        )
+    }
+
+    /// Whether the guard's probes have the index they require, building it if they do
+    /// not. Returns `false` when the store must NOT suppress.
+    ///
+    /// Three properties, each of them load-bearing:
+    ///
+    /// 1. **The gate is the committed DEFINITION, never a name.** An index built for a
+    ///    different metadata key, or a half-written one, satisfies a name check and then
+    ///    degrades every probe into a table walk. So the definition is read back out of
+    ///    `sqlite_master` and compared verbatim, and a mismatch is REBUILT (dropped and
+    ///    recreated) rather than accepted.
+    /// 2. **Readiness is only ever latched from a COMMITTED read.** The flag is set after
+    ///    the build's transaction has ended and the definition has been re-read - never
+    ///    on the way in - so a build that rolls back (a lock timeout, a full disk) leaves
+    ///    the handle knowing it has no index instead of believing forever that it has one.
+    /// 3. **The build takes its OWN transaction, before the append's.** Creating this
+    ///    index over an established log is a large write; running it inside the append's
+    ///    `BEGIN IMMEDIATE` would add its whole duration to a window every other process
+    ///    is queued behind, on top of the append itself. Its own transaction keeps the
+    ///    append's write window the size of the append.
+    /// 4. **The build is IDEMPOTENT UNDER THE LOCK, and it reclaims what it replaces.**
+    ///    Everything above this line is decided outside the write lock, so on a cold
+    ///    store every handle that starts before the first one commits reaches the build
+    ///    with the same verdict. Re-reading the committed definition once the lock is
+    ///    held turns k racing rebuilds of a multi-hundred-megabyte artifact into one
+    ///    build and k-1 no-ops - see [`Store::build_content_key_index`], which is also
+    ///    where an index left behind by a policy that is no longer configured is
+    ///    dropped.
+    ///
+    /// It is reached only from an append that carries a suppressible event, so a store
+    /// that is only ever read, or only ever written with uncovered types, never builds it.
+    fn ensure_content_key_index(&self, conn: &mut Connection, guard: &Guard) -> bool {
+        if guard.index_ready.load(Ordering::SeqCst) {
+            return true;
+        }
+        if committed_index_ddl(conn, &guard.index_name).as_deref() == Some(guard.index_ddl.as_str())
+            && stale_content_key_indexes(conn, &guard.index_name).is_empty()
+        {
+            guard.index_ready.store(true, Ordering::SeqCst);
+            return true;
+        }
+        self.build_content_key_index(conn, guard);
+        let ready = committed_index_ddl(conn, &guard.index_name).as_deref()
+            == Some(guard.index_ddl.as_str());
+        if ready {
+            guard.index_ready.store(true, Ordering::SeqCst);
+        }
+        ready
+    }
+
+    /// Build this policy's content-key index, and drop every content-key index that is
+    /// not it, in ONE write transaction.
+    ///
+    /// THE FIRST THING IT DOES UNDER THE LOCK IS LOOK AGAIN. The decision to build was
+    /// taken outside the write lock, which is the only place it could have been taken -
+    /// and on a cold store that means every handle that starts before the first builder
+    /// COMMITS arrives here having seen no index. Without this re-read each of them
+    /// drops and recreates the artifact the previous one just committed, serially,
+    /// holding the exclusive write lock for the whole build: with four cold handles that
+    /// is four builds and seconds of lock against a five-second busy timeout, and every
+    /// bystander process appending an ordinary event in that window - a worker's
+    /// self-report, a courier's death record - fails with a lock error rather than
+    /// waiting. One re-read collapses that to a single build; the others find their work
+    /// already done and commit nothing. This is the SUCCESS path, not a misuse path: it
+    /// is what a cold store with more than one appender does.
+    ///
+    /// THE SWEEP is the same transaction's other half. The index's NAME carries the
+    /// policy's metadata key, so a store reconfigured onto a different key mints a
+    /// different artifact - and the previous one would otherwise stay committed forever,
+    /// answering no question anyone asks while still being maintained on every single
+    /// insert. Whoever builds the live index is the one process that knows which
+    /// artifacts are dead, so reclaiming them is its job and nobody else's.
+    ///
+    /// The sweep rests on ONE policy per store at a time, which is a property of the
+    /// design and not a convention: the metadata key derived facts carry is a code-owned
+    /// constant minted in one place, so "this project's content keys" is a single answer
+    /// and a second, differently-keyed policy over the same database is not a
+    /// configuration this system can produce.
+    ///
+    /// The build's own `Result` is deliberately NOT the verdict - a statement that ran is
+    /// not an index, and a commit can still fail - so it is discarded here and the
+    /// caller reads the committed state instead.
+    fn build_content_key_index(&self, conn: &mut Connection, guard: &Guard) {
+        let _ = (|| -> rusqlite::Result<()> {
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let mut ddl = String::new();
+            for name in stale_content_key_indexes(&tx, &guard.index_name) {
+                ddl.push_str(&format!("DROP INDEX IF EXISTS {name};\n"));
+            }
+            if committed_index_ddl(&tx, &guard.index_name).as_deref()
+                != Some(guard.index_ddl.as_str())
+            {
+                ddl.push_str(&format!(
+                    "DROP INDEX IF EXISTS {};\n{};",
+                    guard.index_name, guard.index_ddl
+                ));
+            }
+            if ddl.is_empty() {
+                // Another handle built it while this one queued for the lock. Nothing to
+                // write, so nothing is written: the transaction ends having touched no
+                // page, and the artifact is not rebuilt.
+                return Ok(());
+            }
+            tx.execute_batch(&ddl)?;
+            tx.commit()
+        })();
+    }
+
+    /// Whether `events` carries anything this store's guard could suppress: an event of a
+    /// covered type that actually carries a content key. A pure in-memory test over the
+    /// batch - it issues no statement - so an append with nothing suppressible in it never
+    /// touches the index at all.
+    fn has_suppressible(guard: &Guard, events: &[Event]) -> bool {
+        events.iter().any(|e| {
+            guard.identity.covers(&e.type_) && e.meta.contains_key(guard.identity.meta_key())
+        })
+    }
+
+    /// Which of `events` are redundant - one verdict per event, in input order.
+    ///
+    /// Every verdict is taken against the state the log was in when the append STARTED,
+    /// which is why they are all decided before any row is inserted: an event written
+    /// earlier in the same batch would otherwise become the subject's "latest recorded
+    /// generation" and make its own siblings look redundant, so a reverted file would
+    /// re-append its first event and have the rest swallowed - the exact half-landed
+    /// batch this guard exists to prevent.
+    ///
+    /// The order of the test is load-bearing. TYPE first: an event of any other type
+    /// never reaches the key comparison, so no domain event can be dropped here however
+    /// its metadata is spelled. Then the WHOLE key, split by the configured policy: a
+    /// key that names no generation is passed over and appends. Only then the probes.
+    fn redundant_flags(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        stream: &str,
+        events: &[Event],
+        readiness: Readiness,
+    ) -> Result<Verdicts, Error> {
+        let judged_nothing = |degraded| Verdicts {
+            redundant: vec![false; events.len()],
+            degraded,
+        };
+        let Some(guard) = &self.guard else {
+            return Ok(judged_nothing(None));
+        };
+        match readiness {
+            Readiness::Idle => return Ok(judged_nothing(None)),
+            // NO USABLE INDEX, NO SUPPRESSION. Without it every probe becomes a walk of
+            // the table, and a guard that costs an unbounded walk per append is worse
+            // than the duplication it removes - so the store appends, which is the
+            // fail-safe direction this whole layer is built on (it can only ever write
+            // MORE, never drop). It is also RECORDED: the events this append writes
+            // carry the reason, because a defense that has switched itself off in
+            // silence is one nobody discovers until the log is huge again.
+            Readiness::Unindexed => return Ok(judged_nothing(Some(GUARD_DEGRADED_NO_INDEX))),
+            Readiness::Indexed => {}
+        }
+        // One latest-generation lookup per DISTINCT subject in the batch, not per event:
+        // a file's whole batch shares one subject.
+        let mut current: std::collections::HashMap<String, Latest> =
+            std::collections::HashMap::new();
+        let mut degraded = None;
+        let mut redundant = Vec::with_capacity(events.len());
+        for event in events {
+            redundant.push(self.is_redundant(
+                tx,
+                guard,
+                stream,
+                event,
+                &mut current,
+                &mut degraded,
+            )?);
+        }
+        Ok(Verdicts {
+            redundant,
+            degraded,
+        })
+    }
+
+    /// Whether appending `event` would be redundant: its type carries content identity,
+    /// its content key is already recorded, and that key is still ITS SUBJECT'S LATEST
+    /// recorded generation. `current` memoizes the latest generation per subject for the
+    /// duration of one append.
+    fn is_redundant(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        guard: &Guard,
+        stream: &str,
+        event: &Event,
+        current: &mut std::collections::HashMap<String, Latest>,
+        degraded: &mut Option<&'static str>,
+    ) -> Result<bool, Error> {
+        if !guard.identity.covers(&event.type_) {
+            return Ok(false);
+        }
+        let Some(key) = event.meta.get(guard.identity.meta_key()) else {
+            return Ok(false);
+        };
+        let Some((subject, generation)) = guard.identity.subject_of(key) else {
+            return Ok(false);
+        };
+
+        let recorded: i64 = tx
+            .query_row(&guard.recorded_sql, params![key, stream], |r| r.get(0))
+            .map_err(be)?;
+        if recorded == 0 {
+            return Ok(false);
+        }
+        if !current.contains_key(subject) {
+            let latest = self.latest_generation(tx, guard, stream, subject)?;
+            current.insert(subject.to_string(), latest);
+        }
+        Ok(match current.get(subject) {
+            Some(Latest::At(latest)) => latest == generation,
+            Some(Latest::Undetermined) => {
+                // The walk could not establish this subject's current generation, so
+                // nothing is suppressed against it - and the append RECORDS that it was
+                // written by a guard which was not judging.
+                *degraded = Some(GUARD_DEGRADED_UNDETERMINED);
+                false
+            }
+            _ => false,
+        })
+    }
+
+    /// The content generation a subject is CURRENTLY at: the one named by the
+    /// latest-recorded covered key whose subject is exactly `subject`, ON THE TARGET
+    /// STREAM.
+    ///
+    /// Stream scoping is what makes the guard project-scoped by construction. One
+    /// backend can hold many projects (the namespacing decorator gives each its own
+    /// stream prefix), and a content key names a RELATIVE path, so two projects that
+    /// share a file path with identical content mint the IDENTICAL key. An unscoped
+    /// probe would read the second project's genuinely-new fact as already recorded and
+    /// drop it - a non-redundant append silently lost.
+    ///
+    /// It WALKS GENERATIONS, NOT EVENTS. Every key naming this subject begins with the
+    /// subject, so the subject's whole history is one half-open range on the content-key
+    /// index - but that range is the subject's every event of every generation (one
+    /// file's own range on this project's log measures in the hundreds of thousands of
+    /// rows, and it grows with every content change), and ordering it by position needs
+    /// all of it. So the range is never ordered. It is stepped:
+    ///
+    /// 1. seek the FIRST covered key at or after a lower bound, and read off the same
+    ///    seek when that key was last recorded (`GROUP BY` on the indexed expression);
+    /// 2. ask the POLICY to split it - which tells us its subject and its generation;
+    /// 3. move the lower bound past that key's WHOLE generation and repeat.
+    ///
+    /// The cost is therefore ONE index seek per recorded GENERATION of this one subject -
+    /// the same asymptote the deduplicated log itself has, since a new generation is
+    /// exactly what a genuine content change appends - and [`LATEST_GENERATION_STEPS`]
+    /// caps even that. A batch's thousands of sibling keys cost one step between them,
+    /// not one each.
+    ///
+    /// A generation is DATED BY ITS LEADING KEY, which is what makes the walk possible at
+    /// all: dating it by the greatest position over all of its keys would have to touch
+    /// every one of them, which is the unbounded range this walk exists to avoid. That
+    /// dating is exact for every batch this system records, because the only writer of a
+    /// PARTIAL generation is this very guard - it writes the new events of a batch whose
+    /// siblings are already recorded - and it does that ONLY while that generation is
+    /// already the subject's latest, which no dating can change. A generation the file
+    /// has moved past is never appended partially: the guard suppresses none of it.
+    ///
+    /// Stepping past a generation uses the byte RANGES the POLICY located the parts at,
+    /// never a separator this module knows: [`ContentIdentity::split_of`] answers WHERE
+    /// in the key each part lies, so the span to skip is arithmetic on those offsets
+    /// (see [`generation_span`], which also explains why the skip has to reach one
+    /// character PAST the generation to be sound). The store still parses no key format
+    /// of its own.
+    ///
+    /// Candidates are filtered by asking the policy for each one's subject, because a
+    /// prefix range is a superset: a file whose path itself contains the generation
+    /// separator (`vendor/pkg@1.2.3/a.rs` beside a file named `vendor/pkg`) sits inside
+    /// the shorter subject's range while belonging to a different subject entirely, and
+    /// letting it answer would let one file's generation retire another's. A foreign
+    /// subject is skipped WHOLE for the same reason a generation is: by its own range.
+    ///
+    /// Answers [`Latest::Absent`] for a subject with no recorded generation and
+    /// [`Latest::Undetermined`] for a walk that ran out of steps. Neither suppresses -
+    /// but only the second is a degradation, and telling them apart is what lets the
+    /// append record it.
+    fn latest_generation(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        guard: &Guard,
+        stream: &str,
+        subject: &str,
+    ) -> Result<Latest, Error> {
+        self.latest_generation_within(tx, guard, stream, subject, LATEST_GENERATION_STEPS)
+    }
+
+    /// [`Store::latest_generation`] with the step budget given explicitly, so the bound
+    /// itself is drivable: a walk handed fewer steps than the subject has generations
+    /// must answer [`Latest::Undetermined`], never the best generation it happened to
+    /// reach.
+    fn latest_generation_within(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        guard: &Guard,
+        stream: &str,
+        subject: &str,
+        steps: usize,
+    ) -> Result<Latest, Error> {
+        let end = prefix_upper_bound(subject);
+        let mut step = tx.prepare_cached(&guard.step_sql).map_err(be)?;
+        let mut lo = subject.to_string();
+        let mut latest: Option<(Position, String)> = None;
+        let settled = |latest: Option<(Position, String)>| match latest {
+            Some((_, generation)) => Latest::At(generation),
+            None => Latest::Absent,
+        };
+        for _ in 0..steps {
+            if lo >= end {
+                return Ok(settled(latest));
+            }
+            let found: Option<(String, Option<i64>)> = step
+                .query_row(params![stream, &lo, &end], |r| Ok((r.get(0)?, r.get(1)?)))
+                .optional()
+                .map_err(be)?;
+            let Some((key, at)) = found else {
+                return Ok(settled(latest));
+            };
+            // The next bound, in three preferences: past this key's whole generation when
+            // the policy named one, past a FOREIGN subject's whole range when the key
+            // belongs to another subject nested in this one's, and otherwise past just
+            // this key. Each is strictly greater than `key`, so the walk always advances.
+            let mut bound = successor(&key);
+            if let Some((candidate, generation)) = guard.identity.split_of(&key) {
+                // A validated split's subject STARTS the key, and this key already begins
+                // with `subject` (it came out of `subject`'s own range) - so a candidate
+                // longer than `subject` is a subject NESTED inside it, with no further
+                // test needed.
+                let candidate = &key[candidate];
+                if candidate == subject {
+                    if let Some(span) = generation_span(&key, &generation) {
+                        bound = bound.max(prefix_upper_bound(&key[..span]));
+                    }
+                    if let Some(at) = at {
+                        let at = at as Position;
+                        if latest.as_ref().is_none_or(|(seen, _)| at > *seen) {
+                            latest = Some((at, key[generation].to_string()));
+                        }
+                    }
+                } else if candidate.len() > subject.len() {
+                    bound = bound.max(prefix_upper_bound(candidate));
+                }
+            }
+            lo = bound;
+        }
+        // Out of steps: the subject's latest generation is UNDETERMINED, and an
+        // undetermined probe never suppresses.
+        Ok(Latest::Undetermined)
+    }
+
+    /// The metadata this store RECORDS for `event` - the caller's own, verbatim, except
+    /// when the guard was not judging while this append ran.
+    ///
+    /// A guard that has stopped defending has to leave a trace, and the log is the only
+    /// durable place it has: the degradation is invisible from the outside (an append
+    /// that suppresses nothing looks exactly like an append with nothing to suppress),
+    /// and the symptom shows up as a log growing again, days later, in another process.
+    /// So the reason rides as ONE extra metadata pair - no new event type, no new
+    /// serialized form, nothing to backfill - on the events this append was already
+    /// writing, and any read of the store surfaces it.
+    ///
+    /// It is stamped ONLY on events of a type the policy COVERS. A domain event is never
+    /// rewritten by a store that merely happened to be unhealthy while it landed: the
+    /// derived-index events this rides on are the guard's own subject matter, and their
+    /// metadata is the natural place for a fact about how they were admitted.
+    fn recorded_meta(&self, event: &Event, degraded: Option<&'static str>) -> String {
+        let Some(reason) = degraded else {
+            return meta_json(&event.meta);
+        };
+        let covered = self
+            .guard
+            .as_ref()
+            .is_some_and(|g| g.identity.covers(&event.type_));
+        if !covered {
+            return meta_json(&event.meta);
+        }
+        let mut meta = event.meta.clone();
+        meta.insert(META_GUARD_DEGRADED.to_string(), reason.to_string());
+        meta_json(&meta)
     }
 
     /// Whether any stream whose name starts with `prefix` holds an event. An EXACT
@@ -99,10 +698,771 @@ impl Store {
         tx.commit().map_err(be)?;
         Ok(renamed as usize)
     }
+
+    /// Prune the DUPLICATION an already-bloated log accumulated in its derived index, and reclaim
+    /// the disk it held: for each type `identity` covers, keep the LATEST event per distinct
+    /// content key within each stream under `stream_prefix`, carry that key's earliest valid-time
+    /// onto the recording it keeps, delete every earlier recording, then `VACUUM` so the file
+    /// actually shrinks.
+    ///
+    /// This is the COMPACTION half of spec 60 - the supported way to shed duplication a store
+    /// accreted BEFORE the ingest dedup existed. The dedup above the port stops new duplication;
+    /// this removes the pile already on disk. Deleting rows and reclaiming a file is a mechanic of
+    /// the embedded store, so it lives here rather than on the port: a backend that cannot do it
+    /// says so to the operator instead of silently reporting a prune that did not happen.
+    ///
+    /// It takes the SAME [`ContentIdentity`] policy value the guard above is configured with,
+    /// rather than a metadata-key string plus a type list plus a carry list: the policy already
+    /// exists as one injected value, and re-spelling its fields as positional parameters is a
+    /// second parallel expression of one rule that can be passed in the wrong order and can drift
+    /// a call site at a time. The valid-time partition property 2 rests on is part of that value
+    /// ([`ContentIdentity::with_reasserting_types`]) for exactly that reason, and it is CHECKED
+    /// here before a single row is read, because it is the one input to this function that can
+    /// corrupt the projection while leaving every row looking intact.
+    ///
+    /// Four properties, each load-bearing:
+    ///
+    /// 1. **Per KEY, not per subject.** A content key names a file AND its content generation, so
+    ///    a superseded generation is a DISTINCT key whose latest recording survives. The
+    ///    justification is not that some reader re-reads superseded generations - the sink rule
+    ///    deliberately seeds from the LATEST generation only, and says so. It is that per-key is
+    ///    the FAIL-SAFE direction, stated as three properties rather than as a belief about a
+    ///    consumer: it deletes a strict SUBSET of what a per-subject rule would delete; it leaves
+    ///    the per-key `MAX(position)` byte-identical, because only recordings BEHIND a key's
+    ///    survivor are eligible; and its unit of redundancy is exactly the ingest dedup's - the
+    ///    whole `<prefix>/<file>@<hash>#<i>` key - so the prune can never call redundant anything
+    ///    the layer above it would have re-emitted. A per-subject rule would have to decide which
+    ///    of a subject's generations is dead, which is a judgement this store has no standing to
+    ///    make; per-key makes none.
+    /// 2. **A RE-ASSERTED key's valid-time is CARRIED, not dropped.** A projection that
+    ///    re-asserts a fact in place keeps its EARLIEST valid-time ("it has held since it first
+    ///    became true"), so deleting that key's earliest recording would silently re-date the
+    ///    fact to whichever recording survived - and for the design-intent edge class the date IS
+    ///    the value. The policy's own declaration ([`ContentIdentity::reasserts`]) names the types
+    ///    this is true of; each of their surviving rows takes its group's `MIN(valid_from)` before
+    ///    the deletes run. Because a minimum is
+    ///    associative and every deleted row's valid-time is at or above the minimum retained on
+    ///    its survivor, the compacted log then yields exactly the valid-times the whole log
+    ///    yields. A type NOT named here is one whose batch SUPERSEDES the subject's prior
+    ///    assertions, so the surviving (latest) recording's own valid-time is already the one a
+    ///    fold arrives at, and carrying an earlier one onto it would MOVE the graph rather than
+    ///    preserve it. WHICH types are which is not this store's knowledge to hold - it is a fact
+    ///    about the fold, so it arrives as data (see `contextgraph::refold_supersedes_prior_edges`
+    ///    and `ingest::reasserted_derived_types`, where the partition is derived once).
+    ///
+    ///    THERE IS NO SAFE DEFAULT FOR AN UNDECLARED PARTITION, so this REFUSES rather than
+    ///    picking one. Treating an undeclared policy as "nothing re-asserts" would not be the
+    ///    fail-safe direction: the deletes below run over every covered type either way, so an
+    ///    unnamed re-asserting type would have its earliest recordings deleted with no carry and
+    ///    every one of its facts silently re-dated - the exact corruption this property exists to
+    ///    prevent. The opposite default fails the other way, dragging a superseded fact back to a
+    ///    date its fold retired. A policy that never declared the partition, or that declares a
+    ///    type it does not cover, is therefore an [`Error::Backend`] before any row is read.
+    ///    Declaring an EMPTY list is a different thing and is honored: it is a caller stating that
+    ///    none of its types re-assert.
+    /// 3. **Nothing else is touched.** Only the types `identity` covers are eligible, and within
+    ///    them only a row whose key is recorded again LATER in the same stream. A row with no key
+    ///    at all names no content generation and is never provably redundant, so it is left alone -
+    ///    the fail-safe direction. Every surviving row keeps its position, its per-stream revision,
+    ///    its type, its id, its payload bytes and its metadata; the ONLY column this writes is the
+    ///    valid-time of a surviving DERIVED row whose duplicates it deleted, and it writes the
+    ///    value the fold would have derived anyway. No non-derived row is read, written, or moved.
+    /// 4. **The gaps it leaves are safe.** Deleting from the middle of a stream leaves holes in
+    ///    that stream's revisions, which is exactly why [`Store::append`] reads the stream's
+    ///    current revision as `MAX(revision)` rather than counting rows - see the comment there.
+    /// 5. **Everything after the commit is a REPORT, not an outcome.** The deletes are durable the
+    ///    moment the transaction commits; the space reclamation that follows can still fail, and
+    ///    when it does this returns the counts with the failure NAMED beside them rather than an
+    ///    `Err` that says only that something went wrong with a log which HAS been pruned. And it
+    ///    only runs at all when the FILE has free space to reclaim - never merely because this
+    ///    pass deleted something, and never merely because it did not. A file holding no free
+    ///    page is left exactly as it stands rather than rewritten in full to reclaim nothing;
+    ///    a file holding free pages is reclaimed even by a pass that deleted nothing, which is
+    ///    what makes re-running the command after a failed reclamation the remedy this reports
+    ///    tell an operator it is.
+    pub fn prune_derived_index(
+        &self,
+        stream_prefix: &str,
+        identity: &ContentIdentity,
+    ) -> Result<PrunedDerived, Error> {
+        self.prune_derived_index_compacting_with(stream_prefix, identity, compact_in_place)
+    }
+
+    /// A read-only PREVIEW of what [`prune_derived_index`] would delete (spec 68, "the reset
+    /// surface"): for each type `identity` covers, the count of every recording of a covered key
+    /// EXCEPT the latest one in its stream - the exact `rn > 1` predicate the delete's window
+    /// function selects, run as `SELECT COUNT(*)` instead of `DELETE`. No row is touched, no
+    /// valid-time carried, no `VACUUM` run.
+    ///
+    /// Unlike [`prune_derived_index`] this needs no [`ContentIdentity::reasserting`] declaration:
+    /// that check exists because a DELETE has to know whether a surviving row's valid-time must be
+    /// carried forward, and a count writes nothing, so the one input that check guards against
+    /// getting wrong is not read here at all.
+    ///
+    /// `rigger reset`'s bare-menu preview reads this so its printed count can never drift from
+    /// what a real `--derived` removes - both count the identical rows.
+    pub fn count_derived_duplicates(
+        &self,
+        stream_prefix: &str,
+        identity: &ContentIdentity,
+    ) -> Result<Vec<(String, usize)>, Error> {
+        let key = key_expr(identity.meta_key());
+        let sql = format!(
+            "SELECT COUNT(*) FROM (
+               SELECT position, ROW_NUMBER() OVER (
+                        PARTITION BY stream, {key} ORDER BY position DESC) AS rn
+               FROM events
+               WHERE type = ?1
+                 AND substr(stream, 1, length(?2)) = ?2
+                 AND {key} IS NOT NULL
+             ) WHERE rn > 1"
+        );
+        let types = identity.types();
+        let guard = self.conn.lock().unwrap();
+        let mut stmt = guard.prepare(&sql).map_err(be)?;
+        let mut removed: Vec<(String, usize)> = Vec::with_capacity(types.len());
+        for t in types {
+            let n: i64 = stmt
+                .query_row(params![t.as_str(), stream_prefix], |r| r.get(0))
+                .map_err(be)?;
+            removed.push((t.clone(), n.max(0) as usize));
+        }
+        Ok(removed)
+    }
+
+    /// [`Store::prune_derived_index`] with its post-commit space reclamation INJECTED.
+    ///
+    /// The seam exists because that step's real failures - a temporary directory too small for the
+    /// full copy the rewrite stages there, a writer holding the file past the busy timeout - are
+    /// properties of the machine, not of this code, so the only way to pin what the prune does
+    /// WITH a failure is to hand it one. Production has exactly one implementation
+    /// ([`compact_in_place`]) and the public entry point above passes it; nothing chooses.
+    fn prune_derived_index_compacting_with(
+        &self,
+        stream_prefix: &str,
+        identity: &ContentIdentity,
+        compact: impl FnOnce(&Connection) -> Result<Compaction, Error>,
+    ) -> Result<PrunedDerived, Error> {
+        // THE PARTITION IS CHECKED BEFORE ANY ROW IS READ (property 2). Both failures here are
+        // silent when they are wrong - a re-dated fact leaves every row looking perfectly intact -
+        // so they are refused rather than defaulted, and refused up front so a policy that cannot
+        // be acted on never takes the write lock at all.
+        let Some(declared) = identity.reasserting() else {
+            return Err(Error::Backend(format!(
+                "prune_derived_index: the content-identity policy for {:?} has not declared which \
+                 of its types re-assert a fact in place (ContentIdentity::with_reasserting_types). \
+                 Without it a compaction cannot know whether a key's EARLIEST recorded valid-time \
+                 is the one the projection holds, and either default silently re-dates facts. \
+                 Refusing rather than guessing.",
+                identity.types()
+            )));
+        };
+        if let Some(stray) = declared.iter().find(|t| !identity.covers(t)) {
+            return Err(Error::Backend(format!(
+                "prune_derived_index: the content-identity policy declares {stray:?} as \
+                 re-asserting, but does not cover that type ({:?}). A declaration naming a type \
+                 this policy will never prune describes some other policy, so it cannot be the \
+                 partition for this one. Refusing rather than pruning against a declaration that \
+                 does not fit.",
+                identity.types()
+            )));
+        }
+
+        let key = key_expr(identity.meta_key());
+        // Property 2: the survivor of every DUPLICATED key inherits its group's EARLIEST
+        // valid-time, so the fact keeps the date it first became true. Runs BEFORE the delete,
+        // while the group is still whole.
+        //
+        // ONE set-based pass, deliberately: the group's minimum and its survivor come from a
+        // SINGLE grouped scan of the type's rows (`HAVING COUNT(*) > 1` is what keeps a key
+        // recorded once from ever being rewritten, and the survivor is that group's
+        // `MAX(position)` - the same row `ROW_NUMBER() ... ORDER BY position DESC` calls `rn = 1`
+        // below). Written as a correlated `MIN()` subquery per survivor instead, this re-scans the
+        // type's rows once PER CARRIED ROW: on a real pre-dedup log with no index on the key
+        // expression that is hours of held write lock for a prune whose deletes take seconds, and
+        // the cost grows with the square of the log it exists to shrink.
+        let carry = format!(
+            "UPDATE events
+                SET valid_from = g.earliest
+               FROM (SELECT MIN(valid_from)  AS earliest,
+                            MAX(position)    AS survivor
+                       FROM events
+                      WHERE type = ?1
+                        AND substr(stream, 1, length(?2)) = ?2
+                        AND {key} IS NOT NULL
+                      GROUP BY stream, {key}
+                     HAVING COUNT(*) > 1) AS g
+              WHERE events.position = g.survivor"
+        );
+        // Every recording of a covered key EXCEPT the last one in its stream. `ROW_NUMBER` ranks a
+        // key's recordings newest-first, so `rn = 1` is the surviving one and everything beyond it
+        // is a superseded duplicate.
+        let sql = format!(
+            "DELETE FROM events WHERE position IN (
+               SELECT position FROM (
+                 SELECT position, ROW_NUMBER() OVER (
+                          PARTITION BY stream, {key} ORDER BY position DESC) AS rn
+                 FROM events
+                 WHERE type = ?1
+                   AND substr(stream, 1, length(?2)) = ?2
+                   AND {key} IS NOT NULL
+               ) WHERE rn > 1
+             )"
+        );
+
+        let mut guard = self.conn.lock().unwrap();
+        // THE OPERATOR'S BEFORE, taken before a single row is deleted. What the reclamation is
+        // reported as is the space the LOG LOST ON DISK across the whole command, so it is
+        // measured where the command starts rather than derived from a page count inside the
+        // rewrite: a page count is the database's LOGICAL size, it counts pages living only in an
+        // un-checkpointed `-wal`, and a figure computed from it can name a reclamation over a
+        // file that grew. This is the number an operator reproduces by measuring the log before
+        // they run the command and again after, which is the only check they can make.
+        //
+        // `None` for a database with no file behind it (`:memory:`, a temporary database): there
+        // are no bytes on disk to have lost, so the reclamation below is reported as UNMEASURED
+        // rather than as a zero that claims a measurement was taken.
+        let db_file = guard
+            .path()
+            .filter(|p| !p.is_empty())
+            .map(|p| p.to_string());
+        let on_disk_before = db_file.as_deref().map(bytes_on_disk);
+        let types = identity.types();
+        let mut removed: Vec<(String, usize)> = Vec::with_capacity(types.len());
+        {
+            // ONE transaction for the whole prune: a partial compaction is not a state an operator
+            // can reason about. The carry-forward shares it, so a log can never be left with its
+            // duplicates deleted and its survivors' valid-times un-carried.
+            //
+            // WHAT `BEGIN IMMEDIATE` BUYS, AND WHAT IT DOES NOT. It takes the write lock up front,
+            // so this transaction cannot fail the deferred lock upgrade a read-then-write
+            // transaction attempts half way through - that failure mode is closed. It does NOT
+            // make a concurrent appender safe: the lock is held for the WHOLE delete, which on a
+            // large log runs for longer than `busy_timeout` (5000ms, set in `SCHEMA` above -
+            // measured at roughly 8s of held lock on a 165MB log), and an appender that waits out
+            // its timeout gets `database is locked` and does NOT retry. So a prune over a big log
+            // can cost a concurrent writer its append. That is why this is maintenance run BETWEEN
+            // runs and never against a live one, which is what the shipped guidance says; the
+            // window is bounded here, not eliminated.
+            let tx = guard
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(be)?;
+            {
+                let mut carry_stmt = tx.prepare(&carry).map_err(be)?;
+                let mut stmt = tx.prepare(&sql).map_err(be)?;
+                for t in types {
+                    // `Some(_)` throughout: the undeclared case returned above, so every covered
+                    // type here has an answer and none is defaulted.
+                    if identity.reasserts(t) == Some(true) {
+                        carry_stmt
+                            .execute(params![t.as_str(), stream_prefix])
+                            .map_err(be)?;
+                    }
+                    let n = stmt
+                        .execute(params![t.as_str(), stream_prefix])
+                        .map_err(be)?;
+                    removed.push((t.clone(), n));
+                }
+            }
+            tx.commit().map_err(be)?;
+        }
+
+        // FROM HERE ON THE DELETES ARE DURABLE, so nothing below may turn this call into an
+        // `Err`. An error return would tell the operator only that something failed, about a log
+        // that HAS been pruned: not the per-type counts, not that a prune happened at all - the
+        // one outcome this command's design says an operator cannot detect. So the reclamation's
+        // failure is CARRIED BACK beside the counts instead, and the same honesty that reports an
+        // unmeasurable reclamation as unmeasured reports an unrun one as named.
+        //
+        // AND WHETHER IT RUNS AT ALL IS DECIDED BY THE FILE, not by this pass's deletes - see
+        // [`compact_in_place`], which skips a file holding no free page. The two directions are
+        // one rule and both matter. A rewrite over a file with nothing to reclaim holds the write
+        // lock for a full scan and stages a COMPLETE copy of the database in the temporary
+        // directory SQLite resolves (a different, typically much smaller filesystem than the one
+        // holding the log) to reclaim nothing at all - and that is the path the shipped guidance
+        // calls the expected one, so it is the path an operator runs most. A rewrite gated the
+        // OTHER way, on this pass having deleted something, would never run again over the log a
+        // FAILED reclamation leaves behind: the first pass took the duplication, so the re-run
+        // this report tells the operator is safe deletes nothing, and the space it was told to
+        // re-run for would stay in the file forever.
+        match compact(&guard) {
+            // Nothing to reclaim, nothing rewritten: zero bytes is the MEASUREMENT here, not a
+            // measurement that could not be taken - but only where a FILE existed to measure.
+            // A database with no file behind it has no reading to report, and a `Some(0)`
+            // beside `on_disk_measured: false` would claim a measurement the flag denies;
+            // unmeasured is the honest report there, exactly as on the pending path below.
+            Ok(Compaction::Skipped) => Ok(PrunedDerived {
+                removed,
+                reclaimed_bytes: db_file.as_deref().map(|_| 0),
+                compaction_ran: false,
+                on_disk_measured: db_file.is_some(),
+                compaction_error: None,
+            }),
+            // The rewrite ran and its result is on disk NOW, so the before taken above and the
+            // after taken here bracket the whole command: their difference is what the log lost.
+            Ok(Compaction::Landed) => Ok(PrunedDerived {
+                removed,
+                reclaimed_bytes: db_file
+                    .as_deref()
+                    .zip(on_disk_before)
+                    .map(|(db, before)| before.saturating_sub(bytes_on_disk(db))),
+                compaction_ran: true,
+                on_disk_measured: db_file.is_some(),
+                compaction_error: None,
+            }),
+            // The rewrite ran but its result has NOT landed: the freed frames are still in the
+            // write-ahead log, so any difference measured now is between two states of a move
+            // that has not finished. Unmeasured is the honest report.
+            Ok(Compaction::Pending) => Ok(PrunedDerived {
+                removed,
+                reclaimed_bytes: None,
+                compaction_ran: true,
+                on_disk_measured: db_file.is_some(),
+                compaction_error: None,
+            }),
+            Err(e) => Ok(PrunedDerived {
+                removed,
+                reclaimed_bytes: None,
+                compaction_ran: true,
+                on_disk_measured: db_file.is_some(),
+                compaction_error: Some(e.to_string()),
+            }),
+        }
+    }
+
+    /// Measure the derived-index DUPLICATION already sitting in the log, WITHOUT deleting
+    /// anything: across every type `identity` covers, within streams under `stream_prefix`, how
+    /// many rows carry a covered key versus how many DISTINCT `(type, stream, key)` triples
+    /// those rows name.
+    ///
+    /// The READ-ONLY twin of [`Store::prune_derived_index`]'s own count: it is built from the
+    /// SAME `key_expr`/`type_list` the compaction's own DELETE renders from, and the SAME
+    /// `stream_prefix` filter (`substr(stream, 1, length(?1)) = ?1`), so `rigger validate`'s
+    /// bloat advisory (spec 68) can never drift from a second, independently re-derived
+    /// definition of "duplicated" (Design: "one measurement authority per advisory ... no
+    /// shadow accounting"). ONE aggregate query - `COUNT(*)` and `COUNT(DISTINCT ...)` over a
+    /// single scan of the covered rows - bounded by the log's own row count, never a second
+    /// store read or a full-tree walk.
+    ///
+    /// `type || char(30) || stream || char(30) || {key}` triples a row's TYPE with its stream
+    /// and key before counting distinct values, deliberately mirroring what the compaction's own
+    /// DELETE actually scopes: `prune_derived_index_compacting_with` runs its
+    /// `PARTITION BY stream, {key}` window inside a PER-TYPE loop (`WHERE type = ?1`), so a key
+    /// is only ever compared against OTHER ROWS OF THE SAME TYPE - the same key recorded once
+    /// under two different covered types is two independent single-row groups to the real
+    /// DELETE, never a duplicate pair. Counting distinct `(stream, key)` alone (dropping the
+    /// type) would merge those two groups into one duplicated subject, reporting bloat a real
+    /// prune can never reclaim - the type discriminator is what keeps this measurement unable to
+    /// drift from what `prune_derived_index` actually deletes, exactly as the stream
+    /// discriminator already does for two different streams sharing a key. `char(30)` (ASCII
+    /// record separator) is the join glue throughout: a byte no legal type name, stream name or
+    /// JSON-extracted key contains, so two different triples can never collide onto the same
+    /// joined string.
+    pub fn measure_derived_duplication(
+        &self,
+        stream_prefix: &str,
+        identity: &ContentIdentity,
+    ) -> Result<DerivedDuplication, Error> {
+        let key = key_expr(identity.meta_key());
+        let types = type_list(identity.types());
+        let sql = format!(
+            "SELECT COUNT(*), COUNT(DISTINCT type || char(30) || stream || char(30) || {key})
+               FROM events
+              WHERE type IN ({types})
+                AND substr(stream, 1, length(?1)) = ?1
+                AND {key} IS NOT NULL"
+        );
+        let guard = self.conn.lock().unwrap();
+        let (rows, distinct_keys): (i64, i64) = guard
+            .query_row(&sql, params![stream_prefix], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(be)?;
+        Ok(DerivedDuplication {
+            // Never negative (COUNT cannot return one), but the column reads as i64; clamp
+            // rather than trust a cast the type system does not itself guarantee.
+            rows: rows.max(0) as usize,
+            distinct_keys: distinct_keys.max(0) as usize,
+        })
+    }
+}
+
+/// What [`Store::measure_derived_duplication`] found: how many rows carry a covered derived-
+/// index key, and how many DISTINCT keys those rows name - the read-only measurement `rigger
+/// validate`'s bloat advisory (spec 68) warns from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DerivedDuplication {
+    /// Rows in scope carrying a covered, non-null key.
+    pub rows: usize,
+    /// Distinct `(stream, key)` pairs those rows name.
+    pub distinct_keys: usize,
+}
+
+impl DerivedDuplication {
+    /// Rows per distinct key: `1.0` when there is no duplication (every key recorded once, or
+    /// no covered rows at all - `distinct_keys == 0` is guarded rather than divided by, since
+    /// "nothing to measure" is not evidence of bloat), rising with the log's redundancy.
+    pub fn factor(&self) -> f64 {
+        if self.distinct_keys == 0 {
+            1.0
+        } else {
+            self.rows as f64 / self.distinct_keys as f64
+        }
+    }
+}
+
+/// Total bytes the database at `db` occupies on disk: the main file plus its write-ahead log,
+/// which is where a WAL-mode database's most recent pages live until a checkpoint folds them
+/// back. Counting only the main file would report a reclamation over a log whose `-wal` had just
+/// grown by more than the file shrank.
+///
+/// A file that is not there counts as zero rather than failing: the `-wal` does not exist before
+/// the first write and is deleted on a clean close, and neither absence is an error about the
+/// space the log occupies.
+fn bytes_on_disk(db: &str) -> u64 {
+    let len = |p: &str| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+    len(db) + len(&format!("{db}-wal"))
+}
+
+/// What the post-commit space reclamation did to the file, which is the only thing about it the
+/// prune cannot work out for itself.
+///
+/// Three outcomes rather than a byte count, because HOW MANY bytes the log lost is a property of
+/// the whole command (measured either side of it by [`Store::prune_derived_index`]) while WHETHER
+/// the file was rewritten, and whether the rewrite has landed on disk yet, are properties only
+/// this step knows. Reported as a value rather than inferred by the caller from a zero, because
+/// "was not rewritten" and "was rewritten and reclaimed nothing" are different things to tell an
+/// operator and neither can be read off a number.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Compaction {
+    /// The file held no reclaimable free space, so it was NOT rewritten at all.
+    Skipped,
+    /// The file was rewritten and the result is on disk now: the truncating checkpoint folded the
+    /// write-ahead log back into the main file.
+    Landed,
+    /// The file was rewritten, but the freed frames are still in the `-wal`: a concurrent reader
+    /// held a snapshot of the write-ahead log, so they land at some later checkpoint instead.
+    Pending,
+}
+
+/// Reclaim on disk the space the file is holding free, and report whether that reclamation has
+/// landed - or that there was none to do.
+///
+/// Separated from the prune because it runs AFTER the commit, where a failure is a fact to report
+/// rather than an outcome to propagate: by the time this is called the deletes are durable, so its
+/// `Err` describes an un-reclaimed log rather than an un-pruned one.
+fn compact_in_place(conn: &Connection) -> Result<Compaction, Error> {
+    // WHAT THERE IS TO RECLAIM DECIDES WHETHER THE FILE IS TOUCHED - not what this pass deleted.
+    // The freelist is where every delete's freed pages go and where they stay until something
+    // vacuums, so it is the exact question "is a rewrite worth its cost", asked of the file
+    // rather than of the caller. It answers the two directions the caller must not get wrong:
+    // a file with nothing to reclaim is never rewritten to reclaim nothing, and a file that IS
+    // holding free space is reclaimed even when this pass deleted none of it - which is what
+    // makes re-running the command the real remedy for a reclamation that failed.
+    let free_pages: i64 = conn
+        .query_row("PRAGMA freelist_count", [], |r| r.get(0))
+        .map_err(be)?;
+    if free_pages == 0 {
+        return Ok(Compaction::Skipped);
+    }
+    // VACUUM cannot run inside a transaction, so it follows the commit.
+    conn.execute_batch("VACUUM").map_err(be)?;
+    // Fold the WAL back into the main file so the shrink lands on disk NOW rather than at some
+    // later checkpoint: the reported reclamation must match what the operator sees on disk.
+    //
+    // `PRAGMA wal_checkpoint` RETURNS ITS OUTCOME, and TRUNCATE is the mode that can decline:
+    // its first column is 1 when a reader still held a snapshot of the write-ahead log, in
+    // which case the frames stay in the `-wal` file and the file on disk did NOT shrink -
+    // total bytes on disk can even go UP. Discarding that column is what would turn the
+    // caller's before-and-after into a claim, so it is read. Retried a bounded number of
+    // times because a blocked checkpoint is transient (the deletes are already committed and
+    // the vacuum is done, so this is only about WHEN the frames land), and when it is still
+    // blocked the reclamation is reported as UNKNOWN rather than as a number the operator's
+    // own `ls` contradicts.
+    for attempt in 0..CHECKPOINT_TRUNCATE_ATTEMPTS {
+        let busy: i64 = conn
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))
+            .map_err(be)?;
+        if busy == 0 {
+            return Ok(Compaction::Landed);
+        }
+        if attempt + 1 < CHECKPOINT_TRUNCATE_ATTEMPTS {
+            std::thread::sleep(CHECKPOINT_TRUNCATE_BACKOFF);
+        }
+    }
+    Ok(Compaction::Pending)
+}
+
+/// How many times [`compact_in_place`] asks a blocked `wal_checkpoint(TRUNCATE)` again before it
+/// reports the on-disk reclamation as unmeasured, and how long it waits between asks.
+///
+/// Bounded and short on purpose: the prune's transaction has already committed and its vacuum has
+/// already run by the time this matters, so the only thing at stake is whether the freed frames
+/// land in the main file NOW or at the next checkpoint some later writer performs. Waiting a
+/// reader out indefinitely would trade a correct, honestly-reported result for a hang.
+const CHECKPOINT_TRUNCATE_ATTEMPTS: u32 = 5;
+const CHECKPOINT_TRUNCATE_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// What one [`Store::prune_derived_index`] pass removed: the rows deleted PER TYPE (in the order
+/// the caller named the types, including the types nothing was removed from), the bytes the log
+/// lost on disk, whether it was rewritten to lose them at all, whether there was a file to
+/// measure them over in the first place, and - when the reclamation failed after the deletes had
+/// committed - what went wrong with it.
+///
+/// Per type, not just a total, because that is what an operator can check a prune against: a
+/// single number cannot be compared to what the log was expected to hold. And the reclamation's
+/// failure is a FIELD rather than an error return for the same reason: the deletes are durable
+/// before the reclamation is attempted, so a prune whose reclamation failed still has counts an
+/// operator needs, and an `Err` carrying only the failure describes a log that was in fact pruned.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PrunedDerived {
+    /// `(type, rows deleted)`, in the order the caller named the types.
+    pub removed: Vec<(String, usize)>,
+    /// Bytes the LOG LOST ON DISK across this whole call, or `None` when that could not be
+    /// measured because a concurrent reader still held a write-ahead-log snapshot when the
+    /// truncating checkpoint ran, because the reclamation itself failed (see
+    /// [`PrunedDerived::compaction_error`]), or because the database has no file behind it (see
+    /// [`PrunedDerived::on_disk_measured`], which is what tells those last two `None`s apart).
+    ///
+    /// MEASURED, NOT DERIVED, and measured over the pair of files an operator's own `du` would
+    /// add up: the main database plus its `-wal`, sampled before the deletes and again after the
+    /// rewrite has landed. A page-count delta is a tempting substitute and is not the same
+    /// number - it is the database's LOGICAL size, it counts pages living only in an
+    /// un-checkpointed write-ahead log, and a report built from it can name a reclamation over a
+    /// file that grew.
+    ///
+    /// An `Option`, not a `0`. The bytes are on disk only once the checkpoint folds the
+    /// write-ahead log back into the main file and truncates it; while a reader holds a snapshot
+    /// that fold is declined, the freed frames stay in the `-wal`, and any difference measured
+    /// then is between two states of a move that has not finished. `None` says "unmeasured, the
+    /// pages land at the next checkpoint" and is the honest report; `Some(0)` would claim a
+    /// measurement that found nothing.
+    ///
+    /// ONE case is `Some(0)` and is exact: a pass over a file holding NO FREE SPACE, where the
+    /// rewrite is deliberately not run at all (see [`PrunedDerived::compaction_ran`]). There
+    /// "zero bytes reclaimed" is the measurement rather than a measurement that could not be
+    /// taken, and reporting it as `None` would send an operator looking for pages that some later
+    /// checkpoint will land.
+    pub reclaimed_bytes: Option<u64>,
+    /// Whether the file was REWRITTEN at all.
+    ///
+    /// `false` says the rewrite was deliberately skipped because the file held no reclaimable
+    /// free page - the most expensive thing this command can do, declined because it would have
+    /// reclaimed nothing. It is carried as its own fact because it cannot be read off the byte
+    /// count: "not rewritten" and "rewritten, and it reclaimed nothing" are different things to
+    /// tell an operator watching a compaction, and both would be `Some(0)`.
+    ///
+    /// It is NOT "this pass deleted nothing". A pass that deleted nothing still rewrites a file
+    /// that has space to reclaim, which is exactly what makes re-running the command the remedy
+    /// for a reclamation that failed after the deletes committed.
+    pub compaction_ran: bool,
+    /// Whether the before-measurement was TAKEN AT ALL: `true` when this database has a file on
+    /// disk, so the pair of sizes the reclamation is a difference of were both sampled; `false`
+    /// for a database with no file behind it (`:memory:`, a temporary database), where there was
+    /// never anything on disk to measure.
+    ///
+    /// It exists because `reclaimed_bytes: None` alongside `compaction_ran: true` has TWO causes
+    /// and the difference is invisible in the numbers: the truncating checkpoint was declined by
+    /// a concurrent reader (the bytes exist and land later), or this database has no file (there
+    /// are no bytes and none ever land). A consumer told only "unmeasured" cannot tell them
+    /// apart, so it either reports one cause for both - asserting a reader it was never told
+    /// about - or reports neither. Only the prune knows, so the prune carries it.
+    ///
+    /// It says nothing about whether the AFTER measurement was usable: a checkpoint a reader
+    /// declined leaves this `true` and the byte count `None`, which is exactly the pair that
+    /// separates the two causes.
+    pub on_disk_measured: bool,
+    /// Why the space reclamation did not complete, when it was attempted and failed - `None` when
+    /// it succeeded, and `None` when there was no free space for it to reclaim.
+    ///
+    /// It is reported rather than returned because it happens AFTER the commit: the rows are gone
+    /// from the log whatever this says, so it names a log that is pruned but not shrunk, and
+    /// re-running the prune is safe AND useful - the second pass finds nothing to delete, but the
+    /// space this one failed to reclaim is still free in the file, so the reclamation is tried
+    /// again over it.
+    pub compaction_error: Option<String>,
+}
+
+impl PrunedDerived {
+    /// Every row this pass deleted, across all types.
+    pub fn total_removed(&self) -> usize {
+        self.removed.iter().map(|(_, n)| n).sum()
+    }
 }
 
 fn be<E: std::fmt::Display>(e: E) -> Error {
     Error::Backend(e.to_string())
+}
+
+/// A single-quoted SQL string literal for `s` (doubling any embedded quote). Used only
+/// for values that are rendered into the guard's SQL once, at configuration time -
+/// never for per-append data, which is always bound.
+fn sql_literal(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
+/// The SQL expression that reads an event's content key out of its metadata. The
+/// content-key index is built on THIS expression and every probe selects on it, so they
+/// are rendered from one function and the query planner sees identical text - a drift
+/// there would be silent (still correct, but a whole-table walk per append, which is
+/// the very cost this guard exists to avoid).
+///
+/// TWO nested quotings, and both are the caller's string: the metadata key is a JSON
+/// member name inside a path, and that whole path is then a SQL string literal. So the
+/// key is escaped for JSON (a backslash or a quote inside a member name is spelled with a
+/// backslash) and the finished path goes through [`sql_literal`] like any other literal,
+/// rather than being pasted between hand-written quotes - a single apostrophe in a
+/// consumer's key would otherwise end the literal early and leave the rest of the path as
+/// stray SQL.
+///
+/// ONE SHAPE THIS CANNOT ADDRESS, and it fails safe rather than silently wrong: SQLite's
+/// JSON path parser accepts an escaped backslash inside a quoted member name but NOT an
+/// escaped double quote (3.46). A metadata key carrying a `"` is therefore not reachable
+/// by any `json_extract` path, so every probe answers "not recorded" and the guard
+/// SUPPRESSES NOTHING for such a policy - it appends, which is the fail-safe direction,
+/// and never mistakes one key for another. Pinned by
+/// `a_metadata_key_that_no_json_path_can_address_suppresses_nothing`.
+fn key_expr(meta_key: &str) -> String {
+    format!("json_extract(meta, {})", key_path(meta_key))
+}
+
+/// The quoted JSON path a content key is addressed by (`$."<meta_key>"`), as a SQL literal - the
+/// ONE rendering of the path, shared by every expression that reads a content key.
+fn key_path(meta_key: &str) -> String {
+    let path = format!(
+        "$.\"{}\"",
+        meta_key.replace('\\', "\\\\").replace('"', "\\\"")
+    );
+    sql_literal(&path)
+}
+
+/// The `IN (...)` list of the covered event types, rendered once at configuration.
+///
+/// A policy that covers NO type renders `NULL`, not an empty list: `type IN ()` is not
+/// parsable SQL, while `type IN (NULL)` is never true - so a guard configured with no
+/// covered types suppresses nothing, which is what covering no type means.
+fn type_list(types: &[String]) -> String {
+    if types.is_empty() {
+        return "NULL".to_string();
+    }
+    types
+        .iter()
+        .map(|t| sql_literal(t))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The definition SQLite has COMMITTED for the index named `name`, or `None` when no such
+/// index exists. `sqlite_master` is the authority on what the database actually holds:
+/// a statement that ran is not an index, and a transaction that rolled back leaves none.
+fn committed_index_ddl(conn: &Connection, name: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?1",
+        params![name],
+        |r| r.get::<_, Option<String>>(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .flatten()
+}
+
+/// Every committed content-key index that is NOT `keep` - the artifacts a policy that is
+/// no longer configured left behind.
+///
+/// They are dead weight in the exact sense that matters to a store whose purpose is to
+/// stay bounded: an index built for another metadata key answers no question this store
+/// asks (its indexed expression reads a key nothing carries any more, so every entry in
+/// it is NULL), yet SQLite still maintains it on every single insert and still stores it
+/// in the file. Nobody else can identify them - only the handle holding the live policy
+/// knows which name is the live one - so the build sweeps them.
+///
+/// The match is an EXACT prefix comparison on the shared stem, never a `LIKE` pattern:
+/// the stem carries no wildcard today, and a comparison that would change meaning if it
+/// ever did is not one to leave in a DROP path.
+fn stale_content_key_indexes(conn: &Connection, keep: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT name FROM sqlite_master \
+         WHERE type = 'index' AND substr(name, 1, length(?1)) = ?1 AND name <> ?2 \
+         ORDER BY name",
+    ) else {
+        return names;
+    };
+    let Ok(rows) = stmt.query_map(params![CONTENT_KEY_INDEX_STEM, keep], |r| {
+        r.get::<_, String>(0)
+    }) else {
+        return names;
+    };
+    for row in rows.flatten() {
+        names.push(row);
+    }
+    names
+}
+
+/// The smallest string strictly greater than `s`. Used as an INCLUSIVE lower bound that
+/// excludes `s` itself and nothing else: no string sorts between `s` and `s` with a NUL
+/// appended.
+fn successor(s: &str) -> String {
+    format!("{s}\u{0}")
+}
+
+/// The length of `key`'s leading span whose every continuation belongs to the SAME
+/// generation as `key` - the prefix the walk skips to step past one whole generation in a
+/// single index seek. `None` when no such span can be established, and the walk then
+/// advances by one key.
+///
+/// It is `generation`'s end in `key` PLUS THE CHARACTER THAT FOLLOWS IT, and that extra
+/// character is what makes the skip sound rather than merely fast. A generation may be a
+/// string PREFIX of another one - a subject recorded at `h1` and later at `h12` - and a
+/// skip that stopped at the generation's own end would jump past `<subject>h1`, which
+/// `<subject>h12#0` sorts inside. The later generation would then be invisible, the walk
+/// would report the superseded `h1` as current, and re-offering `h1` (a REVERT) would be
+/// suppressed and lost. Including the delimiter narrows the skipped range to keys that
+/// carry the generation AND the character that ends it, which `h12` does not.
+///
+/// So the span exists only while the generation is followed by something. A key whose
+/// generation runs to its very END is not skippable at all - nothing there distinguishes
+/// it from a longer generation that starts the same way - and it answers `None`, which
+/// costs a step per key for a policy shaped that way and is correct for every policy.
+///
+/// `generation` is the RANGE the policy located the generation at, already validated by
+/// [`ContentIdentity::split_of`] as lying inside `key` on character boundaries - so the
+/// generation's end is read off the TYPE rather than recovered by comparing addresses,
+/// and a policy cannot hand back something that merely looks like a slice of the key.
+/// The store still parses no key format of its own; it only asks where the parts are.
+fn generation_span(key: &str, generation: &Range<usize>) -> Option<usize> {
+    let end = generation.end;
+    let delimiter = key.get(end..)?.chars().next()?;
+    Some(end + delimiter.len_utf8())
+}
+
+/// FNV-1a over the bytes of `s`. Used only to give an index NAME a per-policy suffix, so
+/// two metadata keys that sanitize to the same identifier still get distinct artifacts.
+fn fnv1a64(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+/// The exclusive upper bound of the half-open range that holds exactly the strings
+/// beginning with `prefix`, under SQLite's default (byte-wise) TEXT collation: the
+/// prefix with its last character bumped by one. This is what turns "every key naming
+/// this subject" into an index RANGE SEEK rather than a scan-and-filter.
+///
+/// A prefix ending at the last representable character (or an empty one) has no such
+/// successor; the bound then falls back to the prefix followed by the highest character
+/// there is, which still bounds every practical key and never excludes one that a
+/// simple `starts_with` would include for any prefix this crate mints.
+fn prefix_upper_bound(prefix: &str) -> String {
+    if let Some(last) = prefix.chars().next_back() {
+        if let Some(next) = char::from_u32(last as u32 + 1) {
+            let head = &prefix[..prefix.len() - last.len_utf8()];
+            return format!("{head}{next}");
+        }
+    }
+    format!("{prefix}{}", char::MAX)
 }
 
 fn to_nanos(t: SystemTime) -> i64 {
@@ -152,8 +1512,25 @@ impl EventStore for Store {
         stream: &str,
         expected: ExpectedRevision,
         events: &[Event],
-    ) -> Result<Position, Error> {
+    ) -> Result<Appended, Error> {
         let mut guard = self.conn.lock().unwrap();
+        // The content-key index the guard's probes require is settled BEFORE the append's
+        // write transaction opens, and only when this batch has something suppressible in
+        // it. Building it is a large write on an established log; inside the append's own
+        // `BEGIN IMMEDIATE` its whole duration would be added to a window every other
+        // process queues behind. `indexed` is false when the store has no guard, when the
+        // batch has nothing the guard could suppress, or when the index is not there -
+        // and a false answer suppresses nothing.
+        let readiness = match &self.guard {
+            Some(g) if Self::has_suppressible(g, events) => {
+                if self.ensure_content_key_index(&mut guard, g) {
+                    Readiness::Indexed
+                } else {
+                    Readiness::Unindexed
+                }
+            }
+            _ => Readiness::Idle,
+        };
         // BEGIN IMMEDIATE, not the default BEGIN DEFERRED: acquire the write lock up
         // front so a second connection (a separate process - the death courier racing
         // the worker's self-report) QUEUES on `busy_timeout` instead of starting a read
@@ -170,14 +1547,30 @@ impl EventStore for Store {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(be)?;
 
-        let count: i64 = tx
+        // The stream's cursor is the revision its LAST ROW IN POSITION ORDER holds - the
+        // most recently written row, whatever revision number it carries - not its row
+        // count minus one and not the highest revision value the stream holds ANYWHERE.
+        // Position order and "the highest revision value" agree on every stream that has
+        // only ever been written through this function: a write only ever lands at
+        // `last_revision + 1`, so each new row is simultaneously the newest by position
+        // AND the highest by revision, and deleting an arbitrary subset of rows (what the
+        // supported compaction, `Store::prune_derived_index`, does, leaving holes in the
+        // revision sequence) cannot change that relative order among whatever survives.
+        // A count-derived cursor would reissue a revision the stream still holds and
+        // collide on the `UNIQUE(stream, revision)` index; the position-order seek is
+        // exactly as gap-tolerant (it is a seek on the same `idx_events_stream` index,
+        // reverse-ordered, not a table walk), so a compacted stream still gets its true
+        // next revision. What position order buys OVER the highest-revision-value seek is
+        // honesty when the two have already come apart: read below.
+        let last_revision: Revision = tx
             .query_row(
-                "SELECT COUNT(*) FROM events WHERE stream = ?1",
-                [stream],
+                "SELECT revision FROM events WHERE stream = ?1 ORDER BY position DESC LIMIT 1",
+                params![stream],
                 |r| r.get(0),
             )
-            .map_err(be)?;
-        let last_revision: Revision = count - 1; // NO_STREAM (-1) when the stream is empty
+            .optional()
+            .map_err(be)?
+            .unwrap_or(NO_STREAM);
         let ok = match expected {
             ExpectedRevision::Any => true,
             ExpectedRevision::NoStream => last_revision == NO_STREAM,
@@ -191,11 +1584,49 @@ impl EventStore for Store {
             });
         }
 
+        // Spec 71 - APPEND REFUSES DISORDER. The candidate revision this call is about
+        // to assign, `last_revision + 1`, must exceed the HIGHEST revision the stream
+        // records anywhere - not just the one at its newest position. On every stream
+        // this function has ever written to alone the two seeks agree (the correct
+        // writer's cursor IS the max, so this never fires and costs one indexed seek in
+        // the transaction already open). They can only disagree once the stream already
+        // carries the incident's signature: a row at an EARLIER position holding a
+        // HIGHER revision than the row at the NEWEST position, left behind by a write
+        // that came from outside this function entirely (this function itself can never
+        // produce it - see the seek above). Refusing here, before the insert, is what
+        // stops that signature from silently compounding one honest append at a time,
+        // and turns what would otherwise be a bare `UNIQUE(stream, revision)` failure
+        // into a named refusal that says why.
+        let recorded_max: Revision = tx
+            .query_row(
+                "SELECT COALESCE(MAX(revision), ?2) FROM events WHERE stream = ?1",
+                params![stream, NO_STREAM],
+                |r| r.get(0),
+            )
+            .map_err(be)?;
+        if last_revision < recorded_max {
+            return Err(Error::OutOfOrder {
+                stream: stream.to_string(),
+                attempted: last_revision + 1,
+                recorded: recorded_max,
+            });
+        }
+
         // The store stamps recorded_at on ingest (one clock per batch).
         let recorded_at = to_nanos(SystemTime::now());
-        let mut last_pos: Position = 0;
-        for (i, e) in events.iter().enumerate() {
-            let revision = count + i as i64; // the next per-stream revision
+        // One slot per handed event, in input order. A suppressed event takes no
+        // per-stream revision, so the revision cursor advances only on a write and the
+        // stream ends up advanced by exactly the events written.
+        let mut placements: Vec<Option<Position>> = Vec::with_capacity(events.len());
+        let mut revision = last_revision + 1;
+        // Every suppression verdict is taken against the log as it stood when this
+        // append began, BEFORE any of this batch's own rows exist.
+        let verdicts = self.redundant_flags(&tx, stream, events, readiness)?;
+        for (e, redundant) in events.iter().zip(verdicts.redundant) {
+            if redundant {
+                placements.push(None);
+                continue;
+            }
             tx.execute(
                 "INSERT INTO events (stream, type, id, data, meta, valid_from, recorded_at, revision)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -204,17 +1635,20 @@ impl EventStore for Store {
                     e.type_,
                     e.id,
                     e.data,
-                    meta_json(&e.meta),
+                    self.recorded_meta(e, verdicts.degraded),
                     to_nanos(e.valid_from),
                     recorded_at,
                     revision
                 ],
             )
             .map_err(be)?;
-            last_pos = tx.last_insert_rowid() as Position;
+            revision += 1;
+            // The position the STORE issued for this row - read back from sqlite, not
+            // derived from any other event's position.
+            placements.push(Some(tx.last_insert_rowid() as Position));
         }
         tx.commit().map_err(be)?;
-        Ok(last_pos)
+        Ok(Appended::from_placements(placements))
     }
 
     fn read_stream(
@@ -347,6 +1781,1263 @@ fn direction_sql(dir: Direction) -> &'static str {
     match dir {
         Direction::Forward => "ASC",
         Direction::Backward => "DESC",
+    }
+}
+
+/// The storage-level content-identity guard, driven at the STORE PORT directly.
+///
+/// It is proved here rather than through an ingest run on purpose: the guard is
+/// SUBORDINATE defense in depth under the ingest sink's own project-scoped dedup, and a
+/// correct sink is built never to hand the store a redundant append in the first place -
+/// so a proof that only ran through the sink would prove nothing about the guard, and a
+/// defense whose only evidence is that nothing calls it is not evidence.
+///
+/// Lane-agnostic on purpose: the guard is type and string comparison plus two index
+/// seeks, with no dependency on any extraction pass, so it keeps real coverage in both
+/// feature lanes.
+#[cfg(test)]
+mod content_identity_guard {
+    use super::*;
+    use crate::contextgraph::{
+        TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_REVIEW_FINDING,
+    };
+    use crate::ingest::{DERIVED_INDEX_TYPES, META_REPLAY_KEY};
+
+    /// Split a `<prefix>/<file>@<hash>#<i>` content key into `(the prefix every key
+    /// naming the same file begins with, the content generation)`. This is the policy
+    /// the composition root injects; it lives here in the test because the store must
+    /// NEVER parse a key itself - the split is configuration, so that the format stays
+    /// owned by the module that builds it. Splitting from the RIGHT is load-bearing: a
+    /// real path may itself contain `@` or `#`.
+    fn subject_of(key: &str) -> Option<(Range<usize>, Range<usize>)> {
+        let (prefix, remainder) = key.split_once('/')?;
+        if prefix.is_empty() || remainder.is_empty() {
+            return None;
+        }
+        let (head, index) = key.rsplit_once('#')?;
+        if index.is_empty() || !index.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let (file, hash) = head.rsplit_once('@')?;
+        if file.len() <= prefix.len() + 1 || hash.is_empty() {
+            return None;
+        }
+        let subject_end = file.len() + 1; // through the `@` that ends the subject
+        Some((0..subject_end, subject_end..subject_end + hash.len()))
+    }
+
+    /// `subject_of` as the two slices, for assertions that read better as text.
+    fn split(key: &str) -> Option<(&str, &str)> {
+        let (subject, generation) = subject_of(key)?;
+        Some((&key[subject], &key[generation]))
+    }
+
+    /// The policy under test: the real metadata key and the real derived-index type set
+    /// the project's ingest layer uses, so the guard is exercised against the vocabulary
+    /// it will actually be configured with rather than a fixture of its own.
+    pub(super) fn identity() -> ContentIdentity {
+        ContentIdentity::new(META_REPLAY_KEY, DERIVED_INDEX_TYPES, subject_of)
+    }
+
+    pub(super) fn keyed(type_: &str, key: &str) -> Event {
+        Event::new(type_, b"payload".to_vec()).with_meta(META_REPLAY_KEY, key)
+    }
+
+    /// One file's batch at one content generation: the shape the ingest walk emits.
+    fn batch(file: &str, hash: &str) -> Vec<Event> {
+        vec![
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, &format!("gc/{file}@{hash}#0")),
+            keyed(TYPE_EDGE_INFERRED, &format!("gc/{file}@{hash}#1")),
+        ]
+    }
+
+    fn rows(store: &Store, stream: &str) -> usize {
+        store
+            .read_stream(stream, 0, Direction::Forward)
+            .unwrap()
+            .len()
+    }
+
+    #[test]
+    fn subject_of_splits_from_the_right_so_a_path_may_carry_an_at_or_a_hash() {
+        assert_eq!(
+            split("gc/src/a.rs@h1#0"),
+            Some(("gc/src/a.rs@", "h1")),
+            "the subject prefix runs up to and including the generation separator"
+        );
+        assert_eq!(
+            split("gd/a#1/b@2/c.md@deadbeef#12"),
+            Some(("gd/a#1/b@2/c.md@", "deadbeef")),
+            "a path containing both `@` and `#` still yields the whole path as the subject"
+        );
+        for malformed in ["gc/src/a.rs@h1", "gc/src/a.rs#0", "gc/@h1#0", "gc/a.rs@#0"] {
+            assert_eq!(split(malformed), None, "{malformed:?} names no generation");
+        }
+    }
+
+    /// THE CRITERION, all four clauses, over one log.
+    #[test]
+    fn a_still_current_generation_is_a_no_op_and_everything_else_still_appends() {
+        let store = Store::open(":memory:")
+            .unwrap()
+            .with_content_identity(identity());
+
+        // (1) A generation the log has never seen appends in full.
+        let h1 = batch("src/a.rs", "h1");
+        let first = store.append("run", ExpectedRevision::Any, &h1).unwrap();
+        assert_eq!(
+            first.written(),
+            2,
+            "a first-seen generation is written whole"
+        );
+        assert_eq!(rows(&store, "run"), 2);
+
+        // (2) THE NO-OP: re-offering the SAME generation, which is still this file's
+        // latest recorded one, writes nothing - and says so per event, with no position
+        // anywhere in the report.
+        let again = store.append("run", ExpectedRevision::Any, &h1).unwrap();
+        assert_eq!(
+            again.placements(),
+            &[None, None],
+            "every event of an already-recorded current generation is a storage no-op"
+        );
+        assert_eq!(
+            again.handed(),
+            2,
+            "the report still names every handed event"
+        );
+        assert_eq!(
+            again.last(),
+            None,
+            "an append that wrote nothing reports an absence, never a fabricated position 0"
+        );
+        assert_eq!(rows(&store, "run"), 2, "the log did not grow");
+
+        // (3) A NEW generation of the same file appends: the file changed.
+        let h2 = batch("src/a.rs", "h2");
+        assert_eq!(
+            store
+                .append("run", ExpectedRevision::Any, &h2)
+                .unwrap()
+                .written(),
+            2,
+            "a changed file re-emits its whole batch"
+        );
+        assert_eq!(rows(&store, "run"), 4);
+
+        // (4) THE REVERT: h1's keys are recorded, but the file has MOVED PAST them, so
+        // they are not redundant and MUST append. An ever-recorded test would swallow
+        // this and strand the projection on h2 forever, with no recovery - re-folding
+        // the log would replay the same suppression.
+        let reverted = store.append("run", ExpectedRevision::Any, &h1).unwrap();
+        assert_eq!(
+            reverted.written(),
+            2,
+            "a generation the file has moved past is a CHANGE and must append"
+        );
+        assert_eq!(rows(&store, "run"), 6);
+        // ...and once it has, h1 is current again, so offering it again is a no-op and
+        // h2 - now the superseded one - appends.
+        assert_eq!(
+            store
+                .append("run", ExpectedRevision::Any, &h1)
+                .unwrap()
+                .written(),
+            0,
+            "the reverted generation is the current one now, so re-offering it is a no-op"
+        );
+        assert_eq!(
+            store
+                .append("run", ExpectedRevision::Any, &h2)
+                .unwrap()
+                .written(),
+            2,
+            "the generation the file moved away from appends again"
+        );
+
+        // (5) A DOMAIN EVENT never gets content identity, even when its payload is
+        // identical and even when its replay key is spelled exactly like a content key:
+        // two identical review findings mean the finding was raised twice.
+        let finding = keyed(TYPE_REVIEW_FINDING, "gc/src/a.rs@h1#0");
+        let before = rows(&store, "run");
+        for _ in 0..2 {
+            assert_eq!(
+                store
+                    .append("run", ExpectedRevision::Any, std::slice::from_ref(&finding))
+                    .unwrap()
+                    .written(),
+                1,
+                "a domain event appends per append, whatever its metadata says"
+            );
+        }
+        assert_eq!(rows(&store, "run"), before + 2);
+    }
+
+    /// A SHORT WRITE, reported honestly: a batch mixing an already-current derived
+    /// event with a genuinely new one writes one row and names WHICH one it wrote.
+    /// This is the case the arithmetic the shared fold authority used to do cannot
+    /// survive - it would stamp the suppressed event at a position the store never
+    /// issued - and it is why the report is per event rather than a single "last".
+    #[test]
+    fn a_partially_suppressed_append_reports_which_events_it_wrote() {
+        let store = Store::open(":memory:")
+            .unwrap()
+            .with_content_identity(identity());
+        let h1 = batch("src/a.rs", "h1");
+        store.append("run", ExpectedRevision::Any, &h1).unwrap();
+
+        let mixed = vec![
+            h1[0].clone(),
+            keyed(TYPE_REVIEW_FINDING, "not-a-content-key"),
+        ];
+        let appended = store.append("run", ExpectedRevision::Any, &mixed).unwrap();
+
+        assert_eq!(appended.handed(), 2);
+        assert_eq!(
+            appended.written(),
+            1,
+            "exactly one of the two events was written"
+        );
+        assert_eq!(
+            appended.placements()[0],
+            None,
+            "the already-current derived event is suppressed"
+        );
+        let placed: Vec<(usize, Position)> = appended.placed().collect();
+        assert_eq!(placed.len(), 1);
+        assert_eq!(
+            placed[0].0, 1,
+            "the report names WHICH input event was written"
+        );
+
+        // The position reported is the one the log actually holds that event at, and
+        // the stream advanced by exactly one revision - a suppressed event consumes no
+        // revision, so the stream stays contiguous.
+        let stream = store.read_stream("run", 0, Direction::Forward).unwrap();
+        let held = stream
+            .iter()
+            .find(|e| e.position == placed[0].1)
+            .expect("the store holds an event at the reported position");
+        assert_eq!(held.id, mixed[1].id, "and it is the event the report names");
+        assert_eq!(
+            stream.iter().map(|e| e.revision).collect::<Vec<_>>(),
+            (0..stream.len() as Revision).collect::<Vec<_>>(),
+            "per-stream revisions stay contiguous: a suppressed event consumes none"
+        );
+    }
+
+    /// The recorded state the guard tests is THE LOG'S, not one connection's or one
+    /// process's. A SECOND handle on the same on-disk file - the shape of a fresh
+    /// `rigger step` or a cold `rigger graph build`, each its own process - must reach
+    /// the same verdict on its FIRST append. An in-memory seen-set would answer "never
+    /// seen" here and defend nothing, because the duplication this exists to stop is
+    /// cross-process.
+    #[test]
+    fn a_second_handle_on_the_same_log_suppresses_on_its_first_append() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path = path.to_str().unwrap();
+
+        let writer = Store::open(path).unwrap().with_content_identity(identity());
+        let h1 = batch("src/a.rs", "h1");
+        writer.append("run", ExpectedRevision::Any, &h1).unwrap();
+        drop(writer);
+
+        let fresh = Store::open(path).unwrap().with_content_identity(identity());
+        let appended = fresh.append("run", ExpectedRevision::Any, &h1).unwrap();
+        assert_eq!(
+            appended.written(),
+            0,
+            "a fresh process's FIRST append gets the same answer a long-lived one's would"
+        );
+        assert_eq!(rows(&fresh, "run"), 2, "and the log did not grow");
+    }
+
+    /// NOT INERT ON A LOG THAT ALREADY EXISTS. The guard asks its question of the
+    /// content keys the log ALREADY carries - no new event type, no new metadata, no
+    /// backfill - so a log written by a build that had no guard at all is defended from
+    /// the very first append against it.
+    #[test]
+    fn a_log_written_with_no_guard_at_all_is_defended_immediately() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path = path.to_str().unwrap();
+
+        // Written by a store with NO content identity configured: exactly the bytes an
+        // earlier binary would have left.
+        let legacy = Store::open(path).unwrap();
+        let h1 = batch("src/a.rs", "h1");
+        legacy.append("run", ExpectedRevision::Any, &h1).unwrap();
+        legacy.append("run", ExpectedRevision::Any, &h1).unwrap();
+        assert_eq!(rows(&legacy, "run"), 4, "no guard means no suppression");
+        drop(legacy);
+
+        let guarded = Store::open(path).unwrap().with_content_identity(identity());
+        assert_eq!(
+            guarded
+                .append("run", ExpectedRevision::Any, &h1)
+                .unwrap()
+                .written(),
+            0,
+            "the guard reads keys the log already carries, so it defends a pre-existing log"
+        );
+        assert_eq!(rows(&guarded, "run"), 4);
+    }
+
+    /// An unconfigured store has no guard and appends everything through. That is the
+    /// FAIL-SAFE direction: a store with no policy can only ever write MORE, never drop.
+    #[test]
+    fn an_unconfigured_store_appends_everything_through() {
+        let store = Store::open(":memory:").unwrap();
+        let h1 = batch("src/a.rs", "h1");
+        for _ in 0..3 {
+            assert_eq!(
+                store
+                    .append("run", ExpectedRevision::Any, &h1)
+                    .unwrap()
+                    .written(),
+                2
+            );
+        }
+        assert_eq!(rows(&store, "run"), 6);
+    }
+
+    /// Two files whose paths differ only after a shared prefix must never share a
+    /// subject: the range the guard seeks is bounded by the subject's own separator, so
+    /// `src/a.rs` can never be read as a generation of `src/a.rs.bak`.
+    #[test]
+    fn one_files_generations_never_leak_into_another_files_subject() {
+        let store = Store::open(":memory:")
+            .unwrap()
+            .with_content_identity(identity());
+        store
+            .append("run", ExpectedRevision::Any, &batch("src/a.rs", "h1"))
+            .unwrap();
+        store
+            .append("run", ExpectedRevision::Any, &batch("src/a.rs.bak", "h9"))
+            .unwrap();
+        // The sibling's later batch must not make `src/a.rs@h1` look superseded.
+        assert_eq!(
+            store
+                .append("run", ExpectedRevision::Any, &batch("src/a.rs", "h1"))
+                .unwrap()
+                .written(),
+            0,
+            "another file's newer batch is not this file's generation"
+        );
+        // ...and the sibling is still guarded on its own account.
+        assert_eq!(
+            store
+                .append("run", ExpectedRevision::Any, &batch("src/a.rs.bak", "h9"))
+                .unwrap()
+                .written(),
+            0
+        );
+        assert_eq!(rows(&store, "run"), 4);
+    }
+
+    /// Two projects sharing one backend mint the IDENTICAL content key for a shared
+    /// relative path with identical content - the namespacing decorator gives each its
+    /// own stream, and that is the boundary the guard must respect. A probe that read
+    /// the whole log would drop the second project's genuinely-new fact.
+    #[test]
+    fn one_projects_recorded_key_never_suppresses_anothers() {
+        let store = Store::open(":memory:")
+            .unwrap()
+            .with_content_identity(identity());
+        let h1 = batch("src/a.rs", "h1");
+
+        assert_eq!(
+            store
+                .append("proj-a-run", ExpectedRevision::Any, &h1)
+                .unwrap()
+                .written(),
+            2
+        );
+        assert_eq!(
+            store
+                .append("proj-b-run", ExpectedRevision::Any, &h1)
+                .unwrap()
+                .written(),
+            2,
+            "another project's identical key is another project's fact and must append"
+        );
+        // ...and each project is still guarded on its own stream.
+        assert_eq!(
+            store
+                .append("proj-b-run", ExpectedRevision::Any, &h1)
+                .unwrap()
+                .written(),
+            0
+        );
+        assert_eq!(rows(&store, "proj-a-run"), 2);
+        assert_eq!(rows(&store, "proj-b-run"), 2);
+    }
+
+    /// THE PRECONDITION IS THE WHOLE KEY, NOT THE GENERATION. A batch that GREW while its
+    /// generation stayed the same - the same file re-recorded with an event its earlier
+    /// recording did not carry - must append the events the log has never seen, and only
+    /// those.
+    ///
+    /// This is what the exact-key `recorded` probe buys, and nothing else buys it: the
+    /// generation test alone answers "this file is already at h1" for the new event too,
+    /// and suppresses it. It would then be absent from the log forever, because every
+    /// later run asks the same question and gets the same answer - a permanent hole in
+    /// the index with no re-derivation that can fill it.
+    #[test]
+    fn a_batch_that_grew_at_the_same_generation_appends_exactly_its_unrecorded_events() {
+        let store = Store::open(":memory:")
+            .unwrap()
+            .with_content_identity(identity());
+        let first = [keyed(TYPE_CODE_ENTITY_EXTRACTED, "gc/src/a.rs@h1#0")];
+        assert_eq!(
+            store
+                .append("run", ExpectedRevision::Any, &first)
+                .unwrap()
+                .placements(),
+            [Some(1)]
+        );
+        // The SAME generation, now carrying a second event.
+        let grown = [
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, "gc/src/a.rs@h1#0"),
+            keyed(TYPE_EDGE_INFERRED, "gc/src/a.rs@h1#1"),
+        ];
+        assert_eq!(
+            store
+                .append("run", ExpectedRevision::Any, &grown)
+                .unwrap()
+                .placements(),
+            [None, Some(2)],
+            "the recorded key is a no-op and the UNRECORDED one is written - a generation \
+             test alone would swallow it"
+        );
+        assert_eq!(rows(&store, "run"), 2);
+    }
+
+    /// The type gate lives in the probes as well as ahead of them, and this pins the one
+    /// inside the walk: a NON-DERIVED event is not eligible to DATE a generation, however
+    /// its replay key is spelled.
+    ///
+    /// The population is real - a run's own lifecycle events, gate verdicts and review
+    /// findings all carry a `replay_key`, and nothing stops one from being shaped like a
+    /// content key - so a walk that counted them would read whichever generation a domain
+    /// event happened to name LAST as the file's current one, and then suppress the
+    /// genuinely current batch.
+    #[test]
+    fn a_non_derived_event_never_dates_a_generation_however_its_key_is_spelled() {
+        let store = Store::open(":memory:")
+            .unwrap()
+            .with_content_identity(identity());
+        store
+            .append("run", ExpectedRevision::Any, &batch("src/a.rs", "h1"))
+            .unwrap();
+        store
+            .append("run", ExpectedRevision::Any, &batch("src/a.rs", "h2"))
+            .unwrap();
+        // Recorded LAST, and spelled exactly like h1's leading content key.
+        store
+            .append(
+                "run",
+                ExpectedRevision::Any,
+                &[keyed(TYPE_REVIEW_FINDING, "gc/src/a.rs@h1#0")],
+            )
+            .unwrap();
+
+        // h2 is still the file's latest DERIVED generation, so re-offering it is a no-op.
+        // A walk that let the review finding date h1 would call h1 current, read h2 as
+        // superseded, and append it again.
+        let again = batch("src/a.rs", "h2");
+        assert_eq!(
+            store
+                .append("run", ExpectedRevision::Any, &again)
+                .unwrap()
+                .placements(),
+            [None, None]
+        );
+        assert_eq!(rows(&store, "run"), 5, "the log did not grow");
+    }
+
+    /// And the type gate inside the RECORDED probe: a non-derived event carrying a
+    /// content-shaped key never makes a derived event look already recorded.
+    ///
+    /// Without it the domain event answers the precondition for a content key the log has
+    /// never held on a derived event, and - the file's generation being current - the
+    /// derived event is suppressed and lost.
+    #[test]
+    fn a_non_derived_events_key_never_makes_a_derived_event_look_recorded() {
+        let store = Store::open(":memory:")
+            .unwrap()
+            .with_content_identity(identity());
+        // h1 IS this file's current generation...
+        store
+            .append(
+                "run",
+                ExpectedRevision::Any,
+                &[keyed(TYPE_CODE_ENTITY_EXTRACTED, "gc/src/a.rs@h1#1")],
+            )
+            .unwrap();
+        // ...and a DOMAIN event happens to carry h1's other key.
+        store
+            .append(
+                "run",
+                ExpectedRevision::Any,
+                &[keyed(TYPE_REVIEW_FINDING, "gc/src/a.rs@h1#0")],
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .append(
+                    "run",
+                    ExpectedRevision::Any,
+                    &[keyed(TYPE_CODE_ENTITY_EXTRACTED, "gc/src/a.rs@h1#0")],
+                )
+                .unwrap()
+                .placements(),
+            [Some(3)],
+            "no derived event has ever carried this key, so it is not recorded"
+        );
+    }
+
+    /// TWO POLICIES, TWO ARTIFACTS. The index's definition carries the configured
+    /// metadata key (that is the expression it indexes), so its NAME carries it too: a
+    /// store configured with a different key must not inherit - and then silently fall
+    /// off - the first policy's index.
+    #[test]
+    fn a_second_policy_gets_its_own_index_rather_than_inheriting_the_firsts() {
+        assert_ne!(
+            Store::content_key_index_name("replay_key"),
+            Store::content_key_index_name("content_key"),
+            "an index built on one metadata key answers no question about another"
+        );
+        let name = Store::content_key_index_name("replay_key");
+        assert!(
+            Store::content_key_index_ddl(&name, "replay_key").contains("replay_key"),
+            "and the definition is what makes that so"
+        );
+    }
+
+    /// A COMMITTED DEFINITION IS THE GATE, NEVER A NAME. An artifact sitting under the
+    /// right name with the wrong definition is exactly the state a name check waves
+    /// through, and every probe then falls off the index onto a walk of the stream.
+    #[test]
+    fn an_index_with_the_right_name_and_the_wrong_definition_is_rebuilt() {
+        let store = Store::open(":memory:")
+            .unwrap()
+            .with_content_identity(identity());
+        let (name, wanted) = {
+            let g = store.guard.as_ref().expect("configured");
+            (g.index_name.clone(), g.index_ddl.clone())
+        };
+        // An index of the right name that indexes the wrong thing entirely.
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute_batch(&format!("CREATE INDEX {name} ON events(stream)"))
+            .unwrap();
+
+        store
+            .append("run", ExpectedRevision::Any, &batch("src/a.rs", "h1"))
+            .unwrap();
+
+        assert_eq!(
+            committed_index_ddl(&store.conn.lock().unwrap(), &name).as_deref(),
+            Some(wanted.as_str()),
+            "the stale artifact must be replaced, not accepted"
+        );
+    }
+
+    /// A BUILD THAT NEVER COMMITTED IS NOT REMEMBERED AS DONE, and until it does commit
+    /// the guard SUPPRESSES NOTHING.
+    ///
+    /// Both halves matter and neither is optional. A handle that latched "attempted" on
+    /// the way in would believe forever, and silently, that it has an index it does not
+    /// have - and would then pay an unbounded walk of the stream on every probe. And with
+    /// no index the fail-safe direction is to APPEND: a duplicate row is recoverable, and
+    /// an append that costs a table walk under the write lock is what takes a run down.
+    #[test]
+    fn an_index_that_cannot_be_built_suppresses_nothing_and_is_retried_not_remembered() {
+        let store = Store::open(":memory:")
+            .unwrap()
+            .with_content_identity(identity());
+        let name = store.guard.as_ref().expect("configured").index_name.clone();
+        // Occupy the index's name with a TABLE, so the build can never commit.
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute_batch(&format!("CREATE TABLE {name}(blocker)"))
+            .unwrap();
+
+        let h1 = batch("src/a.rs", "h1");
+        store.append("run", ExpectedRevision::Any, &h1).unwrap();
+        assert_eq!(
+            store
+                .append("run", ExpectedRevision::Any, &h1)
+                .unwrap()
+                .written(),
+            2,
+            "with no index the guard suppresses nothing - the redundant batch appends"
+        );
+        assert_eq!(rows(&store, "run"), 4);
+        assert!(
+            !store
+                .guard
+                .as_ref()
+                .expect("configured")
+                .index_ready
+                .load(Ordering::SeqCst),
+            "a build that never committed must never be remembered as done"
+        );
+
+        // Free the name: the very next append re-attempts, and the guard comes back.
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute_batch(&format!("DROP TABLE {name}"))
+            .unwrap();
+        assert_eq!(
+            store
+                .append("run", ExpectedRevision::Any, &h1)
+                .unwrap()
+                .written(),
+            0,
+            "the retry builds the index and the guard resumes"
+        );
+        assert_eq!(rows(&store, "run"), 4, "and the log did not grow");
+    }
+
+    /// WHAT THIS PINS: that every probe is answered by SEEKING the content-key index ON
+    /// ITS KEY TERM - not that any particular wall-clock cost holds. A query plan states
+    /// the access path and nothing about duration, and the two must not be confused: the
+    /// walk above is bounded by the number of generations it steps through, and THAT is
+    /// what bounds the probe's cost. The plan is what stops the step itself from
+    /// silently becoming a table walk.
+    ///
+    /// The key term is the whole point of the assertion. The probes qualify for the
+    /// EXPRESSION index only while their SQL mirrors the indexed expression exactly, and
+    /// a drift there is silent - the planner still uses the index, but only for the
+    /// `stream` equality, and then walks that stream's every event per probe. A plan
+    /// that names the index and constrains nothing but the stream is exactly the
+    /// degradation this test exists to catch, so naming the index is not enough: the
+    /// plan must show the key expression constrained too.
+    #[test]
+    fn every_probe_seeks_the_content_key_index_on_its_key_term() {
+        let store = Store::open(":memory:")
+            .unwrap()
+            .with_content_identity(identity());
+        // Drive one suppressible append so the lazily created index exists.
+        let h1 = batch("src/a.rs", "h1");
+        store.append("run", ExpectedRevision::Any, &h1).unwrap();
+        store.append("run", ExpectedRevision::Any, &h1).unwrap();
+
+        let guard = store.guard.as_ref().expect("configured");
+        let index = guard.index_name.as_str();
+        let conn = store.conn.lock().unwrap();
+        let probes: [(&String, Vec<&dyn rusqlite::ToSql>); 2] = [
+            (&guard.recorded_sql, vec![&"gc/src/a.rs@h1#0", &"run"]),
+            (
+                &guard.step_sql,
+                vec![&"run", &"gc/src/a.rs@", &"gc/src/a.rsA"],
+            ),
+        ];
+        for (sql, args) in probes {
+            let plan: Vec<String> = conn
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .unwrap()
+                .query_map(rusqlite::params_from_iter(args), |r| r.get::<_, String>(3))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect();
+            let plan = plan.join(" | ");
+            assert!(
+                plan.contains(index),
+                "the probe must seek {index}; plan was {plan}\nsql: {sql}"
+            );
+            // SQLite renders an indexed expression's constraint as `<expr>` in a plan, so
+            // `(stream=? AND <expr>...)` is the seek this guard needs and `(stream=?)`
+            // alone is the walk it must never do.
+            assert!(
+                plan.contains("stream=? AND <expr>"),
+                "the probe must constrain the CONTENT KEY on the index, not just the \
+                 stream; plan was {plan}\nsql: {sql}"
+            );
+            assert!(
+                !plan.contains("SCAN events"),
+                "the probe must never scan the events table; plan was {plan}\nsql: {sql}"
+            );
+            assert!(
+                !plan.contains("TEMP B-TREE"),
+                "the probe must never sort - a sort is the whole range materialised; \
+                 plan was {plan}\nsql: {sql}"
+            );
+        }
+    }
+
+    /// A GENERATION THAT IS A STRING PREFIX OF ANOTHER is still found. `h1` and `h12` are
+    /// two unrelated generations, but `<subject>h12#0` sorts INSIDE the key range that
+    /// begins `<subject>h1`, so a walk that stepped past "everything beginning with this
+    /// key's subject and generation" would skip `h12` outright, read the file as still at
+    /// `h1`, and then suppress a re-offer of `h1` - which by then is a REVERT, and the
+    /// only thing that could put the graph back on the file's earlier content.
+    ///
+    /// This is the case that decides how far the generation skip may reach: past the
+    /// character that DELIMITS the generation, never merely past the generation.
+    #[test]
+    fn a_generation_that_is_a_string_prefix_of_a_later_one_is_still_found() {
+        let store = Store::open(":memory:")
+            .unwrap()
+            .with_content_identity(identity());
+        store
+            .append("run", ExpectedRevision::Any, &batch("src/a.rs", "h1"))
+            .unwrap();
+        store
+            .append("run", ExpectedRevision::Any, &batch("src/a.rs", "h12"))
+            .unwrap();
+
+        // The file is at h12, so h1 is SUPERSEDED and re-offering it must append.
+        assert_eq!(
+            store
+                .append("run", ExpectedRevision::Any, &batch("src/a.rs", "h1"))
+                .unwrap()
+                .written(),
+            2,
+            "h12 is this file's latest generation, so h1 is a revert and must append"
+        );
+        // ...and now h1 is current again, so h12 in turn appends and h1 does not.
+        assert_eq!(
+            store
+                .append("run", ExpectedRevision::Any, &batch("src/a.rs", "h1"))
+                .unwrap()
+                .written(),
+            0
+        );
+        assert_eq!(
+            store
+                .append("run", ExpectedRevision::Any, &batch("src/a.rs", "h12"))
+                .unwrap()
+                .written(),
+            2
+        );
+    }
+
+    /// THE BOUND, driven rather than asserted about: the walk costs one step per recorded
+    /// GENERATION of the subject (plus the one step that proves the range is exhausted),
+    /// and NOT one per event - the sixty sibling keys three batches mint here cost three
+    /// range jumps between them, not sixty.
+    ///
+    /// It is proved by starving it. Handed one step fewer than the subject has
+    /// generations, the walk must answer UNDETERMINED - `None` - and never the best
+    /// generation it happened to reach before running out, because "the latest I got to"
+    /// would suppress a revert. Handed exactly enough, it answers. A walk that visited
+    /// events rather than generations would need sixty-one steps and would fail the
+    /// second assertion; a walk that returned its partial best would fail the first.
+    #[test]
+    fn the_walk_spends_one_step_per_generation_and_an_exhausted_budget_answers_nothing() {
+        let store = Store::open(":memory:")
+            .unwrap()
+            .with_content_identity(identity());
+        // Three generations of ONE file, each a wide batch: 3 generations, 60 events.
+        let wide = |hash: &str| -> Vec<Event> {
+            (0..20)
+                .map(|i| {
+                    keyed(
+                        TYPE_CODE_ENTITY_EXTRACTED,
+                        &format!("gc/src/a.rs@{hash}#{i}"),
+                    )
+                })
+                .collect()
+        };
+        for hash in ["h1", "h2", "h3"] {
+            store
+                .append("run", ExpectedRevision::Any, &wide(hash))
+                .unwrap();
+        }
+        assert_eq!(rows(&store, "run"), 60);
+
+        let guard = store.guard.as_ref().expect("configured");
+        let mut conn = store.conn.lock().unwrap();
+        let tx = conn.transaction().unwrap();
+        let within = |steps| {
+            store
+                .latest_generation_within(&tx, guard, "run", "gc/src/a.rs@", steps)
+                .unwrap()
+        };
+        assert_eq!(
+            within(4),
+            Latest::At("h3".to_string()),
+            "three generations plus the step that proves the range exhausted is all it costs"
+        );
+        assert_eq!(
+            within(3),
+            Latest::Undetermined,
+            "a budget that cannot cover every generation must answer UNDETERMINED, so the \
+             append goes through - and it must say UNDETERMINED rather than ABSENT, which \
+             is what makes the degradation recordable"
+        );
+        assert_eq!(
+            store
+                .latest_generation_within(&tx, guard, "run", "gc/src/never.rs@", 4)
+                .unwrap(),
+            Latest::Absent,
+            "a subject the log has never recorded is an ANSWER, not a degradation"
+        );
+    }
+
+    /// THE RENDERED SQL IS SQL, WHATEVER THE POLICY IS SPELLED WITH. The metadata key and
+    /// the covered type names are configuration (a consumer's strings, not this module's)
+    /// rendered into statement text once, so they are the one place a quote could end a
+    /// literal early and leave the remainder as stray SQL. Both go through the same
+    /// escaper, and the store is driven here with a policy carrying an apostrophe (the
+    /// character that ends a SQL literal) and a backslash (the one that escapes inside a
+    /// JSON path) in BOTH the metadata key and a covered type name.
+    #[test]
+    fn a_policy_spelled_with_quotes_and_backslashes_still_guards() {
+        let awkward = "re'play\\key";
+        let awkward_type = "Ty'pe\\A";
+        let store = Store::open(":memory:")
+            .unwrap()
+            .with_content_identity(ContentIdentity::new(awkward, [awkward_type], subject_of));
+        let h1 = [Event::new(awkward_type, b"payload".to_vec()).with_meta(awkward, "gc/a.rs@h1#0")];
+        // A broken rendering shows up as a backend error (unparsable) or as a probe that
+        // never matches (mis-escaped); the two appends below separate both from working.
+        assert_eq!(
+            store
+                .append("run", ExpectedRevision::Any, &h1)
+                .expect("the rendered probes must be valid SQL")
+                .written(),
+            1
+        );
+        assert_eq!(
+            store
+                .append("run", ExpectedRevision::Any, &h1)
+                .expect("and stay valid on the suppressing path")
+                .written(),
+            0,
+            "the guard reads the awkward metadata key just as well as a plain one"
+        );
+    }
+
+    /// A metadata key NO JSON path can address fails SAFE. SQLite's path parser accepts an
+    /// escaped backslash inside a quoted member name but not an escaped double quote, so a
+    /// key carrying a `"` is unreachable by `json_extract` however it is spelled. The guard
+    /// must then suppress NOTHING - append, the fail-safe direction - and must never
+    /// silently read some OTHER key's value as this one's.
+    #[test]
+    fn a_metadata_key_that_no_json_path_can_address_suppresses_nothing() {
+        let unreachable = "quo\"ted";
+        let store = Store::open(":memory:")
+            .unwrap()
+            .with_content_identity(ContentIdentity::new(
+                unreachable,
+                DERIVED_INDEX_TYPES,
+                subject_of,
+            ));
+        let h1 = [Event::new(TYPE_CODE_ENTITY_EXTRACTED, b"payload".to_vec())
+            .with_meta(unreachable, "gc/a.rs@h1#0")];
+        store.append("run", ExpectedRevision::Any, &h1).unwrap();
+        assert_eq!(
+            store
+                .append("run", ExpectedRevision::Any, &h1)
+                .expect("an unaddressable key is not an error")
+                .written(),
+            1,
+            "a probe that cannot see the key answers 'not recorded', so the append goes \
+             through"
+        );
+        assert_eq!(rows(&store, "run"), 2);
+    }
+
+    /// A policy that covers NO type suppresses nothing - and, just as importantly, renders
+    /// SQL that PARSES. `type IN ()` is not valid SQL, so a store configured this way would
+    /// fail every append rather than simply guard nothing; `type IN (NULL)` is never true,
+    /// which is exactly what covering no type means.
+    #[test]
+    fn a_policy_that_covers_no_type_renders_parsable_sql_and_suppresses_nothing() {
+        assert_eq!(type_list(&[]), "NULL");
+        let store = Store::open(":memory:")
+            .unwrap()
+            .with_content_identity(ContentIdentity::new(
+                META_REPLAY_KEY,
+                Vec::<String>::new(),
+                subject_of,
+            ));
+        let h1 = batch("src/a.rs", "h1");
+        store.append("run", ExpectedRevision::Any, &h1).unwrap();
+        assert_eq!(
+            store
+                .append("run", ExpectedRevision::Any, &h1)
+                .expect("an empty type set must still render SQL that parses")
+                .written(),
+            2,
+            "covering no type suppresses nothing"
+        );
+    }
+
+    /// The subject range is a half-open interval, and its upper bound is the prefix with
+    /// its last character bumped - which is what makes "every key naming this subject" an
+    /// index range seek instead of a scan-and-filter.
+    #[test]
+    fn the_subject_range_holds_exactly_the_keys_that_begin_with_the_subject() {
+        let lo = "gc/src/a.rs@";
+        let hi = prefix_upper_bound(lo);
+        assert_eq!(
+            hi, "gc/src/a.rsA",
+            "the bound is the prefix with its last char bumped"
+        );
+        let in_range = |k: &str| k >= lo && k < hi.as_str();
+        assert!(
+            in_range("gc/src/a.rs@h1#0"),
+            "the subject's own keys are inside"
+        );
+        assert!(in_range("gc/src/a.rs@h2#7"), "every generation of it too");
+        // A sibling path that merely SHARES a leading run of characters is outside the
+        // range in both directions, so no file's batch can retire another's.
+        assert!(!in_range("gc/src/a.rs.bak@h1#0"));
+        assert!(!in_range("gc/src/a.rsZ@h1#0"));
+        assert!(!in_range("gc/src/b.rs@h1#0"));
+        assert_eq!(prefix_upper_bound(""), char::MAX.to_string());
+    }
+
+    /// A store's other guarded policy, keyed on a DIFFERENT metadata key - so it needs a
+    /// different index and answers a different question.
+    fn other_identity() -> ContentIdentity {
+        ContentIdentity::new(OTHER_META_KEY, DERIVED_INDEX_TYPES, subject_of)
+    }
+
+    const OTHER_META_KEY: &str = "other_replay_key";
+
+    fn other_keyed(type_: &str, key: &str) -> Event {
+        Event::new(type_, b"payload".to_vec()).with_meta(OTHER_META_KEY, key)
+    }
+
+    /// The readiness latch is a fact about A POLICY'S INDEX, so it belongs to the policy
+    /// and dies with it. RECONFIGURING MUST BUILD THE NEW POLICY'S OWN INDEX.
+    ///
+    /// A latch held beside the policy instead of on it is a second value that can
+    /// disagree with the first, and this is the disagreement: the handle has latched
+    /// "ready" about the index the FIRST policy built, the second policy needs a
+    /// different index entirely (its expression reads a different metadata key), and the
+    /// latch answers for it. The guard then believes every probe is a seek while every
+    /// probe is a full table walk with a `json_extract` per row - inside the append's
+    /// exclusive write transaction, which every other process on that store is queued
+    /// behind. Nothing about the ANSWERS changes, which is why only the artifact can
+    /// witness it.
+    #[test]
+    fn reconfiguring_builds_the_new_policys_index_and_never_inherits_the_olds_readiness() {
+        let store = Store::open(":memory:")
+            .unwrap()
+            .with_content_identity(identity());
+        store
+            .append("run", ExpectedRevision::Any, &batch("src/a.rs", "h1"))
+            .unwrap();
+        assert!(
+            store
+                .guard
+                .as_ref()
+                .expect("configured")
+                .index_ready
+                .load(Ordering::SeqCst),
+            "the first policy's index is built and latched"
+        );
+
+        let store = store.with_content_identity(other_identity());
+        let (name, wanted) = {
+            let g = store.guard.as_ref().expect("reconfigured");
+            assert!(
+                !g.index_ready.load(Ordering::SeqCst),
+                "a new policy starts unlatched: the latch is created with it, not \
+                 inherited from the policy it replaces"
+            );
+            (g.index_name.clone(), g.index_ddl.clone())
+        };
+
+        store
+            .append(
+                "run",
+                ExpectedRevision::Any,
+                &[other_keyed(TYPE_CODE_ENTITY_EXTRACTED, "gc/src/b.rs@h1#0")],
+            )
+            .unwrap();
+
+        assert_eq!(
+            committed_index_ddl(&store.conn.lock().unwrap(), &name).as_deref(),
+            Some(wanted.as_str()),
+            "the reconfigured store builds ITS OWN index; a latch that outlived the \
+             policy it described would leave every probe walking the table"
+        );
+    }
+
+    /// AN INDEX ANOTHER HANDLE ALREADY COMMITTED IS NOT REBUILT. This is the success
+    /// path of a cold store with more than one appender, not a misuse path.
+    ///
+    /// Both handles here are cold, and the decision to build is necessarily taken
+    /// OUTSIDE the write lock - so on a cold store every handle that starts before the
+    /// first one commits arrives at the build having seen no index. The build's first
+    /// act under the lock is therefore to look again. Without that re-read this racer
+    /// drops and recreates the artifact the winner just committed, holding the exclusive
+    /// write lock for the whole rebuild, and every bystander process appending an
+    /// ordinary event in that window fails on the busy timeout rather than waiting.
+    ///
+    /// `PRAGMA schema_version` is the witness because it counts SCHEMA CHANGES and
+    /// nothing else: a build that writes nothing leaves it exactly where it was, while a
+    /// needless `DROP` plus `CREATE` moves it by two.
+    #[test]
+    fn a_racing_cold_handle_finds_the_index_under_the_lock_and_rebuilds_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("run.db");
+        let path = path.to_str().unwrap().to_string();
+        let schema_version = |at: &str| -> i64 {
+            Connection::open(at)
+                .unwrap()
+                .query_row("PRAGMA schema_version", [], |r| r.get(0))
+                .unwrap()
+        };
+
+        let winner = Store::open(&path)
+            .unwrap()
+            .with_content_identity(identity());
+        // The racer is opened and configured while the store is still COLD, which is
+        // exactly the state a handle is in when it passes the check taken outside the
+        // lock and decides to build.
+        let racer = Store::open(&path)
+            .unwrap()
+            .with_content_identity(identity());
+        let name = racer.guard.as_ref().expect("configured").index_name.clone();
+        assert!(
+            committed_index_ddl(&racer.conn.lock().unwrap(), &name).is_none(),
+            "both handles start with nothing committed to find"
+        );
+
+        winner
+            .append("run", ExpectedRevision::Any, &batch("src/a.rs", "h1"))
+            .unwrap();
+        let built = schema_version(&path);
+
+        {
+            let guard = racer.guard.as_ref().expect("configured");
+            let mut conn = racer.conn.lock().unwrap();
+            racer.build_content_key_index(&mut conn, guard);
+        }
+
+        assert_eq!(
+            schema_version(&path),
+            built,
+            "the racer writes no DDL at all: one build, not one per handle"
+        );
+        assert_eq!(
+            racer
+                .append("run", ExpectedRevision::Any, &batch("src/a.rs", "h1"))
+                .unwrap()
+                .written(),
+            0,
+            "and it guards with the artifact it did not rebuild"
+        );
+    }
+
+    /// AN ARTIFACT NO CONFIGURED POLICY USES IS RECLAIMED, by the one handle that can
+    /// know it is dead.
+    ///
+    /// An index built for another metadata key answers no question this store asks - its
+    /// indexed expression reads a key nothing carries any more, so every entry in it is
+    /// NULL - yet SQLite still maintains it on every insert and still keeps it in the
+    /// file. On a spec whose whole purpose is to BOUND the store, leaving one behind per
+    /// policy change is the guard growing the thing it was built to shrink.
+    #[test]
+    fn an_index_left_by_a_policy_that_is_no_longer_configured_is_dropped() {
+        let store = Store::open(":memory:")
+            .unwrap()
+            .with_content_identity(identity());
+        store
+            .append("run", ExpectedRevision::Any, &batch("src/a.rs", "h1"))
+            .unwrap();
+        let abandoned = store.guard.as_ref().expect("configured").index_name.clone();
+        assert!(
+            committed_index_ddl(&store.conn.lock().unwrap(), &abandoned).is_some(),
+            "the first policy's artifact is committed"
+        );
+
+        let store = store.with_content_identity(other_identity());
+        let live = store
+            .guard
+            .as_ref()
+            .expect("reconfigured")
+            .index_name
+            .clone();
+        store
+            .append(
+                "run",
+                ExpectedRevision::Any,
+                &[other_keyed(TYPE_CODE_ENTITY_EXTRACTED, "gc/src/b.rs@h1#0")],
+            )
+            .unwrap();
+
+        let conn = store.conn.lock().unwrap();
+        assert!(
+            committed_index_ddl(&conn, &abandoned).is_none(),
+            "the dead artifact is reclaimed, not left to be maintained on every insert"
+        );
+        assert!(
+            committed_index_ddl(&conn, &live).is_some(),
+            "and the live one is there"
+        );
+        assert!(
+            stale_content_key_indexes(&conn, &live).is_empty(),
+            "nothing content-keyed is left over"
+        );
+    }
+
+    /// THE TYPE GATE IN RUST, DRIVEN BY THE ONE SHAPE THAT REACHES IT.
+    ///
+    /// Every other test of the type rule is answered before this gate: a solo domain
+    /// event never makes the batch suppressible, and a domain event carrying a key of no
+    /// content-key shape is stopped by the split instead. The gate itself is only
+    /// reached by a domain event that is (a) in a batch the guard IS judging and (b)
+    /// carrying a well-formed key that is genuinely its subject's CURRENT generation -
+    /// which is to say, everything a suppressible event has except the type. Delete the
+    /// three lines and this event is dropped; nothing else in the suite notices.
+    #[test]
+    fn a_domain_event_survives_a_judged_batch_even_carrying_a_live_content_key() {
+        let store = Store::open(":memory:")
+            .unwrap()
+            .with_content_identity(identity());
+        store
+            .append("run", ExpectedRevision::Any, &batch("src/a.rs", "h1"))
+            .unwrap();
+
+        // The derived event is redundant, so the guard is judging; the finding carries
+        // the OTHER key of that same still-current generation, already recorded.
+        let mixed = vec![
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, "gc/src/a.rs@h1#0"),
+            keyed(TYPE_REVIEW_FINDING, "gc/src/a.rs@h1#1"),
+        ];
+        let appended = store.append("run", ExpectedRevision::Any, &mixed).unwrap();
+
+        assert_eq!(
+            appended.written(),
+            1,
+            "the derived duplicate is suppressed and the domain event is not"
+        );
+        assert!(
+            appended.placements()[0].is_none() && appended.placements()[1].is_some(),
+            "and the report says WHICH: {:?}",
+            appended.placements()
+        );
+        assert_eq!(
+            rows(&store, "run"),
+            3,
+            "the finding is a row in the log, on a key the guard would have suppressed \
+             for any covered type"
+        );
+    }
+
+    /// A GUARD THAT HAS STOPPED DEFENDING SAYS SO, IN THE LOG.
+    ///
+    /// Both off states are invisible from outside: an append that suppresses nothing
+    /// looks exactly like an append with nothing to suppress, and the symptom - a log
+    /// growing without bound again - surfaces days later in another process. So the
+    /// reason is recorded where every other fact here is recorded, as one metadata pair
+    /// on the covered events the append was already writing. No new event type, nothing
+    /// to backfill, and any read of the store surfaces it.
+    #[test]
+    fn an_append_written_without_an_index_records_that_the_guard_was_not_judging() {
+        let store = Store::open(":memory:")
+            .unwrap()
+            .with_content_identity(identity());
+        let name = store.guard.as_ref().expect("configured").index_name.clone();
+        // Occupy the index's name with a TABLE, so the build can never commit.
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute_batch(&format!("CREATE TABLE {name}(blocker)"))
+            .unwrap();
+
+        let mut mixed = batch("src/a.rs", "h1");
+        mixed.push(keyed(TYPE_REVIEW_FINDING, "gc/src/a.rs@h1#9"));
+        store.append("run", ExpectedRevision::Any, &mixed).unwrap();
+
+        let recorded = store.read_stream("run", 0, Direction::Forward).unwrap();
+        assert_eq!(recorded.len(), 3);
+        for event in recorded.iter().take(2) {
+            assert_eq!(
+                event.meta.get(META_GUARD_DEGRADED).map(String::as_str),
+                Some(GUARD_DEGRADED_NO_INDEX),
+                "every covered event written by a guard that could not judge says so"
+            );
+        }
+        assert_eq!(
+            recorded[2].meta.get(META_GUARD_DEGRADED),
+            None,
+            "a domain event is never rewritten by a store that merely happened to be \
+             unhealthy while it landed"
+        );
+
+        // Free the name: the guard comes back, and a healthy append stamps nothing.
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute_batch(&format!("DROP TABLE {name}"))
+            .unwrap();
+        store
+            .append("run", ExpectedRevision::Any, &batch("src/b.rs", "h1"))
+            .unwrap();
+        let healthy = store.read_stream("run", 0, Direction::Forward).unwrap();
+        assert!(
+            healthy[3..]
+                .iter()
+                .all(|e| !e.meta.contains_key(META_GUARD_DEGRADED)),
+            "a guard that is judging stamps nothing: the mark means what it says"
+        );
+    }
+
+    /// The OTHER off state, and it is a different fact: the index is there and the walk
+    /// still could not answer, because this one subject has recorded more generations
+    /// than the probe's step budget allows it to step through. Nothing is suppressed
+    /// (the fail-safe direction), and the events written say WHY - `generations-exceeded`
+    /// rather than `no-index`, because the two ask for different remedies.
+    #[test]
+    fn an_append_judged_by_an_exhausted_walk_records_which_defence_gave_way() {
+        let store = Store::open(":memory:")
+            .unwrap()
+            .with_content_identity(identity());
+        // One subject, more generations than the walk may step through.
+        let generations = LATEST_GENERATION_STEPS + 6;
+        for i in 0..generations {
+            store
+                .append(
+                    "run",
+                    ExpectedRevision::Any,
+                    &[keyed(
+                        TYPE_CODE_ENTITY_EXTRACTED,
+                        &format!("gc/src/a.rs@h{i:05}#0"),
+                    )],
+                )
+                .unwrap();
+        }
+
+        // Re-offering a RECORDED key is what sends the probe walking.
+        let again = vec![keyed(TYPE_CODE_ENTITY_EXTRACTED, "gc/src/a.rs@h00000#0")];
+        let appended = store.append("run", ExpectedRevision::Any, &again).unwrap();
+
+        assert_eq!(
+            appended.written(),
+            1,
+            "an undetermined probe never suppresses - it appends"
+        );
+        let last = store
+            .read_stream("run", 0, Direction::Forward)
+            .unwrap()
+            .pop()
+            .expect("the append landed");
+        assert_eq!(
+            last.meta.get(META_GUARD_DEGRADED).map(String::as_str),
+            Some(GUARD_DEGRADED_UNDETERMINED),
+            "the row carries WHICH defence gave way, so the duplicate it let through is \
+             explainable instead of mysterious"
+        );
     }
 }
 
@@ -641,6 +3332,624 @@ mod tests {
         assert_eq!(
             revs, expected,
             "per-stream revisions must stay contiguous and unique under concurrency"
+        );
+    }
+
+    /// Spec 71 - APPEND REFUSES DISORDER. Reproduces the incident's exact signature
+    /// out of band: this shape is UNREACHABLE through the safe `append` API alone (a
+    /// correct writer's revision cursor always strictly extends both position and
+    /// revision order together, so it can never land at or below a revision the
+    /// stream already holds - see [`Store::append`]'s own comment on that seek). A
+    /// compaction that deletes a stream's revision-1 row leaves a hole; a stale
+    /// writer (an older build, running its OWN insert - never this function) then
+    /// reissues that freed revision at the stream's NEWEST position, exactly as the
+    /// recorded incident's writer did after the log's derived-index compaction ran.
+    /// The next honest append onto that stream must refuse rather than silently
+    /// build past the disagreement, naming the stream, both revisions, and the
+    /// likely cause.
+    #[test]
+    fn append_refuses_a_stream_whose_position_order_and_revision_order_already_disagree() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("run.db");
+        let path = path.to_str().unwrap().to_string();
+        let store = Store::open(&path).unwrap();
+
+        // A healthy stream: revisions 0..=4, position order and revision order agree.
+        for i in 0..5u8 {
+            store
+                .append("s", ExpectedRevision::Any, &[Event::new("E", vec![i])])
+                .unwrap();
+        }
+
+        // Out-of-band: delete revision 1's row (the compaction's hole), then reissue
+        // that freed revision as a brand-new row at the stream's newest position (the
+        // stale writer's insert - this is exactly what `append` refuses to do itself,
+        // so it can only be reproduced by going around it).
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute("DELETE FROM events WHERE stream = 's' AND revision = 1", [])
+                .unwrap();
+            conn.execute(
+                "INSERT INTO events (stream, type, id, data, meta, valid_from, recorded_at, \
+                 revision) VALUES ('s', 'E', 'reissued', X'00', '{}', 0, 0, 1)",
+                [],
+            )
+            .unwrap();
+        }
+        // Position order for "s" is now: rev 0, rev 3, rev 4, rev 2, rev 1 (newest).
+        // MAX(revision) is still 4; the position-order tail is revision 1.
+
+        let err = store
+            .append("s", ExpectedRevision::Any, &[Event::new("E", vec![9])])
+            .expect_err("an append onto an already-disordered stream must refuse");
+        match &err {
+            Error::OutOfOrder {
+                stream,
+                attempted,
+                recorded,
+            } => {
+                assert_eq!(stream, "s", "the refusal names the stream: {err}");
+                assert_eq!(
+                    *attempted, 2,
+                    "names the revision it would have written: {err}"
+                );
+                assert_eq!(
+                    *recorded, 4,
+                    "names the revision already recorded that it would not sort after: {err}"
+                );
+            }
+            other => panic!("expected Error::OutOfOrder, got {other:?}"),
+        }
+        let message = err.to_string();
+        assert!(
+            message.to_lowercase().contains("stale"),
+            "the refusal names the likely cause: {message}"
+        );
+        assert!(
+            message.contains("compaction"),
+            "the refusal points at the likely cause's origin: {message}"
+        );
+
+        // Nothing was written: the disordered stream is exactly as it was before the
+        // refused attempt.
+        assert_eq!(
+            store.read_stream("s", 0, Direction::Forward).unwrap().len(),
+            5,
+            "a refused append writes nothing"
+        );
+
+        // A correct append on a DIFFERENT, never-disordered stream is untouched: it
+        // succeeds and reads back at revision 0, exactly as any first append does.
+        store
+            .append(
+                "clean",
+                ExpectedRevision::NoStream,
+                &[Event::new("E", vec![1])],
+            )
+            .expect("a correct append on a healthy stream proceeds normally");
+        let clean = store.read_stream("clean", 0, Direction::Forward).unwrap();
+        assert_eq!(clean.len(), 1);
+        assert_eq!(clean[0].revision, 0);
+    }
+
+    /// The GUARDED twin of the test above, and the shape a real run has: several
+    /// PROCESSES, each its own connection and its own handle, offering the SAME file's
+    /// batch to one on-disk log at once.
+    ///
+    /// Three things have to hold together here and none of them can be seen from a
+    /// single-handle test. The index every probe needs is built lazily, so all eight
+    /// handles reach for it at once and it must be built ONCE, by whichever gets the
+    /// write lock first, with the rest reading the committed definition rather than
+    /// racing a second build. The verdict must be the LOG'S, so the seven handles that
+    /// arrive after the first commit must see the batch recorded even though their own
+    /// process never wrote it. And every one of these appends holds `BEGIN IMMEDIATE`,
+    /// so a probe or a build that overran the busy timeout would surface right here as a
+    /// hard `database is locked` - the failure mode that costs a run a self-report, not a
+    /// row.
+    #[test]
+    fn concurrent_guarded_handles_build_one_index_and_record_one_copy() {
+        use super::content_identity_guard::{identity, keyed};
+        use crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("run.db");
+        let path = path.to_str().unwrap().to_string();
+
+        const HANDLES: usize = 8;
+        // One file's batch, wide enough that a probe per event is actually exercised.
+        let batch: Vec<Event> = (0..24)
+            .map(|i| {
+                keyed(
+                    TYPE_CODE_ENTITY_EXTRACTED,
+                    &format!("gc/src/wide.rs@h1#{i}"),
+                )
+            })
+            .collect();
+
+        // Open every handle up front (serialized) so only the appends race.
+        let stores: Vec<Arc<Store>> = (0..HANDLES)
+            .map(|_| {
+                Arc::new(
+                    Store::open(&path)
+                        .unwrap()
+                        .with_content_identity(identity()),
+                )
+            })
+            .collect();
+        let barrier = Arc::new(std::sync::Barrier::new(HANDLES));
+        // `PRAGMA schema_version` counts SCHEMA CHANGES and nothing else, so it is the
+        // exact witness for "how many times was this index built": one `CREATE INDEX` is
+        // one step, and a needless rebuild is a `DROP` plus a `CREATE`, which is two.
+        let schema_version = || -> i64 {
+            Connection::open(&path)
+                .unwrap()
+                .query_row("PRAGMA schema_version", [], |r| r.get(0))
+                .unwrap()
+        };
+        let before = schema_version();
+
+        let handles: Vec<_> = stores
+            .into_iter()
+            .map(|store| {
+                let bar = Arc::clone(&barrier);
+                let batch = batch.clone();
+                std::thread::spawn(move || {
+                    bar.wait();
+                    match store.append("run", ExpectedRevision::Any, &batch) {
+                        Ok(appended) => (appended.written(), 0usize),
+                        Err(Error::Conflict { .. }) => (0, 0),
+                        Err(_) => (0, 1),
+                    }
+                })
+            })
+            .collect();
+        let (written, hard_errs) = handles.into_iter().map(|h| h.join().unwrap()).fold(
+            (Vec::new(), 0usize),
+            |(mut w, e), (wrote, err)| {
+                w.push(wrote);
+                (w, e + err)
+            },
+        );
+
+        assert_eq!(
+            hard_errs, 0,
+            "a guarded append must queue like any other - a lock error here is a lost \
+             self-report, not a lost row"
+        );
+        let winners: Vec<usize> = written.iter().copied().filter(|w| *w > 0).collect();
+        assert_eq!(
+            winners,
+            vec![batch.len()],
+            "exactly ONE handle writes the batch and every other suppresses it whole; \
+             written per handle was {written:?}"
+        );
+        assert_eq!(
+            schema_version() - before,
+            1,
+            "and the index is built ONCE for all {HANDLES} handles. Every one of them is \
+             cold and decides to build outside the write lock, so without a re-read once \
+             the lock is held each would drop and recreate what the last one committed - \
+             a multi-hundred-megabyte artifact rebuilt per handle, serially, with every \
+             bystander appender queued behind it on the busy timeout"
+        );
+
+        let reader = Store::open(&path).unwrap();
+        assert_eq!(
+            reader
+                .read_stream("run", 0, Direction::Forward)
+                .unwrap()
+                .len(),
+            batch.len(),
+            "the log holds exactly one copy of the file's batch"
+        );
+    }
+
+    // --- Spec 60, criterion 5: the prune's POST-COMMIT half is reported, never propagated ---
+
+    /// A store holding `rounds` recordings of one derived-index replay key, in one namespaced
+    /// stream, plus a non-derived event that no prune may touch. The duplication the prune sheds.
+    fn seeded_with_duplicated_key(path: &str, rounds: usize) -> Store {
+        let s = Store::open(path).unwrap();
+        let mut events = vec![Event::new("RunStarted", b"{}".to_vec())];
+        for _ in 0..rounds {
+            events.push(
+                Event::new(
+                    crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                    b"{}".to_vec(),
+                )
+                .with_meta(crate::ingest::META_REPLAY_KEY, "gc/src/a.rs@h1#0"),
+            );
+        }
+        s.append("run", ExpectedRevision::Any, &events).unwrap();
+        s
+    }
+
+    /// The number of rows the log holds for the seeded replay key, read through a connection of
+    /// its own so the count is the file's and not the store's view of it.
+    fn recordings_of_the_key(path: &str) -> i64 {
+        // Read through the store's OWN key expression, so the count can never be of a key this
+        // store spells differently from the way the test wrote it.
+        let sql = format!(
+            "SELECT COUNT(*) FROM events WHERE {} = ?1",
+            key_expr(crate::ingest::META_REPLAY_KEY)
+        );
+        Connection::open(path)
+            .unwrap()
+            .query_row(&sql, params!["gc/src/a.rs@h1#0"], |r| r.get(0))
+            .unwrap()
+    }
+
+    // --- Spec 68, VALIDATE ADVISORIES: measure_derived_duplication, the prune's read-only twin ---
+
+    #[test]
+    fn measure_derived_duplication_reports_rows_vs_distinct_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path = path.to_str().unwrap();
+        let s = seeded_with_duplicated_key(path, 4);
+        let measured = s
+            .measure_derived_duplication("", &crate::ingest::derived_index_identity())
+            .unwrap();
+        assert_eq!(measured.rows, 4, "four recordings of the one covered key");
+        assert_eq!(
+            measured.distinct_keys, 1,
+            "all four share the same replay key"
+        );
+        assert_eq!(measured.factor(), 4.0);
+    }
+
+    #[test]
+    fn measure_derived_duplication_is_read_only_and_never_deletes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path = path.to_str().unwrap();
+        let s = seeded_with_duplicated_key(path, 3);
+        let _ = s
+            .measure_derived_duplication("", &crate::ingest::derived_index_identity())
+            .unwrap();
+        assert_eq!(
+            recordings_of_the_key(path),
+            3,
+            "measuring must never delete anything - that is the prune's job, not this read"
+        );
+    }
+
+    #[test]
+    fn measure_derived_duplication_scopes_to_the_stream_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path = path.to_str().unwrap();
+        let s = Store::open(path).unwrap();
+        s.append(
+            "proj-a/run",
+            ExpectedRevision::Any,
+            &[
+                Event::new(
+                    crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                    b"{}".to_vec(),
+                )
+                .with_meta(crate::ingest::META_REPLAY_KEY, "gc/src/a.rs@h1#0"),
+                Event::new(
+                    crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                    b"{}".to_vec(),
+                )
+                .with_meta(crate::ingest::META_REPLAY_KEY, "gc/src/a.rs@h1#0"),
+            ],
+        )
+        .unwrap();
+        s.append(
+            "proj-b/run",
+            ExpectedRevision::Any,
+            &[Event::new(
+                crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                b"{}".to_vec(),
+            )
+            .with_meta(crate::ingest::META_REPLAY_KEY, "gc/src/a.rs@h1#0")],
+        )
+        .unwrap();
+        let measured = s
+            .measure_derived_duplication("proj-a/", &crate::ingest::derived_index_identity())
+            .unwrap();
+        assert_eq!(measured.rows, 2, "only proj-a's rows are in scope");
+        assert_eq!(measured.distinct_keys, 1);
+    }
+
+    #[test]
+    fn measure_derived_duplication_on_a_clean_log_reports_no_duplication() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path = path.to_str().unwrap();
+        let s = Store::open(path).unwrap();
+        s.append(
+            "run",
+            ExpectedRevision::Any,
+            &[
+                Event::new(
+                    crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                    b"{}".to_vec(),
+                )
+                .with_meta(crate::ingest::META_REPLAY_KEY, "gc/src/a.rs@h1#0"),
+                Event::new(
+                    crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                    b"{}".to_vec(),
+                )
+                .with_meta(crate::ingest::META_REPLAY_KEY, "gc/src/b.rs@h1#0"),
+            ],
+        )
+        .unwrap();
+        let measured = s
+            .measure_derived_duplication("", &crate::ingest::derived_index_identity())
+            .unwrap();
+        assert_eq!(measured.rows, 2);
+        assert_eq!(measured.distinct_keys, 2);
+        assert_eq!(measured.factor(), 1.0);
+    }
+
+    #[test]
+    fn measure_derived_duplication_treats_the_same_key_under_two_covered_types_as_two_distinct_subjects(
+    ) {
+        // A prune deletes duplicates PER TYPE (`prune_derived_index_compacting_with`'s own
+        // per-type loop, `WHERE type = ?1` scoping its own `PARTITION BY stream, key`): each
+        // covered type is its own duplicate-key space, so the same replay key recorded once
+        // under TWO different types is never a duplicate to the real DELETE - each type's pass
+        // only ever sees ITS OWN one row for it. The measurement must report the same zero
+        // reclaimable count the prune actually reclaims here, never a cross-type merged
+        // overcount (spec 68 Global constraints: one measurement authority, no shadow
+        // accounting).
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path = path.to_str().unwrap();
+        let s = Store::open(path).unwrap();
+        s.append(
+            "run",
+            ExpectedRevision::Any,
+            &[
+                Event::new(
+                    crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                    b"{}".to_vec(),
+                )
+                .with_meta(crate::ingest::META_REPLAY_KEY, "gc/src/a.rs@h1#0"),
+                Event::new(crate::contextgraph::TYPE_EDGE_INFERRED, b"{}".to_vec())
+                    .with_meta(crate::ingest::META_REPLAY_KEY, "gc/src/a.rs@h1#0"),
+            ],
+        )
+        .unwrap();
+        let measured = s
+            .measure_derived_duplication("", &crate::ingest::derived_index_identity())
+            .unwrap();
+        assert_eq!(measured.rows, 2, "one row of each of the two covered types");
+        assert_eq!(
+            measured.distinct_keys, 2,
+            "the same key under two DIFFERENT types is two distinct subjects to the per-type \
+             prune, not one - each type's own DELETE never sees the other type's row"
+        );
+        assert_eq!(
+            measured.factor(),
+            1.0,
+            "no row here is actually reclaimable by a real prune, so the factor must not warn"
+        );
+
+        // Cross-check against the real compaction: it must reclaim zero rows for this key,
+        // proving the measurement's factor of 1.0 matches what actually happens rather than
+        // merely being asserted.
+        let pruned = s
+            .prune_derived_index("", &crate::ingest::derived_index_identity())
+            .unwrap();
+        assert_eq!(
+            pruned.total_removed(),
+            0,
+            "the real per-type prune reclaims nothing for a key that appears once per type"
+        );
+    }
+
+    #[test]
+    fn measure_derived_duplication_on_an_empty_log_reports_a_factor_of_one_not_a_division_by_zero()
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let s = Store::open(path.to_str().unwrap()).unwrap();
+        let measured = s
+            .measure_derived_duplication("", &crate::ingest::derived_index_identity())
+            .unwrap();
+        assert_eq!(measured.rows, 0);
+        assert_eq!(measured.distinct_keys, 0);
+        assert_eq!(
+            measured.factor(),
+            1.0,
+            "no covered rows at all is not duplication - never a NaN/inf from dividing by zero"
+        );
+    }
+
+    /// Spec 60, criterion 5: everything after the commit is a REPORT, never an error return.
+    ///
+    /// The deletes are durable the moment the transaction commits, so a failure in the space
+    /// reclamation that follows it describes a log that HAS been pruned. Propagating it hands the
+    /// operator an error and nothing else - not the per-type counts, not the fact that a prune
+    /// happened at all - which is precisely the undetectable outcome this command's design names
+    /// as the one it must never produce. So the failure is carried back beside the counts.
+    ///
+    /// The failing step is INJECTED rather than provoked, because the real triggers (a temporary
+    /// directory too small for the full copy the rewrite stages there, a writer holding the file
+    /// past the busy timeout) are properties of the machine the test runs on and would make this
+    /// pin conditional on the filesystem. That the real step can fail at all is pinned separately
+    /// by `the_real_compaction_step_reports_a_file_it_cannot_rewrite_as_an_error`.
+    #[test]
+    fn a_compaction_that_fails_after_the_commit_still_reports_what_was_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path = path.to_str().unwrap();
+        let s = seeded_with_duplicated_key(path, 4);
+
+        let pruned = s
+            .prune_derived_index_compacting_with(
+                "",
+                &crate::ingest::derived_index_identity(),
+                |_| Err(Error::Backend("database or disk is full".into())),
+            )
+            .expect("a compaction that failed after the deletes committed is not a failed prune");
+
+        assert_eq!(
+            pruned.total_removed(),
+            3,
+            "the report must still name what the committed transaction deleted; got {:?}",
+            pruned.removed
+        );
+        assert_eq!(
+            pruned.reclaimed_bytes, None,
+            "a reclamation whose step failed is unmeasured, not zero"
+        );
+        assert!(
+            pruned
+                .compaction_error
+                .as_deref()
+                .is_some_and(|e| e.contains("database or disk is full")),
+            "the report must NAME the failure, or an operator cannot tell a skipped compaction \
+             from a failed one; got {:?}",
+            pruned.compaction_error
+        );
+        assert_eq!(
+            recordings_of_the_key(path),
+            1,
+            "and the deletes really are committed: that is why the failure below them cannot be \
+             an error return"
+        );
+    }
+
+    /// Spec 60, criterion 5: the post-commit step this store guards against failing really can
+    /// fail, so the capture above is not a defense against an imaginary error.
+    ///
+    /// A file the process cannot write is the reachable shape of every trigger: the rewrite needs
+    /// to write both the database and a full copy of it, and either can be refused.
+    ///
+    /// FREE PAGES ARE PLANTED FIRST because the rewrite is triggered by the space there is to
+    /// reclaim: on a file holding none, the honest answer is to skip the rewrite entirely, and a
+    /// step that was never asked to write cannot report that it could not.
+    #[test]
+    fn the_real_compaction_step_reports_a_file_it_cannot_rewrite_as_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        drop(Store::open(path.to_str().unwrap()).unwrap());
+        plant_free_pages(&path, 400);
+        let readonly = Connection::open_with_flags(
+            &path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+        )
+        .unwrap();
+        let err = compact_in_place(&readonly)
+            .expect_err("a database this connection cannot write cannot be rewritten in place");
+        assert!(
+            matches!(err, Error::Backend(_)),
+            "the step reports a backend failure; got {err:?}"
+        );
+    }
+
+    /// Leave roughly `rows` blobs' worth of reclaimable free pages in `db`: a table filled and
+    /// dropped releases its pages to the freelist, where they stay until something vacuums.
+    fn plant_free_pages(db: &std::path::Path, rows: u64) {
+        let conn = Connection::open(db).expect("open the log to plant free pages");
+        conn.execute_batch(&format!(
+            "CREATE TABLE junk(x BLOB);
+             INSERT INTO junk(x)
+               WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c WHERE i < {rows})
+               SELECT randomblob(600) FROM c;
+             DROP TABLE junk;"
+        ))
+        .expect("plant reclaimable free pages");
+    }
+
+    /// A whole-number `PRAGMA` read through a connection of its own, so the measurement never
+    /// depends on the state of the connection the store is using.
+    fn pragma_i64(db: &std::path::Path, pragma: &str) -> i64 {
+        Connection::open(db)
+            .expect("open the log to read a pragma")
+            .query_row(&format!("PRAGMA {pragma}"), [], |r| r.get(0))
+            .unwrap_or_else(|e| panic!("read PRAGMA {pragma}: {e}"))
+    }
+
+    /// Spec 60, criterion 5: THE REMEDY THE REPORT PROMISES EXISTS. When the reclamation fails
+    /// after the deletes have committed, the command tells the operator that re-running it is
+    /// safe - and [`PrunedDerived::compaction_error`] says in so many words that the second pass
+    /// "tries the reclamation again". That promise is only true if what triggers the rewrite is
+    /// the space there is to reclaim rather than the rows THIS pass deleted: the first pass
+    /// deleted them all, so a second pass deletes nothing, and a rewrite gated on its own deletes
+    /// would never run again on that log. The space would then be unreclaimable through this
+    /// command forever, with the report cheerfully telling the operator to re-run it.
+    ///
+    /// So the failure is injected on the first pass and the REAL step runs on the second, over a
+    /// log whose freed pages are still sitting in the file.
+    #[test]
+    fn a_rerun_reclaims_the_space_a_failed_reclamation_left_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path_str = path.to_str().unwrap().to_string();
+        let s = seeded_with_duplicated_key(&path_str, 4);
+        // The deletes of a handful of small rows can free no whole page at all, which would leave
+        // this asserting that nothing was reclaimed from a file with nothing in it to reclaim.
+        // Planted free pages make the reclamation a definite figure without changing what it is.
+        plant_free_pages(&path, 3_000);
+        let free_before = pragma_i64(&path, "freelist_count");
+        let pages_before = pragma_i64(&path, "page_count");
+        assert!(
+            free_before > 100,
+            "the fixture must leave real free pages, or a reclaimed file and an untouched one \
+             look identical; the freelist holds {free_before} page(s)"
+        );
+
+        // FIRST PASS: the deletes commit, the reclamation fails.
+        let first = s
+            .prune_derived_index_compacting_with(
+                "",
+                &crate::ingest::derived_index_identity(),
+                |_| Err(Error::Backend("database or disk is full".into())),
+            )
+            .expect("a compaction that failed after the deletes committed is not a failed prune");
+        assert!(
+            first.total_removed() > 0,
+            "the first pass must be the one that sheds the duplication; got {:?}",
+            first.removed
+        );
+        assert!(
+            first.compaction_error.is_some(),
+            "the first pass's reclamation must have failed, or there is nothing for the re-run to \
+             retry; got {first:?}"
+        );
+        assert!(
+            pragma_i64(&path, "freelist_count") >= free_before,
+            "a reclamation that failed reclaimed nothing: the free pages must still be in the file"
+        );
+
+        // SECOND PASS, the one the report told the operator to run. It deletes nothing - the first
+        // pass took the duplication - and it must still reclaim the space the first pass could not.
+        let second = s
+            .prune_derived_index("", &crate::ingest::derived_index_identity())
+            .expect("the re-run the report promises is safe");
+        assert_eq!(
+            second.total_removed(),
+            0,
+            "the re-run deletes nothing - that is exactly why a rewrite gated on deletes would \
+             never retry the reclamation; got {:?}",
+            second.removed
+        );
+        assert_eq!(
+            second.compaction_error, None,
+            "the re-run's reclamation must succeed; got {second:?}"
+        );
+        assert!(
+            second.reclaimed_bytes.is_some_and(|b| b > 0),
+            "the re-run must RECLAIM the space the failed pass left behind, or the report's \
+             promise that re-running is safe is a promise that re-running is pointless; got \
+             {second:?}"
+        );
+        assert_eq!(
+            pragma_i64(&path, "freelist_count"),
+            0,
+            "and the file must actually be compact afterwards: VACUUM drives the freelist to zero"
+        );
+        assert!(
+            pragma_i64(&path, "page_count") < pages_before,
+            "the re-run must shrink the file it reclaimed from: {pages_before} page(s) before"
         );
     }
 }

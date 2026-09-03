@@ -41,6 +41,11 @@
 > - [Grounding as a Tool](architecture-addendum-grounding-as-tool.md) - pushes only the small
 >   deterministic intent layer into an agent's prompt and serves the large reference bulk on
 >   demand through a real graph query tool, removing a measured push-truncation defect.
+> - [The World Authority](architecture-addendum-world-authority.md) - one resident
+>   conductor per project parents every subprocess (ending work by handle, never
+>   inference) and runs a world reconciler that converges the filesystem toward a
+>   desired state derived from the event log; git is the retention system, disk holds
+>   only what is live, and the command line (and the workflow's couriers) are clients.
 
 ---
 
@@ -448,10 +453,11 @@ so swapping backends is a configuration change, not an architecture change.
 // src/eventstore/mod.rs
 pub trait EventStore: Send + Sync {
     /// Append events to the end of a stream under an optimistic-concurrency
-    /// expectation, returning the global position of the last event written. A failed
+    /// expectation, reporting what was ACTUALLY written: one slot per event handed in,
+    /// in input order, carrying the position the store itself issued. A failed
     /// expectation yields `Error::Conflict { stream, expected, actual }`.
     fn append(&self, stream: &str, expected: ExpectedRevision, events: &[Event])
-        -> Result<Position, Error>;
+        -> Result<Appended, Error>;
 
     /// Read one stream's events from a per-stream revision, in a direction.
     fn read_stream(&self, stream: &str, from: Revision, dir: Direction)
@@ -558,6 +564,45 @@ identity** (the git top-level basename), so the composition root wraps the chose
 in `Namespaced` before injecting it, and every `rigger run` is scoped without any caller
 action. A hard multi-tenant boundary is just config: a dedicated file, or a dedicated
 server instance.
+
+### 5.1.3 The store defends its own order: detecting and repairing a disordered stream  **[AS-BUILT]**
+
+Two orders coexist on every event: **position**, the store's own global append order
+(assigned once, never reused, never itself disordered), and **revision**, an event's place
+within its own stream (also store-assigned, as `MAX(revision) + 1` at append time). On a
+stream that has only ever been appended to, the two always agree - whichever event lands at
+a later position also holds a higher revision. The derived-index compaction (`rigger reset
+--derived`) is the one thing that deletes rows from a live stream, and deleting rows opens
+**revision holes**: numbers a surviving row no longer occupies. A write that computes its
+next revision from something other than the stream's current maximum (a build predating the
+`MAX(revision)` cursor, for example) can land in one of those holes - the insert satisfies
+`UNIQUE(stream, revision)` outright, because a hole is not a duplicate, yet the row's
+revision does not exceed what the stream already held, so the two orders now disagree for
+that stream.
+
+`rigger validate` **detects** the signature: it walks the log in position order and tracks,
+per stream, the highest revision seen so far; any row whose revision does not exceed that
+running maximum is out of order. It reports the affected stream, the out-of-order row count,
+and the position range they span, as an advisory - report-only, exit status unchanged, never
+a repair. Repair stays a **documented operator procedure**, never a command, because
+rewriting revisions is exactly the kind of silent, automated correction the rest of this
+store refuses to perform on its own.
+
+**The repair: renumber-by-position, in two phases.** Position is the ground truth - assigned
+once, never itself disordered - so the fix is to make revision agree with it, for the
+affected stream only:
+
+1. **Compute (no writes).** Read every surviving row of the affected stream in position
+   order and assign a fresh, dense revision to each: the earliest becomes `0`, the next `1`,
+   and so on. Diff the proposal against the current `revision` column and confirm every
+   other column (`id`, `data`, `position`, ...) is unchanged - a dry run that touches
+   nothing.
+2. **Apply (one transaction, store quiescent).** With no held step lock and no in-flight run
+   touching the stream, run the computed updates keyed by `position`
+   (`UPDATE events SET revision = <new> WHERE position = <p>`) inside a single transaction.
+   Keying by position - never by the old, possibly ambiguous revision - means no two updates
+   in the batch can collide with each other mid-transaction, and the stream ends up densely
+   numbered `0..N-1`, satisfying `UNIQUE(stream, revision)` by construction.
 
 ### 5.2 The knowledge graph: a bi-temporal projection of the target project
 
@@ -709,12 +754,90 @@ is deduped under can never drift between them. Four properties define it:
 - **Batched fold.** Each file's whole batch is appended in ONE store append and folded in
   ONE graph transaction (`append_and_fold_batch`), because the measured cold-build throughput
   was transaction-cadence bound, not parse-bound - one transaction per file, not per event.
-- **Content-keyed skip.** Every event carries a deterministic content key
+- **Content-keyed skip, project-scoped.** Every event carries a deterministic content key
   `<prefix>/<file>@<hash>#<i>`, a pure function of the batch's bytes (`gc` for code, `gd` for
-  design). An unchanged file yields identical keys, so a re-ingest (a `reindex` after a unit
-  integrates, or an incremental `graph build`) **skips** it and re-folds nothing; a changed
-  file hashes to new keys and re-emits. Only what changed is re-parsed and re-emitted;
-  unchanged files are skipped entirely, so a step never re-processes the whole tree.
+  design). One predicate (`ingest::project_scoped_replay_keys`, beside the key authority that
+  builds that format) decides what a fresh emit is redundant against, and both sinks - the run's
+  keyed emit and a cold `graph build` - call it rather than carrying their own copy. It applies
+  three rules in order:
+  - **Type first.** Only the four derived index types (`CodeEntityExtracted`, `EdgeInferred`,
+    `DocConceptExtracted`, `DocLinkExtracted`) are eligible. Every other event is passed over
+    whatever its replay key looks like, so no domain event can be dropped by this path and the
+    partition is a property of the code, not of a naming convention.
+  - **Project scope, not run scope.** The eligible keys are read from the WHOLE stream, because a
+    file's content hash does not change because a new run started. A derived index fact is a fact
+    about the project's files; run scoping belongs to keys whose recurrence is a property of one
+    run (unit lifecycle, gate verdicts, breaker trips), and those still seed from the current run's
+    slice. So an unchanged file appends **zero** events on every subsequent run, forever - the log
+    stops re-accumulating a re-derivable index.
+  - **Latest generation per file, never ever-recorded.** A batch is suppressed only when its hash
+    equals the hash of the LATEST batch recorded for that same file. A changed file - **including
+    one reverted to content it held at an earlier recorded generation** - differs from its latest
+    batch, so it re-emits in full. An ever-recorded key set would match the reverted content's old
+    records, re-emit nothing, and strand the graph on a superseded version of that file. What the
+    re-emitted batch then RETIRES is a different mechanism's doing, not this rule's, and it covers
+    only the code half: a code batch carries a `fresh` head, and the fold's two `fresh` arms are the
+    only callers of `supersede_file_edges`, so the file's prior structural edges are retired by that
+    spec 29a mechanism. The design half sets no `fresh` head at all, so a re-emitted design batch
+    adds its edges without retiring the ones its earlier generation left live.
+
+  The net contract is stated against the LOG, because the log is the only thing this predicate
+  decides: after any mix of skipping and re-ingest, the log holds each file's LATEST content
+  generation **as the walk lowered it** in full, and only what changed is ever re-emitted. That
+  qualifier is load-bearing and the last bullet below is why: the walk's view of a file is not always
+  the tree's. Whether the live graph then equals a cold rebuild is a property of the FOLD, not of
+  this rule - suppression withholds only an append whose content the log already records: it is
+  correct about the LOG, and a lost fold is therefore NOT self-healing by re-ingest, because the
+  skip withholds exactly the re-append that would have re-folded it; only the append-and-fold
+  authority can heal that half. In each case below, the log stays right while the GRAPH or the TREE
+  diverges from it; what follows names some of them and is not a closed enumeration.
+
+  In these three, **no batch is folded for the file at all**. Read "the walk no longer sees it"
+  strictly, because the two halves differ: the design half
+  reads the LIVE tree (`walk_guarded` + a file read per path), so a path that is gone is gone to it,
+  while the code half lowers from a PERSISTED symbols index when the project has one (the last bullet
+  below). A path the tree has deleted that such an index still lists IS handed over as a batch, DOES
+  reach a suppression decision, and is outside these three:
+
+  - **A file the walk no longer sees.** Retiring a file's structure is driven by that file's OWN
+    batch (`supersede_file_edges` runs inside the fold of the batch), and the walk emits no batch for
+    a path it no longer holds - so nothing on the ingest path retires that file's nodes or edges.
+  - **A file the walk still sees that now extracts to NOTHING** - an ordinary edit that removes its
+    last definition and reference. Both halves drop a file whose extraction is empty, so again no
+    batch is emitted, no `supersede_file_edges` runs, and that file's prior entities and edges stay
+    live. "Extracts to nothing" is measured on what the walk lowered, so on a persisted-index project
+    an edit that empties a file leaves the code half emitting the index's batch until the index is
+    refreshed. Skipping is not what strands them: re-appending the whole index would not have
+    retired them either.
+  - **A batch whose APPEND landed but whose FOLD did not.** `append_and_fold_batch` folds
+    best-effort by contract - a fold failure never fails an append that already landed durably - so
+    the log is right and the graph is behind. The append IS recorded, so a later run correctly skips
+    it; healing that half is the append-and-fold authority's obligation, not the skip rule's.
+
+  These two sit outside those three for other reasons:
+
+  - **The design half retires nothing, even when its batch IS folded.** The fold's design arms only
+    ensure nodes and add edges; `supersede_file_edges` is reached from the `fresh` code arms alone.
+    Deleting a section from a design doc therefore re-emits and re-folds that doc's whole batch and
+    still leaves the retired `SPECIFIES` and reference edges live.
+  - **A code walk lowered from a PERSISTED symbols index.** The code half loads a persisted index
+    when the project has one and only builds a fresh one when it does not, and it derives every
+    event from the INDEXED symbols with no read of the file itself. On such a project the batches -
+    and therefore the content the suppression decision is made against - describe what that index
+    holds rather than what the tree currently holds, so a suppression decision IS made and it is made
+    against stale content. This is also why the three above are stated walk-relative: a path the tree
+    no longer holds, or one an edit emptied, still yields a NON-empty batch while the index lists it.
+    Refreshing the index is `rigger reindex`'s job, not this rule's.
+
+  On the INGEST path the projection deletes nothing, so shedding a removed file's facts is a
+  deliberate act (`Projector::prune`), never a consequence of the next ingest. The projection is not
+  delete-free overall, and the distinction is worth stating exactly: besides `prune`'s three deletes,
+  the fold's `CommunityAssigned` and `ConceptDerived` arms each DELETE the super-nodes of their own
+  grain that the same pass just left with no live member (nodes carry no `valid_to`, so removal is
+  the only way to retire one - the same node-removal primitive `prune` uses). Both are scoped by
+  their grain's id prefix and by `KIND_COMMUNITY` / `KIND_CONCEPT` and guarded on having no live
+  member, so neither can reach a file entity or its edges, and neither is reachable from an event of
+  the four derived index types.
 
 ### 5.6 The loop, concretely: emit, project, retrieve
 
@@ -849,8 +972,12 @@ not the machine singleton.
   project identity, the project root, a **credential-free** store identity, and a heartbeat
   it refreshes while it works - as pure discovery metadata under the machine's state
   directory. It is NEVER a source of truth and NEVER holds a credential; its loss is
-  harmless, because live instances repopulate it as they heartbeat, and any reader prunes
-  entries whose heartbeat has gone stale.
+  harmless, because live instances repopulate it as they heartbeat. A dead instance's entry
+  ages out and is eventually deleted - but pruning is reserved to the dashboard's own
+  self-reap watcher tick alone; every other reader (an `/api/instances` poll, an attach
+  resolve, `reset --derived`'s live-writer check) filters stale entries out of its view
+  without ever deleting them, so none of those readers can prune a foreign project's entry
+  out from under it before the watcher itself has observed that project's root.
 - **Attach-to-stores, run-agnostic reads.** The dash discovers every live instance from the
   registry and attaches to each one's store read-only (`?instance=<id>`), re-resolving a
   shared server through the same store-resolution authority every command uses (the registry
@@ -862,8 +989,18 @@ not the machine singleton.
   or CI run opts out with the documented `dash: off` workflow key (or its `false`/`no`
   synonyms), resolved through the single `Workflow::dash_enabled` authority, or with the
   `RIGGER_NO_DASH` environment variable - either suppresses the ensure entirely, so the run
-  proceeds with no dash and no port bind. The singleton self-reaps when the last live instance
-  it was serving is gone.
+  proceeds with no dash and no port bind. The singleton self-reaps only once TWO independent
+  signals both go quiet: the instance registry holds no live entry for any registered
+  project (an entry whose heartbeat has aged past the idle window is pruned before this
+  check runs), AND no in-flight agent's own liveness marker is still fresh. That
+  agent-liveness check is NOT scoped to the launching project alone: it is checked under
+  that project's own scratch root, and under the scratch root of every OTHER project this
+  singleton has ever seen registered on the machine, so a live agent on any of them keeps
+  the singleton serving even once that agent's own project has aged out of the registry (a
+  lapsed heartbeat cadence, or the run that registered it already having ended). This closes
+  the gap a registry-only trigger leaves open: a working agent whose heartbeat cadence falls
+  behind the idle window would otherwise watch its dashboard vanish out from under it
+  mid-work.
 
 The dashboard reads the SAME projection the agent tools read (section 5.7) - the inspector's
 three lenses, call queries, and rationale overlay (section 5.4) are the human face of the

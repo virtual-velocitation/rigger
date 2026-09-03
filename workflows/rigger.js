@@ -154,6 +154,28 @@ const STEP = {
     // the top level (additionalProperties:false) would reject a wedged step's JSON and the
     // wedge would be lost.
     escalated: { type: 'array', items: { type: 'string' } },
+    // The push-side ATTENTION array (spec 69, criterion 5): `rigger step` stamps one entry
+    // per anomaly its call surfaced - a unit ESCALATED, the run HALTED, a worker's death
+    // RECURRED, the budget crossed into its final tenth, or a STALLED FRONTIER - naming the
+    // signal `kind`, the subject `unit` (empty for a run-scoped kind), and a human-readable
+    // `detail`. Omitted on a clean step, preserving the historical `{wave,done}` shape. The
+    // top level rejects unknown properties, so this MUST be declared or a flagged step's
+    // JSON would fail validation and the signal would be lost. Rendering each entry as a
+    // narrator log line is a LATER criterion's job (spec 69, "the driver relays it"); this
+    // schema only admits the field so an unattended run's attention is never dropped.
+    attention: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: true,
+        required: ['kind', 'detail'],
+        properties: {
+          kind: { type: 'string' },
+          unit: { type: 'string' },
+          detail: { type: 'string' },
+        },
+      },
+    },
     error: { type: 'string' },
   },
 }
@@ -169,6 +191,53 @@ const STATUS = {
   additionalProperties: false,
   required: ['stdout'],
   properties: { stdout: { type: 'string' } },
+}
+
+// The push-side ATTENTION relay (spec 69, criterion 6 - "the driver relays it"). `rigger
+// step` (criterion 5) already stamped `step.attention`: one entry per anomaly its call
+// surfaced, naming a closed-vocabulary `kind`, the `unit` it is about (absent for a
+// run-scoped kind), and a human `detail`. This is the ONLY thing left for the driver to do -
+// render each entry as one narrator log() line naming the event, the unit, and a response -
+// so an unattended run's anomalies land in the same surface the driver already narrates to,
+// instead of staying a pull-only whisper an operator has to go read the log for.
+//
+// ATTENTION_RESPONSE maps each wire `kind` to the response an operator should reach for,
+// mirroring the SAME convention `src/watch.rs::Signal::response` establishes for the
+// pull-side `rigger watch` command: `escalated` and `halted` resolve to the two EXISTING
+// spec-68 skills the spec's own Design Notes name directly ("resume and escalation response
+// protocols are spec 68's skills, referenced by name") - `halted` because a run stopped
+// mid-flight (a budget breaker trip, or a merged hung-liveness fault) is exactly the
+// interrupted-run / stale-heartbeat case `rigger-resume-a-run` diagnoses.
+// `worker-death-recurred` resolves to the churn skill (a unit's repeatedly failing attempts
+// is the same family `Signal::RejectRecurrence` maps to on the pull side).
+// `budget-final-tenth` resolves to the resume skill too - a preemptive, run-scoped warning
+// for the SAME halt an operator would otherwise only learn of via `halted` once it actually
+// trips. `stalled-frontier` names the Design's own literal directive verbatim instead of
+// inventing a sixth skill, exactly as `Signal::FrontierStall` does on the pull side. An
+// unrecognized kind (never produced today - the wire's vocabulary is closed) falls back to
+// the umbrella watch skill rather than rendering nothing.
+const ATTENTION_RESPONSE = {
+  'escalated': 'rigger-handle-an-escalation',
+  'halted': 'rigger-resume-a-run',
+  'worker-death-recurred': 'rigger-diagnose-churn',
+  'budget-final-tenth': 'rigger-resume-a-run',
+  'stalled-frontier': 'stop the driver and diagnose before another round spends',
+}
+
+// relayAttention renders each `attention` entry a step carries as ONE narrator log() line -
+// this criterion's whole job, and the ONLY thing it does: it never stops the loop and never
+// retries anything (the wire stamp, criterion 5, already decided WHAT happened - this only
+// decides how an unattended operator READS it). `step.attention` is omitted from the wire
+// entirely on a clean step (criterion 5's `skip_serializing_if`), so the `|| []` guard only
+// ever normalizes that shape - it never manufactures an anomaly the wire did not report, and
+// an entry-less step renders nothing, keeping a clean run's log exactly as quiet as before
+// this criterion.
+function relayAttention(step) {
+  for (const a of step.attention || []) {
+    const subject = a.unit || 'run'
+    const respond = ATTENTION_RESPONSE[a.kind] || 'rigger-watch-a-run'
+    log(`attention - ${a.kind}: ${subject} - ${a.detail} (respond: ${respond})`)
+  }
 }
 
 // phaseOf builds a worker's per-unit `opts.phase` progress-group label from the wave item,
@@ -354,7 +423,9 @@ async function runWorker(req, fatal) {
     `Everything it prints (a persona above a \`---\` line when present, then the task) IS your assignment - follow it as if it were this message. Then:\n\n` +
     `--- rigger driver instructions ---\n` +
     `${workdir}\n` +
-    `SCRATCH POLICY (hard rule): any scratch YOU create - probe repos, verification worktrees, test builds, setup rehearsals - lives under ${REPO}/.rigger/tmp/agent-scratch/, NEVER under /tmp or your own session scratchpad (those are on the operator's small OS partition, and a single cargo target or \`rigger setup\` shim install there fills the disk). For any cargo you run outside your assigned worktree, export CARGO_TARGET_DIR=${REPO}/.rigger/tmp/cargo-target first. agent-scratch is swept when the run completes - do not store anything durable there.\n` +
+    `SCRATCH POLICY (hard rule): before creating ANY scratch - probe repos, verification worktrees, test builds, setup rehearsals - fetch YOUR OWN rigger-assigned scratch container, from ${REPO}, using Bash:\n` +
+    `  rigger scratch '${req.id}'\n` +
+    `Everything you create lives INSIDE that one printed path, NEVER under /tmp or your own session scratchpad (those are on the operator's small OS partition, and a single cargo target or \`rigger setup\` shim install there fills the disk). For any cargo you run outside your assigned worktree, export CARGO_TARGET_DIR to a subdir of that same printed path first - never the shared build cache. It is reaped the moment your result records - do not store anything durable there.\n` +
     heartbeat +
     progressNote +
     `The rigger context tools your task refers to (rigger_emit, rigger_peers) are available here as the CLI commands \`rigger emit --spawn '${req.id}' <Type> '<json>'\` and \`rigger peers <file>...\`, run from ${REPO}. The \`--spawn '${req.id}'\` stamps the emit with YOUR spawn id so the conductor attributes it to you exactly (spec 18) - always include it on every \`rigger emit\`.\n` +
@@ -557,6 +628,12 @@ for (;;) {
   if (step.error) {
     stop(`\`rigger step\` failed: ${step.error}`)
   }
+
+  // 1a. Relay this step's push-side ATTENTION array (spec 69, criterion 6): render each entry
+  //     as one narrator log() line "at the wave it arrived" - as soon as the step that
+  //     surfaced it is in hand, before that same wave's own agents are spawned below. Purely
+  //     a render: it never stops the loop and never changes what happens next.
+  relayAttention(step)
 
   // 2. Spawn the wave natively in parallel; each worker in its own per-unit progress group. A
   //    worker that dies has its failure recorded on its behalf inside runWorker; if that death

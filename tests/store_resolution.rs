@@ -138,10 +138,10 @@ fn the_single_resolver_exists_and_the_old_per_command_helper_is_retired() {
 // Runtime wiring: a command configured for the server-backed store resolves THAT store.
 // ---------------------------------------------------------------------------------------
 
-/// The compiled `rigger` binary under test (Cargo sets this for integration tests).
-fn rigger_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_rigger")
-}
+// The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
+// `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
+// and every suite that spawns the product then dies with a bare NotFound.
+mod common;
 
 /// The project identity the binary resolves for `root` (the git top-level basename, or the
 /// tracked `.rigger/project.id`), mirrored here so a read-back of the server binds the exact
@@ -197,12 +197,13 @@ fn start_kurrentdb(
             return None;
         }
     };
-    // The server needs a moment past the readiness log line before it accepts gRPC.
-    std::thread::sleep(std::time::Duration::from_secs(2));
-    Some((
-        container,
-        "kurrentdb://localhost:21134?tls=false".to_string(),
-    ))
+    // The readiness log line precedes gRPC accept, and the couriers these tests spawn
+    // connect eagerly with no retry - so poll the adapter's own connect until it succeeds
+    // instead of trusting a fixed grace (PR #27's CI caught a courier connecting into the
+    // gap a 2s sleep left on a slow VM). open_server carries the 60s deadline.
+    let conn = "kurrentdb://localhost:21134?tls=false".to_string();
+    drop(open_server(&conn));
+    Some((container, conn))
 }
 
 /// Open the server store as a namespaced port, retrying briefly while it finishes coming up
@@ -241,8 +242,13 @@ fn a_courier_in_a_project_configured_for_the_server_resolves_the_server_store() 
 
         // A bare courier - `rigger emit`, no `--eventstore` flag - the exact surface a worker's
         // self-report uses. Before this criterion it wrote to LOCAL sqlite; now it must resolve
-        // the shared server the project is configured for.
-        let out = Command::new(rigger_bin())
+        // the shared server the project is configured for. `XDG_STATE_HOME` is redirected to a
+        // per-call temp dir (spec 62, "couriers count as activity"): `emit` now refreshes the
+        // machine-global instance registry too, so an unredirected call here would otherwise
+        // seed a phantom, since-deleted-tempdir entry into the operator's real
+        // `~/.local/state/rigger/instances`.
+        let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
+        let out = common::rigger_courier()
             .args([
                 "emit",
                 "DecisionMade",
@@ -251,6 +257,7 @@ fn a_courier_in_a_project_configured_for_the_server_resolves_the_server_store() 
             .current_dir(root)
             .env("KURRENTDB_CONN", &conn)
             .env("RIGGER_NO_DASH", "1")
+            .env("XDG_STATE_HOME", state.path())
             .output()
             .expect("spawn rigger emit");
         assert!(
@@ -344,7 +351,10 @@ fn a_server_courier_in_a_nested_worktree_files_under_the_owning_root_identity() 
 
         // A bare courier - `rigger emit`, no `--eventstore` flag - run FROM the nested worktree,
         // the exact surface a spawned worker's self-report uses inside its unit worktree.
-        let out = Command::new(rigger_bin())
+        // `XDG_STATE_HOME` is redirected for the same reason as the first courier call above:
+        // `emit` now refreshes the machine-global instance registry too (spec 62).
+        let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
+        let out = common::rigger_courier()
             .args([
                 "emit",
                 "DecisionMade",
@@ -353,6 +363,7 @@ fn a_server_courier_in_a_nested_worktree_files_under_the_owning_root_identity() 
             .current_dir(&nested)
             .env("KURRENTDB_CONN", &conn)
             .env("RIGGER_NO_DASH", "1")
+            .env("XDG_STATE_HOME", state.path())
             .output()
             .expect("spawn rigger emit from the nested worktree");
         assert!(
