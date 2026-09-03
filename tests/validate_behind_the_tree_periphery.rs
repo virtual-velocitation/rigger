@@ -114,6 +114,12 @@ fn git_output(root: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .args(args)
         .current_dir(root)
+        // Same fixed identity as `git()` above: commands like `commit-tree` create
+        // commits too, and a CI runner has no global git identity to fall back on.
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@e")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@e")
         .output()
         .unwrap_or_else(|e| panic!("spawning git {args:?} failed: {e}"));
     assert!(
