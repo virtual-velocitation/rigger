@@ -197,12 +197,13 @@ fn start_kurrentdb(
             return None;
         }
     };
-    // The server needs a moment past the readiness log line before it accepts gRPC.
-    std::thread::sleep(std::time::Duration::from_secs(2));
-    Some((
-        container,
-        "kurrentdb://localhost:21134?tls=false".to_string(),
-    ))
+    // The readiness log line precedes gRPC accept, and the couriers these tests spawn
+    // connect eagerly with no retry - so poll the adapter's own connect until it succeeds
+    // instead of trusting a fixed grace (PR #27's CI caught a courier connecting into the
+    // gap a 2s sleep left on a slow VM). open_server carries the 60s deadline.
+    let conn = "kurrentdb://localhost:21134?tls=false".to_string();
+    drop(open_server(&conn));
+    Some((container, conn))
 }
 
 /// Open the server store as a namespaced port, retrying briefly while it finishes coming up
