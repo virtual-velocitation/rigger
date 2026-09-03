@@ -33,9 +33,24 @@ jobs:
       FASTEMBED_CACHE_DIR: ${{ github.workspace }}/.fastembed_cache
     steps:
       - uses: actions/checkout@v4
+        with:
+          # go-gitsemver derives the embedded version from tag history (Mainline mode
+          # walks to the nearest reachable tag), so a shallow, tagless checkout would
+          # derive garbage; full history keeps the derivation identical to a workstation.
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      # The version-derivation periphery tests assert this binary's embedded version is
+      # genuinely derived (not +unversioned), which requires go-gitsemver on PATH when the
+      # test binary is BUILT (spec 74: derivation is delegated, go-gitsemver.yml is the
+      # config authority). Pinned to the version verified on the workstation.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+      - name: install go-gitsemver (version derivation, spec 74)
+        run: go install github.com/MyCarrier-DevOps/go-gitsemver@v1.11.0
       - uses: Swatinem/rust-cache@v2
         with:
           # rust-cache restores the compiled `ort-sys` crate but NOT ort's downloaded ONNX
