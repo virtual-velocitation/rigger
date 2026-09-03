@@ -984,7 +984,7 @@ fn spec_lint_self_clean_over_the_committed_corpus() {
          a recall regression; got: {f4_hits:?}"
     );
     assert_eq!(
-        f1_total, 187,
+        f1_total, 188,
         "F1 ownership's corpus-wide total is pinned to sdet's round-5 independently \
          cross-checked count (194), minus the 3 hits removed by giving specs/66's own \
          criteria 4/5/6 an OWNS sentence (`u66c3-self-clean-ownership-gap-fix`, required by \
@@ -998,17 +998,19 @@ fn spec_lint_self_clean_over_the_committed_corpus() {
          checkbox either - it is not a claimable concern a neighbor could contest), plus 1 hit \
          added by specs/81-deflake-held-port-contract.md landing in the corpus (operator \
          review, PR #27: the same ordinary both-feature-lanes-green closing checkbox as 79's, \
-         carrying no contestable concern), reviewed \
+         carrying no contestable concern), plus 1 hit added by specs/82-unique-pr-heads.md \
+         (operator review 2026-09-03: same closing-checkbox class again), reviewed \
          directly against the advisory text, not a heuristic regression; a changed total means \
          either a real spec edit (update this pin after reviewing the new/removed hits) \
          or a regression in the heuristic"
     );
     assert_eq!(
-        shape_total, 78,
+        shape_total, 82,
         "F2 bundling / F6 copyability's corpus-wide total is pinned as a regression guard \
-         (spot-checked legitimate by the round-5 adversary sweep), plus 4 hits added by \
-         specs/80-criteria-survive-extraction.md and specs/81-deflake-held-port-contract.md \
-         landing in the corpus (operator review, PR #27): their criteria are DELIBERATELY \
+         (spot-checked legitimate by the round-5 adversary sweep), plus 8 hits added by \
+         specs/80-criteria-survive-extraction.md, specs/81-deflake-held-port-contract.md and \
+         specs/82-unique-pr-heads.md \
+         landing in the corpus (operator review, PR #27 + 2026-09-03): their criteria are DELIBERATELY \
          single physical lines - and therefore over-long to this heuristic - so their full \
          text survives the first-physical-line extractor truncation that spec 80 itself \
          fixes; once 80's fix is in the operator binary, new specs wrap normally again and \
