@@ -2,12 +2,57 @@
 //! "Done-when" list the conductor's coverage gate checks every unit against. A
 //! spec with none is not loop-ready.
 
-/// ExtractCriteria returns the text of every markdown checkbox item ("- [ ] ...").
+/// ExtractCriteria returns the FULL text of every markdown checkbox item ("- [ ] ..."), not
+/// merely its first physical line. A checkbox's text runs from its marker to the start of
+/// the next checkbox item, a blank line, or a heading line, whichever comes first
+/// (`criterion_block_boundary`) - continuation lines, including a nested sub-bullet, have
+/// their leading indentation stripped and are joined onto the first line with single spaces
+/// (spec 80's JOINING RULE). This is load-bearing: `resolve_served_criterion`
+/// (src/conductor.rs) canonicalizes every proposal's coverage to exactly this text, so a
+/// criterion's continuation lines - most commonly an OWNS/exclusion sentence, per this
+/// repo's own Done-when convention - must survive extraction whole or every downstream
+/// consumer (unit titles, the grounding query, `UnitStarted.spec_criterion`, plan-critique's
+/// own prompt) silently serves the truncated stub instead.
 pub fn extract_criteria(text: &str) -> Vec<String> {
-    text.lines()
-        .filter_map(checkbox_text)
-        .map(str::to_string)
-        .collect()
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if let Some(first) = checkbox_text(lines[i]) {
+            let mut joined = first.to_string();
+            i += 1;
+            while i < lines.len() && !criterion_block_boundary(lines[i]) {
+                joined.push(' ');
+                joined.push_str(lines[i].trim());
+                i += 1;
+            }
+            out.push(joined);
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// True when `line` ends an open checkbox item's text under [`extract_criteria`]'s JOINING
+/// RULE (spec 80): the start of the next checkbox item, a blank line, or a heading line.
+/// Any other line - indented or not, including a nested sub-bullet - is a continuation.
+fn criterion_block_boundary(line: &str) -> bool {
+    line.trim().is_empty() || heading_level(line).is_some() || checkbox_text(line).is_some()
+}
+
+/// Each checkbox item's FIRST PHYSICAL LINE ONLY - [`extract_criteria`]'s pre-spec-80
+/// reading, kept as its own helper so [`spec_shape_advisories`] can go on scanning exactly
+/// the text a planner verbatim-copies a criterion LABEL from. [`extract_criteria`]'s full
+/// text (spec 80's JOINING RULE) is real, load-bearing content for its actual consumers
+/// (`resolve_served_criterion` et al.) but is the wrong input for a SHAPE lint calibrated
+/// against `MAX_CRITERION_LEN` and clause-coordinator counts on committed spec prose - an
+/// OWNS/exclusion sentence on a continuation line routinely crosses the length threshold or
+/// adds a `"; "` coordinator, which is genuine required content, not a bundling/copyability
+/// defect. `spec_lint_self_clean_over_the_committed_corpus` (tests/spec_lint.rs) pins the
+/// shape lint's real-corpus total against this first-line calibration.
+fn checkbox_opening_lines(text: &str) -> Vec<&str> {
+    text.lines().filter_map(checkbox_text).collect()
 }
 
 /// The repo-relative, path-like tokens a spec's `criteria` reference (e.g. `src/main.rs`,
@@ -164,10 +209,10 @@ impl std::fmt::Display for ShapeAdvisory {
 /// returned in document order, grouped by criterion then by rule. Reuses
 /// [`extract_criteria`] for the criterion list, so indices align with it.
 pub fn spec_shape_advisories(text: &str) -> Vec<ShapeAdvisory> {
-    let criteria = extract_criteria(text);
+    let criteria = checkbox_opening_lines(text);
     let sub_bullets = sub_bullet_criteria(text);
     let mut out = Vec::new();
-    for (i, criterion) in criteria.iter().enumerate() {
+    for (i, &criterion) in criteria.iter().enumerate() {
         let n = i + 1;
         if let Some(count) = multi_behavior_coordinators(criterion) {
             out.push(ShapeAdvisory {
@@ -813,6 +858,103 @@ mod tests {
         assert!(extract_criteria("# just prose\n\nno checkboxes").is_empty());
     }
 
+    // -----------------------------------------------------------------------------------
+    // Spec 80 (unit c1): the JOINING RULE - a checkbox item's text runs from its marker to
+    // the start of the next checkbox item, a blank line, or a heading line, whichever comes
+    // first; continuation lines (including nested sub-bullets) have leading indentation
+    // stripped and are joined with single spaces. Pinned at the src/spec.rs seam.
+    // -----------------------------------------------------------------------------------
+
+    /// A checkbox wrapping across three-plus physical lines, with an OWNS sentence on the
+    /// THIRD line, is returned as one single-spaced, indentation-stripped string - the
+    /// truncation this unit exists to fix (previously only the first physical line was
+    /// kept, silently dropping the OWNS sentence).
+    #[test]
+    fn extract_criteria_joins_a_three_line_wrap_including_the_owns_sentence_on_line_three() {
+        let text = "## Done when\n\n\
+            - [ ] a test proves something that wraps across\n\
+            \x20\x20three physical lines and needs a bit more room to make its\n\
+            \x20\x20point. This criterion OWNS the wrap boundary.\n\
+            - [ ] a short, single-line criterion\n";
+        assert_eq!(
+            extract_criteria(text),
+            [
+                "a test proves something that wraps across three physical lines and needs \
+                 a bit more room to make its point. This criterion OWNS the wrap boundary.",
+                "a short, single-line criterion",
+            ]
+        );
+    }
+
+    /// Adjacent checkboxes with NO blank line between them: a wrapped continuation line
+    /// belongs to the checkbox above it, but the next checkbox marker immediately ends that
+    /// block - the two criteria's text never bleeds into each other.
+    #[test]
+    fn extract_criteria_stops_a_wrap_at_the_next_checkbox_item_with_no_blank_line_between() {
+        let text = "## Done when\n\n\
+            - [ ] the first behaviour continues\n\
+            \x20\x20onto a second physical line\n\
+            - [ ] the second behaviour\n";
+        assert_eq!(
+            extract_criteria(text),
+            [
+                "the first behaviour continues onto a second physical line",
+                "the second behaviour",
+            ]
+        );
+    }
+
+    /// A blank line ends a checkbox's block: prose that follows a blank line - even prose
+    /// that reads as a natural continuation of the sentence above - is NOT joined into the
+    /// criterion above it.
+    #[test]
+    fn extract_criteria_stops_a_wrap_at_a_blank_line_and_excludes_the_prose_after_it() {
+        let text = "## Done when\n\n\
+            - [ ] the first behaviour\n\
+            \x20\x20wraps onto a second line\n\
+            \n\
+            some unrelated prose that must not be joined into criterion one\n";
+        assert_eq!(
+            extract_criteria(text),
+            ["the first behaviour wraps onto a second line"]
+        );
+    }
+
+    /// A heading line ends a checkbox's block, the same as a blank line does - text after
+    /// the heading is not joined into the criterion above it.
+    #[test]
+    fn extract_criteria_stops_a_wrap_at_a_following_heading() {
+        let text = "## Done when\n\n\
+            - [ ] the first behaviour\n\
+            \x20\x20wraps onto a second line\n\
+            ## Notes\n\
+            more prose here, not a criterion\n";
+        assert_eq!(
+            extract_criteria(text),
+            ["the first behaviour wraps onto a second line"]
+        );
+    }
+
+    /// A nested sub-bullet (a plain `-`/`*` line with no checkbox marker, indented under a
+    /// checkbox) is PART of that checkbox's text, joined the same way as any other
+    /// continuation line - the spec-shape lint discourages authors from writing this shape,
+    /// but the extractor must not silently drop what they wrote.
+    #[test]
+    fn extract_criteria_includes_a_nested_sub_bullet_as_part_of_the_criterion_text() {
+        let text = "## Done when\n\n\
+            - [ ] the first behaviour\n\
+            \x20\x20- a nested sub-bullet note\n\
+            \x20\x20- another nested sub-bullet\n\
+            - [ ] the second behaviour\n";
+        assert_eq!(
+            extract_criteria(text),
+            [
+                "the first behaviour - a nested sub-bullet note - another nested sub-bullet",
+                "the second behaviour",
+            ]
+        );
+    }
+
     /// A clean single-behavior spec emits NO spec-shape advisory - the Unit-4 no-false
     /// positive requirement: each criterion is one short observable behavior.
     #[test]
@@ -915,6 +1057,59 @@ mod tests {
         assert!(
             !advisories.iter().any(|a| a.criterion == 1),
             "the short criterion 1 must stay silent; got: {advisories:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Spec 80 (unit c1): spec_shape_advisories must keep scanning a checkbox's FIRST
+    // PHYSICAL LINE ONLY (its pre-existing, corpus-calibrated behavior -
+    // tests/spec_lint.rs::spec_lint_self_clean_over_the_committed_corpus pins its
+    // corpus-wide total), never extract_criteria's new full-JOINING-RULE text - an
+    // OWNS/exclusion sentence on a continuation line is real content, not a shape defect,
+    // and routinely crosses MAX_CRITERION_LEN or adds a clause-coordinator that would
+    // false-positive over-long/multi-behavior if the shape lint scanned it too.
+    // -----------------------------------------------------------------------------------
+
+    /// A checkbox whose FIRST line is short stays silent on `over-long` even when its
+    /// continuation line (an OWNS sentence, this repo's own convention) pushes the FULL
+    /// joined text past MAX_CRITERION_LEN - the shape lint must not have started scanning
+    /// extract_criteria's new full text.
+    #[test]
+    fn spec_shape_advisories_ignores_length_added_by_a_continuation_line() {
+        let filler = "x".repeat(MAX_CRITERION_LEN);
+        let text = format!(
+            "## Done when\n\n\
+             - [ ] a short first line\n\
+             \x20\x20This criterion OWNS a great deal of following detail: {filler}\n\
+             - [ ] a second, unrelated criterion\n"
+        );
+        assert!(
+            !spec_shape_advisories(&text)
+                .iter()
+                .any(|a| a.rule == ShapeRule::OverLong),
+            "the checkbox's first physical line is short; length added by its continuation \
+             line must not trigger over-long; got: {:?}",
+            spec_shape_advisories(&text)
+        );
+    }
+
+    /// A checkbox whose FIRST line carries no clause coordinators stays silent on
+    /// `multi-behavior` even when its continuation lines (again, OWNS-sentence-shaped
+    /// prose) carry two or more `"; "` separators - the coordinator count must come from
+    /// the first physical line alone.
+    #[test]
+    fn spec_shape_advisories_ignores_coordinators_added_by_continuation_lines() {
+        let text = "## Done when\n\n\
+            - [ ] the daemon starts up cleanly\n\
+            \x20\x20and it writes a pidfile; it rotates the log; it emits a heartbeat too\n\
+            - [ ] a second, unrelated criterion\n";
+        assert!(
+            !spec_shape_advisories(text)
+                .iter()
+                .any(|a| a.rule == ShapeRule::MultiBehavior),
+            "the checkbox's first physical line carries no coordinators; coordinators added \
+             by continuation lines must not trigger multi-behavior; got: {:?}",
+            spec_shape_advisories(text)
         );
     }
 
