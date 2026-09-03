@@ -5,6 +5,15 @@ on:
     branches: [main]
   pull_request:
 
+# The cargo test runner (.cargo/pidns-runner.sh) wraps every test binary in a user+pid
+# namespace and FAILS CLOSED where one cannot be created. A hosted CI runner is a
+# throwaway VM with no operator session to protect, and Ubuntu's AppArmor restricts
+# unprivileged user namespaces there, so opt out explicitly - at the workflow level, so
+# EVERY job that runs a test binary inherits it (the kurrentdb job failed exactly this
+# way when the opt-out lived only in build-test). Never set this on a workstation.
+env:
+  RIGGER_PIDNS: "off"
+
 jobs:
   # The default build now INCLUDES turbovec (it is a default cargo feature), so this
   # job builds + tests the real semantic grounder. Turbovec pulls the ONNX runtime
@@ -18,12 +27,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CARGO_BUILD_JOBS: 8
-      # The cargo test runner (.cargo/pidns-runner.sh) wraps every test binary in a
-      # user+pid namespace and FAILS CLOSED where one cannot be created. A hosted CI
-      # runner is a throwaway VM with no operator session to protect, and Ubuntu's
-      # AppArmor restricts unprivileged user namespaces there, so opt out explicitly.
-      # Never set this on a workstation.
-      RIGGER_PIDNS: "off"
       # Pin fastembed's model cache to a stable, absolute path (its default is a
       # `.fastembed_cache` dir in the CWD) so the cache step below can key on it and
       # restore the ~130 MB of embedding weights across runs.
@@ -52,6 +55,13 @@ jobs:
             ${{ github.workspace }}/.fastembed_cache
       - name: install OpenBLAS (turbovec is in the default build)
         run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
+      # The build-environment tests assert against the REAL PATH: config validation
+      # requires `cargo-mutants` resolvable while the repo's own workflow.yml has
+      # build.mutation on, and the build-environment-authority test requires the
+      # `sccache` wrapper it configures to exist. Install both as prebuilt binaries.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants,sccache
       - name: fmt
         run: cargo fmt --check
       - name: clippy (turbovec, default features)
