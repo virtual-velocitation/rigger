@@ -20288,6 +20288,136 @@ fn release_ready_hands_off_a_unique_per_run_pr_head_naming_the_spec_stem_and_run
     );
 }
 
+/// Spec 82, criterion 1's CROSS-MODULE seam (diff-grounded): `main.rs` threads the real
+/// `--spec` CLI argument into `runscope::start_fresh`/`ensure_started_pinned`'s new
+/// `spec_path` parameter, at the `cmd_step` primary (non-`--fresh`) call site via
+/// `enforce_definition_pin` - the everyday path every spec-driven run takes on its first
+/// step. Every other test proving criterion 1 (the sibling test just above, and
+/// `dash_release_ready.rs`) seeds the `RunStarted` body directly via `seed_run_events`,
+/// bypassing this wiring entirely; `run.rs`'s own unit test calls `start_fresh` as a plain
+/// Rust function with an explicit `spec_path` string, bypassing the CLI argument parsing and
+/// the main.rs call site entirely. Neither would catch a main.rs regression that dropped
+/// `args.spec.as_deref().unwrap_or("")` on this path (e.g. passed `""` unconditionally): the
+/// unit test never touches `args`, and the synthetic periphery tests never touch `cmd_step`.
+/// This test drives the REAL `--spec` flag through `cmd_step` across a real process boundary,
+/// reads the persisted `RunStarted` body straight off disk to prove the exact spec path
+/// landed untouched, then proves it reaches `rigger status`'s rendered PR head through a
+/// SECOND real process - never a single in-process call standing in for both halves.
+#[test]
+fn the_real_spec_flag_persists_on_a_real_step_and_reaches_the_status_pr_head() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: spec82SpecFlagWiringTest
+defaults:
+  grounder: nop
+  budget: 60
+  autonomy: manual
+gates:
+  human: { run: "true", kind: core }
+stages:
+  implement:
+    agent: worker
+    strategy: fan-out
+    gates: [human]
+    on_pass: none
+"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("specs")).unwrap();
+    let spec_rel = "specs/u82c1-wiring-check.md";
+    std::fs::write(
+        root.join(spec_rel),
+        "# Spec\n\n## Done when\n\n- [ ] widget\n",
+    )
+    .unwrap();
+
+    // A REAL `rigger step --spec <path>` - the everyday first step of a spec-driven run -
+    // mints RunStarted and synthesizes the sole baseline unit. `autonomy: manual` means no
+    // real agent process launches; the unit parks for review, which is all this test needs.
+    let (out, err, ok) = run_rigger(root, &["step", "--spec", spec_rel]);
+    assert!(
+        ok,
+        "the real spec-driven first step must succeed; stderr:\n{err}\nstdout:\n{out}"
+    );
+
+    // Read the RunStarted (and the synthesized baseline unit's id) straight off the real
+    // on-disk store - a SEPARATE read from the step that minted them - and confirm the exact
+    // `--spec` argument landed in the body untouched: proves the main.rs call site actually
+    // threads `args.spec`, not a dropped or hand-typed value.
+    let (run_id, persisted_spec, unit_id) = {
+        use rigger::eventstore::namespace::Namespaced;
+        use rigger::eventstore::sqlite::Store;
+        use rigger::eventstore::{Direction, EventStore};
+        let backend = Store::open(rigger.join("events.db").to_str().unwrap()).unwrap();
+        let store = Namespaced::new(&backend, &run_stream_identity(root));
+        let events = store
+            .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+            .unwrap();
+        let started = events
+            .iter()
+            .find(|e| e.type_ == rigger::run::TYPE_RUN_STARTED)
+            .expect("the real step must mint a RunStarted");
+        let body: serde_json::Value = serde_json::from_slice(&started.data).unwrap();
+        let unit_started = events
+            .iter()
+            .find(|e| e.type_ == rigger::ledger::TYPE_UNIT_STARTED)
+            .expect("the real step must synthesize the sole baseline unit");
+        let unit_body: serde_json::Value = serde_json::from_slice(&unit_started.data).unwrap();
+        (
+            body["run"].as_str().unwrap().to_string(),
+            body["spec"].as_str().unwrap_or("").to_string(),
+            unit_body["id"].as_str().unwrap().to_string(),
+        )
+    };
+    assert_eq!(
+        persisted_spec, spec_rel,
+        "the real --spec argument must reach the persisted RunStarted body unchanged"
+    );
+
+    // Settle the baseline unit as integrated (this test's only job is proving the spec-path
+    // wire, not re-running the full gate flow) so the run is release-ready.
+    seed_run_events(
+        root,
+        &[(
+            "UnitIntegrated",
+            &format!(r#"{{"id":"{unit_id}","commit":"abc"}}"#),
+        )],
+    );
+
+    // A SECOND real process (`rigger status`) re-reads the SAME on-disk store and derives the
+    // PR head from the RunStarted this test never hand-seeded - proving the wiring survives a
+    // genuine process boundary, using this run's OWN randomly-minted id, not a fixture one.
+    let (out, err, ok) = run_rigger(root, &["status"]);
+    assert!(
+        ok,
+        "rigger status must succeed on a done run; stderr:\n{err}"
+    );
+    let short = &run_id[..run_id.len().min(12)];
+    let head = format!("pr/u82c1-wiring-check-{short}");
+    assert!(
+        out.contains(&format!("git push origin rigger-run:{head}")),
+        "the real --spec argument's stem (u82c1-wiring-check) and this run's OWN minted id \
+         must both reach the printed PR head; got:\n{out}"
+    );
+    assert!(
+        out.contains(&format!("gh pr create --base main --head {head}")),
+        "got:\n{out}"
+    );
+    assert!(
+        !out.contains("--head rigger-run"),
+        "the literal `--head <run_branch>` form must never appear; got:\n{out}"
+    );
+}
+
 /// The handoff is SILENT through `rigger status` for any run that is not done: a
 /// still-un-integrated unit, and (the load-bearing guard) a run whose every unit integrated
 /// but whose deferred phase-boundary gate FAILED - which must never be advertised as a
