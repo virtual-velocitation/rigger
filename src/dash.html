@@ -33,7 +33,13 @@
   .release b { color: var(--ok); }
   .release code { background: var(--panel); border: 1px solid var(--line);
     border-radius: 4px; padding: 1px 5px; }
-  .release code.pr { display: inline-block; margin-top: 4px; color: var(--accent); }
+  /* white-space: pre-wrap so the two-command PR handoff's embedded newline (spec 82 c2)
+     renders as a real line break, matching the established `.reasoning` idiom above -
+     without it, the default `white-space: normal` inherited everywhere on this page
+     collapses the newline to a single space and the two commands run on as one invalid
+     shell line. */
+  .release code.pr { display: inline-block; margin-top: 4px; color: var(--accent);
+    white-space: pre-wrap; }
   /* LANDING strip (spec 50 c3): the instance picker. One row of selectable chips; the chip list
      scrolls INSIDE its own container (overflow-x: auto) so any number of instances stays one row
      and never widens the page. */
