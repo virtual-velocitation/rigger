@@ -46,6 +46,32 @@
 //!    comment - proof the exemption was DELIBERATELY claimed at this exact site, not merely
 //!    that some comment happens to sit nearby.
 //!
+//! DISCLOSED LIMITS (round-5, both mirroring the directory-argument-correlation limit above -
+//! an infeasible-without-real-data-flow gap, named rather than silently ignored or force-fit):
+//!
+//! - A MULTI-LINE `/* ... */` block comment - one whose closing `*/` is not on the same line as
+//!   its opening `/*` - is not stripped by [`effective_code`]; only a SINGLE-LINE block comment
+//!   (opening and closing marker both on one line) is. Resolving a multi-line span needs
+//!   cross-line state this file's per-line scan architecture does not carry today. Not live
+//!   against anything this audit currently protects (no `.rs` file under `src/` today opens a
+//!   multi-line block comment around a reap-authority name or an exemption marker). The
+//!   symmetric direction (a genuine exemption claimed only inside a block comment, of either
+//!   form, going uncredited) is a false-audit-failure, not a false-cover, non-blocking for the
+//!   same reason `sdet-u79c2-cfg-test-exact-match-misses-compound-form` was not: it risks the
+//!   audit being too strict, never too permissive.
+//! - The REAP_AUTHORITIES coverage window (see [`reap_authorities_window_start`]'s own doc) is
+//!   bounded by a nearer preceding BARE `fs::remove_dir_all` in the same function, but
+//!   deliberately NOT by a preceding `git worktree remove` attempt ([`worktree_remove_shape`]):
+//!   this codebase's own real routed sites (`clear_worktree_dir`, `reap_then_remove_worktree`)
+//!   reap once, then try a `git worktree remove`, falling back to a bare removal of the SAME
+//!   directory only on failure - an alternate form of the one already-reaped removal, not a
+//!   second resource. Extending the same boundary logic to a preceding `worktree_remove_shape`
+//!   targeting a genuinely DIFFERENT directory (a shape no real site in this tree exhibits
+//!   today) would need to correlate that shape's own directory argument, which varies textually
+//!   across this tree's real call sites (a trailing array element vs. a chained `.arg(dir)`) -
+//!   the same kind of correlation the module doc's reap-vs-removal limit above already
+//!   discloses as not safely bridgeable by a plain text scan.
+//!
 //! SCOPE: `src/` only, recursively (`src/driver/replay.rs` included) - never `tests/`. Spec
 //! 79's Done-when line is literally "walks `src/`", and its Notes name why: "the pid-namespace
 //! test runner already contains TEST-spawned orphans; this spec is about the OPERATOR-side
@@ -470,20 +496,77 @@ fn exemption_window(
     (window_start, window_end)
 }
 
-/// `line` with every quoted-string literal's content (and its delimiting quotes) dropped, and
-/// everything from the first unquoted `//` onward dropped too - string-aware (naive, no escape
-/// handling, matching [`quoted_tokens`]'s own established precedent: every string this audit
-/// scans is a short ASCII CLI-arg or path literal, never an escaped quote) so that BOTH a
-/// reap-authority name living only inside a string literal (a log message - spec 79 c2
-/// round-4 fix, `adv-u79c2r3-authority-match-inside-noncomment-string-literal-uncaught-by-
-/// either-fix`) AND one living only after a trailing `//` comment on an otherwise-real code
-/// line (round-4 fix, `arch-u79c2r3-comment-guard-is-whole-line-only-trailing-comment-still-
-/// falsely-covers`) are excluded from a "does this line contain a real call" check - while a
-/// real call's own name, sitting in actual code before either a trailing comment or a string
-/// argument, is left untouched and still matches. A `//` that itself lives inside a string
-/// literal argument (never seen in this tree's own reap-authority calls) is correctly not
-/// mistaken for a comment start, since string content is tracked and skipped first.
+/// The index of the `*` starting the first `*/` at or after `from` in `chars` - the
+/// forward-search half of [`strip_single_line_block_comments`], split out only to keep that
+/// function's own loop free of a nested inner loop.
+fn block_comment_end(chars: &[char], from: usize) -> Option<usize> {
+    let mut j = from;
+    while j + 1 < chars.len() {
+        if chars[j] == '*' && chars[j + 1] == '/' {
+            return Some(j);
+        }
+        j += 1;
+    }
+    None
+}
+
+/// `line` with every SINGLE-LINE `/* ... */` block comment span (both the opening `/*` and its
+/// matching `*/` on this same line) dropped, string-aware so a `/*`/`*/` living inside a quoted
+/// string literal is never mistaken for a comment delimiter (spec 79 c2 round-5 fix,
+/// `sdet-u79c2r4-block-comment-authority-name-still-falsely-covers` /
+/// `arch-u79c2r4-uphold-block-comment-defeats-sole-gatekeeper-guarantee`). A `/*` with no
+/// matching `*/` before the end of `line` opens a MULTI-LINE block comment - the module doc's
+/// own disclosed, non-blocking limit - so it is deliberately left untouched here (treated as
+/// ordinary code) rather than silently mishandled or force-fit into cross-line state this
+/// per-line scan does not carry.
+fn strip_single_line_block_comments(line: &str) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let mut out = String::new();
+    let mut in_str = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if in_str {
+            out.push(c);
+            if c == '"' {
+                in_str = false;
+            }
+            i += 1;
+            continue;
+        }
+        if c == '"' {
+            in_str = true;
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        if c == '/' && chars.get(i + 1) == Some(&'*') {
+            if let Some(close) = block_comment_end(&chars, i + 2) {
+                i = close + 2;
+                continue;
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
+/// `line` with every quoted-string literal's content (and its delimiting quotes) dropped, every
+/// single-line `/* ... */` block comment span dropped ([`strip_single_line_block_comments`],
+/// round-5 fix), and everything from the first unquoted `//` onward dropped too - string-aware
+/// (naive, no escape handling, matching [`quoted_tokens`]'s own established precedent: every
+/// string this audit scans is a short ASCII CLI-arg or path literal, never an escaped quote) so
+/// that a reap-authority name living only inside a string literal (a log message - round-4 fix,
+/// `adv-u79c2r3-authority-match-inside-noncomment-string-literal-uncaught-by-either-fix`), only
+/// after a trailing `//` comment on an otherwise-real code line (round-4 fix,
+/// `arch-u79c2r3-comment-guard-is-whole-line-only-trailing-comment-still-falsely-covers`), OR
+/// only inside a single-line `/* ... */` block comment (round-5 fix, see
+/// [`strip_single_line_block_comments`]'s own doc for the multi-line limit) is excluded from a
+/// "does this line contain a real call" check - while a real call's own name, sitting in actual
+/// code before any of the three, is left untouched and still matches.
 fn effective_code(line: &str) -> String {
+    let line = strip_single_line_block_comments(line);
     let mut out = String::new();
     let mut in_str = false;
     let mut chars = line.chars().peekable();
@@ -540,6 +623,48 @@ fn comment_text(line: &str) -> Option<&str> {
     None
 }
 
+/// The lower bound (0-based, inclusive) [`is_covered`]'s REAP_AUTHORITIES scan starts from for
+/// `removal_line`, given the enclosing function's own `start` (spec 79 c2 round-5 fix,
+/// `adv-u79c2r4-reap-authorities-branch-still-function-wide-not-site-scoped`): the line right
+/// after the nearest earlier BARE `fs::remove_dir_all` ([`remove_dir_all_shape`]) strictly
+/// before `removal_line` (skipping comment lines while searching, mirroring
+/// [`exemption_window`]'s own guard), or `start` if none - preventing an earlier removal's own
+/// genuine reap call from silently bleeding onto covering a LATER, unrelated, unreaped removal
+/// in the same multi-removal function (the adversary's own reverted probe: `dir_a` genuinely
+/// `reap_authorized`-then-removed, `dir_b` removed bare and wholly unreaped in the same
+/// function).
+///
+/// Deliberately NARROWER than the sibling [`exemption_window`] bound used for the
+/// EXEMPTION_MARKER check just above, which ALSO resets on a preceding [`worktree_remove_shape`]
+/// line: this codebase's own real routed sites (`clear_worktree_dir` in `src/worktree.rs`,
+/// `reap_then_remove_worktree` in `src/main.rs`) reap ONCE, then attempt a `git worktree
+/// remove`, falling back to a bare `fs::remove_dir_all` of the SAME directory only when that
+/// attempt fails - an ALTERNATE textual form of the one removal the single preceding reap call
+/// already covers, not a second, independently-scoped resource; resetting the bound on that
+/// preceding `worktree_remove_shape` line (empirically verified against the real tree while
+/// building this fix) would sever the one reap call's coverage of its own bare fallback and
+/// spuriously flag both real sites. A preceding BARE `fs::remove_dir_all`, by contrast,
+/// unconditionally and terminally removes its own target; a second one later in the same
+/// function is - verified against every real multi-removal site in this tree today
+/// (`reclaim_cache_sibling` in `src/worktree.rs`, whose three sibling removals each carry their
+/// OWN immediately-preceding dedicated reap call, and remain correctly, individually covered
+/// under this narrower bound) - removing a DIFFERENT directory, so it is a real boundary
+/// between two independently-reaped resources. See the module doc's own DISCLOSED LIMITS entry
+/// for the resulting, deliberately out-of-scope gap (a preceding `worktree_remove_shape`
+/// targeting a genuinely different directory than a later bare removal).
+fn reap_authorities_window_start(lines: &[&str], start: usize, removal_line: usize) -> usize {
+    let mut bound = start;
+    for (i, line) in lines.iter().enumerate().take(removal_line).skip(start) {
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
+        if remove_dir_all_shape(line).is_some() {
+            bound = i + 1;
+        }
+    }
+    bound
+}
+
 /// Whether `span` (the removal's enclosing function, or `None` if it has none) is covered:
 /// either the claimed-exemption marker appears, ON AN ACTUAL COMMENT per [`comment_text`]
 /// (round-4 fix, `sdet-u79c2r3-exemption-marker-check-has-no-comment-guard-at-all`), within
@@ -547,16 +672,20 @@ fn comment_text(line: &str) -> Option<&str> {
 /// documented human claim about this site, not a call with a happens-before relationship to
 /// the removal, but no longer credited to an unrelated OTHER removal elsewhere in the same
 /// function - spec 79 c2 round-3 fix, `arch-u79c2r2-exemption-marker-function-wide-not-site-
-/// scoped`), or a reap-authority call appears, in [`effective_code`] (round-4 fix, closing
-/// both the trailing-comment gap `arch-u79c2r3-comment-guard-is-whole-line-only-trailing-
-/// comment-still-falsely-covers` and the string-literal gap `adv-u79c2r3-authority-match-
-/// inside-noncomment-string-literal-uncaught-by-either-fix` together - a bare substring match
-/// against the raw line, as round 3 did, credits an authority NAME sitting in a trailing
-/// comment or inside a log-message string, never a real call), on a line STRICTLY BEFORE
-/// `removal_line` with - for the one authority [`takes_checked_root_arg`] flags - an effective
-/// authorized-root argument (spec 79 c2 round-2 fix: see the module doc's ROUTED entry for why
-/// order and this one argument check exist, and why full directory-argument correlation does
-/// not).
+/// scoped`), or a reap-authority call appears, in [`effective_code`] (round-4 fix, closing both
+/// the trailing-comment gap `arch-u79c2r3-comment-guard-is-whole-line-only-trailing-comment-
+/// still-falsely-covers` and the string-literal gap `adv-u79c2r3-authority-match-inside-
+/// noncomment-string-literal-uncaught-by-either-fix` together, and round-5 fix, closing the
+/// block-comment gap `sdet-u79c2r4-block-comment-authority-name-still-falsely-covers` /
+/// `arch-u79c2r4-uphold-block-comment-defeats-sole-gatekeeper-guarantee` - a bare substring
+/// match against the raw line, as round 3 did, credits an authority NAME sitting in a trailing
+/// comment, a log-message string, or a block comment, never a real call), on a line STRICTLY
+/// BEFORE `removal_line` and on or after [`reap_authorities_window_start`] (spec 79 c2 round-5
+/// fix, `adv-u79c2r4-reap-authorities-branch-still-function-wide-not-site-scoped` - see that
+/// function's own doc for why its bound is narrower than [`exemption_window`]'s) - with, for
+/// the one authority [`takes_checked_root_arg`] flags, an effective authorized-root argument
+/// (spec 79 c2 round-2 fix: see the module doc's ROUTED entry for why order and this one
+/// argument check exist, and why full directory-argument correlation does not).
 fn is_covered(lines: &[&str], span: Option<(usize, usize)>, removal_line: usize) -> bool {
     let Some((start, end)) = span else {
         return false;
@@ -568,7 +697,8 @@ fn is_covered(lines: &[&str], span: Option<(usize, usize)>, removal_line: usize)
     {
         return true;
     }
-    for i in start..removal_line {
+    let reap_start = reap_authorities_window_start(lines, start, removal_line);
+    for i in reap_start..removal_line {
         let code = effective_code(lines[i]);
         for authority in REAP_AUTHORITIES.iter() {
             if !code.contains(*authority) {
@@ -956,6 +1086,133 @@ fn f(dir: &str) {
             1,
             "a reap-authority name inside a non-comment string literal must never be mistaken \
              for a real call; {findings:?}"
+        );
+    }
+
+    /// ROUND-5 FIX (upholding
+    /// `sdet-u79c2r4-block-comment-authority-name-still-falsely-covers` and
+    /// `arch-u79c2r4-uphold-block-comment-defeats-sole-gatekeeper-guarantee`): a reap-authority
+    /// NAME sitting only inside a single-line `/* ... */` block comment - never a real call -
+    /// must not be mistaken for coverage, the same class [`effective_code`] already closes for
+    /// `//` comments and non-comment string literals.
+    #[test]
+    fn a_reap_authority_name_inside_a_single_line_block_comment_never_covers_the_removal() {
+        let root = tempfile::tempdir().unwrap();
+        write_file(
+            root.path(),
+            "src/somewhere.rs",
+            "\
+fn f(dir: &str) {
+    /* calls reap_processes_rooted_under( just below */
+    let _ = std::fs::remove_dir_all(dir);
+}
+",
+        );
+        let findings = scan_tree(root.path());
+        assert_eq!(
+            findings.len(),
+            1,
+            "an authority name inside a single-line block comment, with no real call, must \
+             never cover; {findings:?}"
+        );
+    }
+
+    /// ROUND-5 FIX: a real reap call is unaffected by the block-comment stripping fix above
+    /// when a harmless single-line block comment sits before it on the SAME line - the call
+    /// itself still sits in effective code once the comment span is dropped.
+    #[test]
+    fn a_real_reap_call_with_a_single_line_block_comment_on_the_same_line_still_covers() {
+        let root = tempfile::tempdir().unwrap();
+        write_file(
+            root.path(),
+            "src/somewhere.rs",
+            "\
+fn f(dir: &str) {
+    /* reaps everything rooted here first */ reap_authorized(std::path::PathBuf::from(dir));
+    let _ = std::fs::remove_dir_all(dir);
+}
+",
+        );
+        let findings = scan_tree(root.path());
+        assert!(
+            findings.is_empty(),
+            "a real call preceded by a harmless same-line block comment must still cover; \
+             {findings:?}"
+        );
+    }
+
+    /// ROUND-5 FIX (upholding
+    /// `adv-u79c2r4-reap-authorities-branch-still-function-wide-not-site-scoped`): a reap call
+    /// that genuinely covers an EARLIER removal in the same function must never bleed onto a
+    /// LATER, wholly unrelated and unreaped removal - the REAP_AUTHORITIES scan is now bounded
+    /// below by the identical nearest-preceding-removal [`exemption_window`] the sibling
+    /// EXEMPTION_MARKER branch already used starting round-3.
+    #[test]
+    fn a_reap_call_covering_one_removal_never_bleeds_onto_a_later_unrelated_removal_in_the_same_function(
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        write_file(
+            root.path(),
+            "src/somewhere.rs",
+            "\
+fn f(dir_a: &str, dir_b: &str) {
+    reap_authorized(std::path::PathBuf::from(dir_a));
+    let _ = std::fs::remove_dir_all(dir_a);
+    let _ = std::fs::remove_dir_all(dir_b);
+}
+",
+        );
+        let findings = scan_tree(root.path());
+        assert_eq!(
+            findings.len(),
+            1,
+            "dir_a's reap call must not bleed onto the unrelated, unreaped dir_b removal; \
+             {findings:?}"
+        );
+        assert_eq!(
+            findings[0].line_no, 4,
+            "the unreaped dir_b removal is the one that must be flagged; {findings:?}"
+        );
+    }
+
+    /// ROUND-5 FIX regression guard: the windowing fix above must NOT sever a real,
+    /// already-shipped idiom this exact tree uses twice (`reap_then_remove_worktree` in
+    /// `src/main.rs`, `clear_worktree_dir` in `src/worktree.rs`) - reap once, attempt a `git
+    /// worktree remove`, and fall back to a bare `fs::remove_dir_all` of the SAME directory
+    /// only when that attempt fails. The one preceding reap call must still cover the bare
+    /// fallback even though a [`worktree_remove_shape`] line (itself also a removal-shaped scan
+    /// target, and itself covered by that same reap call) sits between them. Empirically this
+    /// is the exact regression a first draft of the round-5 fix introduced (reusing
+    /// `exemption_window`'s window unmodified for REAP_AUTHORITIES too broke both real sites)
+    /// before landing on the narrower [`reap_authorities_window_start`] bound this test now
+    /// pins down.
+    #[test]
+    fn a_reap_call_still_covers_a_bare_fallback_removal_across_an_intervening_worktree_remove_attempt_of_the_same_dir(
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        write_file(
+            root.path(),
+            "src/somewhere.rs",
+            "\
+fn f(dir: &str, root: &str) {
+    reap_processes_rooted_under(std::path::Path::new(dir), std::path::Path::new(root));
+    let deregistered = std::process::Command::new(\"git\")
+        .args([\"worktree\", \"remove\", \"--force\"])
+        .arg(dir)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !deregistered {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+",
+        );
+        let findings = scan_tree(root.path());
+        assert!(
+            findings.is_empty(),
+            "one reap call must still cover BOTH the worktree-remove attempt and its own bare \
+             fallback for the same dir; {findings:?}"
         );
     }
 
