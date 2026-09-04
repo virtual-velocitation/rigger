@@ -8139,6 +8139,79 @@ mod tests {
         assert!(!body.contains("release_ready"), "{body}");
     }
 
+    /// Spec 82, criterion 2 (DASH HANDOFF MATCHES): the two-command PR handoff renders as a
+    /// REAL line break on the dash, not a run-on single line. `ledger::RunState::pr_command`
+    /// joins the two commands with an actual `\n` byte (proven below via the SAME authority
+    /// `release_ready_is_surfaced_on_the_dash_only_for_a_done_run` drives, not a hand-typed
+    /// stand-in string); the page's `render()` splices that string into `<code class="pr">`
+    /// verbatim via `esc()` - which escapes only `& < > " '`, never whitespace - confirmed
+    /// below by binding the exact JS line, not merely asserting `esc` exists somewhere. Under
+    /// the DEFAULT `white-space: normal` inherited everywhere else on this page, a browser
+    /// collapses that surviving `\n` to a single space, defeating the handoff. This codebase
+    /// has no headless-JS runner to execute `render()` and observe the live DOM directly, so
+    /// this test instead binds the three facts that TOGETHER guarantee a real rendered line
+    /// break: (a) a genuine newline reaches the node, (b) unmangled, and (c) the CSS rule
+    /// governing exactly that node preserves it. A regression in any one of the three fails
+    /// this test, where the prior (rejected) closure's substring match against the raw
+    /// un-rendered JSON payload caught none of them.
+    #[test]
+    fn release_ready_pr_command_newline_renders_as_a_real_line_break_not_a_collapsed_run_on() {
+        // (a) the real authority embeds a genuine `\n` between the two commands.
+        let done = positioned(vec![
+            ev(
+                "RunStarted",
+                r#"{"run":"7ad52031-01f1-4d37-aa19-ad48090f84a5","spec":"specs/82-unique-pr-heads.md"}"#,
+            ),
+            ev("UnitStarted", r#"{"id":"u1"}"#),
+            ev("UnitIntegrated", r#"{"id":"u1","commit":"abc"}"#),
+        ]);
+        let state = build_state(
+            &done,
+            &Graph::default(),
+            false,
+            &[],
+            &HashMap::new(),
+            3,
+            "rigger-run",
+            "origin/main",
+        )
+        .unwrap();
+        let rr = state
+            .release_ready
+            .as_ref()
+            .expect("a done run surfaces the release-ready handoff on the dash");
+        assert!(
+            rr.pr_command.contains('\n'),
+            "the two-command handoff must be joined by a real newline byte, not a space or a \
+             literal backslash-n escape: {:?}",
+            rr.pr_command
+        );
+
+        // (b) the page splices that string into the release banner's `<code class="pr">` node
+        // via `esc()` alone - never through `preview()` (which collapses `\s+` to one space and
+        // would re-introduce exactly this defect) or any other whitespace-mangling helper.
+        let page = live_page();
+        assert!(
+            page.contains("'<code class=\"pr\">' + esc(rr.pr_command) + '</code>'"),
+            "the release banner must splice rr.pr_command through esc() alone, unmangled by \
+             preview() or any newline-stripping helper, or the embedded newline never reaches \
+             the DOM node at all"
+        );
+
+        // (c) the CSS rule governing exactly that node preserves embedded newlines as real
+        // line breaks - the default `white-space: normal` inherited everywhere else on this
+        // page collapses them to a single space, which is the defect this test guards against.
+        let pr_rule = css_rule(&page, ".release code.pr {");
+        assert!(
+            pr_rule.contains("white-space: pre-wrap")
+                || pr_rule.contains("white-space: pre-line")
+                || pr_rule.contains("white-space: pre;"),
+            "the .release code.pr rule must preserve embedded newlines as real line breaks \
+             (white-space: pre-wrap, matching this file's own `.reasoning` idiom), or the \
+             two-command handoff renders as one run-on invalid shell line: {pr_rule}"
+        );
+    }
+
     #[test]
     fn request_line_parsing_extracts_method_and_target() {
         assert_eq!(
