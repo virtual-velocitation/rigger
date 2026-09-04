@@ -114,8 +114,13 @@ fn a_real_cargo_build_the_agent_runs_lands_in_the_per_unit_cache_not_the_worktre
     let repo_path = repo.path().to_string_lossy().into_owned();
     let root = scratch_root(&repo_path, "", None);
     let worktree_dir = format!("{root}/rigger-wt-cargo-build-probe");
-    let worktree = Worktree::create(&repo_path, &worktree_dir, "rigger/u/cargo-build-probe")
-        .expect("create a real unit worktree");
+    let worktree = Worktree::create(
+        &repo_path,
+        &worktree_dir,
+        "rigger/u/cargo-build-probe",
+        &root,
+    )
+    .expect("create a real unit worktree");
     seed_minimal_crate(&worktree.dir);
 
     // The exact per-unit cache `RunCtx::spawn_env` derives for this worktree - the SAME

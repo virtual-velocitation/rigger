@@ -14,6 +14,18 @@ pub struct Worktree {
     pub dir: String,
     pub branch: String,
     repo: String,
+    /// The scratch root [`Self::create`]'s caller independently resolved `dir` under
+    /// (spec 79 round-2 fix, `arch-u79c1-reap-dir-before-removal-self-authorizes` /
+    /// `sdet-u79c1-authorized-root-tautology`, both UPHELD): carried on the instance so
+    /// [`Self::ensure_present`]'s and [`Self::remove`]'s later reap-before-removal calls
+    /// reuse the SAME caller-supplied authority `create` was given, rather than
+    /// re-deriving one from `dir`'s own filesystem position (`dir.parent()` trivially
+    /// contains `dir` after canonicalization, which made the prior shape's containment
+    /// check an unconditional pass - see [`reap_dir_before_removal`]'s doc comment).
+    /// Empty for a caller with no such root to supply (e.g. a test scaffold that never
+    /// exercises the reap boundary), in which case every reap this instance drives is a
+    /// no-op, exactly as if no root had ever authorized it.
+    authorized_root: String,
     /// Serializes [`Self::ensure_present`]'s call into [`Self::create`]'s mutation path
     /// (spec 64 criterion 3, round 5: adv-u3c3r4-concurrent-lens-ensure-present-races-
     /// worktree-create, sdet-u3c3r4-concurrent-lenses-race-ensure-present-on-the-same-
@@ -91,7 +103,23 @@ impl Worktree {
     /// the BRANCH is the checkpoint. A branch that already exists cannot be
     /// `worktree add -b`'d (git refuses to clobber a ref), so we detect it and check
     /// it out instead.
-    pub fn create(repo: &str, dir: &str, branch: &str) -> Result<Self, Error> {
+    ///
+    /// `authorized_root` is the scratch root the CALLER independently resolved `dir`
+    /// under (the same value [`crate::worktree::scratch_root_from_env`] or an
+    /// equivalent caller-side authority already produced to build `dir` itself) - spec
+    /// 79 round-2 fix. It gates the self-heal reap below via [`reap_dir_before_removal`]
+    /// and is carried on the returned instance for [`Self::ensure_present`] and
+    /// [`Self::remove`] to reuse later; it is NEVER re-derived here from `dir`'s own
+    /// filesystem position (`dir.parent()` trivially contains `dir`, which is exactly
+    /// the tautological self-authorization this fix removes). Pass `""` when the
+    /// caller has no such root (the reap becomes a no-op, matching the
+    /// best-effort/never-fails contract every other reap call site already has).
+    pub fn create(
+        repo: &str,
+        dir: &str,
+        branch: &str,
+        authorized_root: &str,
+    ) -> Result<Self, Error> {
         // SELF-HEAL before any `git worktree add` (spec 51): a lifecycle killed mid
         // `git worktree remove` can leave a corrupt admin entry (a zero-length `commondir`)
         // that makes EVERY add below hard-fail; prune the provably-corrupt entry first so
@@ -118,6 +146,7 @@ impl Worktree {
                     dir: dir.to_string(),
                     branch: branch.to_string(),
                     repo: repo.to_string(),
+                    authorized_root: authorized_root.to_string(),
                     reassert_mu: std::sync::Mutex::new(()),
                 });
             }
@@ -132,6 +161,7 @@ impl Worktree {
                         dir: existing,
                         branch: branch.to_string(),
                         repo: repo.to_string(),
+                        authorized_root: authorized_root.to_string(),
                         reassert_mu: std::sync::Mutex::new(()),
                     });
                 }
@@ -149,7 +179,7 @@ impl Worktree {
             // afresh (adv-u4det-leftover-hardfail-confirmed-nonselfhealing). Only the dir is
             // cleared, never the durable branch - the branch's work is exactly what we reuse.
             if std::path::Path::new(dir).exists() {
-                clear_worktree_dir(repo, dir)?;
+                clear_worktree_dir(repo, dir, authorized_root)?;
             }
             // Reuse the existing branch's committed work: check it out into the fresh
             // worktree dir, no `-b` (which would refuse, the ref already exists).
@@ -161,6 +191,7 @@ impl Worktree {
             dir: dir.to_string(),
             branch: branch.to_string(),
             repo: repo.to_string(),
+            authorized_root: authorized_root.to_string(),
             reassert_mu: std::sync::Mutex::new(()),
         })
     }
@@ -196,7 +227,7 @@ impl Worktree {
     /// never adds contention across a DIFFERENT unit's worktree.
     pub fn ensure_present(&self) -> Result<(), Error> {
         let _lock = self.reassert_mu.lock().unwrap();
-        Worktree::create(&self.repo, &self.dir, &self.branch)?;
+        Worktree::create(&self.repo, &self.dir, &self.branch, &self.authorized_root)?;
         Ok(())
     }
 
@@ -328,14 +359,24 @@ impl Worktree {
     /// survived every discard-then-recreate cycle, leaked forever on the operator's small
     /// scratch partition. A unit's durable worktree owns no fence sibling here (`discard` is
     /// never called on one), so this is a no-op on that path.
-    pub fn discard(repo: &str, dir: &str, branch: &str) -> Result<(), Error> {
+    ///
+    /// `authorized_root` is the SAME caller-resolved scratch root [`Self::create`] takes
+    /// (spec 79 round-2 fix) - it gates the reap-before-removal of both `dir` and its
+    /// reclaimed siblings, never re-derived from `dir`'s own position. Pass `""` when the
+    /// caller has no such root; the reap is then a no-op.
+    pub fn discard(
+        repo: &str,
+        dir: &str,
+        branch: &str,
+        authorized_root: &str,
+    ) -> Result<(), Error> {
         if std::path::Path::new(dir).exists() {
-            clear_worktree_dir(repo, dir)?;
+            clear_worktree_dir(repo, dir, authorized_root)?;
         } else {
             // No dir to clear, but a killed process may still leave a dangling admin entry.
             git(repo, &["worktree", "prune"])?;
         }
-        reclaim_cache_sibling(dir);
+        reclaim_cache_sibling(dir, authorized_root);
         Self::delete_branch(repo, branch)
     }
 
@@ -568,7 +609,12 @@ impl Worktree {
             }
         }
         git(&self.repo, &["worktree", "remove", "--force", &self.dir])?;
-        reclaim_cache_sibling(&self.dir);
+        // The sibling cache/fence dirs, unlike `self.dir` above, sit under the ordinary
+        // scratch-root containment authority (they are constructed as a sibling of `self.dir`
+        // by [`unit_cache_sibling`]/[`review_fence_sibling`], never relocated independently),
+        // so they are gated by `self.authorized_root` - the SAME root [`Self::create`] was
+        // given for this exact instance (spec 79 round-2 fix), never re-derived here.
+        reclaim_cache_sibling(&self.dir, &self.authorized_root);
         Ok(())
     }
 }
@@ -813,17 +859,25 @@ pub fn review_fence_sibling(worktree_dir: &str) -> Option<String> {
 /// pointed at the cache dir, or a fenced courier that opened the fence dir's sqlite store,
 /// can still be alive when the worktree it is a sibling of is torn down; a bare removal here
 /// would outlive that process's now-deleted cwd exactly like the worktree dir itself would).
-/// See [`reap_dir_before_removal`].
-fn reclaim_cache_sibling(worktree_dir: &str) {
+///
+/// `authorized_root` is the caller's independently-resolved scratch root (spec 79 round-2
+/// fix, `arch-u79c1-reap-dir-before-removal-self-authorizes` / `sdet-u79c1-authorized-root-
+/// tautology`, both UPHELD): passed straight through to [`reap_dir_before_removal`] for
+/// every sibling, NEVER re-derived from `worktree_dir`'s own position. Every call site
+/// already has this value to hand ([`Worktree::remove`]/[`Worktree::discard`] carry or take
+/// it, [`sweep_terminal`] already resolves it to confirm `d.starts_with(root)`,
+/// [`reclaim_worktree_on_branch`]'s caller resolves it the same way `Worktree::create`'s
+/// callers do).
+fn reclaim_cache_sibling(worktree_dir: &str, authorized_root: &str) {
     if let Some(cache) = unit_cache_sibling(worktree_dir) {
         let fence = format!("{cache}{}", crate::gate::STORE_FENCE_SUFFIX);
-        reap_dir_before_removal(&fence);
+        reap_dir_before_removal(&fence, authorized_root);
         let _ = std::fs::remove_dir_all(&fence);
-        reap_dir_before_removal(&cache);
+        reap_dir_before_removal(&cache, authorized_root);
         let _ = std::fs::remove_dir_all(&cache);
     }
     if let Some(fence) = review_fence_sibling(worktree_dir) {
-        reap_dir_before_removal(&fence);
+        reap_dir_before_removal(&fence, authorized_root);
         let _ = std::fs::remove_dir_all(&fence);
     }
 }
@@ -882,7 +936,7 @@ pub fn sweep_terminal(
                     std::path::Path::new(root),
                 );
                 git(repo, &["worktree", "remove", "--force", &d])?;
-                reclaim_cache_sibling(&d);
+                reclaim_cache_sibling(&d, root);
                 removed += 1;
             }
         }
@@ -933,9 +987,11 @@ fn registered_worktree_for(repo: &str, branch: &str) -> Option<String> {
 /// path the caller ends up on - `Worktree::create`'s self-heal, `Worktree::discard`'s reset,
 /// or [`reclaim_worktree_on_branch`]'s resume-path reclaim - a build, tool, or courier a
 /// prior process left running inside `dir` must not outlive the dir holding a now-deleted
-/// cwd. See [`reap_dir_before_removal`].
-fn clear_worktree_dir(repo: &str, dir: &str) -> Result<(), Error> {
-    reap_dir_before_removal(dir);
+/// cwd. `authorized_root` is threaded straight through to [`reap_dir_before_removal`] - see
+/// that function's doc comment for why it must be the CALLER's independently-resolved root,
+/// never derived from `dir` itself.
+fn clear_worktree_dir(repo: &str, dir: &str, authorized_root: &str) -> Result<(), Error> {
+    reap_dir_before_removal(dir, authorized_root);
     if run_git(repo, &["worktree", "remove", "--force", dir]).is_err()
         && std::path::Path::new(dir).exists()
     {
@@ -947,22 +1003,35 @@ fn clear_worktree_dir(repo: &str, dir: &str) -> Result<(), Error> {
 }
 
 /// Reap every process rooted inside `dir` (spec 79, criterion 1) before a caller in this
-/// module removes it, using `dir`'s own PARENT as the reap's `authorized_root`. This is safe
-/// because every dir this module ever tears down - a unit worktree (`rigger-wt-<slug>`), a
-/// review worktree (`rigger-review-<stage>-<attempt>`), or either one's sibling cache/fence
-/// dir (a same-parent sibling by construction, see [`unit_cache_sibling`] and
-/// [`review_fence_sibling`]) - lives DIRECTLY under the resolved scratch root by construction
-/// (the same authority [`unit_cache_sibling`]/[`review_fence_sibling`] already use to derive
-/// a sibling path from a worktree dir's own parent): `dir`'s parent therefore IS the SAME
-/// resolved scratch root the caller built `dir` from in the first place, never a hardcoded or
-/// re-derived guess (spec 78's `is_reapable_base` contract). A `dir` with no parent component
-/// (nothing to authorize against) is a no-op, matching every other reap call site's
-/// best-effort, never-fails contract.
-fn reap_dir_before_removal(dir: &str) {
-    let path = std::path::Path::new(dir);
-    if let Some(root) = path.parent() {
-        crate::reap::reap_processes_rooted_under(path, root);
+/// module removes it, gated by [`crate::reap::reap_processes_rooted_under`]'s usual
+/// strictly-under-`authorized_root` containment check.
+///
+/// `authorized_root` MUST be a value the CALLER independently resolved via the SAME
+/// authority it already used to build `dir` itself (`scratch_root_from_env`/
+/// `scratch_root_path_from_env`, or an equivalent caller-side resolution) - spec 79
+/// round-2 fix, decision `u79c1r2-reap-dir-before-removal-authorized-root-param`
+/// (supersedes the round-1 shape). The prior round-1 version of this function computed
+/// `dir.parent()` and used THAT as the authorized root: a canonicalized path always
+/// `starts_with` its own canonicalized parent, so that containment check was a
+/// TAUTOLOGY - it could never refuse, for any `dir` with a parent, regardless of
+/// whether `dir` was actually placed under the run's real, independently-resolved
+/// scratch root (reviewed and rejected: `arch-u79c1-reap-dir-before-removal-self-
+/// authorizes` / `sdet-u79c1-authorized-root-tautology`, both UPHELD - mirrors spec
+/// 78 round 2's `u78c2r2-authorized-root-caller-supplied`, which this function now
+/// finally also honors: "a root the CALLER resolves and supplies... never re-derived
+/// here from base's own git/filesystem position"). An empty `authorized_root` (no such
+/// root to hand, e.g. a test scaffold that never exercises this boundary) is a no-op:
+/// [`crate::reap::processes_rooted_under`]'s canonicalize of `""` fails to resolve,
+/// which the containment gate already reads as "nothing to authorize", so it refuses
+/// safely rather than reaping unconditionally.
+fn reap_dir_before_removal(dir: &str, authorized_root: &str) {
+    if authorized_root.is_empty() {
+        return;
     }
+    crate::reap::reap_processes_rooted_under(
+        std::path::Path::new(dir),
+        std::path::Path::new(authorized_root),
+    );
 }
 
 /// Prune PROVABLY-CORRUPT worktree admin entries before a `git worktree add`, so one
@@ -1050,10 +1119,19 @@ fn worktree_admin_is_corrupt(admin: &std::path::Path) -> bool {
 /// gate spawned can independently outlive it, so [`clear_worktree_dir`] and
 /// [`reclaim_cache_sibling`] both reap whatever they find rooted inside before removing
 /// anything, exactly as [`Worktree::remove`]'s live in-window teardown does.
-pub fn reclaim_worktree_on_branch(repo: &str, branch: &str) -> Result<(), Error> {
+///
+/// `authorized_root` is the caller's independently-resolved scratch root (spec 79 round-2
+/// fix), threaded straight through to both [`clear_worktree_dir`] and
+/// [`reclaim_cache_sibling`] - resolved by the caller via the SAME authority
+/// [`Worktree::create`]'s own callers already use, never re-derived from `dir`.
+pub fn reclaim_worktree_on_branch(
+    repo: &str,
+    branch: &str,
+    authorized_root: &str,
+) -> Result<(), Error> {
     if let Some(dir) = registered_worktree_for(repo, branch) {
-        clear_worktree_dir(repo, &dir)?;
-        reclaim_cache_sibling(&dir);
+        clear_worktree_dir(repo, &dir, authorized_root)?;
+        reclaim_cache_sibling(&dir, authorized_root);
     }
     Ok(())
 }
@@ -1162,7 +1240,8 @@ mod tests {
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
-        let wt = Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/test").unwrap();
+        let wt =
+            Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/test", "").unwrap();
 
         std::fs::write(wt_path.join("feature.txt"), "work\n").unwrap();
         assert_eq!(wt.changed_files().unwrap(), ["feature.txt"]);
@@ -1192,8 +1271,8 @@ mod tests {
         // Both worktrees branch off the SAME base, as concurrent batch-mates do.
         let wa = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
         let wb = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
-        let a = Worktree::create(&repo_path, wa.to_str().unwrap(), "rigger/u/a").unwrap();
-        let b = Worktree::create(&repo_path, wb.to_str().unwrap(), "rigger/u/b").unwrap();
+        let a = Worktree::create(&repo_path, wa.to_str().unwrap(), "rigger/u/a", "").unwrap();
+        let b = Worktree::create(&repo_path, wb.to_str().unwrap(), "rigger/u/b", "").unwrap();
 
         // A adds shared.txt and integrates cleanly.
         std::fs::write(wa.join("shared.txt"), "A version\n").unwrap();
@@ -1244,7 +1323,8 @@ mod tests {
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
-        let wt = Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/revert").unwrap();
+        let wt =
+            Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/revert", "").unwrap();
         std::fs::write(wt_path.join("wrong.txt"), "buggy\n").unwrap();
         let commit = wt
             .integrate("rigger: integrate wrong")
@@ -1298,7 +1378,7 @@ mod tests {
         // (which wants to delete the line C1 added) conflicts with the later modification.
         let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
         let wt =
-            Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/conflict").unwrap();
+            Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/conflict", "").unwrap();
         std::fs::write(wt_path.join("shared.txt"), "original\n").unwrap();
         let c1 = wt
             .integrate("rigger: integrate original")
@@ -1350,7 +1430,8 @@ mod tests {
         let repo_path = repo.path().to_str().unwrap().to_string();
 
         let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
-        let wt = Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/idem").unwrap();
+        let wt =
+            Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/idem", "").unwrap();
         std::fs::write(wt_path.join("gone.txt"), "effect\n").unwrap();
         let c1 = wt
             .integrate("rigger: integrate effect")
@@ -1392,7 +1473,8 @@ mod tests {
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
-        let wt = Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/commit").unwrap();
+        let wt =
+            Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/commit", "").unwrap();
 
         std::fs::write(wt_path.join("feature.txt"), "work\n").unwrap();
         assert!(
@@ -1468,7 +1550,7 @@ mod tests {
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
-        let wt = Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/pre").unwrap();
+        let wt = Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/pre", "").unwrap();
 
         std::fs::write(wt_path.join("feature.txt"), "work\n").unwrap();
         let committed = wt.commit("rigger: pre-commit").unwrap();
@@ -1491,7 +1573,8 @@ mod tests {
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
-        let wt = Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/rename").unwrap();
+        let wt =
+            Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/rename", "").unwrap();
 
         // Commit an original file, then rename it (git stages the rename via `mv`)
         // so git reports it as `R` rather than an add+delete pair.
@@ -1529,7 +1612,7 @@ mod tests {
         // Window 1: create the branch, commit work, remove the transient dir. The
         // branch ref survives.
         let dir1 = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
-        let wt1 = Worktree::create(&repo_path, dir1.to_str().unwrap(), branch).unwrap();
+        let wt1 = Worktree::create(&repo_path, dir1.to_str().unwrap(), branch, "").unwrap();
         std::fs::write(dir1.join("carried.txt"), "prior-window work\n").unwrap();
         let committed = wt1.commit("rigger: window 1").unwrap();
         assert!(!committed.is_empty(), "window 1 must commit work");
@@ -1542,7 +1625,7 @@ mod tests {
         // Window 2: a FRESH dir, same branch. `create` must check out the existing
         // branch, so the committed file is present without re-implementing.
         let dir2 = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
-        let wt2 = Worktree::create(&repo_path, dir2.to_str().unwrap(), branch).unwrap();
+        let wt2 = Worktree::create(&repo_path, dir2.to_str().unwrap(), branch, "").unwrap();
         assert!(
             dir2.join("carried.txt").exists(),
             "the recreated worktree must contain the file committed on the branch in the prior window"
@@ -1616,11 +1699,11 @@ mod tests {
 
         // Terminal: branch created off the run branch, never advanced (ancestor).
         let done_dir = format!("{root}/rigger-wt-done");
-        Worktree::create(&repo_path, &done_dir, "rigger/u/done").unwrap();
+        Worktree::create(&repo_path, &done_dir, "rigger/u/done", "").unwrap();
 
         // In-flight: branch carries a commit the run branch does not have.
         let live_dir = format!("{root}/rigger-wt-live");
-        let live = Worktree::create(&repo_path, &live_dir, "rigger/u/live").unwrap();
+        let live = Worktree::create(&repo_path, &live_dir, "rigger/u/live", "").unwrap();
         std::fs::write(std::path::Path::new(&live_dir).join("wip.txt"), "wip\n").unwrap();
         live.commit("rigger: in-flight").unwrap();
 
@@ -1659,12 +1742,12 @@ mod tests {
         // an ancestor of run_branch, exactly like a terminal unit) but its unit is still
         // in-flight per the current run's log.
         let live_dir = format!("{root}/rigger-wt-live-empty-diff");
-        Worktree::create(&repo_path, &live_dir, "rigger/u/live-empty-diff").unwrap();
+        Worktree::create(&repo_path, &live_dir, "rigger/u/live-empty-diff", "").unwrap();
 
         // Dead, empty-diff: the identical shape, but no live unit claims its branch - this
         // is the case the pre-existing ancestry rule already swept and must keep sweeping.
         let dead_dir = format!("{root}/rigger-wt-dead-empty-diff");
-        Worktree::create(&repo_path, &dead_dir, "rigger/u/dead-empty-diff").unwrap();
+        Worktree::create(&repo_path, &dead_dir, "rigger/u/dead-empty-diff", "").unwrap();
 
         let mut live_branches = std::collections::HashSet::new();
         live_branches.insert("rigger/u/live-empty-diff".to_string());
@@ -1698,7 +1781,7 @@ mod tests {
 
         // Terminal unit: `rigger-wt-done` with its sibling `cargo-target-done` cache.
         let done_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}done");
-        Worktree::create(&repo_path, &done_dir, "rigger/u/done").unwrap();
+        Worktree::create(&repo_path, &done_dir, "rigger/u/done", "").unwrap();
         let done_cache = format!("{root}/{UNIT_CACHE_PREFIX}done");
         std::fs::create_dir_all(&done_cache).unwrap();
         std::fs::write(std::path::Path::new(&done_cache).join("incremental"), "x").unwrap();
@@ -1706,7 +1789,7 @@ mod tests {
         // In-flight unit: its worktree carries an unmerged commit, so both the worktree
         // AND its sibling cache must survive the sweep.
         let live_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}live");
-        let live = Worktree::create(&repo_path, &live_dir, "rigger/u/live").unwrap();
+        let live = Worktree::create(&repo_path, &live_dir, "rigger/u/live", "").unwrap();
         std::fs::write(std::path::Path::new(&live_dir).join("wip.txt"), "wip\n").unwrap();
         live.commit("rigger: in-flight").unwrap();
         let live_cache = format!("{root}/{UNIT_CACHE_PREFIX}live");
@@ -1744,7 +1827,7 @@ mod tests {
         let root = scratch_root(&repo_path, "", None);
 
         let done_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}sweepreap");
-        Worktree::create(&repo_path, &done_dir, "rigger/u/sweepreap").unwrap();
+        Worktree::create(&repo_path, &done_dir, "rigger/u/sweepreap", "").unwrap();
         let done_path = std::path::Path::new(&done_dir).to_path_buf();
 
         let mut child = Command::new("sh")
@@ -1813,7 +1896,7 @@ mod tests {
 
         // A unit worktree with its sibling per-unit cache populated (as a real gate build).
         let unit_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}graceful");
-        let unit = Worktree::create(&repo_path, &unit_dir, "rigger/u/graceful").unwrap();
+        let unit = Worktree::create(&repo_path, &unit_dir, "rigger/u/graceful", "").unwrap();
         let unit_cache = format!("{root}/{UNIT_CACHE_PREFIX}graceful");
         std::fs::create_dir_all(&unit_cache).unwrap();
         std::fs::write(std::path::Path::new(&unit_cache).join("built.rlib"), "x").unwrap();
@@ -1821,7 +1904,7 @@ mod tests {
         // A review worktree owns no `cargo-target-*` sibling; removing it must NOT touch an
         // unrelated cache dir that happens to sit under the same scratch root.
         let review_dir = format!("{root}/rigger-review-panel-0");
-        let review = Worktree::create(&repo_path, &review_dir, "rigger/rev/panel-0").unwrap();
+        let review = Worktree::create(&repo_path, &review_dir, "rigger/rev/panel-0", "").unwrap();
         let bystander = format!("{root}/{UNIT_CACHE_PREFIX}unrelated");
         std::fs::create_dir_all(&bystander).unwrap();
 
@@ -1861,7 +1944,7 @@ mod tests {
         let root = scratch_root(&repo_path, "", None);
 
         let unit_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}fenced");
-        let unit = Worktree::create(&repo_path, &unit_dir, "rigger/u/fenced").unwrap();
+        let unit = Worktree::create(&repo_path, &unit_dir, "rigger/u/fenced", "").unwrap();
         let unit_cache = format!("{root}/{UNIT_CACHE_PREFIX}fenced");
         std::fs::create_dir_all(&unit_cache).unwrap();
         // The store-fence sibling ExecRunner::run derives from the SAME cache path, one
@@ -1914,7 +1997,8 @@ mod tests {
         let root = scratch_root(&repo_path, "", None);
 
         let review_dir = format!("{root}/rigger-review-fanout-stage-0");
-        let review = Worktree::create(&repo_path, &review_dir, "rigger/review/fanout-0").unwrap();
+        let review =
+            Worktree::create(&repo_path, &review_dir, "rigger/review/fanout-0", "").unwrap();
         let fence_dir = format!("{review_dir}{}", crate::gate::STORE_FENCE_SUFFIX);
         std::fs::create_dir_all(&fence_dir).unwrap();
         std::fs::write(std::path::Path::new(&fence_dir).join("events.db"), "x").unwrap();
@@ -1956,7 +2040,7 @@ mod tests {
             .to_str()
             .unwrap()
             .to_string();
-        let wt = Worktree::create(&repo_path, &wt_dir, branch).unwrap();
+        let wt = Worktree::create(&repo_path, &wt_dir, branch, "").unwrap();
         std::fs::write(
             std::path::Path::new(&wt_dir).join("work.rs"),
             "fn work() {}\n",
@@ -1979,7 +2063,7 @@ mod tests {
             "precondition: git refuses to delete a branch checked out in a worktree"
         );
 
-        reclaim_worktree_on_branch(&repo_path, branch).unwrap();
+        reclaim_worktree_on_branch(&repo_path, branch, "").unwrap();
 
         assert_eq!(
             registered_worktree_for(&repo_path, branch),
@@ -2016,13 +2100,14 @@ mod tests {
         let branch = "rigger/u/lingered-reap";
 
         let parent = tempfile::tempdir().unwrap();
-        let wt_dir = parent
-            .path()
+        let parent_path = parent.path().canonicalize().unwrap();
+        let parent_str = parent_path.to_str().unwrap().to_string();
+        let wt_dir = parent_path
             .join("rigger-wt-lingered-reap")
             .to_str()
             .unwrap()
             .to_string();
-        let wt = Worktree::create(&repo_path, &wt_dir, branch).unwrap();
+        let wt = Worktree::create(&repo_path, &wt_dir, branch, &parent_str).unwrap();
         std::fs::write(
             std::path::Path::new(&wt_dir).join("work.rs"),
             "fn work() {}\n",
@@ -2051,7 +2136,7 @@ mod tests {
             "precondition: the fixture process is rooted in the lingering worktree"
         );
 
-        reclaim_worktree_on_branch(&repo_path, branch).unwrap();
+        reclaim_worktree_on_branch(&repo_path, branch, &parent_str).unwrap();
 
         let died = (0..200).any(|_| {
             if matches!(child.try_wait(), Ok(Some(_))) {
@@ -2096,7 +2181,7 @@ mod tests {
                 .to_str()
                 .unwrap()
                 .to_string();
-            let wt = Worktree::create(&repo_path, &d, done_branch).unwrap();
+            let wt = Worktree::create(&repo_path, &d, done_branch, "").unwrap();
             std::fs::write(std::path::Path::new(&d).join("done.rs"), "fn done() {}\n").unwrap();
             wt.commit("rigger: prior window work").unwrap();
             wt.remove().unwrap();
@@ -2120,7 +2205,7 @@ mod tests {
             .to_str()
             .unwrap()
             .to_string();
-        let other = Worktree::create(&repo_path, &other_dir, "rigger/u/inflight").unwrap();
+        let other = Worktree::create(&repo_path, &other_dir, "rigger/u/inflight", "").unwrap();
         std::fs::write(
             std::path::Path::new(&other_dir).join("wip.rs"),
             "fn wip() {}\n",
@@ -2131,7 +2216,7 @@ mod tests {
         std::fs::create_dir_all(&other_cache).unwrap();
 
         // Reclaiming the target (no worktree on it) is a graceful no-op, not an error.
-        reclaim_worktree_on_branch(&repo_path, done_branch).unwrap();
+        reclaim_worktree_on_branch(&repo_path, done_branch, "").unwrap();
 
         assert!(
             branch_exists(&repo_path, done_branch),
@@ -2173,7 +2258,7 @@ mod tests {
             .to_str()
             .unwrap()
             .to_string();
-        let wt = Worktree::create(&repo_path, &wt_dir, branch).unwrap();
+        let wt = Worktree::create(&repo_path, &wt_dir, branch, "").unwrap();
         std::fs::write(
             std::path::Path::new(&wt_dir).join("work.rs"),
             "fn work() {}\n",
@@ -2193,7 +2278,7 @@ mod tests {
             "precondition: git still refuses the branch while the dangling registration holds it"
         );
 
-        reclaim_worktree_on_branch(&repo_path, branch).unwrap();
+        reclaim_worktree_on_branch(&repo_path, branch, "").unwrap();
 
         assert_eq!(
             registered_worktree_for(&repo_path, branch),
@@ -2252,13 +2337,13 @@ mod tests {
 
         // Process 1: create, commit, and do NOT remove - the process "died".
         let dir1 = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
-        let wt1 = Worktree::create(&repo_path, dir1.to_str().unwrap(), branch).unwrap();
+        let wt1 = Worktree::create(&repo_path, dir1.to_str().unwrap(), branch, "").unwrap();
         std::fs::write(dir1.join("inflight.txt"), "wave-1 work\n").unwrap();
         wt1.commit("rigger: in-flight work").unwrap();
 
         // Process 2: same branch, different dir. Must ADOPT dir1, not fail.
         let dir2 = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
-        let wt2 = Worktree::create(&repo_path, dir2.to_str().unwrap(), branch).unwrap();
+        let wt2 = Worktree::create(&repo_path, dir2.to_str().unwrap(), branch, "").unwrap();
         assert_eq!(
             wt2.dir,
             dir1.to_str().unwrap(),
@@ -2274,7 +2359,7 @@ mod tests {
         // requested dir, with the branch's committed work checked out.
         std::fs::remove_dir_all(&dir1).unwrap();
         let dir3 = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
-        let wt3 = Worktree::create(&repo_path, dir3.to_str().unwrap(), branch).unwrap();
+        let wt3 = Worktree::create(&repo_path, dir3.to_str().unwrap(), branch, "").unwrap();
         assert_eq!(
             wt3.dir,
             dir3.to_str().unwrap(),
@@ -2306,7 +2391,7 @@ mod tests {
 
         // Establish the durable branch checkpoint with committed work, then remove the
         // worktree dir (registration gone) - the branch ref survives.
-        let wt1 = Worktree::create(&repo_path, &dir, branch).unwrap();
+        let wt1 = Worktree::create(&repo_path, &dir, branch, "").unwrap();
         std::fs::write(
             std::path::Path::new(&dir).join("carried.txt"),
             "checkpoint\n",
@@ -2337,7 +2422,7 @@ mod tests {
         );
 
         // `create` must HEAL rather than hard-fail exit 128.
-        let wt2 = Worktree::create(&repo_path, &dir, branch)
+        let wt2 = Worktree::create(&repo_path, &dir, branch, "")
             .expect("create must self-heal a leftover dir, not wedge on `git worktree add`");
         assert_eq!(
             wt2.dir, dir,
@@ -2371,13 +2456,13 @@ mod tests {
         let dir = format!("{root}/rigger-wt-unit-det");
 
         // Process 1: create the deterministic worktree and commit work.
-        let wt1 = Worktree::create(&repo_path, &dir, branch).unwrap();
+        let wt1 = Worktree::create(&repo_path, &dir, branch, "").unwrap();
         std::fs::write(std::path::Path::new(&dir).join("work.txt"), "det\n").unwrap();
         wt1.commit("rigger: process 1 work").unwrap();
 
         // Process 2: SAME deterministic dir + branch. It must adopt the existing dir (a
         // path lookup), returning that exact dir with the committed work present.
-        let wt2 = Worktree::create(&repo_path, &dir, branch).unwrap();
+        let wt2 = Worktree::create(&repo_path, &dir, branch, "").unwrap();
         assert_eq!(
             wt2.dir, dir,
             "create adopts the requested deterministic dir directly"
@@ -2423,7 +2508,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
 
         // The real worktree on the branch: matched by path lookup.
-        let wt = Worktree::create(&repo_path, &dir, branch).unwrap();
+        let wt = Worktree::create(&repo_path, &dir, branch, "").unwrap();
         assert!(
             worktree_on_branch(&dir, branch),
             "the dir that IS this branch's worktree matches by its own HEAD"
@@ -2431,7 +2516,7 @@ mod tests {
 
         // A worktree checked out on a DIFFERENT branch is not matched for `branch`.
         let other_dir = format!("{root}/rigger-wt-other");
-        let other = Worktree::create(&repo_path, &other_dir, "rigger/u/other").unwrap();
+        let other = Worktree::create(&repo_path, &other_dir, "rigger/u/other", "").unwrap();
         assert!(
             !worktree_on_branch(&other_dir, branch),
             "a worktree on another branch does not match this branch's path lookup"
@@ -2456,7 +2541,7 @@ mod tests {
 
         // A prior review step created the throwaway worktree off the base HEAD, then CRASHED
         // (no cleanup): the branch + dir survive, pinned at the OLD head.
-        let stale = Worktree::create(&repo_path, &dir, branch).unwrap();
+        let stale = Worktree::create(&repo_path, &dir, branch, "").unwrap();
         let old_head = git(&dir, &["rev-parse", "HEAD"])
             .unwrap()
             .trim()
@@ -2479,12 +2564,12 @@ mod tests {
         );
 
         // The resumed review step discards the stale scaffolding and recreates off HEAD.
-        Worktree::discard(&repo_path, &dir, branch).unwrap();
+        Worktree::discard(&repo_path, &dir, branch, "").unwrap();
         assert!(
             !branch_exists(&repo_path, branch),
             "discard deletes the throwaway review branch"
         );
-        let fresh = Worktree::create(&repo_path, &dir, branch).unwrap();
+        let fresh = Worktree::create(&repo_path, &dir, branch, "").unwrap();
         let fresh_head = git(&fresh.dir, &["rev-parse", "HEAD"])
             .unwrap()
             .trim()
@@ -2516,7 +2601,7 @@ mod tests {
         let branch = "rigger/review/discard-fence-0";
         let dir = format!("{root}/rigger-review-discard-fence-0");
 
-        let stale = Worktree::create(&repo_path, &dir, branch).unwrap();
+        let stale = Worktree::create(&repo_path, &dir, branch, "").unwrap();
         drop(stale); // the Rust struct is gone but the worktree registration + dir survive.
 
         let fence_dir = format!("{dir}{}", crate::gate::STORE_FENCE_SUFFIX);
@@ -2524,7 +2609,7 @@ mod tests {
         std::fs::write(std::path::Path::new(&fence_dir).join("events.db"), "x").unwrap();
         std::fs::write(std::path::Path::new(&fence_dir).join("events.db-wal"), "x").unwrap();
 
-        Worktree::discard(&repo_path, &dir, branch).unwrap();
+        Worktree::discard(&repo_path, &dir, branch, "").unwrap();
 
         assert!(
             !std::path::Path::new(&fence_dir).exists(),
@@ -2703,7 +2788,8 @@ mod tests {
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
-        let wt = Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/spaces").unwrap();
+        let wt =
+            Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/spaces", "").unwrap();
 
         // The plain --porcelain form C-quotes this to `"a file.txt"`; the -z form
         // must hand back the real, unquoted path.
@@ -2725,8 +2811,13 @@ mod tests {
         let scratch = repo.path().join(".rigger").join("tmp");
         std::fs::create_dir_all(&scratch).unwrap();
         let wt_dir = scratch.join("rigger-wt-reaptest");
-        let wt =
-            Worktree::create(&repo_path, wt_dir.to_str().unwrap(), "rigger/u/reaptest").unwrap();
+        let wt = Worktree::create(
+            &repo_path,
+            wt_dir.to_str().unwrap(),
+            "rigger/u/reaptest",
+            "",
+        )
+        .unwrap();
 
         // Inside: a process rooted in the worktree that ignores SIGTERM, so only the SIGKILL
         // escalation reaps it. Outside: a plain sleeper rooted at the repo root.
@@ -2811,7 +2902,7 @@ mod tests {
 
         // A HEALTHY worktree whose admin entry the healing must leave completely alone.
         let healthy_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}healthy");
-        Worktree::create(&repo_path, &healthy_dir, "rigger/u/healthy").unwrap();
+        Worktree::create(&repo_path, &healthy_dir, "rigger/u/healthy", "").unwrap();
         let healthy_admin = admin.join(format!("{UNIT_WORKTREE_PREFIX}healthy"));
         assert!(
             healthy_admin.is_dir(),
@@ -2821,7 +2912,7 @@ mod tests {
         // A CORRUPT admin entry: register a worktree, then truncate its `commondir` to
         // zero length - the exact residue a SIGKILL mid `git worktree remove` leaves.
         let doomed_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}doomed");
-        Worktree::create(&repo_path, &doomed_dir, "rigger/u/doomed").unwrap();
+        Worktree::create(&repo_path, &doomed_dir, "rigger/u/doomed", "").unwrap();
         let doomed_admin = admin.join(format!("{UNIT_WORKTREE_PREFIX}doomed"));
         std::fs::write(doomed_admin.join("commondir"), b"").unwrap();
         assert_eq!(
@@ -2844,7 +2935,7 @@ mod tests {
 
         // `create` on a fresh branch must self-heal the corrupt entry and SUCCEED.
         let new_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}fresh");
-        let created = Worktree::create(&repo_path, &new_dir, "rigger/u/fresh");
+        let created = Worktree::create(&repo_path, &new_dir, "rigger/u/fresh", "");
         assert!(
             created.is_ok(),
             "create must prune the corrupt admin entry first, then add: {:?}",
@@ -2894,14 +2985,14 @@ mod tests {
 
         // A HEALTHY worktree whose admin entry the healing must leave completely alone.
         let healthy_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}healthy");
-        Worktree::create(&repo_path, &healthy_dir, "rigger/u/healthy").unwrap();
+        Worktree::create(&repo_path, &healthy_dir, "rigger/u/healthy", "").unwrap();
         let healthy_admin = admin.join(format!("{UNIT_WORKTREE_PREFIX}healthy"));
 
         // A doomed entry whose `gitdir` marker (NOT `commondir`) is truncated to zero
         // length - the residue a SIGKILL mid `git worktree remove` can leave on the OTHER
         // marker. It is present before the heal and a bare add would never clear it.
         let doomed_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}doomed");
-        Worktree::create(&repo_path, &doomed_dir, "rigger/u/doomed").unwrap();
+        Worktree::create(&repo_path, &doomed_dir, "rigger/u/doomed", "").unwrap();
         let doomed_admin = admin.join(format!("{UNIT_WORKTREE_PREFIX}doomed"));
         std::fs::write(doomed_admin.join("gitdir"), b"").unwrap();
         assert_eq!(
@@ -2918,7 +3009,7 @@ mod tests {
 
         // `create` on a fresh branch must prune the gitdir-corrupt entry and SUCCEED.
         let new_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}fresh");
-        let created = Worktree::create(&repo_path, &new_dir, "rigger/u/fresh");
+        let created = Worktree::create(&repo_path, &new_dir, "rigger/u/fresh", "");
         assert!(
             created.is_ok(),
             "create must self-heal a zero-length gitdir marker before adding: {:?}",
@@ -2965,12 +3056,12 @@ mod tests {
         let admin = repo.path().join(".git").join("worktrees");
 
         let healthy_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}healthy");
-        Worktree::create(&repo_path, &healthy_dir, "rigger/u/healthy").unwrap();
+        Worktree::create(&repo_path, &healthy_dir, "rigger/u/healthy", "").unwrap();
         let healthy_admin = admin.join(format!("{UNIT_WORKTREE_PREFIX}healthy"));
 
         // A doomed entry whose `commondir` marker is DELETED outright (not truncated).
         let doomed_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}doomed");
-        Worktree::create(&repo_path, &doomed_dir, "rigger/u/doomed").unwrap();
+        Worktree::create(&repo_path, &doomed_dir, "rigger/u/doomed", "").unwrap();
         let doomed_admin = admin.join(format!("{UNIT_WORKTREE_PREFIX}doomed"));
         std::fs::remove_file(doomed_admin.join("commondir")).unwrap();
         assert!(
@@ -2984,7 +3075,7 @@ mod tests {
 
         // `create` on a fresh branch must prune the marker-missing entry and SUCCEED.
         let new_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}fresh");
-        let created = Worktree::create(&repo_path, &new_dir, "rigger/u/fresh");
+        let created = Worktree::create(&repo_path, &new_dir, "rigger/u/fresh", "");
         assert!(
             created.is_ok(),
             "create must self-heal a MISSING marker before adding: {:?}",
@@ -3031,7 +3122,7 @@ mod tests {
         let repo_path = repo.path().to_str().unwrap().to_string();
         let root = scratch_root(&repo_path, "", None);
         let dir = format!("{root}/{UNIT_WORKTREE_PREFIX}racer");
-        let wt = Worktree::create(&repo_path, &dir, "rigger/u/racer").unwrap();
+        let wt = Worktree::create(&repo_path, &dir, "rigger/u/racer", "").unwrap();
 
         // Out-of-band deletion: the exact scenario `ensure_present` exists to self-heal -
         // the dir is gone but the branch (the durable checkpoint) still exists.
