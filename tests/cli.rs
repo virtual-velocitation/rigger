@@ -26251,6 +26251,65 @@ fn describe_held_port_if_confirmed_public_contract_holds_at_the_crate_boundary()
     }
 }
 
+/// Spec 81: erases the volatile `/proc` scheduler-state letter a held-port diagnosis message
+/// embeds (`dash::format_held_port`'s `"...(state {state})"` arm) so two messages produced by
+/// two independently-timed `/proc` reads of the SAME still-live pid compare equal even when the
+/// kernel scheduled that pid into a different state (e.g. `R` vs `S`) between the reads - the
+/// exact CI race spec 81 documents (PR #27: `state S` vs `state R` for the same pid, everything
+/// else identical). Only the single-letter `(state <letter>)` form is touched; the `STOPPED` and
+/// `(state not discoverable)` wordings never contain a bare one-letter parenthetical and pass
+/// through unchanged, so this cannot mask a genuinely different pid, address, or wording.
+fn normalize_scheduler_state(msg: &str) -> String {
+    let Some(start) = msg.rfind("(state ") else {
+        return msg.to_string();
+    };
+    let after = &msg[start + "(state ".len()..];
+    // Only a genuine single-letter state (`R)`, `S)`, ...) is the volatile token; the stable
+    // "(state not discoverable)" wording has more than one character before the closing paren
+    // and must pass through untouched.
+    match after.find(')') {
+        Some(1) => format!("{}(state _){}", &msg[..start], &after[2..]),
+        _ => msg.to_string(),
+    }
+}
+
+/// Spec 81's self-proving case: the normalization above is itself exercised by comparing two
+/// strings that differ ONLY in the scheduler-state letter, proving the exact race it closes
+/// (PR #27's `state S` vs `state R` for one pid) can no longer fail an equality assert once both
+/// sides pass through it - while a genuinely different pid, or the two stable non-letter
+/// wordings, still compare unequal/unchanged.
+#[test]
+fn scheduler_state_token_normalizes_a_flap() {
+    let running = "address 127.0.0.1:9 is already in use by pid 42 (state R)";
+    let sleeping = "address 127.0.0.1:9 is already in use by pid 42 (state S)";
+    assert_eq!(
+        normalize_scheduler_state(running),
+        normalize_scheduler_state(sleeping),
+        "two messages differing only in the scheduler-state letter must normalize equal - this \
+         is the exact PR #27 race (state S vs state R for the same pid)"
+    );
+
+    // A genuinely different pid must still compare unequal after normalization - the
+    // normalization erases only the state letter, never the pid it must keep proving.
+    let other_pid = "address 127.0.0.1:9 is already in use by pid 43 (state R)";
+    assert_ne!(
+        normalize_scheduler_state(running),
+        normalize_scheduler_state(other_pid),
+        "normalization must never erase a genuinely different pid"
+    );
+
+    // The two stable, non-letter wordings must pass through byte-identical - neither is the
+    // volatile token this normalization targets.
+    let not_discoverable =
+        "address 127.0.0.1:9 is already in use by pid 42 (state not discoverable)";
+    assert_eq!(
+        normalize_scheduler_state(not_discoverable),
+        not_discoverable,
+        "the not-discoverable wording is stable text, never a one-letter state - must pass \
+         through unchanged"
+    );
+}
+
 /// Spec 62 round 4 fix (adj-u62c3r3-verdict-reject-child-self-attribution) - the PUBLIC contract
 /// of [`rigger::dash::held_port_holder`] at the CRATE BOUNDARY, mirroring the two sibling
 /// crate-boundary tests above. `held_port_holder` is a NEW pub item this round (it did not exist
@@ -26305,12 +26364,23 @@ fn held_port_holder_public_contract_holds_at_the_crate_boundary() {
         // Sibling-consistency: `describe_held_port_if_confirmed` is defined in terms of
         // `held_port_holder` (round 4) precisely so the two can never drift apart - a
         // crate-boundary check that they agree is exactly what would catch a future edit that
-        // broke that delegation without touching either function's own doc.
+        // broke that delegation without touching either function's own doc. Spec 81: each call
+        // re-reads this test's own `/proc/<pid>/stat` independently, and the kernel is free to
+        // schedule this process into a different state (`R` vs `S`) between the two reads - CI
+        // hit exactly that on PR #27's first run. The message embeds that state as diagnostic
+        // value and must keep doing so, so `normalize_scheduler_state` (proved above by
+        // `scheduler_state_token_normalizes_a_flap`) erases only that one volatile token from
+        // both sides before the equality assert - pid, address, and every other word still have
+        // to agree exactly, but a scheduler flap between reads can no longer fail this test.
+        let confirmed =
+            describe_held_port_if_confirmed(held_addr).map(|msg| normalize_scheduler_state(&msg));
         assert_eq!(
-            describe_held_port_if_confirmed(held_addr),
-            Some(held_msg),
-            "held_port_holder's message half and describe_held_port_if_confirmed's own \
-             return must agree - they are documented as sharing one discovery"
+            confirmed,
+            Some(normalize_scheduler_state(&held_msg)),
+            "held_port_holder's message half and describe_held_port_if_confirmed's own return \
+             must agree (scheduler-state letter normalized away since each call independently \
+             re-reads /proc and can observe a state flap) - they are documented as sharing one \
+             discovery"
         );
     }
     drop(listener);
