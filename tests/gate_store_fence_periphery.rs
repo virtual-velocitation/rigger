@@ -519,7 +519,7 @@ fn a_real_fenced_couriers_scratch_store_is_reclaimed_when_the_worktree_is_remove
     // path, not a double of it.
     let root = rigger::worktree::scratch_root(&repo_path, "", None);
     let worktree_dir = format!("{root}/rigger-wt-reclaim-probe");
-    let worktree = Worktree::create(&repo_path, &worktree_dir, "rigger/u/reclaim-probe")
+    let worktree = Worktree::create(&repo_path, &worktree_dir, "rigger/u/reclaim-probe", &root)
         .expect("create a real unit worktree");
     std::fs::create_dir_all(Path::new(&worktree.dir).join(".rigger")).unwrap();
     std::fs::write(
@@ -604,8 +604,13 @@ fn a_real_fenced_couriers_scratch_store_is_reclaimed_for_a_review_worktree_too()
     // unlike a unit worktree.
     let root = rigger::worktree::scratch_root(&repo_path, "", None);
     let review_dir = format!("{root}/rigger-review-reclaim-probe-0");
-    let review = Worktree::create(&repo_path, &review_dir, "rigger/review/reclaim-probe-0")
-        .expect("create a real review worktree");
+    let review = Worktree::create(
+        &repo_path,
+        &review_dir,
+        "rigger/review/reclaim-probe-0",
+        &root,
+    )
+    .expect("create a real review worktree");
     std::fs::create_dir_all(Path::new(&review.dir).join(".rigger")).unwrap();
     std::fs::write(
         Path::new(&review.dir).join(".rigger").join("workflow.yml"),
@@ -694,8 +699,8 @@ fn a_real_fenced_couriers_scratch_store_is_reclaimed_by_discard_too() {
     let root = rigger::worktree::scratch_root(&repo_path, "", None);
     let review_dir = format!("{root}/rigger-review-discard-reclaim-probe-0");
     let branch = "rigger/review/discard-reclaim-probe-0";
-    let review =
-        Worktree::create(&repo_path, &review_dir, branch).expect("create a real review worktree");
+    let review = Worktree::create(&repo_path, &review_dir, branch, &root)
+        .expect("create a real review worktree");
     let dir = review.dir.clone();
     std::fs::create_dir_all(Path::new(&dir).join(".rigger")).unwrap();
     std::fs::write(
@@ -740,7 +745,7 @@ fn a_real_fenced_couriers_scratch_store_is_reclaimed_by_discard_too() {
 
     // `discard`, not `remove`: the crash-resume teardown path `review_only_worktree` runs
     // unconditionally before every review-stage attempt's `create()`.
-    Worktree::discard(&repo_path, &dir, branch).expect("discard the real review worktree");
+    Worktree::discard(&repo_path, &dir, branch, &root).expect("discard the real review worktree");
 
     assert!(
         !Path::new(&fence_dir).exists(),

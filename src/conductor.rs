@@ -4601,12 +4601,13 @@ impl RunCtx<'_> {
         let dir = unit_worktree_dir(&scratch, &st.name);
         let branch = unit_branch(&st.name);
         if lane == 0 {
-            return Ok(Worktree::create(&self.deps.repo, &dir, &branch)?);
+            return Ok(Worktree::create(&self.deps.repo, &dir, &branch, &scratch)?);
         }
         Ok(Worktree::create(
             &self.deps.repo,
             &format!("{dir}-spec{lane}"),
             &format!("{branch}-spec{lane}"),
+            &scratch,
         )?)
     }
 
@@ -6849,6 +6850,14 @@ impl RunCtx<'_> {
     /// would permanently strand that unit's registered scratch - it is not `Integrated`, so
     /// this resume backstop never revisited it either.
     fn gc_integrated_branches(&self, rs: &ledger::RunState, stages: &BTreeMap<String, Stage>) {
+        // The SAME caller-resolved scratch root every other `Worktree::create`/`discard`
+        // call site in this file already computes (spec 79 round-2 fix): threaded through
+        // to `reclaim_worktree_on_branch` so its reap-before-removal is authorized against
+        // the real root, never a re-derivation from the lingering worktree's own dir.
+        let scratch = crate::worktree::scratch_root_from_env(
+            &self.deps.repo,
+            &self.cfg.workflow.defaults.workdir,
+        );
         for u in rs.units.values() {
             if u.status == ledger::Status::Integrated {
                 // Prefer the branch recorded on the unit's `UnitStarted`; fall back to
@@ -6862,7 +6871,7 @@ impl RunCtx<'_> {
                 // worktree FIRST (or `git branch -D` refuses the checked-out branch and
                 // BOTH survive), THEN delete the branch. Best-effort exactly like the
                 // fresh half's `let _`.
-                let _ = worktree::reclaim_worktree_on_branch(&self.deps.repo, &branch);
+                let _ = worktree::reclaim_worktree_on_branch(&self.deps.repo, &branch, &scratch);
                 let _ = Worktree::delete_branch(&self.deps.repo, &branch);
             }
             // See `mutation_scratch_settled`'s own doc comment for why this predicate
@@ -7888,7 +7897,7 @@ impl RunCtx<'_> {
             &self.cfg.workflow.defaults.workdir,
         );
         let dir = unit_worktree_dir(&scratch, &st.name);
-        let wt = Worktree::create(&self.deps.repo, &dir, &unit_branch(&st.name))?;
+        let wt = Worktree::create(&self.deps.repo, &dir, &unit_branch(&st.name), &scratch)?;
         Ok(Some(wt))
     }
 
@@ -7924,8 +7933,8 @@ impl RunCtx<'_> {
         // current HEAD rather than ADOPT the stale checkout and review stale code
         // (adv-u4det-review-adopt-staleness). This is the opposite of the unit worktree,
         // whose durable branch is exactly what `create` reuses.
-        Worktree::discard(&self.deps.repo, &dir, &branch)?;
-        let wt = Worktree::create(&self.deps.repo, &dir, &branch)?;
+        Worktree::discard(&self.deps.repo, &dir, &branch, &scratch)?;
+        let wt = Worktree::create(&self.deps.repo, &dir, &branch, &scratch)?;
         Ok(Some(wt))
     }
 
@@ -16665,7 +16674,8 @@ mod tests {
             sanitize_for_path(unit_id),
             &uuid::Uuid::new_v4().to_string()[..8]
         ));
-        let wt = crate::worktree::Worktree::create(repo, dir.to_str().unwrap(), &branch).unwrap();
+        let wt =
+            crate::worktree::Worktree::create(repo, dir.to_str().unwrap(), &branch, "").unwrap();
         std::fs::write(Path::new(&wt.dir).join(file), content).unwrap();
         let committed = wt.commit("rigger: prior window work").unwrap();
         assert!(!committed.is_empty(), "the prior window must commit work");
@@ -16883,7 +16893,8 @@ mod tests {
             sanitize_for_path(branch),
             &uuid::Uuid::new_v4().to_string()[..8]
         ));
-        let wt = crate::worktree::Worktree::create(repo, dir.to_str().unwrap(), branch).unwrap();
+        let wt =
+            crate::worktree::Worktree::create(repo, dir.to_str().unwrap(), branch, "").unwrap();
         std::fs::write(Path::new(&wt.dir).join(file), content).unwrap();
         let committed = wt.commit("rigger: prior window work").unwrap();
         assert!(!committed.is_empty(), "the prior window must commit work");
@@ -17053,7 +17064,8 @@ mod tests {
         // `cargo-target-*` sibling the reclaim path is responsible for).
         let dir = parent.path().join("rigger-wt-lingering");
         let branch = unit_branch(unit_id);
-        let wt = crate::worktree::Worktree::create(repo, dir.to_str().unwrap(), &branch).unwrap();
+        let wt =
+            crate::worktree::Worktree::create(repo, dir.to_str().unwrap(), &branch, "").unwrap();
         std::fs::write(Path::new(&wt.dir).join(file), content).unwrap();
         let committed = wt
             .commit("rigger: prior window work (worktree left lingering)")

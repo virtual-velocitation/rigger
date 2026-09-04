@@ -114,6 +114,7 @@ fn worktree_remove_still_reaps_a_process_when_its_dir_lives_under_a_relocated_sc
         project_repo_path.to_str().unwrap(),
         wt_dir.to_str().unwrap(),
         "rigger/u/relocatedtest",
+        "",
     )
     .expect("create a worktree at the relocated dir");
 

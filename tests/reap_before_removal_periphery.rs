@@ -97,6 +97,7 @@ fn worktree_remove_reaps_a_process_rooted_in_its_sibling_build_cache_before_recl
         repo_path.to_str().unwrap(),
         wt_dir.to_str().unwrap(),
         "rigger/u/cachereaptest",
+        scratch_path.to_str().unwrap(),
     )
     .expect("create the unit worktree");
 
@@ -149,8 +150,13 @@ fn discard_reaps_a_process_rooted_in_the_review_worktrees_fence_sibling_before_r
     let branch = "rigger/review/discard-reap-0";
     let dir = scratch_path.join("rigger-review-discard-reap-0");
 
-    let stale = Worktree::create(repo_path.to_str().unwrap(), dir.to_str().unwrap(), branch)
-        .expect("create the throwaway review worktree");
+    let stale = Worktree::create(
+        repo_path.to_str().unwrap(),
+        dir.to_str().unwrap(),
+        branch,
+        scratch_path.to_str().unwrap(),
+    )
+    .expect("create the throwaway review worktree");
     drop(stale); // the Rust struct is gone but the worktree registration + dir survive.
 
     let fence_dir =
@@ -166,8 +172,13 @@ fn discard_reaps_a_process_rooted_in_the_review_worktrees_fence_sibling_before_r
         "precondition: the fixture process is rooted in the fence dir before discard() runs"
     );
 
-    Worktree::discard(repo_path.to_str().unwrap(), dir.to_str().unwrap(), branch)
-        .expect("discard() itself must still succeed");
+    Worktree::discard(
+        repo_path.to_str().unwrap(),
+        dir.to_str().unwrap(),
+        branch,
+        scratch_path.to_str().unwrap(),
+    )
+    .expect("discard() itself must still succeed");
 
     let died = wait_until(|| matches!(child.try_wait(), Ok(Some(_))));
     if !died {
@@ -210,6 +221,7 @@ fn worktree_remove_reaps_a_process_rooted_in_the_cache_dirs_own_store_fence_sibl
         repo_path.to_str().unwrap(),
         wt_dir.to_str().unwrap(),
         "rigger/u/cachefencereaptest",
+        scratch_path.to_str().unwrap(),
     )
     .expect("create the unit worktree");
 
@@ -268,8 +280,13 @@ fn discard_reaps_a_process_rooted_in_the_review_worktree_itself_before_clearing_
     let branch = "rigger/review/discard-dir-reap-0";
     let dir = scratch_path.join("rigger-review-discard-dir-reap-0");
 
-    let stale = Worktree::create(repo_path.to_str().unwrap(), dir.to_str().unwrap(), branch)
-        .expect("create the throwaway review worktree");
+    let stale = Worktree::create(
+        repo_path.to_str().unwrap(),
+        dir.to_str().unwrap(),
+        branch,
+        scratch_path.to_str().unwrap(),
+    )
+    .expect("create the throwaway review worktree");
     drop(stale); // the Rust struct is gone but the worktree registration + dir survive.
     let dir_path = dir.clone();
 
@@ -282,8 +299,13 @@ fn discard_reaps_a_process_rooted_in_the_review_worktree_itself_before_clearing_
          before discard() runs"
     );
 
-    Worktree::discard(repo_path.to_str().unwrap(), dir.to_str().unwrap(), branch)
-        .expect("discard() itself must still succeed");
+    Worktree::discard(
+        repo_path.to_str().unwrap(),
+        dir.to_str().unwrap(),
+        branch,
+        scratch_path.to_str().unwrap(),
+    )
+    .expect("discard() itself must still succeed");
 
     let died = wait_until(|| matches!(child.try_wait(), Ok(Some(_))));
     if !died {
@@ -326,7 +348,7 @@ fn sweep_terminal_reaps_a_process_rooted_in_a_terminal_worktree_through_the_real
     let root = scratch_root(&repo_str, "", None);
 
     let done_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}sweepreaptest");
-    Worktree::create(&repo_str, &done_dir, "rigger/u/sweepreaptest")
+    Worktree::create(&repo_str, &done_dir, "rigger/u/sweepreaptest", &root)
         .expect("create a worktree whose tip is already an ancestor of rigger-run");
     let done_path = Path::new(&done_dir).to_path_buf();
 
@@ -356,5 +378,89 @@ fn sweep_terminal_reaps_a_process_rooted_in_a_terminal_worktree_through_the_real
     assert!(
         !done_path.exists(),
         "the terminal worktree is still removed once its rooted process is reaped"
+    );
+}
+
+#[test]
+fn discard_never_reaps_a_dir_when_the_supplied_authorized_root_does_not_actually_contain_it() {
+    // Round-2 fix, spec 79 criterion 1 re-review (adjudication REJECT on diff 0af5281..f8eb209):
+    // the round-1 shape derived `reap_dir_before_removal`'s authorized_root as `dir.parent()`,
+    // which a canonicalized path ALWAYS `starts_with` after canonicalization - a tautology that
+    // could never refuse, for any `dir` with a parent, regardless of whether `dir` was actually
+    // placed under the caller's real, independently-resolved scratch root
+    // (`arch-u79c1-reap-dir-before-removal-self-authorizes` / `sdet-u79c1-authorized-root-
+    // tautology`, both UPHELD). This test is the one no version of that round-1 shape could ever
+    // pass: it calls the real `Worktree::discard` public API with an `authorized_root` that does
+    // NOT contain `dir` at all (an unrelated tempdir), and proves the live process rooted
+    // directly in `dir` SURVIVES - the containment boundary actually refuses an untrusted root,
+    // it does not silently substitute `dir`'s own parent for whatever the caller passed.
+    let repo = tempfile::tempdir().unwrap();
+    let repo_path = repo.path().canonicalize().unwrap();
+    init_repo(&repo_path);
+
+    // `dir`'s REAL parent - what the round-1 `dir.parent()` shape would have (wrongly) used as
+    // the authority, and also the value `Worktree::create` below is given to set the worktree
+    // up correctly in the first place.
+    let scratch = tempfile::tempdir().unwrap();
+    let scratch_path = scratch.path().canonicalize().unwrap();
+    let branch = "rigger/review/wrong-root-refused-0";
+    let dir = scratch_path.join("rigger-review-wrong-root-refused-0");
+
+    let stale = Worktree::create(
+        repo_path.to_str().unwrap(),
+        dir.to_str().unwrap(),
+        branch,
+        scratch_path.to_str().unwrap(),
+    )
+    .expect("create the throwaway review worktree");
+    drop(stale); // the Rust struct is gone but the worktree registration + dir survive.
+    let dir_path = dir.clone();
+
+    let mut child = sigterm_ignorer_in(&dir_path);
+    assert!(
+        wait_until(|| processes_rooted_under(&dir_path)
+            .iter()
+            .any(|(pid, _)| *pid == child.id())),
+        "precondition: the fixture process is rooted directly in the review worktree dir \
+         before discard() runs"
+    );
+
+    // An UNRELATED root - not an ancestor of `dir` at all (a sibling tempdir, not
+    // `scratch_path`). If `reap_dir_before_removal` still derived its own authority from
+    // `dir.parent()` (the round-1 defect), this argument would be ignored entirely and the
+    // reap would proceed anyway; it must now be the value that actually gates the reap.
+    let unrelated_root = tempfile::tempdir().unwrap();
+    let unrelated_root_path = unrelated_root.path().canonicalize().unwrap();
+    assert!(
+        !dir_path.starts_with(&unrelated_root_path),
+        "test setup: the wrong root must not actually contain dir"
+    );
+
+    Worktree::discard(
+        repo_path.to_str().unwrap(),
+        dir.to_str().unwrap(),
+        branch,
+        unrelated_root_path.to_str().unwrap(),
+    )
+    .expect("discard() itself must still succeed even when the reap it gates is refused");
+
+    // Give the (wrongly-authorized-would-have-been) SIGTERM/SIGKILL sequence every chance to
+    // have fired if the containment check were a no-op, then assert the process is UNTOUCHED.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let still_alive = matches!(child.try_wait(), Ok(None));
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(
+        still_alive,
+        "a process rooted in `dir` must be LEFT ALONE when the caller-supplied authorized_root \
+         does not actually contain `dir` - reaping it anyway would mean the containment check \
+         is a rubber stamp (exactly the round-1 defect: dir.parent() always contains dir, so \
+         ANY authorized_root value would have been silently ignored in favor of one derived \
+         from dir's own filesystem position)"
+    );
+    assert!(
+        !dir_path.exists(),
+        "the dir is still removed even though its reap was refused - reap-refusal must never \
+         block the removal itself, matching every other reap call site's best-effort contract"
     );
 }
