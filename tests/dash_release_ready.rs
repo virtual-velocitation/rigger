@@ -11,10 +11,25 @@
 //! `#[serde(skip_serializing_if = "Option::is_none")]` omission survives the wire. This file
 //! adds exactly that layer, over the same public surface on BOTH the default and the
 //! `--no-default-features` lane (none of it is feature-gated).
+//!
+//! Spec 82, criterion 2 round 2 adds a SECOND layer at the bottom of this file: the wire DTO
+//! crossing the socket correctly (proven above) is necessary but not sufficient - the served
+//! page's CLIENT-SIDE `render()` still has to splice that value into the DOM without mangling
+//! its embedded newline (round 1 closed on the DTO alone and an adversary caught exactly this
+//! gap: a real browser collapses the newline under the page's default `white-space: normal`
+//! unless the render pipeline and its CSS preserve it). The `dash.rs` inside-out fix test binds
+//! that pipeline with a STATIC grep on the exact JS source line and the CSS rule text; it never
+//! EXECUTES either, so a future regression inside `esc()` itself (its body, not this call site)
+//! would still grep-match and ship green. `release_ready_pr_command_survives_render_into_the_dom`
+//! closes that gap by actually RUNNING the served page's real `render()` under node's built-in
+//! `vm` (the same hermetic runtime-harness pattern this suite already uses in
+//! `dash_decisions_progressive_disclosure.rs`), fed the SAME JSON this file's socket test above
+//! proves crosses the wire, and asserts the resulting DOM node's content - not its source text.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::process::Command;
 use std::time::Duration;
 
 use rigger::contextgraph::Graph;
@@ -196,5 +211,184 @@ fn release_ready_carries_a_multi_unit_count_across_the_wire() {
     assert_eq!(
         rr["pr_command"],
         "git push origin rigger-run:pr/r1\ngh pr create --base main --head pr/r1"
+    );
+}
+
+/// Extract the single inline `<script>` body from the served page.
+fn page_script(page: &str) -> &str {
+    let open = page
+        .find("<script>")
+        .expect("the served page carries a <script>")
+        + "<script>".len();
+    let close = page
+        .find("</script>")
+        .expect("the served page closes its <script>");
+    &page[open..close]
+}
+
+/// True when a `node` runtime can be spawned (present on dev machines and on GitHub
+/// `ubuntu-latest`, which ships Node.js on PATH, so this runtime guard runs in CI).
+fn node_available() -> bool {
+    Command::new("node")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// A DOM shim + test driver (JavaScript source) that RUNS the served page's own `render()` over a
+/// REAL wire state (the exact JSON this file's socket test proves crosses `/api/state`), then reads
+/// back the rendered release banner's `<code class="pr">` content.
+///
+/// The shim covers exactly what a full `render()` pass touches: every element it addresses via
+/// `el(id)` is auto-vivified with settable `innerHTML`/`textContent`/`hidden`, matching the
+/// `dash_decisions_progressive_disclosure.rs` harness's established shape. `querySelectorAll`
+/// returns an empty list (this driver never inspects the decisions/tree regions, only the release
+/// banner), so the toggle re-arm loop in `render()` runs zero iterations harmlessly.
+const RENDER_PR_COMMAND_HARNESS: &str = r##"
+"use strict";
+const vm = require("vm");
+const fs = require("fs");
+const pageScript = fs.readFileSync(process.argv[2], "utf8");
+const state = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+
+// Minimal DOM shim (vm-realm, prepended to the page script).
+const SHIM = String.raw`
+const __els = {};
+function __El(id){ this.id=id; this._html=""; this._text=""; this.hidden=false; }
+Object.defineProperty(__El.prototype, "innerHTML", { get(){ return this._html; }, set(v){ this._html = String(v); } });
+Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text; }, set(v){ this._text = String(v); } });
+__El.prototype.querySelectorAll = function(){ return []; };
+__El.prototype.addEventListener = function(){};
+const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
+// The page installs its drag-pan handlers on the window global at load; a faithful shim provides
+// it (a no-op addEventListener; this harness only drives the release banner).
+const window = { addEventListener: function(){} };
+const fetch = function(){ return Promise.reject(new Error("no network in the render harness")); };
+const setTimeout = function(){ return 0; };
+`;
+
+// Test driver (vm-realm, appended after the page script - shares its scope, `render`/`el` in scope).
+const DRIVER = String.raw`
+;(function(){
+  render(state);
+  const rel = el("release");
+  if (rel.hidden) throw new Error("render() left the release banner hidden for a done run's state");
+  const html = rel.innerHTML;
+  const m = html.match(/<code class="pr">([\s\S]*?)<\/code>/);
+  if (!m) throw new Error("render() produced no <code class=\"pr\"> node: " + JSON.stringify(html));
+  const rendered = m[1];
+  if (!/\n/.test(rendered)) {
+    throw new Error("REGRESSION: the rendered pr command lost its embedded newline: " + JSON.stringify(rendered));
+  }
+  const commands = rendered.split("\n");
+  if (commands.length !== 2) {
+    throw new Error("REGRESSION: the rendered pr command is not exactly two lines: " + JSON.stringify(rendered));
+  }
+  if (!commands[0].startsWith("git push")) {
+    throw new Error("the first rendered line must be the git push command: " + JSON.stringify(rendered));
+  }
+  if (!commands[1].startsWith("gh pr create")) {
+    throw new Error("the second rendered line must be the gh pr create command: " + JSON.stringify(rendered));
+  }
+  console.log("OK pr-command-newline-survives-render");
+})();
+`;
+
+const sandbox = { console: console, state: state };
+vm.createContext(sandbox);
+vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-release-render-harness.js" });
+"##;
+
+/// Spec 82, criterion 2 (DASH HANDOFF MATCHES), round 2: the two-command PR handoff still reads
+/// as a real line break - not a collapsed run-on - once the SERVED PAGE'S OWN `render()` actually
+/// splices it into the DOM, not merely once its DTO crosses the wire (proven above) or once a
+/// grep matches the JS source text that is supposed to do the splicing (the implementer's own
+/// inside-out fix, `dash.rs::tests::release_ready_pr_command_newline_renders_as_a_real_line_break_
+/// not_a_collapsed_run_on`).
+///
+/// Round 1 closed this criterion on the DTO alone; the adversary caught that the CLIENT-SIDE
+/// `render()` -> `esc()` -> `innerHTML` pipeline was never driven, so a whitespace-collapsing
+/// regression anywhere in THAT pipeline could still ship green even with a byte-perfect wire. The
+/// round-2 production fix (a `white-space: pre-wrap` CSS rule) is correct, but its own regression
+/// test binds ONLY the literal source text of the splice call site and the CSS rule - it never
+/// EXECUTES `esc()` or `render()`, so it cannot see a regression introduced inside `esc()`'s own
+/// body (e.g. a future "hardening" pass that starts collapsing whitespace there): the call site
+/// `esc(rr.pr_command)` would still grep-match while the rendered output silently lost its break.
+///
+/// This test closes that gap: it feeds `render()` the SAME JSON this file's socket test proves
+/// crosses `/api/state` (the real authority, not a hand-typed stand-in), executes the served
+/// page's actual `render()` and `esc()` under node's built-in `vm` (hermetic, no npm - the exact
+/// runtime-harness pattern already established by `dash_decisions_progressive_disclosure.rs`), and
+/// asserts what the DOM node's content ACTUALLY IS: a real two-line split at a raw `\n`, not a
+/// pattern match on source. Mutation-proven non-vacuous first-hand: temporarily reverting the
+/// production CSS fix (dropping `white-space: pre-wrap` from `.release code.pr`) does NOT redden
+/// this test (real CSS layout is unreachable from node's `vm`, so it is legitimately rule-4
+/// out-of-gate and stays the implementer's structural CSS-text assertion to guard); but
+/// temporarily making `esc()` collapse whitespace (`.replace(/\s+/g, " ")` alongside its existing
+/// escapes) DOES redden this test with the exact "lost its embedded newline" message, while the
+/// implementer's own grep-based test stays green throughout (its assertion never executes `esc`) -
+/// confirming this layer catches a class of regression the existing coverage cannot.
+#[test]
+fn release_ready_pr_command_survives_render_into_the_dom_with_its_newline_intact() {
+    if !node_available() {
+        eprintln!(
+            "SKIP release_ready_pr_command_survives_render_into_the_dom_with_its_newline_intact: \
+             no `node` runtime on PATH. This runtime guard needs node (present on dev machines and \
+             on ubuntu-latest CI); install node to run it."
+        );
+        return;
+    }
+
+    // The SAME wire content a browser actually receives: drive the real /api/state socket, exactly
+    // as `release_ready_crosses_the_api_state_socket_on_a_done_run` above, then feed that OWN JSON
+    // to the served page's OWN render() - proving the wire and the client agree end to end.
+    let done = positioned(&[
+        (
+            "RunStarted",
+            r#"{"run":"7ad52031-01f1-4d37-aa19-ad48090f84a5","spec":"specs/82-unique-pr-heads.md"}"#,
+        ),
+        ("UnitStarted", r#"{"id":"u1"}"#),
+        ("UnitIntegrated", r#"{"id":"u1","commit":"abc"}"#),
+    ]);
+    let state = served_state(done);
+    let rr = &state["release_ready"];
+    assert!(
+        rr["pr_command"]
+            .as_str()
+            .expect("pr_command is a string on the wire")
+            .contains('\n'),
+        "the wire payload this test feeds to render() must itself carry the real embedded \
+         newline, or this test would vacuously pass regardless of what render() does: {state}"
+    );
+
+    let page = dash::live_page();
+    let script = page_script(&page);
+
+    let dir = tempfile::tempdir().expect("a scratch dir for the render harness");
+    let harness_path = dir.path().join("harness.js");
+    let script_path = dir.path().join("page-script.js");
+    let state_path = dir.path().join("state.json");
+    std::fs::write(&harness_path, RENDER_PR_COMMAND_HARNESS).expect("write the render harness");
+    std::fs::write(&script_path, script).expect("write the served page script");
+    std::fs::write(&state_path, state.to_string()).expect("write the wire state fixture");
+
+    let out = Command::new("node")
+        .arg(&harness_path)
+        .arg(&script_path)
+        .arg(&state_path)
+        .output()
+        .expect("spawn node to drive the served render() over the real wire state");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the served render() must splice pr_command's real newline into the DOM unmangled, but \
+         the runtime harness failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(
+        stdout.contains("OK pr-command-newline-survives-render"),
+        "the render harness must confirm the newline survived render():\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
     );
 }
