@@ -16,13 +16,29 @@
 //!    (`reap::reap_authorized`, `reap::reap_processes_rooted_under`,
 //!    `worktree::reap_dir_before_removal`) - or, for a call SITE that merely delegates to one
 //!    of the two sanctioned wrapper helpers (`reap_then_remove_dir`/`reap_then_remove_worktree`
-//!    in `src/main.rs`) rather than removing directly, that wrapper call itself - before (or
-//!    anywhere in the same function as) the removal. This is a TEXTUAL "does the enclosing
-//!    function's source contain one of these names" check, not real control-flow analysis
+//!    in `src/main.rs`) rather than removing directly, that wrapper call itself - on a line
+//!    STRICTLY BEFORE the removal's own line (never merely "anywhere in the same function",
+//!    ROUND-2 FIX: a prior round of this file accepted unordered co-occurrence, which marked
+//!    the exact inverted remove-then-reap anti-pattern spec 79's own Design text forbids as
+//!    covered - `adj-u79c2-verdict-reject-detection-blind-spots`, upholding
+//!    `arch-u79c2-coverage-check-is-unordered-co-occurrence-not-reap-then-remove`). For
+//!    `reap_dir_before_removal` specifically - the one authority with a DOCUMENTED
+//!    literal-empty-string no-op convention (its own doc comment: "Pass `""` when the caller
+//!    has no such root... the reap becomes a no-op") - the matched call's own second argument
+//!    is additionally required not to be that literal `""` (ROUND-2 FIX, upholding
+//!    `adv-u79c2-authorized-root-value-blind-textual-match`: `reap_dir_before_removal(dir,
+//!    "")` is a GUARANTEED runtime no-op, textually indistinguishable from a genuinely
+//!    effective call under a name-only match). This is still a TEXTUAL "does the enclosing
+//!    function's source contain one of these names, in the right order, with an effective
+//!    argument where that is checked" scan, not real control-flow or data-flow analysis
 //!    (matching `tests/no_os_kill_audit.rs`'s own precedent for the sibling spec-78 audit) -
-//!    good enough to prove the routing exists without needing a Rust parser, since every
-//!    routed site in this tree calls its reap authority unconditionally or on every branch
-//!    that reaches the removal.
+//!    it does NOT correlate the reap call's own directory argument against the removal's
+//!    (every routed site in this tree calls its reap authority unconditionally or on every
+//!    branch that reaches the removal, but e.g. `Worktree::remove` reaps a locally
+//!    canonicalized `base` derived from `self.dir` while the removal itself uses `self.dir`
+//!    directly - two textually different expressions for the same directory, so a strict
+//!    same-variable-text requirement would misclassify that real, correct site as
+//!    uncovered; a text scan cannot safely bridge that without a real data-flow analyzer).
 //! 2. EXEMPTED: the enclosing function carries the literal marker substring `reap-exempt`
 //!    (u79c1's own convention, always followed by `(spec 79, criterion 2): <reason>` in the
 //!    real tree, though this test only requires the marker itself - the reason text is a
@@ -255,30 +271,232 @@ fn enclosing_fn_span(lines: &[&str], sigs: &[usize], at: usize) -> Option<(usize
     None
 }
 
-/// Whether `span` (the removal's enclosing function, or `None` if it has none) contains a
-/// reap-authority call or the claimed-exemption marker anywhere in its own text.
-fn is_covered(lines: &[&str], span: Option<(usize, usize)>) -> bool {
+/// Whether `authority` is a reap call whose second argument is checked for a literal
+/// empty-string no-op (spec 79 c2 round-2 fix,
+/// `adv-u79c2-authorized-root-value-blind-textual-match`). Only [`reap_dir_before_removal`]
+/// qualifies: it is the ONE authority with a documented literal `""` no-op convention (its
+/// own doc comment, mirrored by `Worktree::create`'s: "Pass `""` when the caller has no such
+/// root... the reap becomes a no-op") - a bare `&str` argument, so the no-op form is the
+/// literal token `""` itself. The other root-taking authorities
+/// (`reap_processes_rooted_under`, `reap_then_remove_dir`, `reap_then_remove_worktree`) take
+/// a `&Path`, so their real-tree no-op equivalent would be a WRAPPED expression like
+/// `Path::new("")`, never the bare literal this defect was reproduced against; generalizing
+/// the check to a wrapped form was not reproduced against any real call site in this tree
+/// and would risk a brittle partial parse for no demonstrated defect. `reap_authorized`
+/// takes no root argument at all (its caller already authorized `base` before calling in).
+fn takes_checked_root_arg(authority: &str) -> bool {
+    authority == "reap_dir_before_removal("
+}
+
+/// Every double-quoted string literal's inner text on `line`, in order, naive (no escape
+/// handling - every string this audit scans is a short ASCII CLI-arg or path literal, never
+/// containing an escaped quote).
+fn quoted_tokens(line: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut rest = line;
+    while let Some(start) = rest.find('"') {
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('"') else {
+            break;
+        };
+        out.push(&after[..end]);
+        rest = &after[end + 1..];
+    }
+    out
+}
+
+/// The raw text of the arguments to the call whose name-plus-opening-paren is `prefix`
+/// (e.g. `"reap_dir_before_removal("`), starting the search at `lines[start]` - everything
+/// from just after that opening paren through the matching closing paren, joined across
+/// however many lines the call wraps onto (rustfmt may put each argument on its own line).
+/// Paren- and string-aware, so a `)` or `,` inside a quoted string argument is never
+/// mistaken for the call's own delimiter, and a nested call in an argument
+/// (`std::path::Path::new(dir)`) does not prematurely close it. Bounded to a small forward
+/// window - generous for any call this audit inspects (a handful of short arguments) but
+/// never scanning arbitrarily far into the file; returns `None` if `prefix` is not found on
+/// `lines[start]` or the call does not close within the window (a shape this audit cannot
+/// confidently verify is never credited as covering).
+fn call_args_text(lines: &[&str], start: usize, prefix: &str) -> Option<String> {
+    const WINDOW: usize = 12;
+    let mut text = String::new();
+    let mut depth: i32 = 0;
+    let mut in_str = false;
+    let mut opened = false;
+    for line in lines.iter().skip(start).take(WINDOW) {
+        let chunk = if !opened {
+            let at = line.find(prefix)?;
+            opened = true;
+            &line[at + prefix.len()..]
+        } else {
+            line
+        };
+        for c in chunk.chars() {
+            if in_str {
+                text.push(c);
+                if c == '"' {
+                    in_str = false;
+                }
+                continue;
+            }
+            match c {
+                '"' => {
+                    in_str = true;
+                    text.push(c);
+                }
+                '(' => {
+                    depth += 1;
+                    text.push(c);
+                }
+                ')' => {
+                    if depth == 0 {
+                        return Some(text);
+                    }
+                    depth -= 1;
+                    text.push(c);
+                }
+                _ => text.push(c),
+            }
+        }
+        text.push('\n');
+    }
+    None
+}
+
+/// Split `text` (a call's own raw argument text from [`call_args_text`]) into its top-level
+/// arguments on comma, string- and paren-aware so a comma inside a nested call or a quoted
+/// string is never mistaken for an argument separator. A trailing comma before the closing
+/// paren (rustfmt's usual style for a wrapped multi-line call) yields no spurious empty
+/// trailing argument.
+fn split_top_level_args(text: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut depth: i32 = 0;
+    let mut in_str = false;
+    let mut current = String::new();
+    for c in text.chars() {
+        if in_str {
+            current.push(c);
+            if c == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => {
+                in_str = true;
+                current.push(c);
+            }
+            '(' => {
+                depth += 1;
+                current.push(c);
+            }
+            ')' => {
+                depth -= 1;
+                current.push(c);
+            }
+            ',' if depth == 0 => {
+                args.push(current.trim().to_string());
+                current = String::new();
+            }
+            _ => current.push(c),
+        }
+    }
+    let last = current.trim();
+    if !last.is_empty() {
+        args.push(last.to_string());
+    }
+    args
+}
+
+/// Whether the call to `prefix` starting at `lines[start]` has an effective (not
+/// literal-empty-string) authorized-root argument - only meaningful when
+/// [`takes_checked_root_arg`] is true for `prefix`. A call whose own arguments this audit
+/// cannot confidently extract (did not close within [`call_args_text`]'s window, or has
+/// fewer than 2 arguments - both shapes this audit has never seen in the real tree) is
+/// treated as NOT effective: a coverage claim this scan cannot itself verify is never
+/// credited.
+fn authorized_root_arg_is_effective(lines: &[&str], start: usize, prefix: &str) -> bool {
+    let Some(text) = call_args_text(lines, start, prefix) else {
+        return false;
+    };
+    let args = split_top_level_args(&text);
+    match args.last() {
+        Some(last) => last != "\"\"",
+        None => false,
+    }
+}
+
+/// Whether `span` (the removal's enclosing function, or `None` if it has none) is covered:
+/// either the claimed-exemption marker appears anywhere in it (order-independent - a
+/// documented human claim about the whole function, not a call with a happens-before
+/// relationship to the removal), or a reap-authority call appears on a line STRICTLY
+/// BEFORE `removal_line` with - for the one authority [`takes_checked_root_arg`] flags - an
+/// effective authorized-root argument (spec 79 c2 round-2 fix: see the module doc's ROUTED
+/// entry for why order and this one argument check exist, and why full directory-argument
+/// correlation does not).
+fn is_covered(lines: &[&str], span: Option<(usize, usize)>, removal_line: usize) -> bool {
     let Some((start, end)) = span else {
         return false;
     };
-    lines[start..=end].iter().any(|line| {
-        REAP_AUTHORITIES.iter().any(|a| line.contains(a)) || line.contains(EXEMPTION_MARKER)
-    })
+    if lines[start..=end]
+        .iter()
+        .any(|line| line.contains(EXEMPTION_MARKER))
+    {
+        return true;
+    }
+    for i in start..removal_line {
+        let line = lines[i];
+        for authority in REAP_AUTHORITIES.iter() {
+            if !line.contains(*authority) {
+                continue;
+            }
+            if !takes_checked_root_arg(authority)
+                || authorized_root_arg_is_effective(lines, i, authority)
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
-/// The forbidden shape a line carries, if any - a real call, never a whole-line comment
-/// merely mentioning the pattern in prose (mirroring [`fn_sig_lines`]'s own comment guard;
-/// the real tree carries no such comment today, but a text scan should not depend on that
-/// staying true).
-fn line_shape(line: &str) -> Option<&'static str> {
-    if line.trim_start().starts_with("//") {
+/// How many lines ahead of a `"worktree"` token this audit looks for the paired
+/// `"remove"` token (spec 79 c2 round-2 fix,
+/// `sdet-u79c2-multiline-worktree-remove-args-array-evades-detection`): generous enough for
+/// rustfmt's own longest observed wrap of a `.args([...])` array (one element per line) with
+/// room to spare, but bounded so an unrelated, later `"remove"` string literal elsewhere in
+/// the function is never mistaken for this pair.
+const WORKTREE_REMOVE_WINDOW: usize = 6;
+
+/// True at the line where a `"worktree"` quoted-string token appears, if a `"remove"`
+/// quoted-string token appears on the SAME line or within
+/// [`WORKTREE_REMOVE_WINDOW`] lines after it - a bare, unreaped `git worktree remove` call
+/// site, whether rustfmt kept its `.args([...])` array on one line or wrapped it one element
+/// per line (round-2 fix; the prior round's same-line-only substring match missed the
+/// wrapped form). Anchored at the `"worktree"` line, so a finding's reported line and the
+/// coverage check's order test both use the EARLIEST evidence of the call, not wherever
+/// `"remove"` happens to land. A `"worktree"` token with no `"remove"` token anywhere in the
+/// window (e.g. `git worktree list`/`prune`) is not this shape.
+fn worktree_remove_shape(lines: &[&str], i: usize) -> Option<&'static str> {
+    if !quoted_tokens(lines[i]).contains(&"worktree") {
         return None;
     }
+    let upper = (i + 1 + WORKTREE_REMOVE_WINDOW).min(lines.len());
+    if lines[i..upper]
+        .iter()
+        .any(|line| quoted_tokens(line).contains(&"remove"))
+    {
+        return Some("bare git worktree remove with no reap coverage or claimed exemption");
+    }
+    None
+}
+
+/// The forbidden `fs::remove_dir_all` shape on `line`, if any - a real call. The caller
+/// ([`scan_tree`]) already skips a whole-line comment before reaching either shape check
+/// (mirroring [`fn_sig_lines`]'s own comment guard, shared here rather than duplicated per
+/// shape), so a comment merely mentioning the pattern in prose is never mistaken for it.
+fn remove_dir_all_shape(line: &str) -> Option<&'static str> {
     if line.contains("remove_dir_all(") {
         return Some("bare fs::remove_dir_all with no reap coverage or claimed exemption");
-    }
-    if line.contains("\"worktree\", \"remove\"") {
-        return Some("bare git worktree remove with no reap coverage or claimed exemption");
     }
     None
 }
@@ -319,14 +537,15 @@ fn scan_tree(root: &Path) -> Vec<Finding> {
         let excluded = cfg_test_ranges(&lines);
         let sigs = fn_sig_lines(&lines, &excluded);
         for (i, line) in lines.iter().enumerate() {
-            if in_ranges(i, &excluded) {
+            if in_ranges(i, &excluded) || line.trim_start().starts_with("//") {
                 continue;
             }
-            let Some(shape) = line_shape(line) else {
+            let shape = remove_dir_all_shape(line).or_else(|| worktree_remove_shape(&lines, i));
+            let Some(shape) = shape else {
                 continue;
             };
             let span = enclosing_fn_span(&lines, &sigs, i);
-            if !is_covered(&lines, span) {
+            if !is_covered(&lines, span, i) {
                 findings.push(Finding {
                     file: rel.clone(),
                     line_no: i + 1,
@@ -726,6 +945,179 @@ fn f(
         assert!(
             findings.is_empty(),
             "a multi-line signature must still resolve the same enclosing span; {findings:?}"
+        );
+    }
+
+    /// ROUND-2 FIX (spec 79 c2, adjudication `adj-u79c2-verdict-reject-detection-blind-
+    /// spots`, upholding `arch-u79c2-coverage-check-is-unordered-co-occurrence-not-reap-
+    /// then-remove`): a reap call sitting AFTER the removal it supposedly authorizes is
+    /// the exact inverted remove-then-reap anti-pattern spec 79's own Design text exists
+    /// to forbid ("removed ONLY through a reap-then-remove path") - it must never be
+    /// mistaken for coverage.
+    #[test]
+    fn a_reap_call_after_the_removal_never_covers_it_remove_then_reap_is_still_flagged() {
+        let root = tempfile::tempdir().unwrap();
+        write_file(
+            root.path(),
+            "src/somewhere.rs",
+            "\
+fn f(dir: &str, root: &str) {
+    let _ = std::fs::remove_dir_all(dir);
+    reap_processes_rooted_under(std::path::Path::new(dir), std::path::Path::new(root));
+}
+",
+        );
+        let findings = scan_tree(root.path());
+        assert_eq!(
+            findings.len(),
+            1,
+            "a reap call textually AFTER the removal (remove-then-reap) must never cover it; \
+             {findings:?}"
+        );
+        assert_eq!(findings[0].line_no, 2, "{findings:?}");
+    }
+
+    /// ROUND-2 FIX: an exemption marker has no such ordering requirement of its own (it is
+    /// a documented human claim about the whole function, not a call with a
+    /// happens-before relationship to the removal) - it must keep covering the removal
+    /// even when the comment sits textually AFTER it in the function body.
+    #[test]
+    fn an_exemption_marker_after_the_removal_still_covers_it() {
+        let root = tempfile::tempdir().unwrap();
+        write_file(
+            root.path(),
+            "src/somewhere.rs",
+            "\
+fn f(dir: &str) {
+    let _ = std::fs::remove_dir_all(dir);
+    // reap-exempt (spec 79, criterion 2): dir is created and removed entirely within this
+    // function and nothing is ever spawned with a cwd inside it.
+}
+",
+        );
+        let findings = scan_tree(root.path());
+        assert!(
+            findings.is_empty(),
+            "the exemption marker is order-independent, unlike a reap-authority call; \
+             {findings:?}"
+        );
+    }
+
+    /// ROUND-2 FIX (upholding `adv-u79c2-authorized-root-value-blind-textual-match`):
+    /// `reap_dir_before_removal(dir, "")` is src/worktree.rs's own sanctioned no-op form
+    /// (its doc comment: "Pass `""` when the caller has no such root... the reap becomes
+    /// a no-op") - a GUARANTEED no-op at runtime, textually indistinguishable from a
+    /// genuinely-effective call under a name-only substring match. It must never cover.
+    #[test]
+    fn a_literal_empty_string_authorized_root_argument_never_covers_the_removal() {
+        let root = tempfile::tempdir().unwrap();
+        write_file(
+            root.path(),
+            "src/somewhere.rs",
+            "\
+fn f(dir: &str) {
+    reap_dir_before_removal(dir, \"\");
+    let _ = std::fs::remove_dir_all(dir);
+}
+",
+        );
+        let findings = scan_tree(root.path());
+        assert_eq!(
+            findings.len(),
+            1,
+            "reap_dir_before_removal(dir, \"\") reaps nothing at runtime and must never be \
+             mistaken for real coverage; {findings:?}"
+        );
+    }
+
+    /// A real (non-empty) `authorized_root` argument must keep covering, including when
+    /// rustfmt wraps the call's own argument list across multiple lines (proves the
+    /// argument-value check's call-text extraction is not accidentally single-line-only,
+    /// the same class of blindness as the worktree/remove multi-line fix below).
+    #[test]
+    fn a_non_empty_authorized_root_argument_still_covers_even_when_the_call_wraps_across_lines() {
+        let root = tempfile::tempdir().unwrap();
+        write_file(
+            root.path(),
+            "src/somewhere.rs",
+            "\
+fn f(a_very_long_directory_argument_name: &str, a_very_long_authorized_root_argument_name: &str) {
+    reap_dir_before_removal(
+        a_very_long_directory_argument_name,
+        a_very_long_authorized_root_argument_name,
+    );
+    let _ = std::fs::remove_dir_all(a_very_long_directory_argument_name);
+}
+",
+        );
+        let findings = scan_tree(root.path());
+        assert!(
+            findings.is_empty(),
+            "a non-empty authorized_root must still cover across a wrapped call; {findings:?}"
+        );
+    }
+
+    /// ROUND-2 FIX (upholding `sdet-u79c2-multiline-worktree-remove-args-array-evades-
+    /// detection`, independently reproduced by the adjudicator with the real project
+    /// rustfmt): a plausible, realistically-long-named `.args([...])` call wraps one
+    /// element per line under this repo's own default rustfmt config, splitting the
+    /// `"worktree"`/`"remove"` pair the old same-line-only match required.
+    #[test]
+    fn a_worktree_remove_args_array_wrapped_across_multiple_lines_by_rustfmt_is_still_caught() {
+        let root = tempfile::tempdir().unwrap();
+        write_file(
+            root.path(),
+            "src/somewhere.rs",
+            "\
+fn f(repo: &str, a_realistically_long_directory_variable_name: &str) {
+    let _ = std::process::Command::new(\"git\")
+        .args([
+            \"worktree\",
+            \"remove\",
+            \"--force\",
+            a_realistically_long_directory_variable_name,
+        ])
+        .output();
+}
+",
+        );
+        let findings = scan_tree(root.path());
+        assert_eq!(
+            findings.len(),
+            1,
+            "a wrapped .args([...]) array must still be recognized as a bare worktree-remove \
+             call; {findings:?}"
+        );
+        assert_eq!(findings[0].line_no, 4, "{findings:?}");
+        assert!(
+            findings[0].shape.contains("git worktree remove"),
+            "{findings:?}"
+        );
+    }
+
+    /// A `"worktree"` token with no paired `"remove"` token anywhere nearby (e.g. a
+    /// wrapped `git worktree list --porcelain` call) must never be mistaken for the
+    /// forbidden shape - the window lookahead must not over-trigger on an unrelated git
+    /// subcommand that merely happens to also take `"worktree"` as its first arg.
+    #[test]
+    fn a_worktree_token_with_no_nearby_remove_token_is_never_mistaken_for_the_shape() {
+        let root = tempfile::tempdir().unwrap();
+        write_file(
+            root.path(),
+            "src/somewhere.rs",
+            "\
+fn f(repo: &str) {
+    let _ = std::process::Command::new(\"git\")
+        .args([\"worktree\", \"list\", \"--porcelain\"])
+        .output();
+}
+",
+        );
+        let findings = scan_tree(root.path());
+        assert!(
+            findings.is_empty(),
+            "\"worktree\" without a nearby \"remove\" token is not the forbidden shape; \
+             {findings:?}"
         );
     }
 
