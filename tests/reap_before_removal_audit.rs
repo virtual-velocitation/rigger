@@ -1,0 +1,807 @@
+//! Spec 79 criterion 2, THE BARE-REMOVAL AUDIT: the whole-tree companion to criterion 1's
+//! reap-before-removal rewiring (`sweep_terminal`, `clear_worktree_dir`, `reclaim_cache_sibling`,
+//! `reclaim_worktree_on_branch`, `Worktree::discard`, `Worktree::remove` - src/worktree.rs, and
+//! `reclaim_unit_mutation_scratch` - src/driver/replay.rs). This test walks every `.rs` file
+//! under `src/` and fails, naming file and line, on any `fs::remove_dir_all(...)` or
+//! `git worktree remove` call site that is NEITHER routed through a reap-then-remove path NOR
+//! carries a claimed-exemption comment this test independently verifies is present (spec 79's
+//! Design: "a directory that can have processes rooted inside it is removed ONLY through a
+//! reap-then-remove path... a removal path whose dir provably cannot host a rooted process...
+//! may stay bare, but the exemption is claimed in a code comment at the site").
+//!
+//! THE TWO FORMS A COVERED SITE TAKES (both already present in the real tree, u79c1's
+//! delivery - decision `u79c1-rewiring-complete-and-exemption-marker`):
+//!
+//! 1. ROUTED: the removal's own enclosing function calls one of the reap authorities
+//!    (`reap::reap_authorized`, `reap::reap_processes_rooted_under`,
+//!    `worktree::reap_dir_before_removal`) - or, for a call SITE that merely delegates to one
+//!    of the two sanctioned wrapper helpers (`reap_then_remove_dir`/`reap_then_remove_worktree`
+//!    in `src/main.rs`) rather than removing directly, that wrapper call itself - before (or
+//!    anywhere in the same function as) the removal. This is a TEXTUAL "does the enclosing
+//!    function's source contain one of these names" check, not real control-flow analysis
+//!    (matching `tests/no_os_kill_audit.rs`'s own precedent for the sibling spec-78 audit) -
+//!    good enough to prove the routing exists without needing a Rust parser, since every
+//!    routed site in this tree calls its reap authority unconditionally or on every branch
+//!    that reaches the removal.
+//! 2. EXEMPTED: the enclosing function carries the literal marker substring `reap-exempt`
+//!    (u79c1's own convention, always followed by `(spec 79, criterion 2): <reason>` in the
+//!    real tree, though this test only requires the marker itself - the reason text is a
+//!    human-reviewed prose claim, not something a text scan can validate) in a doc or line
+//!    comment - proof the exemption was DELIBERATELY claimed at this exact site, not merely
+//!    that some comment happens to sit nearby.
+//!
+//! SCOPE: `src/` only, recursively (`src/driver/replay.rs` included) - never `tests/`. Spec
+//! 79's Done-when line is literally "walks `src/`", and its Notes name why: "the pid-namespace
+//! test runner already contains TEST-spawned orphans; this spec is about the OPERATOR-side
+//! runtime paths, which run in no namespace." A test fixture's own tempdir teardown (e.g.
+//! `tests/reap_before_removal_periphery.rs`'s fixture processes, or `tests/cli.rs`'s scratch
+//! cleanup) is therefore never scanned - not because it is safe by inspection, but because it
+//! is a different problem this spec does not own.
+//!
+//! Within `src/`, anything textually inside a `#[cfg(test)]`-attributed item (a `mod { ... }`
+//! block, OR a single standalone item like `main.rs`'s `#[cfg(test)] fn compose_precommit`, OR
+//! `lib.rs`'s semicolon-terminated `#[cfg(test)] mod blast_radius_eval;`) is excluded for the
+//! SAME reason - it is `#[cfg(test)]` code precisely because it only ever runs inside the
+//! pid-namespaced test runner, never on an operator's real run.
+//!
+//! WHY A REGEX/AST LIBRARY WAS NOT REACHED FOR: spec 79's Global Constraints forbid a new
+//! dependency, and rustfmt (a build-gate precondition on every unit) makes two structural
+//! properties reliable enough for a plain-text scan: (a) a brace-delimited item's own closing
+//! `}` always sits at EXACTLY the item's own indentation, however many lines its signature
+//! spans, and (b) an item's leading attributes/doc comments are always contiguous immediately
+//! above it. [`block_span`] and [`cfg_test_ranges`] below lean on exactly these two properties
+//! and nothing else about Rust's grammar.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+/// The reap authorities a covered removal site's enclosing function calls (spec 79's Design
+/// and `u79c1-rewiring-complete-and-exemption-marker`): the two direct calls every routed
+/// worktree.rs site makes, plus the two `src/main.rs` wrapper helpers spec 79's Design section
+/// names by name as the sanctioned reap-then-remove path for a call site that delegates to
+/// them instead of removing directly (`plan-u79c2-scope-and-gate`'s own allow-list wording).
+const REAP_AUTHORITIES: [&str; 5] = [
+    "reap_processes_rooted_under(",
+    "reap_authorized(",
+    "reap_dir_before_removal(",
+    "reap_then_remove_dir(",
+    "reap_then_remove_worktree(",
+];
+
+/// The claimed-exemption marker this audit verifies (u79c1's own convention): every real
+/// exemption comment in the tree reads `reap-exempt (spec 79, criterion 2): <reason>`, but
+/// this check requires only the marker substring itself - a text scan cannot judge whether the
+/// human-authored reason is actually sound, only that an exemption was deliberately claimed at
+/// this site rather than merely inferred from an unrelated nearby comment.
+const EXEMPTION_MARKER: &str = "reap-exempt";
+
+/// One bare-removal finding: which file, which 1-based line, which shape, and the offending
+/// line's own text (for the failure message only - never re-scanned).
+#[derive(Debug, Clone)]
+struct Finding {
+    file: String,
+    line_no: usize,
+    shape: &'static str,
+    line_text: String,
+}
+
+impl std::fmt::Display for Finding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}:{}: {} - `{}`",
+            self.file,
+            self.line_no,
+            self.shape,
+            self.line_text.trim()
+        )
+    }
+}
+
+/// The number of leading ASCII space characters on `line` - this audit's sole proxy for
+/// "indentation level", since every file it scans is rustfmt-clean (a build-gate
+/// precondition) and rustfmt never indents with tabs.
+fn leading_spaces(line: &str) -> usize {
+    line.chars().take_while(|&c| c == ' ').count()
+}
+
+/// True for a line that DECLARES a function: `fn ` appearing as its own word (never part of a
+/// longer identifier or embedded in prose - "function" has no `fn` substring at all, since
+/// `f` is always followed by `u`, never `n`, so no comment-line guard is needed here). Matches
+/// `fn `, `pub fn `, `pub(crate) fn `, `async fn `, `unsafe fn `, and any other modifier
+/// combination, since it only requires the character immediately before `fn ` to be a
+/// non-identifier character (or the start of the line).
+fn is_fn_sig_line(line: &str) -> bool {
+    let chars: Vec<char> = line.chars().collect();
+    let marker: Vec<char> = "fn ".chars().collect();
+    if chars.len() < marker.len() {
+        return false;
+    }
+    for start in 0..=(chars.len() - marker.len()) {
+        if chars[start..start + marker.len()] != marker[..] {
+            continue;
+        }
+        let before_ok =
+            start == 0 || !(chars[start - 1].is_alphanumeric() || chars[start - 1] == '_');
+        if before_ok {
+            return true;
+        }
+    }
+    false
+}
+
+/// The `[start, end]` line range (0-based, inclusive) of the brace- or semicolon-delimited
+/// item beginning at `start`: the first line at/after `start` whose trimmed-end text ends in
+/// `;` (a single-statement item - e.g. `lib.rs`'s `mod blast_radius_eval;`) closes the item on
+/// that same line; the first line ending in `{` opens a block, closed by the first LATER line
+/// at `start`'s OWN indentation whose trimmed text is exactly `}`. A multi-line signature
+/// (wrapped params, a `where` clause) is handled the same way either form is: this only cares
+/// about which line eventually ends in `{` or `;`, never how many lines came before it.
+fn block_span(lines: &[&str], start: usize) -> (usize, usize) {
+    let indent = leading_spaces(lines[start]);
+    let mut k = start;
+    while k < lines.len() {
+        let t = lines[k].trim_end();
+        if t.ends_with(';') {
+            return (start, k);
+        }
+        if t.ends_with('{') {
+            let mut m = k + 1;
+            while m < lines.len() {
+                if lines[m].trim() == "}" && leading_spaces(lines[m]) == indent {
+                    return (start, m);
+                }
+                m += 1;
+            }
+            return (start, lines.len() - 1);
+        }
+        k += 1;
+    }
+    (start, lines.len() - 1)
+}
+
+/// The `[start, end]` ranges (0-based, inclusive) of every `#[cfg(test)]`-attributed item in
+/// `lines`: a whole `mod { ... }` block (the common shape - `tests`, `pure_metric_tests`,
+/// `corpus_gates`, ...), a single standalone item (`main.rs`'s `#[cfg(test)] fn
+/// compose_precommit`), or a semicolon-terminated module declaration (`lib.rs`'s `#[cfg(test)]
+/// mod blast_radius_eval;`). Attributes may stack (`blast_radius_eval.rs`'s `#[cfg(test)]`
+/// directly above a further `#[cfg(feature = "symbols")]` before the actual `mod`), so this
+/// skips every contiguous attribute/blank line before locating the attributed item itself.
+/// Requires the marker line's TRIMMED text to be EXACTLY `#[cfg(test)]` - never a substring
+/// match - so a doc comment merely mentioning the phrase in prose (as `blast_radius_eval.rs`'s
+/// own module doc does) is never mistaken for the attribute (a `//` or `///` line can never
+/// equal `#[cfg(test)]` after trimming).
+fn cfg_test_ranges(lines: &[&str]) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].trim() != "#[cfg(test)]" {
+            i += 1;
+            continue;
+        }
+        let mut j = i + 1;
+        while j < lines.len() {
+            let t = lines[j].trim();
+            if t.is_empty() || t.starts_with('#') {
+                j += 1;
+            } else {
+                break;
+            }
+        }
+        if j >= lines.len() {
+            break;
+        }
+        let (_, end) = block_span(lines, j);
+        ranges.push((i, end));
+        i = end + 1;
+    }
+    ranges
+}
+
+fn in_ranges(line: usize, ranges: &[(usize, usize)]) -> bool {
+    ranges.iter().any(|&(s, e)| line >= s && line <= e)
+}
+
+/// Every `fn`-signature line (0-based, ascending order) that is NOT inside `excluded` and is
+/// not itself a comment line (a further guard against a doc comment that happens to embed a
+/// literal `fn ` code sample, on top of [`is_fn_sig_line`]'s own word-boundary check).
+fn fn_sig_lines(lines: &[&str], excluded: &[(usize, usize)]) -> Vec<usize> {
+    (0..lines.len())
+        .filter(|&i| {
+            !in_ranges(i, excluded)
+                && !lines[i].trim_start().starts_with("//")
+                && is_fn_sig_line(lines[i])
+        })
+        .collect()
+}
+
+/// The earliest line (0-based) of the contiguous doc-comment/attribute block sitting
+/// immediately above `fn_line` (an `fn`-signature line), if any - so a `reap-exempt` marker
+/// placed in the function's OWN doc comment (as `heal_corrupt_worktree_admin` does, rather
+/// than as a body-level line comment the way `materialize_config_at_rev` does) is still found
+/// by [`is_covered`], which only ever searches an [`enclosing_fn_span`]. Stops at the first
+/// line above that is not a `///`/`//!`/`//` comment or a `#[...]` attribute - a blank line,
+/// or real code (the end of a DIFFERENT, preceding item).
+fn doc_comment_start(lines: &[&str], fn_line: usize) -> usize {
+    let mut start = fn_line;
+    while start > 0 {
+        let t = lines[start - 1].trim();
+        if t.starts_with("///") || t.starts_with("//!") || t.starts_with("//") || t.starts_with('#')
+        {
+            start -= 1;
+        } else {
+            break;
+        }
+    }
+    start
+}
+
+/// The enclosing function's `[start, end]` span for line `at`, if any: the nearest
+/// fn-signature line AT OR BEFORE `at` whose own [`block_span`] actually reaches `at` -
+/// searched innermost-candidate-first (`sigs` descending) so a later, more deeply nested `fn`
+/// is preferred over an outer one that has already closed by `at`. `start` is widened backward
+/// over the function's own leading doc-comment/attribute block via [`doc_comment_start`], so a
+/// marker placed there (not just in the body) still counts.
+fn enclosing_fn_span(lines: &[&str], sigs: &[usize], at: usize) -> Option<(usize, usize)> {
+    for &s in sigs.iter().rev() {
+        if s > at {
+            continue;
+        }
+        let (_, end) = block_span(lines, s);
+        if at <= end {
+            return Some((doc_comment_start(lines, s), end));
+        }
+    }
+    None
+}
+
+/// Whether `span` (the removal's enclosing function, or `None` if it has none) contains a
+/// reap-authority call or the claimed-exemption marker anywhere in its own text.
+fn is_covered(lines: &[&str], span: Option<(usize, usize)>) -> bool {
+    let Some((start, end)) = span else {
+        return false;
+    };
+    lines[start..=end].iter().any(|line| {
+        REAP_AUTHORITIES.iter().any(|a| line.contains(a)) || line.contains(EXEMPTION_MARKER)
+    })
+}
+
+/// The forbidden shape a line carries, if any - a real call, never a whole-line comment
+/// merely mentioning the pattern in prose (mirroring [`fn_sig_lines`]'s own comment guard;
+/// the real tree carries no such comment today, but a text scan should not depend on that
+/// staying true).
+fn line_shape(line: &str) -> Option<&'static str> {
+    if line.trim_start().starts_with("//") {
+        return None;
+    }
+    if line.contains("remove_dir_all(") {
+        return Some("bare fs::remove_dir_all with no reap coverage or claimed exemption");
+    }
+    if line.contains("\"worktree\", \"remove\"") {
+        return Some("bare git worktree remove with no reap coverage or claimed exemption");
+    }
+    None
+}
+
+/// Every `.rs` file strictly under `dir`, recursively, appended to `out`, deterministically
+/// ordered.
+fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let mut entries: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+    entries.sort();
+    for path in entries {
+        if path.is_dir() {
+            collect_rs_files(&path, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            out.push(path);
+        }
+    }
+}
+
+/// Scan every `.rs` file under `root/src`, recursively, for a bare-removal finding (spec 79
+/// criterion 2's audit) - deterministically ordered by (file, line).
+fn scan_tree(root: &Path) -> Vec<Finding> {
+    let mut files = Vec::new();
+    collect_rs_files(&root.join("src"), &mut files);
+    let mut findings = Vec::new();
+    for path in &files {
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let Ok(content) = fs::read_to_string(path) else {
+            continue;
+        };
+        let lines: Vec<&str> = content.lines().collect();
+        let excluded = cfg_test_ranges(&lines);
+        let sigs = fn_sig_lines(&lines, &excluded);
+        for (i, line) in lines.iter().enumerate() {
+            if in_ranges(i, &excluded) {
+                continue;
+            }
+            let Some(shape) = line_shape(line) else {
+                continue;
+            };
+            let span = enclosing_fn_span(&lines, &sigs, i);
+            if !is_covered(&lines, span) {
+                findings.push(Finding {
+                    file: rel.clone(),
+                    line_no: i + 1,
+                    shape,
+                    line_text: (*line).to_string(),
+                });
+            }
+        }
+    }
+    findings
+}
+
+/// Every `(file, 1-based line)` in `root/src` that carries the claimed-exemption marker (spec
+/// 79's Design: "the exemption is claimed in a code comment at the site" - this is the audit
+/// LISTING those claims, not merely accepting them silently), deterministically ordered.
+fn find_exemption_markers(root: &Path) -> Vec<(String, usize)> {
+    let mut files = Vec::new();
+    collect_rs_files(&root.join("src"), &mut files);
+    let mut hits = Vec::new();
+    for path in &files {
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let Ok(content) = fs::read_to_string(path) else {
+            continue;
+        };
+        for (i, line) in content.lines().enumerate() {
+            if line.contains(EXEMPTION_MARKER) {
+                hits.push((rel.clone(), i + 1));
+            }
+        }
+    }
+    hits
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_file(root: &Path, rel: &str, content: &str) {
+        let path = root.join(rel);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(&path, content).unwrap();
+    }
+
+    #[test]
+    fn a_clean_fixture_tree_yields_no_findings() {
+        let root = tempfile::tempdir().unwrap();
+        write_file(
+            root.path(),
+            "src/worktree.rs",
+            "\
+fn clear_worktree_dir(dir: &str, authorized_root: &str) {
+    reap_dir_before_removal(dir, authorized_root);
+    let _ = std::fs::remove_dir_all(dir);
+}
+",
+        );
+        let findings = scan_tree(root.path());
+        assert!(
+            findings.is_empty(),
+            "expected no findings, got {findings:?}"
+        );
+    }
+
+    #[test]
+    fn bare_remove_dir_all_with_no_coverage_is_caught() {
+        let root = tempfile::tempdir().unwrap();
+        write_file(
+            root.path(),
+            "src/somewhere.rs",
+            "\
+fn f(dir: &str) {
+    let _ = std::fs::remove_dir_all(dir);
+}
+",
+        );
+        let findings = scan_tree(root.path());
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].file, "src/somewhere.rs");
+        assert_eq!(findings[0].line_no, 2);
+        assert!(findings[0].shape.contains("remove_dir_all"), "{findings:?}");
+    }
+
+    #[test]
+    fn bare_git_worktree_remove_with_no_coverage_is_caught() {
+        let root = tempfile::tempdir().unwrap();
+        write_file(
+            root.path(),
+            "src/somewhere.rs",
+            "\
+fn f(repo: &str, dir: &str) {
+    let _ = std::process::Command::new(\"git\")
+        .args([\"worktree\", \"remove\", \"--force\", dir])
+        .output();
+}
+",
+        );
+        let findings = scan_tree(root.path());
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(
+            findings[0].shape.contains("git worktree remove"),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn a_reap_call_anywhere_earlier_in_the_enclosing_function_covers_the_removal() {
+        let root = tempfile::tempdir().unwrap();
+        write_file(
+            root.path(),
+            "src/somewhere.rs",
+            "\
+fn f(dir: &str, root: &str) {
+    let other = 1;
+    reap_processes_rooted_under(std::path::Path::new(dir), std::path::Path::new(root));
+    let also = other + 1;
+    let _ = std::fs::remove_dir_all(dir);
+    let _ = also;
+}
+",
+        );
+        let findings = scan_tree(root.path());
+        assert!(
+            findings.is_empty(),
+            "a reap call earlier in the SAME function must cover the removal; {findings:?}"
+        );
+    }
+
+    #[test]
+    fn the_exemption_marker_covers_a_removal_with_no_reap_call() {
+        let root = tempfile::tempdir().unwrap();
+        write_file(
+            root.path(),
+            "src/somewhere.rs",
+            "\
+fn f(dir: &str) {
+    // reap-exempt (spec 79, criterion 2): dir is created and removed entirely within this
+    // function and nothing is ever spawned with a cwd inside it.
+    let _ = std::fs::remove_dir_all(dir);
+}
+",
+        );
+        let findings = scan_tree(root.path());
+        assert!(
+            findings.is_empty(),
+            "the recognized exemption marker must cover the removal; {findings:?}"
+        );
+    }
+
+    #[test]
+    fn the_exemption_marker_in_the_functions_own_doc_comment_above_the_signature_also_covers_it() {
+        let root = tempfile::tempdir().unwrap();
+        write_file(
+            root.path(),
+            "src/somewhere.rs",
+            "\
+/// reap-exempt (spec 79, criterion 2): mirrors heal_corrupt_worktree_admin - the marker sits
+/// in the doc comment ABOVE the fn signature, never in the body next to the removal itself.
+fn f(dir: &str) {
+    let _ = std::fs::remove_dir_all(dir);
+}
+",
+        );
+        let findings = scan_tree(root.path());
+        assert!(
+            findings.is_empty(),
+            "a marker in the fn's own leading doc comment must cover the removal; {findings:?}"
+        );
+    }
+
+    #[test]
+    fn an_arbitrary_comment_is_never_mistaken_for_the_exemption_marker() {
+        let root = tempfile::tempdir().unwrap();
+        write_file(
+            root.path(),
+            "src/somewhere.rs",
+            "\
+fn f(dir: &str) {
+    // trust me, this one is fine
+    let _ = std::fs::remove_dir_all(dir);
+}
+",
+        );
+        let findings = scan_tree(root.path());
+        assert_eq!(
+            findings.len(),
+            1,
+            "an unrecognized comment must not be accepted as a claimed exemption; {findings:?}"
+        );
+    }
+
+    #[test]
+    fn a_reap_call_only_in_a_sibling_function_never_covers_this_one() {
+        let root = tempfile::tempdir().unwrap();
+        write_file(
+            root.path(),
+            "src/somewhere.rs",
+            "\
+fn helper_with_reap(dir: &str, root: &str) {
+    reap_processes_rooted_under(std::path::Path::new(dir), std::path::Path::new(root));
+}
+
+fn bare_sibling(dir: &str) {
+    let _ = std::fs::remove_dir_all(dir);
+}
+",
+        );
+        let findings = scan_tree(root.path());
+        assert_eq!(
+            findings.len(),
+            1,
+            "a reap call in a DIFFERENT function must not cover this one's removal; {findings:?}"
+        );
+        assert_eq!(
+            findings[0].line_no, 6,
+            "attributed to bare_sibling; {findings:?}"
+        );
+    }
+
+    #[test]
+    fn a_removal_inside_a_cfg_test_mod_block_is_never_scanned() {
+        let root = tempfile::tempdir().unwrap();
+        write_file(
+            root.path(),
+            "src/somewhere.rs",
+            "\
+#[cfg(test)]
+mod tests {
+    fn t(dir: &str) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+",
+        );
+        let findings = scan_tree(root.path());
+        assert!(
+            findings.is_empty(),
+            "a #[cfg(test)] mod block is out of this spec's scope; {findings:?}"
+        );
+    }
+
+    #[test]
+    fn a_removal_inside_a_standalone_cfg_test_fn_is_never_scanned_and_a_later_real_fn_still_is() {
+        let root = tempfile::tempdir().unwrap();
+        write_file(
+            root.path(),
+            "src/somewhere.rs",
+            "\
+#[cfg(test)]
+fn helper(dir: &str) {
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+fn production(dir2: &str) {
+    let _ = std::fs::remove_dir_all(dir2);
+}
+",
+        );
+        let findings = scan_tree(root.path());
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(
+            findings[0].line_no, 7,
+            "only the production fn's removal is flagged; {findings:?}"
+        );
+    }
+
+    #[test]
+    fn stacked_cfg_attributes_before_a_test_mod_still_exclude_it() {
+        let root = tempfile::tempdir().unwrap();
+        write_file(
+            root.path(),
+            "src/somewhere.rs",
+            "\
+#[cfg(test)]
+#[cfg(feature = \"symbols\")]
+mod corpus_gates {
+    fn t(dir: &str) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+",
+        );
+        let findings = scan_tree(root.path());
+        assert!(
+            findings.is_empty(),
+            "a stacked second attribute before the mod must not defeat the exclusion; {findings:?}"
+        );
+    }
+
+    #[test]
+    fn a_doc_comment_mentioning_the_cfg_test_attribute_in_prose_is_never_mistaken_for_it() {
+        let root = tempfile::tempdir().unwrap();
+        write_file(
+            root.path(),
+            "src/somewhere.rs",
+            "\
+//! This module's tests live under a #[cfg(test)] mod declared below.
+fn production(dir: &str) {
+    let _ = std::fs::remove_dir_all(dir);
+}
+",
+        );
+        let findings = scan_tree(root.path());
+        assert_eq!(
+            findings.len(),
+            1,
+            "prose merely mentioning the attribute must not exclude real code; {findings:?}"
+        );
+    }
+
+    #[test]
+    fn a_semicolon_terminated_cfg_test_item_excludes_only_itself() {
+        let root = tempfile::tempdir().unwrap();
+        write_file(
+            root.path(),
+            "src/lib.rs",
+            "\
+#[cfg(test)]
+mod blast_radius_eval;
+
+fn production(dir: &str) {
+    let _ = std::fs::remove_dir_all(dir);
+}
+",
+        );
+        let findings = scan_tree(root.path());
+        assert_eq!(
+            findings.len(),
+            1,
+            "the semicolon-terminated declaration excludes only itself; {findings:?}"
+        );
+        assert_eq!(findings[0].line_no, 5, "{findings:?}");
+    }
+
+    #[test]
+    fn a_bare_removal_under_tests_is_never_scanned() {
+        let root = tempfile::tempdir().unwrap();
+        write_file(
+            root.path(),
+            "tests/somewhere.rs",
+            "\
+fn f(dir: &str) {
+    let _ = std::fs::remove_dir_all(dir);
+}
+",
+        );
+        let findings = scan_tree(root.path());
+        assert!(
+            findings.is_empty(),
+            "spec 79's audit is src/ only, never tests/; {findings:?}"
+        );
+    }
+
+    #[test]
+    fn a_finding_names_its_exact_file_and_line_number() {
+        let root = tempfile::tempdir().unwrap();
+        write_file(
+            root.path(),
+            "src/multi_line.rs",
+            "\
+fn a() {}
+fn b(dir: &str) {
+    let _ = std::fs::remove_dir_all(dir);
+}
+fn c() {}
+",
+        );
+        let findings = scan_tree(root.path());
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].file, "src/multi_line.rs");
+        assert_eq!(findings[0].line_no, 3, "{findings:?}");
+    }
+
+    #[test]
+    fn a_multi_line_fn_signature_still_resolves_its_own_closing_brace() {
+        let root = tempfile::tempdir().unwrap();
+        write_file(
+            root.path(),
+            "src/somewhere.rs",
+            "\
+fn f(
+    dir: &str,
+    root: &str,
+) {
+    reap_authorized(std::path::PathBuf::from(dir));
+    let _ = std::fs::remove_dir_all(dir);
+    let _ = root;
+}
+",
+        );
+        let findings = scan_tree(root.path());
+        assert!(
+            findings.is_empty(),
+            "a multi-line signature must still resolve the same enclosing span; {findings:?}"
+        );
+    }
+
+    #[test]
+    fn find_exemption_markers_lists_every_claimed_site() {
+        let root = tempfile::tempdir().unwrap();
+        write_file(
+            root.path(),
+            "src/a.rs",
+            "\
+fn f(dir: &str) {
+    // reap-exempt (spec 79, criterion 2): created and removed within this function.
+    let _ = std::fs::remove_dir_all(dir);
+}
+",
+        );
+        write_file(
+            root.path(),
+            "src/b.rs",
+            "\
+fn g(dir: &str) {
+    let _ = std::fs::remove_dir_all(dir);
+}
+",
+        );
+        let hits = find_exemption_markers(root.path());
+        assert_eq!(hits, vec![("src/a.rs".to_string(), 2)], "{hits:?}");
+    }
+
+    /// The Done-when acceptance test itself: `tests/reap_before_removal_audit.rs` scans the
+    /// REAL, currently checked-out `src/` tree (resolved from `CARGO_MANIFEST_DIR`, never the
+    /// process CWD) and finds zero bare-removal sites - proving criterion 1's rewiring
+    /// (`u79c1-rewiring-complete-and-exemption-marker`) actually covers or exempts every
+    /// production site, and that no later change introduced a new one.
+    #[test]
+    fn the_real_tree_carries_no_bare_removal() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let findings = scan_tree(&root);
+        assert!(
+            findings.is_empty(),
+            "bare-removal audit found {} uncovered/unexempted site(s) in the real tree:\n{}",
+            findings.len(),
+            findings
+                .iter()
+                .map(|f| f.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+
+    /// The listing half of spec 79's Design ("the exemption is claimed in a code comment at
+    /// the site" - this test names every site actually claiming one at HEAD). A change to this
+    /// count is a deliberate, review-worthy event (a new bare site was exempted rather than
+    /// reap-wired) - re-ground the expected files/count here if it fails after a legitimate
+    /// change, never silence it.
+    #[test]
+    fn the_real_trees_claimed_exemptions_are_exactly_the_three_u79c1_recorded() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let hits = find_exemption_markers(&root);
+        let files: Vec<&str> = hits.iter().map(|(f, _)| f.as_str()).collect();
+        assert_eq!(
+            hits.len(),
+            3,
+            "expected exactly the 3 exemptions u79c1-rewiring-complete-and-exemption-marker \
+             recorded (heal_corrupt_worktree_admin, cmd_replay's replay_dir, \
+             materialize_config_at_rev's checkout); got {hits:?}"
+        );
+        assert_eq!(
+            files.iter().filter(|f| **f == "src/main.rs").count(),
+            2,
+            "{hits:?}"
+        );
+        assert_eq!(
+            files.iter().filter(|f| **f == "src/worktree.rs").count(),
+            1,
+            "{hits:?}"
+        );
+    }
+}
