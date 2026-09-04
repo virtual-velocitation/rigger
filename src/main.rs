@@ -5265,6 +5265,13 @@ fn cmd_replay(args: &[String]) -> Res {
     //    the `.db` plus its `.db-wal` / `.db-shm` sidecars - in one call, so no sqlite file
     //    leaks under the scratch root. Best-effort (the diff is already computed), so a
     //    cleanup failure never fails the command.
+    //
+    //    reap-exempt (spec 79, criterion 2): `replay_dir` is created and removed entirely
+    //    within this function, and the ONLY thing ever run against it in between is the
+    //    offline `ReplayDriver`/`ReplayRunner` pairing constructed just above (`deps.gates:
+    //    &ReplayRunner`, whose own module doc states it never shells out - a candidate-config
+    //    re-drive is a pure in-process re-fold over the seeded trajectory) - no subprocess is
+    //    ever spawned with a cwd inside it, so nothing can be rooted there to reap.
     let _ = std::fs::remove_dir_all(&replay_dir);
 
     for line in format_stats_diff(&baseline_id, &rev, &baseline_metrics, &candidate_metrics) {
@@ -5456,6 +5463,10 @@ fn materialize_config_at_rev(
                 .map(|def| (cfg, def))
                 .map_err(|e| format!("rigger replay: candidate definition hash at {rev:?}: {e}"))
         });
+    // reap-exempt (spec 79, criterion 2): `checkout_str` is created and removed entirely
+    // within this one function, and the ONLY things ever run against it in between are
+    // `config::load` and `definition_hash` (just above) - both pure `std::fs` readers with
+    // no subprocess spawned inside the checkout - so nothing can be rooted there to reap.
     let _ = Command::new("git")
         .arg("-C")
         .arg(repo)

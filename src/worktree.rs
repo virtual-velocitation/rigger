@@ -807,13 +807,24 @@ pub fn review_fence_sibling(worktree_dir: &str) -> Option<String> {
 /// runs for both worktree kinds (its own doc comment), so fixing only the fence half
 /// without widening this reclaim half in the SAME change would leave a newly-created,
 /// previously-nonexistent leak on every review-worktree gate run.
+///
+/// Reaps each sibling before removing it (spec 79, criterion 1 - "even the exemplar leaks
+/// here": [`Worktree::remove`] already reaps the worktree dir itself, but a real gate build
+/// pointed at the cache dir, or a fenced courier that opened the fence dir's sqlite store,
+/// can still be alive when the worktree it is a sibling of is torn down; a bare removal here
+/// would outlive that process's now-deleted cwd exactly like the worktree dir itself would).
+/// See [`reap_dir_before_removal`].
 fn reclaim_cache_sibling(worktree_dir: &str) {
     if let Some(cache) = unit_cache_sibling(worktree_dir) {
-        let _ = std::fs::remove_dir_all(format!("{cache}{}", crate::gate::STORE_FENCE_SUFFIX));
-        let _ = std::fs::remove_dir_all(cache);
+        let fence = format!("{cache}{}", crate::gate::STORE_FENCE_SUFFIX);
+        reap_dir_before_removal(&fence);
+        let _ = std::fs::remove_dir_all(&fence);
+        reap_dir_before_removal(&cache);
+        let _ = std::fs::remove_dir_all(&cache);
     }
     if let Some(fence) = review_fence_sibling(worktree_dir) {
-        let _ = std::fs::remove_dir_all(fence);
+        reap_dir_before_removal(&fence);
+        let _ = std::fs::remove_dir_all(&fence);
     }
 }
 
@@ -861,6 +872,15 @@ pub fn sweep_terminal(
             let merged =
                 run_git(repo, &["merge-base", "--is-ancestor", branch, run_branch]).is_ok();
             if merged {
+                // Reap any process rooted inside this terminal worktree BEFORE removing it
+                // (spec 79, criterion 1): a crashed step process can leave a build or tool
+                // still running here, and this is the CRASH-recovery path, not the graceful
+                // `Worktree::remove` one - nothing else reaps it. `root` is the SAME resolved
+                // scratch root already used to confirm `d.starts_with(root)` above.
+                crate::reap::reap_processes_rooted_under(
+                    std::path::Path::new(&d),
+                    std::path::Path::new(root),
+                );
                 git(repo, &["worktree", "remove", "--force", &d])?;
                 reclaim_cache_sibling(&d);
                 removed += 1;
@@ -906,8 +926,16 @@ fn registered_worktree_for(repo: &str, branch: &str) -> Option<String> {
 /// --force`, which also tolerates a dirty tree) AND a bare leftover directory a killed
 /// process left behind (`git worktree remove` refuses it - "not a working tree" - so we
 /// delete it off disk). Used to defend the now-DETERMINISTIC unit dir in
-/// [`Worktree::create`] and to reset a throwaway review worktree in [`Worktree::discard`].
+/// [`Worktree::create`] and to reset a throwaway review worktree in [`Worktree::discard`],
+/// and (via [`reclaim_worktree_on_branch`]) to tear down a lingering worktree on resume.
+///
+/// Reaps whatever is rooted inside `dir` FIRST (spec 79, criterion 1): whichever teardown
+/// path the caller ends up on - `Worktree::create`'s self-heal, `Worktree::discard`'s reset,
+/// or [`reclaim_worktree_on_branch`]'s resume-path reclaim - a build, tool, or courier a
+/// prior process left running inside `dir` must not outlive the dir holding a now-deleted
+/// cwd. See [`reap_dir_before_removal`].
 fn clear_worktree_dir(repo: &str, dir: &str) -> Result<(), Error> {
+    reap_dir_before_removal(dir);
     if run_git(repo, &["worktree", "remove", "--force", dir]).is_err()
         && std::path::Path::new(dir).exists()
     {
@@ -916,6 +944,25 @@ fn clear_worktree_dir(repo: &str, dir: &str) -> Result<(), Error> {
     }
     git(repo, &["worktree", "prune"])?;
     Ok(())
+}
+
+/// Reap every process rooted inside `dir` (spec 79, criterion 1) before a caller in this
+/// module removes it, using `dir`'s own PARENT as the reap's `authorized_root`. This is safe
+/// because every dir this module ever tears down - a unit worktree (`rigger-wt-<slug>`), a
+/// review worktree (`rigger-review-<stage>-<attempt>`), or either one's sibling cache/fence
+/// dir (a same-parent sibling by construction, see [`unit_cache_sibling`] and
+/// [`review_fence_sibling`]) - lives DIRECTLY under the resolved scratch root by construction
+/// (the same authority [`unit_cache_sibling`]/[`review_fence_sibling`] already use to derive
+/// a sibling path from a worktree dir's own parent): `dir`'s parent therefore IS the SAME
+/// resolved scratch root the caller built `dir` from in the first place, never a hardcoded or
+/// re-derived guess (spec 78's `is_reapable_base` contract). A `dir` with no parent component
+/// (nothing to authorize against) is a no-op, matching every other reap call site's
+/// best-effort, never-fails contract.
+fn reap_dir_before_removal(dir: &str) {
+    let path = std::path::Path::new(dir);
+    if let Some(root) = path.parent() {
+        crate::reap::reap_processes_rooted_under(path, root);
+    }
 }
 
 /// Prune PROVABLY-CORRUPT worktree admin entries before a `git worktree add`, so one
@@ -935,6 +982,13 @@ fn clear_worktree_dir(repo: &str, dir: &str) -> Result<(), Error> {
 /// marker is missing or zero-length; a healthy registered worktree (both markers present and
 /// non-empty) is never touched. Best-effort and non-failing, mirroring the sweep helpers: a
 /// repo with no linked worktrees (no metadata dir) is a no-op.
+///
+/// reap-exempt (spec 79, criterion 2): the dir this removes is one worktree's admin
+/// METADATA entry under `<git-common-dir>/worktrees/<name>/` (a few marker files git itself
+/// reads), never a process's working directory - no process ever has its cwd inside a git
+/// admin dir - and it is removed only when [`worktree_admin_is_corrupt`] has already proven
+/// the entry provably corrupt (a marker file missing or zero-length). Nothing hostable, so no
+/// reap is needed here.
 fn heal_corrupt_worktree_admin(repo: &str) {
     let Ok(common) = run_git(repo, &["rev-parse", "--git-common-dir"]) else {
         return;
@@ -988,9 +1042,14 @@ fn worktree_admin_is_corrupt(admin: &std::path::Path) -> bool {
 /// registration whose dir was deleted out from under git - so even a residue that no
 /// longer occupies disk stops holding the branch), and [`reclaim_cache_sibling`] reclaims
 /// the multi-gigabyte `cargo-target-<slug>` cache, exactly as the two teardowns above do.
-/// A branch with no lingering worktree is a graceful no-op. The owning process is already
-/// dead on this path, so no process reap is needed (that is [`Worktree::remove`]'s concern
-/// on the live in-window teardown).
+/// A branch with no lingering worktree is a graceful no-op.
+///
+/// The owning STEP process is dead on this path, but that is not the same as "nothing is
+/// rooted in the dir" (spec 79, criterion 1 - the prior wording here claimed exactly that,
+/// and the spec's Goal names it wrong): a build, test binary, or dash the dead step's own
+/// gate spawned can independently outlive it, so [`clear_worktree_dir`] and
+/// [`reclaim_cache_sibling`] both reap whatever they find rooted inside before removing
+/// anything, exactly as [`Worktree::remove`]'s live in-window teardown does.
 pub fn reclaim_worktree_on_branch(repo: &str, branch: &str) -> Result<(), Error> {
     if let Some(dir) = registered_worktree_for(repo, branch) {
         clear_worktree_dir(repo, &dir)?;
@@ -1672,6 +1731,74 @@ mod tests {
     }
 
     #[test]
+    fn sweep_terminal_reaps_a_process_rooted_in_a_terminal_worktree_before_removing_it() {
+        // spec 79 inventory item 1: `sweep_terminal` (crash recovery) removed a terminal
+        // worktree via a bare `git worktree remove --force` with no reap of its own - a build
+        // or tool a killed step process left running inside it outlived the removed dir. Mirrors
+        // `remove_reaps_a_process_rooted_inside_the_worktree_and_spares_one_outside`'s fixture
+        // shape (SIGTERM-ignoring, so only the SIGKILL escalation ends it) but drives it through
+        // `sweep_terminal` instead of `Worktree::remove`.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        run_git(&repo_path, &["checkout", "-b", "rigger-run"]).unwrap();
+        let root = scratch_root(&repo_path, "", None);
+
+        let done_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}sweepreap");
+        Worktree::create(&repo_path, &done_dir, "rigger/u/sweepreap").unwrap();
+        let done_path = std::path::Path::new(&done_dir).to_path_buf();
+
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("trap '' TERM; while :; do sleep 1; done")
+            .current_dir(&done_path)
+            .spawn()
+            .expect("spawn a SIGTERM-ignoring fixture process");
+        assert!(
+            (0..200).any(|_| {
+                if crate::reap::processes_rooted_under(&done_path)
+                    .iter()
+                    .any(|(pid, _)| *pid == child.id())
+                {
+                    return true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+                false
+            }),
+            "precondition: the fixture process is rooted in the terminal worktree"
+        );
+
+        let removed = sweep_terminal(
+            &repo_path,
+            &root,
+            "rigger-run",
+            &std::collections::HashSet::new(),
+        )
+        .unwrap();
+        assert_eq!(removed, 1, "the terminal worktree is swept");
+
+        let died = (0..200).any(|_| {
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            false
+        });
+        if !died {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        assert!(
+            died,
+            "sweep_terminal must reap a process rooted inside a terminal worktree (SIGTERM then \
+             SIGKILL) before removing its dir"
+        );
+        assert!(
+            !done_path.exists(),
+            "the terminal worktree is still removed once its rooted process is reaped"
+        );
+    }
+
+    #[test]
     fn worktree_remove_reclaims_the_sibling_per_unit_cache() {
         // Gap 19 DOMINANT graceful path: `Worktree::remove` is what the conductor's
         // `run_stage` calls to tear a unit's worktree down at stage-end (on integrate / park
@@ -1870,6 +1997,81 @@ mod tests {
         assert!(
             Worktree::delete_branch(&repo_path, branch).is_ok(),
             "with the worktree gone the branch is finally deletable - the point of the ordered teardown"
+        );
+    }
+
+    #[test]
+    fn reclaim_worktree_on_branch_reaps_a_process_rooted_in_the_lingering_worktree_before_removing_it(
+    ) {
+        // spec 79 inventory item: `reclaim_worktree_on_branch`'s own doc comment claimed "the
+        // owning process is already dead on this path, so no process reap is needed" - the spec
+        // Goal names this claim WRONG. It tears down the lingering worktree through
+        // `clear_worktree_dir`, which (like every other inventoried removal site) must reap
+        // whatever is rooted inside first: the step process that abandoned this worktree may
+        // have LEFT a build or tool still running behind it, so "the owning process is dead"
+        // does not mean nothing is rooted in the dir. Fixing `clear_worktree_dir` transitively
+        // covers this call site.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let branch = "rigger/u/lingered-reap";
+
+        let parent = tempfile::tempdir().unwrap();
+        let wt_dir = parent
+            .path()
+            .join("rigger-wt-lingered-reap")
+            .to_str()
+            .unwrap()
+            .to_string();
+        let wt = Worktree::create(&repo_path, &wt_dir, branch).unwrap();
+        std::fs::write(
+            std::path::Path::new(&wt_dir).join("work.rs"),
+            "fn work() {}\n",
+        )
+        .unwrap();
+        wt.commit("rigger: prior window work").unwrap();
+        let wt_path = std::path::Path::new(&wt_dir).to_path_buf();
+
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("trap '' TERM; while :; do sleep 1; done")
+            .current_dir(&wt_path)
+            .spawn()
+            .expect("spawn a SIGTERM-ignoring fixture process");
+        assert!(
+            (0..200).any(|_| {
+                if crate::reap::processes_rooted_under(&wt_path)
+                    .iter()
+                    .any(|(pid, _)| *pid == child.id())
+                {
+                    return true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+                false
+            }),
+            "precondition: the fixture process is rooted in the lingering worktree"
+        );
+
+        reclaim_worktree_on_branch(&repo_path, branch).unwrap();
+
+        let died = (0..200).any(|_| {
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            false
+        });
+        if !died {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        assert!(
+            died,
+            "reclaim_worktree_on_branch (via clear_worktree_dir) must reap a process rooted in \
+             the lingering worktree (SIGTERM then SIGKILL) before removing its dir"
+        );
+        assert!(
+            !wt_path.exists(),
+            "the lingering worktree is still torn down once its rooted process is reaped"
         );
     }
 
