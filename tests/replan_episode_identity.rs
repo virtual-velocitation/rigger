@@ -1167,7 +1167,7 @@ fn a_wedged_legacy_history_is_recovered_by_a_real_planning_episode_through_run()
     // call's own first action already does; calling it directly, without running an
     // entire workflow to completion first, is the minimal way to seed "a prior window
     // already happened" without begging the very question this test proves.
-    start_fresh(&store, &criteria, "", "").unwrap();
+    start_fresh(&store, &criteria, "", "", "").unwrap();
 
     // Pre-populate the store BEFORE `run` is ever called: two pre-existing LEGACY
     // proposals for the SAME criterion (no `episode` field, no `meta.spawn`), simulating a
@@ -1292,7 +1292,7 @@ fn a_legacy_proposal_logged_after_a_resumed_identified_owner_never_supersedes_it
     // Mint the run's `RunStarted` FIRST, over the SAME criteria the `run` call below
     // uses, so `ensure_started` ADOPTS this run and the events appended next land inside
     // `current_run`'s window (see the matching comment on the fifth test above).
-    start_fresh(&store, &criteria, "", "").unwrap();
+    start_fresh(&store, &criteria, "", "", "").unwrap();
 
     // Pre-populate the store BEFORE `run` is ever called: a PRIOR WINDOW's already-
     // completed identified proposal (hand-stamped `meta.spawn`, simulating a real spawn a
@@ -1397,7 +1397,7 @@ fn a_two_episode_supersession_beside_a_same_episode_split_is_recovered_by_resume
     // Mint the run's `RunStarted` FIRST, over the SAME criteria the `run` call below
     // uses, so `ensure_started` ADOPTS this run rather than minting a fresh one (see the
     // matching comment on the fifth test above).
-    start_fresh(&store, &criteria, "", "").unwrap();
+    start_fresh(&store, &criteria, "", "", "").unwrap();
 
     // (id, criterion, spawn), in LOG ORDER - the identical history the internal
     // `harvest_proposed`-seam test (src/conductor.rs,

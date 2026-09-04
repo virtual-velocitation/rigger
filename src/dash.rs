@@ -8042,11 +8042,19 @@ mod tests {
     /// Spec 38, criterion 3: the dash surfaces the SAME ready-to-release handoff as `rigger
     /// status`, from the SAME authority ([`ledger::RunState::release_ready`]) - present in the
     /// `/api/state` snapshot ONLY on a done run, naming the run branch, the release-target
-    /// base, the integrated-unit count, and the PR command; absent for a run that is not done.
+    /// base, the integrated-unit count, and the two-command unique-head PR handoff (spec 82,
+    /// criterion 1); absent for a run that is not done. `build_state` passes NO new parameter
+    /// for the unique-head derivation - it is folded internally by the shared authority from
+    /// the seeded `RunStarted` in `events`, exactly as `current_run_base` already is one line
+    /// above this call, so this test proves that wiring needs no dash.rs production change.
     #[test]
     fn release_ready_is_surfaced_on_the_dash_only_for_a_done_run() {
         // A done run: one integrated unit, no failed deferred gate.
         let done = positioned(vec![
+            ev(
+                "RunStarted",
+                r#"{"run":"7ad52031-01f1-4d37-aa19-ad48090f84a5","spec":"specs/82-unique-pr-heads.md"}"#,
+            ),
             ev("UnitStarted", r#"{"id":"u1"}"#),
             ev("UnitIntegrated", r#"{"id":"u1","commit":"abc"}"#),
         ]);
@@ -8068,7 +8076,16 @@ mod tests {
         assert_eq!(rr.run_branch, "rigger-run");
         assert_eq!(rr.base, "main");
         assert_eq!(rr.integrated_units, 1);
-        assert_eq!(rr.pr_command, "gh pr create --base main --head rigger-run");
+        let head = "pr/82-unique-pr-heads-7ad52031-01f";
+        assert_eq!(
+            rr.pr_command,
+            format!("git push origin rigger-run:{head}\ngh pr create --base main --head {head}")
+        );
+        assert!(
+            !rr.pr_command.contains("--head rigger-run"),
+            "{}",
+            rr.pr_command
+        );
         // It serializes into the /api/state body the page reads.
         let body = state_json(
             &done,
@@ -8081,8 +8098,13 @@ mod tests {
         )
         .unwrap();
         assert!(
-            body.contains("gh pr create --base main --head rigger-run"),
+            body.contains(&format!("git push origin rigger-run:{head}"))
+                && body.contains(&format!("gh pr create --base main --head {head}")),
             "the handoff appears in the emitted state: {body}"
+        );
+        assert!(
+            !body.contains("--head rigger-run"),
+            "the wire never carries the literal run-branch-as-head form: {body}"
         );
 
         // A run with a still-un-integrated unit surfaces no release-ready signal.

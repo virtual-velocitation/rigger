@@ -20186,10 +20186,21 @@ fn release_ready_handoff_surfaces_on_status_for_a_done_run() {
         out.contains("1 unit integrated"),
         "the handoff names the integrated-unit count; got:\n{out}"
     );
+    // Spec 82, criterion 1: the PR command is the two-command unique-head flow - the seeded
+    // run's id ("r1", no spec) degrades the head to the run-short-id alone, `pr/r1` - never
+    // the literal run branch as `--head`.
     assert!(
-        out.contains("gh pr create --base main --head rigger-run"),
-        "the handoff names the exact PR command, with `origin/main` stripped to `main`; \
-         got:\n{out}"
+        out.contains("git push origin rigger-run:pr/r1"),
+        "the handoff names the push half of the unique-head flow; got:\n{out}"
+    );
+    assert!(
+        out.contains("gh pr create --base main --head pr/r1"),
+        "the handoff names the exact PR command, with `origin/main` stripped to `main` and \
+         the head a per-run-unique branch, never the run branch itself; got:\n{out}"
+    );
+    assert!(
+        !out.contains("--head rigger-run"),
+        "the literal `--head <run_branch>` form must never appear; got:\n{out}"
     );
 
     // The `RIGGER_BASE` override flows through `resolve_run_base` into the surfaced PR
@@ -20199,8 +20210,81 @@ fn release_ready_handoff_surfaces_on_status_for_a_done_run() {
         run_rigger_envs(root, &["status"], &[("RIGGER_BASE", "origin/release-2.0")]);
     assert!(ok, "rigger status honors RIGGER_BASE; stderr:\n{err}");
     assert!(
-        out.contains("gh pr create --base release-2.0 --head rigger-run"),
+        out.contains("gh pr create --base release-2.0 --head pr/r1"),
         "the RIGGER_BASE override reaches the PR command with `origin/` stripped; got:\n{out}"
+    );
+}
+
+/// Spec 82, criterion 1's own done-when test (THE STATUS HANDOFF IS UNIQUE): on a fully-done
+/// run, `rigger status` emits the two-command flow pushing `<run_branch>` to
+/// `pr/<spec-stem>-<run-short-id>` and creating the PR from that head, with the head derived
+/// from the run's spec stem AND its short run id (git-ref-safe) - and the literal
+/// `--head <run_branch>` form NOWHERE in the output. Unlike the other tests in this file
+/// (which seed no spec and so only exercise the degraded run-id-only head), this seeds a REAL
+/// spec path so the full `<spec-stem>-<run-short-id>` derivation is proven end-to-end through
+/// the compiled binary, and proves two runs of the SAME spec never collide on one PR head.
+#[test]
+fn release_ready_hands_off_a_unique_per_run_pr_head_naming_the_spec_stem_and_run_id() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    seed_run_events(
+        root,
+        &[
+            (
+                "RunStarted",
+                r#"{"run":"7ad52031-01f1-4d37-aa19-ad48090f84a5","criteria":["spec 82"],"spec":"specs/82-unique-pr-heads.md"}"#,
+            ),
+            ("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+            ("UnitIntegrated", r#"{"id":"u1","commit":"abc"}"#),
+        ],
+    );
+    let (out, err, ok) = run_rigger(root, &["status"]);
+    assert!(
+        ok,
+        "rigger status must succeed on a done run; stderr:\n{err}"
+    );
+    let head = "pr/82-unique-pr-heads-7ad52031-01f";
+    assert!(
+        out.contains(&format!("git push origin rigger-run:{head}")),
+        "status names the push half of the unique-head flow; got:\n{out}"
+    );
+    assert!(
+        out.contains(&format!("gh pr create --base main --head {head}")),
+        "status names the create half, with the head naming the spec stem AND the 12-char \
+         run-short-id; got:\n{out}"
+    );
+    assert!(
+        !out.contains("--head rigger-run"),
+        "the literal `--head <run_branch>` form is nowhere in the output; got:\n{out}"
+    );
+
+    // Two runs of the SAME spec differ only in run id, so their heads never collide.
+    let dir2 = temp_project();
+    let root2 = dir2.path();
+    seed_store(root2);
+    seed_run_events(
+        root2,
+        &[
+            (
+                "RunStarted",
+                r#"{"run":"a1a1a1a1a1a1a1a1a1a1","criteria":["spec 82"],"spec":"specs/82-unique-pr-heads.md"}"#,
+            ),
+            ("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+            ("UnitIntegrated", r#"{"id":"u1","commit":"abc"}"#),
+        ],
+    );
+    let (out2, err2, ok2) = run_rigger(root2, &["status"]);
+    assert!(ok2, "rigger status must succeed; stderr:\n{err2}");
+    let pr_line = |s: &str| {
+        s.lines()
+            .find(|l| l.trim_start().starts_with("gh pr create"))
+            .map(str::to_string)
+    };
+    assert_ne!(
+        pr_line(&out),
+        pr_line(&out2),
+        "two runs of the SAME spec must never share one PR head; got:\n{out}\n---\n{out2}"
     );
 }
 
@@ -20279,9 +20363,15 @@ fn release_ready_handoff_reaches_the_dash_export_snapshot() {
     );
     let html = std::fs::read_to_string(root.join("snapshot.html"))
         .expect("the export writes the snapshot file");
+    // Spec 82, criterion 1: the unique-head flow (head = `pr/r1`, this run's own id - no
+    // spec was seeded, so it degrades to the run-short-id alone).
     assert!(
-        html.contains("gh pr create --base main --head rigger-run"),
-        "the exported snapshot carries the handoff's exact PR command"
+        html.contains("gh pr create --base main --head pr/r1"),
+        "the exported snapshot carries the handoff's exact PR command: {html}"
+    );
+    assert!(
+        !html.contains("--head rigger-run"),
+        "the exported snapshot never carries the literal run-branch-as-head form"
     );
 
     // An unfinished run: the exported snapshot carries NO release-ready handoff.
@@ -20375,7 +20465,7 @@ fn release_ready_names_the_runs_persisted_base_on_status_over_a_re_resolution() 
         run_rigger_envs(root, &["status"], &[("RIGGER_BASE", "origin/main-decoy")]);
     assert!(ok, "rigger status must succeed; stderr:\n{err}");
     assert!(
-        out.contains("gh pr create --base release-9.9 --head rigger-run"),
+        out.contains("gh pr create --base release-9.9 --head pr/r1"),
         "status names the run's PERSISTED base (origin/release-9.9 -> release-9.9), read from \
          META_BASE, not a re-resolution off the decoy RIGGER_BASE; got:\n{out}"
     );

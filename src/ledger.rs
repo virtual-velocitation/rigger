@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::eventstore::Event;
+use crate::run::TYPE_RUN_STARTED;
 
 /// Status of a unit of work, over its lifecycle
 /// pending -> grounding -> red -> green -> verified -> reviewed -> integrated.
@@ -119,6 +120,17 @@ pub struct RunState {
     /// `rigger step` copies it onto its printed `Step` (spec 69, criterion 5's OWN wire
     /// stamp; the driver's narration of it is a later criterion).
     pub attention: Vec<AttentionEntry>,
+    /// This run's id (spec 82, criterion 1), folded from its `RunStarted` body - the same
+    /// `run` field `runscope::current_run_id` reads via a separate whole-stream scan.
+    /// [`RunState::release_ready`] reads it internally to derive this run's per-run-unique PR
+    /// head name, so every caller of `release_ready` keeps its existing 2-argument call - no
+    /// signature change, no new parameter to thread through `rigger status`/the dash. Empty
+    /// until a `RunStarted` is folded (a legacy events slice with no boundary).
+    pub run_id: String,
+    /// The spec file path this run was launched with (spec 82, criterion 1), folded from the
+    /// same `RunStarted` body. Empty on a legacy run (predates this field) or a no-spec
+    /// workflow run; the head-name derivation then degrades to the run-short-id alone.
+    pub spec_path: String,
 }
 
 /// One of the five spec-69 watching-discipline signals `AttentionEntry::kind` carries.
@@ -203,26 +215,85 @@ pub struct ReleaseReady {
     pub base: String,
     /// How many units landed on the run branch (every unit, since the run is done).
     pub integrated_units: usize,
-    /// The exact command a human runs to open the release PR - `base..run_branch` is exactly
-    /// this run's work, so the PR always applies.
+    /// The two-command handoff a human runs to open the release PR (spec 82, criterion 1,
+    /// operator decision 2026-09-03): a `git push` minting a per-run-UNIQUE remote branch
+    /// (`pr/<spec-stem>-<run-short-id>`), then `gh pr create --head` that same branch - NEVER
+    /// the live run branch itself, so a merged PR's deleted head is never the loop's anchor.
+    /// The two commands are joined by a single `\n`; every render authority (this struct's
+    /// own [`Self::lines`], and the dash's `/api/state` DTO, which carries this field
+    /// verbatim) is responsible for its own newline handling.
     pub pr_command: String,
 }
 
 impl ReleaseReady {
     /// The status-surface render: the human-readable lines `rigger status` and the run's
     /// end-of-run summary print, naming the run branch, the base, the integrated-unit count,
-    /// and the PR command. ONE render authority so every surface reads identically.
+    /// and the two-command PR handoff - each command its OWN indented line (spec 82,
+    /// criterion 1). ONE render authority so every surface reads identically.
     pub fn lines(&self) -> Vec<String> {
         let plural = if self.integrated_units == 1 { "" } else { "s" };
-        vec![
-            format!(
-                "release-ready: run branch {:?} is ready to open a PR to {:?} \
-                 ({} unit{} integrated)",
-                self.run_branch, self.base, self.integrated_units, plural
-            ),
-            format!("  {}", self.pr_command),
-        ]
+        let mut lines = vec![format!(
+            "release-ready: run branch {:?} is ready to open a PR to {:?} \
+             ({} unit{} integrated)",
+            self.run_branch, self.base, self.integrated_units, plural
+        )];
+        lines.extend(self.pr_command.split('\n').map(|cmd| format!("  {cmd}")));
+        lines
     }
+}
+
+/// The status-header run-id truncation (spec 82, criterion 1): the first 12 characters of a
+/// run id. THE single source both `rigger status`'s own header (`main::cmd_status`, which
+/// binds this function to its local `short` name) and [`RunState::release_ready`]'s PR-head
+/// derivation below use, so the head name in the printed PR command always matches the run id
+/// printed above it - one truncation authority, never two parallel spellings.
+pub fn short_run_id(run_id: &str) -> String {
+    run_id.chars().take(12).collect()
+}
+
+/// A spec file path's stem, sanitized to git-ref-safe characters (spec 82, criterion 1): e.g.
+/// `specs/80-criteria-survive-extraction.md` -> `80-criteria-survive-extraction`. Any
+/// character outside `[A-Za-z0-9._-]` becomes a single `-` (consecutive replacements
+/// collapse to one), and the result is trimmed of leading/trailing `-`/`.` (git refuses a ref
+/// component that starts or ends with either). Empty input - a no-spec workflow run, or a
+/// legacy `RunStarted` that predates this field - yields an empty stem.
+fn spec_stem(spec_path: &str) -> String {
+    let raw = std::path::Path::new(spec_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    let mut out = String::with_capacity(raw.len());
+    let mut last_dash = false;
+    for c in raw.chars() {
+        if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+            out.push(c);
+            last_dash = false;
+        } else if !last_dash {
+            out.push('-');
+            last_dash = true;
+        }
+    }
+    out.trim_matches(|c: char| c == '-' || c == '.').to_string()
+}
+
+/// The per-run-UNIQUE PR head branch name (spec 82, criterion 1, operator decision
+/// 2026-09-03): `pr/<spec-stem>-<run-short-id>`. Two runs of one spec always differ in run
+/// id, so this is unique by construction - never the live run branch itself, so a merged
+/// PR's deleted remote head is never the loop's anchor. Degrades gracefully rather than
+/// producing a malformed name: falls back to the run-short-id alone when the spec stem is
+/// empty (a no-spec workflow run, or a legacy `RunStarted`), and to the stem alone when the
+/// run id is empty (should not arise on a real run - every run mints a `RunStarted` before
+/// any unit starts - but this is a pure string function, not a panic site).
+fn pr_head_branch(spec_path: &str, run_id: &str) -> String {
+    let stem = spec_stem(spec_path);
+    let short = short_run_id(run_id);
+    let slug = match (stem.is_empty(), short.is_empty()) {
+        (false, false) => format!("{stem}-{short}"),
+        (false, true) => stem,
+        (true, false) => short,
+        (true, true) => String::new(),
+    };
+    format!("pr/{slug}")
 }
 
 // Run-event types the conductor emits (folded here into run state).
@@ -255,6 +326,18 @@ pub const TYPE_MANUAL_REVIEW: &str = "ManualReview";
 /// "unknown" two different ways.
 pub const CAUSE_UNKNOWN: &str = "unknown";
 
+/// The two [`crate::run::RunStarted`] body fields this projection needs (spec 82, criterion
+/// 1): a local, minimal decode shape - mirroring every other event struct in this module -
+/// rather than depending on `run::RunStarted`'s own (wider, and partly `#[serde(skip)]`)
+/// shape. `#[serde(default)]` on both so a legacy RunStarted (predating `spec`) or a
+/// malformed-but-typed body still folds, degrading rather than erroring.
+#[derive(Deserialize)]
+struct RunStartedFold {
+    #[serde(default)]
+    run: String,
+    #[serde(default)]
+    spec: String,
+}
 #[derive(Deserialize)]
 struct UnitStarted {
     id: String,
@@ -329,6 +412,18 @@ impl RunState {
     /// Fold one run event into the state.
     pub fn apply(&mut self, e: &Event) -> Result<(), serde_json::Error> {
         match e.type_.as_str() {
+            TYPE_RUN_STARTED => {
+                // Spec 82, criterion 1: fold this run's id and launching spec path from the
+                // SAME body every other lifecycle event decodes from - no metadata read, no
+                // second traversal. `events` callers already pass here is the run-scoped
+                // slice (`runscope::current_run`), so exactly one RunStarted is present; a
+                // caller that instead hands the whole unscoped stream still folds correctly
+                // (last RunStarted wins, matching `runscope::current_run_id`'s own "latest"
+                // rule).
+                let p: RunStartedFold = serde_json::from_slice(&e.data)?;
+                self.run_id = p.run;
+                self.spec_path = p.spec;
+            }
             TYPE_UNIT_STARTED => {
                 let p: UnitStarted = serde_json::from_slice(&e.data)?;
                 let u = self.unit(&p.id);
@@ -416,10 +511,18 @@ impl RunState {
     /// run has not FULLY finished the job - so an unfinished run (a unit still un-integrated,
     /// an empty run, a failed deferred phase-boundary gate, or a run halted on an uncovered
     /// criterion) surfaces NO release-ready signal. On a fully-done run it names `run_branch`
-    /// as the PR head and the release-target `base` (the resolved base ref with a leading
-    /// `origin/` remote prefix stripped) as the PR base, so the derived `gh pr create`
-    /// command targets the branch a PR can actually apply to. Purely derived (no new event,
-    /// no auto-merge): a resume-by-replay re-reaches it.
+    /// and the release-target `base` (the resolved base ref with a leading `origin/` remote
+    /// prefix stripped), and derives the two-command unique-head PR handoff (spec 82,
+    /// criterion 1, operator decision 2026-09-03): `git push origin <run_branch>:<head>` then
+    /// `gh pr create --base <base> --head <head>`, where `<head>` is a per-run-UNIQUE remote
+    /// branch (`pr/<spec-stem>-<run-short-id>`, from [`pr_head_branch`]) - NEVER `run_branch`
+    /// itself, so a merged PR's deleted head is never the loop's live anchor and successive
+    /// PRs from the same spec never conflate. The spec stem and run id are read from `self`
+    /// ([`Self::spec_path`], [`Self::run_id`]), folded from this run's own `RunStarted` by
+    /// [`Self::apply`] - so this method's signature stays exactly `(run_branch, base)`, and
+    /// every caller (the dash's `build_state` included) needs no new parameter to reach the
+    /// unique-head flow. Purely derived (no new event, no auto-merge, no network action taken
+    /// by rigger itself): a resume-by-replay re-reaches the identical handoff.
     ///
     /// The gate is [`Self::done`] AND no flagged spec defect - together exactly the
     /// [`Self::fully_done`] predicate ("every criterion covered + every unit integrated +
@@ -442,7 +545,10 @@ impl RunState {
         // (`origin/main` -> `main`). A base that is already a plain branch, or one on another
         // remote, is left intact for the human to adjust.
         let base = base.strip_prefix("origin/").unwrap_or(base).to_string();
-        let pr_command = format!("gh pr create --base {base} --head {run_branch}");
+        let head = pr_head_branch(&self.spec_path, &self.run_id);
+        let pr_command = format!(
+            "git push origin {run_branch}:{head}\ngh pr create --base {base} --head {head}"
+        );
         Some(ReleaseReady {
             run_branch: run_branch.to_string(),
             base,
@@ -705,14 +811,76 @@ mod tests {
     }
 
     #[test]
+    fn short_run_id_truncates_to_twelve_chars_and_passes_shorter_ids_through() {
+        assert_eq!(
+            short_run_id("7ad52031-01f1-4d37-aa19-ad48090f84a5"),
+            "7ad52031-01f"
+        );
+        assert_eq!(short_run_id("r1"), "r1");
+        assert_eq!(short_run_id(""), "");
+    }
+
+    #[test]
+    fn spec_stem_extracts_and_sanitizes_the_file_stem() {
+        assert_eq!(
+            spec_stem("specs/80-criteria-survive-extraction.md"),
+            "80-criteria-survive-extraction"
+        );
+        assert_eq!(spec_stem("spec.md"), "spec");
+        assert_eq!(spec_stem(""), "");
+        // Any character outside [A-Za-z0-9._-] becomes a single collapsed `-`, and the
+        // result is trimmed of leading/trailing `-`/`.` - git refuses a ref component that
+        // starts or ends with either.
+        assert_eq!(spec_stem("specs/a weird spec!!.md"), "a-weird-spec");
+        assert_eq!(
+            spec_stem("specs/ leading and trailing .md"),
+            "leading-and-trailing"
+        );
+    }
+
+    #[test]
+    fn pr_head_branch_combines_stem_and_short_run_id_and_degrades_gracefully() {
+        assert_eq!(
+            pr_head_branch(
+                "specs/82-unique-pr-heads.md",
+                "7ad52031-01f1-4d37-aa19-ad48090f84a5"
+            ),
+            "pr/82-unique-pr-heads-7ad52031-01f"
+        );
+        // No spec path (a no-spec workflow run): degrades to the run-short-id alone.
+        assert_eq!(pr_head_branch("", "abcdef012345"), "pr/abcdef012345");
+        // No run id (should not arise on a real run - every run mints a RunStarted before
+        // any unit starts): degrades to the stem alone rather than a malformed name.
+        assert_eq!(
+            pr_head_branch("specs/82-unique-pr-heads.md", ""),
+            "pr/82-unique-pr-heads"
+        );
+        // Two runs of the SAME spec differ only in run id - the head is unique by
+        // construction (the operator decision this criterion implements).
+        let a = pr_head_branch("specs/82-unique-pr-heads.md", "run-a");
+        let b = pr_head_branch("specs/82-unique-pr-heads.md", "run-b");
+        assert_ne!(a, b);
+    }
+
+    #[test]
     fn release_ready_surfaces_only_a_done_run() {
         // Spec 38 criterion 3 (the ready-to-release handoff): on a DONE run the projection
         // yields the summary naming the run branch, the release-target base, the
         // integrated-unit count, and the exact PR command; a run that is NOT done yields
         // None so no release-ready signal is ever surfaced for unfinished work.
+        //
+        // Spec 82, criterion 1 (the status handoff is unique): the PR command is now the
+        // two-command unique-head flow, with the head derived from this run's own
+        // RunStarted (spec stem + run-short-id) - never the literal run branch as `--head`.
 
-        // A done run (one integrated unit) IS release-ready.
+        // A done run (one integrated unit) IS release-ready. Seeded with a RunStarted whose
+        // run id is deliberately LONGER than 12 characters, so the assertions below also
+        // prove the run-short-id truncation, not just pass a pre-truncated id through.
         let done = project(&[
+            ev(
+                TYPE_RUN_STARTED,
+                r#"{"run":"7ad52031-01f1-4d37-aa19-ad48090f84a5","spec":"specs/82-unique-pr-heads.md"}"#,
+            ),
             ev(TYPE_UNIT_STARTED, r#"{"id":"u1"}"#),
             ev(TYPE_UNIT_INTEGRATED, r#"{"id":"u1","commit":"abc"}"#),
         ])
@@ -725,23 +893,40 @@ mod tests {
         // the PR command targets the branch (`main`), not the tracking ref (`origin/main`).
         assert_eq!(rr.base, "main");
         assert_eq!(rr.integrated_units, 1);
-        assert_eq!(rr.pr_command, "gh pr create --base main --head rigger-run");
-        // The human render names all four facts on the status surface.
+        let head = "pr/82-unique-pr-heads-7ad52031-01f";
+        assert_eq!(
+            rr.pr_command,
+            format!("git push origin rigger-run:{head}\ngh pr create --base main --head {head}"),
+            "the PR command is the two-command unique-head flow, head = spec-stem-run-short-id"
+        );
+        assert!(
+            !rr.pr_command.contains("--head rigger-run"),
+            "the literal `--head <run_branch>` form must never appear: {}",
+            rr.pr_command
+        );
+        // The human render names all facts on the status surface, each command its own
+        // indented line.
         let text = rr.lines().join("\n");
         assert!(text.contains("rigger-run"), "{text}");
         assert!(text.contains("main"), "{text}");
         assert!(text.contains("1 unit"), "{text}");
         assert!(
-            text.contains("gh pr create --base main --head rigger-run"),
+            text.contains(&format!("git push origin rigger-run:{head}")),
             "{text}"
         );
+        assert!(
+            text.contains(&format!("gh pr create --base main --head {head}")),
+            "{text}"
+        );
+        assert!(!text.contains("--head rigger-run"), "{text}");
 
-        // A base that is already a plain branch name is passed through unchanged.
+        // A base that is already a plain branch name is passed through unchanged; the head
+        // (derived from spec/run id, not base) is unaffected.
         let plain = done.release_ready("rigger-run", "develop").unwrap();
         assert_eq!(plain.base, "develop");
         assert_eq!(
             plain.pr_command,
-            "gh pr create --base develop --head rigger-run"
+            format!("git push origin rigger-run:{head}\ngh pr create --base develop --head {head}")
         );
 
         // A run with a not-yet-integrated unit surfaces NO release-ready signal.

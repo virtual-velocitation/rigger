@@ -1092,14 +1092,19 @@ fn definition_hash(dir: &str) -> Result<String, Box<dyn std::error::Error>> {
 /// criterion 3), so `rigger status`/`rigger dash` later read the run's actual base from the
 /// log rather than re-resolving without the run's `--base` flag. On an ADOPTED (resumed) run
 /// it is ignored - the base its original start stamped stands.
+///
+/// `spec_path` is the spec file this run was launched with (spec 82, criterion 1), persisted
+/// on a freshly-minted RunStarted the same mint-only way as `base`, so the ready-to-release
+/// handoff can later derive this run's per-run-unique PR head name.
 fn enforce_definition_pin(
     store: &dyn EventStore,
     criteria: &[String],
     definition: &str,
     rebase: bool,
     base: &str,
+    spec_path: &str,
 ) -> Res {
-    match runscope::ensure_started_pinned(store, criteria, definition, rebase, base)? {
+    match runscope::ensure_started_pinned(store, criteria, definition, rebase, base, spec_path)? {
         runscope::RunStart::Ready(_) => Ok(()),
         runscope::RunStart::Rebased {
             run,
@@ -2133,10 +2138,17 @@ fn cmd_step(args: &[String]) -> Res {
     // began. The notice goes to STDERR - stdout carries only the `{wave,done}` JSON the
     // driver parses. See `runscope::start_fresh`.
     if args.fresh {
-        // Persist the resolved run-branch base on the fresh boundary (spec 38, criterion 3):
-        // `args.base` is the base this step anchored the run branch on, so `rigger status`/dash
-        // name the same base in the ready-to-release handoff.
-        let run = runscope::start_fresh(&store, &criteria, &definition, &args.base)?;
+        // Persist the resolved run-branch base, and the launching spec path (spec 82,
+        // criterion 1), on the fresh boundary (spec 38, criterion 3): `args.base` is the base
+        // this step anchored the run branch on, so `rigger status`/dash name the same base
+        // and derive the per-run-unique PR head name in the ready-to-release handoff.
+        let run = runscope::start_fresh(
+            &store,
+            &criteria,
+            &definition,
+            &args.base,
+            args.spec.as_deref().unwrap_or(""),
+        )?;
         eprintln!("rigger step: --fresh: began a new run {run} (the prior run stays in the log)");
     }
 
@@ -2196,6 +2208,7 @@ fn cmd_step(args: &[String]) -> Res {
         &definition,
         args.rebase_definition,
         &args.base,
+        args.spec.as_deref().unwrap_or(""),
     ) {
         // A definition-drift HALT is a terminal state for this run process (spec 34, criterion
         // 3): reclaim the run-level shared scratch before propagating the loud halt, so a halted
@@ -3291,7 +3304,13 @@ fn fresh_run_if_requested(
         std::env::var("RIGGER_BASE").ok().as_deref(),
     );
     if parsed.fresh {
-        let run = runscope::start_fresh(store, criteria, &definition, &base)?;
+        let run = runscope::start_fresh(
+            store,
+            criteria,
+            &definition,
+            &base,
+            parsed.spec.as_deref().unwrap_or(""),
+        )?;
         let notice =
             format!("rigger: --fresh: began a new run {run} (the prior run stays in the log)");
         if fresh_notice_to_stderr {
@@ -3306,6 +3325,7 @@ fn fresh_run_if_requested(
         &definition,
         parsed.rebase_definition,
         &base,
+        parsed.spec.as_deref().unwrap_or(""),
     )?;
     Ok(())
 }
@@ -5198,8 +5218,8 @@ fn cmd_replay(args: &[String]) -> Res {
         )?;
         let iso = Namespaced::new(iso_backend.as_ref(), "rigger-replay");
         // An offline replay re-fold over an isolated store: no run branch, no PR, so no base
-        // to persist (spec 38, criterion 3).
-        runscope::start_fresh(&iso, &criteria, &candidate_definition, "")?;
+        // or spec path to persist (spec 38, criterion 3; spec 82, criterion 1).
+        runscope::start_fresh(&iso, &criteria, &candidate_definition, "", "")?;
         let trajectory = conductor::replay_trajectory(baseline);
         iso.append(conductor::STREAM, ExpectedRevision::Any, &trajectory)?;
 
@@ -7211,8 +7231,10 @@ fn cmd_status(args: &[String]) -> Res {
         println!("{line}");
     }
 
-    // Readable table. The blackout is visible as `last store event` age >> activity age.
-    let short = |s: &str| s.chars().take(12).collect::<String>();
+    // Readable table. The blackout is visible as `last store event` age >> activity age. The
+    // truncation is `ledger::short_run_id` (spec 82, criterion 1's shared authority) so the run
+    // id printed here always matches the one the release-ready PR head is derived from below.
+    let short = ledger::short_run_id;
     if view.is_empty() && blocker_lines.is_empty() {
         println!("run {}: no agents in flight", short(&run_id));
         for line in &release_lines {
@@ -14711,10 +14733,19 @@ mod tests {
     /// NOT done surfaces no release-ready signal. Proven over the production render seam
     /// (`release_ready_lines`) `cmd_status` prints, so the surface cannot silently drift from
     /// the one authority.
+    ///
+    /// Spec 82, criterion 1 (the status handoff is unique): the PR command is the two-command
+    /// unique-head flow - the head derived from the run's OWN RunStarted (spec stem +
+    /// run-short-id), never the literal run branch as `--head`.
     #[test]
     fn release_ready_lines_surface_only_on_a_done_run() {
         // A done run: one integrated unit, no failed deferred gate.
         let done = [
+            Event::new(
+                runscope::TYPE_RUN_STARTED,
+                br#"{"run":"7ad52031-01f1-4d37-aa19-ad48090f84a5","spec":"specs/82-unique-pr-heads.md"}"#
+                    .to_vec(),
+            ),
             Event::new(ledger::TYPE_UNIT_STARTED, br#"{"id":"u1"}"#.to_vec()),
             Event::new(
                 ledger::TYPE_UNIT_INTEGRATED,
@@ -14732,10 +14763,21 @@ mod tests {
             text.contains("1 unit"),
             "names the integrated-unit count: {text}"
         );
-        // `origin/main` is stripped to the release-target branch in the PR command.
+        // `origin/main` is stripped to the release-target branch in the PR command, and the
+        // head is the per-run-unique `pr/<spec-stem>-<run-short-id>` branch - never the run
+        // branch itself.
+        let head = "pr/82-unique-pr-heads-7ad52031-01f";
         assert!(
-            text.contains("gh pr create --base main --head rigger-run"),
+            text.contains(&format!("git push origin {RUN_BRANCH}:{head}")),
+            "names the push command: {text}"
+        );
+        assert!(
+            text.contains(&format!("gh pr create --base main --head {head}")),
             "names the PR command: {text}"
+        );
+        assert!(
+            !text.contains("--head rigger-run"),
+            "the literal `--head <run_branch>` form must never appear: {text}"
         );
 
         // A run with a still-un-integrated unit surfaces NO release-ready signal.
@@ -14803,10 +14845,12 @@ mod tests {
         assert_ne!(status_base, DEFAULT_BASE_REF);
 
         // Every surface renders through `release_ready`, so the PR command names the run's
-        // actual base - not `main`.
+        // actual base - not `main` - while the head (unaffected by base) is this run's
+        // per-run-unique `pr/<run-short-id>` branch (no spec was seeded, so the head degrades
+        // to the run-short-id alone).
         let text = release_ready_lines(&events, RUN_BRANCH, &status_base).join("\n");
         assert!(
-            text.contains("gh pr create --base release/2.0 --head rigger-run"),
+            text.contains("gh pr create --base release/2.0 --head pr/r1"),
             "the PR command targets the run's persisted base: {text}"
         );
 

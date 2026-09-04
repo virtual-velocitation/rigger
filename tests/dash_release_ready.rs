@@ -100,9 +100,17 @@ fn connect_with_retry(addr: SocketAddr) -> TcpStream {
 /// on a DONE run - naming the run branch, the release-target base (with `origin/` stripped),
 /// the integrated-unit count, and the exact PR command - so the dash and `rigger status`
 /// surface the SAME handoff from the SAME authority.
+///
+/// Spec 82, criterion 1: the PR command is the two-command unique-head flow, with the head
+/// derived from the seeded `RunStarted`'s spec stem and run-short-id - proving that
+/// derivation crosses the REAL socket, not just the in-process `build_state` unit test.
 #[test]
 fn release_ready_crosses_the_api_state_socket_on_a_done_run() {
     let done = positioned(&[
+        (
+            "RunStarted",
+            r#"{"run":"7ad52031-01f1-4d37-aa19-ad48090f84a5","spec":"specs/82-unique-pr-heads.md"}"#,
+        ),
         ("UnitStarted", r#"{"id":"u1"}"#),
         ("UnitIntegrated", r#"{"id":"u1","commit":"abc"}"#),
     ]);
@@ -118,9 +126,10 @@ fn release_ready_crosses_the_api_state_socket_on_a_done_run() {
         "the base crosses the wire with `origin/` stripped to the release-target branch"
     );
     assert_eq!(rr["integrated_units"], 1);
+    let head = "pr/82-unique-pr-heads-7ad52031-01f";
     assert_eq!(
         rr["pr_command"],
-        "gh pr create --base main --head rigger-run"
+        format!("git push origin rigger-run:{head}\ngh pr create --base main --head {head}")
     );
 }
 
@@ -164,6 +173,7 @@ fn release_ready_is_absent_from_the_wire_for_an_unfinished_run() {
 #[test]
 fn release_ready_carries_a_multi_unit_count_across_the_wire() {
     let done_two = positioned(&[
+        ("RunStarted", r#"{"run":"r1"}"#),
         ("UnitStarted", r#"{"id":"u1"}"#),
         ("UnitIntegrated", r#"{"id":"u1","commit":"abc"}"#),
         ("UnitStarted", r#"{"id":"u2"}"#),
@@ -181,8 +191,10 @@ fn release_ready_carries_a_multi_unit_count_across_the_wire() {
          pluralizes off); got:\n{v}"
     );
     assert_eq!(rr["run_branch"], "rigger-run");
+    // Spec 82, criterion 1: no spec was seeded, so the head degrades to the run-short-id
+    // alone (`pr/r1`) - the derivation itself is proven end-to-end by the sibling test above.
     assert_eq!(
         rr["pr_command"],
-        "gh pr create --base main --head rigger-run"
+        "git push origin rigger-run:pr/r1\ngh pr create --base main --head pr/r1"
     );
 }
