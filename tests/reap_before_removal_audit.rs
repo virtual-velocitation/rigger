@@ -470,18 +470,93 @@ fn exemption_window(
     (window_start, window_end)
 }
 
+/// `line` with every quoted-string literal's content (and its delimiting quotes) dropped, and
+/// everything from the first unquoted `//` onward dropped too - string-aware (naive, no escape
+/// handling, matching [`quoted_tokens`]'s own established precedent: every string this audit
+/// scans is a short ASCII CLI-arg or path literal, never an escaped quote) so that BOTH a
+/// reap-authority name living only inside a string literal (a log message - spec 79 c2
+/// round-4 fix, `adv-u79c2r3-authority-match-inside-noncomment-string-literal-uncaught-by-
+/// either-fix`) AND one living only after a trailing `//` comment on an otherwise-real code
+/// line (round-4 fix, `arch-u79c2r3-comment-guard-is-whole-line-only-trailing-comment-still-
+/// falsely-covers`) are excluded from a "does this line contain a real call" check - while a
+/// real call's own name, sitting in actual code before either a trailing comment or a string
+/// argument, is left untouched and still matches. A `//` that itself lives inside a string
+/// literal argument (never seen in this tree's own reap-authority calls) is correctly not
+/// mistaken for a comment start, since string content is tracked and skipped first.
+fn effective_code(line: &str) -> String {
+    let mut out = String::new();
+    let mut in_str = false;
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if in_str {
+            if c == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+        if c == '"' {
+            in_str = true;
+            continue;
+        }
+        if c == '/' && chars.peek() == Some(&'/') {
+            break;
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// The comment portion of `line`, if it carries one: the whole line when its trimmed text
+/// already starts with `//` (a whole-line comment, including `///`/`//!` doc comments - both
+/// start with `//`), or the substring from the first unquoted `//` onward for a TRAILING
+/// comment following real code on the same line (string-aware, naive - matching
+/// [`effective_code`]'s own precedent, so a `//` inside a string literal argument is never
+/// mistaken for a comment start). `None` when `line` carries no comment at all - so a marker
+/// substring living only in real, non-comment code (a log string, say) is never mistaken for a
+/// deliberately claimed exemption (spec 79 c2 round-4 fix,
+/// `sdet-u79c2r3-exemption-marker-check-has-no-comment-guard-at-all`: the round-3
+/// EXEMPTION_MARKER check had no comment requirement of any kind).
+fn comment_text(line: &str) -> Option<&str> {
+    if line.trim_start().starts_with("//") {
+        return Some(line);
+    }
+    let mut in_str = false;
+    let mut chars = line.char_indices().peekable();
+    while let Some((idx, c)) = chars.next() {
+        if in_str {
+            if c == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+        if c == '"' {
+            in_str = true;
+            continue;
+        }
+        if c == '/' && chars.peek().is_some_and(|&(_, next)| next == '/') {
+            return Some(&line[idx..]);
+        }
+    }
+    None
+}
+
 /// Whether `span` (the removal's enclosing function, or `None` if it has none) is covered:
-/// either the claimed-exemption marker appears within this removal's own
-/// [`exemption_window`] (order-independent within that window - a documented human claim
-/// about this site, not a call with a happens-before relationship to the removal, but no
-/// longer credited to an unrelated OTHER removal elsewhere in the same function - spec 79 c2
-/// round-3 fix, `arch-u79c2r2-exemption-marker-function-wide-not-site-scoped`), or a
-/// reap-authority call - on a REAL code line, never a prose comment merely naming it (round-3
-/// fix, `sdet-u79c2r2-authority-name-in-prose-comment-still-falsely-covers`) - appears on a
-/// line STRICTLY BEFORE `removal_line` with - for the one authority
-/// [`takes_checked_root_arg`] flags - an effective authorized-root argument (spec 79 c2
-/// round-2 fix: see the module doc's ROUTED entry for why order and this one argument check
-/// exist, and why full directory-argument correlation does not).
+/// either the claimed-exemption marker appears, ON AN ACTUAL COMMENT per [`comment_text`]
+/// (round-4 fix, `sdet-u79c2r3-exemption-marker-check-has-no-comment-guard-at-all`), within
+/// this removal's own [`exemption_window`] (order-independent within that window - a
+/// documented human claim about this site, not a call with a happens-before relationship to
+/// the removal, but no longer credited to an unrelated OTHER removal elsewhere in the same
+/// function - spec 79 c2 round-3 fix, `arch-u79c2r2-exemption-marker-function-wide-not-site-
+/// scoped`), or a reap-authority call appears, in [`effective_code`] (round-4 fix, closing
+/// both the trailing-comment gap `arch-u79c2r3-comment-guard-is-whole-line-only-trailing-
+/// comment-still-falsely-covers` and the string-literal gap `adv-u79c2r3-authority-match-
+/// inside-noncomment-string-literal-uncaught-by-either-fix` together - a bare substring match
+/// against the raw line, as round 3 did, credits an authority NAME sitting in a trailing
+/// comment or inside a log-message string, never a real call), on a line STRICTLY BEFORE
+/// `removal_line` with - for the one authority [`takes_checked_root_arg`] flags - an effective
+/// authorized-root argument (spec 79 c2 round-2 fix: see the module doc's ROUTED entry for why
+/// order and this one argument check exist, and why full directory-argument correlation does
+/// not).
 fn is_covered(lines: &[&str], span: Option<(usize, usize)>, removal_line: usize) -> bool {
     let Some((start, end)) = span else {
         return false;
@@ -489,17 +564,14 @@ fn is_covered(lines: &[&str], span: Option<(usize, usize)>, removal_line: usize)
     let (window_start, window_end) = exemption_window(lines, start, end, removal_line);
     if lines[window_start..=window_end]
         .iter()
-        .any(|line| line.contains(EXEMPTION_MARKER))
+        .any(|line| comment_text(line).is_some_and(|c| c.contains(EXEMPTION_MARKER)))
     {
         return true;
     }
     for i in start..removal_line {
-        let line = lines[i];
-        if line.trim_start().starts_with("//") {
-            continue;
-        }
+        let code = effective_code(lines[i]);
         for authority in REAP_AUTHORITIES.iter() {
-            if !line.contains(*authority) {
+            if !code.contains(*authority) {
                 continue;
             }
             if !takes_checked_root_arg(authority)
@@ -756,6 +828,135 @@ fn f(dir: &str) {
             "an authority name in prose, with no real call, must never cover; {findings:?}"
         );
         assert_eq!(findings[0].line_no, 3, "{findings:?}");
+    }
+
+    /// ROUND-4 FIX (upholding
+    /// `arch-u79c2r3-comment-guard-is-whole-line-only-trailing-comment-still-falsely-covers`):
+    /// the round-3 comment guard only skips a line whose TRIMMED text starts with `//` - a
+    /// TRAILING comment on a real code line that happens to name a reap authority must still
+    /// never be mistaken for a real call.
+    #[test]
+    fn a_reap_authority_name_in_a_trailing_comment_never_covers_the_removal() {
+        let root = tempfile::tempdir().unwrap();
+        write_file(
+            root.path(),
+            "src/somewhere.rs",
+            "\
+fn f(dir: &str) {
+    let x = 1; // reap_processes_rooted_under(
+    let _ = std::fs::remove_dir_all(dir);
+    let _ = x;
+}
+",
+        );
+        let findings = scan_tree(root.path());
+        assert_eq!(
+            findings.len(),
+            1,
+            "an authority name in a TRAILING comment, with no real call, must never cover; \
+             {findings:?}"
+        );
+    }
+
+    /// ROUND-4 FIX: a real reap call is unaffected by the trailing-comment fix above when a
+    /// harmless comment follows it on the SAME line - the call itself sits before the `//`,
+    /// so it must still cover.
+    #[test]
+    fn a_real_reap_call_with_a_trailing_comment_on_the_same_line_still_covers() {
+        let root = tempfile::tempdir().unwrap();
+        write_file(
+            root.path(),
+            "src/somewhere.rs",
+            "\
+fn f(dir: &str) {
+    reap_authorized(std::path::PathBuf::from(dir)); // reaps everything rooted here first
+    let _ = std::fs::remove_dir_all(dir);
+}
+",
+        );
+        let findings = scan_tree(root.path());
+        assert!(
+            findings.is_empty(),
+            "a real call followed by a harmless trailing comment must still cover; {findings:?}"
+        );
+    }
+
+    /// ROUND-4 FIX (upholding
+    /// `sdet-u79c2r3-exemption-marker-check-has-no-comment-guard-at-all`): the round-3
+    /// EXEMPTION_MARKER check has no comment requirement at all - the marker substring living
+    /// inside a non-comment string literal (a log message) must never be mistaken for a
+    /// deliberately claimed exemption.
+    #[test]
+    fn an_exemption_marker_inside_a_non_comment_string_literal_never_covers_the_removal() {
+        let root = tempfile::tempdir().unwrap();
+        write_file(
+            root.path(),
+            "src/somewhere.rs",
+            "\
+fn f(dir: &str) {
+    log::warn!(\"reap-exempt: not a real claim, just a string\");
+    let _ = std::fs::remove_dir_all(dir);
+}
+",
+        );
+        let findings = scan_tree(root.path());
+        assert_eq!(
+            findings.len(),
+            1,
+            "reap-exempt inside a non-comment string literal must never be mistaken for a \
+             claimed exemption; {findings:?}"
+        );
+    }
+
+    /// ROUND-4 FIX: the exemption marker must still cover when it lives in a genuine TRAILING
+    /// comment on the same line as real code (not just a whole-line comment), proving the
+    /// comment-guard fix above does not over-narrow the marker check to whole-line-only.
+    #[test]
+    fn an_exemption_marker_in_a_trailing_comment_after_real_code_still_covers() {
+        let root = tempfile::tempdir().unwrap();
+        write_file(
+            root.path(),
+            "src/somewhere.rs",
+            "\
+fn f(dir: &str) {
+    let _ = std::fs::remove_dir_all(dir); // reap-exempt (spec 79, criterion 2): trailing form
+}
+",
+        );
+        let findings = scan_tree(root.path());
+        assert!(
+            findings.is_empty(),
+            "a marker in a genuine trailing comment after real code must still cover; \
+             {findings:?}"
+        );
+    }
+
+    /// ROUND-4 FIX (upholding
+    /// `adv-u79c2r3-authority-match-inside-noncomment-string-literal-uncaught-by-either-fix`,
+    /// reproducing the adjudicator's own probe byte-for-byte): a reap-authority NAME living
+    /// inside a non-comment string literal (a log message, never a real call) must never be
+    /// mistaken for coverage - neither the comment-guard fix nor the exemption-marker fix above
+    /// catches this shape on its own.
+    #[test]
+    fn a_reap_authority_name_inside_a_non_comment_string_literal_never_covers_the_removal() {
+        let root = tempfile::tempdir().unwrap();
+        write_file(
+            root.path(),
+            "src/somewhere.rs",
+            "\
+fn f(dir: &str) {
+    log::debug!(\"about to reap_authorized(dir) then remove\");
+    let _ = std::fs::remove_dir_all(dir);
+}
+",
+        );
+        let findings = scan_tree(root.path());
+        assert_eq!(
+            findings.len(),
+            1,
+            "a reap-authority name inside a non-comment string literal must never be mistaken \
+             for a real call; {findings:?}"
+        );
     }
 
     #[test]
