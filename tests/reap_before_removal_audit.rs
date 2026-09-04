@@ -425,19 +425,69 @@ fn authorized_root_arg_is_effective(lines: &[&str], start: usize, prefix: &str) 
     }
 }
 
+/// The `[window_start, window_end]` bound (0-based, inclusive) that the exemption-marker
+/// check in [`is_covered`] searches for `removal_line`, given the OTHER removal-shaped
+/// lines (if any) found in `[start, end]` (spec 79 c2 round-3 fix,
+/// `arch-u79c2r2-exemption-marker-function-wide-not-site-scoped`): the nearest earlier
+/// removal-shaped line strictly before `removal_line` (exclusive - its own comment belongs
+/// to IT, never to this later removal) or `start` if none, through the nearest later
+/// removal-shaped line strictly after `removal_line` (exclusive) or `end` if none. In a
+/// function with exactly one removal - every real site in this tree today - this degenerates
+/// to the whole `[start, end]` span (preserving order-independence: a claim in the function's
+/// own leading doc comment, as `heal_corrupt_worktree_admin` carries it, or trailing the
+/// removal in the body, both still count). In a function with more than one removal, this
+/// keeps a marker attached to ONE of them from silently also covering an unrelated,
+/// unexempted other one. Skips comment lines while locating the neighboring removals
+/// (mirroring [`scan_tree`]'s own guard), since a removal pattern merely mentioned in prose
+/// is not a real site to bound against.
+fn exemption_window(
+    lines: &[&str],
+    start: usize,
+    end: usize,
+    removal_line: usize,
+) -> (usize, usize) {
+    let mut window_start = start;
+    for i in start..removal_line {
+        let line = lines[i];
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
+        if remove_dir_all_shape(line).is_some() || worktree_remove_shape(lines, i).is_some() {
+            window_start = i + 1;
+        }
+    }
+    let mut window_end = end;
+    for i in (removal_line + 1)..=end {
+        let line = lines[i];
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
+        if remove_dir_all_shape(line).is_some() || worktree_remove_shape(lines, i).is_some() {
+            window_end = i - 1;
+            break;
+        }
+    }
+    (window_start, window_end)
+}
+
 /// Whether `span` (the removal's enclosing function, or `None` if it has none) is covered:
-/// either the claimed-exemption marker appears anywhere in it (order-independent - a
-/// documented human claim about the whole function, not a call with a happens-before
-/// relationship to the removal), or a reap-authority call appears on a line STRICTLY
-/// BEFORE `removal_line` with - for the one authority [`takes_checked_root_arg`] flags - an
-/// effective authorized-root argument (spec 79 c2 round-2 fix: see the module doc's ROUTED
-/// entry for why order and this one argument check exist, and why full directory-argument
-/// correlation does not).
+/// either the claimed-exemption marker appears within this removal's own
+/// [`exemption_window`] (order-independent within that window - a documented human claim
+/// about this site, not a call with a happens-before relationship to the removal, but no
+/// longer credited to an unrelated OTHER removal elsewhere in the same function - spec 79 c2
+/// round-3 fix, `arch-u79c2r2-exemption-marker-function-wide-not-site-scoped`), or a
+/// reap-authority call - on a REAL code line, never a prose comment merely naming it (round-3
+/// fix, `sdet-u79c2r2-authority-name-in-prose-comment-still-falsely-covers`) - appears on a
+/// line STRICTLY BEFORE `removal_line` with - for the one authority
+/// [`takes_checked_root_arg`] flags - an effective authorized-root argument (spec 79 c2
+/// round-2 fix: see the module doc's ROUTED entry for why order and this one argument check
+/// exist, and why full directory-argument correlation does not).
 fn is_covered(lines: &[&str], span: Option<(usize, usize)>, removal_line: usize) -> bool {
     let Some((start, end)) = span else {
         return false;
     };
-    if lines[start..=end]
+    let (window_start, window_end) = exemption_window(lines, start, end, removal_line);
+    if lines[window_start..=window_end]
         .iter()
         .any(|line| line.contains(EXEMPTION_MARKER))
     {
@@ -445,6 +495,9 @@ fn is_covered(lines: &[&str], span: Option<(usize, usize)>, removal_line: usize)
     }
     for i in start..removal_line {
         let line = lines[i];
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
         for authority in REAP_AUTHORITIES.iter() {
             if !line.contains(*authority) {
                 continue;
@@ -677,6 +730,32 @@ fn f(dir: &str, root: &str) {
             findings.is_empty(),
             "a reap call earlier in the SAME function must cover the removal; {findings:?}"
         );
+    }
+
+    /// ROUND-3 FIX (upholding
+    /// `sdet-u79c2r2-authority-name-in-prose-comment-still-falsely-covers`): a reap-authority
+    /// NAME appearing only in a prose comment - never a real call - must not be mistaken for
+    /// coverage, mirroring `scan_tree`'s own removal-line comment guard.
+    #[test]
+    fn a_reap_authority_name_in_a_prose_comment_never_covers_the_removal() {
+        let root = tempfile::tempdir().unwrap();
+        write_file(
+            root.path(),
+            "src/somewhere.rs",
+            "\
+fn f(dir: &str) {
+    // TODO: call reap_processes_rooted_under( here eventually, not done yet
+    let _ = std::fs::remove_dir_all(dir);
+}
+",
+        );
+        let findings = scan_tree(root.path());
+        assert_eq!(
+            findings.len(),
+            1,
+            "an authority name in prose, with no real call, must never cover; {findings:?}"
+        );
+        assert_eq!(findings[0].line_no, 3, "{findings:?}");
     }
 
     #[test]
@@ -1000,6 +1079,38 @@ fn f(dir: &str) {
             findings.is_empty(),
             "the exemption marker is order-independent, unlike a reap-authority call; \
              {findings:?}"
+        );
+    }
+
+    /// ROUND-3 FIX (upholding
+    /// `arch-u79c2r2-exemption-marker-function-wide-not-site-scoped`): an exemption claimed
+    /// for ONE removal in a multi-removal function must never silently cover an unrelated,
+    /// unexempted second removal elsewhere in that same function - the marker's coverage is
+    /// bounded to the segment between the removal sites, not the whole enclosing function.
+    #[test]
+    fn an_exemption_marker_attached_to_one_removal_never_covers_an_unrelated_second_removal() {
+        let root = tempfile::tempdir().unwrap();
+        write_file(
+            root.path(),
+            "src/somewhere.rs",
+            "\
+fn f(dir_a: &str, dir_b: &str) {
+    // reap-exempt (spec 79, criterion 2): dir_a is created and removed entirely within this
+    // function and nothing is ever spawned with a cwd inside it.
+    let _ = std::fs::remove_dir_all(dir_a);
+    let _ = std::fs::remove_dir_all(dir_b);
+}
+",
+        );
+        let findings = scan_tree(root.path());
+        assert_eq!(
+            findings.len(),
+            1,
+            "dir_a's exemption must not bleed onto the unrelated dir_b removal; {findings:?}"
+        );
+        assert_eq!(
+            findings[0].line_no, 5,
+            "the unexempted dir_b removal is the one that must be flagged; {findings:?}"
         );
     }
 
