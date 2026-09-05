@@ -1073,6 +1073,15 @@ pub struct Neighborhood {
     /// for a DOWN walk and for every non-call view, so a plain neighborhood is byte-identical.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub referenced_not_called: Vec<NeighborhoodNode>,
+    /// The SUBJECT VIEW's docked MEMORY RAIL (spec 63 c5): the seed's governing decisions,
+    /// findings, and concepts, grouped for the panel's rail cards - metadata on the subject, never
+    /// additional graph nodes ([`graph_json`] fills this from [`memory_rail`] as a SEPARATE read
+    /// over the already-projected graph, never by folding the rail's leaves into the walked
+    /// `nodes`/`edges` above). Set ONLY by [`graph_json`] (the plain seeded-neighborhood path);
+    /// omitted for a cluster drill and a directed-call view, so those stay byte-identical to
+    /// before this criterion.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory: Option<MemoryRail>,
 }
 
 /// One node in a seeded KG neighborhood (spec 30 c5). `label` is the node's human-readable handle
@@ -2265,6 +2274,8 @@ pub fn cluster_detail(graph: &Graph, key: &str, lens: &Lens) -> Neighborhood {
         // A cluster drill is not a directed-call view (spec 52 c4).
         dir: None,
         referenced_not_called: Vec::new(),
+        // A drill is not the plain seeded-neighborhood path; it carries no memory rail (spec 63 c5).
+        memory: None,
     }
 }
 
@@ -2636,6 +2647,9 @@ fn neighborhood_of(graph: &Graph, seeds: &[String], echo_seed: &str, depth: i64)
         // referenced-but-not-called sidecar. Absent, these keep the neighborhood byte-identical.
         dir: None,
         referenced_not_called: Vec::new(),
+        // The route (graph_json) fills this from memory_rail for the requested seed (spec 63 c5);
+        // absent by default, matching explain's own fill-after-construction pattern.
+        memory: None,
     }
 }
 
@@ -2742,6 +2756,86 @@ pub fn rationale_batch(graph: &Graph, nodes: &[String]) -> Vec<NodeRationale> {
         .collect()
 }
 
+/// One CONCEPT a memory-rail subject REALIZES (spec 63 c5, spec 54's `REALIZES` edge read in the
+/// MEMBER's own direction: `<member> --REALIZES--> <concept>`). Content only, like
+/// [`RationaleLeaf`]: the concept's id and its derived display `label` (falling back to the id
+/// when the fold recorded none), never the fold's resolution-grain bookkeeping.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct ConceptRef {
+    pub id: String,
+    pub label: String,
+}
+
+/// The DOCKED MEMORY RAIL body (spec 63 c5): a subject's governing decisions, findings, and
+/// concepts, grouped for the panel's rail cards. Decisions/findings are [`RationaleLeaf`]s - the
+/// same GOVERNS/ABOUT content [`node_rationale`] computes - narrowed to [`KIND_DECISION`] /
+/// [`KIND_FINDING`] only; a `lesson` is deliberately excluded (it is memory ABOUT the build
+/// process, not the target project's design memory the rail exists to surface, unlike the
+/// broader spec-55 rationale overlay which shows it). Concepts are [`ConceptRef`]s. Each list may
+/// be independently empty - the rail still renders (its documented per-section "none" state), so
+/// an all-empty [`MemoryRail`] is not itself a degrade.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct MemoryRail {
+    pub decisions: Vec<RationaleLeaf>,
+    pub findings: Vec<RationaleLeaf>,
+    pub concepts: Vec<ConceptRef>,
+}
+
+/// The memory rail of `node` (spec 63 c5, the SUBJECT VIEW's docked rail): `node`'s governing
+/// decisions, its ABOUT findings, and the concepts it REALIZES - grouped for the panel, as a pure
+/// SEPARATE read over the already-projected `graph` that never touches the walked
+/// neighborhood - listing a subject's memory here adds no node to any `nodes`/`edges` list.
+///
+/// Decisions/findings reuse [`node_rationale`] (already sorted by `(kind, id)`, decisions before
+/// findings before lessons), partitioned by kind in one pass - lessons are dropped, not
+/// re-bucketed, so neither rail list ever carries one. Concepts are `node`'s own currently-valid
+/// `REALIZES` edges to a [`KIND_CONCEPT`] target, deduped by id and sorted (a `BTreeMap`, the same
+/// discipline [`node_rationale`] uses). Always returns a value - every list may be empty - so an
+/// unknown `node` or one with no governing memory degrades gracefully, never an error.
+pub fn memory_rail(graph: &Graph, node: &str) -> MemoryRail {
+    let mut decisions: Vec<RationaleLeaf> = Vec::new();
+    let mut findings: Vec<RationaleLeaf> = Vec::new();
+    for leaf in node_rationale(graph, node) {
+        match leaf.kind.as_str() {
+            KIND_DECISION => decisions.push(leaf),
+            KIND_FINDING => findings.push(leaf),
+            // KIND_LESSON (or anything else node_rationale might ever return): build-process
+            // memory, deliberately excluded from the target-project memory rail.
+            _ => {}
+        }
+    }
+
+    let mut concepts: BTreeMap<String, ConceptRef> = BTreeMap::new();
+    for e in &graph.edges {
+        if e.valid_to.is_some() || e.from != node || e.rel != REL_REALIZES {
+            continue; // only a LIVE edge, FROM this node, of the REALIZES relation
+        }
+        let Some(target) = graph.nodes.iter().find(|n| n.id == e.to) else {
+            continue;
+        };
+        if target.kind != KIND_CONCEPT {
+            continue; // REALIZES targets only ever a concept; anything else is not a rail concept
+        }
+        concepts
+            .entry(target.id.clone())
+            .or_insert_with(|| ConceptRef {
+                id: target.id.clone(),
+                label: target
+                    .attrs
+                    .get("label")
+                    .filter(|l| !l.is_empty())
+                    .cloned()
+                    .unwrap_or_else(|| target.id.clone()),
+            });
+    }
+
+    MemoryRail {
+        decisions,
+        findings,
+        concepts: concepts.into_values().collect(),
+    }
+}
+
 /// Compute the QUERY-PATH between two selected nodes (spec 30 c6): the shortest chain of node ids
 /// from `from` to `to` (inclusive) over the graph's currently-valid edges, walked in EITHER
 /// direction (the same undirected, valid-only traversal [`neighborhood`] uses). A breadth-first
@@ -2816,6 +2910,10 @@ pub fn graph_json(
     // riding the existing response so `explain(<seed>)` needs no new route param. Absent (omitted)
     // when the seed is not a graph node (a re-pointed unit id is not) - graceful, never an error.
     n.explain = explain(graph, requested_seed);
+    // The SUBJECT VIEW's docked memory rail (spec 63 c5): the requested seed's governing
+    // decisions/findings/concepts, riding the existing response so the rail needs no new route
+    // param either - a pure separate read, so listing them adds no node to `n.nodes` above.
+    n.memory = Some(memory_rail(graph, requested_seed));
     serde_json::to_string(&n)
 }
 
@@ -2994,6 +3092,8 @@ fn calls_view(
         truncated: None,
         dir: Some(dir.to_string()),
         referenced_not_called,
+        // A directed-call view is not the plain seeded neighborhood; no memory rail (spec 63 c5).
+        memory: None,
     }
 }
 
@@ -9817,6 +9917,291 @@ mod rationale_overlay_c3 {
         assert!(
             !body.contains("\"leaves\""),
             "the neighborhood carries no rationale batch: {body}"
+        );
+    }
+}
+
+/// Spec 63, criterion 5 - the SUBJECT VIEW's docked MEMORY RAIL. Inside-out unit tests over the
+/// pure [`memory_rail`] surface and its wiring into the `/api/graph?seed=` route branch: a
+/// subject's governing decisions/findings/concepts, grouped for the panel's rail, computed as a
+/// SEPARATE read from the walked neighborhood so listing them never adds a node to the layout.
+/// This criterion rides the EXISTING seedGraph/neighborhood click mechanism (spec 30/55)
+/// unchanged - it owns only the rail's own content and its non-interference with the neighborhood.
+#[cfg(test)]
+mod subject_view_c5 {
+    use super::*;
+    use crate::contextgraph::{Edge, KIND_CODE_ENTITY, KIND_FILE, TIER_INFERRED};
+
+    fn node(id: &str, kind: &str, attrs: &[(&str, &str)]) -> Node {
+        Node {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            attrs: attrs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        }
+    }
+
+    fn edge(from: &str, to: &str, rel: &str) -> Edge {
+        Edge {
+            from: from.to_string(),
+            to: to.to_string(),
+            rel: rel.to_string(),
+            valid_from: 0,
+            valid_to: None,
+            source: 0,
+            tier: TIER_INFERRED.to_string(),
+        }
+    }
+
+    /// A code entity `combat.rs::fire` carries: a governing decision `d1`, an ABOUT finding `f1`,
+    /// an ABOUT lesson `l1` (build-process memory, deliberately excluded from the rail), and its
+    /// own live `REALIZES` edge to a concept `concept/combat` (the direction a MEMBER carries
+    /// TOWARD the concept it realizes - the reverse of a concept's member-set query). A second,
+    /// unrelated file `other.rs` carries none of it, so a query on it proves the empty case.
+    fn subject_graph() -> Graph {
+        Graph {
+            nodes: vec![
+                node("combat.rs::fire", KIND_CODE_ENTITY, &[]),
+                node("other.rs", KIND_FILE, &[]),
+                node(
+                    "d1",
+                    KIND_DECISION,
+                    &[("summary", "use the shared authority")],
+                ),
+                node("f1", KIND_FINDING, &[("summary", "the finding content")]),
+                node("l1", KIND_LESSON, &[("summary", "the lesson content")]),
+                node(
+                    "concept/combat",
+                    KIND_CONCEPT,
+                    &[("label", "combat resolution")],
+                ),
+            ],
+            edges: vec![
+                edge("d1", "combat.rs::fire", REL_GOVERNS),
+                edge("f1", "combat.rs::fire", REL_ABOUT),
+                edge("l1", "combat.rs::fire", REL_ABOUT),
+                edge("combat.rs::fire", "concept/combat", REL_REALIZES),
+            ],
+        }
+    }
+
+    /// The rail lists the subject's governing decision, its ABOUT finding, and the concept it
+    /// REALIZES - and EXCLUDES the lesson: a lesson is build-process memory, not the target
+    /// project's design memory the rail exists to surface.
+    #[test]
+    fn memory_rail_lists_decisions_findings_and_concepts_excluding_lessons() {
+        let g = subject_graph();
+        let rail = memory_rail(&g, "combat.rs::fire");
+        assert_eq!(
+            rail.decisions
+                .iter()
+                .map(|d| d.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["d1"],
+            "the governing decision is listed: {rail:?}"
+        );
+        assert_eq!(
+            rail.decisions[0].summary, "use the shared authority",
+            "the decision leaf carries its content"
+        );
+        assert_eq!(
+            rail.findings
+                .iter()
+                .map(|f| f.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["f1"],
+            "the ABOUT finding is listed: {rail:?}"
+        );
+        assert_eq!(
+            rail.concepts
+                .iter()
+                .map(|c| c.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["concept/combat"],
+            "the subject's own REALIZES target is listed as a concept: {rail:?}"
+        );
+        assert_eq!(
+            rail.concepts[0].label, "combat resolution",
+            "the concept carries its derived display label"
+        );
+        assert!(
+            !rail
+                .decisions
+                .iter()
+                .chain(rail.findings.iter())
+                .any(|leaf| leaf.id == "l1"),
+            "the lesson l1 is excluded from BOTH rail buckets: {rail:?}"
+        );
+    }
+
+    /// A node with no governing memory at all returns an entirely empty rail (every list empty),
+    /// never an error - the graceful degrade the panel's per-section "none" state expects.
+    #[test]
+    fn memory_rail_is_empty_for_a_node_with_no_governing_memory() {
+        let g = subject_graph();
+        let rail = memory_rail(&g, "other.rs");
+        assert!(rail.decisions.is_empty() && rail.findings.is_empty() && rail.concepts.is_empty());
+        // An unknown id is just as graceful - never an error.
+        let rail = memory_rail(&g, "not-a-node");
+        assert!(rail.decisions.is_empty() && rail.findings.is_empty() && rail.concepts.is_empty());
+    }
+
+    /// The concept lookup is a LIVE, FROM-`node`, REALIZES-only, concept-target read - each guard
+    /// pinned by a fixture edge that would leak through if that ONE guard were dropped:
+    /// - `combat.rs::fire` REALIZES `concept/gone` only on an INVALIDATED edge (`valid_to` set) -
+    ///   excluded (not live), with NO other edge to `concept/gone` to mask a dropped live-only check;
+    /// - `combat.rs::fire` also GOVERNS `d2` (reusing a non-REALIZES relation FROM the queried node)
+    ///   - excluded (wrong relation), so `d2` never reads as a concept;
+    /// - `combat.rs::fire` REALIZES `not-a-concept` (a plain file) on a live edge - excluded (the
+    ///   target is not a `KIND_CONCEPT` node);
+    /// - `other.rs` REALIZES `concept/combat` on a live edge - excluded (not FROM the queried node),
+    ///   proven here by its ABSENCE rather than by an empty rail (the from-node filter under real
+    ///   cross-traffic, not merely an otherwise-empty graph).
+    ///
+    /// TWO live REALIZES edges from `combat.rs::fire` to the SAME concept `concept/combat` (a
+    /// double-fold, a real event-sourced possibility) collapse to ONE `ConceptRef` - the dedup a
+    /// `BTreeMap` keyed by id gives, pinned by asserting the result has exactly two entries despite
+    /// three live from-node REALIZES edges landing on only two distinct concepts. A concept with an
+    /// EMPTY `label` attr falls back to its id, matching [`bucket_label_index`]'s own
+    /// `filter(|l| !l.is_empty())` discipline.
+    #[test]
+    fn memory_rail_concepts_are_live_from_node_realizes_edges_to_a_concept_target_deduped_by_id() {
+        let mut g = subject_graph();
+        g.nodes.push(node(
+            "d2",
+            KIND_DECISION,
+            &[("summary", "a second decision")],
+        ));
+        g.nodes.push(node("not-a-concept", KIND_FILE, &[]));
+        g.nodes.push(node("concept/unlabeled", KIND_CONCEPT, &[]));
+        g.nodes.push(node(
+            "concept/gone",
+            KIND_CONCEPT,
+            &[("label", "a retired concept")],
+        ));
+        g.edges
+            .push(edge("combat.rs::fire", "d2", "SOME_OTHER_REL"));
+        g.edges
+            .push(edge("combat.rs::fire", "not-a-concept", REL_REALIZES));
+        g.edges
+            .push(edge("other.rs", "concept/combat", REL_REALIZES));
+        // A SECOND, genuinely LIVE edge to the SAME concept `subject_graph` already realizes - the
+        // dedup fixture (three from-node live REALIZES edges land on only two distinct concepts).
+        g.edges
+            .push(edge("combat.rs::fire", "concept/combat", REL_REALIZES));
+        g.edges
+            .push(edge("combat.rs::fire", "concept/unlabeled", REL_REALIZES));
+        // `concept/gone`'s ONLY edge from combat.rs::fire is invalidated - no live edge masks it.
+        g.edges.push({
+            let mut e = edge("combat.rs::fire", "concept/gone", REL_REALIZES);
+            e.valid_to = Some(9);
+            e
+        });
+
+        let rail = memory_rail(&g, "combat.rs::fire");
+        let mut ids: Vec<&str> = rail.concepts.iter().map(|c| c.id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(
+            ids,
+            vec!["concept/combat", "concept/unlabeled"],
+            "exactly the two LIVE concepts combat.rs::fire REALIZES, each listed ONCE despite three \
+             from-node REALIZES edges (deduped) - never d2 (wrong relation), not-a-concept (wrong \
+             target kind), or concept/gone (edge invalidated, no live edge to it): {rail:?}"
+        );
+        let unlabeled = rail
+            .concepts
+            .iter()
+            .find(|c| c.id == "concept/unlabeled")
+            .expect("concept/unlabeled is listed");
+        assert_eq!(
+            unlabeled.label, "concept/unlabeled",
+            "an empty/absent label falls back to the concept's own id"
+        );
+    }
+
+    /// The served `/api/graph?seed=` route carries the seed's memory rail - and listing it adds NO
+    /// node to the returned neighborhood: at `depth=0` the walk reaches only the seed itself, yet
+    /// the rail still lists the decision/finding/concept reached ONLY through `memory_rail`'s own
+    /// separate read, never through the walked `nodes`/`edges`. This is the criterion's own
+    /// "without adding nodes to the layout" claim, proven at the wire.
+    #[test]
+    fn the_seeded_route_carries_memory_without_adding_a_single_node_to_the_neighborhood() {
+        let g = subject_graph();
+        let resp = route(
+            "GET",
+            "/api/graph?seed=combat.rs%3A%3Afire&depth=0",
+            &[],
+            &g,
+            &[],
+            &HashMap::new(),
+            3,
+            "rigger-run",
+            "origin/main",
+            &[],
+        );
+        assert_eq!(resp.status, 200);
+        let body = String::from_utf8(resp.body).expect("a utf8 body");
+        let json: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        let node_ids: Vec<&str> = json["nodes"]
+            .as_array()
+            .expect("a nodes array")
+            .iter()
+            .map(|n| n["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            node_ids,
+            vec!["combat.rs::fire"],
+            "at depth 0 the walked neighborhood is ONLY the seed itself: {body}"
+        );
+        let mem = &json["memory"];
+        assert_eq!(
+            mem["decisions"][0]["id"].as_str(),
+            Some("d1"),
+            "the rail's decision surfaces even though d1 is NOT a walked node: {body}"
+        );
+        assert_eq!(
+            mem["findings"][0]["id"].as_str(),
+            Some("f1"),
+            "the rail's finding surfaces even though f1 is NOT a walked node: {body}"
+        );
+        assert_eq!(
+            mem["concepts"][0]["id"].as_str(),
+            Some("concept/combat"),
+            "the rail's concept surfaces even though concept/combat is NOT a walked node: {body}"
+        );
+        for absent in ["d1", "f1", "concept/combat", "l1"] {
+            assert!(
+                !node_ids.contains(&absent),
+                "the rail never adds a node to the layout: {absent} must not be in nodes: {body}"
+            );
+        }
+    }
+
+    /// Additive guarantee: a cluster DRILL (a different `Neighborhood` producer, spec 42) carries
+    /// no `memory` field at all - the rail is wired ONLY into the plain seeded-neighborhood path,
+    /// never the drill, so a drill response stays byte-identical to before this criterion.
+    #[test]
+    fn a_cluster_drill_carries_no_memory_field() {
+        let g = subject_graph();
+        let resp = route(
+            "GET",
+            "/api/graph?cluster=other.rs",
+            &[],
+            &g,
+            &[],
+            &HashMap::new(),
+            3,
+            "rigger-run",
+            "origin/main",
+            &[],
+        );
+        assert_eq!(resp.status, 200);
+        let body = String::from_utf8(resp.body).expect("a utf8 body");
+        assert!(
+            !body.contains("\"memory\""),
+            "a drill response carries no memory rail field: {body}"
         );
     }
 }
