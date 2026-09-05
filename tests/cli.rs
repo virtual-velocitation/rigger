@@ -23338,8 +23338,20 @@ fn dash_landing_lists_instances_and_attach_serves_each_instance_store() {
     let default_state = http_get_path(port, "/api/state");
     let a_state = http_get_path(port, &format!("/api/state?instance={a_id}"));
     let b_state = http_get_path(port, &format!("/api/state?instance={b_id}"));
-    let a_graph = http_get_path(port, &format!("/api/graph?instance={a_id}"));
-    let b_graph = http_get_path(port, &format!("/api/graph?instance={b_id}"));
+    // Seeded (not the bare overview): spec 63 c3 (FILES-LENS PURITY) excludes any non-code-entity
+    // node - including the decision and its governed artifact this fixture seeds - from the DEFAULT
+    // overview's clusters entirely, so a bare `/api/graph?instance=` can no longer discriminate A's
+    // content from B's. Seeding the decision itself is lens-independent (spec 30's seeded
+    // neighborhood is a plain depth-bounded walk, untouched by criterion 3), so it reaches exactly
+    // this instance's own decision + its governed artifact and still proves per-instance attach.
+    let a_graph = http_get_path(
+        port,
+        &format!("/api/graph?instance={a_id}&seed=d-alpha&depth=1"),
+    );
+    let b_graph = http_get_path(
+        port,
+        &format!("/api/graph?instance={b_id}&seed=d-beta&depth=1"),
+    );
     let _ = dash.kill();
     let _ = dash.wait();
 
@@ -23371,30 +23383,33 @@ fn dash_landing_lists_instances_and_attach_serves_each_instance_store() {
         "the neutral-cwd dash's default state carries no attached instance's run: {default_state}"
     );
 
-    // Clause 2 - selecting A serves A's RUN (its unit) and A's GRAPH (its `src/` cluster), read-only.
+    // Clause 2 - selecting A serves A's RUN (its unit) and A's GRAPH (its decision's own governed
+    // node, `src/alpha.rs`), read-only.
     assert!(
         a_state.contains("HTTP/1.1 200") && a_state.contains("u-alpha"),
         "attaching to A must serve A's own run (unit u-alpha): {a_state}"
     );
     assert!(
-        a_graph.contains("HTTP/1.1 200") && a_graph.contains("\"key\":\"src\""),
-        "attaching to A must serve A's own knowledge graph (a `src/` cluster): {a_graph}"
+        a_graph.contains("HTTP/1.1 200") && a_graph.contains("\"id\":\"src/alpha.rs\""),
+        "attaching to A must serve A's own knowledge graph (reaching its governed src/alpha.rs \
+         node): {a_graph}"
     );
     // And attach is genuinely per-instance: A's views carry NONE of B's content.
     assert!(
-        !a_state.contains("d-beta") && !a_graph.contains("\"key\":\"docs\""),
+        !a_state.contains("d-beta") && !a_graph.contains("\"id\":\"docs/beta.md\""),
         "A's attached views must not bleed B's content: state={a_state} graph={a_graph}"
     );
 
-    // Clause 3 - an instance with NO active run: its graph still serves (its `docs/` cluster), and
-    // its run view degrades to an EMPTY state (no u-alpha, no error), never a 500.
+    // Clause 3 - an instance with NO active run: its graph still serves (reaching its own governed
+    // `docs/beta.md`), and its run view degrades to an EMPTY state (no u-alpha, no error), never a
+    // 500.
     assert!(
-        b_graph.contains("HTTP/1.1 200") && b_graph.contains("\"key\":\"docs\""),
+        b_graph.contains("HTTP/1.1 200") && b_graph.contains("\"id\":\"docs/beta.md\""),
         "attaching to B (no active run) must still serve its knowledge graph: {b_graph}"
     );
     assert!(
-        !b_graph.contains("\"key\":\"src\""),
-        "B's attached graph must be B's own, not A's `src/` cluster: {b_graph}"
+        !b_graph.contains("\"id\":\"src/alpha.rs\""),
+        "B's attached graph must be B's own, not A's governed src/alpha.rs node: {b_graph}"
     );
     assert!(
         b_state.contains("HTTP/1.1 200")
