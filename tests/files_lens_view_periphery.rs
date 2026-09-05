@@ -292,6 +292,64 @@ fn clustered_overview_under_files_lens_carries_an_accurate_empty_state_when_the_
     );
 }
 
+/// THE SERVED ROUTE half of the same "never blanked" contract: the sibling test above drives
+/// [`clustered_overview`] directly, the seam the in-process unit test already reaches (`super::`);
+/// the CODE lens's own analogous fix (`CODE_LENS_UNDERIVED`) is independently pinned at BOTH the
+/// direct call AND the served `/api/graph` route (`code_lens_view_periphery.rs`'s
+/// `served_json("/api/graph?lens=code&resolution=2")` assertion) - Files must carry the identical
+/// served-route proof, not only the pub-fn one, or a route-layer regression (e.g. `route` dropping
+/// `empty_state` before serializing, or never reaching the lens-absent default) would go uncaught
+/// even though the direct call still passes.
+#[test]
+fn the_served_graph_route_carries_the_accurate_empty_state_when_the_files_fold_admits_nothing() {
+    let graph = Graph {
+        nodes: vec![
+            file_node(FILE_A),
+            plain("d1", KIND_DECISION),
+            plain("docs/x.md", KIND_DESIGN_DOC),
+        ],
+        edges: vec![],
+    };
+
+    // Lens-absent (the DEFAULT the browser hits on every plain load) and explicit `lens=files`
+    // both carry the accurate caption, byte-identical to each other.
+    let default_ov = served_json_over(&graph, "/api/graph");
+    assert_eq!(
+        default_ov["empty_state"].as_str(),
+        Some(WHOLE_GRAPH_FILES_UNRESOLVED),
+        "the served lens-absent default must carry the accurate empty-state caption on a non-empty \
+         graph the files fold admits nothing from, never a bare omission: {default_ov}"
+    );
+    assert_eq!(default_ov["total"].as_u64(), Some(3));
+    assert!(
+        default_ov["clusters"]
+            .as_array()
+            .expect("clusters array")
+            .is_empty(),
+        "no cluster renders when the fold admits nothing: {default_ov}"
+    );
+    assert_eq!(
+        served_over(&graph, "/api/graph?lens=files").body,
+        served_over(&graph, "/api/graph").body,
+        "an explicit lens=files is byte-identical to the lens-absent default"
+    );
+
+    // A TRULY empty graph served over the same route stays the generic caption (no `empty_state`
+    // key at all, since it is `skip_serializing_if = Option::is_none`), not this one's.
+    let truly_empty = served_json_over(
+        &Graph {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+        },
+        "/api/graph",
+    );
+    assert!(
+        truly_empty.get("empty_state").is_none(),
+        "a truly empty graph carries no empty_state key on the wire, so dash.html's generic \
+         empty-graph caption fires instead: {truly_empty}"
+    );
+}
+
 /// Same-file entities MERGE into one cluster; entities in different files - even under the same
 /// parent directory - never merge. This is the files lens's OWN sizing rule (a cluster IS a file),
 /// distinct from the pre-existing directory fold it supersedes.
@@ -474,18 +532,17 @@ fn a_files_contained_entities_are_still_reachable_via_neighborhood_the_cards_own
     );
 }
 
-/// Drive the public `route` for `GET <target>` over the lens fixture and return the raw `Response`.
-/// `route` is the exact body-builder `serve` ships (serve delegates to it), so this drives the
-/// files-lens DEFAULT dispatch the browser hits on every plain `/api/graph` load - the seam the
-/// in-process folds never exercise.
-fn served(target: &str) -> rigger::dash::Response {
-    let graph = lens_graph();
+/// Drive the public `route` for `GET <target>` over an arbitrary graph and return the raw
+/// `Response`. `route` is the exact body-builder `serve` ships (serve delegates to it), so this
+/// drives the files-lens DEFAULT dispatch the browser hits on every plain `/api/graph` load - the
+/// seam the in-process folds never exercise.
+fn served_over(graph: &Graph, target: &str) -> rigger::dash::Response {
     let liveness: HashMap<String, u64> = HashMap::new();
     let resp = route(
         "GET",
         target,
         &[],
-        &graph,
+        graph,
         &[],
         &liveness,
         0,
@@ -500,10 +557,19 @@ fn served(target: &str) -> rigger::dash::Response {
     resp
 }
 
-fn served_json(target: &str) -> serde_json::Value {
-    let resp = served(target);
+/// [`served_over`] over the shared [`lens_graph`] fixture - every existing call site's graph.
+fn served(target: &str) -> rigger::dash::Response {
+    served_over(&lens_graph(), target)
+}
+
+fn served_json_over(graph: &Graph, target: &str) -> serde_json::Value {
+    let resp = served_over(graph, target);
     serde_json::from_slice(&resp.body)
         .unwrap_or_else(|e| panic!("the served {target} body must be valid JSON: {e}"))
+}
+
+fn served_json(target: &str) -> serde_json::Value {
+    served_json_over(&lens_graph(), target)
 }
 
 /// THE SERVED `/api/graph` ROUTE files-lens DEFAULT: a lens-absent request (the exact request every
