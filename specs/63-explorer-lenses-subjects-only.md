@@ -24,8 +24,14 @@ The mockup file is the visual contract for all of the below; it renders standalo
 - **Files lens**: nodes are files, sized by contained-entity count, labeled with the
   repo-relative path; edges are `uses` weighted by coupling (label carries weight);
   directories are the same hull treatment. Entities never render as nodes here.
+  Criterion 3 OWNS this lens's storage-schema-name purity: no code-entity node and no
+  per-type bucket (nor any other storage schema name) ever renders as a node, hub, or
+  group label in this lens, at any zoom.
 - **Concepts lens**: nodes are concepts, sized by evidence weight; edges join concepts
   sharing evidence, labeled with the count. Entities and files stay in the card.
+  Criterion 4 OWNS this lens's storage-schema-name purity: no code-entity node, no file
+  node, and no per-type bucket (nor any other storage schema name) ever renders as a
+  node, hub, or group label in this lens, at any zoom.
 - **The metadata card** (all lenses): one hover-card anatomy everywhere: title row (kind dot
   + name), provenance row (file:line, degree, community), chip rows - FILE / CONCEPTS /
   MEMORY for a code subject, TOP ENTITIES for a file, TOP EVIDENCE for a concept. Hover
@@ -80,7 +86,11 @@ The mockup file is the visual contract for all of the below; it renders standalo
   code lens (including the default-zoom hull treatment); criterion 6 owns proving it holds at
   the zoomed-out collapse into community super-nodes specifically - a community node is a
   subject-taxonomy grouping, not a storage schema name, so criterion 6's collapse satisfies
-  this rule rather than breaching it.
+  this rule rather than breaching it. Criterion 3 owns proving this same rule for the files
+  lens (no code-entity node, no per-type bucket, no storage schema name ever renders as a
+  node, hub, or group label in that lens); criterion 4 owns proving it for the concepts lens
+  (no code-entity node, no file node, no per-type bucket ever renders as a node, hub, or group
+  label in that lens) - each lens proves its own taxonomy's purity, none is left unowned.
 - Card handoff ownership is total: criterion 2 proves the chip-to-lens handoff for every card
   taxonomy (a code subject's card, a file subject's card, and a concept subject's card alike),
   never only a code subject's card. Criteria 3 and 4 exclude all handoff mechanics from their
