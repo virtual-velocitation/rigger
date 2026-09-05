@@ -1975,19 +1975,60 @@ impl<'g> Buckets<'g> {
 /// count, so it renders at any graph size; an empty graph yields an empty overview (zero clusters,
 /// zero total), never an error.
 ///
+/// The WHOLE-GRAPH lens fold key for one node (spec 63 c1, CODE-LENS PURITY / the subjects-only
+/// rule): layered on top of the shared [`Buckets::key`] authority, used ONLY by [`clustered_overview`]
+/// and [`cluster_detail`] (the plain code-lens tab's folded overview and its per-community drill -
+/// spec 42/53's whole-graph exploration, at either zoom). Under [`Lens::Code`] a node outside
+/// [`KIND_CODE_ENTITY`] is excluded outright (`None`), and a membership-less code entity gets NO
+/// bucket either (unlike [`Buckets::key`]'s own fallback) - the code lens admits exactly one subject
+/// taxonomy, never a file node nor a per-kind bucket, at any zoom.
+///
+/// [`Lens::Files`] / [`Lens::Concepts`] fold exactly as [`Buckets::key`] already does here (their own
+/// purity fix is criterion 3 / criterion 4's, not this one's). Spec 55's subject x lens
+/// REPROJECTION matrix ([`reproject`] / `reproject_derived`) is a DIFFERENT code path that shares the
+/// SAME code-lens UI tab (dash.html's `lensControls`/`data-lens="code"` widget renders both) and so
+/// owes the identical purity claim, but is NOT routed through this exact gate: `reprojection_lens_key`
+/// carries an equivalent non-[`KIND_CODE_ENTITY`]-excluding rule for that surface WITHOUT this gate's
+/// stricter membership-less-code-entity exclusion, because reprojection's own nothing-dropped contract
+/// (a membership-less leaf subject keeps its kind bucket, so re-graining a lone subject never empties
+/// the panel) is a distinct, already-settled requirement this gate must not regress there.
+fn whole_graph_lens_key(buckets: &Buckets, node: &Node) -> Option<String> {
+    if matches!(buckets.lens, Lens::Code { .. }) {
+        if node.kind != KIND_CODE_ENTITY {
+            return None;
+        }
+        return buckets
+            .membership
+            .get(node.id.as_str())
+            .map(|b| (*b).to_string());
+    }
+    buckets.key(node)
+}
+
 /// The bucket key is the pluggable [`Lens`] (spec 53 c4): [`Lens::Files`] is the default fold above
 /// (byte-identical to today and to a `lens`-absent request); [`Lens::Code`] buckets each member node
 /// by its coupling COMMUNITY at a resolution grain - the SAME aggregation over a different key - so a
 /// community super-node is sized by member count, coloured by its dominant member kind, and labelled
-/// by the community node's deterministic label, while membership-less nodes keep their kind buckets.
-/// A code grain with NO derived assignments returns the [`CODE_LENS_UNDERIVED`] empty state.
+/// by the community node's deterministic label. Spec 63 criterion 1 (CODE-LENS PURITY, the
+/// subjects-only rule): under [`Lens::Code`] specifically, a node OUTSIDE [`KIND_CODE_ENTITY`] (a
+/// file, a decision, a design-doc, ...) never folds here at all - not even into its own kind bucket -
+/// so no storage-schema name is ever a cluster key or label, at this or the drilled zoom
+/// ([`whole_graph_lens_key`] carries this gate; [`Lens::Files`] / [`Lens::Concepts`] are unchanged,
+/// each lens's own purity fix is its own criterion). A code grain with NO derived assignments returns
+/// the [`CODE_LENS_UNDERIVED`] empty state - and so does a grain that HAS live memberships when EVERY
+/// one of them belongs to a purity-excluded node (round 4's own fix, below): [`Buckets::underived`] is
+/// kind-blind (it only asks whether ANY membership exists at all), so it reads `false` in that case,
+/// while [`whole_graph_lens_key`] admits no kind-bucket fallback at all under [`Lens::Code`] - the
+/// stricter of the two gates - and the fold below is left with nothing, so `empty_state` is derived
+/// from the FOLD'S OWN OUTCOME, not from `underived()` alone.
 pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
     let buckets = Buckets::new(graph, lens);
 
     // The documented empty state (spec 53 c4 / spec 54 c3): a derived lens whose selected resolution
-    // grain has NO assignments. Return an empty overview carrying the lens's derivation prompt, so the
-    // panel says "run `rigger graph communities`" / "run `rigger graph concepts`" instead of showing
-    // an error or a bare kind-bucket view. `total` still reports the whole graph size.
+    // grain has NO assignments AT ALL. Return an empty overview carrying the lens's derivation prompt,
+    // so the panel says "run `rigger graph communities`" / "run `rigger graph concepts`" instead of
+    // showing an error or a bare kind-bucket view. `total` still reports the whole graph size. This is
+    // NOT the only path to that same empty state below - see the post-fold re-check.
     if buckets.underived() {
         return ClusterOverview {
             clusters: Vec::new(),
@@ -1997,21 +2038,36 @@ pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
         };
     }
 
-    // Fold the WHOLE graph through the shared bucket fold: every node folds by the lens's
-    // [`Buckets::key`], and cross-bucket edges weight the super-edges. `total` reports the whole node
-    // count; a derived overview is not the empty state (handled above).
+    // Fold the WHOLE graph through the shared bucket fold: every node folds by
+    // [`whole_graph_lens_key`] (the code lens's purity-gated wrapper over [`Buckets::key`]; byte-
+    // identical to it under Files / Concepts), and cross-bucket edges weight the super-edges. `total`
+    // reports the whole node count.
     let bucket_label = bucket_label_index(graph, &buckets);
     let (clusters, edges) = fold_buckets(
         graph.nodes.iter(),
         &graph.edges,
-        |n| buckets.key(n),
+        |n| whole_graph_lens_key(&buckets, n),
         &bucket_label,
     );
+    // Spec 63 c1 round 4: a POST-FOLD re-check, mirroring `reproject_derived`'s own `has_derived_bucket`
+    // fix pattern (a post-fold classification, not a pre-fold-only gate) at this sibling call site.
+    // `buckets.underived()` above only asks whether ANY membership exists anywhere in the graph - it
+    // says nothing about whether a membership actually LANDED a cluster under this lens's OWN purity
+    // gate. Under `Lens::Code` specifically, `whole_graph_lens_key` drops every non-code-entity member
+    // with NO kind-bucket fallback (stricter than `Buckets::key`), so a graph whose ONLY live community
+    // membership belongs to a purity-excluded node (a file / decision / design-doc, zero code entities
+    // anywhere) makes `underived()` read `false` while this fold still yields NO clusters at all - a
+    // blank, unexplained canvas were `empty_state` left `None`. Classify by the fold's own emptiness
+    // instead: an empty cluster list still carries the lens's derivation prompt as its explanation.
+    let empty_state = clusters
+        .is_empty()
+        .then(|| buckets.underived_message().map(str::to_string))
+        .flatten();
     ClusterOverview {
         clusters,
         edges,
         total: graph.nodes.len(),
-        empty_state: None,
+        empty_state,
     }
 }
 
@@ -2158,18 +2214,21 @@ pub const CLUSTER_RENDER_BUDGET: usize = 60;
 ///
 /// The membership is the pluggable [`Lens`] (spec 53 c4): the SAME drill over a different bucket key.
 /// Under [`Lens::Code`], drilling a `community/<r>/<n>` key yields exactly that community's member
-/// nodes and the coupling edges AMONG them (the community super-node is not a member, and a
-/// membership spoke to it is not an intra-community edge, so neither renders); drilling a kind key
-/// yields that kind's membership-less nodes.
+/// CODE ENTITIES and the coupling edges AMONG them (the community super-node is not a member, a
+/// membership spoke to it is not an intra-community edge, and - spec 63 c1 - a non-code-entity node,
+/// FILE included, folds to no key here even when it carries the same live community membership, so
+/// neither it nor a kind-bucket key ever drills to anything); under [`Lens::Files`] / [`Lens::Concepts`]
+/// drilling a kind key still yields that kind's membership-less nodes, unchanged.
 pub fn cluster_detail(graph: &Graph, key: &str, lens: &Lens) -> Neighborhood {
     let buckets = Buckets::new(graph, lens);
-    // The cluster's members: every node the lens folds to `key`, keyed by id for a deterministic,
-    // deduped set. A node the lens EXCLUDES (a community super-node under the code lens) is never a
-    // member of any bucket.
+    // The cluster's members: every node [`whole_graph_lens_key`] folds to `key` (the code lens's
+    // purity-gated wrapper over [`Buckets::key`]; byte-identical to it under Files / Concepts), keyed
+    // by id for a deterministic, deduped set. A node the lens EXCLUDES (a community super-node under
+    // the code lens, or - spec 63 c1 - any non-code-entity node there) is never a member of any bucket.
     let members: BTreeSet<&str> = graph
         .nodes
         .iter()
-        .filter(|n| buckets.key(n).as_deref() == Some(key))
+        .filter(|n| whole_graph_lens_key(&buckets, n).as_deref() == Some(key))
         .map(|n| n.id.as_str())
         .collect();
     let total = members.len();
@@ -2388,6 +2447,24 @@ fn member_set<'g>(graph: &'g Graph, subject: &str) -> Vec<&'g Node> {
         .collect()
 }
 
+/// The RE-PROJECTION lens fold key for one node (spec 63 c1, CODE-LENS PURITY, the subjects-only
+/// rule, carried onto the [`reproject_derived`] surface - a DIFFERENT code path from
+/// [`clustered_overview`] / [`cluster_detail`], which [`whole_graph_lens_key`] already gates): under
+/// [`Lens::Code`] a node OUTSIDE [`KIND_CODE_ENTITY`] (a decision, a design-doc, ...) is excluded
+/// outright (`None`) - a storage-schema kind name must never become a re-projected cluster key
+/// either, exactly as it never becomes a whole-graph one. UNLIKE [`whole_graph_lens_key`], a
+/// membership-less CODE entity keeps [`Buckets::key`]'s own kind-bucket fallback here: spec 55 c2's
+/// nothing-dropped re-projection contract (a lone code-entity subject re-grained under the code lens
+/// still renders its one `code-entity` bucket) is a distinct, already-settled requirement this purity
+/// gate must not regress. [`Lens::Concepts`] folds exactly as [`Buckets::key`] already does
+/// (criterion 4's own purity fix, not this one's).
+fn reprojection_lens_key(buckets: &Buckets, node: &Node) -> Option<String> {
+    if matches!(buckets.lens, Lens::Code { .. }) && node.kind != KIND_CODE_ENTITY {
+        return None;
+    }
+    buckets.key(node)
+}
+
 /// Re-bucket a member set under a DERIVED lens ([`Lens::Code`] / [`Lens::Concepts`]): fold each
 /// member by its coupling community / derived concept through the shared [`fold_buckets`] authority,
 /// restricted to the member set so cross-bucket edges among members weight the super-edges. `total`
@@ -2398,16 +2475,21 @@ fn reproject_derived(graph: &Graph, subject: &str, lens: &Lens, members: &[&Node
     let (clusters, edges) = fold_buckets(
         members.iter().copied(),
         &graph.edges,
-        |n| buckets.key(n),
+        |n| reprojection_lens_key(&buckets, n),
         &bucket_label,
     );
     // Spec 55 c2, the EMPTY cell: when NO member folds into a derived (community/concept) bucket, the
     // cell is defined-but-empty. The kind-fallback clusters above still render (criterion 1, nothing
     // dropped); this message is the additive caption the panel shows. A single member with a derived
-    // membership makes the cell full and clears the message.
-    let has_derived_bucket = members
-        .iter()
-        .any(|m| buckets.membership.contains_key(m.id.as_str()));
+    // membership makes the cell full and clears the message - PROVIDED that membership actually landed
+    // a cluster: a member `reprojection_lens_key` purity-excludes (spec 63 c1, a non-code-entity kind
+    // under `Lens::Code`) contributes NO cluster at all, so its raw `buckets.membership` entry must not
+    // count here either, or a sole purity-excluded realizer's genuine membership would wrongly read as
+    // "full" while `clusters` stays empty - a blank, unexplained cell (round 2's own regression).
+    let has_derived_bucket = members.iter().any(|m| {
+        reprojection_lens_key(&buckets, m).is_some()
+            && buckets.membership.contains_key(m.id.as_str())
+    });
     let empty_state = (!has_derived_bucket)
         .then(|| buckets.no_membership_message().map(str::to_string))
         .flatten();
@@ -6553,18 +6635,22 @@ mod tests {
     }
 
     /// Spec 53 c4 - the CODE LENS VIEW: with `lens=code` the SAME overview/drill folds bucket every
-    /// node carrying a live `IN_COMMUNITY` membership by its coupling COMMUNITY (a subsystem grouped
-    /// ACROSS directory lines), sizing the community super-node by member count, colouring it by its
-    /// dominant member kind, and labelling it with the community node's deterministic `label`;
-    /// currently-valid coupling edges that cross two communities weight a symmetric cross-edge (an
-    /// intra-community edge and the membership spokes to the excluded super-node add none); a
-    /// membership-LESS node keeps its KIND bucket (so the view stays whole-graph); a community drills
-    /// to exactly its members; a resolution grain with NO derived assignments returns the documented
-    /// empty state (never an error); and `Lens::Files` is byte-identical to the spec-42 directory/kind
-    /// fold (no `label`, no `empty_state`). This test OWNS the lens plumbing; it does not own detection
-    /// (c1), the grain/supersession (c2), or the fold recording (c3).
+    /// CODE-ENTITY node carrying a live `IN_COMMUNITY` membership by its coupling COMMUNITY (a
+    /// subsystem grouped ACROSS directory lines), sizing the community super-node by member count,
+    /// colouring it by its dominant member kind, and labelling it with the community node's
+    /// deterministic `label`; currently-valid coupling edges that cross two communities weight a
+    /// symmetric cross-edge (an intra-community edge and the membership spokes to the excluded
+    /// super-node add none); a community drills to exactly its member code entities; a resolution
+    /// grain with NO derived assignments returns the documented empty state (never an error); and
+    /// `Lens::Files` is byte-identical to the spec-42 directory/kind fold (no `label`, no
+    /// `empty_state`). Spec 63 c1 (CODE-LENS PURITY, the subjects-only rule): a membership-less node,
+    /// and any non-code-entity node, carries NO cluster here at all - not even its own kind bucket -
+    /// so no storage-schema name is ever a cluster key or label under this lens. This test OWNS the
+    /// lens plumbing; it does not own detection (c1 of spec 53), the grain/supersession (c2), or the
+    /// fold recording (c3).
     #[test]
-    fn code_lens_buckets_members_by_community_keeps_kind_buckets_and_reports_underived_grain() {
+    fn code_lens_buckets_code_entities_by_community_excludes_other_kinds_and_reports_underived_grain(
+    ) {
         let ce = |id: &str| Node {
             id: id.to_string(),
             kind: KIND_CODE_ENTITY.to_string(),
@@ -6594,7 +6680,8 @@ mod tests {
         // each other (proving the grouping crosses directory lines - the whole point of the code
         // lens): community/1/0 = {foo, bar}, community/1/1 = {baz, qux}. Plus the two derived
         // KIND_COMMUNITY super-nodes (each with a deterministic label attr) and two membership-LESS
-        // nodes (a decision and a design-doc) that must keep their KIND buckets under the code lens.
+        // non-code-entity nodes (a decision and a design-doc) - spec 63 c1 excludes both from the
+        // code lens entirely (no per-kind bucket); they still exercise the files lens below.
         let foo = "src/one/a.rs::foo";
         let bar = "src/two/b.rs::bar";
         let baz = "src/three/c.rs::baz";
@@ -6656,22 +6743,10 @@ mod tests {
                     kind: KIND_CODE_ENTITY.to_string(),
                     label: Some("baz".to_string()),
                 },
-                // Membership-less nodes KEEP their KIND buckets (not their directory buckets), so the
-                // code lens stays whole-graph.
-                Cluster {
-                    key: KIND_DECISION.to_string(),
-                    count: 1,
-                    kind: KIND_DECISION.to_string(),
-                    label: None,
-                },
-                Cluster {
-                    key: KIND_DESIGN_DOC.to_string(),
-                    count: 1,
-                    kind: KIND_DESIGN_DOC.to_string(),
-                    label: None,
-                },
+                // NO cluster for the membership-less decision / design-doc nodes (spec 63 c1): the
+                // code lens admits ONLY code-entity subjects, so they carry no bucket of any kind.
             ],
-            "code lens buckets members by community (sized, dominant-kind, labelled) and keeps kind buckets for membership-less nodes"
+            "code lens buckets code entities by community (sized, dominant-kind, labelled) and excludes every non-code-entity / membership-less node entirely: {overview:?}"
         );
         assert_eq!(
             overview.edges,
