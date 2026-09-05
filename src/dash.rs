@@ -1980,29 +1980,37 @@ impl<'g> Buckets<'g> {
 /// count, so it renders at any graph size; an empty graph yields an empty overview (zero clusters,
 /// zero total), never an error.
 ///
-/// The WHOLE-GRAPH lens fold key for one node (spec 63 c1/c4, CODE-LENS and CONCEPTS-LENS PURITY - the
-/// subjects-only rule): layered on top of the shared [`Buckets::key`] authority, used ONLY by
-/// [`clustered_overview`] and [`cluster_detail`] (the plain lens tabs' folded overview and their
-/// per-bucket drill - spec 42/53/54's whole-graph exploration, at either zoom). Under [`Lens::Code`] a
-/// node outside [`KIND_CODE_ENTITY`] is excluded outright (`None`), and a membership-less code entity
-/// gets NO bucket either (unlike [`Buckets::key`]'s own fallback) - the code lens admits exactly one
-/// subject taxonomy, never a file node nor a per-kind bucket, at any zoom. Under [`Lens::Concepts`] a
-/// node with NO live `REALIZES` membership at this grain gets NO bucket either, REGARDLESS of its own
-/// kind (a code entity, a decision, a design-doc, ...) - unlike [`Buckets::key`]'s own kind-bucket
-/// fallback - so the concepts lens likewise admits exactly one subject taxonomy (concepts), never a
-/// per-kind bucket, at any zoom.
+/// The WHOLE-GRAPH lens fold key for one node (spec 63 c1/c3/c4, CODE-LENS, FILES-LENS, and
+/// CONCEPTS-LENS PURITY - the subjects-only rule): layered on top of the shared [`Buckets::key`]
+/// authority, used ONLY by [`clustered_overview`] and [`cluster_detail`] (the plain lens tabs' folded
+/// overview and their per-bucket drill - spec 42/53/54's whole-graph exploration, at either zoom). Under
+/// [`Lens::Code`] a node outside [`KIND_CODE_ENTITY`] is excluded outright (`None`), and a
+/// membership-less code entity gets NO bucket either (unlike [`Buckets::key`]'s own fallback) - the
+/// code lens admits exactly one subject taxonomy, never a file node nor a per-kind bucket, at any
+/// zoom. Under [`Lens::Concepts`] a node with NO live `REALIZES` membership at this grain gets NO
+/// bucket either, REGARDLESS of its own kind (a code entity, a decision, a design-doc, ...) - unlike
+/// [`Buckets::key`]'s own kind-bucket fallback - so the concepts lens likewise admits exactly one
+/// subject taxonomy (concepts), never a per-kind bucket, at any zoom.
 ///
-/// [`Lens::Files`] folds exactly as [`Buckets::key`] already does here (its own purity fix is
-/// criterion 3's, not this one's). Spec 55's subject x lens REPROJECTION matrix ([`reproject`] /
-/// `reproject_derived`) is a DIFFERENT code path that shares the SAME lens UI tabs (dash.html's
-/// `lensControls` widget renders all three) and so owes an analogous purity claim for BOTH derived
-/// lenses, but is NOT routed through this exact gate: `reprojection_lens_key` carries the equivalent
-/// gate for that surface. Under [`Lens::Code`] it is non-[`KIND_CODE_ENTITY`]-excluding WITHOUT this
-/// gate's stricter membership-less-code-entity exclusion, because reprojection's own nothing-dropped
-/// contract (a membership-less leaf subject keeps its kind bucket, so re-graining a lone subject
-/// never empties the panel) is a distinct, already-settled requirement this gate must not regress
-/// there. Under [`Lens::Concepts`], by contrast, the gate IS total (criterion 4): kind is never a
-/// filtering axis for concept membership, so there is no own-kind fallback to preserve, and
+/// Under [`Lens::Files`], the SAME shape of gate: a node outside [`KIND_CODE_ENTITY`] (a dev-loop
+/// node, a design-doc, a file's OWN node) is excluded outright, and a code entity folds by
+/// [`file_of`] - its OWN FILE - rather than [`cluster_key`]'s directory fold, so a cluster IS a file,
+/// sized by its contained-entity count, never a peer of the entities it contains. This is the files
+/// lens's whole point (spec 63's Goal): no storage-schema name (a kind bucket, a directory-as-module
+/// bucket that happens to collide with one) is EVER a cluster key or label here, at this or the
+/// drilled zoom - drilling a file cluster is unconditionally empty (see [`cluster_detail`]), because
+/// a file is this lens's atomic leaf subject; inspecting what a file contains is the metadata card's
+/// job (criterion 2's `neighborhood` seam), not a further fold.
+///
+/// Spec 55's subject x lens REPROJECTION matrix ([`reproject`] / `reproject_derived`) is a DIFFERENT
+/// code path that shares the SAME lens UI tabs (dash.html's `lensControls` widget renders all three)
+/// and so owes an analogous purity claim for all three lenses' own surfaces, but is NOT routed
+/// through this exact gate: `reprojection_lens_key` / [`reproject_files`] carry the equivalent gates
+/// for that surface, WITHOUT this gate's stricter membership-less / non-entity exclusions, because
+/// reprojection's own nothing-dropped contract (a re-graining subject keeps SOME cell, so re-graining
+/// a lone subject never empties the panel) is a distinct, already-settled requirement this gate must
+/// not regress there. Under [`Lens::Concepts`], by contrast, the gate IS total (criterion 4): kind is
+/// never a filtering axis for concept membership, so there is no own-kind fallback to preserve, and
 /// `reprojection_lens_key` admits a node there only through genuine [`Buckets::membership`], the same
 /// as this function's own Concepts arm.
 fn whole_graph_lens_key(buckets: &Buckets, node: &Node) -> Option<String> {
@@ -2020,7 +2028,12 @@ fn whole_graph_lens_key(buckets: &Buckets, node: &Node) -> Option<String> {
             .membership
             .get(node.id.as_str())
             .map(|b| (*b).to_string()),
-        Lens::Files => buckets.key(node),
+        Lens::Files => {
+            if node.kind != KIND_CODE_ENTITY {
+                return None;
+            }
+            file_of(&node.id).map(str::to_string)
+        }
     }
 }
 
@@ -2244,9 +2257,31 @@ pub const CLUSTER_RENDER_BUDGET: usize = 60;
 /// neither it nor a kind-bucket key ever drills to anything). Under [`Lens::Concepts`], drilling a
 /// `concept/<r>/<n>` key yields exactly that concept's members (the concept super-node likewise not a
 /// member); and - spec 63 c4 - a membership-less node, of ANY kind, folds to no key here either, so a
-/// former kind-fallback key now drills to nothing too. Under [`Lens::Files`] drilling a kind key still
-/// yields that kind's membership-less nodes, unchanged (criterion 3's purity fix is its own unit).
+/// former kind-fallback key now drills to nothing too.
+///
+/// Under [`Lens::Files`] (spec 63 c3, FILES-LENS PURITY), a file cluster is the atomic LEAF subject -
+/// there is nothing further to drill INTO: the whole reason the fold no longer admits a code entity
+/// as its own peer node (see [`whole_graph_lens_key`]) is that an entity is metadata OF its file, not
+/// a member beside it. So drilling ANY key here is unconditionally EMPTY - never an error, never a
+/// members-of-a-directory fallback - regardless of whether `key` names a real file cluster, an
+/// unknown key, or the graph is empty. A file's CONTENTS (its top entities) are the metadata card's
+/// job (criterion 2), reached the pre-existing [`neighborhood`] way (seed the file's id / an entity id
+/// directly), not by drilling this lens's own cluster.
 pub fn cluster_detail(graph: &Graph, key: &str, lens: &Lens) -> Neighborhood {
+    if matches!(lens, Lens::Files) {
+        return Neighborhood {
+            seed: key.to_string(),
+            depth: 0,
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            path: Vec::new(),
+            explain: None,
+            truncated: None,
+            dir: None,
+            referenced_not_called: Vec::new(),
+            memory: None,
+        };
+    }
     let buckets = Buckets::new(graph, lens);
     // The cluster's members: every node [`whole_graph_lens_key`] folds to `key` (the code/concepts
     // lenses' purity-gated wrapper over [`Buckets::key`]; byte-identical to it under Files), keyed
@@ -6366,16 +6401,17 @@ mod tests {
         );
     }
 
-    /// Spec 42 c2: [`clustered_overview`] folds the WHOLE graph into cluster super-nodes. Each
-    /// [`cluster_key`] bucket becomes a [`Cluster`] carrying its member COUNT and its DOMINANT member
-    /// KIND (ties broken by the lexicographically-smallest kind, so the colour is deterministic);
-    /// every currently-valid edge whose endpoints fall in two DIFFERENT clusters adds weight to a
-    /// symmetric [`ClusterEdge`] (an intra-cluster edge adds none, an invalidated edge counts for
-    /// nothing); and `total` carries the full node count. This test OWNS the overview aggregation; it
-    /// does NOT own the fold key (c1) or the drill projection (c3).
+    /// Spec 42 c2 (purified for [`Lens::Files`] by spec 63 c3): [`clustered_overview`] folds the
+    /// WHOLE graph into cluster super-nodes. Under [`Lens::Files`], ONLY [`KIND_CODE_ENTITY`] nodes
+    /// fold, each by its OWN FILE ([`whole_graph_lens_key`]'s purity gate) - so a cluster IS a file,
+    /// sized by its CONTAINED-ENTITY count, and the file's OWN [`KIND_FILE`] node, a design-doc, and
+    /// a dev-loop node all carry NO cluster at all. Every currently-valid edge whose endpoints fall
+    /// in two DIFFERENT file clusters adds weight to a symmetric [`ClusterEdge`] (an edge touching a
+    /// purity-excluded endpoint adds nothing); `total` carries the full node count regardless of what
+    /// folds. This test OWNS the overview aggregation; it does NOT own the fold key (c1/c3's own
+    /// purity proof lives on the fold key's own tests) or the drill projection (c3's own criterion).
     #[test]
-    fn clustered_overview_folds_the_graph_into_counted_dominant_kind_clusters_and_cross_cluster_edges(
-    ) {
+    fn clustered_overview_under_files_lens_admits_only_code_entities_keyed_by_their_own_file() {
         let node = |id: &str, kind: &str| Node {
             id: id.to_string(),
             kind: kind.to_string(),
@@ -6392,83 +6428,74 @@ mod tests {
         };
         let graph = Graph {
             nodes: vec![
-                // Cluster "src": one code-entity + one file -> count 2, kinds TIE 1-1, so the
-                // dominant kind resolves to the lexicographically-smallest ("code-entity" < "file").
+                // Cluster "src/a.rs": two code entities in the SAME file -> count 2. The file's OWN
+                // KIND_FILE node sits right beside them but is purity-excluded: it contributes
+                // NOTHING to its own file's count and never renders as a second peer node.
                 node("src/a.rs::foo", KIND_CODE_ENTITY),
-                node("src/b.rs", KIND_FILE),
-                // Cluster "docs": three design-docs -> count 3, dominant "design-doc".
-                node("docs/x.md", KIND_DESIGN_DOC),
+                node("src/a.rs::bar", KIND_CODE_ENTITY),
+                node("src/a.rs", KIND_FILE),
+                // Cluster "docs/x.rs": one code entity -> count 1 (a code entity's FILE is what
+                // matters, not whether its directory name reads like a doc path).
+                node("docs/x.rs::baz", KIND_CODE_ENTITY),
+                // Purity-excluded entirely: no cluster, no kind bucket, no directory fallback.
                 node("docs/y.md", KIND_DESIGN_DOC),
-                node("docs/z.md#s", KIND_DESIGN_DOC),
-                // Cluster "decision": two dev-loop decision nodes -> count 2, dominant "decision".
                 node("d1", KIND_DECISION),
                 node("d2", KIND_DECISION),
             ],
             edges: vec![
-                // Cross-cluster src<->docs, twice -> one symmetric edge of weight 2.
-                edge("src/a.rs::foo", "docs/x.md", None),
-                edge("src/b.rs", "docs/y.md", None),
-                // Cross-cluster decision<->src -> weight 1.
-                edge("d1", "src/a.rs::foo", None),
-                // INTRA-cluster (both in "src") -> adds NO weight.
-                edge("src/a.rs::foo", "src/b.rs", None),
-                // INTRA-cluster (both in "decision") -> adds NO weight.
-                edge("d1", "d2", None),
-                // Cross-cluster decision<->docs but INVALIDATED -> must NOT count.
-                edge("d2", "docs/x.md", Some(42)),
+                // Cross-file src/a.rs <-> docs/x.rs, twice -> one symmetric edge of weight 2.
+                edge("src/a.rs::foo", "docs/x.rs::baz", None),
+                edge("src/a.rs::bar", "docs/x.rs::baz", None),
+                // An edge touching the purity-excluded file node itself -> adds nothing, even though
+                // it names the SAME file as its entity siblings.
+                edge("src/a.rs::foo", "src/a.rs", None),
+                // An edge touching the purity-excluded design-doc -> adds nothing.
+                edge("src/a.rs::foo", "docs/y.md", None),
             ],
         };
 
         let overview = clustered_overview(&graph, &Lens::Files);
 
-        // `total` is the FULL node count, independent of the cluster count.
-        assert_eq!(overview.total, 7, "total carries every node in the graph");
+        // `total` is the FULL node count, independent of what folds.
+        assert_eq!(
+            overview.total, 7,
+            "total carries every node in the graph, folded or not"
+        );
 
-        // Clusters come out deterministically ordered by key, each with its member count and its
-        // dominant kind; the "src" tie (1 code-entity vs 1 file) resolves to the smallest kind.
+        // Clusters come out deterministically ordered by key; each code entity folds to its OWN
+        // FILE, and the file node / design-doc / decisions carry no cluster at all.
         assert_eq!(
             overview.clusters,
             vec![
                 Cluster {
-                    key: "decision".to_string(),
-                    count: 2,
-                    kind: KIND_DECISION.to_string(),
+                    key: "docs/x.rs".to_string(),
+                    count: 1,
+                    kind: KIND_CODE_ENTITY.to_string(),
                     label: None,
                 },
                 Cluster {
-                    key: "docs".to_string(),
-                    count: 3,
-                    kind: KIND_DESIGN_DOC.to_string(),
-                    label: None,
-                },
-                Cluster {
-                    key: "src".to_string(),
+                    key: "src/a.rs".to_string(),
                     count: 2,
                     kind: KIND_CODE_ENTITY.to_string(),
                     label: None,
                 },
             ],
-            "each cluster_key bucket folds to a counted, dominant-kind Cluster; the src tie resolves to the smallest kind"
+            "each code entity folds by its OWN FILE; the file's own node, the design-doc, and the \
+             two decisions carry no cluster at all (spec 63 c3 purity): {overview:?}"
         );
 
-        // Only cross-cluster, currently-valid edges carry weight; symmetric pairs canonicalize to
-        // from<=to and merge, so src<->docs (twice) is one weight-2 edge, and the invalidated
-        // decision<->docs edge is absent entirely.
+        // Only cross-FILE, currently-valid edges carry weight; the two src/a.rs -> docs/x.rs edges
+        // merge to weight 2, and the edges touching the purity-excluded file node / design-doc add
+        // nothing.
         assert_eq!(
             overview.edges,
-            vec![
-                ClusterEdge {
-                    from: "decision".to_string(),
-                    to: "src".to_string(),
-                    weight: 1,
-                },
-                ClusterEdge {
-                    from: "docs".to_string(),
-                    to: "src".to_string(),
-                    weight: 2,
-                },
-            ],
-            "cross-cluster currently-valid edges weight symmetric ClusterEdges; intra-cluster and invalidated edges add none"
+            vec![ClusterEdge {
+                from: "docs/x.rs".to_string(),
+                to: "src/a.rs".to_string(),
+                weight: 2,
+            }],
+            "the two src/a.rs -> docs/x.rs entity edges fold into ONE weighted cluster edge; edges \
+             touching the file node and the design-doc add nothing"
         );
     }
 
@@ -6481,6 +6508,13 @@ mod tests {
     /// [`NeighborhoodNode`]'s documented `degree` contract while the SELECTION ranks by the full
     /// intra-cluster degree. This test OWNS the drill projection + the budget cap; it does NOT
     /// exercise the overview aggregation (c2) or the route dispatch (c4).
+    ///
+    /// Driven over [`Lens::Code`] rather than [`Lens::Files`]: spec 63 c3 (FILES-LENS PURITY) makes a
+    /// files-lens drill unconditionally empty (a file is that lens's atomic subject - there is no
+    /// longer a many-member bucket to cap/rank under it), so the MANY-MEMBER budget-cap / degree /
+    /// no-dangle mechanics this test exists to pin are proven here over two coupling COMMUNITIES
+    /// instead, which still drill to real members under the already-merged spec 63 c1 (CODE-LENS
+    /// PURITY).
     #[test]
     fn cluster_detail_drills_a_cluster_to_its_members_and_caps_a_big_one_by_degree() {
         let ce = |id: &str| Node {
@@ -6493,6 +6527,11 @@ mod tests {
             kind: KIND_DECISION.to_string(),
             attrs: BTreeMap::new(),
         };
+        let community = |id: &str| Node {
+            id: id.to_string(),
+            kind: KIND_COMMUNITY.to_string(),
+            attrs: BTreeMap::new(),
+        };
         let refs = |from: &str, to: &str| Edge {
             from: from.to_string(),
             to: to.to_string(),
@@ -6502,6 +6541,21 @@ mod tests {
             source: 0,
             tier: TIER_EXTRACTED.to_string(),
         };
+        let member_of = |from: &str, community_id: &str| Edge {
+            from: from.to_string(),
+            to: community_id.to_string(),
+            rel: REL_IN_COMMUNITY.to_string(),
+            valid_from: 0,
+            valid_to: None,
+            source: 0,
+            tier: TIER_INFERRED.to_string(),
+        };
+
+        let lens = Lens::Code {
+            resolution: "1".to_string(),
+        };
+        const BIG: &str = "community/1/0";
+        const SMALL: &str = "community/1/1";
 
         let b = CLUSTER_RENDER_BUDGET;
         // The hub's id sorts AFTER every spoke, so it survives the cap ONLY because its degree ranks
@@ -6509,30 +6563,34 @@ mod tests {
         let big_hub = "src/big/mod.rs::zzz_hub";
         let spoke = |i: usize| format!("src/big/mod.rs::s{i:05}");
 
-        let mut nodes: Vec<Node> = Vec::new();
+        let mut nodes: Vec<Node> = vec![community(BIG), community(SMALL)];
         let mut edges: Vec<Edge> = Vec::new();
 
-        // OVER-BUDGET cluster `src/big`: a hub wired to b+1 spokes => b+2 members (over the b cap). The
-        // spokes all tie at intra-cluster degree 1, so the id tie-break keeps the b-1 SMALLEST ids and
-        // drops the two largest.
+        // OVER-BUDGET community BIG: a hub wired to b+1 spokes => b+2 members (over the b cap). The
+        // spokes all tie at intra-cluster degree 1, so the id tie-break keeps the b-1 SMALLEST ids
+        // and drops the two largest.
         nodes.push(ce(big_hub));
+        edges.push(member_of(big_hub, BIG));
         for i in 0..=b {
             nodes.push(ce(&spoke(i)));
+            edges.push(member_of(&spoke(i), BIG));
             edges.push(refs(big_hub, &spoke(i)));
         }
 
-        // UNDER-BUDGET cluster `src/small`: a hub + 6 leaves (7 members, well under b). The hub's 6
-        // intra-cluster edges make it a god-node (degree 6 > threshold 5). A SUPERSEDED intra edge and
-        // a CROSS-cluster edge are both excluded from the drill.
+        // UNDER-BUDGET community SMALL: a hub + 6 leaves (7 members, well under b). The hub's 6
+        // intra-community edges make it a god-node (degree 6 > threshold 5). A SUPERSEDED intra edge
+        // and a CROSS-community edge are both excluded from the drill.
         let sm_hub = "src/small/lib.rs::hub";
         for l in ["a", "b", "c", "d", "e", "f"] {
             let leaf = format!("src/small/lib.rs::{l}");
             nodes.push(ce(&leaf));
+            edges.push(member_of(&leaf, SMALL));
             edges.push(refs(sm_hub, &leaf));
         }
         nodes.push(ce(sm_hub));
-        // A SUPERSEDED intra-cluster edge (a -> b): currently-invalid, so NOT a returned edge and it
-        // adds no degree.
+        edges.push(member_of(sm_hub, SMALL));
+        // A SUPERSEDED intra-community edge (a -> b): currently-invalid, so NOT a returned edge and
+        // it adds no degree.
         edges.push(Edge {
             from: "src/small/lib.rs::a".to_string(),
             to: "src/small/lib.rs::b".to_string(),
@@ -6543,18 +6601,20 @@ mod tests {
             tier: TIER_EXTRACTED.to_string(),
         });
 
-        // A dev-loop `decision` cluster (folds by KIND): two decision nodes + a CROSS-cluster edge from
-        // the small hub into it (which the src/small drill must exclude).
+        // Two dev-loop decision nodes, carrying NO community membership: under spec 63 c1's already-
+        // merged CODE-LENS PURITY they fold to no cluster at all (not even their own kind bucket), so
+        // they exist here only to prove a CROSS-community edge into a purity-excluded node is dropped
+        // from the small drill.
         nodes.push(dec("d-xyz"));
         nodes.push(dec("d-abc"));
         edges.push(refs(sm_hub, "d-xyz"));
 
         let g = Graph { nodes, edges };
 
-        // --- OVER-BUDGET DRILL: `src/big` (b+2 members, capped to b) ---
-        let big = cluster_detail(&g, "src/big", &Lens::Files);
+        // --- OVER-BUDGET DRILL: BIG (b+2 members, capped to b) ---
+        let big = cluster_detail(&g, BIG, &lens);
         assert_eq!(
-            big.seed, "src/big",
+            big.seed, BIG,
             "the drill echoes the drilled cluster key as its seed"
         );
         assert_eq!(big.depth, 0, "a cluster drill is not a hop-bounded walk");
@@ -6619,8 +6679,8 @@ mod tests {
         );
         assert!(!spoke_view.god);
 
-        // --- UNDER-BUDGET DRILL: `src/small` (7 members, whole) ---
-        let small = cluster_detail(&g, "src/small", &Lens::Files);
+        // --- UNDER-BUDGET DRILL: SMALL (7 members, whole) ---
+        let small = cluster_detail(&g, SMALL, &lens);
         assert_eq!(
             small.truncated, None,
             "an at/under-budget cluster renders WHOLE - truncated omitted"
@@ -6630,12 +6690,12 @@ mod tests {
             small.nodes.iter().map(|n| n.id.as_str()).collect();
         assert!(
             !small_ids.contains("d-xyz"),
-            "a different cluster's node is not a drill member"
+            "a purity-excluded node is not a drill member, even with a cross edge into this community"
         );
         for e in &small.edges {
             assert!(
                 small_ids.contains(e.from.as_str()) && small_ids.contains(e.to.as_str()),
-                "a src/small drill edge crosses out of the cluster: {} -> {}",
+                "a SMALL drill edge crosses out of the community: {} -> {}",
                 e.from,
                 e.to
             );
@@ -6645,32 +6705,86 @@ mod tests {
                 .edges
                 .iter()
                 .any(|e| e.from == "src/small/lib.rs::a" && e.to == "src/small/lib.rs::b"),
-            "a superseded (currently-invalid) intra-cluster edge is excluded"
+            "a superseded (currently-invalid) intra-community edge is excluded"
         );
         let sm_hub_view = small.nodes.iter().find(|n| n.id == sm_hub).unwrap();
         assert_eq!(
             sm_hub_view.degree, 6,
-            "the small hub's in-view degree counts only its intra-cluster edges (not the cross edge)"
+            "the small hub's in-view degree counts only its intra-community edges (not the cross edge)"
         );
         assert!(
             sm_hub_view.god,
             "a degree-6 hub is a god-node (above the threshold of 5)"
         );
 
-        // --- DEV-LOOP KIND DRILL: `decision` (folds by kind) ---
-        let decisions = cluster_detail(&g, KIND_DECISION, &Lens::Files);
-        assert_eq!(decisions.truncated, None);
-        let dec_ids: std::collections::BTreeSet<&str> =
-            decisions.nodes.iter().map(|n| n.id.as_str()).collect();
-        let want: std::collections::BTreeSet<&str> = ["d-abc", "d-xyz"].into_iter().collect();
-        assert_eq!(
-            dec_ids, want,
-            "a dev-loop KIND drill returns exactly the nodes folding to that kind"
+        // --- PURITY: a dev-loop kind never becomes a bucket under Lens::Code (spec 63 c1, already
+        // merged) - drilling its kind key yields nothing at all, not the two decision nodes. ---
+        let decisions = cluster_detail(&g, KIND_DECISION, &lens);
+        assert!(
+            decisions.nodes.is_empty()
+                && decisions.edges.is_empty()
+                && decisions.truncated.is_none(),
+            "a dev-loop kind carries no cluster under code-lens purity, so drilling its kind key \
+             yields an empty drill: {decisions:?}"
         );
 
         // --- GRACEFUL: an unknown cluster key drills to an empty result, never a panic ---
-        let empty = cluster_detail(&g, "no/such/module", &Lens::Files);
+        let empty = cluster_detail(&g, "no/such/community", &lens);
         assert!(empty.nodes.is_empty() && empty.edges.is_empty() && empty.truncated.is_none());
+    }
+
+    /// Spec 63 c3 (FILES-LENS PURITY): under [`Lens::Files`], drilling a cluster is UNCONDITIONALLY
+    /// EMPTY - never a members-of-a-file fallback - because a file is this lens's atomic LEAF
+    /// subject (there is nothing further to drill INTO; a file's contained entities are the metadata
+    /// card's job, criterion 2's). This holds regardless of whether `key` names a REAL, populated
+    /// file cluster, an unknown key, or the graph is empty - the SAME graceful-degradation shape
+    /// [`cluster_detail`] already promises for every lens, just unconditional here.
+    #[test]
+    fn cluster_detail_under_files_lens_is_unconditionally_empty() {
+        let ce = |id: &str| Node {
+            id: id.to_string(),
+            kind: KIND_CODE_ENTITY.to_string(),
+            attrs: BTreeMap::new(),
+        };
+        let refs = |from: &str, to: &str| Edge {
+            from: from.to_string(),
+            to: to.to_string(),
+            rel: REL_REFERENCES.to_string(),
+            valid_from: 0,
+            valid_to: None,
+            source: 0,
+            tier: TIER_EXTRACTED.to_string(),
+        };
+        let populated = Graph {
+            nodes: vec![ce("src/a.rs::foo"), ce("src/a.rs::bar")],
+            edges: vec![refs("src/a.rs::foo", "src/a.rs::bar")],
+        };
+
+        // A REAL, populated file cluster - drilling it is still empty.
+        let real = cluster_detail(&populated, "src/a.rs", &Lens::Files);
+        assert_eq!(
+            real.seed, "src/a.rs",
+            "the drill still echoes the drilled key as its seed"
+        );
+        assert_eq!(real.depth, 0);
+        assert!(
+            real.nodes.is_empty() && real.edges.is_empty() && real.truncated.is_none(),
+            "a real, populated file cluster still drills to nothing under files-lens purity: {real:?}"
+        );
+
+        // An unknown key over the same populated graph.
+        let unknown = cluster_detail(&populated, "no/such/file.rs", &Lens::Files);
+        assert!(
+            unknown.nodes.is_empty() && unknown.edges.is_empty() && unknown.truncated.is_none()
+        );
+
+        // An empty graph.
+        let empty_graph = Graph {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+        };
+        let none = cluster_detail(&empty_graph, "src/a.rs", &Lens::Files);
+        assert!(none.nodes.is_empty() && none.edges.is_empty() && none.truncated.is_none());
     }
 
     /// Spec 53 c4 - the CODE LENS VIEW: with `lens=code` the SAME overview/drill folds bucket every
@@ -6841,8 +6955,9 @@ mod tests {
             "an underived grain carries the documented empty-state message, never an error"
         );
 
-        // --- LENS=FILES is byte-identical to the spec-42 directory/kind fold (no label, no
-        // empty_state); a membership-less node buckets by its DIRECTORY here, not its kind ---
+        // --- LENS=FILES is a DIFFERENT, purity-gated fold (spec 63 c3, not this criterion's own):
+        // only code entities fold, each by its OWN FILE; the community super-nodes, the decision, and
+        // the design-doc carry no cluster at all here ---
         let files = clustered_overview(&graph, &Lens::Files);
         assert_eq!(files.total, 8);
         assert_eq!(files.empty_state, None, "files lens carries no empty state");
@@ -6854,15 +6969,14 @@ mod tests {
         assert_eq!(
             file_keys,
             vec![
-                KIND_COMMUNITY,
-                KIND_DECISION,
-                "docs",
-                "src/four",
-                "src/one",
-                "src/three",
-                "src/two",
+                "src/four/d.rs",
+                "src/one/a.rs",
+                "src/three/c.rs",
+                "src/two/b.rs",
             ],
-            "the files lens folds by directory/kind (the community nodes bucket by their kind, the design-doc by its directory): {files:?}"
+            "the files lens folds each code entity by its own file; the community super-nodes, the \
+             decision, and the design-doc carry no cluster at all (spec 63 c3 purity, not this \
+             criterion's own): {files:?}"
         );
 
         // The lens-selector parser: `lens=code` (default grain when resolution absent), an explicit
@@ -7088,8 +7202,9 @@ mod tests {
             "an underived concepts grain carries the documented empty-state message, never an error"
         );
 
-        // --- FILES lens byte-identical: no label, no empty_state, membership-less code buckets by
-        // its DIRECTORY (not its kind), the concept super-nodes bucket by their kind ---
+        // --- FILES lens is a DIFFERENT, purity-gated fold (spec 63 c3, not this criterion's own):
+        // only code entities fold, each by its OWN FILE; the concept super-nodes, the decision, and
+        // the design-docs carry no cluster at all here ---
         let files = clustered_overview(&graph, &Lens::Files);
         assert_eq!(files.total, 8);
         assert_eq!(files.empty_state, None, "files lens carries no empty state");
@@ -7098,8 +7213,16 @@ mod tests {
             "the files fold attaches no concept label: {files:?}"
         );
         assert!(
-            files.clusters.iter().any(|c| c.key == "src/graph"),
-            "under the files lens graph::build buckets by its directory src/graph, not by concept: {files:?}"
+            files.clusters.iter().any(|c| c.key == "src/graph/index.rs"),
+            "under the files lens graph::build folds by its own FILE src/graph/index.rs, never its \
+             directory and never a concept bucket: {files:?}"
+        );
+        assert!(
+            !files.clusters.iter().any(|c| c.key.starts_with("concept/")
+                || c.key == KIND_DECISION
+                || c.key == "docs"),
+            "the concept super-nodes, the decision, and the design-docs carry no cluster at all \
+             under files-lens purity: {files:?}"
         );
 
         // --- THE PUBLIC SELECTOR: lens=concepts is a total, infallible parse ---
@@ -7411,9 +7534,11 @@ mod tests {
         };
 
         // VIEW 1 - DRILL: `cluster=<key>` returns `cluster_detail(key)` (a Neighborhood echoing the
-        // drilled cluster key as its seed, its members as nodes). The key `src/a` carries a `/`, so the
-        // client `encodeURIComponent`s it (`src%2Fa`) and the route percent-decodes it back, exactly
-        // like a seed id.
+        // drilled cluster key as its seed). The key `src/a` carries a `/`, so the client
+        // `encodeURIComponent`s it (`src%2Fa`) and the route percent-decodes it back, exactly like a
+        // seed id. Under the default `Lens::Files` (no `lens=` param), a drill is UNCONDITIONALLY
+        // EMPTY (spec 63 c3 FILES-LENS PURITY - a file is this lens's atomic leaf subject, so there is
+        // nothing to drill INTO), regardless of whether `src/a` names real members.
         let drill = call("/api/graph?cluster=src%2Fa");
         assert_eq!(
             drill["seed"], "src/a",
@@ -7423,23 +7548,17 @@ mod tests {
             drill["clusters"].is_null(),
             "a drill is a neighborhood, not an overview (no clusters key): {drill}"
         );
-        let drill_ids: std::collections::BTreeSet<&str> = drill["nodes"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|n| n["id"].as_str().unwrap())
-            .collect();
         assert_eq!(
-            drill_ids,
-            ["src/a/mod.rs::foo", "src/a/mod.rs::bar"]
-                .into_iter()
-                .collect(),
-            "the drill returns exactly the src/a cluster's members: {drill}"
+            drill["nodes"].as_array().unwrap().len(),
+            0,
+            "under the default files lens a drill is unconditionally empty (spec 63 c3): {drill}"
         );
 
         // VIEW 2 - OVERVIEW: an empty `seed` with no `cluster` returns `clustered_overview` (the
         // default KG view) - the whole-graph fold, NOT a neighborhood. Both the no-argument request
-        // and an explicit empty `seed=` select it.
+        // and an explicit empty `seed=` select it. Under the default `Lens::Files`, only code entities
+        // fold, each by its OWN FILE: `foo`/`bar` share the file `src/a/mod.rs` and merge into one
+        // cluster; the decision carries no cluster at all (spec 63 c3 purity).
         for target in ["/api/graph", "/api/graph?seed="] {
             let overview = call(target);
             assert_eq!(
@@ -7458,8 +7577,9 @@ mod tests {
                 .collect();
             assert_eq!(
                 keys,
-                ["decision", "src/a", "src/b"].into_iter().collect(),
-                "{target}: the overview folds the graph into its three clusters: {overview}"
+                ["src/a/mod.rs", "src/b/mod.rs"].into_iter().collect(),
+                "{target}: the overview folds each code entity by its own file; the decision carries \
+                 no cluster: {overview}"
             );
         }
 
