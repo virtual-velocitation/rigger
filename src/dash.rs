@@ -2449,10 +2449,15 @@ fn reproject_derived(graph: &Graph, subject: &str, lens: &Lens, members: &[&Node
     // Spec 55 c2, the EMPTY cell: when NO member folds into a derived (community/concept) bucket, the
     // cell is defined-but-empty. The kind-fallback clusters above still render (criterion 1, nothing
     // dropped); this message is the additive caption the panel shows. A single member with a derived
-    // membership makes the cell full and clears the message.
-    let has_derived_bucket = members
-        .iter()
-        .any(|m| buckets.membership.contains_key(m.id.as_str()));
+    // membership makes the cell full and clears the message - PROVIDED that membership actually landed
+    // a cluster: a member `reprojection_lens_key` purity-excludes (spec 63 c1, a non-code-entity kind
+    // under `Lens::Code`) contributes NO cluster at all, so its raw `buckets.membership` entry must not
+    // count here either, or a sole purity-excluded realizer's genuine membership would wrongly read as
+    // "full" while `clusters` stays empty - a blank, unexplained cell (round 2's own regression).
+    let has_derived_bucket = members.iter().any(|m| {
+        reprojection_lens_key(&buckets, m).is_some()
+            && buckets.membership.contains_key(m.id.as_str())
+    });
     let empty_state = (!has_derived_bucket)
         .then(|| buckets.no_membership_message().map(str::to_string))
         .flatten();

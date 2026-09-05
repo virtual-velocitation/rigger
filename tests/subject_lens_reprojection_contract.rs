@@ -28,7 +28,7 @@ use rigger::contextgraph::{
     Edge, Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_FILE,
     REL_CONTAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_REALIZES,
 };
-use rigger::dash::{reproject, route, Cluster, Lens, UnresolvedMember};
+use rigger::dash::{reproject, route, Cluster, Lens, UnresolvedMember, REPROJECT_NO_COMMUNITY};
 
 // --- fixture helpers ----------------------------------------------------------------------------
 
@@ -415,6 +415,54 @@ fn reprojection_excludes_a_decision_member_even_when_it_carries_a_live_community
         vec![bucket(INFLATE_COMMUNITY, 1, Some("beta"))],
         "the ONE cluster is the community, sized 1 - the decision's own membership in that SAME \
          community never inflates the count to 2: {re:?}"
+    );
+}
+
+const SOLE_CONCEPT: &str = "concept/1/7";
+const SOLE_COMMUNITY: &str = "community/1/7";
+const SOLE_DECISION: &str = "d-u63c1-sole-realizer-purity-excluded";
+
+/// Spec 63 CRITERION 1, round-2's OWN regression: a concept realized by a SINGLE member, and that
+/// member is purity-excluded under the code lens (a decision, never a code entity) yet carries a
+/// GENUINE live `IN_COMMUNITY` membership. `reprojection_lens_key` correctly excludes the decision from
+/// the cluster fold (so `clusters` is empty - no storage-schema-kind bucket, no inflated community),
+/// but `has_derived_bucket` must ALSO honor that same exclusion when it decides whether the cell is
+/// "empty" (spec 55 c2): reading the RAW `buckets.membership` (ungated) sees the decision's genuine
+/// membership and wrongly concludes the cell is full, yielding `clusters: []` AND `empty_state: None`
+/// simultaneously - a silent, unexplained blank the panel cannot present. The one member that DOES
+/// carry a membership is exactly the one member `reprojection_lens_key` says never forms a bucket, so
+/// the cell must fall back to the documented empty-state message, not go blank.
+#[test]
+fn reprojection_carries_empty_state_when_the_sole_realizer_is_purity_excluded() {
+    let graph = Graph {
+        nodes: vec![
+            node(SOLE_CONCEPT, KIND_CONCEPT, Some("the idea")),
+            node(SOLE_COMMUNITY, KIND_COMMUNITY, Some("gamma")),
+            decision(SOLE_DECISION, "why this also matters"),
+        ],
+        edges: vec![
+            // The concept's ONLY realizer is the decision - no code entity co-realizes it.
+            edge(SOLE_DECISION, SOLE_CONCEPT, REL_REALIZES),
+            // The decision's OWN membership is genuine, not absent.
+            edge(SOLE_DECISION, SOLE_COMMUNITY, REL_IN_COMMUNITY),
+        ],
+    };
+
+    let re = reproject(&graph, SOLE_CONCEPT, &code_lens());
+    assert_eq!(
+        re.total, 1,
+        "the member-set size still counts the decision realizer: {re:?}"
+    );
+    assert!(
+        re.clusters.is_empty(),
+        "the purity-excluded decision spawns no cluster of its own: {re:?}"
+    );
+    assert_eq!(
+        re.empty_state.as_deref(),
+        Some(REPROJECT_NO_COMMUNITY),
+        "a blank cell (clusters: [] AND empty_state: None) is never a valid re-projection body - the \
+         sole realizer's membership does not count as a DERIVED bucket once purity-excluded, so the \
+         documented empty-state message must appear instead: {re:?}"
     );
 }
 
