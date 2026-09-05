@@ -11,6 +11,18 @@
 //! those keys, the viz would draw wrong (uniform circles, no god emphasis, no cap caption) while the
 //! page still loads.
 //!
+//! Driven over `?lens=code` (`Lens::Code`) rather than the default `Lens::Files`: spec 63 c3
+//! (FILES-LENS PURITY) makes a files-lens drill UNCONDITIONALLY EMPTY (a file is that lens's atomic
+//! subject, so there is no longer a many-member bucket for the god-node / degree / cap mechanics this
+//! layer exists to pin), and the earlier spec 63 c1 (already-merged CODE-LENS PURITY) means neither
+//! lens ever folds a dev-loop node (a decision, a finding) into a cluster of its own - so the old
+//! "decision cluster, a different dominant kind" fixture is no longer reachable under EITHER lens: a
+//! cluster's dominant `kind` is always [`KIND_CODE_ENTITY`] now. The MANY-MEMBER god-node / degree /
+//! cap mechanics stay fully general (`fold_buckets` runs identically under every lens), so they are
+//! proven here over TWO coupling communities instead, which still fold to real, many-member clusters;
+//! a dev-loop node stays in the fixture (it must still count in `total`) but is asserted to carry no
+//! cluster of its own, rather than a differently-coloured one.
+//!
 //! The EXISTING layers do not jointly pin this. The c2/c3 tests assert the same fields but by calling
 //! `clustered_overview` / `cluster_detail` IN-PROCESS (never through the route). The c4 served-route
 //! tests drive the real socket but pin only the DISPATCH-discriminating fields (`total`,
@@ -27,12 +39,18 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use rigger::contextgraph::{
-    Edge, Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, REL_REFERENCES, TIER_EXTRACTED,
+    Edge, Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, REL_IN_COMMUNITY, REL_REFERENCES,
+    TIER_EXTRACTED, TIER_INFERRED,
 };
 use rigger::dash::{route, CLUSTER_RENDER_BUDGET, GOD_NODE_DEGREE_THRESHOLD};
 
-/// A code-entity node whose id names a file under a module directory, so `cluster_key` folds it into
-/// that directory's cluster (e.g. `src/big/mod.rs::hub` -> cluster `src/big`).
+/// The two coupling communities the fixture folds into at the default resolution grain (`"1"`), so a
+/// `?lens=code` request needs no explicit `resolution=` parameter.
+const BIG: &str = "community/1/0";
+const SMALL: &str = "community/1/1";
+
+/// A code-entity node (carries no membership by itself - `membership` below wires it into a
+/// community).
 fn ce(id: &str) -> Node {
     Node {
         id: id.to_string(),
@@ -41,9 +59,10 @@ fn ce(id: &str) -> Node {
     }
 }
 
-/// A dev-loop decision node (no path id), so `cluster_key` folds it by its KIND into the `decision`
-/// cluster - a second cluster of a DIFFERENT dominant kind than the code-entity clusters, so the
-/// overview's per-cluster `kind` field is proven to discriminate (it drives the super-node colour).
+/// A dev-loop decision node (no path id, no community membership): under the already-merged spec 63
+/// c1 CODE-LENS PURITY, a non-code-entity never folds into a cluster of its own - not even its own
+/// kind bucket - so it stays in the fixture only to prove `total` still counts it while contributing
+/// NO cluster at all.
 fn dec(id: &str) -> Node {
     Node {
         id: id.to_string(),
@@ -65,43 +84,61 @@ fn refs(from: &str, to: &str) -> Edge {
     }
 }
 
-/// A zero-padded spoke id under `src/big` (padding makes ASCII order match numeric order, which the
-/// drill cap's smallest-id tie-break relies on).
+/// The live `IN_COMMUNITY` membership spoke a code-entity id needs to fold under `community`, at the
+/// default resolution grain the fixture's community ids ([`BIG`] / [`SMALL`]) carry.
+fn membership(id: &str, community: &str) -> Edge {
+    Edge {
+        from: id.to_string(),
+        to: community.to_string(),
+        rel: REL_IN_COMMUNITY.to_string(),
+        valid_from: 0,
+        valid_to: None,
+        source: 0,
+        tier: TIER_INFERRED.to_string(),
+    }
+}
+
+/// A zero-padded spoke id under the [`BIG`] community (padding makes ASCII order match numeric
+/// order, which the drill cap's smallest-id tie-break relies on).
 fn spoke(i: usize) -> String {
     format!("src/big/mod.rs::s{i:05}")
 }
 
-/// The exploration fixture. It folds into THREE clusters that exercise every overview + drill field.
-/// `src/big` is a hub wired to `CLUSTER_RENDER_BUDGET + 1` spokes (`CLUSTER_RENDER_BUDGET + 2`
+/// The exploration fixture. It folds into TWO communities that exercise every overview + drill field.
+/// [`BIG`] is a hub wired to `CLUSTER_RENDER_BUDGET + 1` spokes (`CLUSTER_RENDER_BUDGET + 2`
 /// members, ONE over the render budget), so a drill on it CAPS and reports `truncated`, and the
 /// surviving hub is a god-node (its in-view degree `CLUSTER_RENDER_BUDGET - 1` is well above the god
-/// threshold). `src/small` is three members, a small code-entity cluster. `decision` is one dev-loop
-/// node, a cluster of a DIFFERENT dominant kind. TWO graph edges cross `src/big` -> `src/small`, so
-/// the overview carries exactly one cross-cluster edge of `weight` 2. ONE graph drives both route
-/// calls, exactly as the browser hits the same live graph for the overview and then the drill.
+/// threshold). [`SMALL`] is three members, a small code-entity community. `decision` is one dev-loop
+/// node that carries NO community membership and folds into no cluster at all (spec 63 c1 purity).
+/// TWO graph edges cross [`BIG`] -> [`SMALL`], so the overview carries exactly one cross-cluster edge
+/// of `weight` 2. ONE graph drives both route calls, exactly as the browser hits the same live graph
+/// for the overview and then the drill.
 fn exploration_graph() -> Graph {
     let hub = "src/big/mod.rs::hub";
     let mut nodes: Vec<Node> = vec![ce(hub)];
-    let mut edges: Vec<Edge> = Vec::new();
+    let mut edges: Vec<Edge> = vec![membership(hub, BIG)];
 
-    // src/big: hub -> every spoke (all intra-cluster). One over budget so the drill caps.
+    // BIG: hub -> every spoke (all intra-community). One over budget so the drill caps.
     let spokes = CLUSTER_RENDER_BUDGET + 1;
     for i in 0..spokes {
         nodes.push(ce(&spoke(i)));
+        edges.push(membership(&spoke(i), BIG));
         edges.push(refs(hub, &spoke(i)));
     }
 
-    // src/small: three members.
+    // SMALL: three members.
     for m in ["a", "b", "c"] {
-        nodes.push(ce(&format!("src/small/mod.rs::{m}")));
+        let id = format!("src/small/mod.rs::{m}");
+        nodes.push(ce(&id));
+        edges.push(membership(&id, SMALL));
     }
 
-    // decision: one dev-loop node (a distinct dominant kind for the overview colour).
+    // decision: one dev-loop node, no membership - a distinct kind that folds into no cluster at all.
     nodes.push(dec("d0"));
 
-    // Two cross edges src/big -> src/small, so the ONE overview cluster edge has weight 2. They dangle
-    // out of the src/big drill (their src/small endpoint is not a src/big member) and so must be
-    // dropped from the drill body, never dangled.
+    // Two cross edges BIG -> SMALL, so the ONE overview cluster edge has weight 2. They dangle out of
+    // the BIG drill (their SMALL endpoint is not a BIG member) and so must be dropped from the drill
+    // body, never dangled.
     edges.push(refs(hub, "src/small/mod.rs::a"));
     edges.push(refs(&spoke(0), "src/small/mod.rs::b"));
 
@@ -134,18 +171,18 @@ fn served_body(path: &str) -> serde_json::Value {
         .unwrap_or_else(|e| panic!("the served {path} body must be valid JSON: {e}"))
 }
 
-/// The served OVERVIEW body (`GET /api/graph`, no argument = the default KG view) carries EVERY field
-/// `renderKgOverview` reads: `clusters[].{key,count,kind}` (label / size / colour), `total` (the
-/// headline node count), and `edges[].{from,to,weight}` (the cross-cluster lines, thickness by weight).
-/// Each is asserted to a concrete value bound to the fixture, so a renamed / dropped key reddens here.
+/// The served OVERVIEW body (`GET /api/graph?lens=code`) carries EVERY field `renderKgOverview` reads:
+/// `clusters[].{key,count,kind}` (label / size / colour), `total` (the headline node count), and
+/// `edges[].{from,to,weight}` (the cross-cluster lines, thickness by weight). Each is asserted to a
+/// concrete value bound to the fixture, so a renamed / dropped key reddens here.
 #[test]
 fn the_served_overview_route_carries_every_field_the_c5_overview_viz_reads() {
-    let ov = served_body("/api/graph");
+    let ov = served_body("/api/graph?lens=code");
 
     // It is the OVERVIEW shape, not a neighborhood: no `nodes` key (the drill / seed views carry that).
     assert!(
         ov.get("nodes").is_none() || ov["nodes"].is_null(),
-        "the no-argument route is the clustered overview, not a neighborhood: {ov}"
+        "the lens overview request is the clustered overview, not a neighborhood: {ov}"
     );
 
     // `total`: the whole-graph node count the panel headlines. hub + (budget+1) spokes + 3 small + 1
@@ -157,7 +194,8 @@ fn the_served_overview_route_carries_every_field_the_c5_overview_viz_reads() {
     );
 
     // `clusters[]`: the super-nodes, each carrying key + count + kind. Index them by key so the
-    // count/kind assertions bind per cluster.
+    // count/kind assertions bind per cluster. The decision node carries NO cluster (spec 63 c1
+    // purity), so only the two communities appear.
     let clusters = ov["clusters"]
         .as_array()
         .expect("overview carries a clusters array");
@@ -176,54 +214,51 @@ fn the_served_overview_route_carries_every_field_the_c5_overview_viz_reads() {
     let keys: BTreeSet<&str> = by_key.keys().copied().collect();
     assert_eq!(
         keys,
-        ["decision", "src/big", "src/small"].into_iter().collect(),
-        "the graph folds into exactly its three clusters (label = key): {ov}"
+        [BIG, SMALL].into_iter().collect(),
+        "the graph folds into exactly its two communities (the decision carries no cluster): {ov}"
     );
 
     // `count` drives the super-node RADIUS - it must be the real member count, and must discriminate
-    // (the big cluster is far larger than the small ones), not a constant.
+    // (the big community is far larger than the small one), not a constant.
     assert_eq!(
-        by_key["src/big"].0.as_u64(),
+        by_key[BIG].0.as_u64(),
         Some((CLUSTER_RENDER_BUDGET + 2) as u64),
-        "src/big's count is hub + all its spokes (drives the super-node size): {ov}"
+        "BIG's count is hub + all its spokes (drives the super-node size): {ov}"
     );
     assert_eq!(
-        by_key["src/small"].0.as_u64(),
+        by_key[SMALL].0.as_u64(),
         Some(3),
-        "src/small's count is its three members: {ov}"
-    );
-    assert_eq!(
-        by_key["decision"].0.as_u64(),
-        Some(1),
-        "the decision cluster's count is its single member: {ov}"
+        "SMALL's count is its three members: {ov}"
     );
 
-    // `kind` drives the super-node COLOUR - it must be the dominant member kind and must discriminate
-    // (a code-entity cluster vs the decision cluster), so a uniform-colour regression reddens here.
+    // `kind` drives the super-node COLOUR. Under code-lens purity every folded member is a code
+    // entity, so both communities carry the same dominant kind - the field is present and correctly
+    // derived even though it cannot discriminate a colour here (the decision that WOULD discriminate
+    // it carries no cluster at all, per spec 63 c1).
     assert_eq!(
-        by_key["src/big"].1.as_str(),
+        by_key[BIG].1.as_str(),
         Some(KIND_CODE_ENTITY),
-        "src/big's dominant kind is code-entity (drives its colour): {ov}"
+        "BIG's dominant kind is code-entity (drives its colour): {ov}"
     );
     assert_eq!(
-        by_key["decision"].1.as_str(),
-        Some(KIND_DECISION),
-        "the decision cluster's dominant kind differs, so the colour field discriminates: {ov}"
+        by_key[SMALL].1.as_str(),
+        Some(KIND_CODE_ENTITY),
+        "SMALL's dominant kind is code-entity too (drives its colour): {ov}"
     );
 
-    // `edges[].{from,to,weight}`: the cross-cluster lines. Exactly one here (src/big <-> src/small),
-    // its weight the count of crossing graph edges (2), which scales the line thickness.
+    // `edges[].{from,to,weight}`: the cross-cluster lines. Exactly one here (BIG <-> SMALL), its
+    // weight the count of crossing graph edges (2), which scales the line thickness.
     let cedges = ov["edges"]
         .as_array()
         .expect("overview carries an edges array");
     assert_eq!(
         cedges.len(),
         1,
-        "the two src/big -> src/small graph edges fold into ONE weighted cluster edge: {ov}"
+        "the two BIG -> SMALL graph edges fold into ONE weighted cluster edge: {ov}"
     );
     assert_eq!(
         (cedges[0]["from"].as_str(), cedges[0]["to"].as_str()),
-        (Some("src/big"), Some("src/small")),
+        (Some(BIG), Some(SMALL)),
         "the cluster edge is canonicalized from <= to by key: {ov}"
     );
     assert_eq!(
@@ -233,26 +268,26 @@ fn the_served_overview_route_carries_every_field_the_c5_overview_viz_reads() {
     );
 }
 
-/// The served DRILL body (`GET /api/graph?cluster=<key>`, the key `encodeURIComponent`d so its `/`
-/// arrives percent-encoded) carries EVERY field `renderKgDrill` reads: `seed` (the echoed cluster
-/// key), `nodes[].{id,kind,label,degree,god}` (key / colour / label / size / hub emphasis), and
-/// `truncated` (the cap caption). Bound to the mechanism: an over-budget cluster with a god-node hub,
-/// so `truncated` and `god:true` both appear and discriminate from a plain spoke.
+/// The served DRILL body (`GET /api/graph?cluster=<key>&lens=code`, the key `encodeURIComponent`d so
+/// its `/` arrives percent-encoded) carries EVERY field `renderKgDrill` reads: `seed` (the echoed
+/// cluster key), `nodes[].{id,kind,label,degree,god}` (key / colour / label / size / hub emphasis),
+/// and `truncated` (the cap caption). Bound to the mechanism: an over-budget community with a
+/// god-node hub, so `truncated` and `god:true` both appear and discriminate from a plain spoke.
 #[test]
 fn the_served_drill_route_carries_every_field_the_c5_drill_viz_reads() {
-    // The `/` in the module key arrives percent-encoded, exactly as the page's encodeURIComponent
-    // emits it; the route decodes it back to the fold key.
-    let nb = served_body("/api/graph?cluster=src%2Fbig");
+    // The `/` in the community key arrives percent-encoded, exactly as the page's
+    // encodeURIComponent emits it; the route decodes it back to the fold key.
+    let nb = served_body("/api/graph?cluster=community%2F1%2F0&lens=code");
 
     // `seed`: the drill echoes the decoded cluster key (the panel titles "cluster <key>").
     assert_eq!(
         nb["seed"].as_str(),
-        Some("src/big"),
+        Some(BIG),
         "the drill echoes the decoded cluster key as its seed: {nb}"
     );
 
-    // `truncated`: the cap fired (the cluster is one over budget), so it reports the FULL member count
-    // for the "showing the N most-connected of M" caption. A complete drill omits this key.
+    // `truncated`: the cap fired (the community is one over budget), so it reports the FULL member
+    // count for the "showing the N most-connected of M" caption. A complete drill omits this key.
     assert_eq!(
         nb["truncated"].as_u64(),
         Some((CLUSTER_RENDER_BUDGET + 2) as u64),
@@ -298,7 +333,7 @@ fn the_served_drill_route_carries_every_field_the_c5_drill_viz_reads() {
     // surviving spokes (budget-1), well above the god threshold, so `god` is true and `degree`
     // discriminates it from a spoke.
     // Fixture sanity (compile-time): the hub's in-view degree must clear the god threshold, else the
-    // cluster would produce no god-node and the `god == true` assertion below would be vacuous.
+    // community would produce no god-node and the `god == true` assertion below would be vacuous.
     const _: () = assert!(
         CLUSTER_RENDER_BUDGET - 1 > GOD_NODE_DEGREE_THRESHOLD,
         "the fixture's hub degree must exceed the god threshold"
@@ -330,14 +365,14 @@ fn the_served_drill_route_carries_every_field_the_c5_drill_viz_reads() {
     );
 
     // `edges[].{from,to}`: every drawn edge, both endpoints in the returned set (no dangle) and never
-    // a cross-cluster (src/small) endpoint - the drill draws only the cluster's own edges.
+    // a cross-community (SMALL) endpoint - the drill draws only the community's own edges.
     let ids: BTreeSet<&str> = nodes.iter().map(|n| n["id"].as_str().unwrap()).collect();
     let dedges = nb["edges"]
         .as_array()
         .expect("the drill carries an edges array");
     assert!(
         !dedges.is_empty(),
-        "the drilled cluster's hub-to-spoke edges are drawn: {nb}"
+        "the drilled community's hub-to-spoke edges are drawn: {nb}"
     );
     for e in dedges {
         let from = e["from"]
@@ -352,7 +387,7 @@ fn the_served_drill_route_carries_every_field_the_c5_drill_viz_reads() {
         );
         assert!(
             !from.starts_with("src/small/") && !to.starts_with("src/small/"),
-            "the cross-cluster edges are dropped from the drill (no src/small endpoint): {from} -> {to}"
+            "the cross-community edges are dropped from the drill (no SMALL endpoint): {from} -> {to}"
         );
     }
 }
