@@ -28,6 +28,8 @@
 //!    `layer` / `frontier` / `back` / `referenced_not_called`, and NEVER runs the directed traversal;
 //!  - and one INTEGRATION over a real `Projector::calls` wired into `serve_on` exactly as the binary's
 //!    calls-provider does, proving the cross-module seam (route -> provider -> store) over the socket.
+//!  - (spec 63 addendum) the SUBJECT VIEW's docked memory rail (`Neighborhood::memory`) never rides
+//!    a calls-view response - the one `Neighborhood` producer left unchecked for that omission.
 //!
 //! `dash` and `contextgraph` compile on BOTH the default and `--no-default-features` lanes (nothing
 //! here is feature-gated), so these tests run in both. No reference to any external tool or project;
@@ -695,6 +697,36 @@ fn a_plain_neighborhood_request_gains_no_call_fields_and_never_runs_the_directed
     assert!(
         probe.graph_consulted,
         "a plain neighborhood request reads the whole-graph provider"
+    );
+}
+
+// ===========================================================================
+// Spec 63 criterion 5 addendum: the SUBJECT VIEW's docked MEMORY RAIL (`Neighborhood::memory`,
+// `#[serde(skip_serializing_if = "Option::is_none")]`) rides the plain seeded-neighborhood path ONLY.
+// `calls_view` is a THIRD `Neighborhood` producer alongside that plain path and the cluster drill
+// (spec 42), and it is the one producer left unchecked for the omission: the implementer's own
+// inside-out tests (`dash.rs` `subject_view_c5`) cover the plain seed (carries `memory`) and a
+// cluster drill (`a_cluster_drill_carries_no_memory_field`), but never `calls_view` - it is built by
+// a private constructor those same-crate tests could reach but did not, and the byte-identity test
+// just above predates spec 63, asserting only that a plain neighborhood omits every CALL field (the
+// opposite direction of this same additive-field contract). Proven over the real served socket, like
+// every other assertion in this file, so a future `calls_view` change that starts threading a graph
+// through (to add a rail of its own, say) cannot silently regress this byte-identity claim.
+// ===========================================================================
+
+#[test]
+fn a_calls_view_response_carries_no_memory_rail_field() {
+    let probe = drive(
+        "/api/graph?view=calls&dir=down&seed=src%2Fc.rs%3A%3Acaller&depth=5",
+        Graph::default(),
+        standard_provider(),
+    );
+    let body = ok_json(&probe);
+
+    assert!(
+        body.get("memory").is_none(),
+        "a calls-view response carries no memory rail field - the rail is wired ONLY into the \
+         plain seeded-neighborhood path (spec 63 c5), never the directed-call view: {body}"
     );
 }
 
