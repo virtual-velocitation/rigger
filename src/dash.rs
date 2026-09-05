@@ -1075,8 +1075,9 @@ pub struct Neighborhood {
     pub referenced_not_called: Vec<NeighborhoodNode>,
     /// The SUBJECT VIEW's docked MEMORY RAIL (spec 63 c5): the seed's governing decisions,
     /// findings, and concepts, grouped for the panel's rail cards - metadata on the subject, never
-    /// additional graph nodes ([`graph_json`] fills this from [`memory_rail`] as a SEPARATE read
-    /// over the already-projected graph, never by folding the rail's leaves into the walked
+    /// additional graph nodes ([`graph_json`] fills this from [`memory_rail_of`], folded over the
+    /// same `effective_seeds` the neighborhood walk used, as a SEPARATE read over the
+    /// already-projected graph, never by folding the rail's leaves into the walked
     /// `nodes`/`edges` above). Set ONLY by [`graph_json`] (the plain seeded-neighborhood path);
     /// omitted for a cluster drill and a directed-call view, so those stay byte-identical to
     /// before this criterion.
@@ -2793,45 +2794,73 @@ pub struct MemoryRail {
 /// discipline [`node_rationale`] uses). Always returns a value - every list may be empty - so an
 /// unknown `node` or one with no governing memory degrades gracefully, never an error.
 pub fn memory_rail(graph: &Graph, node: &str) -> MemoryRail {
-    let mut decisions: Vec<RationaleLeaf> = Vec::new();
-    let mut findings: Vec<RationaleLeaf> = Vec::new();
-    for leaf in node_rationale(graph, node) {
-        match leaf.kind.as_str() {
-            KIND_DECISION => decisions.push(leaf),
-            KIND_FINDING => findings.push(leaf),
-            // KIND_LESSON (or anything else node_rationale might ever return): build-process
-            // memory, deliberately excluded from the target-project memory rail.
-            _ => {}
-        }
-    }
+    memory_rail_of(graph, std::slice::from_ref(&node.to_string()))
+}
 
+/// The multi-seed core of [`memory_rail`] (spec 63 c5, closing
+/// adv-u63c5-rail-lies-empty-for-a-repointed-unit-seed): folds the governing decisions,
+/// findings, and REALIZES concepts over EVERY seed in `seeds`, deduped by id, rather than a
+/// single node. [`memory_rail`] is the one-element case - matching [`neighborhood_of`]'s own
+/// multi-seed-core / single-seed-wrapper split, and reusing the SAME `effective_seeds` the
+/// neighborhood walk already computed (spec 43's `repoint_seed`).
+///
+/// This is the fix for a run-tree UNIT click: `repoint_seed` re-points the (de-noised-away) unit
+/// id onto that unit's several content nodes, so `requested_seed` itself is no longer a graph
+/// node and a single-node rail read over it matches nothing. Folding over `effective_seeds`
+/// instead means the unit's own governing decision/finding - reached via each content node's
+/// GOVERNS/ABOUT edge, exactly as [`node_rationale`] already reads a plain node - still surfaces,
+/// rather than the rail silently degrading to an indistinguishable all-empty state. A normal
+/// node click leaves this byte-identical: `repoint_seed` returns `vec![seed]` for a seed that IS
+/// already a node, so folding over that one-element slice is exactly [`memory_rail`]'s old
+/// single-node behavior.
+///
+/// Crate-private, matching [`neighborhood_of`]'s own multi-seed-core visibility: only the
+/// single-seed [`memory_rail`] is public API, unchanged from before this fix.
+fn memory_rail_of(graph: &Graph, seeds: &[String]) -> MemoryRail {
+    let mut decisions: BTreeMap<String, RationaleLeaf> = BTreeMap::new();
+    let mut findings: BTreeMap<String, RationaleLeaf> = BTreeMap::new();
     let mut concepts: BTreeMap<String, ConceptRef> = BTreeMap::new();
-    for e in &graph.edges {
-        if e.valid_to.is_some() || e.from != node || e.rel != REL_REALIZES {
-            continue; // only a LIVE edge, FROM this node, of the REALIZES relation
+    for seed in seeds {
+        for leaf in node_rationale(graph, seed) {
+            match leaf.kind.as_str() {
+                KIND_DECISION => {
+                    decisions.entry(leaf.id.clone()).or_insert(leaf);
+                }
+                KIND_FINDING => {
+                    findings.entry(leaf.id.clone()).or_insert(leaf);
+                }
+                // KIND_LESSON (or anything else node_rationale might ever return): build-process
+                // memory, deliberately excluded from the target-project memory rail.
+                _ => {}
+            }
         }
-        let Some(target) = graph.nodes.iter().find(|n| n.id == e.to) else {
-            continue;
-        };
-        if target.kind != KIND_CONCEPT {
-            continue; // REALIZES targets only ever a concept; anything else is not a rail concept
+        for e in &graph.edges {
+            if e.valid_to.is_some() || &e.from != seed || e.rel != REL_REALIZES {
+                continue; // only a LIVE edge, FROM this seed, of the REALIZES relation
+            }
+            let Some(target) = graph.nodes.iter().find(|n| n.id == e.to) else {
+                continue;
+            };
+            if target.kind != KIND_CONCEPT {
+                continue; // REALIZES targets only ever a concept; anything else is not a rail concept
+            }
+            concepts
+                .entry(target.id.clone())
+                .or_insert_with(|| ConceptRef {
+                    id: target.id.clone(),
+                    label: target
+                        .attrs
+                        .get("label")
+                        .filter(|l| !l.is_empty())
+                        .cloned()
+                        .unwrap_or_else(|| target.id.clone()),
+                });
         }
-        concepts
-            .entry(target.id.clone())
-            .or_insert_with(|| ConceptRef {
-                id: target.id.clone(),
-                label: target
-                    .attrs
-                    .get("label")
-                    .filter(|l| !l.is_empty())
-                    .cloned()
-                    .unwrap_or_else(|| target.id.clone()),
-            });
     }
 
     MemoryRail {
-        decisions,
-        findings,
+        decisions: decisions.into_values().collect(),
+        findings: findings.into_values().collect(),
         concepts: concepts.into_values().collect(),
     }
 }
@@ -2913,7 +2942,15 @@ pub fn graph_json(
     // The SUBJECT VIEW's docked memory rail (spec 63 c5): the requested seed's governing
     // decisions/findings/concepts, riding the existing response so the rail needs no new route
     // param either - a pure separate read, so listing them adds no node to `n.nodes` above.
-    n.memory = Some(memory_rail(graph, requested_seed));
+    // Folds over `effective_seeds` (the SAME set `neighborhood_of` above already walked), never
+    // the raw `requested_seed` alone: a re-pointed run-tree unit click (spec 43) leaves
+    // `requested_seed` a non-node id, so a single-node read over it would match nothing and the
+    // rail would silently degrade to an indistinguishable all-empty state
+    // (adv-u63c5-rail-lies-empty-for-a-repointed-unit-seed) instead of surfacing the unit's own
+    // governing memory through its content nodes. A plain node click is unaffected:
+    // `effective_seeds` is exactly `[requested_seed]` in that case, so this is byte-identical to
+    // the old single-node call.
+    n.memory = Some(memory_rail_of(graph, effective_seeds));
     serde_json::to_string(&n)
 }
 
@@ -8019,6 +8056,28 @@ mod tests {
         assert!(
             !ids.contains("u1"),
             "the unit id itself is never a node; the click landed via the unit's decisions/findings"
+        );
+        // spec 63 c5 (the repoint_seed / non-node-seed gap, adv-u63c5-rail-lies-empty-for-a-repointed-unit-seed):
+        // the docked memory rail must NOT silently come back all-empty just because the raw
+        // `requested_seed` (the unit id) is not itself a graph node - it folds over the SAME
+        // `effective_seeds` the neighborhood above already walked, so the unit's own governing
+        // decision/finding still surface beside the canvas that plainly shows those nodes.
+        let mem = &body["memory"];
+        let mem_ids = |key: &str| -> std::collections::BTreeSet<String> {
+            mem[key]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v["id"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert!(
+            mem_ids("decisions").contains("d1"),
+            "the unit's own governing decision is listed on the rail, not silently dropped: {body}"
+        );
+        assert!(
+            mem_ids("findings").contains("f1"),
+            "the unit's own finding is listed on the rail, not silently dropped: {body}"
         );
     }
 
