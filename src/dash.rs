@@ -2005,14 +2005,20 @@ fn whole_graph_lens_key(buckets: &Buckets, node: &Node) -> Option<String> {
 /// so no storage-schema name is ever a cluster key or label, at this or the drilled zoom
 /// ([`whole_graph_lens_key`] carries this gate; [`Lens::Files`] / [`Lens::Concepts`] are unchanged,
 /// each lens's own purity fix is its own criterion). A code grain with NO derived assignments returns
-/// the [`CODE_LENS_UNDERIVED`] empty state.
+/// the [`CODE_LENS_UNDERIVED`] empty state - and so does a grain that HAS live memberships when EVERY
+/// one of them belongs to a purity-excluded node (round 4's own fix, below): [`Buckets::underived`] is
+/// kind-blind (it only asks whether ANY membership exists at all), so it reads `false` in that case,
+/// while [`whole_graph_lens_key`] admits no kind-bucket fallback at all under [`Lens::Code`] - the
+/// stricter of the two gates - and the fold below is left with nothing, so `empty_state` is derived
+/// from the FOLD'S OWN OUTCOME, not from `underived()` alone.
 pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
     let buckets = Buckets::new(graph, lens);
 
     // The documented empty state (spec 53 c4 / spec 54 c3): a derived lens whose selected resolution
-    // grain has NO assignments. Return an empty overview carrying the lens's derivation prompt, so the
-    // panel says "run `rigger graph communities`" / "run `rigger graph concepts`" instead of showing
-    // an error or a bare kind-bucket view. `total` still reports the whole graph size.
+    // grain has NO assignments AT ALL. Return an empty overview carrying the lens's derivation prompt,
+    // so the panel says "run `rigger graph communities`" / "run `rigger graph concepts`" instead of
+    // showing an error or a bare kind-bucket view. `total` still reports the whole graph size. This is
+    // NOT the only path to that same empty state below - see the post-fold re-check.
     if buckets.underived() {
         return ClusterOverview {
             clusters: Vec::new(),
@@ -2025,7 +2031,7 @@ pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
     // Fold the WHOLE graph through the shared bucket fold: every node folds by
     // [`whole_graph_lens_key`] (the code lens's purity-gated wrapper over [`Buckets::key`]; byte-
     // identical to it under Files / Concepts), and cross-bucket edges weight the super-edges. `total`
-    // reports the whole node count; a derived overview is not the empty state (handled above).
+    // reports the whole node count.
     let bucket_label = bucket_label_index(graph, &buckets);
     let (clusters, edges) = fold_buckets(
         graph.nodes.iter(),
@@ -2033,11 +2039,25 @@ pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
         |n| whole_graph_lens_key(&buckets, n),
         &bucket_label,
     );
+    // Spec 63 c1 round 4: a POST-FOLD re-check, mirroring `reproject_derived`'s own `has_derived_bucket`
+    // fix pattern (a post-fold classification, not a pre-fold-only gate) at this sibling call site.
+    // `buckets.underived()` above only asks whether ANY membership exists anywhere in the graph - it
+    // says nothing about whether a membership actually LANDED a cluster under this lens's OWN purity
+    // gate. Under `Lens::Code` specifically, `whole_graph_lens_key` drops every non-code-entity member
+    // with NO kind-bucket fallback (stricter than `Buckets::key`), so a graph whose ONLY live community
+    // membership belongs to a purity-excluded node (a file / decision / design-doc, zero code entities
+    // anywhere) makes `underived()` read `false` while this fold still yields NO clusters at all - a
+    // blank, unexplained canvas were `empty_state` left `None`. Classify by the fold's own emptiness
+    // instead: an empty cluster list still carries the lens's derivation prompt as its explanation.
+    let empty_state = clusters
+        .is_empty()
+        .then(|| buckets.underived_message().map(str::to_string))
+        .flatten();
     ClusterOverview {
         clusters,
         edges,
         total: graph.nodes.len(),
-        empty_state: None,
+        empty_state,
     }
 }
 
