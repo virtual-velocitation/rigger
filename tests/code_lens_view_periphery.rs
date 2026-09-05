@@ -436,6 +436,52 @@ fn code_lens_at_an_underived_grain_carries_the_documented_empty_state_not_an_err
     );
 }
 
+/// Spec 63 CRITERION 1, round 4: the SAME empty state above must ALSO carry when the grain is NOT
+/// underived (a live community membership genuinely exists) but EVERY node carrying one is
+/// purity-excluded (a non-code-entity, zero code entities anywhere in the graph). `Buckets::underived`
+/// only asks whether ANY membership exists at all, so it reads `false` here; `whole_graph_lens_key`
+/// then drops the sole member with no kind-bucket fallback, leaving the fold NOTHING to cluster. A bare
+/// `empty_state: None` in that case would render a totally blank, unexplained canvas - directly
+/// contradicting specs/63's own Notes/Degrade clause ("a lens whose grain the projection lacks...
+/// renders a labeled empty state... never a blank canvas"). This is the whole-graph overview's sibling
+/// of the already-fixed `reproject_derived` blanked-cell regression, at the OTHER call site.
+#[test]
+fn code_lens_overview_carries_the_empty_state_when_only_a_non_code_entity_carries_membership() {
+    const FILE_MEMBER: &str = "src/alpha/mod.rs";
+    let mut file_node = Node {
+        id: FILE_MEMBER.to_string(),
+        kind: KIND_FILE.to_string(),
+        attrs: Default::default(),
+    };
+    file_node
+        .attrs
+        .insert("name".to_string(), FILE_MEMBER.to_string());
+    let graph = Graph {
+        nodes: vec![community(C0, "foo"), file_node],
+        edges: vec![
+            // The ONLY live community membership in the whole graph belongs to a file, not a code
+            // entity - `Buckets::underived` (kind-blind) reads `false` even though the code lens's own
+            // purity gate admits none of it.
+            edge(FILE_MEMBER, C0, REL_IN_COMMUNITY, TIER_INFERRED),
+        ],
+    };
+
+    let overview = clustered_overview(&graph, &code_default());
+    assert_eq!(
+        overview.total, 2,
+        "total still counts both nodes, even though neither folds into a cluster"
+    );
+    assert!(
+        overview.clusters.is_empty() && overview.edges.is_empty(),
+        "the file's membership is purity-excluded, so the fold yields NO clusters: {overview:?}"
+    );
+    assert_eq!(
+        overview.empty_state.as_deref(),
+        Some(CODE_LENS_UNDERIVED),
+        "a blank fold still carries the documented empty-state message, never a bare None: {overview:?}"
+    );
+}
+
 /// THE SERIALIZED WIRE-SHAPE back-compat the external panel reads: this pins the JSON keys'
 /// presence / absence, which the struct-equality inside-out test cannot. Both `Cluster.label` and
 /// `ClusterOverview.empty_state` are `skip_serializing_if = Option::is_none`, so:
