@@ -48,7 +48,7 @@ use rigger::contextgraph::{
 };
 use rigger::dash::{
     cluster_detail, clustered_overview, route, Cluster, ClusterEdge, Lens, CODE_LENS_UNDERIVED,
-    DEFAULT_COMMUNITY_RESOLUTION,
+    DEFAULT_COMMUNITY_RESOLUTION, WHOLE_GRAPH_FILES_UNRESOLVED,
 };
 
 // The two default-grain community ids (`community/<resolution>/<n>`) the fixture derives.
@@ -485,26 +485,34 @@ fn code_lens_overview_carries_the_empty_state_when_only_a_non_code_entity_carrie
 /// THE SERIALIZED WIRE-SHAPE back-compat the external panel reads: this pins the JSON keys'
 /// presence / absence, which the struct-equality inside-out test cannot. Both `Cluster.label` and
 /// `ClusterOverview.empty_state` are `skip_serializing_if = Option::is_none`, so:
-///   * the FILES overview JSON is byte-identical to before spec 53 - NO cluster carries a `label`
-///     key and the body carries NO `empty_state` key;
+///   * the FILES overview JSON carries NO `label` key on any cluster, ever (byte-identical to before
+///     spec 53 on THAT axis); but it DOES carry `empty_state` here, because this fixture's every
+///     `ce(...)` code entity carries no `name` attr (this file's `ce` models the CODE lens's own
+///     coupling members, which the files-lens honesty gate reads as bare cross-file placeholders -
+///     spec 63 c3) and no real definition exists anywhere in the graph to resolve any of them to, so
+///     the files fold admits NOTHING here and [`WHOLE_GRAPH_FILES_UNRESOLVED`] fires rather than a
+///     bare `None` that would misreport this non-empty graph as blank;
 ///   * a CODE overview's community cluster DOES carry `label`, and an UNDERIVED code overview DOES
 ///     carry `empty_state`.
 #[test]
-fn the_serialized_overview_skips_label_and_empty_state_off_the_files_lens() {
+fn the_serialized_overview_skips_label_and_carries_the_accurate_empty_state_off_the_files_lens() {
     let graph = lens_graph();
 
-    // --- FILES lens: byte-identical wire shape (no label anywhere, no empty_state) ---
+    // --- FILES lens: no label anywhere; empty_state IS present and accurate (spec 63 c3, the fold
+    // admits nothing from this fixture's bare, unresolvable code entities) ---
     let files = serde_json::to_value(clustered_overview(&graph, &Lens::Files))
         .expect("the files overview serializes to JSON");
-    assert!(
-        files.get("empty_state").is_none(),
-        "the files overview carries NO empty_state key on the wire: {files}"
+    assert_eq!(
+        files.get("empty_state").and_then(|v| v.as_str()),
+        Some(WHOLE_GRAPH_FILES_UNRESOLVED),
+        "a non-empty graph whose files fold admits nothing carries the accurate empty_state key on \
+         the wire, never a bare-blank omission: {files}"
     );
     let files_clusters = files["clusters"]
         .as_array()
         .expect("clusters is a JSON array");
     assert!(
-        files_clusters.iter().all(|c| c.get("label").is_none()),
+        files_clusters.is_empty() && files_clusters.iter().all(|c| c.get("label").is_none()),
         "NO files-lens cluster carries a label key on the wire (byte-identical back-compat): {files}"
     );
 
