@@ -36,7 +36,7 @@
 //! `dash` + `contextgraph` compile on BOTH the default and the `--no-default-features` lane (neither
 //! the route nor these DTOs is feature-gated), so this guards the served contract in both lanes.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use rigger::contextgraph::{
     Edge, Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, REL_CONTAINS,
@@ -46,12 +46,31 @@ use rigger::dash::{
     cluster_detail, clustered_overview, neighborhood, route, Cluster, ClusterEdge, Lens,
 };
 
-/// A code-entity node under `<file>::<name>` (so [`file_of`] folds it to `<file>`).
+/// A code-entity DEFINITION node under `<file>::<name>` (so [`file_of`] folds it to `<file>`),
+/// carrying a `name` attr matching its own entity-name suffix - exactly as the extraction fold always
+/// sets for a REAL definition, the files-lens honesty gate's (spec 63 c3) marker that this is not a
+/// bare cross-file placeholder. Every fixture in this file models an entity's own file, never a
+/// cross-file reference, so this is the correct shape throughout; [`bare_ce`] below is the dedicated
+/// placeholder shape the honesty-gate tests need.
 fn ce(id: &str) -> Node {
+    let name = id.rsplit_once("::").map_or(id, |(_, n)| n);
     Node {
         id: id.to_string(),
         kind: KIND_CODE_ENTITY.to_string(),
-        attrs: Default::default(),
+        attrs: BTreeMap::from([("name".to_string(), name.to_string())]),
+    }
+}
+
+/// A BARE cross-file code-entity PLACEHOLDER under `<referencing-file>::<name>` (spec 52's documented
+/// shape): no `name` attr, so the files-lens honesty gate (spec 63 c3) cannot take [`file_of`] of its
+/// own id directly - that would misattribute it to the REFERENCING file, not its true definition
+/// file - and instead resolves it by unique entity-name suffix over the [`ce`] DEFINITIONS in the same
+/// graph.
+fn bare_ce(id: &str) -> Node {
+    Node {
+        id: id.to_string(),
+        kind: KIND_CODE_ENTITY.to_string(),
+        attrs: BTreeMap::new(),
     }
 }
 
@@ -223,6 +242,101 @@ fn files_lens_merges_same_file_entities_and_keeps_different_files_apart() {
             },
         ],
         "same-file entities merge (count 2); a different file never merges, even in the same directory"
+    );
+}
+
+/// THE WHOLE-GRAPH FOLD'S OWN RESOLUTION HONESTY (spec 63 c3, FILES-LENS PURITY): a BARE cross-file
+/// placeholder (no `name` attr) names the file that REFERENCES it in its own id, never the file that
+/// DEFINES it, so [`clustered_overview`] must resolve it by entity-name suffix over the graph's real
+/// definitions - the SAME resolution [`reproject`] already performs for the re-projection surface -
+/// rather than folding it to the wrong (referencing) file. Three shapes in one graph: a name with
+/// EXACTLY ONE definition resolves to that definition's file (and its coupling edge crosses files
+/// correctly); a name with NO definition and a name with TWO definitions both cannot be honestly
+/// attributed to any one file, so the whole-graph fold EXCLUDES them entirely (there is no
+/// `unresolved` sidecar at this altitude, unlike the re-projection surface) - never mis-attributed to
+/// the referencing file their own id encodes.
+#[test]
+fn clustered_overview_resolves_bare_cross_file_placeholders_by_unique_name_suffix() {
+    // `helper`: ONE definition (target.rs) - the bare placeholder in caller.rs's namespace resolves
+    // to target.rs, so caller.rs's own cluster count stays at just `foo`, target.rs's count rises to
+    // 2 (its real definition plus the resolved reference), and the foo->helper coupling now crosses
+    // files instead of collapsing to an intra-cluster edge.
+    const CALLER_FOO: &str = "src/caller.rs::foo";
+    const HELPER_BARE: &str = "src/caller.rs::helper";
+    const HELPER_DEF: &str = "src/target.rs::helper";
+    // `ghost`: ZERO definitions anywhere - excluded entirely (never attributed to its own referencing
+    // file `src/caller.rs`).
+    const GHOST_BARE: &str = "src/caller.rs::ghost";
+    // `ambiguous`: TWO definitions (x.rs and y.rs) - excluded entirely (never attributed to either
+    // candidate file, nor to its own referencing file).
+    const AMBIGUOUS_BARE: &str = "src/caller.rs::ambiguous";
+    const AMBIGUOUS_DEF_ONE: &str = "src/x.rs::ambiguous";
+    const AMBIGUOUS_DEF_TWO: &str = "src/y.rs::ambiguous";
+
+    let graph = Graph {
+        nodes: vec![
+            ce(CALLER_FOO),
+            bare_ce(HELPER_BARE),
+            ce(HELPER_DEF),
+            bare_ce(GHOST_BARE),
+            bare_ce(AMBIGUOUS_BARE),
+            ce(AMBIGUOUS_DEF_ONE),
+            ce(AMBIGUOUS_DEF_TWO),
+        ],
+        edges: vec![
+            refs(CALLER_FOO, HELPER_BARE),
+            refs(CALLER_FOO, GHOST_BARE),
+            refs(CALLER_FOO, AMBIGUOUS_BARE),
+        ],
+    };
+
+    let overview = clustered_overview(&graph, &Lens::Files);
+    assert_eq!(
+        overview.total, 7,
+        "total still counts every node, resolved or excluded"
+    );
+    assert_eq!(
+        overview.clusters,
+        vec![
+            Cluster {
+                key: "src/caller.rs".to_string(),
+                count: 1,
+                kind: KIND_CODE_ENTITY.to_string(),
+                label: None,
+            },
+            Cluster {
+                key: "src/target.rs".to_string(),
+                count: 2,
+                kind: KIND_CODE_ENTITY.to_string(),
+                label: None,
+            },
+            Cluster {
+                key: "src/x.rs".to_string(),
+                count: 1,
+                kind: KIND_CODE_ENTITY.to_string(),
+                label: None,
+            },
+            Cluster {
+                key: "src/y.rs".to_string(),
+                count: 1,
+                kind: KIND_CODE_ENTITY.to_string(),
+                label: None,
+            },
+        ],
+        "caller.rs keeps only its real `foo` (the resolved `helper` reference moves to target.rs, \
+         raising ITS count to 2); the ghost and ambiguous placeholders fold to no cluster at all - \
+         never to caller.rs, never to x.rs/y.rs: {overview:?}"
+    );
+    assert_eq!(
+        overview.edges,
+        vec![ClusterEdge {
+            from: "src/caller.rs".to_string(),
+            to: "src/target.rs".to_string(),
+            weight: 1,
+        }],
+        "the foo->helper coupling now correctly crosses to target.rs (the TRUE definition's file), \
+         not caller.rs (the referencing file the bare id encodes); the ghost and ambiguous edges add \
+         no cluster edge since their far endpoint folds to nothing: {overview:?}"
     );
 }
 

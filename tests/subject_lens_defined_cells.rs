@@ -12,7 +12,8 @@
 //!    [`Lens::Concepts`] criterion 4's purity is TOTAL (no own-kind fallback, kind never being a
 //!    filtering axis for concept membership), so the empty cell there is genuinely empty - the
 //!    message is the WHOLE explanation, not an addition to a rendered kind bucket. A [`Lens::Files`]
-//!    re-grain always resolves, so it never carries the message.
+//!    re-grain that resolves at least one member never carries the message (spec 63 c3 owns the
+//!    FILES lens's own empty-cell case, when EVERY member is unresolvable).
 //!  - THE WIDE CELL: a re-grain whose bucket count EXCEEDS the render budget truncates through the
 //!    SAME [`CLUSTER_RENDER_BUDGET`] the cluster drill uses - the largest buckets are kept (ties by
 //!    key), the cross-bucket edges are pruned to the kept set so none dangles, and `truncated` carries
@@ -191,10 +192,12 @@ fn a_derived_regrain_with_no_membership_carries_the_documented_empty_cell_messag
 const CONCEPT_ONLY: &str = "concept/5/0";
 
 /// The code-lens twin: a concept subject whose one member realizes the concept but is in NO community
-/// returns `no derived communities` under the code lens, while the FILES lens - which always resolves -
-/// never carries any empty-cell message even for an unknown (memberless) subject.
+/// returns `no derived communities` under the code lens, while the FILES lens - whose one member DOES
+/// resolve to a file - carries no empty-cell message here, nor for an unknown (memberless) subject
+/// (a different, already-documented degenerate-but-defined cell; spec 63 c3 owns the FILES lens's OWN
+/// empty-cell case, when every member is unresolvable, proven elsewhere).
 #[test]
-fn the_code_lens_empty_cell_and_the_files_lens_never_carrying_a_message() {
+fn the_code_lens_empty_cell_and_the_files_lens_resolving_its_one_member_carry_no_message() {
     let graph = Graph {
         nodes: vec![
             node(CONCEPT_ONLY, KIND_CONCEPT, Some("idea")),
@@ -216,14 +219,17 @@ fn the_code_lens_empty_cell_and_the_files_lens_never_carrying_a_message() {
         "the code empty cell still renders the member's kind-fallback bucket: {code:?}"
     );
 
-    // FILES lens: a file re-grain always resolves, so it NEVER carries an empty-cell message.
+    // FILES lens: the one member (a real definition) resolves to its own file, so it carries no
+    // empty-cell message.
     let files = reproject(&graph, CONCEPT_ONLY, &Lens::Files);
     assert_eq!(
         files.empty_state, None,
-        "a files re-grain resolves every member, so it carries no empty-cell message: {files:?}"
+        "a files re-grain where the member resolves carries no empty-cell message: {files:?}"
     );
     // An UNKNOWN subject (empty member set) under files is a degenerate-but-defined cell: still no
-    // message (the honesty rules never invent a lens membership a files view does not have).
+    // message (the honesty rules never invent a lens membership a files view does not have; an EMPTY
+    // member set is a different, pre-existing degenerate cell from a NON-EMPTY one that resolves to
+    // nothing - spec 63 c3's own empty-cell case, proven elsewhere).
     let unknown = reproject(&graph, "no/such/subject", &Lens::Files);
     assert_eq!(
         unknown.total, 0,
@@ -231,7 +237,7 @@ fn the_code_lens_empty_cell_and_the_files_lens_never_carrying_a_message() {
     );
     assert_eq!(
         unknown.empty_state, None,
-        "the files lens never carries an empty-cell message, even for an unknown subject: {unknown:?}"
+        "the files lens carries no empty-cell message for an unknown (empty-member-set) subject: {unknown:?}"
     );
 }
 
@@ -339,9 +345,11 @@ fn a_partially_membered_derived_cell_is_full_under_both_derived_lenses() {
 /// so no member folds into a derived bucket and the re-grain is the documented empty cell under BOTH
 /// derived lenses - `no derived communities` under code, `not part of any concept` under concepts -
 /// with zero clusters over a zero-size member set. This pins the derived arms of the absent-subject row
-/// the Files twin (`the_code_lens_empty_cell_and_the_files_lens_never_carrying_a_message`) leaves open:
-/// there the absent subject is asserted only under Files (which never carries a message), so without
-/// this the two derived arms could regress in either direction undetected.
+/// the Files twin (`the_code_lens_empty_cell_and_the_files_lens_resolving_its_one_member_carry_no_message`)
+/// leaves open: there the absent subject is asserted only under Files (an empty member set carries no
+/// message there either - a different, pre-existing degenerate cell from the NON-empty-but-unresolvable
+/// case `REPROJECT_FILES_UNRESOLVED` covers, spec 63 c3, proven elsewhere), so without this the two
+/// derived arms could regress in either direction undetected.
 #[test]
 fn an_absent_subject_under_a_derived_lens_is_the_documented_empty_cell() {
     // Any graph works; the subject is simply not one of its nodes.

@@ -29,7 +29,8 @@ use rigger::contextgraph::{
     REL_CONTAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_REALIZES,
 };
 use rigger::dash::{
-    reproject, route, Cluster, Lens, UnresolvedMember, REPROJECT_NO_COMMUNITY, REPROJECT_NO_CONCEPT,
+    reproject, route, Cluster, Lens, UnresolvedMember, REPROJECT_FILES_UNRESOLVED,
+    REPROJECT_NO_COMMUNITY, REPROJECT_NO_CONCEPT,
 };
 
 // --- fixture helpers ----------------------------------------------------------------------------
@@ -857,13 +858,18 @@ fn served_reproject_fires_for_a_file_subject_and_cluster_drill_takes_precedence(
 // auto-resolves and MORE THAN ONE is marked-unresolved with its candidates - both arms are covered by
 // the mechanics periphery (`helper` -> one, `run` -> two) and the serialize contract above. TWO
 // resolution arms remain that no fixture in either suite hits, yet each is a documented honesty
-// guarantee ("nothing silently dropped") that a regression would break green:
+// guarantee ("nothing silently dropped, nothing mis-labeled") that a regression would break green:
 //  - the ZERO-candidate bare member: a call target whose name matches NO definition anywhere (an
 //    external / not-yet-extracted symbol - an EVERYDAY case). It must be marked unresolved with an
 //    EMPTY candidate frontier, never dropped and never mis-attributed to the file its id references;
 //  - the NO-file-identity member: a non-bare member whose id names no file (a non-code singleton
-//    subject, e.g. a decision node). Under files it keeps its KIND bucket - the files-lens twin of the
-//    derived-lens kind fallback the single-entity test proves for `code`.
+//    subject, e.g. a decision node). Under files (spec 63 c3, FILES-LENS PURITY) it is marked
+//    unresolved with an EMPTY candidate frontier too - the SAME honesty shape the zero-candidate bare
+//    member above carries - rather than keeping its raw KIND as a cluster label: no storage-schema
+//    name is ever a cluster key or group label in this lens, unlike the derived-lens kind fallback the
+//    single-entity test proves for `code`. A subject whose ENTIRE member set excludes this way (as a
+//    singleton necessarily does) carries the documented `REPROJECT_FILES_UNRESOLVED` empty-cell
+//    caption rather than a blank, unexplained canvas.
 
 const UNMATCHED_CONCEPT: &str = "concept/7/0";
 const EXTERNAL_BARE: &str = "src/caller.rs::external_symbol";
@@ -915,16 +921,28 @@ fn a_bare_member_with_no_matching_definition_is_unresolved_with_an_empty_frontie
         !re.clusters.iter().any(|c| c.key == "src/caller.rs"),
         "the referencing file the bare id encodes is never a bucket: {re:?}"
     );
+    // The subject's entire member set excludes this way, so the cell is explained, never blanked.
+    assert_eq!(
+        re.empty_state.as_deref(),
+        Some(REPROJECT_FILES_UNRESOLVED),
+        "a member set that resolves to NO file bucket at all carries the documented caption: {re:?}"
+    );
 }
 
 const DECISION_SUBJECT: &str = "d-u55c1-a-decision-node";
 
 /// A single NON-code subject whose id names no file (a decision node) is its own singleton member set.
-/// Under the FILES lens it has no file identity, so it keeps its KIND bucket - the files-lens twin of
-/// the derived-lens kind fallback - rather than being dropped or mis-attributed. Flipping to files
-/// never empties a panel a code lens would fill.
+/// Under the FILES lens (spec 63 c3, FILES-LENS PURITY) it has no file identity, so it is marked
+/// UNRESOLVED with an EMPTY candidate frontier - the honesty shape a zero-candidate bare placeholder
+/// already carries - rather than keeping its raw KIND as a cluster label: no storage-schema name is
+/// ever a cluster key or group label in this lens (unlike the derived-lens kind fallback the
+/// single-entity test proves for `code`). `total` still counts it, and `unresolved` still names it -
+/// nothing is silently dropped, only never mis-labeled. Because this subject's ENTIRE member set
+/// excludes this way, the cell carries the documented [`REPROJECT_FILES_UNRESOLVED`] caption instead
+/// of a blank, unexplained canvas.
 #[test]
-fn a_singleton_subject_with_no_file_identity_keeps_its_kind_bucket_under_files() {
+fn a_singleton_subject_with_no_file_identity_is_marked_unresolved_under_files_never_a_kind_bucket()
+{
     let graph = Graph {
         nodes: vec![node(DECISION_SUBJECT, KIND_DECISION, None)],
         edges: vec![],
@@ -936,19 +954,23 @@ fn a_singleton_subject_with_no_file_identity_keeps_its_kind_bucket_under_files()
         "the singleton echoes its subject"
     );
     assert_eq!(re.total, 1, "a single entity is a member set of one");
-    assert_eq!(
-        re.clusters,
-        vec![Cluster {
-            key: KIND_DECISION.to_string(),
-            count: 1,
-            kind: KIND_DECISION.to_string(),
-            label: None,
-        }],
-        "a member with no file identity keeps its KIND bucket under files, never dropped: {re:?}"
-    );
     assert!(
-        re.unresolved.is_empty(),
-        "a non-bare member is resolved (to its kind), so it is never marked unresolved: {re:?}"
+        re.clusters.is_empty(),
+        "a member with no file identity folds to NO cluster - never its raw KIND as a label: {re:?}"
+    );
+    assert_eq!(
+        re.unresolved,
+        vec![UnresolvedMember {
+            id: DECISION_SUBJECT.to_string(),
+            candidates: Vec::new(),
+        }],
+        "a member with no file identity is marked unresolved with an EMPTY frontier, never dropped \
+         and never mis-labeled by its kind: {re:?}"
+    );
+    assert_eq!(
+        re.empty_state.as_deref(),
+        Some(REPROJECT_FILES_UNRESOLVED),
+        "the subject's entire member set excludes, so the cell is explained, never blanked: {re:?}"
     );
 }
 
