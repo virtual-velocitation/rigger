@@ -326,6 +326,48 @@ fn reprojection_carries_empty_state_when_no_member_realizes_any_concept_under_th
     );
 }
 
+/// Spec 63 CRITERION 4's purity fix, driven over the SERVED `route` boundary, not just the direct
+/// `reproject` call the tests above use: `arch-u63c4-reprojection-leak-full-trace` established the
+/// leak this criterion fixes was reachable at the live `GET /api/graph?seed=<id>&lens=concepts` route,
+/// the exact one the concepts UI tab issues (dash.html's shared `lensControls` widget). So the fix must
+/// be pinned at that SAME wire boundary, not only against the in-process `Reprojection` value: a served
+/// concepts re-grain of the four-member community (`community_over_concepts_graph`) must never carry a
+/// raw `code-entity` KIND bucket for the concept-less m4 in the JSON `clusters` array a browser parses.
+#[test]
+fn the_served_route_excludes_a_membershipless_members_kind_bucket_under_the_concepts_lens() {
+    let body = served_json(
+        &community_over_concepts_graph(),
+        "/api/graph?seed=community%2F1%2F9&lens=concepts&resolution=1",
+    );
+    assert_eq!(
+        body["subject"].as_str(),
+        Some(COMMUNITY),
+        "the served re-projection echoes its subject: {body}"
+    );
+    assert_eq!(
+        body["total"].as_u64(),
+        Some(4),
+        "total still counts all four members over the wire: {body}"
+    );
+    let keys: Vec<&str> = body["clusters"]
+        .as_array()
+        .expect("clusters array")
+        .iter()
+        .map(|c| c["key"].as_str().expect("cluster key is a string"))
+        .collect();
+    assert_eq!(
+        keys,
+        vec![CONCEPT_A, CONCEPT_B],
+        "the served body's clusters are exactly the two concept buckets - no storage-schema \
+         `code-entity` kind name for the concept-less m4 ever reaches the wire: {body}"
+    );
+    assert!(
+        body.get("empty_state").is_none(),
+        "two of the four members DID land a real concept bucket, so the served body omits the \
+         additive caption: {body}"
+    );
+}
+
 // --- the SUBJECT axis: a FILE subject --------------------------------------------------------------
 
 const FILE_SUBJECT: &str = "src/pkg/mod.rs";
