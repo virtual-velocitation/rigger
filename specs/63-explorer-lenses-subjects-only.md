@@ -31,6 +31,11 @@ The mockup file is the visual contract for all of the below; it renders standalo
   MEMORY for a code subject, TOP ENTITIES for a file, TOP EVIDENCE for a concept. Hover
   highlights direct neighbors, dims the rest. Chips are the LENS HANDOFF: a chip opens its
   own taxonomy's lens with the clicked thing as subject. The card never occludes the node.
+  Criterion 2 OWNS proving this chip-to-lens handoff for EVERY card taxonomy named above - a
+  code subject's card (FILE/CONCEPTS/MEMORY chips), a file subject's card (TOP ENTITIES
+  chips), and a concept subject's card (TOP EVIDENCE chips) alike - not only a code subject's
+  card. Criteria 3 and 4 own their own lens's node/edge rendering and card content only; they
+  own no handoff mechanics for any card, matching the Files lens and Concepts lens bullets.
 - **Subject view** (all lenses, on click): clicking focuses the node as subject - canvas
   re-seeds to its one-hop neighborhood (typed edges preserved), a breadcrumb names lens and
   subject with an escape route, and a MEMORY RAIL docks right listing the governing
@@ -76,6 +81,10 @@ The mockup file is the visual contract for all of the below; it renders standalo
   the zoomed-out collapse into community super-nodes specifically - a community node is a
   subject-taxonomy grouping, not a storage schema name, so criterion 6's collapse satisfies
   this rule rather than breaching it.
+- Card handoff ownership is total: criterion 2 proves the chip-to-lens handoff for every card
+  taxonomy (a code subject's card, a file subject's card, and a concept subject's card alike),
+  never only a code subject's card. Criteria 3 and 4 exclude all handoff mechanics from their
+  own Done-when - they prove only their lens's own node/edge/card rendering.
 
 ## Done when
 
