@@ -44,6 +44,7 @@ use rigger::contextgraph::{
 };
 use rigger::dash::{
     cluster_detail, clustered_overview, neighborhood, route, Cluster, ClusterEdge, Lens,
+    WHOLE_GRAPH_FILES_UNRESOLVED,
 };
 
 /// A code-entity DEFINITION node under `<file>::<name>` (so [`file_of`] folds it to `<file>`),
@@ -207,6 +208,87 @@ fn files_lens_overview_buckets_code_entities_by_file_and_excludes_every_other_no
         }],
         "only cross-file coupling weights the super-edge; intra-file edges and edges touching a \
          purity-excluded endpoint add none: {overview:?}"
+    );
+}
+
+/// THE WHOLE-GRAPH FOLD'S OWN "NEVER BLANKED" CONTRACT (spec 63 c3, FILES-LENS PURITY, the sibling
+/// fix to [`REPROJECT_FILES_UNRESOLVED`]'s reprojection-cell contract): a NON-EMPTY graph whose Files
+/// fold admits NOTHING at all - every node either falls outside `KIND_CODE_ENTITY` or is a bare
+/// cross-file placeholder [`clustered_overview`] cannot honestly attribute to one file - must still
+/// carry [`WHOLE_GRAPH_FILES_UNRESOLVED`] as its `empty_state`, never a bare `None` that dash.html's
+/// `renderKgOverview` would otherwise mistake for a truly empty graph and caption "empty graph -
+/// nothing to explore yet" on a graph that plainly is not. This is the IDENTICAL defect class this
+/// spec already fixed for the derived lenses' own whole-graph surface (`CODE_LENS_UNDERIVED` /
+/// `CONCEPTS_LENS_UNDERIVED` firing on the fold's own post-fold emptiness, not merely on
+/// `Buckets::underived()`), extended here to the Files lens's own purity-excluded case. A TRULY empty
+/// graph (zero nodes at all) stays `None` - that one degrades to the generic caption correctly.
+#[test]
+fn clustered_overview_under_files_lens_carries_an_accurate_empty_state_when_the_fold_admits_nothing(
+) {
+    // Every node here is purity-excluded from the Files fold (spec 63 c3): none is a
+    // `KIND_CODE_ENTITY`, so `whole_graph_lens_key` returns `None` for all of them.
+    let all_non_code_entities = Graph {
+        nodes: vec![
+            file_node(FILE_A),
+            plain("d1", KIND_DECISION),
+            plain("docs/x.md", KIND_DESIGN_DOC),
+        ],
+        edges: vec![],
+    };
+    let overview = clustered_overview(&all_non_code_entities, &Lens::Files);
+    assert_eq!(
+        overview.total, 3,
+        "total still counts every node, folded or not"
+    );
+    assert!(
+        overview.clusters.is_empty(),
+        "no node here is a code entity, so the fold admits nothing: {overview:?}"
+    );
+    assert_eq!(
+        overview.empty_state.as_deref(),
+        Some(WHOLE_GRAPH_FILES_UNRESOLVED),
+        "a non-empty graph whose Files fold admits nothing must carry the accurate empty-state \
+         caption, never a bare None that reads as a truly empty graph: {overview:?}"
+    );
+
+    // Every code entity here IS a bare cross-file placeholder with ZERO matching definitions
+    // anywhere in the graph (no `ce(...)` real definition exists at all) - unresolvable honestly, so
+    // the fold still admits nothing even though `KIND_CODE_ENTITY` nodes exist. (A real definition
+    // would fold under its own file regardless of whether it also candidates for some OTHER bare
+    // placeholder's ambiguous resolution - that shape is a different, already-covered test:
+    // `clustered_overview_resolves_bare_cross_file_placeholders_by_unique_name_suffix`.)
+    let only_unresolvable_placeholders = Graph {
+        nodes: vec![
+            bare_ce("src/caller.rs::ghost_one"),
+            bare_ce("src/caller.rs::ghost_two"),
+        ],
+        edges: vec![],
+    };
+    let overview = clustered_overview(&only_unresolvable_placeholders, &Lens::Files);
+    assert_eq!(overview.total, 2);
+    assert!(
+        overview.clusters.is_empty(),
+        "every code entity here is a bare placeholder with no definition to resolve to: {overview:?}"
+    );
+    assert_eq!(
+        overview.empty_state.as_deref(),
+        Some(WHOLE_GRAPH_FILES_UNRESOLVED),
+        "unresolvable bare placeholders leave the fold empty just like non-code-entity nodes, and \
+         must carry the same accurate caption: {overview:?}"
+    );
+
+    // A TRULY empty graph (no nodes at all) is a DIFFERENT, already-documented degenerate case: it
+    // stays `None`, so dash.html's generic "empty graph - nothing to explore yet" caption fires
+    // instead - accurate there, unlike the non-empty cases above.
+    let empty = Graph {
+        nodes: Vec::new(),
+        edges: Vec::new(),
+    };
+    let overview = clustered_overview(&empty, &Lens::Files);
+    assert_eq!(overview.total, 0);
+    assert_eq!(
+        overview.empty_state, None,
+        "a truly empty graph carries no empty_state - the generic caption already covers it"
     );
 }
 

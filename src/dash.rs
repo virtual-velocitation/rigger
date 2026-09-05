@@ -1782,6 +1782,19 @@ pub const REPROJECT_NO_CONCEPT: &str = "not part of any concept";
 /// UNKNOWN subject (an empty member set) - a different, already-documented degenerate-but-defined cell.
 pub const REPROJECT_FILES_UNRESOLVED: &str = "no member resolves to a file";
 
+/// The documented empty-state message a [`Lens::Files`] WHOLE-GRAPH overview ([`clustered_overview`],
+/// spec 63 c3, FILES-LENS PURITY) carries when the graph holds at least one node but the Files fold
+/// admits NONE of them into any cluster - every node either falls outside [`KIND_CODE_ENTITY`] (a
+/// file's own node, a decision, a design-doc, ...) or is a bare cross-file placeholder
+/// [`whole_graph_lens_key`] could not honestly attribute to one file (zero or more than one
+/// name-suffix candidate). This is the Files-lens sibling of [`REPROJECT_FILES_UNRESOLVED`] - the
+/// identical "never blanked" contract carried onto THIS whole-graph surface, mirroring [`CODE_LENS_UNDERIVED`]
+/// / [`CONCEPTS_LENS_UNDERIVED`]'s own post-fold re-check (spec 63 c1 round 4) for the derived lenses.
+/// A TRULY EMPTY graph (`total == 0`) never reaches this message: [`clustered_overview`] leaves
+/// `empty_state` `None` there instead, so dash.html's generic "empty graph" caption fires - accurate
+/// for that different, already-documented degenerate case.
+pub const WHOLE_GRAPH_FILES_UNRESOLVED: &str = "no node resolves to a file";
+
 /// The overview/drill bucket lens (spec 53 c4): how a graph node folds to its super-node bucket.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Lens {
@@ -2171,9 +2184,28 @@ pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
     // anywhere) makes `underived()` read `false` while this fold still yields NO clusters at all - a
     // blank, unexplained canvas were `empty_state` left `None`. Classify by the fold's own emptiness
     // instead: an empty cluster list still carries the lens's derivation prompt as its explanation.
+    //
+    // Spec 63 c3 (FILES-LENS PURITY): `Lens::Files` carries this SAME hazard - `whole_graph_lens_key`'s
+    // own purity gate (a non-code-entity node, or a bare cross-file placeholder with zero or more than
+    // one name-suffix candidate) can exclude EVERY node in a non-empty graph - but `buckets.underived()`
+    // is unconditionally `false` under `Lens::Files` (it is never a derived lens) and
+    // `buckets.underived_message()` is unconditionally `None` there, so neither signal this fold's own
+    // emptiness the way the Code/Concepts arms above do. Mirror `reproject_files`'s own
+    // `(!members.is_empty() && clusters.is_empty())` "never blanked" gate at this whole-graph sibling
+    // surface, keyed on the WHOLE graph (`graph.nodes`) rather than one subject's member set: a
+    // non-empty graph the fold admits nothing from carries `WHOLE_GRAPH_FILES_UNRESOLVED`; a TRULY
+    // empty graph stays `None`, falling through to dash.html's generic "empty graph" caption (accurate
+    // there).
     let empty_state = clusters
         .is_empty()
-        .then(|| buckets.underived_message().map(str::to_string))
+        .then(|| match buckets.lens {
+            Lens::Files => {
+                (!graph.nodes.is_empty()).then_some(WHOLE_GRAPH_FILES_UNRESOLVED.to_string())
+            }
+            Lens::Code { .. } | Lens::Concepts { .. } => {
+                buckets.underived_message().map(str::to_string)
+            }
+        })
         .flatten();
     ClusterOverview {
         clusters,
