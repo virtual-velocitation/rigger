@@ -408,6 +408,54 @@ fn concepts_lens_excludes_membershipless_nodes_of_any_kind_entirely() {
     );
 }
 
+/// Spec 63 criterion 4's INCLUSION half, uncovered by the exclusion tests above: `Buckets::new`'s
+/// `Lens::Concepts` arm indexes every live `REALIZES` edge with NO kind check on the realizing node
+/// (unlike `Lens::Code`, which excludes every non-`KIND_CODE_ENTITY` member outright), so membership -
+/// never kind - is the concepts lens's only filter. A decision that DOES realize a concept must fold
+/// there exactly like a code entity or design doc, at both the overview and the drill; if a future
+/// edit mistakenly copied the code lens's kind-exclusion onto the concepts arm, this is the one test
+/// that would catch it (every other fixture's non-code/doc kinds are membership-less, so they are
+/// indistinguishable from a kind-excluded node here without this positive case).
+#[test]
+fn concepts_lens_admits_a_realizing_member_of_any_kind_not_only_code_and_docs() {
+    let graph = Graph {
+        nodes: vec![
+            ce("src/only.rs::fn_a"),
+            plain("decision-realizes", KIND_DECISION),
+            concept(C0, "the idea"),
+        ],
+        edges: vec![
+            edge("src/only.rs::fn_a", C0, REL_REALIZES, TIER_INFERRED),
+            edge("decision-realizes", C0, REL_REALIZES, TIER_INFERRED),
+        ],
+    };
+
+    let overview = clustered_overview(&graph, &concepts_default());
+    assert_eq!(
+        overview.clusters,
+        vec![Cluster {
+            key: C0.to_string(),
+            count: 2,
+            kind: KIND_CODE_ENTITY.to_string(),
+            label: Some("the idea".to_string()),
+        }],
+        "a decision that REALIZES a concept folds into it exactly like a code entity - membership, \
+         not kind, is the only filter under the concepts lens (dominant-kind tie resolves to the \
+         lexicographically-smallest, code-entity): {overview:?}"
+    );
+
+    let drill = cluster_detail(&graph, C0, &concepts_default());
+    let members: BTreeSet<&str> = drill.nodes.iter().map(|n| n.id.as_str()).collect();
+    assert_eq!(
+        members,
+        ["src/only.rs::fn_a", "decision-realizes"]
+            .into_iter()
+            .collect::<BTreeSet<&str>>(),
+        "the concept drill includes the realizing decision alongside the code entity: kind is not a \
+         filtering axis for concept membership: {drill:?}"
+    );
+}
+
 /// THE UNDERIVED-GRAIN empty state over the public boundary: a concepts lens at a resolution grain
 /// with NO derived assignments returns the documented `CONCEPTS_LENS_UNDERIVED` prompt - never an
 /// error and never a bare kind-bucket view - while `total` still reports the whole graph size.
