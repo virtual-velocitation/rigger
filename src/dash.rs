@@ -1975,10 +1975,13 @@ impl<'g> Buckets<'g> {
 ///
 /// [`Lens::Files`] / [`Lens::Concepts`] fold exactly as [`Buckets::key`] already does here (their own
 /// purity fix is criterion 3 / criterion 4's, not this one's). Spec 55's subject x lens
-/// REPROJECTION matrix ([`reproject`] / `reproject_derived`) is a DIFFERENT code path that calls
-/// [`Buckets::key`] directly and is deliberately NOT routed through this gate: its own nothing-dropped
-/// contract (a membership-less leaf subject keeps its kind bucket, so re-graining a lone subject never
-/// empties the panel) is a distinct, already-settled requirement this amendment does not touch.
+/// REPROJECTION matrix ([`reproject`] / `reproject_derived`) is a DIFFERENT code path that shares the
+/// SAME code-lens UI tab (dash.html's `lensControls`/`data-lens="code"` widget renders both) and so
+/// owes the identical purity claim, but is NOT routed through this exact gate: `reprojection_lens_key`
+/// carries an equivalent non-[`KIND_CODE_ENTITY`]-excluding rule for that surface WITHOUT this gate's
+/// stricter membership-less-code-entity exclusion, because reprojection's own nothing-dropped contract
+/// (a membership-less leaf subject keeps its kind bucket, so re-graining a lone subject never empties
+/// the panel) is a distinct, already-settled requirement this gate must not regress there.
 fn whole_graph_lens_key(buckets: &Buckets, node: &Node) -> Option<String> {
     if matches!(buckets.lens, Lens::Code { .. }) {
         if node.kind != KIND_CODE_ENTITY {
@@ -2412,6 +2415,24 @@ fn member_set<'g>(graph: &'g Graph, subject: &str) -> Vec<&'g Node> {
         .collect()
 }
 
+/// The RE-PROJECTION lens fold key for one node (spec 63 c1, CODE-LENS PURITY, the subjects-only
+/// rule, carried onto the [`reproject_derived`] surface - a DIFFERENT code path from
+/// [`clustered_overview`] / [`cluster_detail`], which [`whole_graph_lens_key`] already gates): under
+/// [`Lens::Code`] a node OUTSIDE [`KIND_CODE_ENTITY`] (a decision, a design-doc, ...) is excluded
+/// outright (`None`) - a storage-schema kind name must never become a re-projected cluster key
+/// either, exactly as it never becomes a whole-graph one. UNLIKE [`whole_graph_lens_key`], a
+/// membership-less CODE entity keeps [`Buckets::key`]'s own kind-bucket fallback here: spec 55 c2's
+/// nothing-dropped re-projection contract (a lone code-entity subject re-grained under the code lens
+/// still renders its one `code-entity` bucket) is a distinct, already-settled requirement this purity
+/// gate must not regress. [`Lens::Concepts`] folds exactly as [`Buckets::key`] already does
+/// (criterion 4's own purity fix, not this one's).
+fn reprojection_lens_key(buckets: &Buckets, node: &Node) -> Option<String> {
+    if matches!(buckets.lens, Lens::Code { .. }) && node.kind != KIND_CODE_ENTITY {
+        return None;
+    }
+    buckets.key(node)
+}
+
 /// Re-bucket a member set under a DERIVED lens ([`Lens::Code`] / [`Lens::Concepts`]): fold each
 /// member by its coupling community / derived concept through the shared [`fold_buckets`] authority,
 /// restricted to the member set so cross-bucket edges among members weight the super-edges. `total`
@@ -2422,7 +2443,7 @@ fn reproject_derived(graph: &Graph, subject: &str, lens: &Lens, members: &[&Node
     let (clusters, edges) = fold_buckets(
         members.iter().copied(),
         &graph.edges,
-        |n| buckets.key(n),
+        |n| reprojection_lens_key(&buckets, n),
         &bucket_label,
     );
     // Spec 55 c2, the EMPTY cell: when NO member folds into a derived (community/concept) bucket, the
