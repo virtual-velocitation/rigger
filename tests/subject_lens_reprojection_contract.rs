@@ -466,6 +466,76 @@ fn reprojection_carries_empty_state_when_the_sole_realizer_is_purity_excluded() 
     );
 }
 
+const FALLBACK_ENTITY: &str = "src/gamma/o.rs::o";
+
+/// Round 3's `has_derived_bucket` guard (`reprojection_lens_key(m).is_some() &&
+/// buckets.membership.contains_key(m.id)`) ANDs TWO independent conditions, but
+/// `reprojection_carries_empty_state_when_the_sole_realizer_is_purity_excluded` above only exercises
+/// the branch where the FIRST operand is what turns the AND false (a non-code-entity member,
+/// unconditionally excluded regardless of membership). This pins the OTHER branch: a membership-less
+/// CODE ENTITY passes `reprojection_lens_key`'s `is_some()` half (the pre-existing spec-55 c2
+/// kind-bucket fallback `single_entity_subject_is_its_own_member_set` already proves for `clusters`,
+/// but never checks `empty_state`), so it is the SECOND operand - the raw membership check - doing
+/// the real work here: with no membership at all, the AND must still read false and the additive
+/// `REPROJECT_NO_COMMUNITY` caption must still appear ALONGSIDE the rendered kind-bucket cluster, never
+/// suppressed just because `reprojection_lens_key` happened to return `Some` via its fallback. A mutant
+/// dropping the membership operand (leaving only `reprojection_lens_key(m).is_some()`) would wrongly
+/// clear this caption for every membership-less code-entity re-projection - nothing before this test
+/// asserted `empty_state` on that path.
+#[test]
+fn reprojection_keeps_the_empty_state_caption_for_a_membership_less_code_entitys_kind_fallback() {
+    let graph = Graph {
+        nodes: vec![def(FALLBACK_ENTITY, "o")],
+        edges: vec![],
+    };
+
+    let re = reproject(&graph, FALLBACK_ENTITY, &code_lens());
+    assert_eq!(
+        re.clusters,
+        vec![bucket(KIND_CODE_ENTITY, 1, None)],
+        "the membership-less code entity still keeps its kind-bucket fallback: {re:?}"
+    );
+    assert_eq!(
+        re.empty_state.as_deref(),
+        Some(REPROJECT_NO_COMMUNITY),
+        "no member landed a DERIVED (community) bucket, so the additive no-community caption must \
+         still appear beside the kind-bucket cluster above - the is_some() gate's kind-bucket \
+         fallback for a code entity must never be mistaken for a real derived membership: {re:?}"
+    );
+}
+
+const LANDED_ENTITY: &str = "src/gamma/p.rs::p";
+const LANDED_COMMUNITY: &str = "community/1/8";
+
+/// The mirror POSITIVE case, completing round 3's `has_derived_bucket` AND-guard accounting: a code
+/// entity carrying a REAL live community membership must clear the empty-state caption entirely
+/// (`has_derived_bucket` true). Pins that the added `is_some()` operand does not ALSO wrongly suppress
+/// a genuine full cell - a mutant that forces `has_derived_bucket` to always read false (e.g. deleting
+/// the `&&`'s right-hand side, or the whole conjunction) would be caught here, since no prior test in
+/// this suite asserts `empty_state` is `None` on a real-membership path either.
+#[test]
+fn reprojection_clears_the_empty_state_caption_when_a_real_membership_lands_a_bucket() {
+    let graph = Graph {
+        nodes: vec![
+            def(LANDED_ENTITY, "p"),
+            node(LANDED_COMMUNITY, KIND_COMMUNITY, Some("delta")),
+        ],
+        edges: vec![edge(LANDED_ENTITY, LANDED_COMMUNITY, REL_IN_COMMUNITY)],
+    };
+
+    let re = reproject(&graph, LANDED_ENTITY, &code_lens());
+    assert_eq!(
+        re.clusters,
+        vec![bucket(LANDED_COMMUNITY, 1, Some("delta"))],
+        "the entity's real community membership is the ONE cluster: {re:?}"
+    );
+    assert_eq!(
+        re.empty_state, None,
+        "a genuine derived membership landed a real cluster, so no additive caption should appear: \
+         {re:?}"
+    );
+}
+
 /// An UNKNOWN subject (absent from the graph) has an EMPTY member set, so `reproject` returns an empty
 /// body - the subject echoed, zero clusters, zero edges, zero total, no unresolved - rather than
 /// panicking or leaking a whole-graph overview. This is the c1 mechanics of the documented empty cell
