@@ -250,6 +250,13 @@
   .kgsvg { display: block; width: 100%; overflow: hidden; background: rgba(110, 168, 254, 0.03);
     border: 1px solid var(--line); border-radius: 6px; cursor: grab; touch-action: none; user-select: none; }
   .kgsvg:active { cursor: grabbing; }
+  /* GROUP HULL (spec 63 c3, directory hulls): a low-contrast tinted region behind the members sharing
+     a group key (the files lens's directory grouping), never a hub node - a region, never a member. */
+  .kghull rect { fill: rgba(110, 168, 254, 0.06); stroke: var(--dim); stroke-width: 1; }
+  .kghull-l {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; letter-spacing: 0.08em;
+    fill: var(--muted); text-transform: uppercase;
+  }
   .kgline { stroke: var(--dim); }
   .kgn { cursor: pointer; }
   .kgn circle { stroke: var(--panel); stroke-width: 1; }
@@ -873,7 +880,11 @@ function renderReprojection(rp) {
     nodeClass: () => "kgcluster",
     nodeAttrs: n => ' data-cluster="' + esc(n.id) + '"',
     label: n => (n.label || n.id) + " (" + n.count + ")",
-    edgeWidth: e => 0.6 + 4 * (e.weight / maxW)
+    edgeWidth: e => 0.6 + 4 * (e.weight / maxW),
+    // DIRECTORY HULLS (spec 63 c3): a files re-grain's clusters ARE files too, so the same directory
+    // grouping applies here; code/concepts re-grains opt out (undefined groupOf), unchanged.
+    groupOf: kgLens === "files" ? (n => kgFilesDirOf(n.id)) : undefined,
+    groupLabel: kgLens === "files" ? (key => "DIR · " + key) : undefined
   });
   el("kgpanel").innerHTML = toolbar + emptyCell + svg + unresolvedSection + sharedSection + overlayNotes(nodes);
   bindKgView();
@@ -1466,15 +1477,56 @@ function kgVisibleLabels(nodes, pos, scale, radiusOf, labelOf) {
   return vis;
 }
 
+// Fold laid-out nodes into their GROUP HULL bounding boxes (spec 63 c3, directory hulls): `groupOf(n)`
+// keys each node with a laid-out position (`pos[n.id]` present) into a group; a nullish key or a
+// missing position joins no group. Each group's box is the union of its members' circles (centre +/-
+// `radiusOf(n)`), so the box is exactly as large as it needs to be to enclose every member - never
+// hard-coded, never approximated. Returns `{}` (no hulls) when `groupOf` is absent, so this is a
+// pure no-op for every view that does not opt in.
+function kgGroupHulls(nodes, pos, radiusOf, groupOf) {
+  const boxes = {};
+  if (!groupOf) return boxes;
+  nodes.forEach(n => {
+    const q = pos[n.id];
+    if (!q) return;
+    const key = groupOf(n);
+    if (key === null || key === undefined) return;
+    const r = radiusOf(n);
+    const b = boxes[key] || (boxes[key] = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity });
+    b.minX = Math.min(b.minX, q.x - r);
+    b.minY = Math.min(b.minY, q.y - r);
+    b.maxX = Math.max(b.maxX, q.x + r);
+    b.maxY = Math.max(b.maxY, q.y + r);
+  });
+  return boxes;
+}
+
+// The files lens's DIRECTORY grouping key (spec 63 c3, directory hulls): a file cluster's `id` IS its
+// repo-relative path (clustered_overview / reproject's own files-lens fold key), so its directory is
+// everything before the LAST `/`; a directory-less (repo-root) file falls back to the SAME `(root)`
+// sentinel the server's own directory fold (`cluster_key` / `CLUSTER_ROOT`) uses, so a root file's
+// hull label reads identically to how the pre-spec-63 directory fold once bucketed it. Pure client-
+// side string logic over the ALREADY-SERVED file key - no new payload field, matching the dash
+// charter (JS-only where the existing DTO already carries what the view needs).
+function kgFilesDirOf(key) {
+  const i = key.lastIndexOf('/');
+  return i === -1 ? '(root)' : key.slice(0, i);
+}
+
 // Emit the SVG for a graph: a layout places the nodes, then we draw one edge per <line>/<path> and
 // one <g><circle><text></g> per node - all inside a single #kgzoom group the pan/zoom transforms. The
 // caller supplies per-node radius/colour/class/label and the select handle (data-cluster on a cluster
 // super-node, data-seed on a member), so ONE emitter serves the overview, the drill, AND the directed
-// -call DAG (spec 52 c5). The DIRECTION is drawn from three optional opts the exploration views omit
-// (so their output is unchanged): `opts.layout` swaps the force layout for another position map (the
+// -call DAG (spec 52 c5). The DIRECTION is drawn from optional opts the exploration views omit (so
+// their output is unchanged): `opts.layout` swaps the force layout for another position map (the
 // left-to-right layered layout); `opts.marker` adds an SVG ARROWHEAD marker definition and points the
-// forward edges at it; and `opts.edgeBack(e)` renders a recursion edge as a DISTINCT curved return
-// arc instead of a straight line. With none supplied the emitter draws exactly as before.
+// forward edges at it; `opts.edgeBack(e)` renders a recursion edge as a DISTINCT curved return arc
+// instead of a straight line; and `opts.groupOf(n)` + `opts.groupLabel(key)` draw a GROUP HULL - a
+// low-contrast tinted, labelled region behind the members sharing a group key (spec 63 c3's directory
+// hulls: the files lens groups its file nodes by directory) - computed from the SAME laid-out
+// positions and radii as the nodes themselves, so a hull always encloses exactly the members it
+// labels. `groupOf` returning a nullish key excludes that node from every hull (no group, no hull).
+// With none of these supplied the emitter draws exactly as before.
 function kgSvg(nodes, edges, width, height, opts) {
   // The force path is DENSITY-SCALED (spec 59 c2): forceLayout takes the per-node radius/label
   // accessors so its canvas (and thus its repulsion) grows with the node count and the total label
@@ -1495,6 +1547,23 @@ function kgSvg(nodes, edges, width, height, opts) {
   // it clears the state and stays byte-identical.
   const declutter = !opts.layout;
   kgLabelState = declutter ? { nodes: nodes, pos: pos, radius: opts.radius, label: opts.label, width: width } : null;
+  // GROUP HULLS (spec 63 c3, directory hulls): a low-contrast tinted, rounded region drawn BEHIND the
+  // edges and nodes, one per DISTINCT group key `opts.groupOf` reports, padding the bounding box of
+  // its members' laid-out circles (centre +/- radius) so the region always encloses exactly what it
+  // labels. Sorted by group key for a deterministic z-order and DOM order across polls. A node whose
+  // `groupOf` is nullish (or whose position is missing, e.g. a budget-dropped drill member) joins no
+  // hull. Absent `opts.groupOf`, this is a no-op and the emitter draws exactly as before.
+  const hulls = kgGroupHulls(nodes, pos, opts.radius, opts.groupOf);
+  const hullPad = 16;
+  const hullMarkup = Object.keys(hulls).sort().map(key => {
+    const b = hulls[key];
+    const x = b.minX - hullPad, y = b.minY - hullPad;
+    const w = (b.maxX - b.minX) + hullPad * 2, h = (b.maxY - b.minY) + hullPad * 2;
+    const label = opts.groupLabel ? opts.groupLabel(key) : key;
+    return '<g class="kghull"><rect x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="'
+      + w.toFixed(1) + '" height="' + h.toFixed(1) + '" rx="14" ry="14"/><text class="kghull-l" x="'
+      + (x + 10).toFixed(1) + '" y="' + (y + 17).toFixed(1) + '">' + esc(label) + '</text></g>';
+  }).join("");
   // The arrowhead marker (spec 52 c5): defined ONLY when the caller asks for direction, so the
   // exploration views (no marker) emit no <defs> and stay byte-identical. Forward directed edges
   // then carry marker-end so the callee end draws an arrowhead.
@@ -1547,7 +1616,7 @@ function kgSvg(nodes, edges, width, height, opts) {
   }).join("");
   return '<svg class="kgsvg" width="100%" height="' + height + '" viewBox="0 0 ' + width + ' ' + height
     + '" preserveAspectRatio="xMidYMid meet">' + defs
-    + '<g id="kgzoom">' + lines + circles + '</g></svg>';
+    + '<g id="kgzoom">' + hullMarkup + lines + circles + '</g></svg>';
 }
 
 // The DIRECTED-CALL layered layout (spec 52 c5): a left-to-right DAG position map for `kgSvg`, keyed
@@ -1692,7 +1761,12 @@ function renderKgOverview(ov) {
     nodeClass: () => "kgcluster",
     nodeAttrs: n => ' data-cluster="' + esc(n.id) + '"',
     label: n => (n.label || n.id) + " (" + n.count + ")",
-    edgeWidth: e => 0.6 + 4 * (e.weight / maxW)
+    edgeWidth: e => 0.6 + 4 * (e.weight / maxW),
+    // DIRECTORY HULLS (spec 63 c3): only the files lens's nodes ARE files, so only there does a
+    // directory grouping mean anything - code/concepts clusters are already communities/concepts,
+    // not files, so they opt out (undefined groupOf, no hull drawn) and stay byte-identical.
+    groupOf: kgLens === "files" ? (n => kgFilesDirOf(n.id)) : undefined,
+    groupLabel: kgLens === "files" ? (key => "DIR · " + key) : undefined
   });
   const toolbar = '<div class="kgtoolbar">' + controls + ' &middot; ' + total + " node" + (total === 1 ? "" : "s")
     + " in " + clusters.length + " cluster" + (clusters.length === 1 ? "" : "s")

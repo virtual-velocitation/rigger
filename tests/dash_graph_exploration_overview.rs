@@ -38,12 +38,22 @@ use rigger::contextgraph::{
 };
 use rigger::dash::{clustered_overview, Cluster, ClusterEdge, ClusterOverview, Lens};
 
-/// A graph node with no attributes (the overview reads only its id and kind, never its label).
+/// A graph node (the overview reads only its id, kind, and - for a code entity, spec 63 c3's files-
+/// lens honesty gate - whether it carries a `name` attr; never its label). A [`KIND_CODE_ENTITY`]
+/// node carries a `name` attr matching its own entity-name suffix, exactly as the extraction fold
+/// always sets for a REAL definition (never a bare cross-file placeholder, which is what a MISSING
+/// `name` attr means to that gate) - every fixture in this file models one entity's own file, never a
+/// cross-file placeholder, so this is the correct shape for all of them.
 fn node(id: &str, kind: &str) -> Node {
     Node {
         id: id.to_string(),
         kind: kind.to_string(),
-        attrs: BTreeMap::new(),
+        attrs: if kind == KIND_CODE_ENTITY {
+            let name = id.rsplit_once("::").map_or(id, |(_, n)| n);
+            BTreeMap::from([("name".to_string(), name.to_string())])
+        } else {
+            BTreeMap::new()
+        },
     }
 }
 

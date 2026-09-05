@@ -239,6 +239,14 @@ fn concept_files_regrain_resolves_bare_members_to_their_defining_files() {
         Some(1),
         "a.rs holds only its definition member foo, never the bare run it merely references: {re:?}"
     );
+    // Spec 63 c3's "never blanked" re-check is genuinely POST-FOLD, not "any unresolved member ->
+    // empty": this member set carries an unresolved entry (run) YET four members DID fold into a
+    // file bucket, so the cell is FULL - no empty-cell caption.
+    assert_eq!(
+        re.empty_state, None,
+        "a member set where at least one member resolves carries no empty-cell message, even though \
+         another member is marked unresolved: {re:?}"
+    );
 }
 
 /// THE SERVED `/api/graph` ROUTE threads the `seed=` + `lens=` composition END-TO-END: a non-empty

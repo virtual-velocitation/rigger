@@ -1322,13 +1322,15 @@ pub struct Reprojection {
     /// The member-set size (every member, resolved or not), so the panel reports the re-grain size -
     /// NOT the whole-graph node count.
     pub total: usize,
-    /// The MARKED-UNRESOLVED members (spec 55 c1 honesty rule), set only under [`Lens::Files`]: a
-    /// bare cross-file placeholder member whose name resolves to MORE THAN ONE definition (or to
-    /// none) cannot be attributed to a single defining file, so it is surfaced here - each carrying
-    /// its SORTED candidate definition ids - rather than folded into the WRONG file bucket its
-    /// (referencing-file) id would encode. Ordered by member id. Empty (and omitted from the JSON)
-    /// under [`Lens::Code`] / [`Lens::Concepts`] and for a fully-resolvable FILES re-grain, so those
-    /// bodies stay lean.
+    /// The MARKED-UNRESOLVED members (spec 55 c1 honesty rule, extended by spec 63 c3's FILES-LENS
+    /// PURITY), set only under [`Lens::Files`]: a bare cross-file placeholder member whose name
+    /// resolves to MORE THAN ONE definition (or to none) cannot be attributed to a single defining
+    /// file, so it is surfaced here - each carrying its SORTED candidate definition ids - rather than
+    /// folded into the WRONG file bucket its (referencing-file) id would encode; a member with NO file
+    /// identity at all (a rare dev-loop node) is surfaced here too, with an EMPTY candidate frontier,
+    /// rather than folded into its raw storage-schema KIND as a cluster label. Ordered by member id.
+    /// Empty (and omitted from the JSON) under [`Lens::Code`] / [`Lens::Concepts`] and for a
+    /// fully-resolvable FILES re-grain, so those bodies stay lean.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub unresolved: Vec<UnresolvedMember>,
     /// The member ids flagged SHARED (spec 55 c2): a member realizing MORE THAN ONE concept folds
@@ -1347,14 +1349,15 @@ pub struct Reprojection {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated: Option<usize>,
     /// The documented empty-CELL message (spec 55 c2), set under a DERIVED lens when the member set
-    /// folds into NO community/concept bucket: [`REPROJECT_NO_COMMUNITY`] under [`Lens::Code`],
-    /// [`REPROJECT_NO_CONCEPT`] under [`Lens::Concepts`]. Under [`Lens::Code`] the criterion-1
+    /// folds into NO bucket at all: [`REPROJECT_NO_COMMUNITY`] under [`Lens::Code`] (the criterion-1
     /// kind-fallback clusters still render, so this caption is ADDITIVE there - the defined-but-empty
-    /// cell is explained, never blanked. Under [`Lens::Concepts`] criterion 4's purity is TOTAL (no
-    /// own-kind fallback), so whenever this fires `clusters` is genuinely empty - the caption is the
-    /// ONLY explanation for the blank cell there, not merely additive. Absent (`None`, omitted from
-    /// the JSON) under [`Lens::Files`] (a file re-grain always resolves) and whenever any member DID
-    /// fold into a derived bucket.
+    /// cell is explained, never blanked), [`REPROJECT_NO_CONCEPT`] under [`Lens::Concepts`] (criterion
+    /// 4's purity is TOTAL - no own-kind fallback - so whenever this fires `clusters` is genuinely
+    /// empty, the caption the ONLY explanation for the blank cell there, not merely additive), or
+    /// [`REPROJECT_FILES_UNRESOLVED`] under [`Lens::Files`] (spec 63 c3, when every member is
+    /// unresolvable and `clusters` is genuinely empty). Absent (`None`, omitted from the JSON) whenever
+    /// any member DID fold into a bucket, and for an UNKNOWN subject (an empty member set) under every
+    /// lens - a different, already-documented degenerate-but-defined cell.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub empty_state: Option<String>,
 }
@@ -1697,6 +1700,30 @@ fn name_suffix(id: &str) -> &str {
     }
 }
 
+/// Index every code-entity DEFINITION (a `name` attr - the extraction fold's marker that a node is a
+/// real definition, never a bare cross-file placeholder) by its entity-name SUFFIX ([`name_suffix`]):
+/// the ONE resolution authority a bare placeholder's [`file_of`] attribution reads, so the files-lens
+/// whole-graph fold ([`Buckets::new`]'s [`Lens::Files`] arm) and [`reproject_files`] resolve the
+/// IDENTICAL shape identically (spec 52's `definitions_with_suffix`, in-memory). Each candidate list
+/// is sorted + deduped for a deterministic frontier: EXACTLY ONE candidate resolves a bare placeholder
+/// honestly, MORE THAN ONE (or zero) cannot be.
+fn defs_by_entity_suffix(graph: &Graph) -> BTreeMap<&str, Vec<&str>> {
+    let mut defs_by_suffix: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for n in &graph.nodes {
+        if n.kind == KIND_CODE_ENTITY && n.attrs.contains_key("name") {
+            defs_by_suffix
+                .entry(name_suffix(&n.id))
+                .or_default()
+                .push(n.id.as_str());
+        }
+    }
+    for cands in defs_by_suffix.values_mut() {
+        cands.sort_unstable();
+        cands.dedup();
+    }
+    defs_by_suffix
+}
+
 // ---------------------------------------------------------------------------
 // The overview/drill LENS (spec 53 c4): the bucket key is PLUGGABLE. `lens=files` is the default
 // spec-42 directory/kind fold ([`cluster_key`]), byte-identical to today and to a `lens`-absent
@@ -1744,6 +1771,16 @@ pub const REPROJECT_NO_COMMUNITY: &str = "no derived communities";
 /// caption fires, `clusters` is genuinely empty, so a "not part of any concept" empty cell is not
 /// merely additive here, it is the whole explanation.
 pub const REPROJECT_NO_CONCEPT: &str = "not part of any concept";
+
+/// The documented empty-CELL message a [`Lens::Files`] RE-PROJECTION (spec 63 c3, FILES-LENS PURITY)
+/// carries when the member set is non-empty but resolves to NO file bucket at all - every member
+/// either carries no file identity or is an unresolvable bare cross-file placeholder, so
+/// [`reproject_files`] marks each one unresolved rather than mis-labeling it, and this caption explains
+/// the resulting empty canvas instead of leaving it blank (mirroring [`REPROJECT_NO_COMMUNITY`] /
+/// [`REPROJECT_NO_CONCEPT`]'s "never blanked" contract for the derived lenses). `unresolved` still
+/// names every excluded member; this message is additive. `None` (the pre-existing cell) for an
+/// UNKNOWN subject (an empty member set) - a different, already-documented degenerate-but-defined cell.
+pub const REPROJECT_FILES_UNRESOLVED: &str = "no member resolves to a file";
 
 /// The overview/drill bucket lens (spec 53 c4): how a graph node folds to its super-node bucket.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1816,6 +1853,13 @@ struct Buckets<'g> {
     /// multi-concept member appears once, never silently duplicated. Always empty under
     /// [`Lens::Files`] and [`Lens::Code`] (a node carries at most one community).
     shared: BTreeSet<&'g str>,
+    /// [`Lens::Files`] ONLY (spec 63 c3, FILES-LENS PURITY): every code-entity DEFINITION indexed by
+    /// entity-name suffix ([`defs_by_entity_suffix`]), so [`whole_graph_lens_key`] can resolve a bare
+    /// cross-file placeholder to its unique real definition's file - the SAME honest resolution
+    /// [`reproject_files`] performs for the re-projection surface - rather than taking [`file_of`] of
+    /// the placeholder's own id (which names the REFERENCING file, not its true definition file).
+    /// Empty under [`Lens::Code`] / [`Lens::Concepts`].
+    defs_by_suffix: BTreeMap<&'g str, Vec<&'g str>>,
 }
 
 impl<'g> Buckets<'g> {
@@ -1828,8 +1872,11 @@ impl<'g> Buckets<'g> {
     fn new(graph: &'g Graph, lens: &'g Lens) -> Self {
         let mut membership: BTreeMap<&str, &str> = BTreeMap::new();
         let mut shared: BTreeSet<&str> = BTreeSet::new();
+        let mut defs_by_suffix: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
         match lens {
-            Lens::Files => {}
+            Lens::Files => {
+                defs_by_suffix = defs_by_entity_suffix(graph);
+            }
             Lens::Code { resolution } => {
                 let prefix = format!("community/{resolution}/");
                 for e in &graph.edges {
@@ -1887,6 +1934,7 @@ impl<'g> Buckets<'g> {
             lens,
             membership,
             shared,
+            defs_by_suffix,
         }
     }
 
@@ -1937,11 +1985,15 @@ impl<'g> Buckets<'g> {
         }
     }
 
-    /// The documented empty-CELL message for a RE-PROJECTION whose member set folds into NO derived
-    /// bucket (spec 55 c2): [`REPROJECT_NO_COMMUNITY`] under [`Lens::Code`], [`REPROJECT_NO_CONCEPT`]
-    /// under [`Lens::Concepts`], `None` under [`Lens::Files`] (a file re-grain always resolves).
-    /// Distinct from [`underived_message`]: a re-projection cell is empty when THIS subject's members
-    /// carry no membership, independent of whether the grain is derived for the graph at large.
+    /// The documented empty-CELL message for a DERIVED-lens RE-PROJECTION whose member set folds into
+    /// NO derived bucket (spec 55 c2): [`REPROJECT_NO_COMMUNITY`] under [`Lens::Code`],
+    /// [`REPROJECT_NO_CONCEPT`] under [`Lens::Concepts`]. `None` under [`Lens::Files`] too, but
+    /// UNREACHABLE there in practice: [`reproject_files`] never calls this shared derived-lens
+    /// mechanism (it is not itself a [`Buckets`] fold) - the files lens's OWN empty-cell case (spec 63
+    /// c3, [`REPROJECT_FILES_UNRESOLVED`], when every member is an unresolvable placeholder or carries
+    /// no file identity) is computed directly in `reproject_files`, not through this method. Distinct
+    /// from [`underived_message`]: a re-projection cell is empty when THIS subject's members carry no
+    /// membership, independent of whether the grain is derived for the graph at large.
     fn no_membership_message(&self) -> Option<&'static str> {
         match self.lens {
             Lens::Files => None,
@@ -1995,12 +2047,18 @@ impl<'g> Buckets<'g> {
 /// Under [`Lens::Files`], the SAME shape of gate: a node outside [`KIND_CODE_ENTITY`] (a dev-loop
 /// node, a design-doc, a file's OWN node) is excluded outright, and a code entity folds by
 /// [`file_of`] - its OWN FILE - rather than [`cluster_key`]'s directory fold, so a cluster IS a file,
-/// sized by its contained-entity count, never a peer of the entities it contains. This is the files
-/// lens's whole point (spec 63's Goal): no storage-schema name (a kind bucket, a directory-as-module
-/// bucket that happens to collide with one) is EVER a cluster key or label here, at this or the
-/// drilled zoom - drilling a file cluster is unconditionally empty (see [`cluster_detail`]), because
-/// a file is this lens's atomic leaf subject; inspecting what a file contains is the metadata card's
-/// job (criterion 2's `neighborhood` seam), not a further fold.
+/// sized by its contained-entity count, never a peer of the entities it contains. A REAL definition
+/// (a `name` attr) takes [`file_of`] of its own id directly; a BARE cross-file placeholder (no `name`
+/// attr) resolves FIRST by entity-name suffix over [`Buckets::defs_by_suffix`] - the identical honest
+/// resolution [`reproject_files`] performs - since its raw id names the file that REFERENCES it, not
+/// the file that DEFINES it: EXACTLY ONE candidate takes that definition's file; ZERO or MORE THAN ONE
+/// cannot be honestly attributed to any one file, so the fold excludes it entirely rather than
+/// mis-attributing its count (and silently dropping the cross-file coupling edge it carries) to the
+/// wrong file. This is the files lens's whole point (spec 63's Goal): no storage-schema name (a kind
+/// bucket, a directory-as-module bucket that happens to collide with one) is EVER a cluster key or
+/// label here, at this or the drilled zoom - drilling a file cluster is unconditionally empty (see
+/// [`cluster_detail`]), because a file is this lens's atomic leaf subject; inspecting what a file
+/// contains is the metadata card's job (criterion 2's `neighborhood` seam), not a further fold.
 ///
 /// Spec 55's subject x lens REPROJECTION matrix ([`reproject`] / `reproject_derived`) is a DIFFERENT
 /// code path that shares the SAME lens UI tabs (dash.html's `lensControls` widget renders all three)
@@ -2032,7 +2090,24 @@ fn whole_graph_lens_key(buckets: &Buckets, node: &Node) -> Option<String> {
             if node.kind != KIND_CODE_ENTITY {
                 return None;
             }
-            file_of(&node.id).map(str::to_string)
+            // A real definition (a `name` attr) folds under its OWN file. A BARE cross-file
+            // placeholder (no `name` attr) resolves by entity-name suffix over
+            // `buckets.defs_by_suffix` FIRST - the same honest resolution `reproject_files`
+            // performs - since its raw id names the REFERENCING file, not its true definition
+            // file: EXACTLY ONE candidate resolves to that definition's file; ZERO or MORE THAN
+            // ONE cannot be honestly attributed to any one file, so the fold excludes it entirely
+            // (never mis-attributed to the referencing file its own id encodes).
+            if node.attrs.contains_key("name") {
+                return file_of(&node.id).map(str::to_string);
+            }
+            match buckets
+                .defs_by_suffix
+                .get(name_suffix(&node.id))
+                .map(Vec::as_slice)
+            {
+                Some([only]) => file_of(only).map(str::to_string),
+                _ => None,
+            }
         }
     }
 }
@@ -2421,8 +2496,11 @@ pub fn cluster_detail(graph: &Graph, key: &str, lens: &Lens) -> Neighborhood {
 /// placeholder (no `name` attr) resolves by name-suffix to the DEFINITION sharing its name - EXACTLY
 /// ONE folds under that definition's file, MORE THAN ONE (or zero) is surfaced as a marked-unresolved
 /// entry carrying the sorted candidate ids, never a wrong attribution to the referencing file its id
-/// encodes. A pure read over the already-projected graph: no store touch, no new event type, and
-/// deterministic by construction.
+/// encodes; a member with NO file identity at all (a rare dev-loop node) is marked unresolved with an
+/// EMPTY frontier too, never folded to its raw storage-schema KIND (spec 63 c3, FILES-LENS PURITY) - a
+/// member set that resolves to no file bucket at all carries [`REPROJECT_FILES_UNRESOLVED`] rather
+/// than a blank canvas. A pure read over the already-projected graph: no store touch, no new event
+/// type, and deterministic by construction.
 pub fn reproject(graph: &Graph, subject: &str, lens: &Lens) -> Reprojection {
     let members = member_set(graph, subject);
     let mut re = match lens {
@@ -2589,36 +2667,28 @@ fn reproject_derived(graph: &Graph, subject: &str, lens: &Lens, members: &[&Node
 }
 
 /// Re-bucket a member set under [`Lens::Files`] to its DISTINCT DEFINING FILES, resolving cross-grain
-/// honestly (spec 55 c1). Each member is resolved to a file key, or surfaced as marked-unresolved:
+/// honestly (spec 55 c1). Each member is resolved to a file key, or surfaced as marked-unresolved -
+/// NEVER folded to a raw storage-schema name (spec 63 c3, FILES-LENS PURITY):
 ///
 /// - a member that IS a definition (a `name` attr) or a doc / file-path node folds under its OWN
 ///   file ([`file_of`]);
 /// - a BARE cross-file code-entity placeholder (no `name` attr) resolves by name-suffix over the
 ///   DEFINITION nodes sharing its name: EXACTLY ONE folds under that definition's file; MORE THAN ONE
 ///   (or zero) is marked-unresolved with the sorted candidate ids;
-/// - a member with no file identity at all (a rare dev-loop node) keeps its KIND bucket, mirroring
-///   the derived lens - nothing is silently dropped.
+/// - a member with NO file identity at all (a rare dev-loop node, e.g. a decision) is marked
+///   unresolved too, with an EMPTY candidate frontier - the same honesty shape a zero-candidate bare
+///   placeholder already carries - rather than falling back to its raw KIND as a cluster/group label:
+///   no storage-schema name is ever a cluster key here, mirroring [`whole_graph_lens_key`]'s identical
+///   rule for the whole-graph fold. Nothing is silently DROPPED (`total` still counts it, and
+///   `unresolved` still names it), only never mis-labeled.
 ///
 /// The resolved keys feed the shared [`fold_buckets`] authority (no bucket label under files), so the
 /// file buckets are sized, dominant-kind coloured, and cross-file coupling edges weighted exactly as
 /// every other lens. `total` is the member-set size (resolved or not).
 fn reproject_files(graph: &Graph, subject: &str, members: &[&Node]) -> Reprojection {
-    // Index every code-entity DEFINITION (a `name` attr) by its entity-name suffix, for the
-    // conservative cross-file resolution - the in-memory twin of the store's `definitions_with_suffix`
-    // (spec 52). Each candidate list is sorted + deduped for a deterministic frontier.
-    let mut defs_by_suffix: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    for n in &graph.nodes {
-        if n.kind == KIND_CODE_ENTITY && n.attrs.contains_key("name") {
-            defs_by_suffix
-                .entry(name_suffix(&n.id))
-                .or_default()
-                .push(n.id.as_str());
-        }
-    }
-    for cands in defs_by_suffix.values_mut() {
-        cands.sort_unstable();
-        cands.dedup();
-    }
+    // Index every code-entity DEFINITION by its entity-name suffix, for the conservative cross-file
+    // resolution - the SAME index [`whole_graph_lens_key`] reads for the whole-graph fold.
+    let defs_by_suffix = defs_by_entity_suffix(graph);
 
     // Resolve each member to a file key (or mark it unresolved). `resolved` is member-id -> file key
     // the fold reads back; `unresolved` collects the marked-unresolved frontiers.
@@ -2651,21 +2721,26 @@ fn reproject_files(graph: &Graph, subject: &str, members: &[&Node]) -> Reproject
             }
             continue;
         }
-        // A definition / doc / file-path member folds under its OWN file; a member with no file
-        // identity keeps its kind bucket (never silently dropped).
+        // A definition / doc / file-path member folds under its OWN file; a member with NO file
+        // identity (a rare dev-loop node) is marked unresolved with an EMPTY frontier - the honesty
+        // shape a zero-candidate bare placeholder already uses - never its raw KIND as a cluster
+        // label (spec 63 c3: no storage-schema name is ever a cluster key or group label here).
         match file_of(&m.id) {
             Some(file) => {
                 resolved.insert(m.id.as_str(), file.to_string());
             }
             None => {
-                resolved.insert(m.id.as_str(), m.kind.clone());
+                unresolved.push(UnresolvedMember {
+                    id: m.id.clone(),
+                    candidates: Vec::new(),
+                });
             }
         }
     }
 
-    // Fold the resolved members into their file (or kind) buckets through the shared authority; a
-    // member marked unresolved has no key, so it is excluded from every bucket and edge. Files name
-    // themselves, so there is no bucket label.
+    // Fold the resolved members into their file buckets through the shared authority; a member marked
+    // unresolved has no key, so it is excluded from every bucket and edge. Files name themselves, so
+    // there is no bucket label.
     let empty_label: BTreeMap<&str, &str> = BTreeMap::new();
     let (clusters, edges) = fold_buckets(
         members.iter().copied(),
@@ -2674,18 +2749,26 @@ fn reproject_files(graph: &Graph, subject: &str, members: &[&Node]) -> Reproject
         &empty_label,
     );
     unresolved.sort_by(|a, b| a.id.cmp(&b.id));
+    // Spec 63 c3's own "never blanked" re-check, mirroring `clustered_overview`'s round-4 post-fold
+    // audit and `reproject_derived`'s `has_derived_bucket` gate at their own call sites: a NON-EMPTY
+    // member set that resolves to NO file bucket at all (every member either carries no file identity
+    // or is an unresolvable bare placeholder) would otherwise render a blank, unexplained canvas -
+    // `unresolved` still names every excluded member, but the caption makes the empty canvas legible
+    // without it. An EMPTY member set (the pre-existing spec 55 c2 unknown-subject cell) stays `None`:
+    // that cell is defined-but-empty for a different, already-documented reason.
+    let empty_state = (!members.is_empty() && clusters.is_empty())
+        .then_some(REPROJECT_FILES_UNRESOLVED.to_string());
     Reprojection {
         subject: subject.to_string(),
         clusters,
         edges,
         total: members.len(),
         unresolved,
-        // A files re-grain always resolves a member (to a file, its kind, or the unresolved sidecar)
-        // and never shares, so the spec 55 c2 empty-cell message and shared flag never apply here; the
+        // A files re-grain never shares, so the spec 55 c2 shared flag never applies here; the
         // wide-cell cap runs once, uniformly, in `reproject`.
         shared: Vec::new(),
         truncated: None,
-        empty_state: None,
+        empty_state,
     }
 }
 
@@ -6412,10 +6495,17 @@ mod tests {
     /// purity proof lives on the fold key's own tests) or the drill projection (c3's own criterion).
     #[test]
     fn clustered_overview_under_files_lens_admits_only_code_entities_keyed_by_their_own_file() {
+        // A code entity carries a `name` attr - the extraction fold's real-definition marker (spec
+        // 63 c3's honesty gate resolves a NO-name bare cross-file placeholder differently); every
+        // other kind carries none.
         let node = |id: &str, kind: &str| Node {
             id: id.to_string(),
             kind: kind.to_string(),
-            attrs: BTreeMap::new(),
+            attrs: if kind == KIND_CODE_ENTITY {
+                BTreeMap::from([("name".to_string(), name_suffix(id).to_string())])
+            } else {
+                BTreeMap::new()
+            },
         };
         let edge = |from: &str, to: &str, valid_to: Option<i64>| Edge {
             from: from.to_string(),
@@ -6804,10 +6894,13 @@ mod tests {
     #[test]
     fn code_lens_buckets_code_entities_by_community_excludes_other_kinds_and_reports_underived_grain(
     ) {
+        // A real definition carries a `name` attr (the extraction fold's marker; spec 63 c3's files-
+        // lens honesty gate below reads it to tell a real definition from a bare cross-file
+        // placeholder).
         let ce = |id: &str| Node {
             id: id.to_string(),
             kind: KIND_CODE_ENTITY.to_string(),
-            attrs: BTreeMap::new(),
+            attrs: BTreeMap::from([("name".to_string(), name_suffix(id).to_string())]),
         };
         let community = |id: &str, label: &str| Node {
             id: id.to_string(),
@@ -7012,10 +7105,12 @@ mod tests {
     #[test]
     fn concepts_lens_buckets_members_by_concept_excludes_membershipless_nodes_and_reports_underived_grain(
     ) {
+        // A real definition carries a `name` attr (the extraction fold's marker; spec 63 c3's files-
+        // lens honesty gate reads it to tell a real definition from a bare cross-file placeholder).
         let ce = |id: &str| Node {
             id: id.to_string(),
             kind: KIND_CODE_ENTITY.to_string(),
-            attrs: BTreeMap::new(),
+            attrs: BTreeMap::from([("name".to_string(), name_suffix(id).to_string())]),
         };
         let doc = |id: &str| Node {
             id: id.to_string(),
@@ -7472,10 +7567,12 @@ mod tests {
     /// node folds by KIND, so the three views are visibly different: the overview reports all three
     /// clusters, the drill returns one cluster's members, and the seed walks one node's neighborhood.
     fn dispatch_graph() -> Graph {
+        // A real definition carries a `name` attr (the extraction fold's marker; spec 63 c3's files-
+        // lens honesty gate reads it to tell a real definition from a bare cross-file placeholder).
         let ce = |id: &str| Node {
             id: id.to_string(),
             kind: KIND_CODE_ENTITY.to_string(),
-            attrs: BTreeMap::new(),
+            attrs: BTreeMap::from([("name".to_string(), name_suffix(id).to_string())]),
         };
         let refs = |from: &str, to: &str| Edge {
             from: from.to_string(),

@@ -1399,10 +1399,15 @@ fn the_served_root_page_ships_the_tier_toggles_and_the_explain_provenance() {
 /// community and so stay a real, many-member drill target; the OVERVIEW and SEED dispatch stay
 /// proven over the default (lens-absent) request, unaffected by the added membership edges.
 fn exploration_graph() -> Graph {
+    // A real definition carries a `name` attr (the extraction fold's marker; spec 63 c3's files-lens
+    // honesty gate reads it to tell a real definition from a bare cross-file placeholder).
     let ce = |id: &str| Node {
         id: id.to_string(),
         kind: KIND_CODE_ENTITY.to_string(),
-        attrs: BTreeMap::new(),
+        attrs: BTreeMap::from([(
+            "name".to_string(),
+            id.rsplit_once("::").map_or(id, |(_, n)| n).to_string(),
+        )]),
     };
     let refs = |from: &str, to: &str| Edge {
         from: from.to_string(),
