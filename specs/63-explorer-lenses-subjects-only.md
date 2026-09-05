@@ -35,13 +35,22 @@ The mockup file is the visual contract for all of the below; it renders standalo
 - **The metadata card** (all lenses): one hover-card anatomy everywhere: title row (kind dot
   + name), provenance row (file:line, degree, community), chip rows - FILE / CONCEPTS /
   MEMORY for a code subject, TOP ENTITIES for a file, TOP EVIDENCE for a concept. Hover
-  highlights direct neighbors, dims the rest. Chips are the LENS HANDOFF: a chip opens its
-  own taxonomy's lens with the clicked thing as subject. The card never occludes the node.
+  highlights direct neighbors, dims the rest. FILE and CONCEPTS chips are LENS HANDOFFS: a
+  chip opens its own taxonomy's lens (the Files lens / the Concepts lens respectively) with
+  the clicked thing as subject. MEMORY is not a lens handoff - this design names exactly
+  three lenses (Code, Files, Concepts) and no memory lens exists among them - it instead
+  opens criterion 5's docked memory rail (the same rail a plain node click already opens) for
+  the card's own subject, without switching lens or re-seeding the canvas to a different
+  subject. The card never occludes the node.
   Criterion 2 OWNS proving this chip-to-lens handoff for EVERY card taxonomy named above - a
-  code subject's card (FILE/CONCEPTS/MEMORY chips), a file subject's card (TOP ENTITIES
-  chips), and a concept subject's card (TOP EVIDENCE chips) alike - not only a code subject's
-  card. Criteria 3 and 4 own their own lens's node/edge rendering and card content only; they
-  own no handoff mechanics for any card, matching the Files lens and Concepts lens bullets.
+  code subject's card (FILE/CONCEPTS chips hand off to their lenses, MEMORY opens criterion
+  5's rail), a file subject's card (TOP ENTITIES chip), and a concept subject's card (TOP
+  EVIDENCE chip) alike - not only a code subject's card. Criteria 3 and 4 own their own
+  lens's node/edge rendering and card content only; they own no handoff mechanics for any
+  card, matching the Files lens and Concepts lens bullets. Criterion 5 owns the rail-and-reseed
+  mechanism itself (unchanged, triggered by a plain node click too); criterion 2 owns only
+  wiring the card's MEMORY chip to invoke that existing mechanism for the card's own subject,
+  reusing it rather than building a second one.
 - **Subject view** (all lenses, on click): clicking focuses the node as subject - canvas
   re-seeds to its one-hop neighborhood (typed edges preserved), a breadcrumb names lens and
   subject with an escape route, and a MEMORY RAIL docks right listing the governing
@@ -94,7 +103,12 @@ The mockup file is the visual contract for all of the below; it renders standalo
 - Card handoff ownership is total: criterion 2 proves the chip-to-lens handoff for every card
   taxonomy (a code subject's card, a file subject's card, and a concept subject's card alike),
   never only a code subject's card. Criteria 3 and 4 exclude all handoff mechanics from their
-  own Done-when - they prove only their lens's own node/edge/card rendering.
+  own Done-when - they prove only their lens's own node/edge/card rendering. The MEMORY chip
+  is not a lens handoff (this design names exactly three lenses - Code, Files, Concepts - and
+  no memory lens exists): criterion 2 proves it opens criterion 5's docked memory rail for the
+  card's own subject instead, reusing criterion 5's rail-and-reseed mechanism rather than
+  building a second one. Criterion 5 owns that mechanism itself and needs no card to exist
+  first - the rail is triggered by a plain node click too, per criterion 5's own Done-when.
 
 ## Done when
 
