@@ -320,6 +320,57 @@ fn single_entity_subject_is_its_own_member_set() {
     assert_eq!(code.total, 1, "the member-set size is still one");
 }
 
+// --- the CODE-LENS PURITY boundary (spec 63 c1), on the RE-PROJECTION surface -----------------------
+
+const PURITY_CONCEPT: &str = "concept/1/5";
+const PURITY_COMMUNITY: &str = "community/1/5";
+const PURITY_ENTITY: &str = "src/alpha/m.rs::m";
+const PURITY_DECISION: &str = "d-u63c1-a-non-code-realizer";
+
+/// Spec 63 CRITERION 1 (CODE-LENS PURITY, the subjects-only rule), on the RE-PROJECTION surface
+/// (`reproject_derived`, a DIFFERENT code path from `clustered_overview` / `cluster_detail` - the
+/// whole-graph surface `code_lens_excludes_a_membership_less_code_entity_entirely` already pins): a
+/// concept realized by a NON-code-entity node (a decision - `REALIZES` is never restricted to code
+/// entities, exactly as spec 53 already lets a non-code-entity carry a live `IN_COMMUNITY`
+/// membership) must carry NO bucket at all once the concept's member set is re-bucketed under the
+/// CODE lens - not even a `decision` KIND bucket - so a storage-schema kind name never becomes a
+/// cluster key on the shared code-lens tab, at the whole-graph OR the re-projected surface.
+#[test]
+fn reprojection_excludes_a_non_code_entity_member_entirely_under_the_code_lens() {
+    let graph = Graph {
+        nodes: vec![
+            node(PURITY_CONCEPT, KIND_CONCEPT, Some("the idea")),
+            node(PURITY_COMMUNITY, KIND_COMMUNITY, Some("alpha")),
+            decision(PURITY_DECISION, "why this matters"),
+            def(PURITY_ENTITY, "m"),
+        ],
+        edges: vec![
+            // The concept's REALIZES members: a real code entity AND a decision.
+            edge(PURITY_ENTITY, PURITY_CONCEPT, REL_REALIZES),
+            edge(PURITY_DECISION, PURITY_CONCEPT, REL_REALIZES),
+            // The code entity's own community membership, so its bucket is non-empty.
+            edge(PURITY_ENTITY, PURITY_COMMUNITY, REL_IN_COMMUNITY),
+        ],
+    };
+
+    let re = reproject(&graph, PURITY_CONCEPT, &code_lens());
+    assert_eq!(
+        re.total, 2,
+        "the member-set size still counts the decision realizer, even though it folds into nothing"
+    );
+    assert_eq!(
+        re.clusters,
+        vec![bucket(PURITY_COMMUNITY, 1, Some("alpha"))],
+        "the decision realizer never spawns its own kind bucket under the code lens - the ONLY \
+         cluster is the real community the code entity joined: {re:?}"
+    );
+    assert!(
+        re.clusters.iter().all(|c| c.key != KIND_DECISION),
+        "no decision KIND bucket - the exact storage-schema-name leak this criterion fixes - ever \
+         appears as a cluster key in a re-projection: {re:?}"
+    );
+}
+
 /// An UNKNOWN subject (absent from the graph) has an EMPTY member set, so `reproject` returns an empty
 /// body - the subject echoed, zero clusters, zero edges, zero total, no unresolved - rather than
 /// panicking or leaking a whole-graph overview. This is the c1 mechanics of the documented empty cell
