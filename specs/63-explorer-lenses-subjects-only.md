@@ -18,6 +18,9 @@ The mockup file is the visual contract for all of the below; it renders standalo
   `contains`, `creates`, `reads`), each labeled. Coupling communities are low-contrast
   tinted hulls BEHIND members with an uppercase label - a region, never a hub node. No file
   node, no bucket, no schema type name at any zoom. `view=calls` keeps its own layout.
+  Criterion 1 OWNS this storage-schema-name purity rule together with the default-zoom hull
+  treatment described here; it does not own the zoomed-out collapse below, which is criterion
+  6's exclusively (see the Overview zoom bullet).
 - **Files lens**: nodes are files, sized by contained-entity count, labeled with the
   repo-relative path; edges are `uses` weighted by coupling (label carries weight);
   directories are the same hull treatment. Entities never render as nodes here.
@@ -35,7 +38,11 @@ The mockup file is the visual contract for all of the below; it renders standalo
   nodes and the layout never re-flows for it.
 - **Overview zoom** (code lens zoomed out): hulls collapse to COMMUNITY nodes sized by
   member count, labeled by community name, drill-down on click. Storage type names are
-  never a grouping key at any zoom.
+  never a grouping key at any zoom. Criterion 6 OWNS this zoomed-out collapse into community
+  super-nodes specifically. A community node here is a subject-taxonomy grouping (the
+  coupling community its members belong to), not a storage schema name like `file`,
+  `decision`, or a kind-fallback bucket - so this collapse does not violate criterion 1's
+  storage-schema-name purity rule above; it re-affirms that rule at the collapsed zoom.
 - **Data plumbing** (`src/dash.rs`, only as needed): payloads carry what the views consume -
   entity kind, typed edges, community id + label, per-file entity counts and coupling
   weights, concept evidence weights, the subject's governs-linked memory rows. Gaps close by
@@ -64,7 +71,11 @@ The mockup file is the visual contract for all of the below; it renders standalo
 - The dash charter holds: no external assets, all JS inline in `dash.html`, zero new
   dependencies, dash read-only over existing projections.
 - Lens purity is total: no lens renders another taxonomy's node, and no storage schema name
-  is ever user-visible as a node, hub, or group label.
+  is ever user-visible as a node, hub, or group label. Criterion 1 owns proving this for the
+  code lens (including the default-zoom hull treatment); criterion 6 owns proving it holds at
+  the zoomed-out collapse into community super-nodes specifically - a community node is a
+  subject-taxonomy grouping, not a storage schema name, so criterion 6's collapse satisfies
+  this rule rather than breaching it.
 
 ## Done when
 
