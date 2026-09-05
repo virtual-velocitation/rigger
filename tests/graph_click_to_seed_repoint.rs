@@ -137,6 +137,20 @@ fn a_de_noised_unit_click_lands_on_a_real_neighborhood_through_the_route() {
         Some("u1"),
         "the response echoes the requested unit seed, not the re-pointed content ids: {body}"
     );
+    // spec 63 c5 (the repoint_seed / non-node-seed gap,
+    // adv-u63c5-rail-lies-empty-for-a-repointed-unit-seed), proven at the PUBLIC route boundary:
+    // the docked memory rail must not silently come back all-empty just because the raw
+    // requested seed (the unit id) is not itself a graph node.
+    assert_eq!(
+        body["memory"]["decisions"][0]["id"].as_str(),
+        Some("d1"),
+        "the unit's own governing decision is on the rail, not silently dropped: {body}"
+    );
+    assert_eq!(
+        body["memory"]["findings"][0]["id"].as_str(),
+        Some("f1"),
+        "the unit's own finding is on the rail, not silently dropped: {body}"
+    );
 }
 
 #[test]
@@ -170,7 +184,8 @@ fn a_unit_click_is_scoped_to_the_clicked_unit_and_never_drags_in_another() {
 
     // The same scoping observed through the real route: clicking uA never drags in uB's neighborhood.
     let graph = fold_and_prefetch(&run);
-    let ids = node_ids(&get_graph(&run, &graph, "uA"));
+    let body = get_graph(&run, &graph, "uA");
+    let ids = node_ids(&body);
     for want in ["dA", "fA", "a.rs"] {
         assert!(ids.contains(want), "uA's click reaches {want}: {ids:?}");
     }
@@ -180,6 +195,21 @@ fn a_unit_click_is_scoped_to_the_clicked_unit_and_never_drags_in_another() {
             "uA's click never drags in uB's content ({never}): {ids:?}"
         );
     }
+    // The memory rail (spec 63 c5), folded over uA's re-pointed effective seeds, is likewise
+    // scoped to uA alone - never uB's decision, matching the neighborhood's own isolation.
+    assert_eq!(
+        body["memory"]["decisions"][0]["id"].as_str(),
+        Some("dA"),
+        "uA's click surfaces its own decision on the rail: {body}"
+    );
+    assert!(
+        body["memory"]["decisions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|d| d["id"] != "dB"),
+        "uA's rail never carries uB's decision: {body}"
+    );
 }
 
 #[test]
