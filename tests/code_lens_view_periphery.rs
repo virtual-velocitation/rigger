@@ -351,6 +351,64 @@ fn code_lens_excludes_a_file_node_even_when_it_carries_a_live_community_membersh
     );
 }
 
+/// Spec 63 CRITERION 1 (CODE-LENS PURITY, the subjects-only rule): a code-entity node with NO live
+/// community membership must carry NO bucket at all under the code lens - not even its own
+/// `code-entity` KIND bucket. This is the EXACT regression the spec's own motivating bug names (a
+/// `code-entity (4280)` hub sibling to the `file`/`decision`/`design-doc` buckets): before this
+/// criterion, every membership-less node - a stray code entity included - kept its KIND bucket so the
+/// view stayed whole-graph, and a large corpus with many unattached entities folded them ALL into one
+/// giant `code-entity` hub node. `whole_graph_lens_key` special-cases `Lens::Code` before falling
+/// back to the shared `Buckets::key` precisely so a membership-less code entity loses its kind
+/// fallback along with every other kind - proving that here (not just for a file / decision / design-
+/// doc) closes the boundary the doc comment claims but no other test exercises.
+#[test]
+fn code_lens_excludes_a_membership_less_code_entity_entirely() {
+    const LONER: &str = "src/loner/z.rs::orphan";
+    let graph = Graph {
+        nodes: vec![ce(FOO), ce(BAR), community(C0, "foo"), ce(LONER)],
+        edges: vec![
+            edge(FOO, C0, REL_IN_COMMUNITY, TIER_INFERRED),
+            edge(BAR, C0, REL_IN_COMMUNITY, TIER_INFERRED),
+            edge(FOO, BAR, REL_CALLS, TIER_EXTRACTED),
+            // LONER has no IN_COMMUNITY edge at all - it never joined any community.
+        ],
+    };
+
+    let overview = clustered_overview(&graph, &code_default());
+    assert_eq!(
+        overview.total, 4,
+        "total still counts the loner node, even though it folds into nothing"
+    );
+    assert_eq!(
+        overview.clusters,
+        vec![Cluster {
+            key: C0.to_string(),
+            count: 2,
+            kind: KIND_CODE_ENTITY.to_string(),
+            label: Some("foo".to_string()),
+        }],
+        "the loner never spawns its own code-entity KIND bucket, and never inflates community/1/0's \
+         member count either - the ONLY cluster is the real community: {overview:?}"
+    );
+    assert!(
+        overview.clusters.iter().all(|c| c.key != KIND_CODE_ENTITY),
+        "no code-entity KIND bucket - the exact 'code-entity (N) hub' regression this criterion \
+         fixes - ever appears as a cluster key: {overview:?}"
+    );
+
+    let drill = cluster_detail(&graph, C0, &code_default());
+    let members: BTreeSet<&str> = drill.nodes.iter().map(|n| n.id.as_str()).collect();
+    assert!(
+        !members.contains(LONER),
+        "the loner belongs to no community, so it never appears in a drill: {drill:?}"
+    );
+    assert_eq!(
+        members,
+        [FOO, BAR].into_iter().collect::<BTreeSet<&str>>(),
+        "community/1/0 drills to exactly its two real members: {drill:?}"
+    );
+}
+
 /// THE UNDERIVED-GRAIN empty state over the public boundary: a code lens at a resolution grain with
 /// NO derived assignments returns the documented `CODE_LENS_UNDERIVED` prompt - never an error and
 /// never a bare kind-bucket view - while `total` still reports the whole graph size.
