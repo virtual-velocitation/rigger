@@ -488,8 +488,10 @@ fn concepts_lens_at_an_underived_grain_carries_the_documented_empty_state_not_an
 /// `skip_serializing_if = is_not_shared`, so:
 ///   * a CONCEPTS drill's genuinely-shared member DOES carry `"shared": true`;
 ///   * every SINGLE-concept concepts-drill node OMITS the key (byte-identical to before this lens);
-///   * a FILES-lens drill of the SAME shared-under-concepts node OMITS the key too - the marker is
-///     concepts-lens-only, so every other view stays byte-identical on the wire.
+///   * a FILES-lens drill is UNCONDITIONALLY EMPTY (spec 63 c3, FILES-LENS PURITY - a file is that
+///     lens's atomic leaf subject), so the shared-under-concepts node never even RENDERS there; the
+///     marker being concepts-lens-only is now vacuously true for that lens rather than proven by an
+///     omitted key on a present node.
 #[test]
 fn the_serialized_drill_skips_the_shared_marker_off_every_non_shared_node() {
     let graph = lens_graph();
@@ -518,18 +520,14 @@ fn the_serialized_drill_skips_the_shared_marker_off_every_non_shared_node() {
         );
     }
 
-    // --- FILES drill of append's directory: the SAME node omits the shared key (concepts-lens-only) ---
+    // --- FILES drill: unconditionally empty (spec 63 c3) - the shared-under-concepts append never
+    // renders here at all, so the shared marker's concepts-lens-only claim is vacuous for this lens.
     let files = serde_json::to_value(cluster_detail(&graph, "src/store", &Lens::Files))
         .expect("the files drill serializes to JSON");
-    let files_append = files["nodes"]
-        .as_array()
-        .expect("files drill nodes is a JSON array")
-        .iter()
-        .find(|n| n["id"] == APPEND)
-        .expect("the files drill of src/store includes append");
-    assert!(
-        files_append.get("shared").is_none(),
-        "under the files lens the shared-under-concepts append carries NO shared key - every non-concepts view is byte-identical: {files}"
+    assert_eq!(
+        files["nodes"].as_array().expect("files drill nodes is a JSON array").len(),
+        0,
+        "under files-lens purity a drill is unconditionally empty, so append never renders: {files}"
     );
 }
 
