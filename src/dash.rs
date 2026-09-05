@@ -1348,10 +1348,13 @@ pub struct Reprojection {
     pub truncated: Option<usize>,
     /// The documented empty-CELL message (spec 55 c2), set under a DERIVED lens when the member set
     /// folds into NO community/concept bucket: [`REPROJECT_NO_COMMUNITY`] under [`Lens::Code`],
-    /// [`REPROJECT_NO_CONCEPT`] under [`Lens::Concepts`]. The criterion-1 kind-fallback clusters still
-    /// render, so this caption is ADDITIVE - the defined-but-empty cell is explained, never blanked.
-    /// Absent (`None`, omitted from the JSON) under [`Lens::Files`] (a file re-grain always resolves)
-    /// and whenever any member DID fold into a derived bucket.
+    /// [`REPROJECT_NO_CONCEPT`] under [`Lens::Concepts`]. Under [`Lens::Code`] the criterion-1
+    /// kind-fallback clusters still render, so this caption is ADDITIVE there - the defined-but-empty
+    /// cell is explained, never blanked. Under [`Lens::Concepts`] criterion 4's purity is TOTAL (no
+    /// own-kind fallback), so whenever this fires `clusters` is genuinely empty - the caption is the
+    /// ONLY explanation for the blank cell there, not merely additive. Absent (`None`, omitted from
+    /// the JSON) under [`Lens::Files`] (a file re-grain always resolves) and whenever any member DID
+    /// fold into a derived bucket.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub empty_state: Option<String>,
 }
@@ -1736,8 +1739,10 @@ pub const REPROJECT_NO_COMMUNITY: &str = "no derived communities";
 
 /// The documented empty-CELL message a [`Lens::Concepts`] RE-PROJECTION (spec 55 c2) carries when the
 /// selected subject's member set realizes NO concept - the [`Lens::Concepts`] twin of
-/// [`REPROJECT_NO_COMMUNITY`]. The kind-fallback clusters criterion 1 ships still render; this message
-/// is additive, so a "not part of any concept" caption never hides the members it re-grains.
+/// [`REPROJECT_NO_COMMUNITY`]. Unlike its Code twin, NO kind-fallback cluster ever renders alongside
+/// this caption (criterion 4's concepts-lens purity is total - no own-kind fallback): when this
+/// caption fires, `clusters` is genuinely empty, so a "not part of any concept" empty cell is not
+/// merely additive here, it is the whole explanation.
 pub const REPROJECT_NO_CONCEPT: &str = "not part of any concept";
 
 /// The overview/drill bucket lens (spec 53 c4): how a graph node folds to its super-node bucket.
@@ -1975,34 +1980,48 @@ impl<'g> Buckets<'g> {
 /// count, so it renders at any graph size; an empty graph yields an empty overview (zero clusters,
 /// zero total), never an error.
 ///
-/// The WHOLE-GRAPH lens fold key for one node (spec 63 c1, CODE-LENS PURITY / the subjects-only
-/// rule): layered on top of the shared [`Buckets::key`] authority, used ONLY by [`clustered_overview`]
-/// and [`cluster_detail`] (the plain code-lens tab's folded overview and its per-community drill -
-/// spec 42/53's whole-graph exploration, at either zoom). Under [`Lens::Code`] a node outside
-/// [`KIND_CODE_ENTITY`] is excluded outright (`None`), and a membership-less code entity gets NO
-/// bucket either (unlike [`Buckets::key`]'s own fallback) - the code lens admits exactly one subject
-/// taxonomy, never a file node nor a per-kind bucket, at any zoom.
+/// The WHOLE-GRAPH lens fold key for one node (spec 63 c1/c4, CODE-LENS and CONCEPTS-LENS PURITY - the
+/// subjects-only rule): layered on top of the shared [`Buckets::key`] authority, used ONLY by
+/// [`clustered_overview`] and [`cluster_detail`] (the plain lens tabs' folded overview and their
+/// per-bucket drill - spec 42/53/54's whole-graph exploration, at either zoom). Under [`Lens::Code`] a
+/// node outside [`KIND_CODE_ENTITY`] is excluded outright (`None`), and a membership-less code entity
+/// gets NO bucket either (unlike [`Buckets::key`]'s own fallback) - the code lens admits exactly one
+/// subject taxonomy, never a file node nor a per-kind bucket, at any zoom. Under [`Lens::Concepts`] a
+/// node with NO live `REALIZES` membership at this grain gets NO bucket either, REGARDLESS of its own
+/// kind (a code entity, a decision, a design-doc, ...) - unlike [`Buckets::key`]'s own kind-bucket
+/// fallback - so the concepts lens likewise admits exactly one subject taxonomy (concepts), never a
+/// per-kind bucket, at any zoom.
 ///
-/// [`Lens::Files`] / [`Lens::Concepts`] fold exactly as [`Buckets::key`] already does here (their own
-/// purity fix is criterion 3 / criterion 4's, not this one's). Spec 55's subject x lens
-/// REPROJECTION matrix ([`reproject`] / `reproject_derived`) is a DIFFERENT code path that shares the
-/// SAME code-lens UI tab (dash.html's `lensControls`/`data-lens="code"` widget renders both) and so
-/// owes the identical purity claim, but is NOT routed through this exact gate: `reprojection_lens_key`
-/// carries an equivalent non-[`KIND_CODE_ENTITY`]-excluding rule for that surface WITHOUT this gate's
-/// stricter membership-less-code-entity exclusion, because reprojection's own nothing-dropped contract
-/// (a membership-less leaf subject keeps its kind bucket, so re-graining a lone subject never empties
-/// the panel) is a distinct, already-settled requirement this gate must not regress there.
+/// [`Lens::Files`] folds exactly as [`Buckets::key`] already does here (its own purity fix is
+/// criterion 3's, not this one's). Spec 55's subject x lens REPROJECTION matrix ([`reproject`] /
+/// `reproject_derived`) is a DIFFERENT code path that shares the SAME lens UI tabs (dash.html's
+/// `lensControls` widget renders all three) and so owes an analogous purity claim for BOTH derived
+/// lenses, but is NOT routed through this exact gate: `reprojection_lens_key` carries the equivalent
+/// gate for that surface. Under [`Lens::Code`] it is non-[`KIND_CODE_ENTITY`]-excluding WITHOUT this
+/// gate's stricter membership-less-code-entity exclusion, because reprojection's own nothing-dropped
+/// contract (a membership-less leaf subject keeps its kind bucket, so re-graining a lone subject
+/// never empties the panel) is a distinct, already-settled requirement this gate must not regress
+/// there. Under [`Lens::Concepts`], by contrast, the gate IS total (criterion 4): kind is never a
+/// filtering axis for concept membership, so there is no own-kind fallback to preserve, and
+/// `reprojection_lens_key` admits a node there only through genuine [`Buckets::membership`], the same
+/// as this function's own Concepts arm.
 fn whole_graph_lens_key(buckets: &Buckets, node: &Node) -> Option<String> {
-    if matches!(buckets.lens, Lens::Code { .. }) {
-        if node.kind != KIND_CODE_ENTITY {
-            return None;
+    match buckets.lens {
+        Lens::Code { .. } => {
+            if node.kind != KIND_CODE_ENTITY {
+                return None;
+            }
+            buckets
+                .membership
+                .get(node.id.as_str())
+                .map(|b| (*b).to_string())
         }
-        return buckets
+        Lens::Concepts { .. } => buckets
             .membership
             .get(node.id.as_str())
-            .map(|b| (*b).to_string());
+            .map(|b| (*b).to_string()),
+        Lens::Files => buckets.key(node),
     }
-    buckets.key(node)
 }
 
 /// The bucket key is the pluggable [`Lens`] (spec 53 c4): [`Lens::Files`] is the default fold above
@@ -2013,14 +2032,19 @@ fn whole_graph_lens_key(buckets: &Buckets, node: &Node) -> Option<String> {
 /// subjects-only rule): under [`Lens::Code`] specifically, a node OUTSIDE [`KIND_CODE_ENTITY`] (a
 /// file, a decision, a design-doc, ...) never folds here at all - not even into its own kind bucket -
 /// so no storage-schema name is ever a cluster key or label, at this or the drilled zoom
-/// ([`whole_graph_lens_key`] carries this gate; [`Lens::Files`] / [`Lens::Concepts`] are unchanged,
-/// each lens's own purity fix is its own criterion). A code grain with NO derived assignments returns
-/// the [`CODE_LENS_UNDERIVED`] empty state - and so does a grain that HAS live memberships when EVERY
-/// one of them belongs to a purity-excluded node (round 4's own fix, below): [`Buckets::underived`] is
-/// kind-blind (it only asks whether ANY membership exists at all), so it reads `false` in that case,
-/// while [`whole_graph_lens_key`] admits no kind-bucket fallback at all under [`Lens::Code`] - the
-/// stricter of the two gates - and the fold below is left with nothing, so `empty_state` is derived
-/// from the FOLD'S OWN OUTCOME, not from `underived()` alone.
+/// ([`whole_graph_lens_key`] carries this gate; [`Lens::Files`] is unchanged, its own purity fix is
+/// criterion 3's). Spec 63 criterion 4 (CONCEPTS-LENS PURITY) carries the analogous gate under
+/// [`Lens::Concepts`]: a membership-less node never folds here either, regardless of its own kind - but
+/// UNLIKE criterion 1, no separate post-fold re-check is needed there, because kind is never a
+/// filtering axis for concepts membership (any kind may realize a concept), so every entry in
+/// [`Buckets::membership`] lands a real cluster and [`Buckets::underived`] alone already predicts the
+/// fold's emptiness. A code grain with NO derived assignments returns the [`CODE_LENS_UNDERIVED`] empty
+/// state - and so does a grain that HAS live memberships when EVERY one of them belongs to a
+/// purity-excluded node (round 4's own fix, below, CODE-LENS ONLY): [`Buckets::underived`] is kind-blind
+/// (it only asks whether ANY membership exists at all), so it reads `false` in that case, while
+/// [`whole_graph_lens_key`] admits no kind-bucket fallback at all under [`Lens::Code`] - the stricter of
+/// the two gates - and the fold below is left with nothing, so `empty_state` is derived from the FOLD'S
+/// OWN OUTCOME, not from `underived()` alone.
 pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
     let buckets = Buckets::new(graph, lens);
 
@@ -2217,14 +2241,18 @@ pub const CLUSTER_RENDER_BUDGET: usize = 60;
 /// CODE ENTITIES and the coupling edges AMONG them (the community super-node is not a member, a
 /// membership spoke to it is not an intra-community edge, and - spec 63 c1 - a non-code-entity node,
 /// FILE included, folds to no key here even when it carries the same live community membership, so
-/// neither it nor a kind-bucket key ever drills to anything); under [`Lens::Files`] / [`Lens::Concepts`]
-/// drilling a kind key still yields that kind's membership-less nodes, unchanged.
+/// neither it nor a kind-bucket key ever drills to anything). Under [`Lens::Concepts`], drilling a
+/// `concept/<r>/<n>` key yields exactly that concept's members (the concept super-node likewise not a
+/// member); and - spec 63 c4 - a membership-less node, of ANY kind, folds to no key here either, so a
+/// former kind-fallback key now drills to nothing too. Under [`Lens::Files`] drilling a kind key still
+/// yields that kind's membership-less nodes, unchanged (criterion 3's purity fix is its own unit).
 pub fn cluster_detail(graph: &Graph, key: &str, lens: &Lens) -> Neighborhood {
     let buckets = Buckets::new(graph, lens);
-    // The cluster's members: every node [`whole_graph_lens_key`] folds to `key` (the code lens's
-    // purity-gated wrapper over [`Buckets::key`]; byte-identical to it under Files / Concepts), keyed
-    // by id for a deterministic, deduped set. A node the lens EXCLUDES (a community super-node under
-    // the code lens, or - spec 63 c1 - any non-code-entity node there) is never a member of any bucket.
+    // The cluster's members: every node [`whole_graph_lens_key`] folds to `key` (the code/concepts
+    // lenses' purity-gated wrapper over [`Buckets::key`]; byte-identical to it under Files), keyed
+    // by id for a deterministic, deduped set. A node the lens EXCLUDES (a super-node under the code or
+    // concepts lens, or - spec 63 c1/c4 - a non-code-entity / membership-less node there) is never a
+    // member of any bucket.
     let members: BTreeSet<&str> = graph
         .nodes
         .iter()
@@ -2447,18 +2475,29 @@ fn member_set<'g>(graph: &'g Graph, subject: &str) -> Vec<&'g Node> {
         .collect()
 }
 
-/// The RE-PROJECTION lens fold key for one node (spec 63 c1, CODE-LENS PURITY, the subjects-only
-/// rule, carried onto the [`reproject_derived`] surface - a DIFFERENT code path from
-/// [`clustered_overview`] / [`cluster_detail`], which [`whole_graph_lens_key`] already gates): under
-/// [`Lens::Code`] a node OUTSIDE [`KIND_CODE_ENTITY`] (a decision, a design-doc, ...) is excluded
-/// outright (`None`) - a storage-schema kind name must never become a re-projected cluster key
-/// either, exactly as it never becomes a whole-graph one. UNLIKE [`whole_graph_lens_key`], a
+/// The RE-PROJECTION lens fold key for one node (spec 63 c1/c4, CODE-LENS and CONCEPTS-LENS PURITY,
+/// the subjects-only rule, carried onto the [`reproject_derived`] surface - a DIFFERENT code path
+/// from [`clustered_overview`] / [`cluster_detail`], which [`whole_graph_lens_key`] already gates):
+/// under [`Lens::Code`] a node OUTSIDE [`KIND_CODE_ENTITY`] (a decision, a design-doc, ...) is
+/// excluded outright (`None`) - a storage-schema kind name must never become a re-projected cluster
+/// key either, exactly as it never becomes a whole-graph one. UNLIKE [`whole_graph_lens_key`], a
 /// membership-less CODE entity keeps [`Buckets::key`]'s own kind-bucket fallback here: spec 55 c2's
 /// nothing-dropped re-projection contract (a lone code-entity subject re-grained under the code lens
 /// still renders its one `code-entity` bucket) is a distinct, already-settled requirement this purity
-/// gate must not regress. [`Lens::Concepts`] folds exactly as [`Buckets::key`] already does
-/// (criterion 4's own purity fix, not this one's).
+/// gate must not regress. Under [`Lens::Concepts`], by contrast, the gate is TOTAL - the same as
+/// [`whole_graph_lens_key`]'s Concepts arm, and with NO own-kind fallback at all: a node folds ONLY
+/// through genuine [`Buckets::membership`], regardless of its own kind, because kind is never a
+/// filtering axis for concept membership (any kind may realize a concept), so there is no "own kind"
+/// for Concepts to grandfather the way Code's code-entity fallback does. A membership-less node under
+/// [`Lens::Concepts`] (any kind - a code entity, a decision, ...) therefore gets NO bucket here
+/// either, exactly mirroring criterion 4's whole-graph fix.
 fn reprojection_lens_key(buckets: &Buckets, node: &Node) -> Option<String> {
+    if matches!(buckets.lens, Lens::Concepts { .. }) {
+        return buckets
+            .membership
+            .get(node.id.as_str())
+            .map(|b| (*b).to_string());
+    }
     if matches!(buckets.lens, Lens::Code { .. }) && node.kind != KIND_CODE_ENTITY {
         return None;
     }
@@ -6845,16 +6884,20 @@ mod tests {
         assert_eq!(Lens::from_query(Some("bogus"), Some("9")), Lens::Files);
     }
 
-    /// The CONCEPTS LENS VIEW (spec 54 c3): `lens=concepts` buckets every `REALIZES`-carrying node by
-    /// its intent CONCEPT through the SAME overview/drill folds - the idea the docs and code realize,
-    /// grouped across directory lines. A node realizing MORE THAN ONE concept folds under its PRIMARY
-    /// (the largest concept by member count, ties by lexicographically-smallest id) and is flagged
-    /// `shared` - counted once, never silently duplicated; a membership-less node keeps its KIND
-    /// bucket (so the view stays whole-graph); the `KIND_CONCEPT` super-node is a bucket, not a
-    /// member, so it is excluded; an underived grain carries the documented empty state; and the files
-    /// lens stays byte-identical. This is the criterion-3 fold behaviour driven inside-out.
+    /// The CONCEPTS LENS VIEW (spec 54 c3, amended by spec 63 c4): `lens=concepts` buckets every
+    /// `REALIZES`-carrying node by its intent CONCEPT through the SAME overview/drill folds - the idea
+    /// the docs and code realize, grouped across directory lines. A node realizing MORE THAN ONE
+    /// concept folds under its PRIMARY (the largest concept by member count, ties by
+    /// lexicographically-smallest id) and is flagged `shared` - counted once, never silently
+    /// duplicated; the `KIND_CONCEPT` super-node is a bucket, not a member, so it is excluded; an
+    /// underived grain carries the documented empty state; and the files lens stays byte-identical.
+    /// Spec 63 CRITERION 4 (CONCEPTS-LENS PURITY): a membership-less node carries NO bucket at all
+    /// here, regardless of its own kind - the concepts lens admits exactly one subject taxonomy, never
+    /// a per-kind bucket, at any zoom (mirroring criterion 1's identical fix for the code lens). This is
+    /// the criterion-4 fold behaviour driven inside-out.
     #[test]
-    fn concepts_lens_buckets_members_by_concept_with_primary_shared_and_empty_state() {
+    fn concepts_lens_buckets_members_by_concept_excludes_membershipless_nodes_and_reports_underived_grain(
+    ) {
         let ce = |id: &str| Node {
             id: id.to_string(),
             kind: KIND_CODE_ENTITY.to_string(),
@@ -6890,9 +6933,9 @@ mod tests {
         // store::append} (size 3, the LARGER); concept/1/1 "the review" = {docs/review.md, graph::build}
         // (size 2, the SMALLER). `graph::build` REALIZES BOTH - a SHARED member whose PRIMARY is the
         // larger concept/1/0 (by size, not the tie-break). Plus the two KIND_CONCEPT super-nodes (each
-        // labelled) and TWO membership-less nodes (an unattached code entity + a decision) that keep
-        // their KIND buckets. One cross-concept doc reference weights the super-edge; one intra-concept
-        // GOVERNS edge adds none.
+        // labelled) and TWO membership-less nodes (an unattached code entity + a decision) that spec 63
+        // c4 EXCLUDES entirely - no per-type bucket, so neither ever renders as a node. One cross-concept
+        // doc reference weights the super-edge; one intra-concept GOVERNS edge adds none.
         let kg = "docs/kg.md";
         let review = "docs/review.md";
         let build = "src/graph/index.rs::build";
@@ -6941,13 +6984,6 @@ mod tests {
         assert_eq!(
             overview.clusters,
             vec![
-                // The unattached code entity keeps its KIND bucket (not its directory).
-                Cluster {
-                    key: KIND_CODE_ENTITY.to_string(),
-                    count: 1,
-                    kind: KIND_CODE_ENTITY.to_string(),
-                    label: None,
-                },
                 // concept/1/0 (the larger): {kg.md, build, append} = 3 members, dominant kind
                 // code-entity (build + append), labelled by the concept node's label.
                 Cluster {
@@ -6964,15 +7000,27 @@ mod tests {
                     kind: KIND_DESIGN_DOC.to_string(),
                     label: Some("the review".to_string()),
                 },
-                // The membership-less decision keeps its KIND bucket.
-                Cluster {
-                    key: KIND_DECISION.to_string(),
-                    count: 1,
-                    kind: KIND_DECISION.to_string(),
-                    label: None,
-                },
+                // NO cluster for the membership-less code entity / decision (spec 63 c4): the concepts
+                // lens admits ONLY concept members, so they carry no bucket of any kind.
             ],
-            "concepts lens folds members by concept (primary bucket, shared counted once), keeps kind buckets for the unattached nodes, and labels each concept: {overview:?}"
+            "concepts lens folds members by concept (primary bucket, shared counted once) and excludes every membership-less node entirely, at any kind: {overview:?}"
+        );
+        assert!(
+            overview
+                .clusters
+                .iter()
+                .all(|c| c.key != KIND_CODE_ENTITY && c.key != KIND_DECISION),
+            "no storage-schema-name (code-entity / decision) ever appears as a cluster key: {overview:?}"
+        );
+        assert!(
+            cluster_detail(&graph, KIND_CODE_ENTITY, &concepts).nodes.is_empty(),
+            "the code-entity kind key no longer drills to the unattached helper - no per-type bucket \
+             exists under the concepts lens"
+        );
+        assert!(
+            cluster_detail(&graph, KIND_DECISION, &concepts).nodes.is_empty(),
+            "the decision kind key no longer drills to the membership-less d1 - no per-type bucket \
+             exists under the concepts lens"
         );
         assert_eq!(
             overview.edges,
