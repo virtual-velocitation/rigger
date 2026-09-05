@@ -4,10 +4,20 @@
 //! grouped ACROSS directory lines - through the SAME whole-graph overview / drill folds the files and
 //! code lenses use, a different bucket key. A node realizing MORE THAN ONE concept folds under its
 //! PRIMARY (the largest concept by member count, ties by lexicographically-smallest id) and is
-//! flagged `shared` so it is counted once, never silently duplicated; a membership-less node keeps
-//! its KIND bucket (so the view stays whole-graph); the `KIND_CONCEPT` super-node is a bucket, not a
-//! member, so it is excluded. `lens=files` (and an absent / unknown lens) stays the byte-identical
-//! spec-42 directory/kind fold.
+//! flagged `shared` so it is counted once, never silently duplicated; the `KIND_CONCEPT` super-node is
+//! a bucket, not a member, so it is excluded. `lens=files` (and an absent / unknown lens) stays the
+//! byte-identical spec-42 directory/kind fold.
+//!
+//! Amended by spec 63 criterion 4 (CONCEPTS-LENS PURITY): a membership-less node - of ANY kind, not
+//! only a code entity - carries NO bucket at all under the concepts lens, at either zoom (the folded
+//! overview or a concept drill). This is narrower than spec 54's original whole-graph fold, which kept
+//! a membership-less node's KIND bucket so the view stayed whole-graph; spec 63 deliberately drops
+//! that for the concepts lens specifically (mirroring criterion 1's identical fix for the code lens),
+//! since a decision / file / unattached code entity is a different taxonomy's subject. The FILES lens
+//! keeps the original spec-42 whole-graph fold unchanged (criterion 3's purity fix is its own unit),
+//! and the spec-55 subject x lens REPROJECTION matrix (`reproject`) is a distinct code path this
+//! amendment does not touch: its own nothing-dropped contract (a membership-less leaf subject keeps
+//! its kind bucket) still holds, pinned by `tests/subject_lens_reprojection_contract.rs`.
 //!
 //! These run OUTSIDE the crate, over the library's PUBLIC surface (`rigger::dash::{Lens, from_query,
 //! clustered_overview, cluster_detail, route, NeighborhoodNode.shared, ...}` + the two concept
@@ -35,7 +45,7 @@
 //! `dash` + `contextgraph` compile on BOTH the default and the `--no-default-features` lane (neither
 //! the route nor these DTOs is feature-gated), so this guards the served contract in both lanes.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 use std::process::Command;
 
 use rigger::contextgraph::{
@@ -94,7 +104,7 @@ fn concept(id: &str, label: &str) -> Node {
 }
 
 /// A membership-LESS node of an arbitrary kind (a dev-loop decision): under the concepts lens it must
-/// keep its KIND bucket, so the view stays whole-graph.
+/// be entirely EXCLUDED (spec 63 c4) - no per-type bucket, so it never renders as a node here.
 fn plain(id: &str, kind: &str) -> Node {
     Node {
         id: id.to_string(),
@@ -122,7 +132,8 @@ fn edge(from: &str, to: &str, rel: &str, tier: &str) -> Edge {
 /// src/store/log.rs::append} (size 2, the SMALLER). `append` REALIZES BOTH - a SHARED member whose
 /// PRIMARY is the larger `concept/1/0` (by size), so it folds there and is flagged `shared`, counted
 /// once. Plus the two `KIND_CONCEPT` super-nodes (each labelled) and TWO membership-less nodes (an
-/// unattached code entity + a decision) that keep their KIND buckets. Coupling: ONE intra-concept
+/// unattached code entity + a decision) that spec 63 c4 EXCLUDES entirely - no per-type bucket, so
+/// neither ever renders as a node here. Coupling: ONE intra-concept
 /// `append->index` call (adds no cross weight, renders in the c0 drill); ONE cross-concept
 /// `store.md->api.md` reference (folds to a single weight-1 super-edge). ONE graph drives every fold,
 /// exactly as the browser hits one live graph for the overview and then a drill.
@@ -206,12 +217,14 @@ fn lens_from_query_is_a_public_total_selector_including_concepts() {
 /// ACROSS directory lines - sizing each concept super-node by MEMBER count, colouring it by its
 /// dominant member kind, and labelling it with the concept node's deterministic `label`. A node
 /// realizing MORE THAN ONE concept folds under its PRIMARY (the larger by member count) and is counted
-/// ONCE there; a membership-LESS node keeps its KIND bucket (so the view stays whole-graph); and only
-/// edges that CROSS two concepts weight the symmetric super-edge (intra-concept coupling and the
-/// REALIZES spokes to the excluded super-node add none). Every value is bound to the fixture so a
-/// renamed field or a mis-fold reddens here, not just in-process.
+/// ONCE there; only edges that CROSS two concepts weight the symmetric super-edge (intra-concept
+/// coupling and the REALIZES spokes to the excluded super-node add none). Spec 63 criterion 4
+/// (CONCEPTS-LENS PURITY): a membership-LESS node carries NO bucket at all here, regardless of its own
+/// kind - the concepts lens admits exactly one subject taxonomy, never a per-kind bucket. Every value
+/// is bound to the fixture so a renamed field or a mis-fold reddens here, not just in-process.
 #[test]
-fn concepts_lens_overview_buckets_members_by_concept_across_directories() {
+fn concepts_lens_overview_buckets_members_by_concept_across_directories_and_excludes_membershipless_nodes(
+) {
     let overview = clustered_overview(&lens_graph(), &concepts_default());
 
     assert_eq!(
@@ -225,14 +238,6 @@ fn concepts_lens_overview_buckets_members_by_concept_across_directories() {
     assert_eq!(
         overview.clusters,
         vec![
-            // The unattached code entity keeps its KIND bucket (NOT its src/util directory), so the
-            // concepts lens stays whole-graph.
-            Cluster {
-                key: KIND_CODE_ENTITY.to_string(),
-                count: 1,
-                kind: KIND_CODE_ENTITY.to_string(),
-                label: None,
-            },
             // concept/1/0 (the larger): {store.md, append, index} = 3 members across three
             // directories, dominant kind code-entity (append + index), labelled by the concept node.
             Cluster {
@@ -249,15 +254,18 @@ fn concepts_lens_overview_buckets_members_by_concept_across_directories() {
                 kind: KIND_DESIGN_DOC.to_string(),
                 label: Some("the api".to_string()),
             },
-            // The membership-less decision keeps its KIND bucket.
-            Cluster {
-                key: KIND_DECISION.to_string(),
-                count: 1,
-                kind: KIND_DECISION.to_string(),
-                label: None,
-            },
+            // NO cluster for the unattached code entity or the membership-less decision (spec 63 c4):
+            // the concepts lens admits ONLY concept members, so a membership-less node of any kind
+            // carries no bucket here.
         ],
-        "concepts lens folds members by concept (primary bucket, shared counted once), keeps kind buckets for the unattached nodes, and labels each concept: {overview:?}"
+        "concepts lens folds members by concept (primary bucket, shared counted once) and excludes every membership-less node entirely, at any kind: {overview:?}"
+    );
+    assert!(
+        overview
+            .clusters
+            .iter()
+            .all(|c| c.key != KIND_CODE_ENTITY && c.key != KIND_DECISION),
+        "no storage-schema-name (code-entity / decision) kind bucket ever appears as a cluster key under the concepts lens: {overview:?}"
     );
     assert_eq!(
         overview.edges,
@@ -366,54 +374,37 @@ fn a_shared_member_of_two_equal_size_concepts_folds_to_the_lexicographically_sma
     );
 }
 
-/// WHOLE-GRAPH COMPLETENESS AT THE DRILL, over the public boundary: the overview test proves a
-/// membership-LESS node keeps its KIND bucket in the OVERVIEW, but a KIND bucket that cannot be
-/// DRILLED hides its members from a human - so `cluster_detail(graph, <a KIND key>, &Concepts)` must
-/// reach the SAME kind-fallback arm and yield exactly that kind's membership-less nodes. This exercises
-/// the drill's `key`-else branch (a membership-less node folds by its KIND, not by a concept) that the
-/// concept-key drills never touch, and pins three boundary facts the overview cannot: (1) a
-/// membership-less node of a kind is reachable by drilling its KIND bucket; (2) a node that DOES realize
-/// a concept is NOT in its kind's fallback drill (it folded to its concept, so kind and concept buckets
-/// never double-count it); (3) the excluded `KIND_CONCEPT` super-node is a bucket, never a member, so it
-/// appears in NO drill - not a concept drill and not its own `KIND_CONCEPT` kind-fallback drill. Every
-/// kind-fallback member is `shared = false` (the shared marker is concepts-membership-only).
+/// Spec 63 CRITERION 4 (CONCEPTS-LENS PURITY): a node with NO live `REALIZES` membership at this grain
+/// must carry NO bucket at all under the concepts lens - not even its own KIND bucket - regardless of
+/// the node's own kind. This is the exact regression criterion 1 already fixed for the code lens,
+/// generalized here: before this criterion, every membership-less node kept its KIND bucket (reachable
+/// by drilling that kind's key) so the view stayed whole-graph; `whole_graph_lens_key` now special-cases
+/// `Lens::Concepts` before falling back to the shared `Buckets::key`, so a membership-less node of ANY
+/// kind loses its kind fallback, at BOTH zooms. Proven for TWO different kinds (a code entity and a
+/// decision) so this is not a kind-specific coincidence, and the excluded `KIND_CONCEPT` super-node
+/// (a bucket, never a member) drills to nothing either, exactly as before.
 #[test]
-fn drilling_a_kind_fallback_bucket_under_lens_concepts_keeps_membershipless_nodes_whole_graph() {
+fn concepts_lens_excludes_membershipless_nodes_of_any_kind_entirely() {
     let graph = lens_graph();
 
-    // --- DRILL the code-entity KIND bucket: exactly the membership-LESS helper, never the concept
-    // members append/index (they folded to c0) and never the excluded concept super-nodes ---
-    let ce_drill = cluster_detail(&graph, KIND_CODE_ENTITY, &concepts_default());
-    let ce_members: BTreeMap<&str, bool> = ce_drill
-        .nodes
-        .iter()
-        .map(|n| (n.id.as_str(), n.shared))
-        .collect();
-    assert_eq!(
-        ce_members,
-        BTreeMap::from([(HELPER, false)]),
-        "the code-entity kind-fallback drill yields ONLY the membership-less helper (append/index folded to their concept, the concept super-nodes are excluded), flagged shared=false: {ce_drill:?}"
-    );
+    // Every former kind-fallback key - the unattached helper's, the membership-less decision's, and
+    // the excluded concept super-node's own kind - now drills to NOTHING: no per-type bucket survives
+    // at the drill zoom either.
+    for kind_key in [KIND_CODE_ENTITY, KIND_DECISION, KIND_CONCEPT] {
+        let drill = cluster_detail(&graph, kind_key, &concepts_default());
+        assert!(
+            drill.nodes.is_empty(),
+            "the former kind key {kind_key:?} must drill to nothing under the concepts lens: {drill:?}"
+        );
+    }
 
-    // --- DRILL the decision KIND bucket: exactly the membership-less decision, not shared ---
-    let dec_drill = cluster_detail(&graph, KIND_DECISION, &concepts_default());
-    let dec_members: BTreeMap<&str, bool> = dec_drill
-        .nodes
-        .iter()
-        .map(|n| (n.id.as_str(), n.shared))
-        .collect();
-    assert_eq!(
-        dec_members,
-        BTreeMap::from([("d1", false)]),
-        "the decision kind-fallback drill keeps the membership-less decision reachable, flagged shared=false: {dec_drill:?}"
-    );
-
-    // --- The excluded KIND_CONCEPT super-node is a BUCKET, not a member: drilling its literal kind key
-    // yields NOTHING (the concept super-nodes belong to no drill) ---
-    let concept_kind_drill = cluster_detail(&graph, KIND_CONCEPT, &concepts_default());
+    // The concept drills are UNCHANGED by the exclusion: append/index/store.md still resolve to c0,
+    // api.md to c1 - the membership-less helper and decision never leak into either.
+    let drill0 = cluster_detail(&graph, C0, &concepts_default());
+    let members0: BTreeSet<&str> = drill0.nodes.iter().map(|n| n.id.as_str()).collect();
     assert!(
-        concept_kind_drill.nodes.is_empty(),
-        "the KIND_CONCEPT super-node is a bucket not a member, so its kind key drills to nothing: {concept_kind_drill:?}"
+        !members0.contains(HELPER) && !members0.contains("d1"),
+        "the membership-less helper/decision never leak into a real concept's drill: {drill0:?}"
     );
 }
 
@@ -550,8 +541,8 @@ fn the_served_graph_route_threads_the_concepts_lens_into_overview_and_drill() {
         .collect();
     assert_eq!(
         keys,
-        vec![KIND_CODE_ENTITY, C0, C1, KIND_DECISION],
-        "the served concepts overview buckets by concept + kind: {ov}"
+        vec![C0, C1],
+        "the served concepts overview buckets by concept only - no per-type bucket (spec 63 c4): {ov}"
     );
     let c0_label = ov["clusters"]
         .as_array()
