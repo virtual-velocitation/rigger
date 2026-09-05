@@ -68,7 +68,10 @@
   /* KG is the top, full-width feature holding ~half the viewport for graph exploration; the columns
      hold the remaining half and scroll INTERNALLY, so the whole dashboard fits one screen with no
      page overflow. */
-  #kg { flex: 0 0 48%; min-height: 0; display: flex; flex-direction: column; }
+  /* position:relative so the docked memory rail (spec 63 c5, .kgrail) can be position:absolute
+     WITHIN this section, scoped to its bounds - never a flex sibling of #kgpanel, so opening or
+     closing the rail changes nothing about #kgpanel's own box and the graph layout never re-flows. */
+  #kg { flex: 0 0 48%; min-height: 0; display: flex; flex-direction: column; position: relative; }
   #kg > .kg { flex: 1 1 auto; min-height: 0; overflow: auto; }
   .columns { flex: 1 1 0; min-height: 0; display: flex; gap: 16px; }
   .columns > .col { flex: 1 1 46%; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 16px; overflow-y: auto; }
@@ -318,6 +321,20 @@
   .kgunresolved { margin-top: 6px; }
   .kgunresolved h3 { font-size: 12px; margin: 4px 0; color: var(--dim); }
   .kgsharedlist { font-size: 11px; color: var(--dim); padding: 3px 2px; overflow-wrap: anywhere; }
+  /* The SUBJECT VIEW's docked MEMORY RAIL (spec 63 c5): a STATIC sibling of #kgpanel, absolutely
+     positioned WITHIN #kg (never a flex sibling), so it docks to the right over the panel without
+     changing #kgpanel's own box - the canvas layout never re-flows when the rail opens or closes.
+     Lists the focused subject's governing decisions/findings/concepts as scrollable cards; hidden
+     with no subject focused (mirrors .kgsubjectlens). */
+  .kgrail { position: absolute; top: 0; right: 0; bottom: 0; width: 260px; max-width: 42%;
+    overflow-y: auto; background: var(--panel); border-left: 1px solid var(--line);
+    padding: 8px 10px; box-sizing: border-box; font-size: 12px; }
+  .kgrail[hidden] { display: none; }
+  .kgrail-section { margin-bottom: 10px; }
+  .kgrail-section h3 { margin: 0 0 4px; font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.06em; color: var(--muted); }
+  .kgrail-card { border-bottom: 1px solid var(--line); padding: 4px 0; overflow-wrap: anywhere; }
+  .kgrail-card b { display: block; color: var(--ink); }
 </style>
 </head>
 <body>
@@ -352,6 +369,10 @@
     <div class="kg" id="kgpanel">
       <div class="empty">the unified knowledge graph renders here for exploration; hover or click a node to highlight it, shift-click a second to trace the path between them</div>
     </div>
+    <!-- The docked MEMORY RAIL (spec 63 c5): a STATIC sibling of #kgpanel, absolutely positioned so
+         populating it never touches the panel's own rendered nodes/edges - hidden until a subject is
+         focused (a plain node click), exactly like #kgsubjectlens. -->
+    <div class="kgrail" id="kgrail" hidden></div>
   </section>
 
   <div class="columns">
@@ -744,6 +765,29 @@ function syncSubjectLens() {
     + ' &middot; <a href="#" class="kgback" data-kgclear="1">whole graph</a>';
 }
 
+// The SUBJECT VIEW's docked MEMORY RAIL (spec 63 c5): a STATIC sibling of #kgpanel (like
+// #kgsubjectlens), so populating it never touches the neighborhood's own rendered nodes/edges -
+// it is pure metadata and the canvas layout never re-flows for it. `memory` is the seeded
+// neighborhood's `memory` field (`{decisions, findings, concepts}`, each possibly empty); `null`
+// (no subject focused, or a static export with no live memory to fetch) hides the rail entirely.
+// Each section renders its documented "none" state rather than disappearing, so an all-empty
+// memory rail still reads as "checked, and there is none" rather than looking broken.
+function renderMemoryRail(memory) {
+  const rail = el("kgrail");
+  if (!rail) return;
+  if (!memory) { rail.hidden = true; rail.innerHTML = ""; return; }
+  rail.hidden = false;
+  const section = (title, items, card) => '<div class="kgrail-section"><h3>' + esc(title)
+    + ' (' + items.length + ')</h3>'
+    + (items.length ? items.map(card).join("") : '<div class="empty">none</div>') + '</div>';
+  const leafCard = lf => '<div class="kgrail-card"><b>' + esc(lf.id) + '</b>'
+    + esc(preview(lf.summary)) + '</div>';
+  const conceptCard = c => '<div class="kgrail-card"><b>' + esc(c.label || c.id) + '</b></div>';
+  rail.innerHTML = section("decisions", memory.decisions || [], leafCard)
+    + section("findings", memory.findings || [], leafCard)
+    + section("concepts", memory.concepts || [], conceptCard);
+}
+
 // The SUBJECT-STICKY lens dispatch (spec 55 c4): ONE lens picker serves the overview's inline selector
 // AND the subject-lens header. When a subject is focused, flipping the lens RE-REQUESTS that subject
 // under the new lens (a re-projection, seed+lens); with no subject it reloads the whole-graph overview
@@ -928,6 +972,10 @@ function renderGraph(g) {
   // c4). These are state-only assignments; they do NOT change this view's rendered output.
   kgMode = "seed";
   kgViewData = g;
+  // The SUBJECT VIEW's docked memory rail (spec 63 c5): the seed's governing decisions/findings/
+  // concepts riding this SAME response, rendered into the STATIC #kgrail sibling - never folded
+  // into `nodes`/`edges` above, so listing them adds no node to the drawn layout.
+  renderMemoryRail(g.memory || null);
   const nodes = g.nodes || [];
   const edges = g.edges || [];
   // The query-path (spec 30 c6): the shortest chain of node ids between the two selected nodes, and
@@ -1745,6 +1793,9 @@ async function loadKgOverview() {
   } catch (e) {
     el("kgpanel").innerHTML = '<div class="empty">the knowledge graph is unavailable</div>';
   }
+  // The whole-graph overview is the subject-less altitude (spec 63 c5): the docked memory rail is
+  // a SUBJECT's rail, so it hides right alongside the subject-sticky lens control, on every arm.
+  renderMemoryRail(null);
 }
 
 // DRILL a cluster (spec 42 c5): fetch /api/graph?cluster=<key> (the key encodeURIComponent'd, since a
@@ -2089,6 +2140,9 @@ wireSelectToSeed();
 // paint. Both are no-ops on their view bodies (the additive guarantee).
 syncSubjectLens();
 syncOverlayToggle();
+// The docked memory rail (spec 63 c5) starts hidden too - no subject is focused before the first
+// paint (matches the static markup's own `hidden` attribute; a no-op on the panel body).
+renderMemoryRail(null);
 
 // Paint the landing strip immediately (the "this dash" chip, plus any prior list) so the picker is
 // present before the first /api/instances fetch lands; the live poll then fills in the instances.
