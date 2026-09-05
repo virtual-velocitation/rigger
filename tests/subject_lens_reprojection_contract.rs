@@ -371,6 +371,53 @@ fn reprojection_excludes_a_non_code_entity_member_entirely_under_the_code_lens()
     );
 }
 
+const INFLATE_CONCEPT: &str = "concept/1/6";
+const INFLATE_COMMUNITY: &str = "community/1/6";
+const INFLATE_ENTITY: &str = "src/beta/n.rs::n";
+const INFLATE_DECISION: &str = "d-u63c1-a-non-code-community-member";
+
+/// Spec 63 CRITERION 1, the STRICTER form on the RE-PROJECTION surface:
+/// `reprojection_excludes_a_non_code_entity_member_entirely_under_the_code_lens` above proves a
+/// membership-LESS non-code-entity realizer spawns no bucket of its own; a realizer that ALSO carries
+/// its OWN live `IN_COMMUNITY` membership (spec 53: never restricted to code entities) is the harder
+/// case - `Buckets::key` would otherwise fold it into that SAME community bucket, INFLATING its member
+/// count rather than leaking a separate key. `reprojection_lens_key` excludes by KIND unconditionally,
+/// before ever consulting membership, so this must hold too; mirrors
+/// `code_lens_excludes_a_file_node_even_when_it_carries_a_live_community_membership`, which pins the
+/// identical inflation guard on the whole-graph surface.
+#[test]
+fn reprojection_excludes_a_decision_member_even_when_it_carries_a_live_community_membership() {
+    let graph = Graph {
+        nodes: vec![
+            node(INFLATE_CONCEPT, KIND_CONCEPT, Some("the idea")),
+            node(INFLATE_COMMUNITY, KIND_COMMUNITY, Some("beta")),
+            decision(INFLATE_DECISION, "why this also matters"),
+            def(INFLATE_ENTITY, "n"),
+        ],
+        edges: vec![
+            // The concept's REALIZES members: a real code entity AND a decision.
+            edge(INFLATE_ENTITY, INFLATE_CONCEPT, REL_REALIZES),
+            edge(INFLATE_DECISION, INFLATE_CONCEPT, REL_REALIZES),
+            // BOTH realizers join the SAME community - the decision's membership is genuine, not
+            // absent, so a broken guard would fold it into the community bucket alongside the entity.
+            edge(INFLATE_ENTITY, INFLATE_COMMUNITY, REL_IN_COMMUNITY),
+            edge(INFLATE_DECISION, INFLATE_COMMUNITY, REL_IN_COMMUNITY),
+        ],
+    };
+
+    let re = reproject(&graph, INFLATE_CONCEPT, &code_lens());
+    assert_eq!(
+        re.total, 2,
+        "the member-set size still counts the decision realizer"
+    );
+    assert_eq!(
+        re.clusters,
+        vec![bucket(INFLATE_COMMUNITY, 1, Some("beta"))],
+        "the ONE cluster is the community, sized 1 - the decision's own membership in that SAME \
+         community never inflates the count to 2: {re:?}"
+    );
+}
+
 /// An UNKNOWN subject (absent from the graph) has an EMPTY member set, so `reproject` returns an empty
 /// body - the subject echoed, zero clusters, zero edges, zero total, no unresolved - rather than
 /// panicking or leaking a whole-graph overview. This is the c1 mechanics of the documented empty cell
