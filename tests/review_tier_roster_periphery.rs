@@ -59,6 +59,25 @@ fn run_worker_label_with_reviews(
     title: &str,
     reviews: Option<&[&str]>,
 ) -> Option<String> {
+    run_worker_label_for_unit_and_reviews(id, None, title, reviews)
+}
+
+/// Like [`run_worker_label_with_reviews`], but ALSO stamps `req.unit` - the field `workerLabel`
+/// reads to derive the structural `Plan`/`Plan-Critique` persona for the two run-wide meta-stage
+/// spawns (mirrors `tests/worker_persona_label_periphery.rs::run_worker_label_for_unit`, the
+/// established per-file convention of a base helper plus a `_for_unit` variant that also sets
+/// `req.unit`). Needed for the ONE seam neither file exercises alone: criterion 2's persona
+/// override COMPOSED with criterion 4's roster injection - the exact shape the plan-critique
+/// gate's real adjudicator spawn produces (`req.unit === "plan-critique"` alongside a non-empty
+/// `req.reviews`), which `workerLabel` derives from the SAME `req` object in one function body.
+/// `None` omits the field entirely, matching an ordinary build unit's wave item -
+/// [`run_worker_label_with_reviews`] above is exactly that case.
+fn run_worker_label_for_unit_and_reviews(
+    id: &str,
+    unit: Option<&str>,
+    title: &str,
+    reviews: Option<&[&str]>,
+) -> Option<String> {
     let src = rigger_js_source();
     let verb_table = js_declaration(&src, "const PERSONA_VERB = {");
     let roster_table = js_declaration(&src, "const ROSTER_VERB = {");
@@ -68,6 +87,9 @@ fn run_worker_label_with_reviews(
     let worker_label = js_declaration(&src, "function workerLabel(req) {");
 
     let mut req = serde_json::json!({ "id": id, "title": title });
+    if let Some(unit) = unit {
+        req["unit"] = serde_json::Value::String(unit.to_string());
+    }
     if let Some(reviews) = reviews {
         req["reviews"] = serde_json::Value::Array(
             reviews
@@ -216,5 +238,32 @@ fn a_single_entry_roster_renders_with_no_stray_separator() {
         label,
         "Adversary - challenge the findings, assumptions, and rigor of lens:sdet #2: \
          challenge the one lens."
+    );
+}
+
+/// adv-u67c4-plancritique-persona-roster-composition-untested: criterion 2's persona override
+/// (`req.unit === "plan-critique"` forces the `Plan-Critique` persona regardless of the role
+/// half) COMPOSED with criterion 4's roster injection (a non-empty `req.reviews` inlined via
+/// `ROSTER_VERB[role]`) - the exact shape the plan-critique gate's real adjudicator spawn
+/// produces, since `plan_critique_loop` always stamps `adjudicator_roster(&[], adversary)` (the
+/// bare adversary token - the DAG-level critique names no lens tier). Every other test in this
+/// file exercises the roster with NO `req.unit`, and `worker_persona_label_periphery.rs` exercises
+/// `req.unit` with NO roster - `workerLabel` derives both from the SAME `req` object in one
+/// function body, so this combination is a distinct seam neither file's existing coverage pins.
+/// Correct today; this proves a future edit to `PERSONA_VERB`/`ROSTER_VERB`/the `req.unit` branch
+/// cannot silently regress it while every roster-only or persona-only test above keeps passing.
+#[test]
+fn the_plan_critiques_adjudicator_composes_its_persona_override_with_its_roster() {
+    let Some(label) = run_worker_label_for_unit_and_reviews(
+        "plan-critique/adjudicator#0",
+        Some("plan-critique"),
+        "review the proposed unit DAG.",
+        Some(&["adversary"]),
+    ) else {
+        return; // node unavailable; graceful absence.
+    };
+    assert_eq!(
+        label,
+        "Plan-Critique - weigh adversary and rule #0: review the proposed unit DAG."
     );
 }
