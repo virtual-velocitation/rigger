@@ -6,7 +6,11 @@
 //! CONCEPTS (or TOP-ENTITIES / TOP-EVIDENCE) chip forces that lens and re-projects the chip's id AS
 //! THE SUBJECT (`kgLens`/`kgSubject` land on the target), while a MEMORY chip carries no lens at
 //! all - it reuses criterion 5's plain re-seed (`kgSeed` lands on the card's own subject, `kgLens`
-//! is left UNTOUCHED) since this design names no memory lens.
+//! is left UNTOUCHED) since this design names no memory lens. A TOP-EVIDENCE member is not always
+//! a code entity (the intent layer can fold a file, or any other intent-layer kind, into the same
+//! concept's REALIZES membership - spec 54/29b), so its chip's lens is resolved from the member's
+//! OWN kind, never assumed code: this file proves a FILE evidence member hands off to the FILES
+//! lens and a kind with no lens of its own (a design-doc) carries no handoff at all.
 //!
 //! The implementer's inside-out `dash.rs` tests pin the pure `card`/`Card` surface; this layer
 //! proves the CLIENT actually renders it AND that a chip click drives the right seam - the
@@ -80,11 +84,12 @@ const CODE_CARD = { id: "combat.rs::fire", kind: "code-entity", label: "fire",
   decisions: 2, findings: 1, top_entities: [], top_evidence: [] };
 const FILE_CARD = { id: "combat.rs", kind: "file", label: "combat.rs",
   degree: 2, concepts: [], decisions: 0, findings: 0,
-  top_entities: [ { id: "combat.rs::fire", label: "fire" }, { id: "combat.rs::reload", label: "reload" } ],
+  top_entities: [ { id: "combat.rs::fire", kind: "code-entity", label: "fire" },
+                  { id: "combat.rs::reload", kind: "code-entity", label: "reload" } ],
   top_evidence: [] };
 const CONCEPT_CARD = { id: "concept/combat", kind: "concept", label: "combat resolution",
   degree: 1, concepts: [], decisions: 0, findings: 0,
-  top_entities: [], top_evidence: [ { id: "combat.rs::fire", label: "fire" } ] };
+  top_entities: [], top_evidence: [ { id: "combat.rs::fire", kind: "code-entity", label: "fire" } ] };
 function __cardFor(id){
   if (id === "combat.rs::fire") return CODE_CARD;
   if (id === "combat.rs") return FILE_CARD;
@@ -203,23 +208,49 @@ const CARD_DRIVER: &str = r#"
   // --- renderCard: a FILE subject's card (TOP ENTITIES) ---------------------------------------
   renderCard({ id: "combat.rs", kind: "file", label: "combat.rs", degree: 2,
     concepts: [], decisions: 0, findings: 0,
-    top_entities: [ { id: "combat.rs::fire", label: "fire" }, { id: "combat.rs::reload", label: "reload" } ],
+    top_entities: [ { id: "combat.rs::fire", kind: "code-entity", label: "fire" },
+                    { id: "combat.rs::reload", kind: "code-entity", label: "reload" } ],
     top_evidence: [] });
   const fileHtml = el("kgcard")._html;
   if (fileHtml.indexOf("TOP ENTITIES") === -1) throw new Error("REGRESSION: a file card must carry TOP ENTITIES: " + fileHtml);
   if (fileHtml.indexOf('data-seed="combat.rs::fire"') === -1 || fileHtml.indexOf('data-handoff="code"') === -1)
-    throw new Error("REGRESSION: a top-entity chip must hand off to the code lens: " + fileHtml);
+    throw new Error("REGRESSION: a CODE-ENTITY top-entity chip must hand off to the code lens: " + fileHtml);
   if (fileHtml.indexOf("CONCEPTS") !== -1 || fileHtml.indexOf("MEMORY") !== -1)
     throw new Error("REGRESSION: a file's card must carry no FILE/CONCEPTS/MEMORY rows (a code-entity's own rows): " + fileHtml);
 
   // --- renderCard: a CONCEPT subject's card (TOP EVIDENCE) ------------------------------------
   renderCard({ id: "concept/combat", kind: "concept", label: "combat resolution", degree: 1,
     concepts: [], decisions: 0, findings: 0, top_entities: [],
-    top_evidence: [ { id: "combat.rs::fire", label: "fire" } ] });
+    top_evidence: [ { id: "combat.rs::fire", kind: "code-entity", label: "fire" } ] });
   const conceptHtml = el("kgcard")._html;
   if (conceptHtml.indexOf("TOP EVIDENCE") === -1) throw new Error("REGRESSION: a concept card must carry TOP EVIDENCE: " + conceptHtml);
   if (conceptHtml.indexOf('data-seed="combat.rs::fire"') === -1 || conceptHtml.indexOf('data-handoff="code"') === -1)
-    throw new Error("REGRESSION: an evidence chip must hand off to the code lens: " + conceptHtml);
+    throw new Error("REGRESSION: a CODE-ENTITY evidence chip must hand off to the code lens: " + conceptHtml);
+
+  // --- renderCard: a CONCEPT subject's card whose evidence spans DIFFERENT kinds (spec 63 c2's
+  // own defect fix, "Card handoff ownership is total"): the intent layer can fold a file (or any
+  // other intent-layer kind) alongside a code entity into the SAME concept's REALIZES membership
+  // (mirroring concepts.rs's own primary derivation fixture, which realizes a concept from a
+  // KIND_FILE node via SPECIFIES) - each member's chip must hand off to THAT member's OWN
+  // taxonomy's lens, never a lens hardcoded for the whole row.
+  renderCard({ id: "concept/combat", kind: "concept", label: "combat resolution", degree: 3,
+    concepts: [], decisions: 0, findings: 0, top_entities: [],
+    top_evidence: [
+      { id: "combat.rs::fire", kind: "code-entity", label: "fire" },
+      { id: "combat.rs", kind: "file", label: "combat.rs" },
+      { id: "doc/combat-design", kind: "design-doc", label: "combat design" }
+    ] });
+  const mixedHtml = el("kgcard")._html;
+  if (mixedHtml.indexOf('data-seed="combat.rs::fire"') === -1 || mixedHtml.indexOf('data-handoff="code"') === -1)
+    throw new Error("REGRESSION: a CODE-ENTITY evidence chip must hand off to the code lens: " + mixedHtml);
+  if (mixedHtml.indexOf('data-seed="combat.rs"') === -1 || mixedHtml.indexOf('data-handoff="files"') === -1)
+    throw new Error("REGRESSION: a FILE evidence chip must hand off to the FILES lens, not code: " + mixedHtml);
+  const docChipIdx = mixedHtml.indexOf('data-seed="doc/combat-design"');
+  if (docChipIdx === -1) throw new Error("REGRESSION: a design-doc evidence chip must still render: " + mixedHtml);
+  const docChipTagStart = mixedHtml.lastIndexOf("<a ", docChipIdx);
+  const docChipTagEnd = mixedHtml.indexOf(">", docChipIdx);
+  if (mixedHtml.slice(docChipTagStart, docChipTagEnd).indexOf("data-handoff") !== -1)
+    throw new Error("REGRESSION: a design-doc evidence chip has no lens of its own - it must carry NO data-handoff: " + mixedHtml);
 
   // --- renderCard(null) hides it ---------------------------------------------------------------
   renderCard(null);

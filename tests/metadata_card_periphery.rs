@@ -229,6 +229,12 @@ fn the_served_route_carries_a_file_and_a_concept_subjects_card() {
         vec!["combat.rs::fire", "combat.rs::reload"],
         "a file's card lists its CONTAINED entities: {body}"
     );
+    assert_eq!(
+        json["card"]["top_entities"][0]["kind"].as_str(),
+        Some(KIND_CODE_ENTITY),
+        "each top_entities member's OWN kind rides the wire, the field a client needs to route \
+         its chip: {body}"
+    );
     assert!(
         json["card"].get("top_evidence").is_none(),
         "a file's card carries no top_evidence key: {body}"
@@ -258,6 +264,11 @@ fn the_served_route_carries_a_file_and_a_concept_subjects_card() {
         Some("combat.rs::fire"),
         "a concept's card lists the members that REALIZE it: {body}"
     );
+    assert_eq!(
+        json["card"]["top_evidence"][0]["kind"].as_str(),
+        Some(KIND_CODE_ENTITY),
+        "each top_evidence member's OWN kind rides the wire too: {body}"
+    );
     assert!(
         json["card"].get("top_entities").is_none(),
         "a concept's card carries no top_entities key: {body}"
@@ -266,6 +277,56 @@ fn the_served_route_carries_a_file_and_a_concept_subjects_card() {
         json["card"].get("file").is_none() && json["card"].get("line").is_none(),
         "a concept subject is not a code entity - its OWN card carries no file/line \
          definition-site keys: {body}"
+    );
+}
+
+/// A concept realized by members of DIFFERENT kinds (spec 63 c2's own fix, "Card handoff
+/// ownership is total": the intent layer folds a file alongside a code entity into the SAME
+/// concept's `REALIZES` membership, mirroring concepts.rs's own primary derivation fixture, which
+/// makes a `KIND_FILE` node realize a concept via `SPECIFIES`) serves EACH `top_evidence` member's
+/// OWN `kind` over the wire - the field a hand-rolled JS client reads to route a chip to the
+/// referenced node's OWN taxonomy's lens, never assumed code the way a prior round shipped it.
+#[test]
+fn the_served_route_carries_each_top_evidence_members_own_kind() {
+    let mut g = fixture_graph();
+    g.edges
+        .push(edge("combat.rs", "concept/combat", REL_REALIZES));
+    let resp = route(
+        "GET",
+        "/api/graph?card=concept%2Fcombat",
+        &[],
+        &g,
+        &[],
+        &HashMap::new(),
+        3,
+        "rigger-run",
+        "origin/main",
+        &[],
+    );
+    let body = String::from_utf8(resp.body).expect("a utf8 body");
+    let json: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+    let mut evidence: Vec<(String, String)> = json["card"]["top_evidence"]
+        .as_array()
+        .expect("a top_evidence array")
+        .iter()
+        .map(|e| {
+            (
+                e["id"].as_str().unwrap().to_string(),
+                e["kind"]
+                    .as_str()
+                    .expect("each evidence member carries its OWN kind")
+                    .to_string(),
+            )
+        })
+        .collect();
+    evidence.sort();
+    assert_eq!(
+        evidence,
+        vec![
+            ("combat.rs".to_string(), KIND_FILE.to_string()),
+            ("combat.rs::fire".to_string(), KIND_CODE_ENTITY.to_string()),
+        ],
+        "each top_evidence member's OWN kind rides the wire, never assumed code: {body}"
     );
 }
 
