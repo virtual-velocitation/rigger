@@ -277,3 +277,89 @@ fn metadata_card_renders_every_taxonomy_and_chips_hand_off_to_their_own_lens() {
         "OK metadata-card-renders-every-taxonomy-and-chips-hand-off-correctly",
     );
 }
+
+/// Driver for the CARD's OWN WIRING (spec 63 c2): `renderCard`/`loadCard` are proven above in
+/// isolation (called directly with fixture data), which is structurally blind to whether the
+/// FOUR real call sites the diff added - `renderGraph`, `renderReprojection`, `drillCluster`, and
+/// `loadKgOverview` - actually invoke them. `tests/dash_kg_graph_route.rs` and
+/// `tests/subject_lens_overlay_served_page.rs` were retargeted to TOLERATE the additive `card=`
+/// fetch those call sites now make, but neither asserts the fetch happens - a silently-dropped
+/// `loadCard`/`renderCard(null)` call at any of the four sites would regress unnoticed. This
+/// drives each call site directly against the shared `RESOLVING_FETCH` fixture and asserts the
+/// card that lands in `#kgcard` (or its absence) matches that site's own documented contract:
+/// `renderGraph`/`renderReprojection` card their seed/subject; a files/concepts-lens
+/// `drillCluster` cards its cluster (a code-lens drill names no card, so it hides any stale one);
+/// `loadKgOverview` cards nothing at the whole-graph altitude.
+const WIRING_DRIVER: &str = r#"
+;(async function(){
+  function flush(){ return (async()=>{ for (let k=0;k<40;k++) await Promise.resolve(); })(); }
+
+  // --- renderGraph(g) must card g.seed -----------------------------------------------------
+  renderGraph({ seed: "combat.rs::fire", nodes: [], edges: [] });
+  await flush();
+  if (el("kgcard").hidden !== false) throw new Error("REGRESSION: renderGraph did not card its seed at all");
+  let html = el("kgcard")._html;
+  if (html.indexOf("fire") === -1 || html.indexOf("combat.rs:42") === -1)
+    throw new Error("REGRESSION: renderGraph must fetch+render the SEED's own card: " + html);
+
+  // --- renderReprojection(rp) must card its subject ----------------------------------------
+  renderReprojection({ subject: "combat.rs", clusters: [], edges: [], total: 0 });
+  await flush();
+  html = el("kgcard")._html;
+  if (html.indexOf("TOP ENTITIES") === -1)
+    throw new Error("REGRESSION: renderReprojection must fetch+render the SUBJECT's own card: " + html);
+
+  // --- drillCluster(key): a FILES-lens drill cards its cluster (top entities) -------------
+  kgLens = "files";
+  await drillCluster("combat.rs");
+  await flush();
+  html = el("kgcard")._html;
+  if (el("kgcard").hidden !== false || html.indexOf("TOP ENTITIES") === -1)
+    throw new Error("REGRESSION: a files-lens drill must card its cluster: " + html);
+
+  // --- drillCluster(key): a CONCEPTS-lens drill cards its cluster (top evidence) ----------
+  kgLens = "concepts";
+  await drillCluster("concept/combat");
+  await flush();
+  html = el("kgcard")._html;
+  if (el("kgcard").hidden !== false || html.indexOf("TOP EVIDENCE") === -1)
+    throw new Error("REGRESSION: a concepts-lens drill must card its cluster: " + html);
+
+  // --- drillCluster(key): a CODE-lens drill's cluster is a community - no card exists -----
+  kgLens = "code";
+  await drillCluster("combat.rs::fire");
+  await flush();
+  if (el("kgcard").hidden !== true)
+    throw new Error("REGRESSION: a code-lens drill names no card and must hide any stale one");
+
+  // --- loadKgOverview() cards nothing at the whole-graph altitude -------------------------
+  renderCard({ id: "combat.rs", kind: "file", label: "combat.rs", degree: 1, concepts: [],
+    decisions: 0, findings: 0, top_entities: [], top_evidence: [] });
+  if (el("kgcard").hidden !== false) throw new Error("setup: the card must be visible before loadKgOverview");
+  await loadKgOverview();
+  if (el("kgcard").hidden !== true)
+    throw new Error("REGRESSION: loadKgOverview must hide the card - no subject at the whole-graph altitude");
+
+  console.log("OK metadata-card-wiring-fires-at-every-call-site");
+})().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
+"#;
+
+/// RUNTIME guard proving the card's WIRING (never just its own rendering, covered above): each of
+/// the four call sites the diff added actually drives `loadCard`/`renderCard`, exactly as its own
+/// documentation promises - the seam `tests/dash_kg_graph_route.rs` and
+/// `tests/subject_lens_overlay_served_page.rs` only had to TOLERATE, never had to PROVE.
+#[test]
+fn metadata_card_wiring_fires_at_every_render_and_drill_call_site() {
+    if !node_available() {
+        eprintln!(
+            "SKIP metadata_card_wiring_fires_at_every_render_and_drill_call_site: no `node` \
+             runtime on PATH. This runtime guard needs node (present on dev machines and on \
+             ubuntu-latest CI); install node to run it."
+        );
+        return;
+    }
+    run_node_harness(
+        &build_harness(WIRING_DRIVER),
+        "OK metadata-card-wiring-fires-at-every-call-site",
+    );
+}
