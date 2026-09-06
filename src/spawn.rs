@@ -1878,11 +1878,15 @@ mod tests {
             js.contains("starting ${req.id}"),
             "a log() narrator line must announce the worker's title (the work-line)"
         );
-        // Additive: the progress-GROUP label (phaseOf) is UNCHANGED - the work-line enriches the
-        // item and narrator, it never fragments a unit's shared `{unit}:{stage}` group.
+        // Additive: the progress-GROUP label (phaseOf) is a mechanism SEPARATE from the
+        // work-line built here - the work-line enriches the item and narrator, it never reads
+        // from or replaces the phase group. phaseOf's own role/stage -> {Plan,Build,Review}
+        // mapping (spec 67, criterion 1) is pinned in its own dedicated test, not re-derived
+        // here.
         assert!(
-            js.contains("`${req.unit}:${req.stage}`"),
-            "phaseOf stays the unit+stage group label; the work-line render is additive"
+            js.contains("const ph = phaseOf(req)") && js.contains("phase: ph"),
+            "the worker's progress group must still come from phaseOf(req), a mechanism \
+             distinct from the work-line label built here"
         );
     }
 

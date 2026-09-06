@@ -240,13 +240,32 @@ function relayAttention(step) {
   }
 }
 
-// phaseOf builds a worker's per-unit `opts.phase` progress-group label from the wave item,
-// exactly per the documented `unit + stage` contract on spawn::SpawnRequest. The conductor
-// currently sets both to the unit id, so a unit's whole wave (implementer + reviewers)
-// shares one group - which is precisely the grouping we want; if the conductor later
-// distinguishes the stage half, this label refines automatically with no driver change.
+// roleOf reads the ROLE half of a wave item's deterministic spawn id, mirroring the grammar
+// `spawn::spawn_role` (src/spawn.rs) owns on the Rust side: `<unit>/<role>#<attempt>`, with an
+// optional `~retry{n}` respawn suffix riding after the role, both trimmed. Unit ids never
+// contain `/` (spawn::spawn_id's own invariant), so splitting on the first `/` is unambiguous.
+// Shared by every driver-side label that needs a wave item's role (phaseOf below, and the
+// persona-led work label) so the id grammar has ONE reader here, not a copy per caller.
+function roleOf(req) {
+  const afterUnit = String(req.id || '').split('/')[1] || ''
+  return afterUnit.split(/[#~]/)[0]
+}
+
+// phaseOf maps a wave item onto one of the fixed `meta.phases` groups (spec 67, criterion 1).
+// The two run-wide meta-stages are special-cased on the UNIT, ahead of any role read: `plan`
+// and `plan-critique` are `Plan` regardless of which role spawns them (the planner spawns as
+// an `implementer`, the critique gate as `adversary`/`adjudicator` - unmapped, those would
+// split the two meta-stages across Build/Review instead of the one Plan group they belong to).
+// Every other item is a per-criterion unit, and its ROLE decides the rest: the three review
+// tiers (`lens:*`, `adversary`, `adjudicator`) group under `Review`; `implementer` and every
+// other role - INCLUDING one this mapping does not yet recognize - group under `Build`, a
+// fail-visible default that keeps an unknown role's row visible under ongoing work rather than
+// dropping it. Courier placement (the Drive lane) is criterion 3's, at its own call sites.
 function phaseOf(req) {
-  return `${req.unit}:${req.stage}`
+  if (req.unit === 'plan' || req.unit === 'plan-critique') return 'Plan'
+  const role = roleOf(req)
+  if (role === 'adversary' || role === 'adjudicator' || role.startsWith('lens')) return 'Review'
+  return 'Build'
 }
 
 // runWorker spawns one wave item natively and lets it self-report. The Workflow `agent()`
@@ -384,13 +403,13 @@ async function runWorker(req, fatal) {
   // The live work-line (spec 19a, c4): the unit's criterion the conductor threaded onto the
   // wave item. It rides the RENDER surfaces here - the log() narrator and the per-worker
   // progress-group label - so an observer sees the actual WORK a spawn is doing, not just its
-  // `${req.unit}:${req.stage}` group. Collapsed to a single line so a multi-line criterion
-  // never breaks the one-line narration; empty for an untitled (plan/canary) spawn, which then
-  // renders exactly as before. The group label (phaseOf) is UNCHANGED - the title is additive.
+  // lifecycle-phase group. Collapsed to a single line so a multi-line criterion never breaks
+  // the one-line narration; empty for an untitled (plan/canary) spawn, which then renders
+  // exactly as before. The group label (phaseOf) is UNCHANGED - the title is additive.
   const work = (req.title || '').replace(/\s+/g, ' ').trim()
   const workLabel = work ? `${req.id} · ${work}` : req.id
   // Narrate the start of this worker's run so a long silent stretch is a visible line, not a
-  // gap; the title is what turns `${req.unit}:${req.stage}` into the actual criterion.
+  // gap; the title is what turns the bare phase group into the actual criterion.
   log(`starting ${req.id}${work ? `: ${work}` : ''}`)
   const workdir = req.dir
     ? `Do all your file edits, cargo, and any git commit inside your isolated worktree ${req.dir} (the conductor assigned it and owns its lifecycle; run \`rigger ...\` commands from ${REPO}).`
