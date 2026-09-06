@@ -383,8 +383,9 @@ function roleAttempt(id) {
 // "Plan-Critique" persona a reader needs to recognize these rows: rendering them as a plain
 // "Implementer"/"Adversary" persona would be indistinguishable from any ordinary build unit's row
 // (the "plan personas are dead code" regression a prior round shipped). So the persona for these
-// two is derived STRUCTURALLY, from `req.unit` (the same field `phaseOf` above already keys its
-// own per-unit grouping on), never from the role half.
+// two is derived STRUCTURALLY, from `req.unit` (the same field `phaseOf` above reads only to
+// special-case these two meta-stage units into `Plan`, never as a per-unit grouping key), never
+// from the role half.
 function workerLabel(req) {
   const work = (req.title || '').replace(/\s+/g, ' ').trim()
   if (!work) return req.id
