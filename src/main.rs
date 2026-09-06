@@ -20357,13 +20357,17 @@ mod tests {
             code.contains("phase: ph"),
             "each spawned worker must label its progress group with the per-unit phase"
         );
-        // No bare global lifecycle phase markers: Build/Review/Integrate are per-unit (inside
-        // the conductor) now, so a global marker would re-imply a false "all units build, then
-        // all review" order.
-        for stage in ["Build", "Review", "Integrate"] {
+        // No bare global lifecycle phase markers survive at all now (spec 67, criterion 3):
+        // Build/Review/Integrate are per-unit (inside the conductor), and Plan's own global
+        // `phase('Plan')` call - which used to pin the courier steps under a fixed
+        // "orchestration pass" group for the run's whole duration - is retired outright. A
+        // global marker for any of these would re-imply a false "all units build, then all
+        // review" (or "everything is one Plan pass") order.
+        for stage in ["Plan", "Build", "Review", "Integrate"] {
             assert!(
                 !code.contains(&format!("phase('{stage}')")),
-                "the global phase('{stage}') marker must not exist - {stage} is per-unit now"
+                "the global phase('{stage}') marker must not exist - {stage} is per-unit or \
+                 retired now"
             );
             assert!(
                 !code.contains(&format!("phase: '{stage}'")),
@@ -20371,10 +20375,17 @@ mod tests {
                  every unit into one global progress group"
             );
         }
-        // Only Plan remains a genuine global phase marker (the orchestration/courier pass).
+        // No global phase(...) marker call of ANY kind survives - the couriers (which have no
+        // unit of their own) now group under the dedicated `Drive` orchestration lane instead,
+        // via the SAME per-spawn opts.phase literal mechanism every worker already uses.
         assert!(
-            code.contains("phase('Plan')"),
-            "the single global Plan pass must keep its phase('Plan') marker"
+            !code.contains("phase("),
+            "no global phase(...) marker call may survive anywhere in the driver - \
+             orchestration groups ride the per-spawn `phase: 'Drive'` opts literal instead"
+        );
+        assert!(
+            code.contains("phase: 'Drive'"),
+            "the step courier must group under the dedicated Drive orchestration lane"
         );
 
         // 6. Workers SELF-REPORT via `rigger result <id>`, and a worker that DIES without
@@ -20878,17 +20889,19 @@ mod tests {
     /// Isolate the STEP-courier prompt (the agent that runs `rigger step` and relays the wave)
     /// from the surrounding driver source, so a structural assertion pins the RIGHT agent's
     /// instructions and not some other prompt that shares a word. The prompt is the template
-    /// string that opens with `Advance the run one frontier` and runs up to the `{ phase: 'Plan'`
-    /// options object that closes the `agent(...)` call. Asserted over comment-stripped source so
-    /// the phrases are checked in the actual prompt literal, not the file's documentation prose.
+    /// string that opens with `Advance the run one frontier` and runs up to the `{ phase:
+    /// 'Drive'` options object that closes the `agent(...)` call (spec 67, criterion 3: the
+    /// step courier's own progress group is the dedicated Drive orchestration lane, not the
+    /// retired global `Plan` marker). Asserted over comment-stripped source so the phrases are
+    /// checked in the actual prompt literal, not the file's documentation prose.
     fn step_courier_prompt(code: &str) -> &str {
         let at = code
             .find("Advance the run one frontier")
             .expect("the driver must still define the step-courier prompt");
         let end = code[at..]
-            .find("{ phase: 'Plan'")
+            .find("{ phase: 'Drive'")
             .map(|off| at + off)
-            .expect("the step-courier prompt must close with the `{ phase: 'Plan' }` options");
+            .expect("the step-courier prompt must close with the `{ phase: 'Drive' }` options");
         &code[at..end]
     }
 

@@ -3465,6 +3465,79 @@ fn native_driver_scratch_policy_directs_the_worker_to_its_own_spawn_owned_contai
     );
 }
 
+/// Spec 67, criterion 3 (COURIERS RIDE THE DRIVE LANE): the driver's own step courier - the
+/// ONE spawn site that couriers `rigger step` itself - must group under the dedicated `Drive`
+/// orchestration lane (a meta phase, spec 67 Design), not the retired global `Plan` marker;
+/// and the global `phase('Plan')` call that pinned the WHOLE run under one static group for
+/// its entire duration must be gone entirely; the per-worker `opts.phase` (`phaseOf`) is what
+/// the /workflows display groups by, and always was for everything except this one site and
+/// the retired marker. The two SIDECAR couriers - the liveness reader
+/// (`livenessAgeSeconds`) and the fault recorder (`recordFaultCourier`) - already pass their
+/// calling worker's OWN `ph` (its `phaseOf(req)` result), never a literal, so they already
+/// satisfy this criterion's sidecar clause without any code change; this pins that fact so a
+/// future edit cannot silently regress either back to a hardcoded phase.
+///
+/// A source-fixture drift guard (the driver cannot execute in the Rust test harness - see
+/// `rigger_js_source`'s own doc comment): pins the load-bearing structure at a bar a no-op
+/// cannot pass.
+#[test]
+fn native_driver_couriers_ride_the_drive_lane_and_the_global_plan_marker_is_retired() {
+    let src = rigger_js_source();
+
+    // No global `phase(...)` marker call - or its now-stale explaining comment (which itself
+    // names a second hypothetical `phase('Build')` marker) - survives anywhere in the file.
+    assert!(
+        !src.contains("phase("),
+        "no global `phase(...)` marker call (nor its explaining comment) may survive in the \
+         driver - per-unit grouping rides opts.phase alone: {src}"
+    );
+
+    // The ONE step-courier spawn site groups under the dedicated Drive lane, not Plan.
+    let step_courier_line = src
+        .lines()
+        .find(|l| l.contains("schema: STEP") && l.contains("label: `step#"))
+        .unwrap_or_else(|| panic!("the step-courier spawn site must still exist: {src}"));
+    assert!(
+        step_courier_line.contains("phase: 'Drive'"),
+        "the step-courier spawn site must group under the Drive lane: {step_courier_line}"
+    );
+    assert!(
+        !step_courier_line.contains("phase: 'Plan'"),
+        "the step-courier spawn site must no longer group under the retired Plan marker: \
+         {step_courier_line}"
+    );
+
+    // Both sidecar couriers already ride their calling worker's OWN phase (`ph`), never a
+    // literal - isolate each function body so this stays pointed at the right call site.
+    let liveness_at = src
+        .find("async function livenessAgeSeconds(")
+        .expect("the liveness-reader sidecar courier must still exist");
+    let liveness_end = src[liveness_at..]
+        .find("\nasync function raceMarkerStaleness(")
+        .map(|off| liveness_at + off)
+        .expect("livenessAgeSeconds must be followed by raceMarkerStaleness");
+    let liveness_fn = &src[liveness_at..liveness_end];
+    assert!(
+        liveness_fn.contains("phase: ph,"),
+        "the liveness-reader sidecar courier must pass its calling worker's own `ph`, never a \
+         literal phase: {liveness_fn}"
+    );
+
+    let fault_at = src
+        .find("async function recordFaultCourier(")
+        .expect("the fault-recorder sidecar courier must still exist");
+    let fault_end = src[fault_at..]
+        .find("\nasync function runWorker(")
+        .map(|off| fault_at + off)
+        .expect("recordFaultCourier must be followed by runWorker");
+    let fault_fn = &src[fault_at..fault_end];
+    assert!(
+        fault_fn.contains("phase: ph,"),
+        "the fault-recorder sidecar courier must pass its calling worker's own `ph`, never a \
+         literal phase: {fault_fn}"
+    );
+}
+
 /// Scaffold a project whose workflow has TWO independent stages (neither `needs` the
 /// other, so both are ready in the first wave) that do no grounder work (`nop`) and
 /// never merge (`on_pass: none`). This is the minimal shape that drives `rigger step`
