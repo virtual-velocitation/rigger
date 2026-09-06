@@ -20292,15 +20292,16 @@ mod tests {
     }
 
     /// The native `/rigger` workflow is a THIN driver over the Rust conductor: it couriers
-    /// each frontier via `rigger step`, spawns the returned wave natively in parallel with a
-    /// per-unit `opts.phase` label built from the wave item, lets each worker self-report via
+    /// each frontier via `rigger step`, spawns the returned wave natively in parallel with an
+    /// `opts.phase` label built from the wave item's ROLE, lets each worker self-report via
     /// `rigger result`, records a dead worker's failure on its behalf via `rigger result
     /// --if-absent --error`, and loops until the step reports `done`. Because `meta` MUST be a pure literal
     /// (statically extracted by the Workflow runtime - no computed values / no interpolation)
-    /// and unit ids are only known at runtime, the per-unit labels live in the runtime
-    /// `opts.phase` strings while `meta.phases` keeps the fixed stage set. This test pins the
-    /// thin-driver contract so a future edit cannot silently regress it; it supersedes the
-    /// fat-workflow `buildUnit`/`PH` structure this workflow replaced.
+    /// and unit ids are only known at runtime, the lifecycle-phase labels live in the runtime
+    /// `opts.phase` strings `phaseOf` derives from role, while `meta.phases` keeps the fixed
+    /// stage set. This test pins the thin-driver contract so a future edit cannot silently
+    /// regress it; it supersedes the fat-workflow `buildUnit`/`PH` structure this workflow
+    /// replaced.
     #[test]
     fn workflow_is_a_thin_courier_driver_with_per_unit_phase_labels() {
         let wf = RIGGER_WORKFLOW;
@@ -20309,9 +20310,11 @@ mod tests {
         // assertions run against the raw literal object body.
         let code = strip_line_comments(wf);
 
-        // 1. meta.phases keeps the FIXED stage set as a pure up-front literal.
+        // 1. meta.phases keeps the FIXED stage set as a pure up-front literal. (`Integrate`
+        //    was retired for `Drive` by spec 67 criterion 5 - pinned in its own dedicated
+        //    test below, not re-derived here.)
         let meta = meta_object_body(wf);
-        for stage in ["Plan", "Build", "Review", "Integrate"] {
+        for stage in ["Plan", "Build", "Review", "Drive"] {
             assert!(
                 meta.contains(&format!("title: '{stage}'")),
                 "meta.phases must declare the fixed stage '{stage}'"
@@ -20345,8 +20348,8 @@ mod tests {
             "the driver must spawn the wave's agents natively in parallel"
         );
 
-        // 5. Per-unit progress groups are produced at runtime from the WAVE ITEM, and every
-        //    worker is labelled with one. `phaseOf`'s own role/stage -> {Plan,Build,Review}
+        // 5. Lifecycle-phase progress groups are produced at runtime from the WAVE ITEM, and
+        //    every worker is labelled with one. `phaseOf`'s own role -> {Plan,Build,Review}
         //    mapping (spec 67, criterion 1) is pinned in its own dedicated test below, not
         //    re-derived here.
         assert!(
@@ -20355,7 +20358,7 @@ mod tests {
         );
         assert!(
             code.contains("phase: ph"),
-            "each spawned worker must label its progress group with the per-unit phase"
+            "each spawned worker must label its progress group with phaseOf's derived phase"
         );
         // No bare global lifecycle phase markers survive at all now (spec 67, criterion 3):
         // Build/Review/Integrate are per-unit (inside the conductor), and Plan's own global
@@ -20628,6 +20631,57 @@ mod tests {
             "phaseOf's final, unconditional statement must be `return 'Build'` - the \
              fail-visible default for implementer and any unrecognized role: {body}"
         );
+    }
+
+    /// Spec 67, criterion 5 (THIS unit OWNS meta matching reality). `meta.phases` must
+    /// declare exactly the four groups a spawn can render under - `Plan`, `Build`, `Review`,
+    /// `Drive` - never the retired `Integrate` (conductor-only work: it spawns no agent of
+    /// its own, so it was never a group a WORKER rendered under; its detail folds onto
+    /// `Review` instead). And no prose anywhere in the template may still teach the
+    /// `<unit>:<stage>` per-unit construction criterion 1 retired: every spawn's `opts.phase`
+    /// group is now derived from its ROLE by `phaseOf` (Plan/Build/Review, shared across
+    /// units), never keyed on a unit+stage pair, so a leftover "per-unit progress group" /
+    /// "per-unit distinction" description would actively mislead a reader about how the
+    /// grouping actually works today.
+    #[test]
+    fn meta_matches_reality_drops_integrate_and_the_unit_stage_construction() {
+        let wf = RIGGER_WORKFLOW;
+        let meta = meta_object_body(wf);
+
+        for stage in ["Plan", "Build", "Review", "Drive"] {
+            assert!(
+                meta.contains(&format!("title: '{stage}'")),
+                "meta.phases must declare the fixed stage '{stage}': {meta}"
+            );
+        }
+        assert!(
+            !meta.contains("title: 'Integrate'"),
+            "meta.phases must drop the retired 'Integrate' phase - conductor-only work that \
+             spawns no agent, so it was never a group a worker rendered under; its detail \
+             folds onto 'Review': {meta}"
+        );
+
+        // Whitespace-normalize so a phrase wrapped across a `//` comment's line break is one
+        // contiguous, checkable string (this is prose scanning, not JS parsing).
+        let normalized = wf.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            !normalized.contains("<unit>:<stage>"),
+            "no detail line may still describe opts.phase groups as keyed on <unit>:<stage> - \
+             phaseOf (spec 67 c1) groups by ROLE-derived lifecycle phase, shared across units, \
+             not by a per-unit construction"
+        );
+        for stale in [
+            "own per-unit",
+            "per-unit progress group",
+            "per-unit distinction",
+        ] {
+            assert!(
+                !normalized.contains(stale),
+                "the template must not describe progress groups as per-unit (found {stale:?}) - \
+                 phaseOf (spec 67 c1) groups by lifecycle phase (Plan/Build/Review/Drive), \
+                 shared across units, never one group per unit"
+            );
+        }
     }
 
     /// Spec 69, criterion 6 ("the driver relays it" - THIS unit OWNS the relay; the wire
