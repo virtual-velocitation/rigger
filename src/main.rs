@@ -1768,6 +1768,25 @@ impl StoreLocation {
             None => project_identity(),
         }
     }
+
+    /// The repo root this store lives under (spec 83, criterion 2): the SAME OWNING root
+    /// [`identity`](Self::identity) binds to (the parent of the resolved `.rigger/`), NEVER
+    /// the process's raw cwd (`git_repo()`). A courier invoked from a nested unit worktree -
+    /// the documented, walk-up-supported shape [`require_store_dir`] exists for - has a
+    /// DIFFERENT git toplevel than the main repo a driver's `rigger step` (always run from the
+    /// repo root) stamped a spawn's liveness marker under; resolving the scratch root from
+    /// that raw cwd instead of this owning root is exactly how `rigger status`/`rigger watch`
+    /// used to read back "no marker" for an agent that was demonstrably alive and heartbeating
+    /// (spec 83's Problem statement). Empty when `dir` has no parent (pathological - the
+    /// resolved dir is always `<root>/.rigger`), mirroring [`identity`](Self::identity)'s own
+    /// fallback shape.
+    fn repo_root(&self) -> String {
+        self.dir
+            .parent()
+            .and_then(|p| p.to_str())
+            .map(String::from)
+            .unwrap_or_default()
+    }
 }
 
 /// The [`StoreLocation`] a SERVER-backed project resolves to, anchored at `cwd`. The server
@@ -7107,6 +7126,46 @@ fn cmd_progress(args: &[String]) -> Res {
     Ok(())
 }
 
+/// Every currently in-flight spawn's liveness-marker age (spec 14; spec 83 criterion 2): the
+/// ONE authority `cmd_status` and `watch_poll` both call, so the two surfaces can never
+/// disagree about who is still alive - no second, independently re-derived copy of this loop
+/// to drift out of step with the first.
+///
+/// `repo` MUST be the store's resolved OWNING root ([`StoreLocation::repo_root`]), never a raw
+/// `git_repo()` cwd read: a courier invoked from a nested unit worktree (the documented,
+/// walk-up-supported shape [`require_store_dir`] exists for) has a DIFFERENT git toplevel than
+/// the main repo a driver's `rigger step` (which always runs from the repo root) stamped the
+/// marker under, so resolving the scratch root from the raw cwd silently looks in a tree
+/// nothing ever wrote to - an alive, heartbeating agent then reads back with NO liveness age
+/// at all, exactly spec 83's own Problem statement ("the per-spawn liveness marker the sweep
+/// would consult is absent even while the agent is demonstrably alive"). An empty `repo` (no
+/// owning root resolved at all) degrades to no ages, mirroring every other repo-less reader.
+fn liveness_ages_for_wave(
+    repo: &str,
+    workdir: &str,
+    run_id: &str,
+    wave: &[spawn::WaveItem],
+    now: std::time::SystemTime,
+) -> std::collections::BTreeMap<String, u64> {
+    let mut ages = std::collections::BTreeMap::new();
+    if repo.is_empty() {
+        return ages;
+    }
+    let root = rigger::worktree::scratch_root_from_env(repo, workdir);
+    for w in wave {
+        let Some(path) = rigger::liveness::marker_path(&root, run_id, &w.id) else {
+            continue;
+        };
+        if let Ok(age) = std::fs::metadata(&path)
+            .and_then(|md| md.modified())
+            .map(|mtime| now.duration_since(mtime).map(|d| d.as_secs()).unwrap_or(0))
+        {
+            ages.insert(w.id.clone(), age);
+        }
+    }
+    ages
+}
+
 /// `rigger status [--json]` - present the live per-agent view of the current run (spec 14,
 /// unit 2). Rigger CONSOLIDATES its three signals for every in-flight spawn - the run-stream
 /// milestone, the latest progress report, and the liveness-marker age it reads in Rust here
@@ -7159,23 +7218,11 @@ fn cmd_status(args: &[String]) -> Res {
     let (workdir, max_retries) = config::load(".")
         .map(|c| (c.workflow.defaults.workdir, c.workflow.defaults.max_retries))
         .unwrap_or_default();
-    let repo = git_repo();
-    let mut liveness_ages: std::collections::HashMap<String, u64> =
-        std::collections::HashMap::new();
-    if !repo.is_empty() {
-        let root = rigger::worktree::scratch_root_from_env(&repo, &workdir);
-        for w in &spawn::step_result(run_events)?.wave {
-            let Some(path) = rigger::liveness::marker_path(&root, &run_id, &w.id) else {
-                continue;
-            };
-            if let Ok(age) = std::fs::metadata(&path)
-                .and_then(|md| md.modified())
-                .map(|mtime| now.duration_since(mtime).map(|d| d.as_secs()).unwrap_or(0))
-            {
-                liveness_ages.insert(w.id.clone(), age);
-            }
-        }
-    }
+    let wave = spawn::step_result(run_events)?.wave;
+    let liveness_ages: std::collections::HashMap<String, u64> =
+        liveness_ages_for_wave(&loc.repo_root(), &workdir, &run_id, &wave, now)
+            .into_iter()
+            .collect();
 
     let view = progress::consolidate(run_events, &prog_events, &liveness_ages, now)?;
 
@@ -7470,23 +7517,9 @@ fn watch_poll(
     let (workdir, _max_retries) = config::load(".")
         .map(|c| (c.workflow.defaults.workdir, c.workflow.defaults.max_retries))
         .unwrap_or_default();
-    let repo = git_repo();
-    let mut wave_liveness_ages: std::collections::BTreeMap<String, u64> =
-        std::collections::BTreeMap::new();
-    if !repo.is_empty() {
-        let root = rigger::worktree::scratch_root_from_env(&repo, &workdir);
-        for w in &spawn::step_result(&run_events)?.wave {
-            let Some(path) = rigger::liveness::marker_path(&root, &run_id, &w.id) else {
-                continue;
-            };
-            if let Ok(age) = std::fs::metadata(&path)
-                .and_then(|md| md.modified())
-                .map(|mtime| now.duration_since(mtime).map(|d| d.as_secs()).unwrap_or(0))
-            {
-                wave_liveness_ages.insert(w.id.clone(), age);
-            }
-        }
-    }
+    let wave = spawn::step_result(&run_events)?.wave;
+    let wave_liveness_ages =
+        liveness_ages_for_wave(&loc.repo_root(), &workdir, &run_id, &wave, now);
 
     // Dash liveness: prefer the per-project MARKER (port + pid) when one exists,
     // verified with the same real serve probe `dash_serving_on` uses - a marker naming
@@ -8813,18 +8846,19 @@ fn cmd_result(args: &[String]) -> Res {
 /// [`reap_then_remove_dir`] reaps any process still rooted under the scratch (spec 23) before
 /// removing it, so a build a hung worker left running never outlives its now-deleted cwd.
 fn reclaim_spawn_scratch(loc: &StoreLocation, prior: &[Event], spawn_id: &str) {
-    let Some(repo) = loc.dir.parent().and_then(|p| p.to_str()) else {
+    let repo = loc.repo_root();
+    if repo.is_empty() {
         return;
-    };
+    }
     // The run's scratch root by the SAME precedence the run assigned the path with
     // (`scratch_root_from_env`: RIGGER_TMPDIR > `defaults.workdir` > the `<repo>/.rigger/tmp`
     // default). The courier inherits the run's `RIGGER_TMPDIR`; `workdir` loads best-effort,
     // falling back to the repo default when the config is momentarily unreadable (the
     // overwhelming common placement). The read-only `_path_` resolver never conjures a root.
-    let workdir = config::load(repo)
+    let workdir = config::load(&repo)
         .map(|c| c.workflow.defaults.workdir)
         .unwrap_or_default();
-    let scratch_root = rigger::worktree::scratch_root_path_from_env(repo, &workdir);
+    let scratch_root = rigger::worktree::scratch_root_path_from_env(&repo, &workdir);
     let run_id = runscope::current_run_id(prior).unwrap_or_default();
     reclaim_spawn_registered_scratch(&scratch_root, &run_id, spawn_id);
 }
@@ -23409,6 +23443,62 @@ mod tests {
         };
         let identity = loc.identity();
         (dir, loc, identity)
+    }
+
+    // --- Spec 83, criterion 2: HEARTBEATS ARE VISIBLE AGAIN (write/read agreement) ---
+
+    /// `StoreLocation::repo_root` - the repo [`liveness_ages_for_wave`] resolves the scratch
+    /// root from - MUST be the store's resolved OWNING root, never the process's raw cwd. A
+    /// courier invoked from a nested unit worktree is the DOCUMENTED, walk-up-supported shape
+    /// [`require_store_dir`] exists for (see its own doc comment: "most plausibly a unit
+    /// worktree"), and that worktree's OWN git toplevel is a DIFFERENT directory than the main
+    /// repo a driver's `rigger step` (which always runs from the repo root) stamped the marker
+    /// under - so a cwd-based resolution looks for the marker in a scratch tree nothing ever
+    /// wrote to, while the real marker sits fresh under the actual owning root (spec 83's own
+    /// Problem statement: "the per-spawn liveness marker the sweep would consult is absent
+    /// even while the agent is demonstrably alive").
+    ///
+    /// This test never touches the process's real cwd (which would race every other parallel
+    /// test) - it points a fabricated `StoreLocation` at a tempdir wholly unrelated to wherever
+    /// `cargo test` itself runs from, so ANY cwd-based resolution (this crate's own
+    /// `git_repo()`) necessarily disagrees with it, exactly reproducing the divergence live
+    /// rigger hit - pinned at the real writer (`scratch_root_from_env` + `marker_path`, the
+    /// SAME functions `cmd_step` stamps a wave item's marker path with) and the real reader
+    /// (`liveness_ages_for_wave` via `StoreLocation::repo_root`), never a mock of either side.
+    #[test]
+    fn store_location_repo_root_resolves_the_owning_root_not_the_process_cwd_so_a_real_marker_is_found(
+    ) {
+        let owning_root = tempfile::tempdir().unwrap();
+        let rigger_dir = owning_root.path().join(RIGGER_DIR);
+        std::fs::create_dir_all(&rigger_dir).unwrap();
+        let loc = StoreLocation { dir: rigger_dir };
+
+        // The REAL writer computation - byte-identical to what `cmd_step` stamps onto a wave
+        // item's `marker_path` (the absolute path the thin driver frames the worker's `touch`
+        // instruction around): the scratch root resolved from the owning root, then the
+        // single marker-path authority.
+        let run_id = "r-seam";
+        let spawn_id = "u-seam/implementer#0";
+        let scratch_root =
+            rigger::worktree::scratch_root_from_env(owning_root.path().to_str().unwrap(), "");
+        let marker = rigger::liveness::marker_path(&scratch_root, run_id, spawn_id).unwrap();
+        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        std::fs::write(&marker, b"heartbeat").unwrap();
+        let touched_at = std::fs::metadata(&marker).unwrap().modified().unwrap();
+
+        let wave = vec![spawn::WaveItem {
+            id: spawn_id.to_string(),
+            ..Default::default()
+        }];
+        let now = touched_at + std::time::Duration::from_secs(5);
+        let ages = liveness_ages_for_wave(&loc.repo_root(), "", run_id, &wave, now);
+
+        assert_eq!(
+            ages.get(spawn_id).copied(),
+            Some(5),
+            "the reader must resolve the SAME scratch root the writer stamped the marker \
+             under (the store's owning root), never a raw process-cwd read: {ages:?}"
+        );
     }
 
     #[test]
