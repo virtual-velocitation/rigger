@@ -20345,11 +20345,13 @@ mod tests {
             "the driver must spawn the wave's agents natively in parallel"
         );
 
-        // 5. Per-unit progress groups are produced at runtime from the WAVE ITEM (unit +
-        //    stage), per the spawn::SpawnRequest contract, and every worker is labelled with it.
+        // 5. Per-unit progress groups are produced at runtime from the WAVE ITEM, and every
+        //    worker is labelled with one. `phaseOf`'s own role/stage -> {Plan,Build,Review}
+        //    mapping (spec 67, criterion 1) is pinned in its own dedicated test below, not
+        //    re-derived here.
         assert!(
-            code.contains("function phaseOf(req)") && code.contains("`${req.unit}:${req.stage}`"),
-            "the driver must build each worker's opts.phase label from the wave item's unit + stage"
+            code.contains("function phaseOf(req)"),
+            "the driver must build each worker's opts.phase label from the wave item"
         );
         assert!(
             code.contains("phase: ph"),
@@ -20544,6 +20546,77 @@ mod tests {
             }
         }
         panic!("`{signature}` body is not brace-balanced");
+    }
+
+    /// Spec 67, criterion 1 (THIS unit OWNS phase derivation; courier placement - the Drive
+    /// lane call sites - is criterion 3's, a separate function, not this one's). `phaseOf`
+    /// must map every wave item to one of the fixed `meta.phases` groups by role, with the
+    /// two run-wide meta-stages special-cased ahead of any role read: a `plan`/`plan-critique`
+    /// item is `Plan` regardless of its OWN role (the planner spawns as an `implementer` role
+    /// and the critique gate spawns as `adversary`/`adjudicator` roles - unmapped, those would
+    /// fall into Build/Review and split the two meta-stages across three different groups,
+    /// exactly the bug this special-case prevents). Every other item is a per-criterion unit,
+    /// and the ROLE half of its deterministic spawn id (`<unit>/<role>#<attempt>`, spec 18)
+    /// decides the rest: the three review-tier roles (`lens:*`, `adversary`, `adjudicator`)
+    /// map to `Review`; `implementer` and every other role - INCLUDING one this mapping does
+    /// not recognize - map to `Build`, the fail-visible default the Design names (an unknown
+    /// role groups with ongoing work, never a dropped row).
+    #[test]
+    fn phase_of_maps_wave_items_to_the_meta_phase_by_role_and_stage() {
+        let code = strip_line_comments(RIGGER_WORKFLOW);
+        assert!(
+            code.contains("function phaseOf(req)"),
+            "the driver must define a phaseOf(req) function"
+        );
+        let body = js_function_body(&code, "function phaseOf(req) {");
+
+        // The two run-wide meta-stages are special-cased on the UNIT, ahead of any role
+        // read, and resolve straight to Plan.
+        assert!(
+            body.contains("req.unit === 'plan'") && body.contains("req.unit === 'plan-critique'"),
+            "phaseOf must special-case the plan and plan-critique meta-stages by unit, ahead \
+             of role-based mapping: {body}"
+        );
+        let stage_check = body
+            .find("req.unit === 'plan'")
+            .expect("plan-stage check must exist");
+        let stage_line_end = body[stage_check..]
+            .find('\n')
+            .map(|n| stage_check + n)
+            .unwrap_or(body.len());
+        assert!(
+            body[stage_check..stage_line_end].contains("'Plan'"),
+            "the plan/plan-critique special case must return 'Plan' on the SAME statement as \
+             the unit check, ahead of any role-based branch: {body}"
+        );
+
+        // The three review-tier roles - lens:* (tier-1), adversary, adjudicator - map to
+        // Review, named individually so a mapping that drops one of the three is caught.
+        assert!(
+            body.contains("adversary") && body.contains("adjudicator") && body.contains("lens"),
+            "phaseOf must name all three review-tier roles (lens:*, adversary, adjudicator): \
+             {body}"
+        );
+        assert!(
+            body.contains("'Review'"),
+            "phaseOf must map the review-tier roles to 'Review': {body}"
+        );
+
+        // implementer, and any role this mapping does not recognize, fall to the
+        // fail-visible Build default: the function's LAST statement is an unconditional
+        // `return 'Build'`, not one more conditional branch that could leave a role
+        // unmapped (falling off the end of the function -> undefined, a dropped row).
+        let last_stmt = body
+            .lines()
+            .rev()
+            .map(str::trim)
+            .find(|l| !l.is_empty() && *l != "}")
+            .unwrap_or("");
+        assert_eq!(
+            last_stmt, "return 'Build'",
+            "phaseOf's final, unconditional statement must be `return 'Build'` - the \
+             fail-visible default for implementer and any unrecognized role: {body}"
+        );
     }
 
     /// Spec 69, criterion 6 ("the driver relays it" - THIS unit OWNS the relay; the wire
