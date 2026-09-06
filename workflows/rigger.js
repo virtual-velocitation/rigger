@@ -249,6 +249,68 @@ function phaseOf(req) {
   return `${req.unit}:${req.stage}`
 }
 
+// PERSONA_VERB maps each role - the id's role half, from the deterministic <unit>/<role>#<attempt>
+// spawn id (spec 18) - to the human action phrase naming that persona's MANDATE (spec 67 Design):
+// the criterion sentence alone would render every tier of one unit identically, so the verb is
+// what actually distinguishes them. Adversary and adjudicator render WITHOUT a roster clause here
+// - spec 67 criterion 4 appends that separately once the conductor stamps `req.reviews` onto the
+// wave item; this table (and `workerLabel` below) never reads that field.
+const PERSONA_VERB = {
+  'implementer': 'implement',
+  'sdet-author': 'author the discriminating tests for',
+  'lens:sdet': 'evaluate testing effectiveness',
+  'lens:architecture-reviewer': 'evaluate architectural integrity',
+  'adversary': 'challenge the findings, assumptions, and rigor',
+  'adjudicator': 'weigh and rule',
+  'plan': 'decompose the spec into a unit DAG',
+  'plan-critique': 'critique the decomposition',
+}
+
+// personaOf title-cases a role for display, segment by segment on its ':'/'-' separators (e.g.
+// `lens:architecture-reviewer` -> `Lens:Architecture-Reviewer`), with one documented exception:
+// the `sdet` segment renders as the acronym `SDET` (e.g. `lens:sdet` -> `Lens:SDET`, `sdet-author`
+// -> `SDET-Author`) rather than merely capitalized, per spec 67 Design's own example.
+function personaOf(role) {
+  return role
+    .split(/([:-])/)
+    .map((seg) =>
+      seg === ':' || seg === '-'
+        ? seg
+        : seg.toLowerCase() === 'sdet'
+          ? 'SDET'
+          : seg.charAt(0).toUpperCase() + seg.slice(1).toLowerCase(),
+    )
+    .join('')
+}
+
+// firstSentence cuts an already whitespace-normalized string at its first sentence boundary (a
+// `.`, `!`, or `?` followed by whitespace or end of string), inclusive of the terminator, and
+// returns it WHOLE - the caller never slices or ellipsizes further (spec 67 criterion 2's own
+// no-truncation convention). A string with no sentence-ending punctuation is returned unchanged.
+function firstSentence(s) {
+  const m = /^.*?[.!?](?=\s|$)/.exec(s)
+  return m ? m[0] : s
+}
+
+// workerLabel renders a titled wave item's display label per spec 67 criterion 2 (ROWS LEAD WITH
+// THE PERSONA): `<Persona> - <action phrase> #<attempt>: <subject>`. Persona and attempt come from
+// the id's own deterministic <unit>/<role>#<attempt> shape (spec 18); the action phrase is
+// PERSONA_VERB's mandate for a known role, or the generic `review` verb for an unmapped one (an
+// unmapped custom lens still reads with its OWN persona token, never a bare slug); the subject is
+// `req.title`'s first sentence, whitespace-normalized, passed WHOLE. An untitled item (no
+// `req.title`, or one that whitespace-normalizes to empty) falls back to `req.id`, exactly as
+// before this criterion.
+function workerLabel(req) {
+  const work = (req.title || '').replace(/\s+/g, ' ').trim()
+  if (!work) return req.id
+  const subject = firstSentence(work)
+  const m = /\/([^#]+)#(\d+)$/.exec(req.id || '')
+  if (!m) return `${req.id}: ${subject}`
+  const [, role, attempt] = m
+  const verb = PERSONA_VERB[role] || 'review'
+  return `${personaOf(role)} - ${verb} #${attempt}: ${subject}`
+}
+
 // runWorker spawns one wave item natively and lets it self-report. The Workflow `agent()`
 // primitive accepts only { phase, model, schema, label }, so everything the cli/serve
 // drivers pass out-of-band (the persona as --system-prompt, the worktree as cwd) must ride
@@ -388,7 +450,10 @@ async function runWorker(req, fatal) {
   // never breaks the one-line narration; empty for an untitled (plan/canary) spawn, which then
   // renders exactly as before. The group label (phaseOf) is UNCHANGED - the title is additive.
   const work = (req.title || '').replace(/\s+/g, ' ').trim()
-  const workLabel = work ? `${req.id} · ${work}` : req.id
+  // The progress-group LABEL leads with the persona (spec 67 criterion 2): `<Persona> - <action
+  // phrase> #<attempt>: <subject>`, replacing the old `${req.id} · ${work}` concatenation. An
+  // untitled spawn still falls back to `req.id` unchanged (workerLabel's own fallback).
+  const workLabel = workerLabel(req)
   // Narrate the start of this worker's run so a long silent stretch is a visible line, not a
   // gap; the title is what turns `${req.unit}:${req.stage}` into the actual criterion.
   log(`starting ${req.id}${work ? `: ${work}` : ''}`)
