@@ -8,9 +8,10 @@
 //   1. COURIERS a step: an agent runs `cd <repo> && rigger step` and returns the one
 //      line of JSON it prints - `{"wave":[<SpawnRequest>...],"done":<bool>}` - the wave
 //      the conductor newly parked plus whether the run has reached a fixpoint.
-//   2. SPAWNS the wave natively in parallel: one `agent()` per SpawnRequest, each in its
-//      own per-unit `opts.phase` progress group so the /workflows display groups a unit's
-//      agents together. Two ready units with disjoint blast radii share a wave, so
+//   2. SPAWNS the wave natively in parallel: one `agent()` per SpawnRequest, each labeled
+//      with the LIFECYCLE-PHASE `opts.phase` group `phaseOf` derives from its role (Plan /
+//      Build / Review), so the /workflows display groups by what stage of the loop an agent
+//      is doing - never by unit. Two ready units with disjoint blast radii share a wave, so
 //      fan-out falls straight out of the conductor's partition - the driver just runs it.
 //   3. Lets each worker SELF-REPORT via `rigger result <id> ...`, which is exactly what
 //      the next `rigger step` replays past to advance the run. A worker that DIES without
@@ -40,18 +41,19 @@
 // meta MUST be a pure literal: the Workflow runtime extracts it statically (before the
 // workflow body ever runs), so it cannot contain computed values or interpolation. Unit
 // ids come from the conductor at RUNTIME and are unknowable at static-extraction time, so
-// meta.phases names only the FIXED lifecycle stages a unit passes through; the per-unit
-// distinction that makes the /workflows display match execution is carried entirely by the
-// runtime `opts.phase` strings the driver builds from each wave item (see `phaseOf` below).
+// meta.phases names only the FIXED lifecycle-phase groups every spawn falls into (Plan /
+// Build / Review / Drive); which group a given spawn renders under is carried entirely by
+// the runtime `opts.phase` string the driver derives from its ROLE (see `phaseOf` below),
+// never by its unit.
 export const meta = {
   name: 'rigger',
   description:
     'Turn a spec into working, reviewed code: it splits the spec into small units, implements and tests each one, reviews every change before merging it, and stops loudly if it gets stuck. Use it when you want a spec built out automatically instead of by hand.',
   phases: [
     { title: 'Plan', detail: 'the conductor sets up the run branch and decomposes the spec into a unit DAG on the first `rigger step` (one global pass)' },
-    { title: 'Build', detail: 'per-unit implement + cargo gates; the conductor parks the implementer, the driver spawns it under opts.phase "<unit>:<stage>"' },
-    { title: 'Review', detail: 'per-unit three-tier adversarial review (lenses, adversary, adjudicator); the conductor parks each reviewer, the driver spawns it under "<unit>:<stage>"' },
-    { title: 'Integrate', detail: 'per-unit merge of the approved unit onto the run branch; the conductor does the merge when a unit passes review' },
+    { title: 'Build', detail: 'per-unit implement + cargo gates; the driver spawns the implementer under opts.phase "Build" (phaseOf maps its role to this lifecycle phase)' },
+    { title: 'Review', detail: 'per-unit three-tier adversarial review (lenses, adversary, adjudicator); the driver spawns each reviewer under opts.phase "Review". An approved unit then integrates onto the run branch automatically - conductor work that spawns no agent of its own' },
+    { title: 'Drive', detail: 'orchestration: the step courier that advances the run each frontier (labeled step#N); sidecar couriers (liveness probes, fault recorders) ride the phase of the worker they accompany instead' },
   ],
 }
 
@@ -754,10 +756,10 @@ for (;;) {
   //     a render: it never stops the loop and never changes what happens next.
   relayAttention(step)
 
-  // 2. Spawn the wave natively in parallel; each worker in its own per-unit progress group. A
-  //    worker that dies has its failure recorded on its behalf inside runWorker; if that death
-  //    courier ITSELF dies, runWorker records it in `fatal` (it never re-throws, so parallel()
-  //    is not aborted mid-wave) and we stop loudly below.
+  // 2. Spawn the wave natively in parallel; each worker labeled with its lifecycle-phase
+  //    progress group (phaseOf). A worker that dies has its failure recorded on its behalf
+  //    inside runWorker; if that death courier ITSELF dies, runWorker records it in `fatal`
+  //    (it never re-throws, so parallel() is not aborted mid-wave) and we stop loudly below.
   const fatal = []
   const wave = step.wave || []
   if (wave.length > 0) {
