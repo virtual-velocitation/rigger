@@ -367,9 +367,12 @@ const DRIVER = String.raw`
   if (slHtml.indexOf("data-lens=") === -1 || slHtml.indexOf("data-kgclear") === -1)
     throw new Error("the subject-lens did not render its lens tabs + whole-graph clear: " + slHtml);
   // The neighborhood was fetched WITHOUT a lens param (composition absent - the byte-identical view).
-  const neighFetch = __fetched[__fetched.length - 1] || "";
+  // Found by shape, not position: spec 63 c2 added an ADDITIVE card=<id> fetch right after this one
+  // resolves (the focused subject's metadata card), so the neighborhood fetch is no longer
+  // necessarily the LAST entry in __fetched.
+  const neighFetch = __fetched.find(function(u){ return u.indexOf("seed=") !== -1; }) || "";
   if (neighFetch.indexOf("seed=") === -1 || neighFetch.indexOf("lens=") !== -1)
-    throw new Error("focusing a node must fetch the LENS-ABSENT neighborhood: " + neighFetch);
+    throw new Error("focusing a node must fetch the LENS-ABSENT neighborhood: " + JSON.stringify(__fetched));
   // Capture the neighborhood BASELINE (overlay never toggled) for the additive proof in (f).
   const neighBaseline = el("kgpanel")._html;
   if (neighBaseline.indexOf("kgbadge") !== -1)
@@ -382,7 +385,9 @@ const DRIVER = String.raw`
   if (!headListeners.length) throw new Error("no delegated click listener on the KG header (seam unwired)");
   fire(headListeners, handle("lens", "code"));
   await flush();
-  const reprojFetch = __fetched[__fetched.length - 1] || "";
+  // Found by shape, not position: renderReprojection ALSO carded the subject (spec 63 c2), an
+  // additive fetch that may land after this one in __fetched.
+  const reprojFetch = __fetched.find(function(u){ return u.indexOf("seed=") !== -1 && u.indexOf("lens=") !== -1; }) || "";
   if (reprojFetch.indexOf("seed=") === -1 || reprojFetch.indexOf("lens=code") === -1)
     throw new Error("flipping the lens on a subject must RE-REQUEST seed=<subject>&lens=code (re-projection): " + JSON.stringify(__fetched));
   const reproj = el("kgpanel")._html;

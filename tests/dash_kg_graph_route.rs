@@ -365,7 +365,11 @@ const pageScript = fs.readFileSync(process.argv[2], "utf8");
 // poll's /api/state fetch), recording the graph URL so the driver can assert the seed was carried.
 const SHIM = String.raw`
 const __els = {};
-let __fetchedGraphUrl = "";
+// Every '/api/graph' URL fetched, in order (spec 63 c2 added a SECOND, additive fetch -
+// card=<seed> - right after a plain seed renders, so this must NOT collapse to a single
+// last-writer-wins string: asserting "the seed URL is IN the fetched set" survives that additive
+// fetch, where asserting "the LAST fetch equals the seed URL" would not).
+const __fetchedGraphUrls = [];
 const __NB = { seed: "u1", depth: 2,
   nodes: [ { id: "u1", kind: "unit", label: "u1" }, { id: "d1", kind: "decision", label: "the d1 decision" } ],
   edges: [ { from: "d1", to: "u1", rel: "DECIDED", tier: "extracted" } ] };
@@ -380,8 +384,11 @@ const document = { getElementById: function(id){ return __els[id] || (__els[id] 
 const window = { addEventListener: function(){} };
 const fetch = function(url){
   if (String(url).indexOf("/api/graph") !== -1) {
-    __fetchedGraphUrl = String(url);
-    return Promise.resolve({ json: function(){ return Promise.resolve(__NB); } });
+    __fetchedGraphUrls.push(String(url));
+    // A card=<id> fetch (spec 63 c2) resolves gracefully empty here - this harness's own fixture
+    // is the plain-neighborhood shape __NB, which carries no card field.
+    const body = String(url).indexOf("card=") !== -1 ? { card: null } : __NB;
+    return Promise.resolve({ json: function(){ return Promise.resolve(body); } });
   }
   return Promise.reject(new Error("no network for " + url));
 };
@@ -389,7 +396,7 @@ const setTimeout = function(){ return 0; };
 `;
 
 // Test driver (vm-realm, appended after the page script - shares its scope, so it calls el()/render()
-// and reads kgSeed/__fetchedGraphUrl directly).
+// and reads kgSeed/__fetchedGraphUrls directly).
 const DRIVER = String.raw`
 ;(async function(){
   // A click on a run-tree node carrying data-seed="u1" (what treeNode() emits), dispatched through
@@ -404,8 +411,8 @@ const DRIVER = String.raw`
   for (let k = 0; k < 12; k++) { await Promise.resolve(); }
 
   if (kgSeed !== "u1") throw new Error("clicking a data-seed node did not set the seed: " + kgSeed);
-  if (__fetchedGraphUrl.indexOf("seed=u1") === -1)
-    throw new Error("select-to-seed did not fetch /api/graph for the selected seed: " + __fetchedGraphUrl);
+  if (!__fetchedGraphUrls.some(function(u){ return u.indexOf("seed=u1") !== -1; }))
+    throw new Error("select-to-seed did not fetch /api/graph for the selected seed: " + __fetchedGraphUrls);
   const panel = el("kgpanel")._html;
   if (panel.indexOf("DECIDED") === -1) throw new Error("the KG panel did not render the neighborhood edge: " + panel);
   if (panel.indexOf("extracted") === -1) throw new Error("the KG panel did not render the edge confidence tier: " + panel);
@@ -792,7 +799,11 @@ const pageScript = fs.readFileSync(process.argv[2], "utf8");
 
 const SHIM = String.raw`
 const __els = {};
-let __fetchedGraphUrl = "";
+// Every '/api/graph' URL fetched, in order (spec 63 c2 added a SECOND, additive fetch -
+// card=<seed> - right after a plain seed renders, so this must NOT collapse to a single
+// last-writer-wins string: asserting "the query-path URL is IN the fetched set" survives that
+// additive fetch, where asserting "the LAST fetch equals the query-path URL" would not).
+const __fetchedGraphUrls = [];
 const __NB_PATH = { seed: "a", depth: 2,
   nodes: [ { id: "a", kind: "unit", label: "a", degree: 1, god: false },
            { id: "b", kind: "unit", label: "b", degree: 2, god: false },
@@ -815,8 +826,11 @@ const document = { getElementById: function(id){ return __els[id] || (__els[id] 
 const window = { addEventListener: function(){} };
 const fetch = function(url){
   if (String(url).indexOf("/api/graph") !== -1) {
-    __fetchedGraphUrl = String(url);
-    const body = String(url).indexOf("from=") !== -1 ? __NB_PATH : __NB_SEED;
+    __fetchedGraphUrls.push(String(url));
+    // A card=<id> fetch (spec 63 c2) resolves gracefully empty here - this harness's own
+    // fixtures carry no card field.
+    const body = String(url).indexOf("card=") !== -1 ? { card: null }
+      : String(url).indexOf("from=") !== -1 ? __NB_PATH : __NB_SEED;
     return Promise.resolve({ json: function(){ return Promise.resolve(body); } });
   }
   return Promise.reject(new Error("no network for " + url));
@@ -847,8 +861,8 @@ const DRIVER = String.raw`
   const target = { dataset: { seed: "h" }, closest: function(sel){ return sel === "[data-seed]" ? this : null; } };
   handlers.forEach(function(fn){ fn({ target: target, shiftKey: true }); });
   for (let k = 0; k < 12; k++) { await Promise.resolve(); }
-  if (__fetchedGraphUrl.indexOf("from=") === -1 || __fetchedGraphUrl.indexOf("to=h") === -1)
-    throw new Error("a shift-click did not request the query path (from/to): " + __fetchedGraphUrl);
+  if (!__fetchedGraphUrls.some(function(u){ return u.indexOf("from=") !== -1 && u.indexOf("to=h") !== -1; }))
+    throw new Error("a shift-click did not request the query path (from/to): " + __fetchedGraphUrls);
   if (el("kgpanel")._html.indexOf("onpath") === -1)
     throw new Error("the shift-click query path was not highlighted: " + el("kgpanel")._html);
 
