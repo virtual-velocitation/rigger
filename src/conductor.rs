@@ -24192,6 +24192,77 @@ mod tests {
         );
     }
 
+    /// sdet-u67c4-fanout-and-plancritique-roster-untested (round 2 fix): the FOUR tests
+    /// above all drive `review_unit` (the per-unit review path, reached through a stage
+    /// carrying an `agent`) - they never exercise `run_fan_out_review_loop`, the
+    /// STANDALONE three-tier review stage's OWN call site (`is_fan_out`: no `agent`, a
+    /// populated `agents` lens list). It calls the identical `run_adversary`/
+    /// `run_adjudicator` helpers, but is a second, independent wiring the mutation
+    /// accounting cannot see (cargo-mutants mutates function bodies, not which caller
+    /// passes which argument) - a swapped or dropped roster argument at THIS call site
+    /// would pass every other gate silently. This test drives it end to end and reads the
+    /// REAL `SpawnOpts.reviews` the driver received, mirroring the review_unit-path
+    /// assertions above on the fan-out path.
+    #[test]
+    fn the_fan_out_review_loops_adversary_and_adjudicator_spawns_are_stamped_with_the_routed_roster(
+    ) {
+        let mut cfg = Config::default();
+        for a in ["lensA", "lensB", "adversary", "judge"] {
+            cfg.agents.insert(a.into(), agent(a));
+        }
+        cfg.workflow.stages.insert(
+            "review".into(),
+            Stage {
+                name: "review".into(),
+                // No `agent` + a populated `agents` lens list routes this to the
+                // STANDALONE fan-out review path (`is_fan_out`), never `review_unit`.
+                agents: vec!["lensA".into(), "lensB".into()],
+                adversary: "adversary".into(),
+                adjudicator: "judge".into(),
+                // Repo-less: the adjudicator approves and `on_pass: none` stops before
+                // integrate, so no git repo is needed - `reviewed` still emits.
+                on_pass: "none".into(),
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            output_by_agent: HashMap::from([
+                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
+                ("lensA".to_string(), "reviewed: no blocker".to_string()),
+                ("lensB".to_string(), "reviewed: no blocker".to_string()),
+                ("adversary".to_string(), "reviewed: no blocker".to_string()),
+            ]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+        assert_eq!(
+            driver.reviews_for("adversary"),
+            Some(vec!["lens:lensA".to_string(), "lens:lensB".to_string()]),
+            "run_fan_out_review_loop's adversary spawn must carry fan_out_lenses(st), \
+             exactly like review_unit's does"
+        );
+        assert_eq!(
+            driver.reviews_for("judge"),
+            Some(vec![
+                "lens:lensA".to_string(),
+                "lens:lensB".to_string(),
+                "adversary".to_string()
+            ]),
+            "run_fan_out_review_loop's adjudicator spawn must carry the lens roster plus \
+             the adversary token"
+        );
+    }
+
     #[test]
     fn stage_autonomy_override_seeds_the_gate() {
         // A stage with `autonomy: silent` seeds its gate's ratchet at Silent, so the
@@ -33724,6 +33795,63 @@ mod tests {
             1,
             "no reject means no re-plan; planner ran {}x",
             driver.count("planner")
+        );
+    }
+
+    /// sdet-u67c4-fanout-and-plancritique-roster-untested (round 2 fix): `plan_critique_loop`
+    /// is a THIRD, independent call site for the same roster-stamp mechanism - it bypasses
+    /// `run_adversary`/`run_adjudicator` entirely and calls `run_reviewer` directly, with a
+    /// hardcoded `&[]` for the adversary (the DAG-level critique names no lens tier of its
+    /// own) and `adjudicator_roster(&[], &gate_st.adversary)` for the adjudicator. Neither the
+    /// clean mutation accounting nor the `review_unit`/`run_fan_out_review_loop` tests above
+    /// cover this wiring - a swapped or dropped argument here would pass every other gate
+    /// silently. `CritiqueDriver` (used by every OTHER plan-critique test in this file) ignores
+    /// `opts.reviews` entirely, so this uses `Stub` instead to read the REAL `SpawnOpts` the
+    /// gate's adversary/adjudicator spawns actually received.
+    #[test]
+    fn the_plan_critique_gates_adversary_and_adjudicator_spawns_are_stamped_correctly() {
+        let cfg = critique_cfg();
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            emits_by_agent: HashMap::from([(
+                "planner".to_string(),
+                vec![(
+                    TYPE_UNIT_PROPOSED.to_string(),
+                    json!({
+                        "id": "u-a",
+                        "agent": "worker",
+                        "criterion": "the widget renderer is implemented",
+                        "needs": ["plan-critique"],
+                    }),
+                )],
+            )]),
+            output_by_agent: HashMap::from([
+                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
+                ("adversary".to_string(), "reviewed the dag".to_string()),
+            ]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+        assert_eq!(
+            driver.reviews_for("adversary"),
+            Some(Vec::new()),
+            "the plan-critique gate names no lens tier: its adversary's roster must be the \
+             honest empty one, never a fabricated lens"
+        );
+        assert_eq!(
+            driver.reviews_for("judge"),
+            Some(vec!["adversary".to_string()]),
+            "the plan-critique gate's adjudicator roster is adjudicator_roster(&[], adversary) \
+             - the bare adversary token, since the DAG-level critique names no lenses"
         );
     }
 
