@@ -156,6 +156,45 @@ fn the_served_route_carries_a_code_subjects_card() {
         "a code entity's served card carries NO top_entities key at all \
          (skip_serializing_if, never an empty array): {body}"
     );
+    assert!(
+        c.get("top_evidence").is_none(),
+        "a code entity's served card carries NO top_evidence key at all \
+         (skip_serializing_if, never an empty array): {body}"
+    );
+}
+
+/// A code entity with NO `IN_COMMUNITY` membership and NO `line` attr (`combat.rs::reload`) serves
+/// a card with NEITHER key present at all - the `community`/`line` `skip_serializing_if` contract
+/// the module doc promises, proven at the JSON layer (the inside-out unit test asserts
+/// `Option::None` on the Rust struct, never the ABSENT key a hand-rolled JS client actually reads).
+/// Its `file` key stays present (still a code entity), isolating the two independent omissions.
+#[test]
+fn the_served_route_omits_community_and_line_keys_for_a_membership_less_entity() {
+    let g = fixture_graph();
+    let resp = route(
+        "GET",
+        "/api/graph?card=combat.rs%3A%3Areload",
+        &[],
+        &g,
+        &[],
+        &HashMap::new(),
+        3,
+        "rigger-run",
+        "origin/main",
+        &[],
+    );
+    let body = String::from_utf8(resp.body).expect("a utf8 body");
+    let json: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+    let c = &json["card"];
+    assert_eq!(c["file"].as_str(), Some("combat.rs"), "{body}");
+    assert!(
+        c.get("line").is_none(),
+        "no `line` attr on the node - the key must be ABSENT, never `null`: {body}"
+    );
+    assert!(
+        c.get("community").is_none(),
+        "no live IN_COMMUNITY membership - the key must be ABSENT, never `null`: {body}"
+    );
 }
 
 /// The served route also serves a FILE subject's card (`top_entities`) and a CONCEPT subject's
@@ -194,6 +233,11 @@ fn the_served_route_carries_a_file_and_a_concept_subjects_card() {
         json["card"].get("top_evidence").is_none(),
         "a file's card carries no top_evidence key: {body}"
     );
+    assert!(
+        json["card"].get("file").is_none() && json["card"].get("line").is_none(),
+        "a file subject is not a code entity - its OWN card carries no file/line definition-site \
+         keys (those name a code entity's definition, never a file's own path): {body}"
+    );
 
     let resp = route(
         "GET",
@@ -217,6 +261,11 @@ fn the_served_route_carries_a_file_and_a_concept_subjects_card() {
     assert!(
         json["card"].get("top_entities").is_none(),
         "a concept's card carries no top_entities key: {body}"
+    );
+    assert!(
+        json["card"].get("file").is_none() && json["card"].get("line").is_none(),
+        "a concept subject is not a code entity - its OWN card carries no file/line \
+         definition-site keys: {body}"
     );
 }
 
