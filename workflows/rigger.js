@@ -268,6 +268,111 @@ function phaseOf(req) {
   return 'Build'
 }
 
+// PERSONA_VERB maps each REAL role token - the id's role half, from the deterministic
+// <unit>/<role>#<attempt> spawn id (spec 18) - to the human action phrase naming that persona's
+// MANDATE (spec 67 Design): the criterion sentence alone would render every tier of one unit
+// identically, so the verb is what actually distinguishes them. Adversary and adjudicator render
+// WITHOUT a roster clause here - spec 67 criterion 4 appends that separately once the conductor
+// stamps `req.reviews` onto the wave item; this table (and `workerLabel` below) never reads that
+// field.
+//
+// `plan` and `plan-critique` are the two run-wide META-STAGE UNIT ids, never role tokens, so they
+// do NOT belong in this role-keyed table (a prior round put them here and they were unreachable
+// dead code: conductor.rs:4139 mints the planning unit's own producer spawn via the ordinary
+// ROLE_IMPLEMENTER, and the plan-critique gate's tier-2/3 spawns use the ordinary
+// "adversary"/"adjudicator" roles - conductor.rs:6265,6280 - so no spawn id's role half is ever
+// literally "plan" or "plan-critique"). `workerLabel` below derives THEIR persona structurally,
+// from `req.unit`, instead. `replan` (conductor.rs:6080's re-plan respawn, role token "replan")
+// DOES occur as a real role half and gets its own verb here rather than falling to the generic
+// "review" fallback.
+const PERSONA_VERB = {
+  'implementer': 'implement',
+  'sdet-author': 'author the discriminating tests for',
+  'lens:sdet': 'evaluate testing effectiveness',
+  'lens:architecture-reviewer': 'evaluate architectural integrity',
+  'adversary': 'challenge the findings, assumptions, and rigor',
+  'adjudicator': 'weigh and rule',
+  'replan': 'revise the unit DAG from the critique feedback',
+}
+
+// personaOf title-cases a role for display, segment by segment on its ':'/'-' separators (e.g.
+// `lens:architecture-reviewer` -> `Lens:Architecture-Reviewer`), with one documented exception:
+// the `sdet` segment renders as the acronym `SDET` (e.g. `lens:sdet` -> `Lens:SDET`, `sdet-author`
+// -> `SDET-Author`) rather than merely capitalized, per spec 67 Design's own example.
+function personaOf(role) {
+  return role
+    .split(/([:-])/)
+    .map((seg) =>
+      seg === ':' || seg === '-'
+        ? seg
+        : seg.toLowerCase() === 'sdet'
+          ? 'SDET'
+          : seg.charAt(0).toUpperCase() + seg.slice(1).toLowerCase(),
+    )
+    .join('')
+}
+
+// firstSentence cuts an already whitespace-normalized string at its first sentence boundary (a
+// `.`, `!`, or `?` followed by whitespace or end of string), inclusive of the terminator, and
+// returns it WHOLE - the caller never slices or ellipsizes further (spec 67 criterion 2's own
+// no-truncation convention). A string with no sentence-ending punctuation is returned unchanged.
+function firstSentence(s) {
+  const m = /^.*?[.!?](?=\s|$)/.exec(s)
+  return m ? m[0] : s
+}
+
+// roleAttempt parses a spawn id's `{unit}/{role}#{attempt}[~retry{n}]` grammar (spec 18),
+// MIRRORING `src/spawn.rs::spawn_role`/`attempt_of`'s own semantics exactly - strip an optional
+// trailing `~retry{n}` suffix before anchoring on the attempt digits - rather than a second,
+// divergent `$`-anchored digit-only regex. A Gap-18 reviewer respawn (spec 07,
+// `src/spawn.rs::spawn_retry_id`) carries that suffix and is a normal, frequently-exercised path
+// for lens/adversary/adjudicator spawns whose result comes back empty or whitespace-only, not a
+// corner case - a `$`-anchored regex silently drops the persona for every such respawn. Returns
+// `null` when the id carries no `/` (no structured role to render), so the caller falls back to
+// the pre-criterion `${req.id}: ${subject}` shape unchanged.
+function roleAttempt(id) {
+  const s = String(id || '')
+  const slash = s.lastIndexOf('/')
+  if (slash === -1) return null
+  const rest = s.slice(slash + 1) // "role#attempt[~retry{n}]"
+  const hash = rest.indexOf('#')
+  if (hash === -1) return null
+  const role = rest.slice(0, hash)
+  const attempt = rest.slice(hash + 1).split('~')[0] // strip an optional trailing ~retry{n}
+  if (!/^\d+$/.test(attempt)) return null
+  return { role, attempt }
+}
+
+// workerLabel renders a titled wave item's display label per spec 67 criterion 2 (ROWS LEAD WITH
+// THE PERSONA): `<Persona> - <action phrase> #<attempt>: <subject>`. Role and attempt come from
+// the id's own deterministic <unit>/<role>#<attempt>[~retry{n}] shape (spec 18, via `roleAttempt`
+// above); the action phrase is PERSONA_VERB's mandate for a known role, or the generic `review`
+// verb for an unmapped one (an unmapped custom lens still reads with its OWN persona token, never
+// a bare slug); the subject is `req.title`'s first sentence, whitespace-normalized, passed WHOLE.
+// An untitled item (no `req.title`, or one that whitespace-normalizes to empty) falls back to
+// `req.id`, exactly as before this criterion.
+//
+// The persona itself is `personaOf(role)` title-casing the role - EXCEPT for the two run-wide
+// META-STAGE units (`plan`, `plan-critique`), whose role half is always an ordinary role
+// (`implementer`/`replan`, `adversary`/`adjudicator`) and so can never itself carry the "Plan" /
+// "Plan-Critique" persona a reader needs to recognize these rows: rendering them as a plain
+// "Implementer"/"Adversary" persona would be indistinguishable from any ordinary build unit's row
+// (the "plan personas are dead code" regression a prior round shipped). So the persona for these
+// two is derived STRUCTURALLY, from `req.unit` (the same field `phaseOf` above already keys its
+// own per-unit grouping on), never from the role half.
+function workerLabel(req) {
+  const work = (req.title || '').replace(/\s+/g, ' ').trim()
+  if (!work) return req.id
+  const subject = firstSentence(work)
+  const parsed = roleAttempt(req.id)
+  if (!parsed) return `${req.id}: ${subject}`
+  const { role, attempt } = parsed
+  const persona =
+    req.unit === 'plan' ? 'Plan' : req.unit === 'plan-critique' ? 'Plan-Critique' : personaOf(role)
+  const verb = PERSONA_VERB[role] || 'review'
+  return `${persona} - ${verb} #${attempt}: ${subject}`
+}
+
 // runWorker spawns one wave item natively and lets it self-report. The Workflow `agent()`
 // primitive accepts only { phase, model, schema, label }, so everything the cli/serve
 // drivers pass out-of-band (the persona as --system-prompt, the worktree as cwd) must ride
@@ -407,7 +512,10 @@ async function runWorker(req, fatal) {
   // the one-line narration; empty for an untitled (plan/canary) spawn, which then renders
   // exactly as before. The group label (phaseOf) is UNCHANGED - the title is additive.
   const work = (req.title || '').replace(/\s+/g, ' ').trim()
-  const workLabel = work ? `${req.id} · ${work}` : req.id
+  // The progress-group LABEL leads with the persona (spec 67 criterion 2): `<Persona> - <action
+  // phrase> #<attempt>: <subject>`, replacing the old `${req.id} · ${work}` concatenation. An
+  // untitled spawn still falls back to `req.id` unchanged (workerLabel's own fallback).
+  const workLabel = workerLabel(req)
   // Narrate the start of this worker's run so a long silent stretch is a visible line, not a
   // gap; the title is what turns the bare phase group into the actual criterion.
   log(`starting ${req.id}${work ? `: ${work}` : ''}`)
