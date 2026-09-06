@@ -818,6 +818,20 @@ function renderMemoryRail(memory) {
     + section("concepts", memory.concepts || [], conceptCard);
 }
 
+// A CardRef's OWN `kind` (never the card's own subject kind) resolved to the lens that owns that
+// taxonomy (spec 63 c2, "Card handoff ownership is total"): a `top_entities` member is always a
+// code entity (REL_CONTAINS forward edges are structurally file -> code-entity only, spec 29a),
+// but a `top_evidence` member can be ANY kind the intent layer folds into a concept (a file, a
+// design-doc, a handbook rule, ... - spec 54/29b) - so the chip lens is resolved from THIS field,
+// never hardcoded to "code" for the whole row. A kind with no lens of its own in this design's
+// three named lenses (Code, Files, Concepts) resolves to `null` - a graceful non-handoff, the
+// same shape the MEMORY chip already uses.
+function chipLensForKind(kind) {
+  if (kind === "file") return "files";
+  if (kind === "code-entity") return "code";
+  return null;
+}
+
 // The METADATA CARD (spec 63 c2): ONE hover/click-card anatomy for any subject - a title row (its
 // label), a provenance row (file:line, degree, community), and per-taxonomy chip rows. `card` is
 // the `/api/graph?card=` body's `card` field (`null` hides the card entirely - no subject carded,
@@ -826,10 +840,12 @@ function renderMemoryRail(memory) {
 // MEMORY chip rows; a file subject gets TOP ENTITIES; a concept subject gets TOP EVIDENCE. A FILE
 // or CONCEPTS chip carries `data-handoff="<lens>"` alongside `data-seed="<id>"` (the LENS HANDOFF:
 // #kgcard's own click handler reads it to force that lens before re-projecting, spec 63's "a chip
-// opens its own taxonomy's lens, the subject rides along"); the MEMORY chip carries `data-seed`
-// alone, so it falls through to the SAME plain re-seed [`seedGraph`] already performs on a node
-// click - reusing spec 63 c5's rail-and-reseed mechanism rather than building a second one (no
-// memory lens exists among this design's three named lenses).
+// opens its own taxonomy's lens, the subject rides along"); a TOP-ENTITIES/TOP-EVIDENCE chip's
+// handoff is resolved per-member via `chipLensForKind` (never assumed code - see its own doc);
+// the MEMORY chip carries `data-seed` alone, so it falls through to the SAME plain re-seed
+// [`seedGraph`] already performs on a node click - reusing spec 63 c5's rail-and-reseed mechanism
+// rather than building a second one (no memory lens exists among this design's three named
+// lenses).
 function renderCard(card) {
   const box = el("kgcard");
   if (!box) return;
@@ -837,6 +853,7 @@ function renderCard(card) {
   box.hidden = false;
   const chip = (id, label, lens) => '<a href="#" class="kgcard-chip" data-seed="' + esc(id) + '"'
     + (lens ? ' data-handoff="' + esc(lens) + '"' : "") + '>' + esc(label) + '</a>';
+  const memberChip = e => chip(e.id, e.label, chipLensForKind(e.kind));
   const row = (title, chips) => chips ? '<div class="kgcard-row"><h4>' + esc(title) + '</h4>' + chips + '</div>' : "";
   const prov = [
     card.file ? esc(card.file) + (card.line ? ":" + esc(card.line) : "") : "",
@@ -851,9 +868,9 @@ function renderCard(card) {
       + (card.findings ? chip(card.id, card.findings + (card.findings === 1 ? " finding" : " findings")) : "");
     rows += row("MEMORY", mem);
   } else if (card.kind === "file") {
-    rows += row("TOP ENTITIES", (card.top_entities || []).map(e => chip(e.id, e.label, "code")).join(""));
+    rows += row("TOP ENTITIES", (card.top_entities || []).map(memberChip).join(""));
   } else if (card.kind === "concept") {
-    rows += row("TOP EVIDENCE", (card.top_evidence || []).map(e => chip(e.id, e.label, "code")).join(""));
+    rows += row("TOP EVIDENCE", (card.top_evidence || []).map(memberChip).join(""));
   }
   const dot = '<span class="kgcard-dot" style="background:' + esc(kindColor(card.kind)) + '"></span>';
   box.innerHTML = '<div class="kgcard-title">' + dot + esc(card.label) + '</div>'

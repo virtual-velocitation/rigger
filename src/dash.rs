@@ -3136,14 +3136,20 @@ fn memory_rail_of(graph: &Graph, seeds: &[String]) -> MemoryRail {
     }
 }
 
-/// A reference to another graph node from a [`Card`]'s chip list (spec 63 c2): id + display
-/// label, the raw material for a client-side chip whose click hands off to the id's OWN
-/// taxonomy's lens (a `top_entities` chip opens the code lens on it; a `top_evidence` chip opens
-/// the code lens on the evidencing entity or file). Content only, like [`ConceptRef`] /
-/// [`RationaleLeaf`] - never the fold's own bookkeeping.
+/// A reference to another graph node from a [`Card`]'s chip list (spec 63 c2): id + kind +
+/// display label, the raw material for a client-side chip whose click hands off to the id's OWN
+/// taxonomy's lens - a `top_entities` member is always a [`KIND_CODE_ENTITY`] ([`REL_CONTAINS`]
+/// forward edges are structurally file -> code-entity only, spec 29a), but a `top_evidence`
+/// member can be ANY kind the intent layer folds into a concept (a file, a design-doc, a
+/// handbook rule, ... - spec 54/29b), so `kind` rides along here rather than being assumed by the
+/// caller: it is what lets the client route each chip to the REFERENCED node's OWN taxonomy's
+/// lens (files lens for a file, code lens for a code entity, no handoff for a kind this design's
+/// three lenses do not own), never a lens hardcoded for the whole row. Content only, like
+/// [`ConceptRef`] / [`RationaleLeaf`] - never the fold's own bookkeeping.
 #[derive(Debug, Serialize, PartialEq, Eq)]
 pub struct CardRef {
     pub id: String,
+    pub kind: String,
     pub label: String,
 }
 
@@ -3233,12 +3239,15 @@ fn community_label(graph: &Graph, id: &str) -> Option<String> {
     Some(label)
 }
 
-/// A [`member_set`] node as a [`CardRef`] (id + display label) - the shared mapping [`card`]'s
-/// `top_entities` (a file's CONTAINS members) and `top_evidence` (a concept's REALIZES members)
-/// both use, so the two chip lists are built by ONE conversion, never two.
+/// A [`member_set`] node as a [`CardRef`] (id + kind + display label) - the shared mapping
+/// [`card`]'s `top_entities` (a file's CONTAINS members) and `top_evidence` (a concept's REALIZES
+/// members) both use, so the two chip lists are built by ONE conversion, never two. `kind` is the
+/// member's OWN [`Node::kind`], never the subject's - the field the client reads to route this
+/// chip to that member's own taxonomy's lens.
 fn card_ref(n: &Node) -> CardRef {
     CardRef {
         id: n.id.clone(),
+        kind: n.kind.clone(),
         label: node_label(n),
     }
 }
@@ -10999,6 +11008,57 @@ mod metadata_card_c2 {
         assert!(
             card.top_entities.is_empty(),
             "a concept names no top_entities: {card:?}"
+        );
+        assert_eq!(
+            card.top_evidence[0].kind, KIND_CODE_ENTITY,
+            "each top_evidence member carries its OWN kind: {card:?}"
+        );
+    }
+
+    /// A concept realized by members of DIFFERENT kinds (spec 63 c2's own fix, "Card handoff
+    /// ownership is total"): the intent layer folds a file (or any other intent-layer kind)
+    /// alongside a code entity into the SAME concept's `REALIZES` membership (concepts.rs's own
+    /// primary derivation fixture makes exactly this shape - a `KIND_FILE` node realizing a
+    /// concept via `SPECIFIES`), so `top_evidence` must carry EACH member's own kind, never assume
+    /// every evidence member is a code entity - the defect a prior round shipped.
+    #[test]
+    fn card_of_a_concept_carries_each_top_evidence_members_own_kind() {
+        let mut g = card_graph();
+        g.nodes.push(node("combat.rs", KIND_FILE, &[]));
+        g.edges
+            .push(edge("combat.rs", "concept/combat", REL_REALIZES));
+        let card = card(&g, "concept/combat").expect("concept/combat is a graph node");
+        let mut evidence: Vec<(&str, &str)> = card
+            .top_evidence
+            .iter()
+            .map(|e| (e.id.as_str(), e.kind.as_str()))
+            .collect();
+        evidence.sort_unstable();
+        assert_eq!(
+            evidence,
+            vec![
+                ("combat.rs", KIND_FILE),
+                ("combat.rs::fire", KIND_CODE_ENTITY),
+            ],
+            "each top_evidence member carries its OWN kind, not just a code entity's - the field \
+             a client needs to route a chip to the referenced node's OWN taxonomy's lens: {card:?}"
+        );
+    }
+
+    /// A file's `top_entities` also carries each member's own kind (always `code-entity`, since
+    /// `REL_CONTAINS` forward edges are structurally file -> code-entity only, spec 29a) - the
+    /// SAME `CardRef` shape `top_evidence` uses, proven here so the field is not accidentally
+    /// scoped to concepts alone.
+    #[test]
+    fn card_of_a_file_carries_each_top_entity_members_own_kind() {
+        let mut g = card_graph();
+        g.nodes.push(node("combat.rs", KIND_FILE, &[]));
+        g.edges
+            .push(edge("combat.rs", "combat.rs::fire", REL_CONTAINS));
+        let card = card(&g, "combat.rs").expect("combat.rs is a graph node");
+        assert_eq!(
+            card.top_entities[0].kind, KIND_CODE_ENTITY,
+            "a file's top_entities member carries its own kind too: {card:?}"
         );
     }
 
