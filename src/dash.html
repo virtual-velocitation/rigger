@@ -342,6 +342,25 @@
     letter-spacing: 0.06em; color: var(--muted); }
   .kgrail-card { border-bottom: 1px solid var(--line); padding: 4px 0; overflow-wrap: anywhere; }
   .kgrail-card b { display: block; color: var(--ink); }
+  /* The METADATA CARD (spec 63 c2): a STATIC sibling of #kgpanel (like .kgsubjectlens / .kgrail),
+     so populating it never touches the panel's own rendered nodes/edges. Docks TOP-LEFT (the
+     memory rail docks right) so a code subject's card and its rail can show together without
+     overlapping - the graph layout never re-flows for either. Hidden with no subject carded. */
+  .kgcard { position: absolute; top: 8px; left: 8px; width: 280px; max-width: 46%;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 10px; box-sizing: border-box; font-size: 12px; z-index: 2; }
+  .kgcard[hidden] { display: none; }
+  .kgcard-title { font-weight: 700; color: var(--ink); }
+  .kgcard-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    margin-right: 6px; vertical-align: middle; }
+  .kgcard-prov { color: var(--muted); font-size: 11px; margin: 2px 0 6px; overflow-wrap: anywhere; }
+  .kgcard-row { margin-top: 4px; }
+  .kgcard-row h4 { margin: 0 0 3px; font-size: 10px; text-transform: uppercase;
+    letter-spacing: 0.08em; color: var(--muted); }
+  .kgcard-chip { display: inline-block; border: 1px solid var(--line); border-radius: 9px;
+    padding: 1px 8px; margin: 0 4px 4px 0; font-size: 11px; cursor: pointer; background: none;
+    color: inherit; text-decoration: none; }
+  .kgcard-chip:hover { border-color: var(--accent); }
 </style>
 </head>
 <body>
@@ -380,6 +399,10 @@
          populating it never touches the panel's own rendered nodes/edges - hidden until a subject is
          focused (a plain node click), exactly like #kgsubjectlens. -->
     <div class="kgrail" id="kgrail" hidden></div>
+    <!-- The METADATA CARD (spec 63 c2): a STATIC sibling of #kgpanel, absolutely positioned so
+         populating it never touches the panel's own rendered nodes/edges - hidden until a subject
+         is carded (a plain node click, or a files/concepts cluster click). -->
+    <div class="kgcard" id="kgcard" hidden></div>
   </section>
 
   <div class="columns">
@@ -795,6 +818,61 @@ function renderMemoryRail(memory) {
     + section("concepts", memory.concepts || [], conceptCard);
 }
 
+// The METADATA CARD (spec 63 c2): ONE hover/click-card anatomy for any subject - a title row (its
+// label), a provenance row (file:line, degree, community), and per-taxonomy chip rows. `card` is
+// the `/api/graph?card=` body's `card` field (`null` hides the card entirely - no subject carded,
+// or a static export with no live card to fetch). Every OTHER taxonomy than the card's OWN subject
+// renders here as a CHIP, never a second graph node: a code-entity subject gets FILE / CONCEPTS /
+// MEMORY chip rows; a file subject gets TOP ENTITIES; a concept subject gets TOP EVIDENCE. A FILE
+// or CONCEPTS chip carries `data-handoff="<lens>"` alongside `data-seed="<id>"` (the LENS HANDOFF:
+// #kgcard's own click handler reads it to force that lens before re-projecting, spec 63's "a chip
+// opens its own taxonomy's lens, the subject rides along"); the MEMORY chip carries `data-seed`
+// alone, so it falls through to the SAME plain re-seed [`seedGraph`] already performs on a node
+// click - reusing spec 63 c5's rail-and-reseed mechanism rather than building a second one (no
+// memory lens exists among this design's three named lenses).
+function renderCard(card) {
+  const box = el("kgcard");
+  if (!box) return;
+  if (!card) { box.hidden = true; box.innerHTML = ""; return; }
+  box.hidden = false;
+  const chip = (id, label, lens) => '<a href="#" class="kgcard-chip" data-seed="' + esc(id) + '"'
+    + (lens ? ' data-handoff="' + esc(lens) + '"' : "") + '>' + esc(label) + '</a>';
+  const row = (title, chips) => chips ? '<div class="kgcard-row"><h4>' + esc(title) + '</h4>' + chips + '</div>' : "";
+  const prov = [
+    card.file ? esc(card.file) + (card.line ? ":" + esc(card.line) : "") : "",
+    "degree " + card.degree,
+    card.community ? "community: " + esc(card.community) : ""
+  ].filter(Boolean).join(" · ");
+  let rows = "";
+  if (card.kind === "code-entity") {
+    rows += row("FILE", card.file ? chip(card.file, card.file, "files") : "");
+    rows += row("CONCEPTS", (card.concepts || []).map(c => chip(c.id, c.label, "concepts")).join(""));
+    const mem = (card.decisions ? chip(card.id, card.decisions + (card.decisions === 1 ? " decision" : " decisions")) : "")
+      + (card.findings ? chip(card.id, card.findings + (card.findings === 1 ? " finding" : " findings")) : "");
+    rows += row("MEMORY", mem);
+  } else if (card.kind === "file") {
+    rows += row("TOP ENTITIES", (card.top_entities || []).map(e => chip(e.id, e.label, "code")).join(""));
+  } else if (card.kind === "concept") {
+    rows += row("TOP EVIDENCE", (card.top_evidence || []).map(e => chip(e.id, e.label, "code")).join(""));
+  }
+  const dot = '<span class="kgcard-dot" style="background:' + esc(kindColor(card.kind)) + '"></span>';
+  box.innerHTML = '<div class="kgcard-title">' + dot + esc(card.label) + '</div>'
+    + '<div class="kgcard-prov">' + prov + '</div>' + rows;
+}
+
+// Fetch subject `id`'s metadata card from GET /api/graph?card=<id> and render it (spec 63 c2). The
+// id is `encodeURIComponent`d like every other node id param. A static export / failed fetch /
+// unknown id all degrade to hiding the card - never an error, never a stale card left showing.
+async function loadCard(id) {
+  if (!LIVE || !id) { renderCard(null); return; }
+  try {
+    const body = await (await fetch(apiUrl("/api/graph?card=" + encodeURIComponent(id)), { cache: "no-store" })).json();
+    renderCard(body.card || null);
+  } catch (e) {
+    renderCard(null);
+  }
+}
+
 // The SUBJECT-STICKY lens dispatch (spec 55 c4): ONE lens picker serves the overview's inline selector
 // AND the subject-lens header. When a subject is focused, flipping the lens RE-REQUESTS that subject
 // under the new lens (a re-projection, seed+lens); with no subject it reloads the whole-graph overview
@@ -839,6 +917,11 @@ function renderReprojection(rp) {
   kgMode = "reproject";
   kgViewData = rp;
   const subject = (rp && rp.subject) || kgSubject || "";
+  // The re-projected SUBJECT's own METADATA CARD (spec 63 c2): re-projecting under a new lens
+  // (e.g. after a card chip's handoff) re-cards the SAME subject, so a code-entity subject's card
+  // (file/concepts/memory) or a file/concept subject's card (top entities / top evidence) tracks
+  // whichever taxonomy is now focused.
+  loadCard(subject);
   const clusters = (rp && rp.clusters) || [];
   const total = (rp && rp.total) || 0;
   const back = '<a class="kgback" href="#" data-kgclear="1">&larr; whole graph</a>';
@@ -987,6 +1070,10 @@ function renderGraph(g) {
   // concepts riding this SAME response, rendered into the STATIC #kgrail sibling - never folded
   // into `nodes`/`edges` above, so listing them adds no node to the drawn layout.
   renderMemoryRail(g.memory || null);
+  // The seed's METADATA CARD (spec 63 c2): a code-entity subject's file:line/degree/community/
+  // concepts/memory-count peek, docked alongside the rail. A separate on-demand fetch (never
+  // folded into `g`), so a plain neighborhood response stays byte-identical.
+  loadCard(g.seed);
   const nodes = g.nodes || [];
   const edges = g.edges || [];
   // The query-path (spec 30 c6): the shortest chain of node ids between the two selected nodes, and
@@ -1870,6 +1957,8 @@ async function loadKgOverview() {
   // The whole-graph overview is the subject-less altitude (spec 63 c5): the docked memory rail is
   // a SUBJECT's rail, so it hides right alongside the subject-sticky lens control, on every arm.
   renderMemoryRail(null);
+  // Likewise the METADATA CARD (spec 63 c2): no single subject is carded at the whole-graph altitude.
+  renderCard(null);
 }
 
 // DRILL a cluster (spec 42 c5): fetch /api/graph?cluster=<key> (the key encodeURIComponent'd, since a
@@ -1893,6 +1982,12 @@ async function drillCluster(key) {
   } catch (e) {
     el("kgpanel").innerHTML = '<div class="empty">the cluster is unavailable</div>';
   }
+  // The FILES / CONCEPTS lens's own cluster IS a file / concept subject (criteria 3/4): card it
+  // alongside the drill (its top entities / top evidence, spec 63 c2) - additive, the drill's own
+  // markup above is unchanged. A CODE lens cluster is a coupling COMMUNITY, which this design names
+  // no card for, so it hides any stale card instead.
+  if (kgLens === "files" || kgLens === "concepts") loadCard(key);
+  else renderCard(null);
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -2099,6 +2194,21 @@ function wireSelectToSeed() {
     const lens = ev.target.closest("[data-lens]");
     if (lens && lens.dataset.lens) { ev.preventDefault(); onLensPick(lens.dataset.lens); return; }
   });
+  // The METADATA CARD's own chip dispatch (spec 63 c2): ONE delegated click on the STATIC #kgcard,
+  // so a chip works no matter which view is behind it (the card is never swapped by a view render).
+  // A FILE / CONCEPTS / TOP-ENTITIES / TOP-EVIDENCE chip carries `data-handoff="<lens>"` alongside
+  // `data-seed="<id>"` - the LENS HANDOFF: force that lens, then re-project the chip's id under it
+  // (subject rides along, spec 63's "a chip opens its own taxonomy's lens"). A MEMORY chip carries
+  // `data-seed` ALONE, so it falls through to the plain re-seed [`seedGraph`] a node click already
+  // performs - reusing criterion 5's rail-and-reseed mechanism for the card's OWN subject, never a
+  // second memory lens (this design names none).
+  el("kgcard").addEventListener("click", ev => {
+    const chip = ev.target.closest("[data-seed]");
+    if (!chip || !chip.dataset.seed) return;
+    ev.preventDefault();
+    if (chip.dataset.handoff) { kgLens = chip.dataset.handoff; reprojectSubject(chip.dataset.seed); }
+    else seedGraph(chip.dataset.seed);
+  });
   // c7 TIER FILTER: one delegated CHANGE listener on the stable KG panel container, so a tier-checkbox
   // toggle re-filters the DRAWN edges over the LAST neighborhood body (no re-fetch) and it SURVIVES the
   // renderGraph innerHTML swaps - the same delegation discipline the select-to-seed click uses.
@@ -2217,6 +2327,8 @@ syncOverlayToggle();
 // The docked memory rail (spec 63 c5) starts hidden too - no subject is focused before the first
 // paint (matches the static markup's own `hidden` attribute; a no-op on the panel body).
 renderMemoryRail(null);
+// The metadata card (spec 63 c2) starts hidden the same way.
+renderCard(null);
 
 // Paint the landing strip immediately (the "this dash" chip, plus any prior list) so the picker is
 // present before the first /api/instances fetch lands; the live poll then fills in the instances.

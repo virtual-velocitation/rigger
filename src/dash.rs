@@ -3136,6 +3136,160 @@ fn memory_rail_of(graph: &Graph, seeds: &[String]) -> MemoryRail {
     }
 }
 
+/// A reference to another graph node from a [`Card`]'s chip list (spec 63 c2): id + display
+/// label, the raw material for a client-side chip whose click hands off to the id's OWN
+/// taxonomy's lens (a `top_entities` chip opens the code lens on it; a `top_evidence` chip opens
+/// the code lens on the evidencing entity or file). Content only, like [`ConceptRef`] /
+/// [`RationaleLeaf`] - never the fold's own bookkeeping.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct CardRef {
+    pub id: String,
+    pub label: String,
+}
+
+/// The METADATA CARD (spec 63 c2, "one hover-card anatomy everywhere"): the ONE card shape for
+/// any subject in the KG explorer, built by [`card`] as a pure read over the already-projected
+/// graph, on demand for a SINGLE requested id (mirrors [`rationale_batch`]'s per-node, on-demand
+/// shape rather than riding every view's body). Every OTHER taxonomy than the card's own subject
+/// lives here as METADATA, never a second graph node:
+///
+/// - a [`KIND_CODE_ENTITY`] subject carries its definition `file`/`line`, the coupling
+///   `community` it belongs to (spec 53's default grain), the `concepts` it REALIZES, and
+///   `decisions`/`findings` COUNTS (spec 63 c5's rail carries the full leaves for the docked
+///   panel; the card carries only the chip's count, e.g. "2 decisions");
+/// - a [`KIND_FILE`] subject carries `top_entities` - the [`member_set`] it CONTAINS;
+/// - a [`KIND_CONCEPT`] subject carries `top_evidence` - the [`member_set`] that REALIZES it.
+///
+/// Every field the subject's own taxonomy does not name is simply empty/absent (`file`/`line`/
+/// `community` for a file or concept; `top_entities`/`top_evidence` for a code entity), so this
+/// ONE struct serves every lens - never a per-taxonomy card type reconciled after the fact.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct Card {
+    pub id: String,
+    pub kind: String,
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<String>,
+    /// This subject's degree over the WHOLE graph (unlike [`NeighborhoodNode::degree`], which is
+    /// bounded to a returned view) - the card is fetched independent of any view, so it reports
+    /// the honest whole-graph fact the mockup's "degree 17" names. A self-loop counts once.
+    pub degree: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub community: Option<String>,
+    pub concepts: Vec<ConceptRef>,
+    pub decisions: usize,
+    pub findings: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub top_entities: Vec<CardRef>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub top_evidence: Vec<CardRef>,
+}
+
+/// The `/api/graph?card=<id>` response body (spec 63 c2): the requested subject's [`Card`], or
+/// `None` (serialized `null`) for an id the graph does not know - a distinct response shape from
+/// the neighborhood / overview / drill / rationale-batch bodies, served over the SAME lazy
+/// whole-graph provider `/api/graph` already reads, never the state poll.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct CardResponse {
+    pub card: Option<Card>,
+}
+
+/// `id`'s degree over the WHOLE graph (every currently-valid edge incident to it, either
+/// direction; a self-loop counts once) - the card's own degree fact, distinct from
+/// [`NeighborhoodNode::degree`]'s view-bounded count because a card is fetched on demand for one
+/// subject, independent of any currently-drawn neighborhood.
+fn whole_graph_degree(graph: &Graph, id: &str) -> usize {
+    graph
+        .edges
+        .iter()
+        .filter(|e| e.valid_to.is_none() && (e.from == id || e.to == id))
+        .count()
+}
+
+/// The display name of the coupling COMMUNITY `id` belongs to at the DEFAULT resolution grain
+/// (spec 53's `community/1/<n>`), or `None` when it carries no live membership at that grain.
+/// Falls back to the community's own id when the derivation folded no explicit `label` attr for
+/// it (a real membership is never silently hidden for want of a friendly name), matching
+/// [`bucket_label_index`]'s own `filter(|l| !l.is_empty())` discipline.
+fn community_label(graph: &Graph, id: &str) -> Option<String> {
+    let prefix = format!("community/{DEFAULT_COMMUNITY_RESOLUTION}/");
+    let community_id = graph.edges.iter().find_map(|e| {
+        (e.valid_to.is_none()
+            && e.rel == REL_IN_COMMUNITY
+            && e.from == id
+            && e.to.starts_with(&prefix))
+        .then_some(e.to.as_str())
+    })?;
+    let label = graph
+        .nodes
+        .iter()
+        .find(|n| n.id == community_id)
+        .and_then(|n| n.attrs.get("label"))
+        .filter(|l| !l.is_empty())
+        .cloned()
+        .unwrap_or_else(|| community_id.to_string());
+    Some(label)
+}
+
+/// A [`member_set`] node as a [`CardRef`] (id + display label) - the shared mapping [`card`]'s
+/// `top_entities` (a file's CONTAINS members) and `top_evidence` (a concept's REALIZES members)
+/// both use, so the two chip lists are built by ONE conversion, never two.
+fn card_ref(n: &Node) -> CardRef {
+    CardRef {
+        id: n.id.clone(),
+        label: node_label(n),
+    }
+}
+
+/// The METADATA CARD of `id` (spec 63 c2): `None` when `id` is not a graph node (the graceful
+/// empty every KG detail read degrades to). See [`Card`] for the per-taxonomy field contract.
+/// Reuses [`memory_rail`] for the concepts/decision/finding facts and [`member_set`] for a file's
+/// contained entities / a concept's realizing members - ONE read authority per fact, never a
+/// second parallel derivation kept in sync by hand.
+pub fn card(graph: &Graph, id: &str) -> Option<Card> {
+    let node = graph.nodes.iter().find(|n| n.id == id)?;
+    let rail = memory_rail(graph, id);
+    let (top_entities, top_evidence) = match node.kind.as_str() {
+        KIND_FILE => (
+            member_set(graph, id).into_iter().map(card_ref).collect(),
+            Vec::new(),
+        ),
+        KIND_CONCEPT => (
+            Vec::new(),
+            member_set(graph, id).into_iter().map(card_ref).collect(),
+        ),
+        _ => (Vec::new(), Vec::new()),
+    };
+    // `file`/`line` name a CODE ENTITY's definition site only: [`file_of`] would happily reduce a
+    // file's OWN id to itself (a file's path already names a file), which would render as a
+    // meaningless "file: <its own path>" row on a file's card, so this is gated on the entity kind
+    // rather than reusing `file_of`'s generic path-shaped-id test.
+    let (file, line) = if node.kind == KIND_CODE_ENTITY {
+        (
+            file_of(id).map(str::to_string),
+            node.attrs.get("line").cloned(),
+        )
+    } else {
+        (None, None)
+    };
+    Some(Card {
+        id: id.to_string(),
+        kind: node.kind.clone(),
+        label: node_label(node),
+        file,
+        line,
+        degree: whole_graph_degree(graph, id),
+        community: community_label(graph, id),
+        concepts: rail.concepts,
+        decisions: rail.decisions.len(),
+        findings: rail.findings.len(),
+        top_entities,
+        top_evidence,
+    })
+}
+
 /// Compute the QUERY-PATH between two selected nodes (spec 30 c6): the shortest chain of node ids
 /// from `from` to `to` (inclusive) over the graph's currently-valid edges, walked in EITHER
 /// direction (the same undirected, valid-only traversal [`neighborhood`] uses). A breadth-first
@@ -4329,6 +4483,22 @@ pub fn route(
                     Err(e) => {
                         Response::text(500, &format!("dash: rationale projection failed: {e}"))
                     }
+                };
+            }
+            // The METADATA CARD (spec 63 c2): `card=<id>` returns ONE subject's card - content
+            // only, on demand, mirroring `explain=`'s per-node shape (never riding every other
+            // view's body). The id is `encodeURIComponent`d by the client like every other node
+            // id param, so it is percent-decoded the same way. An id absent from the graph serves
+            // `{"card":null}` at 200 (the graceful-empty contract every `/api/graph` read keeps),
+            // never a 404/500. Checked alongside `explain=`, before the lens/seed dispatch, so
+            // every existing `/api/graph` view stays byte-identical.
+            if let Some(raw_card) = query_param(target, "card") {
+                let body = CardResponse {
+                    card: card(graph, &percent_decode(raw_card)),
+                };
+                return match serde_json::to_string(&body) {
+                    Ok(body) => Response::json(200, body),
+                    Err(e) => Response::text(500, &format!("dash: card projection failed: {e}")),
                 };
             }
             // The overview/drill bucket lens (spec 53 c4), resolved from `lens=` + `resolution=`.
@@ -10633,6 +10803,258 @@ mod subject_view_c5 {
         assert!(
             !body.contains("\"memory\""),
             "a drill response carries no memory rail field: {body}"
+        );
+    }
+}
+
+/// Spec 63, criterion 2 - the METADATA CARD. Inside-out unit tests over the pure [`card`] surface
+/// and the `/api/graph?card=` route branch: a code-entity subject's card carries its definition
+/// file:line, its coupling community, the concepts it REALIZES, and decision/finding COUNTS
+/// (spec 63 c5's rail carries the full leaves; the card carries only the chip's count); a file
+/// subject's card lists its CONTAINED entities as `top_entities`; a concept subject's card lists
+/// its REALIZING members as `top_evidence`. Every field the subject's own taxonomy does not name
+/// stays empty/absent - ONE struct serves every lens, never a per-taxonomy card type. The served-
+/// boundary + chip-handoff proof lives in `tests/metadata_card_handoff_viz.rs`.
+#[cfg(test)]
+mod metadata_card_c2 {
+    use super::*;
+    use crate::contextgraph::{Edge, KIND_CODE_ENTITY, KIND_FILE, TIER_INFERRED};
+
+    fn node(id: &str, kind: &str, attrs: &[(&str, &str)]) -> Node {
+        Node {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            attrs: attrs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        }
+    }
+
+    fn edge(from: &str, to: &str, rel: &str) -> Edge {
+        Edge {
+            from: from.to_string(),
+            to: to.to_string(),
+            rel: rel.to_string(),
+            valid_from: 0,
+            valid_to: None,
+            source: 0,
+            tier: TIER_INFERRED.to_string(),
+        }
+    }
+
+    /// A code entity `combat.rs::fire` (line 42) carries: a live `IN_COMMUNITY` membership at the
+    /// DEFAULT grain (a labelled community), a `REALIZES` edge to a concept, a governing decision,
+    /// and an ABOUT finding - one of every taxonomy the card's METADATA rows carry. A single
+    /// `calls` edge to a peer entity gives it a non-zero whole-graph degree distinct from any
+    /// in-neighborhood count. `other.rs` carries none of it, for the empty case.
+    fn card_graph() -> Graph {
+        Graph {
+            nodes: vec![
+                node(
+                    "combat.rs::fire",
+                    KIND_CODE_ENTITY,
+                    &[("name", "fire"), ("kind", "function"), ("line", "42")],
+                ),
+                node("combat.rs::reload", KIND_CODE_ENTITY, &[("name", "reload")]),
+                node("other.rs", KIND_FILE, &[]),
+                node(
+                    "community/1/3",
+                    KIND_COMMUNITY,
+                    &[("label", "combat lifecycle")],
+                ),
+                node(
+                    "concept/combat",
+                    KIND_CONCEPT,
+                    &[("label", "combat resolution")],
+                ),
+                node(
+                    "d1",
+                    KIND_DECISION,
+                    &[("summary", "use the shared authority")],
+                ),
+                node("f1", KIND_FINDING, &[("summary", "the finding content")]),
+            ],
+            edges: vec![
+                edge("combat.rs::fire", "combat.rs::reload", "CALLS"),
+                edge("combat.rs::fire", "community/1/3", REL_IN_COMMUNITY),
+                edge("combat.rs::fire", "concept/combat", REL_REALIZES),
+                edge("d1", "combat.rs::fire", REL_GOVERNS),
+                edge("f1", "combat.rs::fire", REL_ABOUT),
+            ],
+        }
+    }
+
+    #[test]
+    fn card_of_a_code_entity_carries_file_line_degree_community_concepts_and_memory_counts() {
+        let g = card_graph();
+        let card = card(&g, "combat.rs::fire").expect("combat.rs::fire is a graph node");
+        assert_eq!(card.kind, KIND_CODE_ENTITY);
+        assert_eq!(
+            card.label, "fire",
+            "the label authority reads the name attr"
+        );
+        assert_eq!(
+            card.file.as_deref(),
+            Some("combat.rs"),
+            "a code entity's file is its id's part before `::`: {card:?}"
+        );
+        assert_eq!(
+            card.line.as_deref(),
+            Some("42"),
+            "the definition's line attr: {card:?}"
+        );
+        assert_eq!(
+            card.degree, 5,
+            "every live edge incident to it counts (CALLS, IN_COMMUNITY, REALIZES, the \
+             governing decision's GOVERNS, and the ABOUT finding) - a whole-graph fact, not \
+             bounded to any drawn neighborhood: {card:?}"
+        );
+        assert_eq!(
+            card.community.as_deref(),
+            Some("combat lifecycle"),
+            "the default-grain IN_COMMUNITY target's display label: {card:?}"
+        );
+        assert_eq!(
+            card.concepts
+                .iter()
+                .map(|c| c.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["concept/combat"],
+            "the concepts it REALIZES, reusing memory_rail: {card:?}"
+        );
+        assert_eq!(card.decisions, 1, "the governing decision COUNT: {card:?}");
+        assert_eq!(card.findings, 1, "the ABOUT finding COUNT: {card:?}");
+        assert!(
+            card.top_entities.is_empty() && card.top_evidence.is_empty(),
+            "a code-entity subject names neither files nor concepts as ITS OWN members: {card:?}"
+        );
+    }
+
+    /// A code entity with no community membership and no `line` attr (a bare cross-file
+    /// placeholder) degrades gracefully: `community` and `line` are both `None`, never a panic or
+    /// a made-up value.
+    #[test]
+    fn card_of_a_membership_less_entity_has_no_community_and_no_line() {
+        let mut g = card_graph();
+        g.nodes.push(node("other.rs::bare", KIND_CODE_ENTITY, &[]));
+        let card = card(&g, "other.rs::bare").expect("a graph node, even a bare placeholder");
+        assert_eq!(card.community, None);
+        assert_eq!(card.line, None);
+        assert_eq!(card.file.as_deref(), Some("other.rs"));
+        assert_eq!(card.degree, 0);
+    }
+
+    /// A file subject's card lists the entities it CONTAINS as `top_entities` (reusing
+    /// [`member_set`]'s own file dispatch, never a second parallel read) and carries no
+    /// `file`/`line`/`community` of its own (those name a CODE-ENTITY's definition site, not a
+    /// file's).
+    #[test]
+    fn card_of_a_file_lists_its_contained_entities_as_top_entities() {
+        let mut g = card_graph();
+        g.nodes.push(node("combat.rs", KIND_FILE, &[]));
+        g.edges
+            .push(edge("combat.rs", "combat.rs::fire", REL_CONTAINS));
+        g.edges
+            .push(edge("combat.rs", "combat.rs::reload", REL_CONTAINS));
+        let card = card(&g, "combat.rs").expect("combat.rs is a graph node");
+        assert_eq!(card.kind, KIND_FILE);
+        let mut ids: Vec<&str> = card.top_entities.iter().map(|e| e.id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(
+            ids,
+            vec!["combat.rs::fire", "combat.rs::reload"],
+            "top_entities is the file's CONTAINS member set: {card:?}"
+        );
+        assert!(
+            card.top_evidence.is_empty(),
+            "a file names no evidence: {card:?}"
+        );
+        assert_eq!(
+            card.file, None,
+            "a FILE subject carries no file-of-itself field: {card:?}"
+        );
+        assert_eq!(card.line, None);
+        assert_eq!(
+            card.community, None,
+            "communities apply to code entities, not files"
+        );
+    }
+
+    /// A concept subject's card lists the members that REALIZE it as `top_evidence` (again
+    /// [`member_set`]'s own concept dispatch), never `top_entities`.
+    #[test]
+    fn card_of_a_concept_lists_its_realizing_members_as_top_evidence() {
+        let g = card_graph();
+        let card = card(&g, "concept/combat").expect("concept/combat is a graph node");
+        assert_eq!(card.kind, KIND_CONCEPT);
+        assert_eq!(
+            card.top_evidence
+                .iter()
+                .map(|e| e.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["combat.rs::fire"],
+            "top_evidence is the concept's REALIZES member set: {card:?}"
+        );
+        assert!(
+            card.top_entities.is_empty(),
+            "a concept names no top_entities: {card:?}"
+        );
+    }
+
+    /// An id absent from the graph carries no card - the graceful empty every KG detail read
+    /// degrades to, never an error.
+    #[test]
+    fn card_of_an_unknown_id_is_none() {
+        let g = card_graph();
+        assert_eq!(card(&g, "not-a-node"), None);
+    }
+
+    /// The served `/api/graph?card=<id>` route: a known id's card rides the wire, percent-decoded
+    /// like every other `/api/graph` id param; an unknown id serves `{"card":null}` at 200, never
+    /// a 404 or 500 - the same graceful-empty contract `explain=` and `seed=` already keep.
+    #[test]
+    fn the_card_route_serves_a_known_subjects_card_and_null_for_an_unknown_one() {
+        let g = card_graph();
+        let resp = route(
+            "GET",
+            "/api/graph?card=combat.rs%3A%3Afire",
+            &[],
+            &g,
+            &[],
+            &HashMap::new(),
+            3,
+            "rigger-run",
+            "origin/main",
+            &[],
+        );
+        assert_eq!(resp.status, 200);
+        let body = String::from_utf8(resp.body).expect("a utf8 body");
+        let json: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(
+            json["card"]["id"].as_str(),
+            Some("combat.rs::fire"),
+            "{body}"
+        );
+        assert_eq!(json["card"]["line"].as_str(), Some("42"), "{body}");
+
+        let resp = route(
+            "GET",
+            "/api/graph?card=not-a-node",
+            &[],
+            &g,
+            &[],
+            &HashMap::new(),
+            3,
+            "rigger-run",
+            "origin/main",
+            &[],
+        );
+        assert_eq!(resp.status, 200);
+        let body = String::from_utf8(resp.body).expect("a utf8 body");
+        assert_eq!(
+            body, "{\"card\":null}",
+            "an unknown card subject is a graceful null: {body}"
         );
     }
 }
