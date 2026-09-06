@@ -143,6 +143,13 @@ fn the_served_route_carries_a_code_subjects_card() {
     assert_eq!(c["kind"].as_str(), Some("code-entity"), "{body}");
     assert_eq!(c["file"].as_str(), Some("combat.rs"), "{body}");
     assert_eq!(c["line"].as_str(), Some("42"), "{body}");
+    // `degree` (whole_graph_degree) counts every currently-valid edge touching this id, either
+    // direction: CONTAINS (combat.rs -> it), IN_COMMUNITY (it -> community/1/3), REALIZES
+    // (it -> concept/combat), GOVERNS (d1 -> it), ABOUT (f1 -> it) = 5. Never asserted at the wire
+    // boundary before this test: the inside-out unit test pins the Rust field, and the JS client
+    // seam harness only ever renders a HARD-CODED fixture value, so neither proves the served
+    // route actually computes and serializes the real whole-graph degree.
+    assert_eq!(c["degree"].as_i64(), Some(5), "{body}");
     assert_eq!(c["community"].as_str(), Some("combat lifecycle"), "{body}");
     assert_eq!(
         c["concepts"][0]["id"].as_str(),
@@ -235,6 +242,11 @@ fn the_served_route_carries_a_file_and_a_concept_subjects_card() {
         "each top_entities member's OWN kind rides the wire, the field a client needs to route \
          its chip: {body}"
     );
+    // whole_graph_degree is subject-agnostic (every currently-valid edge touching the id, either
+    // direction): combat.rs's own two CONTAINS edges (to fire and to reload) give it degree 2,
+    // proven here so a file/concept subject's degree is not silently assumed correct because the
+    // code-entity case above passes.
+    assert_eq!(json["card"]["degree"].as_i64(), Some(2), "{body}");
     assert!(
         json["card"].get("top_evidence").is_none(),
         "a file's card carries no top_evidence key: {body}"
@@ -269,6 +281,8 @@ fn the_served_route_carries_a_file_and_a_concept_subjects_card() {
         Some(KIND_CODE_ENTITY),
         "each top_evidence member's OWN kind rides the wire too: {body}"
     );
+    // concept/combat's only incident edge is the single REALIZES from combat.rs::fire: degree 1.
+    assert_eq!(json["card"]["degree"].as_i64(), Some(1), "{body}");
     assert!(
         json["card"].get("top_entities").is_none(),
         "a concept's card carries no top_entities key: {body}"
