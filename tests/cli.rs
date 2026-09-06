@@ -5039,6 +5039,168 @@ stages:
     );
 }
 
+/// REVIEW TIERS NAME THEIR TARGETS (spec 67 criterion 4): the routed review roster the
+/// conductor stamps onto a review-tier `SpawnOpts` must survive the real production
+/// conversion - `SpawnOpts` (`src/conductor.rs`) -> `ReplayDriver::spawn` ->
+/// `spawn_request` (`src/driver/replay.rs`, "the ONE place `SpawnOpts` becomes a
+/// `SpawnRequest`") -> `SpawnRequest`/`WaveItem` (`src/spawn.rs`) - and land on the ACTUAL
+/// printed `rigger step` wave wire a real courier reads. `tests/review_tier_roster_periphery.rs`
+/// proves `workflows/rigger.js` renders a `req.reviews` it is HANDED correctly, and this
+/// crate's own `mod tests` (`src/conductor.rs`, `src/spawn.rs`) prove the roster is computed
+/// and copied correctly IN PROCESS via the `Stub` driver double or a hand-built
+/// `SpawnRequest` - neither exercises the real `ReplayDriver` conversion this diff adds the
+/// one new `reviews: opts.reviews.clone()` line to, so neither would catch that line ever
+/// being dropped or wrong. This drives the compiled `rigger` binary through a real review
+/// panel (a lens, an adversary, and an adjudicator) and reads the roster off the real,
+/// printed wave JSON at each tier.
+#[test]
+fn step_stamps_the_real_routed_roster_onto_the_printed_wave() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
+    )
+    .unwrap();
+    for (id, body) in [
+        ("a", "Review it."),
+        ("adv", "Try to break it."),
+        ("judge", "Adjudicate it."),
+    ] {
+        std::fs::write(
+            rigger.join("agents").join(format!("{id}.md")),
+            format!("---\nid: {id}\nmodel: sonnet\ntools: [Read]\n---\n{body}\n"),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: reviewrostertest
+defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok: { run: "true", kind: core }
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    on_pass: none
+    review:
+      lenses: [a]
+      adversary: adv
+      adjudicator: judge
+"#,
+    )
+    .unwrap();
+
+    let wt_dir = root.join(".rigger").join("tmp").join("rigger-wt-solo");
+
+    // Step 1: the implementer parks and does its (trivial) work.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/implementer#0""#),
+        "step 1 must park the implementer; got: {out:?}"
+    );
+    std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
+    for args in [&["add", "-A"][..], &["commit", "-q", "-m", "wip"]] {
+        let ok = Command::new("git")
+            .args(args)
+            .current_dir(&wt_dir)
+            .status()
+            .expect("git must be runnable")
+            .success();
+        assert!(
+            ok,
+            "git {args:?} must succeed committing the test's setup diff"
+        );
+    }
+    let (_o, err, ok) = run_rigger(
+        root,
+        &["result", "solo/implementer#0", "implemented the unit"],
+    );
+    assert!(
+        ok,
+        "recording the implementer result must succeed; stderr: {err}"
+    );
+
+    // Step 2: the lens tier parks. A lens carries NO routed roster of its own (spec 67
+    // criterion 4: only the adversary/adjudicator judge another tier's output) - the real
+    // wave must omit `reviews` entirely, the same back-compatible shape an older conductor's
+    // wave item already has.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the second step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/lens:a#0""#),
+        "step 2 must park the lens; got: {out:?}"
+    );
+    assert!(
+        !out.contains("\"reviews\""),
+        "a lens spawn must carry no reviews roster on the real printed wave; got: {out:?}"
+    );
+    let (_o, err, ok) = run_rigger(root, &["result", "solo/lens:a#0", "reviewed: no blocker"]);
+    assert!(ok, "recording the lens result must succeed; stderr: {err}");
+
+    // Step 3: the adversary tier parks, stamped with the unit's routed lens roster - proving
+    // the roster the conductor computed survived the real `SpawnOpts -> ReplayDriver::spawn
+    // -> spawn_request -> SpawnRequest -> WaveItem` conversion and reached the ACTUAL
+    // printed `rigger step` wire, not merely an in-process `Stub` double.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the third step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/adversary#0""#),
+        "step 3 must park the adversary; got: {out:?}"
+    );
+    assert!(
+        out.contains(r#""reviews":["lens:a"]"#),
+        "the adversary's real printed wave item must carry the routed lens roster; got: {out:?}"
+    );
+    let (_o, err, ok) = run_rigger(
+        root,
+        &["result", "solo/adversary#0", "reviewed: no blocker"],
+    );
+    assert!(
+        ok,
+        "recording the adversary result must succeed; stderr: {err}"
+    );
+
+    // Step 4: the adjudicator tier parks, stamped with that same lens roster PLUS the
+    // adversary's own attribution token - proving the two-source join (lenses plus adversary)
+    // survives the real pipeline too, not just the lens-only roster above.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the fourth step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/adjudicator#0""#),
+        "step 4 must park the adjudicator; got: {out:?}"
+    );
+    assert!(
+        out.contains(r#""reviews":["lens:a","adversary"]"#),
+        "the adjudicator's real printed wave item must carry the lens roster plus the \
+         adversary token; got: {out:?}"
+    );
+    let (_o, err, ok) = run_rigger(
+        root,
+        &["result", "solo/adjudicator#0", r#"{"verdict":"approve"}"#],
+    );
+    assert!(
+        ok,
+        "recording the adjudicator's approve must succeed; stderr: {err}"
+    );
+
+    // Step 5: the approve folds through (`on_pass: none`, so the unit reaches `reviewed` and
+    // stops) - proving the run reaches a clean fixpoint, not merely that each wave item's
+    // wire shape looked right along the way.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the fifth step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""done":true"#),
+        "the reviewed, unmerged unit must reach a clean fixpoint; got: {out:?}"
+    );
+}
+
 /// Mirrors `step_stamps_a_real_reviewed_sha_after_repeated_between_step_deletions` above for
 /// the REJECT arm (`run_single_stage`'s `failed_sha` stamp on the review-reject
 /// `UnitFailed`, `adv-u3c3r3-reviewed-and-failed-sha-empty-sentinel-inversion`'s second
