@@ -546,14 +546,6 @@ async function runWorker(req, fatal) {
   }
 }
 
-// The single global phase marker: everything up front (and the courier steps, which have no
-// unit of their own) is the run's Plan/orchestration pass. The per-unit progress groups are
-// the runtime opts.phase strings on the workers, NOT a global phase('Build') marker - a
-// global build marker would falsely imply every unit builds together before any review, when
-// in fact each unit runs its whole Build -> Review -> Integrate lifecycle (inside the
-// conductor) before the next unit's spawns are parked.
-phase('Plan')
-
 // The thin driver loop. Each iteration: courier one `rigger step`, spawn the wave it parked,
 // and stop when the conductor reports a fixpoint. Termination is guaranteed by the conductor
 // (its spawn-budget breaker and per-unit retry bound), so this loop needs no cap of its own.
@@ -599,7 +591,7 @@ for (;;) {
       // large JSON object, and haiku demonstrably "helps" by externalizing big waves
       // to a file reference - which loses the wave (the driver reads only the
       // returned JSON) and stalls the run.
-      { phase: 'Plan', model: 'sonnet', schema: STEP, label: `step#${waves + 1}` },
+      { phase: 'Drive', model: 'sonnet', schema: STEP, label: `step#${waves + 1}` },
     )
   } catch (e) {
     // The `rigger step` courier AGENT itself rejected (its own max turns / crash) - distinct
