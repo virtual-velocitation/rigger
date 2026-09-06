@@ -346,3 +346,89 @@ fn internal_whitespace_is_normalized_before_the_sentence_is_cut() {
         "Adjudicator - weigh and rule #3: weigh the findings and rule."
     );
 }
+
+/// `roleAttempt` returns `null` for ANY id that does not match its `{unit}/{role}#{attempt}`
+/// grammar - no `/` at all, a `/` with no trailing `#`, or a `#`-suffix that is not purely
+/// digits (see `roleAttempt`'s own doc comment in `workflows/rigger.js`) - and `workerLabel`
+/// must fall back to the PRE-CRITERION `${req.id}: ${subject}` shape for every one of those
+/// three cases, not merely the untitled fallback covered by
+/// `an_untitled_item_falls_back_to_the_spawn_id` above - that is a DIFFERENT branch entirely
+/// (`workerLabel` returns the BARE `req.id`, with no subject, before `roleAttempt` is ever
+/// called, whenever the title itself is empty). This is `roleAttempt`'s own null contract,
+/// exercised with a real, non-empty title so the subject half of the fallback is proven too.
+#[test]
+fn a_non_conforming_id_falls_back_to_the_pre_criterion_shape_with_the_subject() {
+    for id in [
+        "bare-id-no-slash",
+        "unit/role-with-no-hash",
+        "unit/role#not-digits",
+    ] {
+        let Some(label) = run_worker_label(id, "do the thing. a second sentence.") else {
+            return;
+        };
+        assert_eq!(
+            label,
+            format!("{id}: do the thing."),
+            "a non-conforming id must fall back to `${{req.id}}: ${{subject}}`, keeping the \
+             subject rather than dropping it or rendering a broken persona"
+        );
+    }
+}
+
+/// A REAL production wave item ALWAYS carries `unit` - `src/spawn.rs::WaveItem.unit` has no
+/// `skip_serializing_if` and `WaveItem::from` copies the request's own unit id into it verbatim,
+/// so the field is NEVER omitted on the wire, unlike this file's `run_worker_label` convenience
+/// wrapper (used by most tests above), which omits it entirely via `run_worker_label_for_unit`'s
+/// `None`. This proves the structural plan/plan-critique override is keyed on the unit's VALUE
+/// (`req.unit === 'plan'` / `=== 'plan-critique'`), not merely on the field being ABSENT: a
+/// genuinely present, ordinary unit id ("u2", matching this wave item's own id) must still
+/// render the role-based persona - the same guarantee the omitted-field cases above assume but
+/// never actually exercise against a real `unit` value.
+#[test]
+fn an_ordinary_build_units_real_unit_field_still_uses_the_role_based_persona() {
+    let Some(label) =
+        run_worker_label_for_unit("u2/implementer#0", "implement the thing.", Some("u2"))
+    else {
+        return;
+    };
+    assert_eq!(label, "Implementer - implement #0: implement the thing.");
+}
+
+/// The wiring seam itself: `runWorker`'s per-worker progress-group `label:` must be computed by
+/// calling the REAL `workerLabel(req)` this criterion added, not the pre-criterion `${req.id} ·
+/// ${work}` concatenation it replaced. `runWorker` cannot execute outside the workflow harness
+/// (top-level await, injected `agent`/`parallel`/`log` globals - see this file's header), so this
+/// is a source-text isolation proof, the same convention `tests/cli.rs::
+/// native_driver_enforces_an_outer_wall_clock_that_surfaces_an_unbounded_spawn` already
+/// establishes for other unexecutable `runWorker` structure.
+///
+/// This closes a real gap: the pre-existing pin
+/// `src/spawn.rs::the_thin_driver_renders_the_work_line_at_both_sites` only asserts the
+/// substring `"workLabel = work"`, which both the OLD ternary (`workLabel = work ? ... : ...`)
+/// and the NEW `workLabel = workerLabel(req)` satisfy (since `"workerLabel"` itself starts with
+/// `"work"`) - so that pin cannot tell the two apart and would not catch a silent revert of this
+/// criterion's own wiring. The tests above prove `workerLabel` renders correctly in isolation;
+/// this proves the call site actually reaches it.
+#[test]
+fn workerlabel_is_actually_wired_into_runworkers_agent_call_label() {
+    let src = rigger_js_source();
+    let rw_at = src
+        .find("async function runWorker(")
+        .expect("the driver must still define runWorker");
+    let rw_end = src[rw_at..]
+        .find("\nfunction stop(")
+        .map(|off| rw_at + off)
+        .expect("runWorker must be followed by the stop() helper");
+    let run_worker = &src[rw_at..rw_end];
+
+    assert!(
+        run_worker.contains("const workLabel = workerLabel(req)"),
+        "runWorker must compute its progress-group label by calling the real workerLabel(req), \
+         not a reverted or divergent computation: {run_worker}"
+    );
+    assert!(
+        run_worker.contains("label: workLabel"),
+        "the workerLabel(req) result must actually reach the agent() call's label field, not a \
+         stale or shadowed variable"
+    );
+}
