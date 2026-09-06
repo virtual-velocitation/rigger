@@ -264,6 +264,10 @@ fn spawn_request(agent: &AgentDef, prompt: &str, opts: &SpawnOpts) -> SpawnReque
         // the parked request so the persisted `SpawnRequested` - and the wave `rigger step`
         // prints from it - carry the WORK the thin driver narrates.
         title: opts.title.clone(),
+        // The routed review roster (spec 67, criterion 4): copy the conductor-threaded
+        // adversary/adjudicator roster onto the parked request, the same additive seam
+        // `title` establishes, so the wave carries it for `workflows/rigger.js` to render.
+        reviews: opts.reviews.clone(),
     }
 }
 

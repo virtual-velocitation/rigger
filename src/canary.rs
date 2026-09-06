@@ -816,6 +816,9 @@ fn canary_opts(item: &CanaryItem, role: &str, agent: &AgentDef) -> SpawnOpts {
         // (spec 65) has nothing to reach here, so this stays empty rather than resolving
         // config this spawn never uses.
         env: Vec::new(),
+        // A canary reviewer judges one synthetic corpus item alone, not a real unit's
+        // multi-tier panel, so it carries no routed review roster (spec 67, criterion 4).
+        reviews: Vec::new(),
     }
 }
 

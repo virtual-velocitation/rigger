@@ -1064,6 +1064,17 @@ pub struct SpawnOpts {
     /// applies every pair to its spawned `Command`; a driver with no subprocess of its
     /// own (a test double) may ignore it.
     pub env: Vec<(String, String)>,
+    /// The routed review roster (spec 67, criterion 4): for the adversary tier, the
+    /// unit's routed lens role tokens (`lens:<agent_id>`, [`review_roster`]); for the
+    /// adjudicator tier, that same roster plus [`ROLE_ADVERSARY`] when an adversary
+    /// ran ([`adjudicator_roster`]). Empty for every other tier (a lens, or a panel with
+    /// no lenses/adversary). The CONDUCTOR is the only honest source - it reads the
+    /// panel `review_unit`/`run_fan_out_review_loop` actually routed to (light or full),
+    /// never a static declaration a driver guess could get stale against a replayed
+    /// lens - so a parking driver copies it verbatim onto
+    /// [`SpawnRequest::reviews`](crate::spawn::SpawnRequest::reviews) for the thin
+    /// driver to render inside the action phrase.
+    pub reviews: Vec<String>,
 }
 
 /// AgentDriver spawns an agent to completion. The agent records events it emits
@@ -3596,6 +3607,11 @@ impl RunCtx<'_> {
         attempt: u32,
         parallel: bool,
         st: &Stage,
+        // The routed review roster (spec 67, criterion 4): empty for a lens, the unit's
+        // lens roster for the adversary, and that roster plus the adversary for the
+        // adjudicator - always the CALLER's already-computed value (`run_reviewer`'s own
+        // `reviews` parameter), never re-derived here.
+        reviews: &[String],
     ) -> Result<SpawnOpts, Error> {
         self.assert_isolated_cwd(role, agent_id, dir)?;
         let agent_def = self.cfg.agents.get(agent_id).ok_or_else(|| {
@@ -3636,6 +3652,7 @@ impl RunCtx<'_> {
             // per-unit cache a gate build for this `dir` gets, so its own `cargo`
             // invocations share both.
             env: Self::spawn_env(&build_env, dir),
+            reviews: reviews.to_vec(),
         })
     }
 
@@ -3754,7 +3771,7 @@ impl RunCtx<'_> {
         // TIER 2: the adversary grounds AFTER the lenses, so `graph_context` surfaces
         // their findings; it tries to prove them wrong and emits its own findings.
         if !adversary.is_empty() {
-            self.run_adversary(st, &adversary, dir, attempt, wt)?;
+            self.run_adversary(st, &adversary, dir, attempt, wt, &lenses)?;
         }
         if adjudicator.is_empty() {
             return Ok(ReviewOutcome::approved(String::new()));
@@ -3762,7 +3779,7 @@ impl RunCtx<'_> {
         // TIER 3: the adjudicator grounds last, reads the lenses' and adversary's
         // findings from the graph, and renders the gating verdict.
         let (approved, reason, adj_resolved) =
-            self.run_adjudicator(st, &adjudicator, dir, attempt, wt)?;
+            self.run_adjudicator(st, &adjudicator, dir, attempt, wt, &lenses, &adversary)?;
         // A COMPENSATION target (spec 12, unit 4): the verdict may name a PRIOR integrated
         // unit as the real defect source, INDEPENDENTLY of whether it approves this unit.
         // Carried on the outcome so the run loop can roll that unit back after the wave.
@@ -3902,6 +3919,9 @@ impl RunCtx<'_> {
                 attempt,
                 false,
                 st,
+                // The sdet-author writes periphery tests - it is not a review tier judging
+                // another agent's output, so it carries no roster (spec 67, criterion 4).
+                &[],
             )
             .and_then(|opts| {
                 self.deps
@@ -4212,6 +4232,9 @@ impl RunCtx<'_> {
                             // cache a gate build for this `dir` gets, instead of
                             // embedding a `target/` dir inside the worktree itself.
                             env: Self::spawn_env(&build_env, dir),
+                            // An implementer is never a review tier: no roster to render
+                            // (spec 67, criterion 4).
+                            reviews: Vec::new(),
                         },
                         &emit,
                     )
@@ -4710,6 +4733,9 @@ impl RunCtx<'_> {
                         // same wrapper cache AND land in its own lane's per-unit cache,
                         // never a `target/` dir embedded in its own lane worktree.
                         env: Self::spawn_env(&build_env, &dir),
+                        // A speculation candidate is an implementer lane, never a review
+                        // tier: no roster to render (spec 67, criterion 4).
+                        reviews: Vec::new(),
                     },
                     &emit,
                 )
@@ -5282,7 +5308,7 @@ impl RunCtx<'_> {
             // guards - unchanged by that fix.
             self.run_review_agents_concurrently(st, &lenses, dir, attempts, any_lens_parked, None)?;
             if !st.adversary.is_empty() {
-                self.run_adversary(st, &st.adversary, dir, attempts, None)?;
+                self.run_adversary(st, &st.adversary, dir, attempts, None, &lenses)?;
             }
             // The neutral adjudicator's verdict gates the stage (§3.2), fail-closed:
             // it approves ONLY on an explicit `approve`, blocking integration
@@ -5290,7 +5316,15 @@ impl RunCtx<'_> {
             let (approved, reason, adj_resolved) = if st.adjudicator.is_empty() {
                 (true, String::new(), String::new())
             } else {
-                self.run_adjudicator(st, &st.adjudicator, dir, attempts, None)?
+                self.run_adjudicator(
+                    st,
+                    &st.adjudicator,
+                    dir,
+                    attempts,
+                    None,
+                    &lenses,
+                    &st.adversary,
+                )?
             };
 
             // A standalone review stage integrates no code of its own, so there is nothing to
@@ -5522,6 +5556,9 @@ impl RunCtx<'_> {
             false,
             &prompt,
             wt,
+            // A lens judges the diff directly, not another tier's output - it carries no
+            // review roster (spec 67, criterion 4; that's the adversary/adjudicator's job).
+            &[],
         )?;
         Ok(())
     }
@@ -5558,7 +5595,10 @@ impl RunCtx<'_> {
     /// in parallel); `stdout_is_verdict` selects the tier-specific degeneracy signal (see
     /// [`reviewer_result_is_degenerate`](RunCtx::reviewer_result_is_degenerate)); `prompt`
     /// is the tier's already-grounded prompt. A budget-refused respawn surfaces the budget
-    /// sentinel exactly like the original spawn.
+    /// sentinel exactly like the original spawn. `reviews` is the routed review roster
+    /// (spec 67, criterion 4) this spawn's `SpawnOpts` carries verbatim - empty for a lens,
+    /// the unit's lens roster for the adversary, that roster plus the adversary for the
+    /// adjudicator - always the CALLER's already-computed value, never re-derived here.
     #[allow(clippy::too_many_arguments)]
     fn run_reviewer(
         &self,
@@ -5579,6 +5619,7 @@ impl RunCtx<'_> {
         // unit's OWN durable worktree (`review_unit`, reached from both the single-lane
         // and speculation lifecycles).
         wt: Option<&Worktree>,
+        reviews: &[String],
     ) -> Result<AgentResult, Error> {
         let agent_def = self.cfg.agents.get(agent_id).ok_or_else(|| {
             Error(format!(
@@ -5590,7 +5631,8 @@ impl RunCtx<'_> {
         // ordinal is a `~retry{n}` respawn. At most `1 + REVIEWER_RESPAWN_BOUND` spawns.
         for retry in 0..=REVIEWER_RESPAWN_BOUND {
             let id = spawn_retry_id(&st.name, role, attempt, retry);
-            let opts = self.reviewer_spawn_opts(&id, tier, agent_id, dir, attempt, parallel, st)?;
+            let opts =
+                self.reviewer_spawn_opts(&id, tier, agent_id, dir, attempt, parallel, st, reviews)?;
             if !self.reserve_spawn(&id) {
                 return Err(budget_refused(&st.name, tier, agent_id));
             }
@@ -5851,7 +5893,10 @@ impl RunCtx<'_> {
     /// the adjudicator it reviews - it produces no code to integrate, so it owns no
     /// worktree of its own; it runs IN the unit's worktree (`dir`), never the live
     /// main checkout - and unlike the adjudicator its output does NOT gate the stage;
-    /// it informs the adjudicator's judgment via the graph.
+    /// it informs the adjudicator's judgment via the graph. `lenses` is the routed panel's
+    /// own lens agent ids (spec 67, criterion 4) - the CALLER's already-routed value (light
+    /// or full), stamped verbatim as this spawn's [`SpawnOpts::reviews`] roster via
+    /// [`review_roster`].
     fn run_adversary(
         &self,
         st: &Stage,
@@ -5859,6 +5904,7 @@ impl RunCtx<'_> {
         dir: &str,
         attempt: u32,
         wt: Option<&Worktree>,
+        lenses: &[String],
     ) -> Result<(), Error> {
         // Like a lens, the adversary emits its findings to the graph rather than
         // returning a verdict, so its substantive result is discarded; `run_reviewer`
@@ -5878,6 +5924,7 @@ impl RunCtx<'_> {
             false,
             &prompt,
             wt,
+            &review_roster(lenses),
         )?;
         Ok(())
     }
@@ -5889,7 +5936,15 @@ impl RunCtx<'_> {
     /// tiers by retrieving their findings through the graph, not from a hand-threaded
     /// block. The reviewer produces no code to integrate. The returned output is the
     /// verdict reason: it is folded into the unit's `reviewed` evidence on approval
-    /// (item 4) and into the next attempt's prompt on a reject (item 5).
+    /// (item 4) and into the next attempt's prompt on a reject (item 5). `lenses` and
+    /// `adversary_id` are the routed panel's own lens agent ids and adversary agent id
+    /// (spec 67, criterion 4) - the CALLER's already-routed values (light or full),
+    /// combined via [`adjudicator_roster`] into this spawn's [`SpawnOpts::reviews`] roster.
+    // Each argument is a distinct, already-documented review input (stage, agent id, dir,
+    // attempt, the ensure-on-park worktree, and now the routed lens/adversary roster
+    // inputs) - the same primitive-argument shape `run_reviewer`/`reviewer_spawn_opts`
+    // already carry this allow for.
+    #[allow(clippy::too_many_arguments)]
     fn run_adjudicator(
         &self,
         st: &Stage,
@@ -5897,6 +5952,8 @@ impl RunCtx<'_> {
         dir: &str,
         attempt: u32,
         wt: Option<&Worktree>,
+        lenses: &[String],
+        adversary_id: &str,
     ) -> Result<(bool, String, String), Error> {
         // Unlike the other tiers the adjudicator's result IS the verdict, so it is read
         // here (not discarded). `run_reviewer` guarantees it is non-degenerate before it
@@ -5916,6 +5973,7 @@ impl RunCtx<'_> {
             true,
             &prompt,
             wt,
+            &adjudicator_roster(lenses, adversary_id),
         )?;
         // The resolved model the adjudicator ran as (spec 05 line 52) rides back with the
         // verdict so the `reviewed` status - this spawn's unit event - can carry it.
@@ -6142,6 +6200,9 @@ impl RunCtx<'_> {
                     // always empty (no worktree, `isolation: none`), so `unit_cache_sibling`
                     // yields `None` and no `CARGO_TARGET_DIR` is added here.
                     env: Self::spawn_env(&build_env, ""),
+                    // The planner/re-planner is never a review tier: no roster to render
+                    // (spec 67, criterion 4).
+                    reviews: Vec::new(),
                 },
                 &emit,
             )
@@ -6274,6 +6335,9 @@ impl RunCtx<'_> {
                     false,
                     &format!("{prompt}{}", review_protocol(ROLE_ADVERSARY)),
                     None,
+                    // The DAG-level critique names no lens tier of its own (spec 67, c4): an
+                    // empty roster here is the honest one, never a fabricated lens.
+                    &[],
                 )?;
             }
             // TIER 3: the adjudicator renders the gating verdict over the DAG, fail-closed.
@@ -6291,6 +6355,9 @@ impl RunCtx<'_> {
                     true,
                     &prompt,
                     None,
+                    // No lens tier at the DAG level, so the shared helper's roster reduces to
+                    // just the adversary token when one ran (spec 67, c4) - never fabricated.
+                    &adjudicator_roster(&[], &gate_st.adversary),
                 )?;
                 (
                     verdict_approves(&result.output),
@@ -9943,6 +10010,29 @@ fn fan_out_lenses(st: &Stage) -> Vec<String> {
     }
 }
 
+/// The adversary's routed review roster (spec 67, criterion 4): the unit's lens AGENT ids
+/// (`ReviewPanel::lenses` / [`fan_out_lenses`]'s raw values), rendered as the same
+/// review-attribution role tokens ([`lens_role`]) a `ReviewFinding.by` already carries - so
+/// the driver names EXACTLY who the adversary is grounding against, never a guessed set.
+/// Pure over the panel's own lens list, so it stays correct for whichever panel the
+/// conductor actually routed to (light or full) - the caller always passes THAT panel's
+/// lenses, never a static declaration.
+fn review_roster(lenses: &[String]) -> Vec<String> {
+    lenses.iter().map(|id| lens_role(id)).collect()
+}
+
+/// The adjudicator's routed review roster (spec 67, criterion 4): [`review_roster`]'s same
+/// lens roster, PLUS [`ROLE_ADVERSARY`] when an adversary tier actually ran for this panel
+/// (`adversary_id` non-empty) - never a fabricated entry for a panel with no adversary
+/// (e.g. a reduced light tier).
+fn adjudicator_roster(lenses: &[String], adversary_id: &str) -> Vec<String> {
+    let mut roster = review_roster(lenses);
+    if !adversary_id.is_empty() {
+        roster.push(ROLE_ADVERSARY.to_string());
+    }
+    roster
+}
+
 /// Whether a stage carries an LLM judge, i.e. a real verifier and not a mechanical
 /// proxy. A stage covers a criterion only if it has one (§8 proxy-gap guard, item 5):
 /// a worker agent, a fan-out lens set, or an adjudicator. A gate-command-only stage
@@ -10277,6 +10367,11 @@ mod tests {
         /// threaded into SpawnOpts for each agent - used to prove a spawn carries its
         /// criterion so the thin driver narrates the WORK, not just `<unit>:<stage>`.
         titles_by_agent: Mutex<HashMap<String, String>>,
+        /// The routed review roster (spec 67, criterion 4) the conductor threaded into
+        /// SpawnOpts for each agent - used to prove an adversary/adjudicator spawn
+        /// carries the unit's ACTUALLY-routed lens roster (plus the adversary, for the
+        /// adjudicator), never a guessed or stale one.
+        reviews_by_agent: Mutex<HashMap<String, Vec<String>>>,
         /// Every prompt each agent was spawned with, in order, keyed by agent id.
         /// Used to assert the cross-tier findings block (item 1) and the prior-failure
         /// block on a retry (items 3 + 5) reached the right agent's prompt.
@@ -10318,6 +10413,7 @@ mod tests {
                 dirs_by_agent: Mutex::new(HashMap::new()),
                 system_prompt_by_agent: Mutex::new(HashMap::new()),
                 titles_by_agent: Mutex::new(HashMap::new()),
+                reviews_by_agent: Mutex::new(HashMap::new()),
                 prompts_by_agent: Mutex::new(HashMap::new()),
                 call_order: Mutex::new(Vec::new()),
                 delete_dir_by_agent: std::collections::HashSet::new(),
@@ -10359,6 +10455,12 @@ mod tests {
         /// for the named agent, or None if it was never spawned.
         fn title_for(&self, agent_id: &str) -> Option<String> {
             self.titles_by_agent.lock().unwrap().get(agent_id).cloned()
+        }
+
+        /// The routed review roster (spec 67, criterion 4) the conductor threaded to the
+        /// driver for the named agent, or None if it was never spawned.
+        fn reviews_for(&self, agent_id: &str) -> Option<Vec<String>> {
+            self.reviews_by_agent.lock().unwrap().get(agent_id).cloned()
         }
 
         /// Every spawn's deterministic id, in spawn order (Gap-18 tests assert the exact
@@ -10428,6 +10530,10 @@ mod tests {
                 .lock()
                 .unwrap()
                 .insert(a.id.clone(), opts.title.clone());
+            self.reviews_by_agent
+                .lock()
+                .unwrap()
+                .insert(a.id.clone(), opts.reviews.clone());
             self.prompts_by_agent
                 .lock()
                 .unwrap()
@@ -23849,6 +23955,240 @@ mod tests {
             driver.title_for("a").as_deref(),
             Some("the blocker line is surfaced on both status and the dashboard"),
             "the implementer's SpawnOpts.title is its unit criterion (coverage), trimmed"
+        );
+    }
+
+    /// REVIEW TIERS NAME THEIR TARGETS (spec 67, criterion 4): the adversary's spawn is
+    /// stamped with the unit's routed lens roster, rendered as the same `lens:<id>`
+    /// attribution tokens a `ReviewFinding.by` already carries - never a bare agent id,
+    /// never a guess.
+    #[test]
+    fn the_adversarys_spawn_is_stamped_with_the_units_lens_roster() {
+        let store = Store::open(":memory:").unwrap();
+        let mut cfg = Config::default();
+        for a in ["worker", "lensA", "lensB", "adversary", "judge"] {
+            cfg.agents.insert(a.into(), agent(a));
+        }
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                // Repo-less: the adjudicator approves and `on_pass: none` stops before
+                // integrate, so no git repo is needed - `reviewed` still emits.
+                on_pass: "none".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lensA".into(), "lensB".into()],
+                    adversary: "adversary".into(),
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let driver = Stub {
+            output_by_agent: HashMap::from([
+                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
+                // A substantive result for each so the Gap-18 respawn loop never trips.
+                ("lensA".to_string(), "reviewed: no blocker".to_string()),
+                ("lensB".to_string(), "reviewed: no blocker".to_string()),
+                ("adversary".to_string(), "reviewed: no blocker".to_string()),
+            ]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+        assert_eq!(
+            driver.reviews_for("adversary"),
+            Some(vec!["lens:lensA".to_string(), "lens:lensB".to_string()]),
+            "the adversary's SpawnOpts.reviews is the unit's lens roster, as lens:<id> tokens"
+        );
+    }
+
+    /// The adjudicator's roster is the SAME lens roster PLUS the adversary's role token
+    /// (spec 67, criterion 4: "the adjudicator's with lenses plus adversary") - the
+    /// literal `"adversary"` attribution token, not the agent id or a title-cased form.
+    #[test]
+    fn the_adjudicators_spawn_is_stamped_with_lenses_plus_adversary() {
+        let store = Store::open(":memory:").unwrap();
+        let mut cfg = Config::default();
+        for a in ["worker", "lensA", "lensB", "adversary", "judge"] {
+            cfg.agents.insert(a.into(), agent(a));
+        }
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                on_pass: "none".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lensA".into(), "lensB".into()],
+                    adversary: "adversary".into(),
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let driver = Stub {
+            output_by_agent: HashMap::from([
+                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
+                ("lensA".to_string(), "reviewed: no blocker".to_string()),
+                ("lensB".to_string(), "reviewed: no blocker".to_string()),
+                ("adversary".to_string(), "reviewed: no blocker".to_string()),
+            ]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+        assert_eq!(
+            driver.reviews_for("judge"),
+            Some(vec![
+                "lens:lensA".to_string(),
+                "lens:lensB".to_string(),
+                "adversary".to_string()
+            ]),
+            "the adjudicator's SpawnOpts.reviews is the lens roster plus the adversary token"
+        );
+    }
+
+    /// "never a fabricated or stale roster": a panel with lenses but NO adversary must
+    /// never invent an `"adversary"` entry in the adjudicator's roster.
+    #[test]
+    fn a_panel_with_no_adversary_never_fabricates_one_in_the_adjudicators_roster() {
+        let store = Store::open(":memory:").unwrap();
+        let mut cfg = Config::default();
+        for a in ["worker", "lensA", "judge"] {
+            cfg.agents.insert(a.into(), agent(a));
+        }
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                on_pass: "none".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lensA".into()],
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let driver = Stub {
+            output_by_agent: HashMap::from([
+                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
+                ("lensA".to_string(), "reviewed: no blocker".to_string()),
+            ]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+        assert!(
+            !driver.spawned("adversary"),
+            "a panel with no adversary configured must spawn none"
+        );
+        assert_eq!(
+            driver.reviews_for("judge"),
+            Some(vec!["lens:lensA".to_string()]),
+            "with no adversary tier, the adjudicator's roster is the lens roster alone - \
+             never a fabricated adversary entry"
+        );
+    }
+
+    /// The roster reflects the panel the conductor ACTUALLY routed to (spec 03 / spec 13
+    /// unit 4 risk-tiered depth), not a static declaration of the full panel: a unit
+    /// routed to the reduced LIGHT tier must stamp the light panel's own (smaller) lens
+    /// roster - never the full panel's wider one, and never the adversary the light tier
+    /// does not name. This is the exact defect class the Design calls out: "a driver
+    /// guess would miss a replayed lens".
+    #[test]
+    fn the_roster_reflects_the_actually_routed_light_panel_not_the_full_one() {
+        let store = Store::open(":memory:").unwrap();
+        let mut cfg = Config::default();
+        for a in ["worker", "lensA", "lensB", "adversary", "judge"] {
+            cfg.agents.insert(a.into(), agent(a));
+        }
+        let light = crate::config::ReviewPanel {
+            lenses: vec!["lensA".into()],
+            adjudicator: "judge".into(),
+            ..Default::default()
+        };
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                coverage: "s".into(),
+                on_pass: "none".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lensA".into(), "lensB".into()],
+                    adversary: "adversary".into(),
+                    adjudicator: "judge".into(),
+                    tiers: Some(Box::new(crate::config::ReviewDepth {
+                        light,
+                        // One grounded file, well under threshold, no high-risk path: every
+                        // signal routes LIGHT on this unit's first attempt (flapped false).
+                        threshold: 5,
+                        high_risk_paths: Vec::new(),
+                    })),
+                },
+                ..Default::default()
+            },
+        );
+        let grounder = StubGrounder {
+            by_query: HashMap::from([("s".to_string(), vec!["src/f.rs".to_string()])]),
+        };
+        let driver = Stub {
+            output_by_agent: HashMap::from([
+                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
+                ("lensA".to_string(), "reviewed: no blocker".to_string()),
+            ]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grounder),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+        assert!(
+            !driver.spawned("lensB") && !driver.spawned("adversary"),
+            "a light-routed unit must spawn neither the full-only lens nor the adversary"
+        );
+        assert_eq!(
+            driver.reviews_for("judge"),
+            Some(vec!["lens:lensA".to_string()]),
+            "the stamped roster must match the ACTUALLY-routed light panel, never the \
+             full panel's wider lens set or its adversary"
         );
     }
 

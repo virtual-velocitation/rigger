@@ -271,10 +271,11 @@ function phaseOf(req) {
 // PERSONA_VERB maps each REAL role token - the id's role half, from the deterministic
 // <unit>/<role>#<attempt> spawn id (spec 18) - to the human action phrase naming that persona's
 // MANDATE (spec 67 Design): the criterion sentence alone would render every tier of one unit
-// identically, so the verb is what actually distinguishes them. Adversary and adjudicator render
-// WITHOUT a roster clause here - spec 67 criterion 4 appends that separately once the conductor
-// stamps `req.reviews` onto the wave item; this table (and `workerLabel` below) never reads that
-// field.
+// identically, so the verb is what actually distinguishes them. This is the ROSTER-LESS base
+// phrase for every role, including adversary/adjudicator: it is what `workerLabel` renders for a
+// roster-less item (an older conductor, or a panel with no lenses/adversary) - see `ROSTER_VERB`
+// below for the roster-bearing form spec 67 criterion 4 adds on top, once the conductor stamps
+// `req.reviews` onto the wave item. This table itself never reads that field.
 //
 // `plan` and `plan-critique` are the two run-wide META-STAGE UNIT ids, never role tokens, so they
 // do NOT belong in this role-keyed table (a prior round put them here and they were unreachable
@@ -293,6 +294,20 @@ const PERSONA_VERB = {
   'adversary': 'challenge the findings, assumptions, and rigor',
   'adjudicator': 'weigh and rule',
   'replan': 'revise the unit DAG from the critique feedback',
+}
+
+// ROSTER_VERB maps the two review-tier roles a routed roster ever names (spec 67 criterion 4:
+// "the conductor stamps the adversary's wave item with the unit's routed lens roster and the
+// adjudicator's with lenses plus adversary") to a function inlining that roster into
+// PERSONA_VERB's own base phrase for the SAME role - the adversary's mandate names WHO it is
+// disproving ("challenge ... of <roster>"), the adjudicator's names WHO it is weighing ("weigh
+// <roster> and rule"). Consulted ONLY when `req.reviews` is a real, non-empty array (`workerLabel`
+// below); a lens, an unmapped role, or a roster-less item (an older conductor, an empty panel)
+// never reaches this table and renders PERSONA_VERB's base phrase unchanged - the driver renders
+// EXACTLY what the conductor stamped, never a guessed or stale roster of its own.
+const ROSTER_VERB = {
+  'adversary': (roster) => `challenge the findings, assumptions, and rigor of ${roster.join(', ')}`,
+  'adjudicator': (roster) => `weigh ${roster.join(', ')} and rule`,
 }
 
 // personaOf title-cases a role for display, segment by segment on its ':'/'-' separators (e.g.
@@ -352,6 +367,14 @@ function roleAttempt(id) {
 // An untitled item (no `req.title`, or one that whitespace-normalizes to empty) falls back to
 // `req.id`, exactly as before this criterion.
 //
+// REVIEW TIERS NAME THEIR TARGETS (spec 67 criterion 4): when `req.reviews` is a real, non-empty
+// array - the roster the CONDUCTOR routed this panel to, never a driver guess - and the role has
+// a `ROSTER_VERB` entry (adversary/adjudicator only), the action phrase inlines that roster via
+// `ROSTER_VERB[role](reviews)` instead of `PERSONA_VERB`'s roster-less base. Every other case
+// (an absent/empty `req.reviews`, a lens, an unmapped role) renders `PERSONA_VERB`'s base phrase
+// unchanged - a roster-less item renders the phrase without the roster clause, exactly as before
+// this criterion.
+//
 // The persona itself is `personaOf(role)` title-casing the role - EXCEPT for the two run-wide
 // META-STAGE units (`plan`, `plan-critique`), whose role half is always an ordinary role
 // (`implementer`/`replan`, `adversary`/`adjudicator`) and so can never itself carry the "Plan" /
@@ -369,7 +392,8 @@ function workerLabel(req) {
   const { role, attempt } = parsed
   const persona =
     req.unit === 'plan' ? 'Plan' : req.unit === 'plan-critique' ? 'Plan-Critique' : personaOf(role)
-  const verb = PERSONA_VERB[role] || 'review'
+  const roster = Array.isArray(req.reviews) ? req.reviews.filter((r) => typeof r === 'string' && r) : []
+  const verb = roster.length && ROSTER_VERB[role] ? ROSTER_VERB[role](roster) : PERSONA_VERB[role] || 'review'
   return `${persona} - ${verb} #${attempt}: ${subject}`
 }
 
