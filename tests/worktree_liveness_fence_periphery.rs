@@ -31,21 +31,41 @@
 //! outcome - only the evidence text's attribution.
 //!
 //! `step_worktree_sweep_discriminates_in_flight_hung_and_terminal_spawns_across_real_process_
-//! boundaries` below is exactly the "crosses a real process boundary" test (1) describes, and it
-//! FAILS as written - not from a test defect, but because it found a genuine, currently-unfixed
-//! gap the crate-internal layers above are structurally unable to see: `sweep_terminal` and
-//! `current_run_units` both correctly consult THE FENCE, but `conductor.rs::gc_integrated_
+//! boundaries` below is exactly the "crosses a real process boundary" test (1) describes. It was
+//! ORIGINALLY RED (round 1) - not from a test defect, but because it found a genuine gap the
+//! crate-internal layers above were structurally unable to see: `sweep_terminal` and
+//! `current_run_units` both correctly consulted THE FENCE, but `conductor.rs::gc_integrated_
 //! branches` - a THIRD worktree-reclaim call site, run unconditionally at the top of every
-//! `conductor::run` - loops every unit whose ledger reads `Integrated` and reclaims its worktree
+//! `conductor::run` - looped every unit whose ledger read `Integrated` and reclaimed its worktree
 //! and branch with no `spawn_fence` check at all. A unit this test's OWN two fence-respecting
-//! layers correctly protect from `sweep_terminal`'s crash-recovery sweep still loses its worktree
-//! moments later, in the SAME `rigger step`, to this unpatched third path - the exact `u81c1`
-//! shape spec 83 exists to close, surviving through a seam the implementer's fix never touched.
-//! See the failing assertion's own message for the full diagnosis, and decision
-//! `sdet-u83c1-gc-integrated-branches-bypasses-fence` for the record of it (which also flags
-//! `run_stage`'s own fresh-half `w.remove()` teardown, structurally identical and unconfirmed).
-//! This is deliberately left RED per this role's mandate: a failing periphery test reveals a
-//! boundary bug and drives remediation of the CODE, never a weakening of the test.
+//! layers correctly protected from `sweep_terminal`'s crash-recovery sweep still lost its
+//! worktree moments later, in the SAME `rigger step`, to this unpatched third path - the exact
+//! `u81c1` shape spec 83 exists to close, surviving through a seam the implementer's round-1 fix
+//! never touched. Recorded as decision `sdet-u83c1-gc-integrated-branches-bypasses-fence` (which
+//! also flagged `run_stage`'s own fresh-half `w.remove()` teardown as a structurally identical,
+//! separately-tracked, unconfirmed sibling gap - out of THIS diff's scope; see that decision for
+//! its own status).
+//!
+//! Round 2 closed the gap: `gc_integrated_branches` now consults `worktree::spawn_fence` over
+//! the same current-run-scoped `events` slice `run()` already resolves, mirroring `sweep_
+//! terminal`'s own consultation, and (per spec 83's Design text, "each sweep decision is
+//! attributable from the log with its evidence") gained its own DI-split logging seam
+//! (`gc_integrated_branches_logged`) exactly like `sweep_terminal`/`sweep_terminal_logged`'s
+//! precedent. The test below is now GREEN, and its assertions were extended (not merely left
+//! passing) to close the SAME class of gap (1) describes for this new production instance too:
+//! the crate-internal `gc_integrated_branches_logged_prints_kept_evidence_for_an_in_flight_
+//! straggler_spawn` / `..._prints_removing_evidence_for_a_terminal_spawns_decision` tests drive
+//! `gc_integrated_branches_logged` directly through its DI-injected closure, bypassing the
+//! production `eprintln!` wrapper (`gc_integrated_branches`) and the real `run()` call site
+//! entirely - they cannot see whether that PRODUCTION wrapper is actually the one wired into
+//! `run()`, or whether its evidence reaches real stderr across a real process boundary, the way
+//! Done-when criterion 1 promises. The `branch-gc`-prefixed assertions added to this test's step
+//! 2 (both the "fenced" kept arm and the "hung" removing arm) close that: `branch-gc` names no
+//! string anywhere in the pre-round-2 tree (`git show 49cd8a3:src/conductor.rs | grep -c
+//! branch-gc` returns 0), so those assertions could only pass against the round-2 fix, and their
+//! distinct prefix (vs. `sweep_terminal`'s "worktree sweep") means they can only be satisfied by
+//! `gc_integrated_branches_logged`'s own production call, never by `sweep_terminal`'s
+//! coincidentally-overlapping evidence text for the same units.
 
 mod common;
 
@@ -401,6 +421,27 @@ fn step_worktree_sweep_discriminates_in_flight_hung_and_terminal_spawns_across_r
         "`fenced` must not appear in any REMOVAL evidence on real stderr - it is still live; \
          stderr:\n{err}"
     );
+    // Round 2 (`gc_integrated_branches` consulting THE FENCE): this reclaim authority is a
+    // SEPARATE loop from `sweep_terminal` above, reached only via the real `conductor::run`
+    // this step's `cmd_step` drives (never `sweep_terminal`'s own call site) - it is the ONLY
+    // authority `fenced` actually exercises here, since `sweep_terminal` never even considers
+    // it (short-circuited on `live_branches` before its own internal fence re-check). The
+    // crate-internal `gc_integrated_branches_logged_prints_kept_evidence_for_an_in_flight_
+    // straggler_spawn` test proves this text through the DI-injected closure, bypassing the
+    // production `eprintln!` wrapper entirely; this is the real-process confirmation that the
+    // PRODUCTION instance - the one actually wired into `run()` - reaches real stderr with its
+    // OWN "branch-gc" evidence line (distinct from `sweep_terminal`'s "worktree sweep" prefix,
+    // so this can only be satisfied by `gc_integrated_branches_logged`'s own log call, never by
+    // `sweep_terminal`'s coincidentally-overlapping text for a different unit).
+    assert!(
+        err.contains("branch-gc")
+            && err.contains("kept branch")
+            && err.contains(r#""rigger/u/fenced""#)
+            && err.contains("in flight"),
+        "gc_integrated_branches's OWN kept decision for `fenced` must be attributable from \
+         real stderr, not only from the DI-injected closure the crate-internal test observes: \
+         {err}"
+    );
 
     assert!(
         !hung_dir.exists(),
@@ -411,6 +452,21 @@ fn step_worktree_sweep_discriminates_in_flight_hung_and_terminal_spawns_across_r
         err.contains("removing") && err.contains(r#""hung""#) && err.contains("hung past"),
         "the REMOVED decision for `hung` must name it as hung, not merely terminal, on real \
          stderr: {err}"
+    );
+    // The `hung` counterpart to the `fenced` assertion above: `hung` is ALSO ledger-`Integrated`,
+    // so `gc_integrated_branches` reaches it too (redundantly with `sweep_terminal`, which has
+    // already reclaimed it by this point) - its own "branch-gc: removing" line must independently
+    // appear on real stderr, proving the production wrapper's REMOVING arm (not only its kept
+    // arm, pinned above for `fenced`) is genuinely reachable from a real process, not merely from
+    // `gc_integrated_branches_logged_prints_removing_evidence_for_a_terminal_spawns_decision`'s
+    // direct, non-subprocess call.
+    assert!(
+        err.contains("branch-gc")
+            && err.contains("removing branch")
+            && err.contains(r#""rigger/u/hung""#)
+            && err.contains("hung past"),
+        "gc_integrated_branches's OWN removing decision for `hung` must be attributable from \
+         real stderr too: {err}"
     );
     let list = git_out(root, &["worktree", "list", "--porcelain"]).unwrap_or_default();
     assert!(
