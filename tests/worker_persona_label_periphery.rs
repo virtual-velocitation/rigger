@@ -60,15 +60,30 @@ fn rigger_js_source() -> String {
 /// run_relay_attention` and `src/main.rs`'s own `node --check` test already establish for this
 /// crate (missing node is an environment fact, never a test failure).
 fn run_worker_label(id: &str, title: &str) -> Option<String> {
+    run_worker_label_for_unit(id, title, None)
+}
+
+/// Like [`run_worker_label`], but also stamps `req.unit` - the field `workerLabel` reads to
+/// derive the `Plan`/`Plan-Critique` structural persona for the two run-wide meta-stage spawns
+/// (their role half is always an ordinary role - `implementer`/`replan`, `adversary`/
+/// `adjudicator` - so it can never itself carry that persona; see `workerLabel`'s own doc
+/// comment in `workflows/rigger.js`). `None` omits the field entirely, matching an ordinary
+/// build unit's wave item.
+fn run_worker_label_for_unit(id: &str, title: &str, unit: Option<&str>) -> Option<String> {
     let src = rigger_js_source();
     let verb_table = js_declaration(&src, "const PERSONA_VERB = {");
     let persona_of = js_declaration(&src, "function personaOf(role) {");
     let first_sentence = js_declaration(&src, "function firstSentence(s) {");
+    let role_attempt = js_declaration(&src, "function roleAttempt(id) {");
     let worker_label = js_declaration(&src, "function workerLabel(req) {");
 
-    let req = serde_json::json!({ "id": id, "title": title }).to_string();
+    let mut req = serde_json::json!({ "id": id, "title": title });
+    if let Some(unit) = unit {
+        req["unit"] = serde_json::Value::String(unit.to_string());
+    }
+    let req = req.to_string();
     let script = format!(
-        "{verb_table}\n{persona_of}\n{first_sentence}\n{worker_label}\n\
+        "{verb_table}\n{persona_of}\n{first_sentence}\n{role_attempt}\n{worker_label}\n\
          process.stdout.write(workerLabel(JSON.parse(process.argv[2])) + '\\n')\n"
     );
 
@@ -143,44 +158,117 @@ fn two_tiers_of_the_same_unit_render_distinct_persona_and_verb() {
 /// parenthetical once the conductor stamps `req.reviews`; this unit never reads that field).
 #[test]
 fn every_documented_role_maps_to_its_own_persona_and_action_phrase() {
+    // Every id/unit pair here is a REAL production shape - never a fabricated one a real
+    // conductor construction path could not mint (src/conductor.rs:4139, 6080, 6265, 6280;
+    // src/spawn.rs:1713's own test fixture). In particular `plan`/`plan-critique` are unit ids,
+    // never role tokens - no real spawn's role half is ever literally "plan" or "plan-critique" -
+    // so their persona comes from the structural `req.unit` override, not from a role mapping.
     let cases = [
-        ("u2/implementer#0", "Implementer - implement"),
+        ("u2/implementer#0", None, "Implementer - implement"),
         (
             "u2/sdet-author#0",
+            None,
             "SDET-Author - author the discriminating tests for",
         ),
         (
             "u2/lens:sdet#0",
+            None,
             "Lens:SDET - evaluate testing effectiveness",
         ),
         (
             "u2/lens:architecture-reviewer#0",
+            None,
             "Lens:Architecture-Reviewer - evaluate architectural integrity",
         ),
         (
             "u2/adversary#1",
+            None,
             "Adversary - challenge the findings, assumptions, and rigor",
         ),
-        ("u2/adjudicator#1", "Adjudicator - weigh and rule"),
-        ("u2/plan#0", "Plan - decompose the spec into a unit DAG"),
+        ("u2/adjudicator#1", None, "Adjudicator - weigh and rule"),
         (
-            "u2/plan-critique#0",
-            "Plan-Critique - critique the decomposition",
+            // The planning unit's own producer spawn (conductor.rs:4139): a plain ROLE_IMPLEMENTER
+            // under unit "plan" - the persona still reads "Plan", never "Implementer".
+            "plan/implementer#0",
+            Some("plan"),
+            "Plan - implement",
+        ),
+        (
+            // A re-plan respawn after a plan-critique reject (conductor.rs:6080): role "replan",
+            // still under unit "plan", with its OWN verb rather than the generic fallback.
+            "plan/replan#1",
+            Some("plan"),
+            "Plan - revise the unit DAG from the critique feedback",
+        ),
+        (
+            // The plan-critique gate's tier-2 spawn (conductor.rs:6265): an ordinary "adversary"
+            // role under unit "plan-critique" - the persona still reads "Plan-Critique".
+            "plan-critique/adversary#0",
+            Some("plan-critique"),
+            "Plan-Critique - challenge the findings, assumptions, and rigor",
+        ),
+        (
+            // The plan-critique gate's tier-3 spawn (conductor.rs:6280): an ordinary "adjudicator"
+            // role under unit "plan-critique".
+            "plan-critique/adjudicator#0",
+            Some("plan-critique"),
+            "Plan-Critique - weigh and rule",
         ),
     ];
-    for (id, want_prefix) in cases {
-        let Some(label) = run_worker_label(id, "some criterion sentence.") else {
+    for (id, unit, want_prefix) in cases {
+        let Some(label) = run_worker_label_for_unit(id, "some criterion sentence.", unit) else {
             return;
         };
         assert!(
             label.starts_with(want_prefix),
-            "{id} must render a label starting with {want_prefix:?}; got {label:?}"
+            "{id} (unit {unit:?}) must render a label starting with {want_prefix:?}; got {label:?}"
         );
         assert!(
             !label.contains("roster") && !label.contains("<roster>"),
             "this unit must never render a roster placeholder or literal (c4's job); got {label:?}"
         );
     }
+}
+
+/// A Gap-18 reviewer RESPAWN id (spec 07, `src/spawn.rs::spawn_retry_id`'s own
+/// `{unit}/{role}#{attempt}~retry{n}` shape) still renders the FULL persona-led label, not the
+/// pre-criterion `${req.id}: ${subject}` fallback - the exact regression a `$`-anchored
+/// digit-only regex produced (it demands the id END in digits, so it never matches a
+/// `~retry{n}`-suffixed id). Gap-18 respawns are a normal, frequently-exercised path for
+/// lens/adversary/adjudicator spawns whose result comes back empty or whitespace-only, so this is
+/// the opposite of a corner case.
+#[test]
+fn a_gap_18_respawn_id_still_renders_the_full_persona_led_label() {
+    let Some(label) = run_worker_label(
+        "u1/adjudicator#1~retry2",
+        "weigh and rule on the merged tree.",
+    ) else {
+        return;
+    };
+    assert_eq!(
+        label, "Adjudicator - weigh and rule #1: weigh and rule on the merged tree.",
+        "a ~retry{{n}}-suffixed id must render the persona-led label, using the ATTEMPT ordinal \
+         (matching src/spawn.rs::attempt_of), never fall back to the pre-criterion slug format"
+    );
+}
+
+/// The retry suffix rides the ROLE half too (a Gap-18 respawn of a plan-critique reviewer) -
+/// proving the structural `Plan-Critique` persona override composes with the retry-aware parser,
+/// not just the base id shape covered above.
+#[test]
+fn a_gap_18_respawn_of_a_plan_critique_reviewer_keeps_its_structural_persona() {
+    let Some(label) = run_worker_label_for_unit(
+        "plan-critique/adversary#0~retry2",
+        "challenge the revised decomposition.",
+        Some("plan-critique"),
+    ) else {
+        return;
+    };
+    assert_eq!(
+        label,
+        "Plan-Critique - challenge the findings, assumptions, and rigor #0: challenge the \
+         revised decomposition."
+    );
 }
 
 /// An UNMAPPED custom lens keeps its OWN persona token, readable, with the generic `review` verb
