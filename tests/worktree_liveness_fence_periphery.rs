@@ -541,6 +541,138 @@ fn step_worktree_sweep_discriminates_in_flight_hung_and_terminal_spawns_across_r
     );
 }
 
+/// Spec 83, criterion 1 (THE FENCE), round 3's OWN positive real-boundary proof.
+///
+/// Round 3's fix (gating `gc_integrated_branches_logged`'s "removing" evidence on `worktree::
+/// registered_worktree_for` still finding the worktree registered) necessarily REPLACED the
+/// only real-process assertion that had ever proven that evidence line reaches real stderr at
+/// all: round 2's `hung` arm above asserted `branch-gc` + `removing branch` + `hung past` on
+/// real stderr, and round 3 changed that SAME assertion to its negation (the line must be
+/// ABSENT), because `sweep_terminal` - which always runs first, per `main.rs::cmd_step` - beats
+/// `gc_integrated_branches` to every worktree still registered under the scratch root once its
+/// branch is git-ancestry-merged into `rigger-run` (both consult the identical `spawn_fence`).
+/// The crate-internal `gc_integrated_branches_logged_prints_removing_evidence_for_a_terminal_
+/// spawns_decision` test proves the evidence text through the DI-injected closure, but - the
+/// same class of gap this file's own module doc names for `sweep_terminal`'s identical
+/// wrapper/DI split - it cannot see whether the PRODUCTION `eprintln!` wrapper actually wired
+/// into `run()` reaches real stderr across a real process boundary the way Done-when criterion
+/// 1 promises. After round 3's edit, no periphery test proved that positive arm at all.
+///
+/// `settled`'s worktree is deliberately created OUTSIDE the scratch root (`.rigger/tmp`) that
+/// `cmd_step`'s OTHER two backstops - `sweep_terminal` (this file's module doc, `fenced`/`hung`
+/// above) and the spec-34 orphan sweep (`reclaim_orphan_scratch`, which independently scans
+/// `.rigger/tmp` for any `rigger-wt-<slug>` directory no live unit owns, entirely UNGATED by
+/// git ancestry) - both scan before `conductor::run` ever starts. Placing `fenced`/`hung`'s own
+/// convention (a worktree directly under the scratch root) here would let `reclaim_orphan_
+/// scratch` reclaim `settled`'s directory first (confirmed empirically: an earlier draft of
+/// this test, with `settled` under the scratch root and a divergent, never-merged commit to
+/// dodge ONLY `sweep_terminal`'s ancestry check, still failed - real stderr read `rigger step:
+/// reclaimed 1 orphaned scratch entry`, `reclaim_orphan_scratch`'s own evidence text, not `gc_
+/// integrated_branches`'s), silently defeating this test's premise the way `sweep_terminal`'s
+/// own ancestry-only rule would. `registered_worktree_for` (`gc_integrated_branches`'s own
+/// presence check) parses `git worktree list --porcelain` GLOBALLY, with no location or naming
+/// restriction at all - unlike both other backstops, it does not care where the worktree lives.
+/// This isolates `gc_integrated_branches`'s own ledger-driven reclaim from either backstop, so
+/// what this test proves is attributable to round 3's fix alone, not an accident of which
+/// backstop happened to run first.
+#[test]
+fn gc_integrated_branches_removing_evidence_reaches_real_stderr_for_a_still_registered_worktree_it_alone_reclaims(
+) {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_reviewless_git_unit_workflow(root);
+
+    // Step 1: bootstraps the store and the `rigger-run` branch; unrelated to `settled`, which
+    // this test manufactures directly, exactly like `fenced`/`hung` above.
+    let (_out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "step 1 must succeed; stderr: {err}");
+
+    let settled_dir = root.join("settled-outside-the-scratch-root");
+    git_ok(
+        root,
+        &[
+            "worktree",
+            "add",
+            settled_dir.to_str().unwrap(),
+            "-b",
+            "rigger/u/settled",
+            "rigger-run",
+        ],
+    );
+
+    // `settled`'s real ledger history: started, then integrated - as the resume-backstop
+    // scenario reads it (the ledger already says `Integrated`, e.g. a crash before the
+    // graceful teardown recorded its removal) - with its one spawn answered ORDINARILY (never
+    // a liveness fault), so its evidence reads plain "terminal", distinct from `hung`'s "hung
+    // past" wording above.
+    seed_events(
+        root,
+        vec![
+            rigger::eventstore::Event::new(
+                rigger::ledger::TYPE_UNIT_STARTED,
+                br#"{"id":"settled","branch":"rigger/u/settled"}"#.to_vec(),
+            ),
+            rigger::eventstore::Event::new(
+                rigger::ledger::TYPE_UNIT_INTEGRATED,
+                br#"{"id":"settled","commit":"deadbeef"}"#.to_vec(),
+            ),
+            rigger::spawn::SpawnRequest::new("settled", "settled", "adversary", 0, "verify")
+                .to_event()
+                .unwrap(),
+            rigger::spawn::SpawnResult::ok("settled/adversary#0", "approve")
+                .to_event()
+                .unwrap(),
+        ],
+    );
+
+    // Step 2: neither `sweep_terminal` nor `reclaim_orphan_scratch` ever considers a worktree
+    // outside the scratch root; `gc_integrated_branches` then finds `settled` via the LEDGER
+    // alone (`registered_worktree_for` scans git's own global worktree list) and is the ONLY
+    // authority that ever touches it.
+    let (_out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "step 2 must succeed; stderr: {err}");
+
+    assert!(
+        !err.lines()
+            .any(|l| l.contains("worktree sweep") && l.contains("settled")),
+        "premise: `sweep_terminal` must never even consider `settled` (outside the scratch \
+         root) - or this test proves nothing about `gc_integrated_branches` acting alone: {err}"
+    );
+    assert!(
+        !err.contains("orphaned scratch"),
+        "premise: `reclaim_orphan_scratch` must never touch `settled` (outside the scratch \
+         root) either - or this test proves nothing about `gc_integrated_branches` acting \
+         alone: {err}"
+    );
+    assert!(
+        !settled_dir.exists(),
+        "`gc_integrated_branches` must reclaim `settled`'s still-registered worktree by itself; \
+         stderr:\n{err}"
+    );
+    assert!(
+        err.contains("branch-gc")
+            && err.contains("removing branch")
+            && err.contains(r#""rigger/u/settled""#)
+            && err.contains("terminal"),
+        "gc_integrated_branches's OWN removing decision, for a worktree it alone reclaims, must \
+         be attributable from real stderr - the one positive proof round 3's negated `hung` \
+         assertion above no longer gives: {err}"
+    );
+    assert!(
+        git_out(
+            root,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                "refs/heads/rigger/u/settled"
+            ]
+        )
+        .is_none(),
+        "the branch ref itself must also be reclaimed, not only the worktree"
+    );
+}
+
 /// Spec 83, criterion 1 (THE FENCE), the run-scoping half at the crate's PUBLIC library
 /// boundary - never a subprocess here, but never a crate-internal privilege either
 /// (`rigger::conductor`/`rigger::eventstore`/`rigger::run`/`rigger::spawn`/`rigger::worktree`,
