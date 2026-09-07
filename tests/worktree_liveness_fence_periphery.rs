@@ -51,7 +51,7 @@
 //! terminal`'s own consultation, and (per spec 83's Design text, "each sweep decision is
 //! attributable from the log with its evidence") gained its own DI-split logging seam
 //! (`gc_integrated_branches_logged`) exactly like `sweep_terminal`/`sweep_terminal_logged`'s
-//! precedent. The test below is now GREEN, and its assertions were extended (not merely left
+//! precedent. The test below went GREEN, and its assertions were extended (not merely left
 //! passing) to close the SAME class of gap (1) describes for this new production instance too:
 //! the crate-internal `gc_integrated_branches_logged_prints_kept_evidence_for_an_in_flight_
 //! straggler_spawn` / `..._prints_removing_evidence_for_a_terminal_spawns_decision` tests drive
@@ -59,13 +59,30 @@
 //! production `eprintln!` wrapper (`gc_integrated_branches`) and the real `run()` call site
 //! entirely - they cannot see whether that PRODUCTION wrapper is actually the one wired into
 //! `run()`, or whether its evidence reaches real stderr across a real process boundary, the way
-//! Done-when criterion 1 promises. The `branch-gc`-prefixed assertions added to this test's step
-//! 2 (both the "fenced" kept arm and the "hung" removing arm) close that: `branch-gc` names no
-//! string anywhere in the pre-round-2 tree (`git show 49cd8a3:src/conductor.rs | grep -c
-//! branch-gc` returns 0), so those assertions could only pass against the round-2 fix, and their
-//! distinct prefix (vs. `sweep_terminal`'s "worktree sweep") means they can only be satisfied by
-//! `gc_integrated_branches_logged`'s own production call, never by `sweep_terminal`'s
-//! coincidentally-overlapping evidence text for the same units.
+//! Done-when criterion 1 promises. The `branch-gc`-prefixed assertion added to this test's step
+//! 2 kept arm (for `fenced`) closes that: `branch-gc` names no string anywhere in the pre-
+//! round-2 tree (`git show 49cd8a3:src/conductor.rs | grep -c branch-gc` returns 0), so it could
+//! only pass against the round-2 fix, and its distinct prefix (vs. `sweep_terminal`'s "worktree
+//! sweep") means it can only be satisfied by `gc_integrated_branches_logged`'s own production
+//! call, never by `sweep_terminal`'s coincidentally-overlapping evidence text for the same unit.
+//!
+//! Round 2 shipped its OWN, second defect in that new evidence-logging text (never in THE FENCE
+//! mechanism itself, which every round confirmed correct): `gc_integrated_branches_logged`
+//! gated the "removing" line purely on ledger status plus the fence's (purely event-derived)
+//! liveness state, never on the branch/worktree's actual PHYSICAL presence - unlike `sweep_
+//! terminal_logged`, which only ever iterates `git worktree list --porcelain`'s live output.
+//! Because `rs.units` is a ledger-projected, monotonic, never-shrinking `Integrated` set folded
+//! fresh on every `conductor::run`, this re-printed a false "removing branch" claim for every
+//! already-integrated unit with any recorded spawn on every future step, forever - and, sharper
+//! still, double-logged a single real vanish within the very FIRST triggering step too: this
+//! file's own `hung` arm required (in round 2) a SECOND "branch-gc: removing" line duplicating
+//! `sweep_terminal`'s own line moments earlier in the SAME step (`main.rs::cmd_step` runs `sweep_
+//! terminal` BEFORE `conductor::run`). Round 3 gates the "removing" log on `worktree::
+//! registered_worktree_for` still finding the worktree registered (mirroring `sweep_terminal_
+//! logged`'s own live-git-state candidate set) - so the `hung` arm below now asserts the
+//! ABSENCE of that duplicate line instead of requiring it, while still confirming the orphaned
+//! branch ref is silently reclaimed underneath (only the duplicate LOG line is suppressed, never
+//! the underlying best-effort cleanup).
 
 mod common;
 
@@ -453,20 +470,42 @@ fn step_worktree_sweep_discriminates_in_flight_hung_and_terminal_spawns_across_r
         "the REMOVED decision for `hung` must name it as hung, not merely terminal, on real \
          stderr: {err}"
     );
-    // The `hung` counterpart to the `fenced` assertion above: `hung` is ALSO ledger-`Integrated`,
-    // so `gc_integrated_branches` reaches it too (redundantly with `sweep_terminal`, which has
-    // already reclaimed it by this point) - its own "branch-gc: removing" line must independently
-    // appear on real stderr, proving the production wrapper's REMOVING arm (not only its kept
-    // arm, pinned above for `fenced`) is genuinely reachable from a real process, not merely from
-    // `gc_integrated_branches_logged_prints_removing_evidence_for_a_terminal_spawns_decision`'s
-    // direct, non-subprocess call.
+    // Round 3 fix for `sdet-u83c1r2-removing-evidence-repeats-forever-after-real-removal`
+    // (UPHELD in ADJUDICATION u83c1 round 2, cause genuine-defect): `hung` is ALSO
+    // ledger-`Integrated`, so `gc_integrated_branches` reaches it too - but `sweep_
+    // terminal` has ALREADY reclaimed its worktree by this point (both run in the SAME
+    // step, `sweep_terminal` first, per `main.rs::cmd_step`). The round-2 diff this
+    // replaces required a SECOND "branch-gc: removing" line here, duplicating `sweep_
+    // terminal`'s own evidence above for the IDENTICAL vanish - exactly the double-
+    // attribution the adjudication rejected. The fix gates `gc_integrated_branches`'s own
+    // "removing" evidence on the worktree still being PHYSICALLY REGISTERED (mirroring
+    // `sweep_terminal_logged`'s own `git worktree list --porcelain`-driven candidate
+    // set), so it now stays silent here instead of re-reporting a vanish another
+    // authority already logged moments earlier in the same step.
     assert!(
-        err.contains("branch-gc")
-            && err.contains("removing branch")
-            && err.contains(r#""rigger/u/hung""#)
-            && err.contains("hung past"),
-        "gc_integrated_branches's OWN removing decision for `hung` must be attributable from \
-         real stderr too: {err}"
+        !err.lines().any(|l| l.contains("branch-gc")
+            && l.contains("removing branch")
+            && l.contains(r#""rigger/u/hung""#)),
+        "gc_integrated_branches must NOT re-report a vanish `sweep_terminal` already logged \
+         in the SAME step, on real stderr: {err}"
+    );
+    // The branch REF itself - never touched by `sweep_terminal`, which only ever
+    // deregisters the worktree - is still silently reclaimed by `gc_integrated_branches`'s
+    // own best-effort `Worktree::delete_branch` call underneath; only the duplicate LOG
+    // line is suppressed, never the underlying cleanup.
+    assert!(
+        git_out(
+            root,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                "refs/heads/rigger/u/hung"
+            ]
+        )
+        .is_none(),
+        "the hung unit's now-orphaned branch ref must still be reclaimed (silently), even \
+         though its removal is no longer independently logged"
     );
     let list = git_out(root, &["worktree", "list", "--porcelain"]).unwrap_or_default();
     assert!(

@@ -6981,7 +6981,46 @@ impl RunCtx<'_> {
                 // become a reason dead residue lingers.
                 let fence = worktree::spawn_fence(events, &u.id);
                 if fence.permits_reclaim() {
-                    if !matches!(fence, worktree::SpawnFence::NoSpawn) {
+                    // Round 3 fix for `sdet-u83c1r2-removing-evidence-repeats-forever-
+                    // after-real-removal` (UPHELD, ADJUDICATION u83c1 round 2, cause
+                    // genuine-defect): `rs.units` is a ledger-projected, monotonic,
+                    // never-shrinking `Integrated` set folded fresh on EVERY
+                    // `conductor::run`, so gating this log purely on ledger status plus
+                    // the fence's (also purely event-derived) liveness state - never on
+                    // the branch/worktree's actual PHYSICAL presence - made every
+                    // already-integrated unit with any recorded spawn re-emit a false
+                    // "removing branch" claim on every future step for the rest of the
+                    // campaign, long after the real removal already happened. Sharper
+                    // still, it double-attributed a SINGLE real vanish within the very
+                    // FIRST triggering step too: `main.rs::cmd_step` runs `worktree::
+                    // sweep_terminal` BEFORE `conductor::run` in the SAME step, so a
+                    // "hung" unit's worktree is typically already reclaimed by `sweep_
+                    // terminal` - complete with its OWN "worktree sweep: removing" line -
+                    // by the time this loop reaches it.
+                    //
+                    // Mirroring `sweep_terminal_logged`'s own candidate set (`git
+                    // worktree list --porcelain`, never the ledger), the "removing"
+                    // evidence now fires only when THIS call finds the worktree still
+                    // actually REGISTERED - i.e. only when this call is the one genuinely
+                    // performing the removal (the resume backstop's sole-reclaimer case:
+                    // `gc_integrated_branches_logged_prints_removing_evidence_for_a_
+                    // terminal_spawns_decision`). A branch whose worktree is already gone
+                    // - reclaimed by a prior call to this same function on an earlier
+                    // step (`..._does_not_repeat_removing_evidence_once_the_real_
+                    // removal_already_happened`), or by `sweep_terminal` moments earlier
+                    // in the SAME step (the periphery suite's `hung` arm) - stays silent
+                    // instead of re-claiming a removal that already happened or
+                    // duplicating another authority's own evidence for the identical
+                    // vanish. The best-effort reclaim calls themselves are UNCHANGED -
+                    // still unconditional and idempotent exactly as before: an orphaned
+                    // branch a prior worktree removal left behind is still silently
+                    // cleaned up here
+                    // (`..._stays_silent_for_an_already_gone_worktree_but_still_
+                    // reclaims_an_orphaned_branch`), just without a second headline for
+                    // it.
+                    let worktree_present = !matches!(fence, worktree::SpawnFence::NoSpawn)
+                        && worktree::registered_worktree_for(&self.deps.repo, &branch).is_some();
+                    if worktree_present {
                         log(&format!(
                             "rigger: branch-gc: removing branch {branch:?} - {}",
                             fence.evidence(&u.id)
@@ -17623,9 +17662,41 @@ mod tests {
         // in-flight spawn never reaches this arm at all - `permits_reclaim()` is false),
         // so this pins the REMOVING arm specifically, closing the exact gap the live
         // TIMEOUT mutant at `gc_integrated_branches_logged`'s log-condition line exposed.
+        //
+        // Round 3 fix for `sdet-u83c1r2-removing-evidence-repeats-forever-after-real-
+        // removal` (UPHELD): the "removing" line is now gated on the worktree still being
+        // PHYSICALLY REGISTERED (mirroring `sweep_terminal_logged`'s own `git worktree
+        // list --porcelain`-driven candidate set), so this test deliberately does NOT use
+        // `commit_on_unit_branch` (which `wt.remove()`s its seed worktree, modeling the
+        // dominant graceful path where the fresh-half teardown already removed both the
+        // worktree and the branch together) - it instead leaves the worktree REGISTERED,
+        // modeling the actual steady state this THIRD reclaim authority backstops: a step
+        // process crashed strictly between its own graceful teardown's two back-to-back
+        // calls (`w.remove()` immediately followed by `Worktree::delete_branch`, e.g.
+        // conductor.rs:3459-3470), so on a later resume BOTH the branch and its worktree
+        // are still fully present for `gc_integrated_branches` to find and reclaim itself,
+        // as the sole authority that ever touches this unit's branch/worktree.
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
-        commit_on_unit_branch(&repo_path, "answered", "answered.rs", "fn answered() {}\n");
+        let seed_dir = std::env::temp_dir().join(format!(
+            "rigger-seed-{}-{}",
+            sanitize_for_path("answered"),
+            &uuid::Uuid::new_v4().to_string()[..8]
+        ));
+        let seed_wt = crate::worktree::Worktree::create(
+            &repo_path,
+            seed_dir.to_str().unwrap(),
+            &unit_branch("answered"),
+            "",
+        )
+        .unwrap();
+        std::fs::write(
+            Path::new(&seed_wt.dir).join("answered.rs"),
+            "fn answered() {}\n",
+        )
+        .unwrap();
+        let committed = seed_wt.commit("rigger: prior window work").unwrap();
+        assert!(!committed.is_empty(), "the prior window must commit work");
 
         let events = vec![
             Event::new(
@@ -17673,10 +17744,207 @@ mod tests {
             "a terminal (answered) latest spawn must not block this reclaim authority"
         );
         assert!(
+            !Path::new(&seed_wt.dir).exists(),
+            "the still-registered worktree must be reclaimed too, not only the branch ref"
+        );
+        assert!(
             lines.iter().any(|l| l.contains("removing")
                 && l.contains("answered")
                 && l.contains("terminal")),
-            "the removed decision must be attributable from the log: {lines:?}"
+            "the removed decision must be attributable from the log when this call is the \
+             one genuinely performing the removal: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn gc_integrated_branches_logged_stays_silent_for_an_already_gone_worktree_but_still_reclaims_an_orphaned_branch(
+    ) {
+        // Round 3 fix for `sdet-u83c1r2-removing-evidence-repeats-forever-after-real-
+        // removal` (UPHELD in ADJUDICATION u83c1 round 2, cause genuine-defect): the
+        // DOMINANT graceful path (e.g. conductor.rs:3459-3470) removes a unit's worktree
+        // and deletes its branch back-to-back in the SAME call, so by the time a LATER
+        // `conductor::run` examines this unit, `commit_on_unit_branch`'s own `wt.remove()`
+        // models exactly that - the worktree is already gone, and only a lingering branch
+        // ref remains (either a rarer crash strictly between those two teardown lines, or
+        // - the periphery suite's `hung` arm - `worktree::sweep_terminal` already reclaimed
+        // the worktree moments earlier in the SAME `rigger step`, per `main.rs::cmd_step`
+        // running it BEFORE `conductor::run`). Before this fix, `gc_integrated_branches_
+        // logged` printed a false "removing branch" claim in BOTH cases regardless of
+        // physical presence, either forever (the ledger's `Integrated` set never shrinks)
+        // or as a duplicate of `sweep_terminal`'s own line for the identical vanish. The
+        // fix gates the LOG on the worktree still being registered, mirroring `sweep_
+        // terminal_logged`'s own live-git-state candidate set - so this scenario now stays
+        // silent, while the best-effort `Worktree::delete_branch` call underneath still
+        // reclaims the orphaned branch exactly as before (idempotent, unconditional, per
+        // the required fix's own explicit carve-out for the reclaim calls themselves).
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        commit_on_unit_branch(&repo_path, "settled", "settled.rs", "fn settled() {}\n");
+        assert!(
+            branch_present(&repo_path, &unit_branch("settled")),
+            "precondition: the branch survives its own worktree's removal"
+        );
+
+        let events = vec![
+            Event::new(
+                ledger::TYPE_UNIT_STARTED,
+                serde_json::to_vec(
+                    &json!({"id": "settled", "agent": "worker", "branch": unit_branch("settled")}),
+                )
+                .unwrap(),
+            ),
+            Event::new(
+                ledger::TYPE_UNIT_INTEGRATED,
+                serde_json::to_vec(&json!({"id": "settled", "commit": "5e77"})).unwrap(),
+            ),
+            spawn::SpawnRequest::new("settled", "settled", "adversary", 0, "verify")
+                .to_event()
+                .unwrap(),
+            spawn::SpawnResult::ok("settled/adversary#0", "approve")
+                .to_event()
+                .unwrap(),
+        ];
+        let rs = ledger::project(&events).unwrap();
+        let stages: BTreeMap<String, Stage> = BTreeMap::new();
+
+        let st = Store::open(":memory:").unwrap();
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        let mut lines: Vec<String> = Vec::new();
+        ctx.gc_integrated_branches_logged(&rs, &stages, &events, &mut |l| {
+            lines.push(l.to_string())
+        });
+
+        assert!(
+            !branch_present(&repo_path, &unit_branch("settled")),
+            "the orphaned branch must still be silently reclaimed - only the log emission \
+             is gated, never the underlying best-effort delete"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.contains("removing") && l.contains("settled")),
+            "no removing evidence may be printed for a branch whose worktree is already \
+             gone - it is either a re-claim of a removal that already happened (the \
+             forever-repeat defect) or a duplicate of `sweep_terminal`'s own line for the \
+             identical vanish moments earlier in the same step: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn gc_integrated_branches_logged_does_not_repeat_removing_evidence_once_the_real_removal_already_happened(
+    ) {
+        // The direct regression pin for `sdet-u83c1r2-removing-evidence-repeats-forever-
+        // after-real-removal` / `adv-u83c1r2-uphold-removing-evidence-repeats-forever-own-
+        // repro` (both UPHELD): `rs.units` is a ledger-projected, monotonic, never-
+        // shrinking `Integrated` set folded fresh on EVERY `conductor::run` (every `rigger
+        // step`), so a unit that reads `Integrated` on step N still reads `Integrated` on
+        // every step after it - and, pre-fix, `gc_integrated_branches_logged` re-printed a
+        // false "removing branch" claim on every one of those future steps, forever, long
+        // after the real removal already happened on step N. This drives the SAME call
+        // TWICE over the IDENTICAL `rs`/`events` - exactly what a later `rigger step`
+        // resolves for such a unit - and pins that only the FIRST call (the one that
+        // genuinely finds the worktree still registered and reclaims it) logs "removing";
+        // the second call, over the same never-shrinking `Integrated` set, must stay
+        // silent because the branch and worktree are already gone.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let seed_dir = std::env::temp_dir().join(format!(
+            "rigger-seed-{}-{}",
+            sanitize_for_path("repeat"),
+            &uuid::Uuid::new_v4().to_string()[..8]
+        ));
+        let seed_wt = crate::worktree::Worktree::create(
+            &repo_path,
+            seed_dir.to_str().unwrap(),
+            &unit_branch("repeat"),
+            "",
+        )
+        .unwrap();
+        std::fs::write(
+            Path::new(&seed_wt.dir).join("repeat.rs"),
+            "fn repeat() {}\n",
+        )
+        .unwrap();
+        let committed = seed_wt.commit("rigger: prior window work").unwrap();
+        assert!(!committed.is_empty(), "the prior window must commit work");
+
+        let events = vec![
+            Event::new(
+                ledger::TYPE_UNIT_STARTED,
+                serde_json::to_vec(
+                    &json!({"id": "repeat", "agent": "worker", "branch": unit_branch("repeat")}),
+                )
+                .unwrap(),
+            ),
+            Event::new(
+                ledger::TYPE_UNIT_INTEGRATED,
+                serde_json::to_vec(&json!({"id": "repeat", "commit": "2e97"})).unwrap(),
+            ),
+            spawn::SpawnRequest::new("repeat", "repeat", "adversary", 0, "verify")
+                .to_event()
+                .unwrap(),
+            spawn::SpawnResult::ok("repeat/adversary#0", "approve")
+                .to_event()
+                .unwrap(),
+        ];
+        let rs = ledger::project(&events).unwrap();
+        let stages: BTreeMap<String, Stage> = BTreeMap::new();
+
+        let st = Store::open(":memory:").unwrap();
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        let mut first: Vec<String> = Vec::new();
+        ctx.gc_integrated_branches_logged(&rs, &stages, &events, &mut |l| {
+            first.push(l.to_string())
+        });
+        assert!(
+            !branch_present(&repo_path, &unit_branch("repeat")),
+            "the first call must genuinely reclaim the branch"
+        );
+        assert!(
+            first
+                .iter()
+                .any(|l| l.contains("removing") && l.contains("repeat")),
+            "the first, REAL removal must be attributable from the log: {first:?}"
+        );
+
+        // Second call: SAME `rs` (same ledger-projected `RunState`) and SAME `events` -
+        // exactly what a later `rigger step` resolves for this unit, since `rs.units` never
+        // shrinks. The branch and worktree are already fully gone from the first call.
+        let mut second: Vec<String> = Vec::new();
+        ctx.gc_integrated_branches_logged(&rs, &stages, &events, &mut |l| {
+            second.push(l.to_string())
+        });
+        assert!(
+            !second
+                .iter()
+                .any(|l| l.contains("removing") && l.contains("repeat")),
+            "a real vanish must be logged exactly once across the whole campaign - never \
+             re-claimed on every future step after the branch/worktree are already gone: \
+             {second:?}"
         );
     }
 

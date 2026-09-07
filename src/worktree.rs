@@ -1139,7 +1139,13 @@ fn worktree_on_branch(dir: &str, branch: &str) -> bool {
 /// from `git worktree list --porcelain` (a `worktree <dir>` line followed by its
 /// `branch refs/heads/<name>` line). Registrations whose dirs were deleted out from
 /// under git still appear here; the caller decides adopt-vs-prune by checking the dir.
-fn registered_worktree_for(repo: &str, branch: &str) -> Option<String> {
+///
+/// `pub(crate)` (spec 83 round 3): `conductor.rs::gc_integrated_branches_logged` uses this
+/// as its own presence check before printing "removing" evidence, mirroring `sweep_
+/// terminal_logged`'s identical `git worktree list --porcelain`-driven candidate set -
+/// never a second, parallel notion of "is this worktree still here". Crate-internal only;
+/// this is not part of the library's external surface.
+pub(crate) fn registered_worktree_for(repo: &str, branch: &str) -> Option<String> {
     let out = run_git(repo, &["worktree", "list", "--porcelain"]).ok()?;
     let want = format!("branch refs/heads/{branch}");
     let mut dir: Option<&str> = None;
