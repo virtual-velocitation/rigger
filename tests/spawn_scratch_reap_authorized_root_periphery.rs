@@ -271,3 +271,107 @@ fn rigger_result_reaps_a_live_process_in_the_spawns_registered_mutation_scratch_
          files, never a live process."
     );
 }
+
+/// A DIFFERENT axis of `reclaim_spawn_scratch`'s own boundary than the rest of this file
+/// (spec 83 criterion 2 round 2, not spec 78): WHICH ROOT it reaps under. `reclaim_spawn_
+/// scratch`'s round-2 fix (the reject's own required follow-up to a half-applied round-1 fix)
+/// makes it resolve `defaults.workdir` via the shared, validate-independent `scratch_defaults`,
+/// never `config::load`, which additionally requires a fully loadable `.rigger/agents/` fleet
+/// just to learn that one string field, and silently zeroed it via `.unwrap_or_default()`
+/// whenever that fleet was absent (this project's OWN committed `.rigger/workflow.yml`, with
+/// no agents fleet in THIS fixture, is the exact shape). This test reuses the live-process
+/// fixture above for the SAME reason it does there: a misresolved root does not merely miss a
+/// field, it reaps the WRONG (default) directory while a process quietly keeps running in the
+/// CONFIGURED one forever, and only a live process (never a file-survival check) tells "reaped
+/// the right root" apart from "silently reaped nothing relevant".
+#[test]
+fn rigger_result_reaps_a_live_process_from_the_owning_roots_configured_workdir_with_no_agents_fleet_present(
+) {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    seed_run_started(root, "r1");
+
+    let relocated = tempfile::tempdir().expect("create relocated workdir");
+    std::fs::write(
+        root.join(".rigger").join("workflow.yml"),
+        format!(
+            "name: w\ndefaults:\n  workdir: \"{}\"\n",
+            relocated.path().to_string_lossy()
+        ),
+    )
+    .expect("write the owning root's workflow.yml with a configured workdir");
+    // Fixture guard: no `.rigger/agents/` dir exists at the owning root either - confirms this
+    // test genuinely exercises the validate-independent axis of the fix, not just field
+    // plumbing.
+    assert!(
+        !root.join(".rigger").join("agents").exists(),
+        "fixture bug: this test requires an agents-less owning root to exercise the \
+         validate-independent axis of the fix"
+    );
+
+    let spawn_id = "u-periphery-cli-live-reap-configured-workdir/implementer#0";
+    let scratch_root = rigger::worktree::scratch_root_path_from_env(
+        root.to_str().unwrap(),
+        relocated.path().to_str().unwrap(),
+    );
+    // Fixture guard: the configured scratch root genuinely differs from the crate's own
+    // documented DEFAULT (`<repo>/.rigger/tmp`) - else this test cannot discriminate the fix
+    // from a regression that silently fell back to the default because `config::load` failed
+    // on this agents-less root.
+    let default_scratch_root = root.join(".rigger").join("tmp");
+    assert_ne!(
+        Path::new(&scratch_root),
+        default_scratch_root.as_path(),
+        "fixture bug: the configured workdir must resolve a scratch root distinct from the \
+         crate's own default, else this test cannot discriminate the fix"
+    );
+
+    let leaf = spawn_scratch_path(&scratch_root, "r1", spawn_id)
+        .expect("a well-formed spawn id must encode to a real path");
+    std::fs::create_dir_all(&leaf).unwrap();
+
+    let mut child = sigterm_ignorer_in(&leaf);
+    assert!(
+        wait_until(|| processes_rooted_under(&leaf)
+            .iter()
+            .any(|(pid, _)| *pid == child.id())),
+        "precondition: the fixture process must actually be rooted in the spawn's registered \
+         agent-scratch dir (under the CONFIGURED workdir) before `rigger result` runs"
+    );
+
+    // A dedicated, empty cache home for the mutation-scratch half of the same call, and
+    // `RIGGER_TMPDIR` explicitly cleared so this test's outcome cannot depend on whatever
+    // scratch relocation the surrounding gate/CI happens to be running under - the same
+    // env-override-free precedence rung the fixture above assumes.
+    let cache_home = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME for the rigger run");
+    let mut cmd = common::rigger_courier();
+    cmd.args(["result", spawn_id, "done"])
+        .current_dir(root)
+        .env("RIGGER_NO_DASH", "1")
+        .env("XDG_STATE_HOME", state.path())
+        .env("XDG_CACHE_HOME", cache_home.path())
+        .env_remove("RIGGER_TMPDIR");
+    let output = cmd.output().expect("failed to spawn the rigger binary");
+    assert!(
+        output.status.success(),
+        "recording the result must succeed even when the owning root has no agents fleet at \
+         all; stdout: {:?} stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let died = wait_until(|| matches!(child.try_wait(), Ok(Some(_))));
+    if !died {
+        cleanup(&mut child);
+    }
+    assert!(
+        died,
+        "`rigger result` must reap a live process rooted in the spawn's agent-scratch dir \
+         under the OWNING ROOT'S CONFIGURED `defaults.workdir` - resolved without requiring a \
+         loadable agents fleet there - not silently no-op onto the crate's default root \
+         instead: got a still-alive fixture process, meaning the reap targeted the wrong \
+         directory"
+    );
+}
