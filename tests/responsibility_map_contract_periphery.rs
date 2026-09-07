@@ -161,6 +161,58 @@ fn unassigned_entries_in_the_committed_map_still_name_their_function() {
     }
 }
 
+/// THE is_test / proposed_module CONSISTENCY PROOF, round 2 addendum (decision
+/// `sdet-u85c1-r2-surface-accounting`): the adjudicator's round-1 REJECT
+/// (`adj-u85c1-verdict-reject-impl-frame-swallows-test-ancestry`) was exactly a violation of
+/// this cross-field invariant - 70 entries committed with `is_test:false` under a fabricated
+/// PRODUCTION module while genuinely living inside test-only impl blocks. The round-2 fix
+/// (decision `u85c1-r2-fix-impl-test-ancestry`) restored it, verified ad hoc against the
+/// committed file at fix time - but nothing PINS it going forward. The generator's own
+/// drift-guard test only proves the committed JSON matches whatever `build_map` computes
+/// TODAY (self-consistency); it does not, and structurally cannot, prove that computation is
+/// correct. A future edit to `classify()` that reintroduces this exact class of bug (or its
+/// mirror - a genuinely-test fn losing its `is_test` flag) would pass every one of the
+/// producer's own tests and the drift guard unchanged, and only a periphery test reading the
+/// artifact from the outside catches it. Per decision `u85c1-classification-scheme`, a
+/// `is_test:true` row is ALWAYS assigned (never left unassigned) to `<file_stem>::tests` or a
+/// nested `<file_stem>::tests::<submodule>`; a `is_test:false` row is NEVER assigned into a
+/// `::tests` module. Verified against the real committed file (1493 entries) before writing
+/// this test: 0 violations either direction.
+#[test]
+fn is_test_rows_and_only_is_test_rows_land_in_a_tests_proposed_module() {
+    let entries = deserialize_committed_map();
+    for e in &entries {
+        if e.is_test {
+            let module = e.proposed_module.as_deref().unwrap_or_else(|| {
+                panic!(
+                    "entry {:?} ({}) is is_test:true but has no proposed_module - decision \
+                     u85c1-classification-scheme says is_test always wins assignment, never \
+                     leaves a test fn unassigned",
+                    e.name, e.file
+                )
+            });
+            assert!(
+                module.contains("::tests"),
+                "entry {:?} ({}) is is_test:true but proposed_module {module:?} does not \
+                 contain \"::tests\" - this is precisely the class of bug the adjudicator's \
+                 round-1 REJECT (adj-u85c1-verdict-reject-impl-frame-swallows-test-ancestry) \
+                 found: a test-only fn given a production module home",
+                e.name,
+                e.file
+            );
+        } else if let Some(module) = &e.proposed_module {
+            assert!(
+                !module.contains("::tests"),
+                "entry {:?} ({}) is is_test:false but proposed_module {module:?} contains \
+                 \"::tests\" - a genuinely-production fn must never be homed under a test \
+                 module",
+                e.name,
+                e.file
+            );
+        }
+    }
+}
+
 /// THE BACK-COMPAT / STABILITY PROOF: deserializing the committed file into this independently
 /// declared struct and re-serializing it (same field order, `serde_json::to_string_pretty` plus
 /// the producer's own trailing-newline convention) reproduces the committed bytes exactly. This
