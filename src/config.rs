@@ -951,10 +951,32 @@ pub fn read_store_config(rigger_dir: &Path) -> Result<StoreConfig, Error> {
 /// Anchored at the `.rigger` directory, matching [`read_store_config`]'s own convention -
 /// a caller that already resolved the store dir passes it straight through.
 pub fn read_scratch_workdir(rigger_dir: &Path) -> Result<String, Error> {
+    Ok(read_scratch_defaults(rigger_dir)?.workdir)
+}
+
+/// Read the FULL `defaults:` block from `<rigger_dir>/workflow.yml` (spec 83 criterion 2,
+/// round 2) - the single lightweight parse [`read_scratch_workdir`] delegates to, so a
+/// caller that also needs a second `defaults.*` field (e.g. `defaults.max_retries`) reads
+/// it through the SAME probe rather than a second, independently-maintained copy. Tolerates
+/// an absent file exactly like [`read_store_config`]'s own NotFound-vs-other split: an
+/// absent file resolves to `Defaults::default()` ("no opinion"), never a silent swallow of a
+/// genuinely unreadable one.
+///
+/// Requires neither a loadable `.rigger/agents/` fleet nor a passing [`Config::validate`] -
+/// unlike [`load`], which fails outright whenever either is unsatisfied (e.g. this project's
+/// own committed `build.mutation: on` when `cargo-mutants` is off PATH, or simply no
+/// `agents/` dir at all). A caller reading only a `defaults.*` field must never inherit that
+/// unrelated failure by routing through the full loader and `.unwrap_or_default()`-ing past
+/// it - doing so silently zeroes the field it actually wanted alongside the one that failed
+/// (spec 83's own round-2 reject: `rigger status`/`rigger watch` silently lost a configured
+/// `defaults.workdir` this way whenever `Config::validate` failed for an unrelated reason).
+///
+/// Anchored at the `.rigger` directory, matching [`read_store_config`]'s own convention.
+pub fn read_scratch_defaults(rigger_dir: &Path) -> Result<Defaults, Error> {
     let path = rigger_dir.join("workflow.yml");
     let body = match std::fs::read_to_string(&path) {
         Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Defaults::default()),
         Err(e) => return Err(err(format!("read workflow: {e}"))),
     };
     #[derive(Deserialize, Default)]
@@ -964,7 +986,7 @@ pub fn read_scratch_workdir(rigger_dir: &Path) -> Result<String, Error> {
     }
     let probe: Probe =
         serde_yaml::from_str(&body).map_err(|e| err(format!("parse workflow: {e}")))?;
-    Ok(probe.defaults.workdir)
+    Ok(probe.defaults)
 }
 
 impl Config {
@@ -2723,6 +2745,84 @@ agent: worker\n";
         assert_eq!(
             absent.defaults.max_retries, 0,
             "an absent defaults.max_retries must default to 0 (the fall-back-to-3 sentinel)"
+        );
+    }
+
+    /// Spec 83 criterion 2, round 2 (the reject's own required fix): [`read_scratch_defaults`]
+    /// must read BOTH `defaults.workdir` and `defaults.max_retries` from a project whose
+    /// `.rigger/agents/` fleet is entirely absent - the exact shape [`load`] refuses outright
+    /// (`load_agents` fails before `Config::validate` ever runs). A caller reading just these
+    /// two lightweight fields must never inherit that unrelated failure.
+    #[test]
+    fn read_scratch_defaults_reads_workdir_and_max_retries_without_an_agents_fleet() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let rigger_dir = tmp.path().join(".rigger");
+        std::fs::create_dir_all(&rigger_dir).expect("create .rigger dir");
+        std::fs::write(
+            rigger_dir.join("workflow.yml"),
+            "name: w\ndefaults:\n  workdir: \"/configured/scratch\"\n  max_retries: 5\n",
+        )
+        .expect("write workflow.yml");
+        // No `.rigger/agents/` dir at all - fixture guard confirming this test genuinely
+        // exercises the validate-independent axis, not just the field-plumbing.
+        assert!(
+            load(tmp.path().to_str().unwrap()).is_err(),
+            "fixture bug: config::load must fail on an agents-less project for this test to \
+             discriminate the lightweight resolver from the full one"
+        );
+
+        let d = read_scratch_defaults(&rigger_dir)
+            .expect("read_scratch_defaults must succeed with no agents fleet present");
+        assert_eq!(
+            d.workdir, "/configured/scratch",
+            "must read the configured workdir via the lightweight resolver"
+        );
+        assert_eq!(
+            d.max_retries, 5,
+            "must read the configured max_retries via the lightweight resolver"
+        );
+    }
+
+    /// Mirrors [`read_store_config`]'s / [`read_scratch_workdir`]'s own tolerant-absent
+    /// contract: a project with no `workflow.yml` at all pins nothing, so every field resolves
+    /// to its ordinary default rather than an error.
+    #[test]
+    fn read_scratch_defaults_resolves_to_the_default_when_workflow_yml_is_absent() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let rigger_dir = tmp.path().join(".rigger");
+        std::fs::create_dir_all(&rigger_dir).expect("create .rigger dir");
+
+        let d = read_scratch_defaults(&rigger_dir)
+            .expect("an absent workflow.yml must resolve to the default, not an error");
+        assert_eq!(
+            d.workdir, "",
+            "absent config resolves to no configured workdir"
+        );
+        assert_eq!(
+            d.max_retries, 0,
+            "absent config resolves to no configured max_retries"
+        );
+    }
+
+    /// [`read_scratch_workdir`] must keep delegating to [`read_scratch_defaults`] (the shared
+    /// parse), not a second independently-maintained copy - a regression guard for the two
+    /// already-established call sites (`rigger reset --build-cache`'s two flavors) that read
+    /// `read_scratch_workdir` directly and must see byte-identical behavior after this refactor.
+    #[test]
+    fn read_scratch_workdir_still_matches_read_scratch_defaults_workdir() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let rigger_dir = tmp.path().join(".rigger");
+        std::fs::create_dir_all(&rigger_dir).expect("create .rigger dir");
+        std::fs::write(
+            rigger_dir.join("workflow.yml"),
+            "name: w\ndefaults:\n  workdir: \"/some/other/scratch\"\n",
+        )
+        .expect("write workflow.yml");
+
+        assert_eq!(
+            read_scratch_workdir(&rigger_dir).unwrap(),
+            read_scratch_defaults(&rigger_dir).unwrap().workdir,
+            "read_scratch_workdir must stay byte-identical to read_scratch_defaults().workdir"
         );
     }
 
