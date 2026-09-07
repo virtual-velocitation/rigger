@@ -5,6 +5,8 @@
 
 use std::process::Command;
 
+use crate::eventstore::Event;
+
 #[derive(Debug, thiserror::Error)]
 #[error("worktree: {0}")]
 pub struct Error(pub String);
@@ -882,6 +884,134 @@ fn reclaim_cache_sibling(worktree_dir: &str, authorized_root: &str) {
     }
 }
 
+/// The spec-83 (criterion 1) worktree-fence verdict for one unit's LATEST requested spawn:
+/// whether the unit's worktree may be reclaimed by a sweep this step runs, and the evidence
+/// a log line can name so a vanished (or spared) worktree is attributable from the log
+/// afterward.
+///
+/// A FENCE, not a replacement: a caller consults this only for a unit its OWN liveness
+/// signal (the ledger's terminal read, or [`sweep_terminal`]'s own ancestry-merge test)
+/// already reads as terminal - this closes the gap where that signal races ahead of a
+/// straggler spawn still working the SAME unit (a slower confirmatory review lens after the
+/// deciding verdict already integrated the unit - spec 83's `u81c1` observation), not a
+/// parallel or overriding notion of "unit in flight".
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SpawnFence {
+    /// No spawn has EVER been requested for this unit - the fence has nothing to add; the
+    /// caller's own liveness signal decides alone.
+    NoSpawn,
+    /// The unit's LATEST requested spawn has no recorded result - keep the worktree live
+    /// regardless of the caller's own terminal read. A MISSING liveness marker is never
+    /// reapable evidence on its own (spec 83 Design): both "no marker yet" and "a fresh
+    /// marker" land here, since only a RECORDED RESULT (a real one, or the liveness sweep's
+    /// own stale-marker classification) ever moves a spawn out of this arm.
+    InFlight { spawn: String },
+    /// The unit's LATEST requested spawn's result is recorded at event `position` `at` -
+    /// eligible for reclaim. `hung` names whether that result is the liveness sweep's own
+    /// stale-marker classification ([`crate::spawn::SpawnResult::is_liveness_fault`]) rather
+    /// than a worker- or courier-reported outcome, for a more specific evidence line.
+    Terminal {
+        spawn: String,
+        at: crate::eventstore::Position,
+        hung: bool,
+    },
+}
+
+impl SpawnFence {
+    /// Whether this verdict permits a worktree to be reclaimed this sweep: every arm does
+    /// except [`SpawnFence::InFlight`] - `NoSpawn` has nothing to fence on, so the caller's
+    /// own (pre-spec-83) signal governs alone, exactly as it did before this fence existed.
+    pub fn permits_reclaim(&self) -> bool {
+        !matches!(self, SpawnFence::InFlight { .. })
+    }
+
+    /// The human-readable evidence line named in a sweep's log output for `unit`, so a
+    /// worktree's vanish (or its being spared) is attributable from the log after the fact.
+    pub fn evidence(&self, unit: &str) -> String {
+        match self {
+            SpawnFence::NoSpawn => format!("unit {unit:?}: no spawn ever recorded for it"),
+            SpawnFence::InFlight { spawn } => {
+                format!(
+                    "unit {unit:?}: latest spawn {spawn:?} is in flight (no recorded result yet)"
+                )
+            }
+            SpawnFence::Terminal {
+                spawn,
+                at,
+                hung: false,
+            } => {
+                format!(
+                    "unit {unit:?}: latest spawn {spawn:?} terminal (result recorded at position {at})"
+                )
+            }
+            SpawnFence::Terminal {
+                spawn,
+                at,
+                hung: true,
+            } => {
+                format!(
+                    "unit {unit:?}: latest spawn {spawn:?} hung past its max_wall_clock \
+                     (the liveness sweep classified it at position {at})"
+                )
+            }
+        }
+    }
+}
+
+/// Classify `unit`'s LATEST requested spawn (spec 83, criterion 1): the one whose liveness
+/// governs whether a worktree candidate the caller already reads as terminal may actually be
+/// reclaimed. "Latest" is by REQUEST ORDER in `events` (the last
+/// [`crate::spawn::TYPE_SPAWN_REQUESTED`] whose [`crate::spawn::SpawnRequest::unit`] matches) -
+/// a unit accumulates one spawn per role per attempt (implementer, reviewer, adversary, ...),
+/// and it is the most recently dispatched one that can still be working while an earlier one
+/// already answered.
+///
+/// `events` should already be scoped to the run the caller cares about (e.g.
+/// [`crate::run::current_run`]) - an unscoped slice risks matching a PRIOR run's
+/// identically-named unit's already-resolved spawn as "the latest", which would wrongly
+/// permit a reclaim this fence exists to prevent. Reuses [`crate::spawn::recorded`] /
+/// [`crate::spawn::result_of`] (the SAME spawn-request/result authority every other liveness
+/// reader folds) rather than re-deriving a second notion of "answered".
+pub fn spawn_fence(events: &[Event], unit: &str) -> SpawnFence {
+    let mut latest: Option<crate::spawn::SpawnRequest> = None;
+    for e in events {
+        if e.type_ == crate::spawn::TYPE_SPAWN_REQUESTED {
+            if let Ok(req) = crate::spawn::SpawnRequest::from_event(e) {
+                if req.unit == unit {
+                    latest = Some(req);
+                }
+            }
+        }
+    }
+    let Some(req) = latest else {
+        return SpawnFence::NoSpawn;
+    };
+    match crate::spawn::result_of(events, &req.id) {
+        Ok(Some(res)) => {
+            // The position of the LATEST result event for this id - mirrors `result_of`'s
+            // own "later results win" fold (last-write-wins), just walked in reverse to stop
+            // at the first (i.e. latest) match instead of folding every candidate.
+            let at = events
+                .iter()
+                .rev()
+                .find(|e| {
+                    e.type_ == crate::spawn::TYPE_SPAWN_RESULT
+                        && crate::spawn::SpawnResult::from_event(e).is_ok_and(|r| r.id == req.id)
+                })
+                .map(|e| e.position)
+                .unwrap_or_default();
+            SpawnFence::Terminal {
+                spawn: req.id,
+                at,
+                hung: res.is_liveness_fault(),
+            }
+        }
+        // A malformed result body degrades identically to "no result yet" - the same
+        // conservative direction `result_of`'s own callers already take on decode failure.
+        _ => SpawnFence::InFlight { spawn: req.id },
+    }
+}
+
 /// Sweep the scratch root's TERMINAL worktrees: prune stale registrations, then remove
 /// every registered worktree under `root` whose branch tip is already an ancestor of
 /// `run_branch` - integrated (or never-advanced review scaffolding), so the worktree
@@ -905,11 +1035,42 @@ fn reclaim_cache_sibling(worktree_dir: &str, authorized_root: &str) {
 /// while the unit is still live in review, so `live_branches` is checked BEFORE the ancestry
 /// test and spares such a worktree outright; a merged-or-dead, not-live worktree is still
 /// reclaimed exactly as before.
+///
+/// `events` is the SAME current-run-scoped slice `live_branches` was folded from (spec 83,
+/// criterion 1: THE FENCE). Both pre-existing signals above can still read a branch as
+/// terminal while a STRAGGLER spawn for the identical unit keeps working the very worktree
+/// this loop is about to remove (the deciding verdict integrates the unit while a slower
+/// confirmatory review lens is still running - the observed `u81c1` bug); [`spawn_fence`]
+/// closes that gap by consulting the unit's LATEST requested spawn directly. A branch with NO
+/// recorded spawn at all ([`SpawnFence::NoSpawn`]) sweeps exactly as before -
+/// the fence has nothing to add and must never itself become a reason dead residue lingers.
+/// Every fence-relevant decision (kept in flight, or removed with its terminal/hung evidence)
+/// is printed, so a worktree's vanish - or its being spared - is attributable from the step's
+/// own log output after the fact.
 pub fn sweep_terminal(
     repo: &str,
     root: &str,
     run_branch: &str,
     live_branches: &std::collections::HashSet<String>,
+    events: &[Event],
+) -> Result<usize, Error> {
+    sweep_terminal_logged(repo, root, run_branch, live_branches, events, &mut |line| {
+        eprintln!("{line}")
+    })
+}
+
+/// [`sweep_terminal`]'s real body, with its evidence lines routed through an injected `log`
+/// sink instead of a hardcoded `eprintln!` (strict DI, per this crate's own discipline: no
+/// hardcoded I/O a test cannot observe) - production wires stderr; the fence's own test
+/// module wires a `Vec<String>` collector so a KEPT vs. REMOVED decision's evidence text is
+/// itself an assertable fact, not merely a side effect no test can see.
+fn sweep_terminal_logged(
+    repo: &str,
+    root: &str,
+    run_branch: &str,
+    live_branches: &std::collections::HashSet<String>,
+    events: &[Event],
+    log: &mut dyn FnMut(&str),
 ) -> Result<usize, Error> {
     git(repo, &["worktree", "prune"])?;
     let out = run_git(repo, &["worktree", "list", "--porcelain"]).map_err(Error)?;
@@ -926,6 +1087,24 @@ pub fn sweep_terminal(
             let merged =
                 run_git(repo, &["merge-base", "--is-ancestor", branch, run_branch]).is_ok();
             if merged {
+                // THE FENCE (spec 83, criterion 1): the unit id doubles as the branch's
+                // `rigger/u/<slug>` tail - the same assumption `current_run_units`'
+                // dead/live-slug split already makes for a branch in this exact shape.
+                let unit = branch.strip_prefix("rigger/u/").unwrap_or(branch);
+                let fence = spawn_fence(events, unit);
+                if !fence.permits_reclaim() {
+                    log(&format!(
+                        "rigger step: worktree sweep: kept {d:?} (branch {branch:?}) - {}",
+                        fence.evidence(unit)
+                    ));
+                    continue;
+                }
+                if !matches!(fence, SpawnFence::NoSpawn) {
+                    log(&format!(
+                        "rigger step: worktree sweep: removing {d:?} (branch {branch:?}) - {}",
+                        fence.evidence(unit)
+                    ));
+                }
                 // Reap any process rooted inside this terminal worktree BEFORE removing it
                 // (spec 79, criterion 1): a crashed step process can leave a build or tool
                 // still running here, and this is the CRASH-recovery path, not the graceful
@@ -960,7 +1139,13 @@ fn worktree_on_branch(dir: &str, branch: &str) -> bool {
 /// from `git worktree list --porcelain` (a `worktree <dir>` line followed by its
 /// `branch refs/heads/<name>` line). Registrations whose dirs were deleted out from
 /// under git still appear here; the caller decides adopt-vs-prune by checking the dir.
-fn registered_worktree_for(repo: &str, branch: &str) -> Option<String> {
+///
+/// `pub(crate)` (spec 83 round 3): `conductor.rs::gc_integrated_branches_logged` uses this
+/// as its own presence check before printing "removing" evidence, mirroring `sweep_
+/// terminal_logged`'s identical `git worktree list --porcelain`-driven candidate set -
+/// never a second, parallel notion of "is this worktree still here". Crate-internal only;
+/// this is not part of the library's external surface.
+pub(crate) fn registered_worktree_for(repo: &str, branch: &str) -> Option<String> {
     let out = run_git(repo, &["worktree", "list", "--porcelain"]).ok()?;
     let want = format!("branch refs/heads/{branch}");
     let mut dir: Option<&str> = None;
@@ -1712,6 +1897,7 @@ mod tests {
             &root,
             "rigger-run",
             &std::collections::HashSet::new(),
+            &[],
         )
         .unwrap();
         assert_eq!(removed, 1, "exactly the terminal worktree is swept");
@@ -1752,7 +1938,7 @@ mod tests {
         let mut live_branches = std::collections::HashSet::new();
         live_branches.insert("rigger/u/live-empty-diff".to_string());
 
-        let removed = sweep_terminal(&repo_path, &root, "rigger-run", &live_branches).unwrap();
+        let removed = sweep_terminal(&repo_path, &root, "rigger-run", &live_branches, &[]).unwrap();
         assert_eq!(removed, 1, "only the dead empty-diff worktree is swept");
         assert!(
             std::path::Path::new(&live_dir).exists(),
@@ -1761,6 +1947,437 @@ mod tests {
         assert!(
             !std::path::Path::new(&dead_dir).exists(),
             "a dead unit in the identical empty-diff shape is still reclaimed"
+        );
+    }
+
+    // --- Spec 83, criterion 1: THE FENCE (direct `spawn_fence` unit tests) ---
+
+    use crate::conductor::STREAM;
+    use crate::eventstore::sqlite::Store;
+    use crate::eventstore::{Direction, EventStore, ExpectedRevision};
+    use crate::spawn::{SpawnRequest, SpawnResult};
+
+    fn read_stream(store: &Store) -> Vec<Event> {
+        store.read_stream(STREAM, 0, Direction::Forward).unwrap()
+    }
+
+    #[test]
+    fn spawn_fence_is_no_spawn_when_the_unit_has_never_requested_one() {
+        assert_eq!(spawn_fence(&[], "ghost-unit"), SpawnFence::NoSpawn);
+        assert!(SpawnFence::NoSpawn.permits_reclaim());
+    }
+
+    #[test]
+    fn spawn_fence_is_in_flight_when_the_latest_spawn_has_no_recorded_result() {
+        let store = Store::open(":memory:").unwrap();
+        let req = SpawnRequest::new("u1", "u1", "implementer", 0, "task");
+        store
+            .append(STREAM, ExpectedRevision::Any, &[req.to_event().unwrap()])
+            .unwrap();
+        let events = read_stream(&store);
+
+        let fence = spawn_fence(&events, "u1");
+        assert_eq!(
+            fence,
+            SpawnFence::InFlight {
+                spawn: req.id.clone()
+            }
+        );
+        assert!(
+            !fence.permits_reclaim(),
+            "an in-flight latest spawn must NOT permit a reclaim"
+        );
+        assert!(fence.evidence("u1").contains(&req.id));
+    }
+
+    #[test]
+    fn spawn_fence_is_terminal_at_the_results_position_once_a_real_result_lands() {
+        let store = Store::open(":memory:").unwrap();
+        let req = SpawnRequest::new("u2", "u2", "implementer", 0, "task");
+        store
+            .append(STREAM, ExpectedRevision::Any, &[req.to_event().unwrap()])
+            .unwrap();
+        let res = SpawnResult::ok(&req.id, "done");
+        let pos = store
+            .append(STREAM, ExpectedRevision::Any, &[res.to_event().unwrap()])
+            .unwrap()
+            .one("result")
+            .unwrap();
+        let events = read_stream(&store);
+
+        let fence = spawn_fence(&events, "u2");
+        assert_eq!(
+            fence,
+            SpawnFence::Terminal {
+                spawn: req.id.clone(),
+                at: pos,
+                hung: false,
+            }
+        );
+        assert!(fence.permits_reclaim());
+        let ev = fence.evidence("u2");
+        assert!(ev.contains(&req.id) && ev.contains(&pos.to_string()));
+    }
+
+    #[test]
+    fn spawn_fence_finds_the_true_results_position_past_a_later_event_sharing_its_id() {
+        // A decoy event AFTER the real result reuses the SAME id in a DIFFERENT event type
+        // (a re-parked `SpawnRequested`, unrealistic in production but constructible directly
+        // on the log) - its JSON body still decodes successfully as a `SpawnResult` (both
+        // share the `id` field, and `SpawnResult`'s other fields all default), so the
+        // position lookup's `find` predicate must match on TYPE *and* id: a `||` in place of
+        // the `&&`, or a flipped `==`, would let this wrong-typed decoy's LATER position (or
+        // no position at all) leak into the evidence instead of the real result's.
+        let store = Store::open(":memory:").unwrap();
+        let req = SpawnRequest::new("u5", "u5", "implementer", 0, "task");
+        store
+            .append(STREAM, ExpectedRevision::Any, &[req.to_event().unwrap()])
+            .unwrap();
+        let res = SpawnResult::ok(&req.id, "done");
+        let real_pos = store
+            .append(STREAM, ExpectedRevision::Any, &[res.to_event().unwrap()])
+            .unwrap()
+            .one("result")
+            .unwrap();
+        // The decoy: a SECOND `SpawnRequested` reusing the identical id, appended AFTER the
+        // real result so it sits at a LATER position - reverse iteration reaches it FIRST.
+        store
+            .append(STREAM, ExpectedRevision::Any, &[req.to_event().unwrap()])
+            .unwrap();
+        let events = read_stream(&store);
+
+        let fence = spawn_fence(&events, "u5");
+        assert_eq!(
+            fence,
+            SpawnFence::Terminal {
+                spawn: req.id.clone(),
+                at: real_pos,
+                hung: false,
+            },
+            "the position must be the REAL result's, never the later decoy's matching id"
+        );
+    }
+
+    #[test]
+    fn spawn_fence_names_a_liveness_fault_result_as_hung() {
+        let store = Store::open(":memory:").unwrap();
+        let mut req = SpawnRequest::new("u3", "u3", "implementer", 0, "task");
+        req.max_wall_clock = Some(60);
+        store
+            .append(STREAM, ExpectedRevision::Any, &[req.to_event().unwrap()])
+            .unwrap();
+        let fault = SpawnResult::liveness_fault(&req.id, "stale marker", "infra");
+        let pos = store
+            .append(STREAM, ExpectedRevision::Any, &[fault.to_event().unwrap()])
+            .unwrap()
+            .one("result")
+            .unwrap();
+        let events = read_stream(&store);
+
+        let fence = spawn_fence(&events, "u3");
+        assert_eq!(
+            fence,
+            SpawnFence::Terminal {
+                spawn: req.id.clone(),
+                at: pos,
+                hung: true,
+            }
+        );
+        assert!(
+            fence.permits_reclaim(),
+            "a hung latest spawn IS reclaimable"
+        );
+        assert!(fence.evidence("u3").contains("hung"));
+    }
+
+    #[test]
+    fn spawn_fence_tracks_only_the_units_latest_spawn_across_roles_and_attempts() {
+        // Two roles for the SAME unit: the implementer already answered (attempt 0), but the
+        // review-tier spawn requested AFTER it (attempt 1, a distinct role) has not - the
+        // fence must follow the LATEST request, not the first one, keeping the worktree live.
+        let store = Store::open(":memory:").unwrap();
+        let impl_req = SpawnRequest::new("u4", "u4", "implementer", 0, "task");
+        store
+            .append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[impl_req.to_event().unwrap()],
+            )
+            .unwrap();
+        store
+            .append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[SpawnResult::ok(&impl_req.id, "done").to_event().unwrap()],
+            )
+            .unwrap();
+
+        let review_req = SpawnRequest::new("u4", "u4", "adversary", 1, "review");
+        store
+            .append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[review_req.to_event().unwrap()],
+            )
+            .unwrap();
+        let events = read_stream(&store);
+
+        let fence = spawn_fence(&events, "u4");
+        assert_eq!(
+            fence,
+            SpawnFence::InFlight {
+                spawn: review_req.id.clone()
+            },
+            "the LATEST spawn (the still-unanswered review) governs, not the answered implementer"
+        );
+    }
+
+    #[test]
+    fn spawn_fence_scoped_out_of_a_prior_run_never_sees_its_resolved_spawn() {
+        // A prior run's unit shared the same slug and its spawn is long resolved; an
+        // UNSCOPED read would wrongly see it as terminal. Scoping to the current run (as
+        // `sweep_terminal`'s caller does) must show `NoSpawn` instead - the current run
+        // never requested anything for this unit.
+        let store = Store::open(":memory:").unwrap();
+        let prior = SpawnRequest::new("reused-slug", "reused-slug", "implementer", 0, "task");
+        store
+            .append(STREAM, ExpectedRevision::Any, &[prior.to_event().unwrap()])
+            .unwrap();
+        store
+            .append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[SpawnResult::ok(&prior.id, "done").to_event().unwrap()],
+            )
+            .unwrap();
+        store
+            .append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[Event::new(
+                    crate::run::TYPE_RUN_STARTED,
+                    br#"{"run":"r2","criteria":["c"]}"#.to_vec(),
+                )],
+            )
+            .unwrap();
+        let events = read_stream(&store);
+        let scoped = crate::run::current_run(&events);
+
+        assert_eq!(spawn_fence(scoped, "reused-slug"), SpawnFence::NoSpawn);
+    }
+
+    /// A `SpawnRequested` event for `unit`, unanswered - the shape `spawn_fence` reads as
+    /// "in flight".
+    fn requested(unit: &str) -> Event {
+        let req = crate::spawn::SpawnRequest::new(unit, unit, "implementer", 0, "task");
+        req.to_event().unwrap()
+    }
+
+    /// A `SpawnRequested` + a real (non-liveness-fault) `SpawnResult` for `unit` - the
+    /// shape `spawn_fence` reads as "terminal".
+    fn requested_and_answered(unit: &str) -> Vec<Event> {
+        let req = crate::spawn::SpawnRequest::new(unit, unit, "implementer", 0, "task");
+        let res = crate::spawn::SpawnResult::ok(&req.id, "done");
+        vec![req.to_event().unwrap(), res.to_event().unwrap()]
+    }
+
+    /// A `SpawnRequested` + a liveness-fault `SpawnResult` for `unit` - the shape
+    /// `spawn_fence` reads as "hung".
+    fn requested_and_hung(unit: &str) -> Vec<Event> {
+        let req = crate::spawn::SpawnRequest::new(unit, unit, "implementer", 0, "task");
+        let res = crate::spawn::SpawnResult::liveness_fault(&req.id, "stale marker", "infra");
+        vec![req.to_event().unwrap(), res.to_event().unwrap()]
+    }
+
+    #[test]
+    fn sweep_terminal_spares_a_merged_branch_whose_units_latest_spawn_is_still_in_flight() {
+        // Spec 83, criterion 1: THE FENCE. The branch reads terminal by BOTH pre-existing
+        // signals (merged into run_branch, and absent from `live_branches`) - exactly the
+        // shape that raced ahead of a straggler spawn in the observed bug (a reviewer's
+        // verdict integrates the unit while an adversary/sdet lens for the SAME unit is
+        // still working the identical worktree). No liveness MARKER exists at all - the
+        // Design's explicit "absence is never reapable evidence on its own" case.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        run_git(&repo_path, &["checkout", "-b", "rigger-run"]).unwrap();
+        let root = scratch_root(&repo_path, "", None);
+
+        let dir = format!("{root}/rigger-wt-fenced");
+        Worktree::create(&repo_path, &dir, "rigger/u/fenced", "").unwrap();
+
+        let events = [requested("fenced")];
+        let removed = sweep_terminal(
+            &repo_path,
+            &root,
+            "rigger-run",
+            &std::collections::HashSet::new(),
+            &events,
+        )
+        .unwrap();
+        assert_eq!(
+            removed, 0,
+            "an in-flight latest spawn must fence off the reclaim entirely"
+        );
+        assert!(
+            std::path::Path::new(&dir).exists(),
+            "the worktree survives despite reading terminal by every pre-spec-83 signal"
+        );
+    }
+
+    #[test]
+    fn sweep_terminal_reclaims_a_merged_branch_once_its_latest_spawn_has_a_real_result() {
+        // The counterpart to the fence test above: once the SAME shape's latest spawn has
+        // actually answered, the fence must not block the pre-existing removal.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        run_git(&repo_path, &["checkout", "-b", "rigger-run"]).unwrap();
+        let root = scratch_root(&repo_path, "", None);
+
+        let dir = format!("{root}/rigger-wt-answered");
+        Worktree::create(&repo_path, &dir, "rigger/u/answered", "").unwrap();
+
+        let events = requested_and_answered("answered");
+        let removed = sweep_terminal(
+            &repo_path,
+            &root,
+            "rigger-run",
+            &std::collections::HashSet::new(),
+            &events,
+        )
+        .unwrap();
+        assert_eq!(
+            removed, 1,
+            "a terminal latest spawn does not block the reclaim"
+        );
+        assert!(!std::path::Path::new(&dir).exists());
+    }
+
+    #[test]
+    fn sweep_terminal_reclaims_a_merged_branch_whose_latest_spawn_is_hung() {
+        // A latest spawn the liveness sweep already classified hung (a recorded
+        // liveness-fault SpawnResult, spec 10 unit 3) is ALSO terminal for fencing
+        // purposes: "hung past max_wall_clock" is the fence's other reclaim-eligible arm.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        run_git(&repo_path, &["checkout", "-b", "rigger-run"]).unwrap();
+        let root = scratch_root(&repo_path, "", None);
+
+        let dir = format!("{root}/rigger-wt-hung");
+        Worktree::create(&repo_path, &dir, "rigger/u/hung", "").unwrap();
+
+        let events = requested_and_hung("hung");
+        let removed = sweep_terminal(
+            &repo_path,
+            &root,
+            "rigger-run",
+            &std::collections::HashSet::new(),
+            &events,
+        )
+        .unwrap();
+        assert_eq!(removed, 1, "a hung latest spawn does not block the reclaim");
+        assert!(!std::path::Path::new(&dir).exists());
+    }
+
+    #[test]
+    fn sweep_terminal_reclaims_a_merged_branch_with_no_spawn_recorded_at_all_unchanged() {
+        // Back-compat: a branch whose unit never recorded ANY spawn (`SpawnFence::NoSpawn`)
+        // must sweep exactly as it did before spec 83 - the fence has nothing to add and
+        // must never itself become a NEW reason to keep dead residue around forever.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        run_git(&repo_path, &["checkout", "-b", "rigger-run"]).unwrap();
+        let root = scratch_root(&repo_path, "", None);
+
+        let dir = format!("{root}/rigger-wt-nospawn");
+        Worktree::create(&repo_path, &dir, "rigger/u/nospawn", "").unwrap();
+
+        let removed = sweep_terminal(
+            &repo_path,
+            &root,
+            "rigger-run",
+            &std::collections::HashSet::new(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(removed, 1);
+        assert!(!std::path::Path::new(&dir).exists());
+    }
+
+    #[test]
+    fn sweep_terminal_prints_evidence_for_a_kept_decision_but_not_for_a_removed_no_spawn_one() {
+        // Spec 83, criterion 1: "each sweep decision is attributable from the log with its
+        // evidence". Drives `sweep_terminal_logged` directly (the DI seam) so the printed
+        // evidence text itself is an assertable fact: a FENCED (kept) worktree names WHY in
+        // the log, while the ordinary NO-SPAWN removal (the ubiquitous common case, unrelated
+        // to this fence) stays exactly as silent as it was before spec 83 - no new noise for
+        // every routine integration.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        run_git(&repo_path, &["checkout", "-b", "rigger-run"]).unwrap();
+        let root = scratch_root(&repo_path, "", None);
+
+        let fenced_dir = format!("{root}/rigger-wt-fenced");
+        Worktree::create(&repo_path, &fenced_dir, "rigger/u/fenced", "").unwrap();
+        let nospawn_dir = format!("{root}/rigger-wt-nospawn");
+        Worktree::create(&repo_path, &nospawn_dir, "rigger/u/nospawn", "").unwrap();
+
+        let events = [requested("fenced")];
+        let mut lines = Vec::new();
+        let removed = sweep_terminal_logged(
+            &repo_path,
+            &root,
+            "rigger-run",
+            &std::collections::HashSet::new(),
+            &events,
+            &mut |l| lines.push(l.to_string()),
+        )
+        .unwrap();
+        assert_eq!(removed, 1, "only the no-spawn worktree is reclaimed");
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("kept") && l.contains("fenced") && l.contains("in flight")),
+            "the fenced (kept) decision must be attributable from the log: {lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("nospawn")),
+            "the ordinary no-spawn removal stays silent, exactly as before spec 83: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn sweep_terminal_prints_evidence_for_a_removed_terminal_spawn_decision() {
+        // The counterpart: a MERGED branch whose latest spawn genuinely answered is REMOVED,
+        // and that removal is ALSO attributable - the evidence line must fire on the
+        // REMOVING arm, not just the KEPT one (this is what
+        // `sweep_terminal_prints_evidence_for_a_kept_decision...` cannot pin alone: a
+        // flipped condition that prints on the WRONG arm still passes that test's `nospawn`
+        // exclusion since "answered" isn't "nospawn").
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        run_git(&repo_path, &["checkout", "-b", "rigger-run"]).unwrap();
+        let root = scratch_root(&repo_path, "", None);
+
+        let dir = format!("{root}/rigger-wt-answered");
+        Worktree::create(&repo_path, &dir, "rigger/u/answered", "").unwrap();
+
+        let events = requested_and_answered("answered");
+        let mut lines = Vec::new();
+        let removed = sweep_terminal_logged(
+            &repo_path,
+            &root,
+            "rigger-run",
+            &std::collections::HashSet::new(),
+            &events,
+            &mut |l| lines.push(l.to_string()),
+        )
+        .unwrap();
+        assert_eq!(removed, 1);
+        assert!(
+            lines.iter().any(|l| l.contains("removing")
+                && l.contains("answered")
+                && l.contains("terminal")),
+            "the removed decision must be attributable from the log: {lines:?}"
         );
     }
 
@@ -1800,6 +2417,7 @@ mod tests {
             &root,
             "rigger-run",
             &std::collections::HashSet::new(),
+            &[],
         )
         .unwrap();
         assert_eq!(removed, 1, "exactly the terminal unit worktree is swept");
@@ -1855,6 +2473,7 @@ mod tests {
             &root,
             "rigger-run",
             &std::collections::HashSet::new(),
+            &[],
         )
         .unwrap();
         assert_eq!(removed, 1, "the terminal worktree is swept");

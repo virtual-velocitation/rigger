@@ -1654,7 +1654,14 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // expansion would silently exempt them from the widened predicate). Moving this call
     // does not reorder anything it reads (`prior` is already fully projected) or
     // anything downstream that depends on it having already run.
-    ctx.gc_integrated_branches(&prior, &stages);
+    //
+    // `prior_events` (spec 83, criterion 1: THE FENCE) is passed through unchanged - it is
+    // already the SAME current-run-scoped slice `main.rs::cmd_step`'s own `fence_events`
+    // is folded from (`crate::run::current_run` over the whole stream), so `spawn_fence`
+    // reads identically here as it does at that call site. See `gc_integrated_branches`'s
+    // own doc comment for why this THIRD reclaim authority needed the same consultation
+    // `sweep_terminal`/`current_run_units` already had.
+    ctx.gc_integrated_branches(&prior, &stages, prior_events);
 
     // Resume-safe dedup (the duplication fix, order-independent): fold any
     // ALREADY-EMITTED UnitProposed events from a PRIOR window and apply the
@@ -6916,7 +6923,38 @@ impl RunCtx<'_> {
     /// FRESH-path call sites' own (synchronous, same-call-stack) reclaim a few lines later
     /// would permanently strand that unit's registered scratch - it is not `Integrated`, so
     /// this resume backstop never revisited it either.
-    fn gc_integrated_branches(&self, rs: &ledger::RunState, stages: &BTreeMap<String, Stage>) {
+    /// `events` is the SAME current-run-scoped slice the caller resolved `rs` from -
+    /// production wires `run`'s own `prior_events` (spec 83, criterion 1: THE FENCE, round
+    /// 2). This THIRD worktree-reclaim authority re-derives `Integrated` from a `RunState`
+    /// FROZEN before this window's own spawns exist, with no liveness signal of its own -
+    /// so a straggler spawn for a unit already read as terminal (the `u81c1` shape) used
+    /// to lose its worktree here even after `sweep_terminal`/`current_run_units` had
+    /// correctly spared it moments earlier in the SAME `rigger step` (finding
+    /// `sdet-u83c1-gc-integrated-branches-bypasses-fence`, upheld in
+    /// `adj-u83c1-constraints-recheck-fails-gc2`). Consulting [`worktree::spawn_fence`]
+    /// here closes that gap the same way `sweep_terminal`'s own internal check does,
+    /// reusing the identical fence authority rather than a second notion of liveness.
+    fn gc_integrated_branches(
+        &self,
+        rs: &ledger::RunState,
+        stages: &BTreeMap<String, Stage>,
+        events: &[Event],
+    ) {
+        self.gc_integrated_branches_logged(rs, stages, events, &mut |line| eprintln!("{line}"));
+    }
+
+    /// [`Self::gc_integrated_branches`]'s real body, with its evidence lines routed
+    /// through an injected `log` sink instead of a hardcoded `eprintln!` - mirrors
+    /// [`worktree::sweep_terminal`]/`sweep_terminal_logged`'s identical DI seam (strict DI
+    /// per this crate's discipline: no hardcoded I/O a test cannot observe), so a KEPT vs.
+    /// REMOVED fence decision is itself an assertable fact here too.
+    fn gc_integrated_branches_logged(
+        &self,
+        rs: &ledger::RunState,
+        stages: &BTreeMap<String, Stage>,
+        events: &[Event],
+        log: &mut dyn FnMut(&str),
+    ) {
         // The SAME caller-resolved scratch root every other `Worktree::create`/`discard`
         // call site in this file already computes (spec 79 round-2 fix): threaded through
         // to `reclaim_worktree_on_branch` so its reap-before-removal is authorized against
@@ -6934,15 +6972,81 @@ impl RunCtx<'_> {
                 } else {
                     u.branch.clone()
                 };
-                // Ordered teardown, mirroring the fresh half: remove the lingering
-                // worktree FIRST (or `git branch -D` refuses the checked-out branch and
-                // BOTH survive), THEN delete the branch. Best-effort exactly like the
-                // fresh half's `let _`.
-                let _ = worktree::reclaim_worktree_on_branch(&self.deps.repo, &branch, &scratch);
-                let _ = Worktree::delete_branch(&self.deps.repo, &branch);
+                // THE FENCE (spec 83, criterion 1): a unit already ledger-`Integrated`
+                // may still have a straggler spawn (a slower confirmatory review lens
+                // dispatched after the deciding verdict already integrated it) still
+                // working the very worktree this loop is about to reclaim.
+                // `SpawnFence::NoSpawn` (no spawn ever recorded for this unit) sweeps
+                // exactly as before - the fence has nothing to add and must never itself
+                // become a reason dead residue lingers.
+                let fence = worktree::spawn_fence(events, &u.id);
+                if fence.permits_reclaim() {
+                    // Round 3 fix for `sdet-u83c1r2-removing-evidence-repeats-forever-
+                    // after-real-removal` (UPHELD, ADJUDICATION u83c1 round 2, cause
+                    // genuine-defect): `rs.units` is a ledger-projected, monotonic,
+                    // never-shrinking `Integrated` set folded fresh on EVERY
+                    // `conductor::run`, so gating this log purely on ledger status plus
+                    // the fence's (also purely event-derived) liveness state - never on
+                    // the branch/worktree's actual PHYSICAL presence - made every
+                    // already-integrated unit with any recorded spawn re-emit a false
+                    // "removing branch" claim on every future step for the rest of the
+                    // campaign, long after the real removal already happened. Sharper
+                    // still, it double-attributed a SINGLE real vanish within the very
+                    // FIRST triggering step too: `main.rs::cmd_step` runs `worktree::
+                    // sweep_terminal` BEFORE `conductor::run` in the SAME step, so a
+                    // "hung" unit's worktree is typically already reclaimed by `sweep_
+                    // terminal` - complete with its OWN "worktree sweep: removing" line -
+                    // by the time this loop reaches it.
+                    //
+                    // Mirroring `sweep_terminal_logged`'s own candidate set (`git
+                    // worktree list --porcelain`, never the ledger), the "removing"
+                    // evidence now fires only when THIS call finds the worktree still
+                    // actually REGISTERED - i.e. only when this call is the one genuinely
+                    // performing the removal (the resume backstop's sole-reclaimer case:
+                    // `gc_integrated_branches_logged_prints_removing_evidence_for_a_
+                    // terminal_spawns_decision`). A branch whose worktree is already gone
+                    // - reclaimed by a prior call to this same function on an earlier
+                    // step (`..._does_not_repeat_removing_evidence_once_the_real_
+                    // removal_already_happened`), or by `sweep_terminal` moments earlier
+                    // in the SAME step (the periphery suite's `hung` arm) - stays silent
+                    // instead of re-claiming a removal that already happened or
+                    // duplicating another authority's own evidence for the identical
+                    // vanish. The best-effort reclaim calls themselves are UNCHANGED -
+                    // still unconditional and idempotent exactly as before: an orphaned
+                    // branch a prior worktree removal left behind is still silently
+                    // cleaned up here
+                    // (`..._stays_silent_for_an_already_gone_worktree_but_still_
+                    // reclaims_an_orphaned_branch`), just without a second headline for
+                    // it.
+                    let worktree_present = !matches!(fence, worktree::SpawnFence::NoSpawn)
+                        && worktree::registered_worktree_for(&self.deps.repo, &branch).is_some();
+                    if worktree_present {
+                        log(&format!(
+                            "rigger: branch-gc: removing branch {branch:?} - {}",
+                            fence.evidence(&u.id)
+                        ));
+                    }
+                    // Ordered teardown, mirroring the fresh half: remove the lingering
+                    // worktree FIRST (or `git branch -D` refuses the checked-out branch
+                    // and BOTH survive), THEN delete the branch. Best-effort exactly like
+                    // the fresh half's `let _`.
+                    let _ =
+                        worktree::reclaim_worktree_on_branch(&self.deps.repo, &branch, &scratch);
+                    let _ = Worktree::delete_branch(&self.deps.repo, &branch);
+                } else {
+                    log(&format!(
+                        "rigger: branch-gc: kept branch {branch:?} - {}",
+                        fence.evidence(&u.id)
+                    ));
+                }
             }
             // See `mutation_scratch_settled`'s own doc comment for why this predicate
-            // covers more than the `Integrated` branch/worktree teardown just above.
+            // covers more than the `Integrated` branch/worktree teardown just above - it
+            // is UNGATED by THE FENCE above on purpose: that fence protects the WORKTREE/
+            // BRANCH a straggler spawn may still be working in, never the unit's separate
+            // registered mutation-scratch (build debris with zero review value once
+            // mutation testing has finished, per that predicate's own doc comment), so a
+            // fenced (kept) unit above still reaches this check exactly as before.
             if mutation_scratch_settled(u, rs, stages) {
                 self.reclaim_terminal_unit_mutation_scratch(&u.id);
             }
@@ -17393,6 +17497,454 @@ mod tests {
         assert!(
             branch_present(&repo_path, &unit_branch("stuck")),
             "the escalated unit's branch must be retained as the human's evidence"
+        );
+    }
+
+    #[test]
+    fn branch_gc_fences_reclaim_behind_an_in_flight_straggler_spawn_and_reclaims_once_it_answers() {
+        // Spec 83, criterion 1 (THE FENCE), round 2 fix for
+        // `adj-u83c1-constraints-recheck-fails-gc2`: `gc_integrated_branches` is a THIRD
+        // worktree-reclaim authority (alongside `sweep_terminal`/`current_run_units`), and
+        // must consult the identical `spawn_fence` before reclaiming an `Integrated` unit's
+        // branch/worktree - a straggler spawn for the same unit (a slower confirmatory
+        // review lens dispatched AFTER the deciding verdict already integrated it) must
+        // fence the reclaim off here exactly as it already does for `sweep_terminal`, and
+        // the reclaim must proceed once that spawn answers with a real result. This is the
+        // fast, crate-internal counterpart to the periphery suite's real-process-boundary
+        // test (`tests/worktree_liveness_fence_periphery.rs::step_worktree_sweep_
+        // discriminates_in_flight_hung_and_terminal_spawns_across_real_process_boundaries`),
+        // driving the identical shape directly through the public `run()` resume seam.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        commit_on_unit_branch(&repo_path, "fenced", "fenced.rs", "fn fenced() {}\n");
+        assert!(
+            branch_present(&repo_path, &unit_branch("fenced")),
+            "precondition: the integrated unit's branch exists before the run"
+        );
+
+        let st = Store::open(":memory:").unwrap();
+        seed_events_in_run(
+            &st,
+            &[],
+            &[
+                Event::new(
+                    ledger::TYPE_UNIT_STARTED,
+                    serde_json::to_vec(
+                        &json!({"id": "fenced", "agent": "worker", "branch": unit_branch("fenced")}),
+                    )
+                    .unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_INTEGRATED,
+                    serde_json::to_vec(&json!({"id": "fenced", "commit": "f00"})).unwrap(),
+                ),
+                spawn::SpawnRequest::new("fenced", "fenced", "adversary", 0, "verify")
+                    .to_event()
+                    .unwrap(),
+            ],
+        );
+
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["fenced"].status, ledger::Status::Integrated);
+        assert!(
+            branch_present(&repo_path, &unit_branch("fenced")),
+            "an in-flight latest spawn must fence the branch off THIS resume-path reclaim \
+             entirely, even though the unit's own ledger status already reads Integrated"
+        );
+
+        // The straggler now answers, exactly as a review lens finishing late would.
+        st.append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[spawn::SpawnResult::ok("fenced/adversary#0", "approve")
+                .to_event()
+                .unwrap()],
+        )
+        .unwrap();
+
+        let rs2 = run(&cfg, &deps).unwrap();
+        assert_eq!(rs2.units["fenced"].status, ledger::Status::Integrated);
+        assert!(
+            !branch_present(&repo_path, &unit_branch("fenced")),
+            "once its latest spawn has a real result the fence's own check no longer blocks \
+             the pre-existing reclaim - the branch must be gone exactly as it was before \
+             THE FENCE existed"
+        );
+    }
+
+    #[test]
+    fn gc_integrated_branches_logged_prints_kept_evidence_for_an_in_flight_straggler_spawn() {
+        // Spec 83, criterion 1 (THE FENCE) Design text: "each sweep decision is
+        // attributable from the log with its evidence" - this governs `gc_integrated_
+        // branches` too, not only `sweep_terminal`. Drives `gc_integrated_branches_logged`
+        // directly (the DI seam), bypassing the public `run()` resume path entirely, so no
+        // OTHER reclaim authority (`sweep_terminal` is a `main.rs::cmd_step` concept
+        // `conductor::run` never reaches) can mask this authority's OWN evidence text -
+        // mirrors `worktree::sweep_terminal_prints_evidence_for_a_kept_decision_but_not_
+        // for_a_removed_no_spawn_one`'s identical precedent for the sibling reclaim
+        // authority. Round-2 addition: `branch_gc_fences_reclaim_behind_an_in_flight_
+        // straggler_spawn_and_reclaims_once_it_answers` above only pins WHETHER the
+        // branch survives, never the log text, so a flipped log condition (caught live as
+        // mutant `src/conductor.rs:6984:24: delete ! in gc_integrated_branches_logged`,
+        // TIMEOUT on an unrelated `cargo tree` package-cache lock contention, not a real
+        // kill) passed it undetected.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        commit_on_unit_branch(&repo_path, "fenced", "fenced.rs", "fn fenced() {}\n");
+
+        let events = vec![
+            Event::new(
+                ledger::TYPE_UNIT_STARTED,
+                serde_json::to_vec(
+                    &json!({"id": "fenced", "agent": "worker", "branch": unit_branch("fenced")}),
+                )
+                .unwrap(),
+            ),
+            Event::new(
+                ledger::TYPE_UNIT_INTEGRATED,
+                serde_json::to_vec(&json!({"id": "fenced", "commit": "f00"})).unwrap(),
+            ),
+            spawn::SpawnRequest::new("fenced", "fenced", "adversary", 0, "verify")
+                .to_event()
+                .unwrap(),
+        ];
+        let rs = ledger::project(&events).unwrap();
+        let stages: BTreeMap<String, Stage> = BTreeMap::new();
+
+        let st = Store::open(":memory:").unwrap();
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        let mut lines: Vec<String> = Vec::new();
+        ctx.gc_integrated_branches_logged(&rs, &stages, &events, &mut |l| {
+            lines.push(l.to_string())
+        });
+
+        assert!(
+            branch_present(&repo_path, &unit_branch("fenced")),
+            "an in-flight latest spawn must fence the branch off this reclaim authority too"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("kept") && l.contains("fenced") && l.contains("in flight")),
+            "the kept decision must be attributable from the log: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn gc_integrated_branches_logged_prints_removing_evidence_for_a_terminal_spawns_decision() {
+        // The counterpart, mirroring `worktree::sweep_terminal_prints_evidence_for_a_
+        // removed_terminal_spawn_decision`'s own reasoning verbatim: a flipped log
+        // condition that prints on the WRONG arm still passes the "kept" test above (an
+        // in-flight spawn never reaches this arm at all - `permits_reclaim()` is false),
+        // so this pins the REMOVING arm specifically, closing the exact gap the live
+        // TIMEOUT mutant at `gc_integrated_branches_logged`'s log-condition line exposed.
+        //
+        // Round 3 fix for `sdet-u83c1r2-removing-evidence-repeats-forever-after-real-
+        // removal` (UPHELD): the "removing" line is now gated on the worktree still being
+        // PHYSICALLY REGISTERED (mirroring `sweep_terminal_logged`'s own `git worktree
+        // list --porcelain`-driven candidate set), so this test deliberately does NOT use
+        // `commit_on_unit_branch` (which `wt.remove()`s its seed worktree, modeling the
+        // dominant graceful path where the fresh-half teardown already removed both the
+        // worktree and the branch together) - it instead leaves the worktree REGISTERED,
+        // modeling the actual steady state this THIRD reclaim authority backstops: a step
+        // process crashed strictly between its own graceful teardown's two back-to-back
+        // calls (`w.remove()` immediately followed by `Worktree::delete_branch`, e.g.
+        // conductor.rs:3459-3470), so on a later resume BOTH the branch and its worktree
+        // are still fully present for `gc_integrated_branches` to find and reclaim itself,
+        // as the sole authority that ever touches this unit's branch/worktree.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let seed_dir = std::env::temp_dir().join(format!(
+            "rigger-seed-{}-{}",
+            sanitize_for_path("answered"),
+            &uuid::Uuid::new_v4().to_string()[..8]
+        ));
+        let seed_wt = crate::worktree::Worktree::create(
+            &repo_path,
+            seed_dir.to_str().unwrap(),
+            &unit_branch("answered"),
+            "",
+        )
+        .unwrap();
+        std::fs::write(
+            Path::new(&seed_wt.dir).join("answered.rs"),
+            "fn answered() {}\n",
+        )
+        .unwrap();
+        let committed = seed_wt.commit("rigger: prior window work").unwrap();
+        assert!(!committed.is_empty(), "the prior window must commit work");
+
+        let events = vec![
+            Event::new(
+                ledger::TYPE_UNIT_STARTED,
+                serde_json::to_vec(
+                    &json!({"id": "answered", "agent": "worker", "branch": unit_branch("answered")}),
+                )
+                .unwrap(),
+            ),
+            Event::new(
+                ledger::TYPE_UNIT_INTEGRATED,
+                serde_json::to_vec(&json!({"id": "answered", "commit": "a11"})).unwrap(),
+            ),
+            spawn::SpawnRequest::new("answered", "answered", "adversary", 0, "verify")
+                .to_event()
+                .unwrap(),
+            spawn::SpawnResult::ok("answered/adversary#0", "approve")
+                .to_event()
+                .unwrap(),
+        ];
+        let rs = ledger::project(&events).unwrap();
+        let stages: BTreeMap<String, Stage> = BTreeMap::new();
+
+        let st = Store::open(":memory:").unwrap();
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        let mut lines: Vec<String> = Vec::new();
+        ctx.gc_integrated_branches_logged(&rs, &stages, &events, &mut |l| {
+            lines.push(l.to_string())
+        });
+
+        assert!(
+            !branch_present(&repo_path, &unit_branch("answered")),
+            "a terminal (answered) latest spawn must not block this reclaim authority"
+        );
+        assert!(
+            !Path::new(&seed_wt.dir).exists(),
+            "the still-registered worktree must be reclaimed too, not only the branch ref"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("removing")
+                && l.contains("answered")
+                && l.contains("terminal")),
+            "the removed decision must be attributable from the log when this call is the \
+             one genuinely performing the removal: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn gc_integrated_branches_logged_stays_silent_for_an_already_gone_worktree_but_still_reclaims_an_orphaned_branch(
+    ) {
+        // Round 3 fix for `sdet-u83c1r2-removing-evidence-repeats-forever-after-real-
+        // removal` (UPHELD in ADJUDICATION u83c1 round 2, cause genuine-defect): the
+        // DOMINANT graceful path (e.g. conductor.rs:3459-3470) removes a unit's worktree
+        // and deletes its branch back-to-back in the SAME call, so by the time a LATER
+        // `conductor::run` examines this unit, `commit_on_unit_branch`'s own `wt.remove()`
+        // models exactly that - the worktree is already gone, and only a lingering branch
+        // ref remains (either a rarer crash strictly between those two teardown lines, or
+        // - the periphery suite's `hung` arm - `worktree::sweep_terminal` already reclaimed
+        // the worktree moments earlier in the SAME `rigger step`, per `main.rs::cmd_step`
+        // running it BEFORE `conductor::run`). Before this fix, `gc_integrated_branches_
+        // logged` printed a false "removing branch" claim in BOTH cases regardless of
+        // physical presence, either forever (the ledger's `Integrated` set never shrinks)
+        // or as a duplicate of `sweep_terminal`'s own line for the identical vanish. The
+        // fix gates the LOG on the worktree still being registered, mirroring `sweep_
+        // terminal_logged`'s own live-git-state candidate set - so this scenario now stays
+        // silent, while the best-effort `Worktree::delete_branch` call underneath still
+        // reclaims the orphaned branch exactly as before (idempotent, unconditional, per
+        // the required fix's own explicit carve-out for the reclaim calls themselves).
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        commit_on_unit_branch(&repo_path, "settled", "settled.rs", "fn settled() {}\n");
+        assert!(
+            branch_present(&repo_path, &unit_branch("settled")),
+            "precondition: the branch survives its own worktree's removal"
+        );
+
+        let events = vec![
+            Event::new(
+                ledger::TYPE_UNIT_STARTED,
+                serde_json::to_vec(
+                    &json!({"id": "settled", "agent": "worker", "branch": unit_branch("settled")}),
+                )
+                .unwrap(),
+            ),
+            Event::new(
+                ledger::TYPE_UNIT_INTEGRATED,
+                serde_json::to_vec(&json!({"id": "settled", "commit": "5e77"})).unwrap(),
+            ),
+            spawn::SpawnRequest::new("settled", "settled", "adversary", 0, "verify")
+                .to_event()
+                .unwrap(),
+            spawn::SpawnResult::ok("settled/adversary#0", "approve")
+                .to_event()
+                .unwrap(),
+        ];
+        let rs = ledger::project(&events).unwrap();
+        let stages: BTreeMap<String, Stage> = BTreeMap::new();
+
+        let st = Store::open(":memory:").unwrap();
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        let mut lines: Vec<String> = Vec::new();
+        ctx.gc_integrated_branches_logged(&rs, &stages, &events, &mut |l| {
+            lines.push(l.to_string())
+        });
+
+        assert!(
+            !branch_present(&repo_path, &unit_branch("settled")),
+            "the orphaned branch must still be silently reclaimed - only the log emission \
+             is gated, never the underlying best-effort delete"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.contains("removing") && l.contains("settled")),
+            "no removing evidence may be printed for a branch whose worktree is already \
+             gone - it is either a re-claim of a removal that already happened (the \
+             forever-repeat defect) or a duplicate of `sweep_terminal`'s own line for the \
+             identical vanish moments earlier in the same step: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn gc_integrated_branches_logged_does_not_repeat_removing_evidence_once_the_real_removal_already_happened(
+    ) {
+        // The direct regression pin for `sdet-u83c1r2-removing-evidence-repeats-forever-
+        // after-real-removal` / `adv-u83c1r2-uphold-removing-evidence-repeats-forever-own-
+        // repro` (both UPHELD): `rs.units` is a ledger-projected, monotonic, never-
+        // shrinking `Integrated` set folded fresh on EVERY `conductor::run` (every `rigger
+        // step`), so a unit that reads `Integrated` on step N still reads `Integrated` on
+        // every step after it - and, pre-fix, `gc_integrated_branches_logged` re-printed a
+        // false "removing branch" claim on every one of those future steps, forever, long
+        // after the real removal already happened on step N. This drives the SAME call
+        // TWICE over the IDENTICAL `rs`/`events` - exactly what a later `rigger step`
+        // resolves for such a unit - and pins that only the FIRST call (the one that
+        // genuinely finds the worktree still registered and reclaims it) logs "removing";
+        // the second call, over the same never-shrinking `Integrated` set, must stay
+        // silent because the branch and worktree are already gone.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let seed_dir = std::env::temp_dir().join(format!(
+            "rigger-seed-{}-{}",
+            sanitize_for_path("repeat"),
+            &uuid::Uuid::new_v4().to_string()[..8]
+        ));
+        let seed_wt = crate::worktree::Worktree::create(
+            &repo_path,
+            seed_dir.to_str().unwrap(),
+            &unit_branch("repeat"),
+            "",
+        )
+        .unwrap();
+        std::fs::write(
+            Path::new(&seed_wt.dir).join("repeat.rs"),
+            "fn repeat() {}\n",
+        )
+        .unwrap();
+        let committed = seed_wt.commit("rigger: prior window work").unwrap();
+        assert!(!committed.is_empty(), "the prior window must commit work");
+
+        let events = vec![
+            Event::new(
+                ledger::TYPE_UNIT_STARTED,
+                serde_json::to_vec(
+                    &json!({"id": "repeat", "agent": "worker", "branch": unit_branch("repeat")}),
+                )
+                .unwrap(),
+            ),
+            Event::new(
+                ledger::TYPE_UNIT_INTEGRATED,
+                serde_json::to_vec(&json!({"id": "repeat", "commit": "2e97"})).unwrap(),
+            ),
+            spawn::SpawnRequest::new("repeat", "repeat", "adversary", 0, "verify")
+                .to_event()
+                .unwrap(),
+            spawn::SpawnResult::ok("repeat/adversary#0", "approve")
+                .to_event()
+                .unwrap(),
+        ];
+        let rs = ledger::project(&events).unwrap();
+        let stages: BTreeMap<String, Stage> = BTreeMap::new();
+
+        let st = Store::open(":memory:").unwrap();
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        let mut first: Vec<String> = Vec::new();
+        ctx.gc_integrated_branches_logged(&rs, &stages, &events, &mut |l| {
+            first.push(l.to_string())
+        });
+        assert!(
+            !branch_present(&repo_path, &unit_branch("repeat")),
+            "the first call must genuinely reclaim the branch"
+        );
+        assert!(
+            first
+                .iter()
+                .any(|l| l.contains("removing") && l.contains("repeat")),
+            "the first, REAL removal must be attributable from the log: {first:?}"
+        );
+
+        // Second call: SAME `rs` (same ledger-projected `RunState`) and SAME `events` -
+        // exactly what a later `rigger step` resolves for this unit, since `rs.units` never
+        // shrinks. The branch and worktree are already fully gone from the first call.
+        let mut second: Vec<String> = Vec::new();
+        ctx.gc_integrated_branches_logged(&rs, &stages, &events, &mut |l| {
+            second.push(l.to_string())
+        });
+        assert!(
+            !second
+                .iter()
+                .any(|l| l.contains("removing") && l.contains("repeat")),
+            "a real vanish must be logged exactly once across the whole campaign - never \
+             re-claimed on every future step after the branch/worktree are already gone: \
+             {second:?}"
         );
     }
 
