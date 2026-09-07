@@ -40,6 +40,7 @@ mod common;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
@@ -180,6 +181,54 @@ fn seed_in_flight_spawn(root: &Path) {
             ),
         ],
     );
+}
+
+/// Nanosecond wall-clock timestamp, matching exactly what a real
+/// [`rigger::eventstore::sqlite::Store::append`] stamps - mirrors
+/// `tests/watchdog_cli_periphery.rs`'s own `now_nanos`.
+fn now_nanos() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as i64
+}
+
+/// Seed a run with exactly one in-flight spawn (`SPAWN_ID`, no recorded result), IDENTICAL to
+/// [`seed_in_flight_spawn`] except its two seed events (`RunStarted`, `SpawnRequested`) carry a
+/// `recorded_at`/`valid_from` `age_secs` in the past rather than "now". Inserted directly,
+/// bypassing the store's own current-time stamping - the only way to control it - mirroring
+/// `tests/watchdog_cli_periphery.rs`'s own `seed_order_signature` technique (a real, schema-
+/// correct row via a raw `INSERT`, not a mocked reader). Lets a test pin `watch_poll`'s "store
+/// quiet an hour" dead-driver clause deterministically without an actual hour of wall-clock
+/// wait, so the marker-heartbeat axis can be isolated and varied independently.
+fn seed_stale_in_flight_spawn(root: &Path, age_secs: i64) {
+    seed_store(root);
+    let db = root.join(".rigger").join("events.db");
+    // Opened through the real store first, so the schema is laid down exactly as the binary
+    // itself would lay it down (mirrors `seed_order_signature`'s own precondition).
+    Store::open(db.to_str().unwrap()).unwrap();
+    let stream = format!(
+        "{}{}",
+        Namespaced::prefix_for(&run_stream_identity(root)),
+        rigger::conductor::STREAM
+    );
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let ts = now_nanos() - age_secs * 1_000_000_000;
+    let run_started = format!(r#"{{"run":"{RUN_ID}","criteria":["seam"]}}"#);
+    let spawn_requested = format!(
+        r#"{{"id":"{SPAWN_ID}","unit":"seam-unit","stage":"implementer","prompt":"do the seam work"}}"#
+    );
+    for (revision, ty, row_id, body) in [
+        (1i64, "RunStarted", "e1", run_started),
+        (2i64, "SpawnRequested", "e2", spawn_requested),
+    ] {
+        conn.execute(
+            "INSERT INTO events (stream, type, id, data, meta, valid_from, recorded_at, revision)
+             VALUES (?1, ?2, ?3, ?4, '{}', ?5, ?5, ?6)",
+            rusqlite::params![stream, ty, row_id, body.as_bytes(), ts, revision],
+        )
+        .unwrap();
+    }
 }
 
 /// Run `rigger <args>` with cwd `dir`. `RIGGER_TMPDIR` is explicitly cleared (never merely
@@ -426,5 +475,94 @@ fn status_resolves_a_configured_workdir_from_the_owning_root_with_no_agents_flee
         age.unwrap() < 120,
         "the reported heartbeat age must reflect the marker just touched under the \
          CONFIGURED workdir, not a mis-scoped read: got {age:?}"
+    );
+}
+
+/// The SAME round-2 seam as `status_resolves_a_configured_workdir_from_the_owning_root_with_
+/// no_agents_fleet_present` above, at `rigger watch`'s own real-binary boundary. The fix's own
+/// doc comment names `watch_poll` as bugged the IDENTICAL way `cmd_status` was: both resolved
+/// `defaults.workdir` via `config::load(".")` off the process's raw cwd, and both would
+/// silently lose a configured workdir whenever the owning root had no loadable
+/// `.rigger/agents/` fleet - `scratch_defaults` is the ONE shared resolver fixing both call
+/// sites identically. `watch_poll` never renders a per-spawn heartbeat age directly (unlike
+/// `cmd_status --json`'s `liveness_age_s`); the only user-visible channel a mis-resolved
+/// `workdir` reaches is `watch::detect`'s dead-driver conjunction (Signal 2): an ABSENT marker
+/// (because the read landed on the wrong scratch root) leaves `wave_liveness_ages` EMPTY for
+/// this spawn, and `.all()` over an empty map is vacuously `true` - so a mis-resolved workdir
+/// does not merely miss an age, it manufactures a FALSE `dead driver` anomaly out of a spawn
+/// that is, in fact, actively heartbeating. This test proves the fix suppresses that false
+/// positive: a quiet store (last event older than `watch::DEAD_DRIVER_QUIET_BOUND`, the "an
+/// hour" half of the conjunction, held constant so only the workdir-resolution axis varies), no
+/// step process, and a FRESH marker at the owning root's CONFIGURED (non-default) workdir -
+/// reachable only by resolving from the owning root, validate-independently - must report NO
+/// anomalies at all.
+#[test]
+fn watch_once_suppresses_a_false_dead_driver_when_the_configured_workdir_resolves_from_the_owning_root_with_no_agents_fleet(
+) {
+    let project = main_repo_with_commit();
+    let root = project.path();
+    seed_stale_in_flight_spawn(root, 4000);
+
+    let nested = nested_worktree(root, "rigger-wt-watch-workdir-seam");
+
+    let relocated = tempfile::tempdir().expect("create relocated workdir");
+    std::fs::write(
+        root.join(".rigger").join("workflow.yml"),
+        format!(
+            "name: w\ndefaults:\n  workdir: \"{}\"\n",
+            relocated.path().to_string_lossy()
+        ),
+    )
+    .expect("write the owning root's workflow.yml with a configured workdir");
+    // Fixture guard: no `.rigger/agents/` dir exists at the owning root either - confirms this
+    // test genuinely exercises the validate-independent axis of the fix, not just the
+    // cwd-vs-owning-root one.
+    assert!(
+        !root.join(".rigger").join("agents").exists(),
+        "fixture bug: this test requires an agents-less owning root to exercise the \
+         validate-independent axis of the fix"
+    );
+
+    // The REAL writer's path composition, using the configured workdir directly.
+    let scratch_root = real_scratch_root(root, relocated.path().to_str().unwrap());
+    let marker = rigger::liveness::marker_path(&scratch_root, RUN_ID, SPAWN_ID)
+        .expect("a spawn id must always resolve a marker path");
+    std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    std::fs::write(&marker, b"heartbeat").unwrap();
+
+    // The WRONG path a `config::load(".")`-from-nested-cwd regression would resolve: the
+    // nested worktree's own cwd has no workflow.yml at all (never committed), so it falls
+    // through to the empty-workdir default rung - a DIFFERENT scratch root than the configured
+    // one above, and one with NO marker, so this test cannot pass vacuously.
+    let wrong_scratch_root = real_scratch_root(&nested, "");
+    assert_ne!(
+        wrong_scratch_root, scratch_root,
+        "fixture bug: the cwd-based (nested, default-workdir) resolution must differ from the \
+         owning-root-configured one, else this test cannot discriminate the fix"
+    );
+    let wrong_marker = rigger::liveness::marker_path(&wrong_scratch_root, RUN_ID, SPAWN_ID)
+        .expect("marker path must resolve");
+    assert!(
+        !wrong_marker.exists(),
+        "fixture bug: a marker exists at the WRONG (cwd-based) location {wrong_marker:?}"
+    );
+
+    // `rigger watch --once`, run FROM the nested worktree - the exact surface a courier
+    // invoked from inside a unit worktree uses.
+    let out = run_rigger(&nested, &["watch", "--once"]);
+    assert!(
+        out.status.success(),
+        "rigger watch --once from a nested worktree must succeed even when the owning root \
+         has no agents fleet at all; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.trim().is_empty(),
+        "a quiet store with a genuinely fresh heartbeat (read from the owning root's \
+         configured workdir, without requiring a loadable agents fleet there) must report NO \
+         anomalies - a nonempty line here means the configured workdir was not resolved and \
+         `wave_liveness_ages` fell back to empty, manufacturing a false `dead driver`: got \
+         {stdout:?}"
     );
 }
