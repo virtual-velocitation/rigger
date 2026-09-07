@@ -6555,20 +6555,20 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3222,
-        "end_line": 3222,
+        "start_line": 3305,
+        "end_line": 3305,
         "name": "\"| Conductor orchestration: gates, courier, step/run lifecycle | 19 | 8,257 | \\\n        the `courier_registry_refresh_{boundary,fence,periphery}` trio (3 files) \\\n        pair together in 6 clusters confined to just themselves (2-5 sites each; \\\n        excludes the whole-codebase Command::new/`.rigger`-path mandatory-sweep \\\n        clusters, section 2, that also happen to intersect them) |\\n\""
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4518,
-        "end_line": 4518,
+        "start_line": 4615,
+        "end_line": 4615,
         "name": "\"fn a() {\\n    let _ = \\\".rigger/tmp\\\";\\n}\\n\""
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4521,
-        "end_line": 4521,
+        "start_line": 4618,
+        "end_line": 4618,
         "name": "\".rigger\""
       },
       {
@@ -8099,8 +8099,8 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4525,
-        "end_line": 4533,
+        "start_line": 4622,
+        "end_line": 4630,
         "name": "looks_error_shaping_matches_error_and_underscore_bounded_err_but_not_an_incidental_substring"
       }
     ],
@@ -9353,50 +9353,50 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3083,
-        "end_line": 3083,
-        "name": "\"A second mutation authority for one domain: the one previously-known \\\n        instance in this codebase (`src/dash.rs` reimplementing `src/reap.rs`'s \\\n        `/proc` pid scan, spec 85's own Goal example, upheld at spec 62's capstone) \\\n        is a duplicate READ-only reimplementation, not a bypassed MUTATION path - it \\\n        is section 2's finding (`u85c2-proc-stat-worked-example`, \\\n        `find_proc_stat_or_status_readers`), not re-counted here to avoid \\\n        double-charging one defect to two sections. Checked git as the one other \\\n        plausible second-authority candidate: every `Command::new(\\\"git\\\")` call \\\n        site in `src/conductor.rs` (22 sites) is at line >= 17297, inside \\\n        `#[cfg(test)] mod tests` - production `conductor.rs` never shells to git \\\n        directly, so `src/worktree.rs` is confirmed the sole production git-command \\\n        authority. No second mutation authority found beyond the already-cited, \\\n        already-catalogued `/proc` case.\\n\""
+        "start_line": 3136,
+        "end_line": 3136,
+        "name": "\"A second mutation authority for one domain: the one previously-known \\\n        instance in this codebase (`src/dash.rs` reimplementing `src/reap.rs`'s \\\n        `/proc` pid scan, spec 85's own Goal example, upheld at spec 62's capstone) \\\n        is a duplicate READ-only reimplementation, not a bypassed MUTATION path - it \\\n        is section 2's finding (`u85c2-proc-stat-worked-example`, \\\n        `find_proc_stat_or_status_readers`), not re-counted here to avoid \\\n        double-charging one defect to two sections. Checked git as the one other \\\n        plausible second-authority candidate: every `Command::new(\\\"git\\\")` call \\\n        site in `src/conductor.rs` (23 sites) is at line >= 17297, inside \\\n        `#[cfg(test)] mod tests` - production `conductor.rs` never shells to git \\\n        directly. `src/worktree.rs` is the sole git-worktree-mutation authority \\\n        OUTSIDE the composition root. Inside it, `src/main.rs` (exempt from the \\\n        port-concretion-reach check above, not from this one) holds two more \\\n        git-worktree-mutation sites: `reap_then_remove_worktree` \\\n        (`main.rs:2791-2805`), the sanctioned worktree half of the spec-34/spec-79 \\\n        orphan-sweep and extensively reviewed across those specs - a deliberate \\\n        design choice, not a gap; and `materialize_config_at_rev` \\\n        (`main.rs:5510-5556`), a real, already-known, non-blocking gap \\\n        (`arch-u13-config-checkout-bypasses-worktree-authority` / \\\n        `arch-u2r-config-checkout-shells-git` / \\\n        `arch-u2r2-replayrunner-and-config-checkout-persist-not-introduced`: the \\\n        `Worktree` API is branch-creating and exposes no detach-at-rev checkout, so \\\n        this is a gap in that authority rather than a competing abstraction). No \\\n        second mutation authority found beyond the already-cited, \\\n        already-catalogued `/proc` case and this already-dispositioned \\\n        `materialize_config_at_rev` gap.\\n\""
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4403,
-        "end_line": 4403,
+        "start_line": 4500,
+        "end_line": 4500,
         "name": "\"fn state_of(pid: u32) -> Option<char> {\\n    let stat = std::fs::read_to_string(format!(\\\"/proc/{pid}/stat\\\")).ok()?;\\n    stat.rsplit_once(')')?.1.split_whitespace().next()?.chars().next()\\n}\\n\""
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4408,
-        "end_line": 4408,
+        "start_line": 4505,
+        "end_line": 4505,
         "name": "\"fn starttime_of(pid: u32) -> Option<u64> {\\n    let stat = std::fs::read_to_string(format!(\\\"/proc/{pid}/stat\\\")).ok()?;\\n    stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.parse().ok()\\n}\\n\""
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4413,
-        "end_line": 4413,
+        "start_line": 4510,
+        "end_line": 4510,
         "name": "\"fn ppid_of(pid: u32) -> Option<u32> {\\n    let stat = std::fs::read_to_string(format!(\\\"/proc/{pid}/stat\\\")).ok()?;\\n    stat.rsplit_once(')')?.1.split_whitespace().nth(1)?.parse().ok()\\n}\\n\""
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4504,
-        "end_line": 4504,
+        "start_line": 4601,
+        "end_line": 4601,
         "name": "\"fn a() {\\n    let _ = std::fs::read_to_string(\\\"/proc/1/stat\\\");\\n    let _ = \\\"hello\\\";\\n}\\n\""
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4507,
-        "end_line": 4507,
+        "start_line": 4604,
+        "end_line": 4604,
         "name": "\"/proc\""
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4509,
-        "end_line": 4509,
+        "start_line": 4606,
+        "end_line": 4606,
         "name": "\"/proc\""
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4573,
-        "end_line": 4573,
+        "start_line": 4670,
+        "end_line": 4670,
         "name": "\"fn state_of(pid: u32) -> Option<char> {\\n    let s = std::fs::read_to_string(format!(\\\"/proc/{pid}/stat\\\")).ok()?;\\n    s.chars().next()\\n}\\nfn ppid_of(pid: u32) -> Option<u32> {\\n    let s = std::fs::read_to_string(format!(\\\"/proc/{pid}/status\\\")).ok()?;\\n    s.parse().ok()\\n}\\nfn unrelated() -> u32 {\\n    1\\n}\\n\""
       }
     ],
@@ -9469,20 +9469,20 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4395,
-        "end_line": 4421,
+        "start_line": 4492,
+        "end_line": 4518,
         "name": "three_near_but_not_identical_functions_cluster_as_near_with_every_site_and_one_home"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4499,
-        "end_line": 4510,
+        "start_line": 4596,
+        "end_line": 4607,
         "name": "proc_literal_sweep_finds_a_proc_path_string_and_ignores_an_unrelated_one"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4567,
-        "end_line": 4580,
+        "start_line": 4664,
+        "end_line": 4677,
         "name": "proc_stat_or_status_reader_sweep_finds_a_stat_reader_and_a_status_reader_but_not_an_unrelated_fn"
       }
     ],
@@ -10583,8 +10583,8 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3851,
-        "end_line": 3853,
+        "start_line": 3948,
+        "end_line": 3950,
         "name": "impl_self_type_still_handles_a_generic_self_type_with_a_where_clause"
       },
       {
@@ -11665,26 +11665,26 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3837,
-        "end_line": 3848,
+        "start_line": 3934,
+        "end_line": 3945,
         "name": "impl_self_type_strips_a_trailing_where_clause_on_a_non_generic_self_type"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3856,
-        "end_line": 3862,
+        "start_line": 3953,
+        "end_line": 3959,
         "name": "strip_trailing_where_clause_is_a_word_boundary_match_not_a_substring_match"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3904,
-        "end_line": 3908,
+        "start_line": 4001,
+        "end_line": 4005,
         "name": "pluralize_functions_uses_singular_only_at_exactly_one"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4198,
-        "end_line": 4208,
+        "start_line": 4295,
+        "end_line": 4305,
         "name": "ident_kind_marker_classifies_by_casing"
       }
     ],
@@ -14269,8 +14269,8 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3619,
-        "end_line": 3623,
+        "start_line": 3716,
+        "end_line": 3720,
         "name": "a_trait_method_signature_without_a_body_is_not_recorded"
       }
     ],
@@ -22602,19 +22602,19 @@
       {
         "file": "tests/simplification_audit.rs",
         "start_line": 3011,
-        "end_line": 3098,
+        "end_line": 3164,
         "name": "render_section_3"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3106,
-        "end_line": 3177,
+        "start_line": 3174,
+        "end_line": 3258,
         "name": "render_section_4"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3184,
-        "end_line": 3409,
+        "start_line": 3265,
+        "end_line": 3506,
         "name": "render_section_5"
       }
     ],
@@ -22627,14 +22627,14 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3501,
-        "end_line": 3510,
+        "start_line": 3598,
+        "end_line": 3607,
         "name": "a_simple_free_function_is_found_with_its_line_span"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3741,
-        "end_line": 3747,
+        "start_line": 3838,
+        "end_line": 3844,
         "name": "production_functions_before_a_cfg_test_mod_are_not_flagged_test"
       }
     ],
@@ -22647,92 +22647,92 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3513,
-        "end_line": 3521,
+        "start_line": 3610,
+        "end_line": 3618,
         "name": "two_sibling_functions_are_both_found_in_order"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3531,
-        "end_line": 3536,
+        "start_line": 3628,
+        "end_line": 3633,
         "name": "fnv1a_is_not_mistaken_for_the_fn_keyword"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3543,
-        "end_line": 3548,
+        "start_line": 3640,
+        "end_line": 3645,
         "name": "a_brace_inside_a_line_comment_is_ignored"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3551,
-        "end_line": 3556,
+        "start_line": 3648,
+        "end_line": 3653,
         "name": "a_brace_inside_a_block_comment_is_ignored"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3559,
-        "end_line": 3564,
+        "start_line": 3656,
+        "end_line": 3661,
         "name": "nested_block_comments_are_handled"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3567,
-        "end_line": 3572,
+        "start_line": 3664,
+        "end_line": 3669,
         "name": "a_brace_inside_a_string_literal_is_ignored"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3575,
-        "end_line": 3580,
+        "start_line": 3672,
+        "end_line": 3677,
         "name": "a_brace_inside_a_raw_string_with_hashes_is_ignored"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3583,
-        "end_line": 3588,
+        "start_line": 3680,
+        "end_line": 3685,
         "name": "a_brace_inside_a_byte_string_is_ignored"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3591,
-        "end_line": 3596,
+        "start_line": 3688,
+        "end_line": 3693,
         "name": "a_brace_char_literal_is_not_mistaken_for_real_braces"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3599,
-        "end_line": 3604,
+        "start_line": 3696,
+        "end_line": 3701,
         "name": "a_lifetime_is_not_mistaken_for_a_char_literal"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3607,
-        "end_line": 3612,
+        "start_line": 3704,
+        "end_line": 3709,
         "name": "an_escaped_quote_char_literal_does_not_confuse_the_scanner"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3626,
-        "end_line": 3631,
+        "start_line": 3723,
+        "end_line": 3728,
         "name": "a_trait_default_method_with_a_body_is_recorded"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3634,
-        "end_line": 3639,
+        "start_line": 3731,
+        "end_line": 3736,
         "name": "a_fn_pointer_type_usage_is_not_recorded"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3642,
-        "end_line": 3648,
+        "start_line": 3739,
+        "end_line": 3745,
         "name": "a_semicolon_inside_an_array_type_param_does_not_end_the_signature_early"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3766,
-        "end_line": 3772,
+        "start_line": 3863,
+        "end_line": 3869,
         "name": "braces_from_if_match_and_closures_do_not_break_the_enclosing_fns_span"
       }
     ],
@@ -22745,20 +22745,20 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3655,
-        "end_line": 3661,
+        "start_line": 3752,
+        "end_line": 3758,
         "name": "a_method_inside_an_impl_block_carries_its_header"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3664,
-        "end_line": 3672,
+        "start_line": 3761,
+        "end_line": 3769,
         "name": "a_trait_impl_header_keeps_the_trait_for_type_text"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3675,
-        "end_line": 3687,
+        "start_line": 3772,
+        "end_line": 3784,
         "name": "a_method_inside_an_impl_nested_in_a_cfg_test_mod_is_flagged_test"
       }
     ],
@@ -22771,14 +22771,14 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3712,
-        "end_line": 3718,
+        "start_line": 3809,
+        "end_line": 3815,
         "name": "a_function_directly_in_a_cfg_test_mod_is_flagged_test"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3721,
-        "end_line": 3730,
+        "start_line": 3818,
+        "end_line": 3827,
         "name": "a_nested_named_test_submodule_is_still_flagged_test_and_named"
       }
     ],
@@ -22791,20 +22791,20 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3816,
-        "end_line": 3822,
+        "start_line": 3913,
+        "end_line": 3919,
         "name": "a_method_is_classified_under_its_impl_self_type"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3825,
-        "end_line": 3834,
+        "start_line": 3922,
+        "end_line": 3931,
         "name": "a_method_on_a_generic_impl_block_strips_the_impls_own_leading_generics"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3865,
-        "end_line": 3870,
+        "start_line": 3962,
+        "end_line": 3967,
         "name": "a_trait_impl_method_is_classified_under_the_implementing_type_not_the_trait"
       }
     ],
@@ -22817,14 +22817,14 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3985,
-        "end_line": 3991,
+        "start_line": 4082,
+        "end_line": 4088,
         "name": "replace_section_1_only_touches_section_1_leaving_later_sections_intact"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4949,
-        "end_line": 4956,
+        "start_line": 5046,
+        "end_line": 5053,
         "name": "replace_section_2_only_touches_section_2_leaving_neighbors_intact"
       }
     ],
@@ -22837,14 +22837,14 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4035,
-        "end_line": 4057,
+        "start_line": 4132,
+        "end_line": 4154,
         "name": "responsibility_map_json_matches_the_tree_or_is_rewritten"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5092,
-        "end_line": 5114,
+        "start_line": 5189,
+        "end_line": 5211,
         "name": "duplication_catalog_json_matches_the_tree_or_is_rewritten"
       }
     ],
@@ -22857,14 +22857,14 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4152,
-        "end_line": 4160,
+        "start_line": 4249,
+        "end_line": 4257,
         "name": "string_and_raw_string_literals_are_one_lit_token_each"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4172,
-        "end_line": 4180,
+        "start_line": 4269,
+        "end_line": 4277,
         "name": "number_literals_including_a_fraction_are_lit_tokens"
       }
     ],
@@ -22877,32 +22877,32 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4395,
-        "end_line": 4421,
+        "start_line": 4492,
+        "end_line": 4518,
         "name": "three_near_but_not_identical_functions_cluster_as_near_with_every_site_and_one_home"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4424,
-        "end_line": 4442,
+        "start_line": 4521,
+        "end_line": 4539,
         "name": "cluster_ids_are_assigned_after_deterministic_sort_and_sites_are_sorted_within_a_cluster"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4445,
-        "end_line": 4456,
+        "start_line": 4542,
+        "end_line": 4553,
         "name": "same_impl_block_duplicate_methods_propose_that_types_home"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4463,
-        "end_line": 4475,
+        "start_line": 4560,
+        "end_line": 4572,
         "name": "command_new_sweep_finds_a_call_site_and_names_it"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4536,
-        "end_line": 4548,
+        "start_line": 4633,
+        "end_line": 4645,
         "name": "error_shaping_sweep_requires_both_the_name_shape_and_a_format_call"
       }
     ],
@@ -22915,14 +22915,14 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4567,
-        "end_line": 4580,
+        "start_line": 4664,
+        "end_line": 4677,
         "name": "proc_stat_or_status_reader_sweep_finds_a_stat_reader_and_a_status_reader_but_not_an_unrelated_fn"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4827,
-        "end_line": 4844,
+        "start_line": 4924,
+        "end_line": 4941,
         "name": "bespoke_lexer_sweep_finds_the_named_trio_but_not_an_unrelated_fn"
       }
     ],
@@ -22935,14 +22935,14 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4587,
-        "end_line": 4600,
+        "start_line": 4684,
+        "end_line": 4697,
         "name": "the_dash_reap_proc_stat_pair_the_spec_names_lands_in_one_real_cluster"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4699,
-        "end_line": 4714,
+        "start_line": 4796,
+        "end_line": 4811,
         "name": "the_two_exploration_graph_fixture_builders_the_adversarial_sample_found_land_in_one_real_cluster"
       }
     ],
@@ -22955,14 +22955,14 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4603,
-        "end_line": 4610,
+        "start_line": 4700,
+        "end_line": 4707,
         "name": "constructs_own_type_literal_matches_self_and_the_named_type_but_not_an_unrelated_call"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4613,
-        "end_line": 4621,
+        "start_line": 4710,
+        "end_line": 4718,
         "name": "constructs_own_type_literal_matches_shorthand_field_init_too"
       }
     ],
@@ -22975,14 +22975,14 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4647,
-        "end_line": 4665,
+        "start_line": 4744,
+        "end_line": 4762,
         "name": "the_spawn_result_constructor_triple_the_adversarial_sample_found_lands_in_one_real_cluster"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4851,
-        "end_line": 4868,
+        "start_line": 4948,
+        "end_line": 4965,
         "name": "the_bespoke_lexer_and_canonical_extractor_the_lens_routed_land_in_one_real_cluster"
       }
     ],
@@ -22995,20 +22995,20 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4717,
-        "end_line": 4745,
+        "start_line": 4814,
+        "end_line": 4842,
         "name": "same_named_helper_sweep_excludes_required_trait_impl_methods_across_adapters"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4748,
-        "end_line": 4777,
+        "start_line": 4845,
+        "end_line": 4874,
         "name": "same_named_helper_sweep_excludes_a_trait_default_method_and_its_override"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4780,
-        "end_line": 4804,
+        "start_line": 4877,
+        "end_line": 4901,
         "name": "same_named_helper_sweep_still_catches_two_inherent_impls_sharing_a_method_name"
       }
     ],
@@ -23021,14 +23021,14 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4972,
-        "end_line": 4976,
+        "start_line": 5069,
+        "end_line": 5073,
         "name": "sample_indices_is_deterministic_for_a_fixed_seed"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5002,
-        "end_line": 5006,
+        "start_line": 5099,
+        "end_line": 5103,
         "name": "different_seeds_produce_different_draws"
       }
     ],
@@ -23041,14 +23041,14 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5121,
-        "end_line": 5158,
+        "start_line": 5218,
+        "end_line": 5255,
         "name": "report_section_2_matches_the_tree_or_is_rewritten"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5233,
-        "end_line": 5279,
+        "start_line": 5330,
+        "end_line": 5376,
         "name": "report_sections_3_through_5_match_the_tree_or_are_rewritten"
       }
     ],
@@ -23061,14 +23061,14 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5166,
-        "end_line": 5190,
+        "start_line": 5263,
+        "end_line": 5287,
         "name": "replace_sections_3_to_5_only_touches_that_span_leaving_neighbors_intact"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5193,
-        "end_line": 5210,
+        "start_line": 5290,
+        "end_line": 5307,
         "name": "replace_sections_3_to_5_falls_back_to_end_of_string_when_no_section_6_heading_exists"
       }
     ],
