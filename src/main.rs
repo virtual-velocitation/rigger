@@ -2205,11 +2205,31 @@ fn cmd_step(args: &[String]) -> Res {
     // call itself stays INLINE here (not pulled into that helper) because
     // `worktree_sweep_completes_before_any_add_within_one_step` (spec 51, criterion 5) pins its
     // presence and lock->sweep->add ordering directly in `cmd_step`'s own source text.
+    //
+    // Spec 83, criterion 1: THE FENCE. `sweep_terminal` additionally consults the unit's
+    // LATEST requested spawn (`worktree::spawn_fence`) before removing an already-merged,
+    // ledger-terminal branch - a second, INDEPENDENT read of the same stream, scoped the same
+    // way `current_run_units` scopes its own fold, so a straggler spawn for a unit
+    // `current_run_units` already read as terminal still fences off its worktree. An
+    // unreadable second read degrades to an EMPTY events slice, under which `spawn_fence`
+    // reads every candidate as `NoSpawn` - the pre-spec-83 rule alone, never a NEW way to
+    // block a reclaim - so the degrade costs nothing beyond forgoing this step's extra
+    // protection, exactly like `live_branches_for_sweep`'s own read one line above.
     if let Some(root) = &scratch_root {
         if let Some(live_branches) =
             live_branches_for_sweep(store.read_stream(conductor::STREAM, 0, Direction::Forward))
         {
-            match rigger::worktree::sweep_terminal(&repo, root, RUN_BRANCH, &live_branches) {
+            let fence_events = store
+                .read_stream(conductor::STREAM, 0, Direction::Forward)
+                .map(|evs| runscope::current_run(&evs).to_vec())
+                .unwrap_or_default();
+            match rigger::worktree::sweep_terminal(
+                &repo,
+                root,
+                RUN_BRANCH,
+                &live_branches,
+                &fence_events,
+            ) {
                 Ok(0) => {}
                 Ok(n) => eprintln!("rigger step: swept {n} terminal worktree(s) from {root}"),
                 Err(e) => eprintln!("rigger step: scratch sweep skipped: {e}"),
@@ -9799,7 +9819,20 @@ fn current_run_units(events: &[Event]) -> RunUnits {
         ..RunUnits::default()
     };
     for u in run.units.values() {
-        if run.is_terminal(&u.id) {
+        // Spec 83, criterion 1: THE FENCE. A unit the ledger reads terminal can still have
+        // a STRAGGLER spawn working the same unit id (a slower confirmatory review lens
+        // still running after the deciding verdict already integrated it - the observed
+        // `u81c1` bug); `spawn_fence` closes that gap by consulting the unit's LATEST
+        // requested spawn directly, so `dead_slugs`/`live_branches` stay the ONE liveness
+        // authority every consumer (`sweep_terminal`, `reclaim_orphan_scratch` via
+        // `worktree_belongs_to_live`) already reads, rather than leaving a second notion of
+        // "in flight" for callers to reconcile themselves.
+        let fenced_live = run.is_terminal(&u.id)
+            && matches!(
+                rigger::worktree::spawn_fence(scoped, &u.id),
+                rigger::worktree::SpawnFence::InFlight { .. }
+            );
+        if run.is_terminal(&u.id) && !fenced_live {
             if let Some(slug) = u.branch.strip_prefix("rigger/u/") {
                 if !slug.is_empty() {
                     out.dead_slugs.insert(slug.to_string());
@@ -15729,6 +15762,75 @@ mod tests {
         assert_eq!(run.live_branches, slugs(["rigger/u/unit-6"]));
         assert_eq!(live_slugs(&run.live_branches), slugs(["unit-6"]));
         assert_eq!(run.dead_slugs, slugs(["unit-old", "unit-gone"]));
+    }
+
+    #[test]
+    fn current_run_units_spares_a_terminal_units_branch_whose_latest_spawn_is_still_in_flight() {
+        // Spec 83, criterion 1: THE FENCE. `unit-old` reads TERMINAL by the ledger alone
+        // (Integrated), the pre-spec-83 signal `dead_slugs` used exclusively - but a
+        // straggler spawn for the SAME unit (a slower review lens still working after the
+        // deciding verdict already integrated it) is still unanswered. The fence must keep
+        // its branch OUT of `dead_slugs` and IN `live_branches`, so neither
+        // `sweep_terminal`'s ancestry sweep nor `reclaim_orphan_scratch`'s backstop
+        // (`worktree_belongs_to_live`, keyed off these exact two sets) can remove its
+        // worktree out from under the straggler.
+        let events = [
+            Event::new(
+                runscope::TYPE_RUN_STARTED,
+                br#"{"run":"r1","criteria":["new"]}"#.to_vec(),
+            ),
+            Event::new(
+                ledger::TYPE_UNIT_STARTED,
+                br#"{"id":"unit-old","branch":"rigger/u/unit-old"}"#.to_vec(),
+            ),
+            Event::new(
+                ledger::TYPE_UNIT_INTEGRATED,
+                br#"{"id":"unit-old","commit":"abc"}"#.to_vec(),
+            ),
+            // The straggler: requested AFTER integration, still unanswered.
+            spawn::SpawnRequest::new("unit-old", "review", "adversary", 1, "p")
+                .to_event()
+                .unwrap(),
+        ];
+        let run = current_run_units(&events);
+        assert_eq!(
+            run.live_branches,
+            slugs(["rigger/u/unit-old"]),
+            "the fenced unit's branch must be LIVE despite the ledger reading it terminal"
+        );
+        assert!(
+            run.dead_slugs.is_empty(),
+            "a fenced unit must not ALSO appear dead - the two sets stay a partition"
+        );
+    }
+
+    #[test]
+    fn current_run_units_still_retires_a_terminal_unit_once_its_latest_spawn_answers() {
+        // The counterpart: once that same straggler spawn answers (any result, including a
+        // liveness fault), the unit reverts to dead exactly as it always has.
+        let events = [
+            Event::new(
+                runscope::TYPE_RUN_STARTED,
+                br#"{"run":"r1","criteria":["new"]}"#.to_vec(),
+            ),
+            Event::new(
+                ledger::TYPE_UNIT_STARTED,
+                br#"{"id":"unit-old","branch":"rigger/u/unit-old"}"#.to_vec(),
+            ),
+            Event::new(
+                ledger::TYPE_UNIT_INTEGRATED,
+                br#"{"id":"unit-old","commit":"abc"}"#.to_vec(),
+            ),
+            spawn::SpawnRequest::new("unit-old", "review", "adversary", 1, "p")
+                .to_event()
+                .unwrap(),
+            spawn::SpawnResult::ok("unit-old/adversary#1", "approve")
+                .to_event()
+                .unwrap(),
+        ];
+        let run = current_run_units(&events);
+        assert_eq!(run.dead_slugs, slugs(["unit-old"]));
+        assert!(run.live_branches.is_empty());
     }
 
     #[test]

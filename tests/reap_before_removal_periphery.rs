@@ -361,7 +361,7 @@ fn sweep_terminal_reaps_a_process_rooted_in_a_terminal_worktree_through_the_real
          sweep_terminal() runs"
     );
 
-    let removed = sweep_terminal(&repo_str, &root, "rigger-run", &HashSet::new())
+    let removed = sweep_terminal(&repo_str, &root, "rigger-run", &HashSet::new(), &[])
         .expect("sweep_terminal must still succeed");
     assert_eq!(removed, 1, "the merged terminal worktree is swept");
 
