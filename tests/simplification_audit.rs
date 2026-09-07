@@ -92,7 +92,9 @@ enum FrameKind {
     Mod {
         is_test: bool,
     },
-    Impl,
+    Impl {
+        is_test: bool,
+    },
     Trait {
         is_test: bool,
     },
@@ -119,8 +121,9 @@ impl Frame {
         match &self.kind {
             FrameKind::Mod { is_test }
             | FrameKind::Trait { is_test }
-            | FrameKind::Fn { is_test } => *is_test,
-            FrameKind::TopLevel | FrameKind::Impl | FrameKind::Anonymous => false,
+            | FrameKind::Fn { is_test }
+            | FrameKind::Impl { is_test } => *is_test,
+            FrameKind::TopLevel | FrameKind::Anonymous => false,
         }
     }
 }
@@ -340,10 +343,12 @@ fn scan_file(file: &str, content: &str) -> Vec<ScannedFn> {
             if found {
                 let header: String = chars[header_start..j].iter().collect();
                 let header = header.trim().to_string();
+                let is_test =
+                    pending_cfg_test || stack.last().map(|f| f.is_test()).unwrap_or(false);
                 pending_cfg_test = false;
                 impl_stack.push(header);
                 stack.push(Frame {
-                    kind: FrameKind::Impl,
+                    kind: FrameKind::Impl { is_test },
                 });
                 i = j + 1;
                 continue;
@@ -379,7 +384,7 @@ fn scan_file(file: &str, content: &str) -> Vec<ScannedFn> {
                     FrameKind::Mod { .. } => {
                         mods_stack.pop();
                     }
-                    FrameKind::Impl => {
+                    FrameKind::Impl { .. } => {
                         impl_stack.pop();
                     }
                     FrameKind::Trait { .. } | FrameKind::Anonymous | FrameKind::TopLevel => {}
@@ -1325,20 +1330,48 @@ fn strip_leading_impl_generics(header: &str) -> &str {
 
 /// The `Self` type name out of an `impl` header (`"GateRatchet"` -> `"GateRatchet"`,
 /// `"AgentDriver for Stub"` -> `"Stub"`, `"gate::Runner for FlakyGate"` -> `"FlakyGate"`,
-/// `"<'a> RunCtx<'a>"` -> `"RunCtx"`).
+/// `"<'a> RunCtx<'a>"` -> `"RunCtx"`, `"MyGuard where MyGuard: Sized"` -> `"MyGuard"`).
 fn impl_self_type(header: &str) -> String {
     let after_for = header.rsplit(" for ").next().unwrap_or(header);
     let no_leading_generics = strip_leading_impl_generics(after_for);
-    let generic_stripped = no_leading_generics
-        .split('<')
-        .next()
-        .unwrap_or(no_leading_generics);
+    // Strip a trailing where-clause BEFORE the generic split below: a where-clause bound can
+    // itself contain `<...>` (e.g. `where T: Bar<Baz>`), and when the Self type has no
+    // generics of its own the `split('<')` step would otherwise find that `<` first and cut
+    // in the wrong place, leaving the where-clause text glued onto the self type.
+    let no_where_clause = strip_trailing_where_clause(no_leading_generics);
+    let generic_stripped = no_where_clause.split('<').next().unwrap_or(no_where_clause);
     generic_stripped
         .rsplit("::")
         .next()
         .unwrap_or(generic_stripped)
         .trim()
         .to_string()
+}
+
+/// Strip a trailing ` where ...` clause from an impl header fragment (already past the leading
+/// `impl<...>` generics), at a word boundary so a Self type merely CONTAINING "where" as a
+/// substring (e.g. a hypothetical `Somewhere` type) is never mistaken for the keyword.
+fn strip_trailing_where_clause(header: &str) -> &str {
+    let mut search_from = 0usize;
+    while let Some(rel) = header[search_from..].find("where") {
+        let start = search_from + rel;
+        let end = start + "where".len();
+        let before_is_boundary = header[..start]
+            .chars()
+            .next_back()
+            .map(|c| !is_ident_char(c))
+            .unwrap_or(true);
+        let after_is_boundary = header[end..]
+            .chars()
+            .next()
+            .map(|c| !is_ident_char(c))
+            .unwrap_or(true);
+        if before_is_boundary && after_is_boundary {
+            return header[..start].trim_end();
+        }
+        search_from = end;
+    }
+    header
 }
 
 fn snake_case(name: &str) -> String {
@@ -1741,6 +1774,43 @@ mod tests {
     }
 
     #[test]
+    fn a_method_inside_an_impl_nested_in_a_cfg_test_mod_is_flagged_test() {
+        // Regression (adjudicator u85c1 round 1 REJECT): an impl block sitting inside a
+        // #[cfg(test)] mod must propagate that ancestry to its methods - FrameKind::Impl
+        // previously had no is_test field at all, so this was always false.
+        let src = "#[cfg(test)]\nmod tests {\n    impl AgentDriver for CacheDriver {\n        fn spawn(&self) {}\n    }\n}\n";
+        let fns = scan_str(src);
+        assert_eq!(fns.len(), 1);
+        assert!(fns[0].is_test, "{:?}", fns[0]);
+        assert_eq!(
+            fns[0].enclosing_impl.as_deref(),
+            Some("AgentDriver for CacheDriver")
+        );
+    }
+
+    #[test]
+    fn a_cfg_test_attribute_directly_on_an_impl_block_is_flagged_test() {
+        // Regression: a #[cfg(test)] attribute attached DIRECTLY to a standalone impl block
+        // (no enclosing cfg-test mod) must also mark its methods test - the impl push site
+        // used to drop pending_cfg_test unconditionally instead of reading it like
+        // Mod/Trait/Fn already do.
+        let src = "#[cfg(test)]\nimpl<'a> RunCtx<'a> {\n    fn for_test() -> Self {\n        todo!()\n    }\n}\n";
+        let fns = scan_str(src);
+        assert_eq!(fns.len(), 1);
+        assert!(fns[0].is_test, "{:?}", fns[0]);
+    }
+
+    #[test]
+    fn a_non_cfg_test_impl_block_still_inherits_a_non_test_ancestry() {
+        // Sanity: the fix must not make every impl test-only - a plain impl outside any
+        // cfg-test context stays production.
+        let src = "impl Foo {\n    fn bar(&self) {}\n}\n";
+        let fns = scan_str(src);
+        assert_eq!(fns.len(), 1);
+        assert!(!fns[0].is_test, "{:?}", fns[0]);
+    }
+
+    #[test]
     fn a_function_directly_in_a_cfg_test_mod_is_flagged_test() {
         let src = "#[cfg(test)]\nmod tests {\n    fn helper() {}\n}\n";
         let fns = scan_str(src);
@@ -1863,6 +1933,34 @@ mod tests {
         assert_eq!(module.as_deref(), Some("conductor::run_ctx"));
         assert!(reason.contains("RunCtx"), "{reason}");
         assert!(!reason.contains("`` methods"), "{reason}");
+    }
+
+    #[test]
+    fn impl_self_type_strips_a_trailing_where_clause_on_a_non_generic_self_type() {
+        // Regression (sdet-u85c1-where-clause-impl-self-type-untested, currently dormant but
+        // unguarded): when the Self type itself has no `<...>` generics, the OLD
+        // `split('<')` step never found a `<` to cut at, so a trailing where-clause (which
+        // can itself contain `<...>`, e.g. a bound like `T: Bar<Baz>`) leaked into the
+        // "self type" text verbatim.
+        assert_eq!(
+            impl_self_type("Drop for MyGuard where MyGuard: Sized"),
+            "MyGuard"
+        );
+        assert_eq!(impl_self_type("MyGuard where MyGuard: Bar<Baz>"), "MyGuard");
+    }
+
+    #[test]
+    fn impl_self_type_still_handles_a_generic_self_type_with_a_where_clause() {
+        assert_eq!(impl_self_type("Foo<T> where T: Bar<Baz>"), "Foo");
+    }
+
+    #[test]
+    fn strip_trailing_where_clause_is_a_word_boundary_match_not_a_substring_match() {
+        // A Self type that merely CONTAINS "where" as a substring must survive untouched -
+        // only a real `where` keyword at a word boundary is a clause start.
+        assert_eq!(strip_trailing_where_clause("Somewhere"), "Somewhere");
+        assert_eq!(strip_trailing_where_clause("Foo where T: Bar"), "Foo");
+        assert_eq!(strip_trailing_where_clause("Foo"), "Foo");
     }
 
     #[test]
