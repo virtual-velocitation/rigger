@@ -2986,6 +2986,471 @@ fn replace_section_2(existing: &str, section_2: &str) -> String {
     out
 }
 
+// =========================================================================================
+// CRITERION 3 (`u85c3`, THIS UNIT): SECTIONS 3-5 (BOUNDARY VIOLATIONS, DEAD AND VESTIGIAL
+// CODE, TEST-SUITE SHAPE)
+// =========================================================================================
+//
+// This criterion's own Done-when text: "This criterion OWNS sections 3-5 and introduces no
+// generator code" - unlike criteria 1 and 2, there is no new mechanical scanner here. Each
+// `render_section_N` below is hand-authored prose from a real investigation (decisions
+// `u85c3-scope-and-instruments`, `u85c3-boundary-violation-mutation-scratch-reach`,
+// `u85c3-dead-code-clean-both-instruments`, `u85c3-test-suite-shape-from-committed-catalog`),
+// citing `file:line` and naming its instrument per claim, exactly as sections 1 and 2 already
+// do for their own mechanically-derived content. Deliberately built with `String::push_str`
+// rather than `writeln!`/`format!` throughout: the content is 100% static (no interpolated
+// runtime values), and `push_str` needs no `{{`/`}}` escaping for the literal braces this
+// section's own quoted `AgentDriver` trait definition and `courier_registry_refresh_{boundary,
+// fence,periphery}` file-glob prose require.
+
+/// Section 3, BOUNDARY VIOLATIONS: one real finding (`src/conductor.rs`'s mutation-scratch
+/// reclaim reaching directly into the concrete `driver::replay` adapter for a concern no port
+/// covers) plus four explicitly-checked-and-clean port-concretion sweeps and the
+/// use-cases-importing-infrastructure / second-mutation-authority categories (decision
+/// `u85c3-boundary-violation-mutation-scratch-reach`).
+fn render_section_3() -> String {
+    let mut out = String::new();
+    out.push_str("## 3. Boundary Violations\n\n");
+    out.push_str(
+        "Instrument: for each of the five named ports (`eventstore::EventStore`, \
+        `contextgraph::Projection`, `conductor::AgentDriver`, `gate::Runner`, \
+        `grounder::Grounder`), grepped every production (pre-`#[cfg(test)]`) call \
+        site of that port's known concrete adapter modules from a NON-adapter, \
+        NON-composition-root file, and separately grepped every domain-ish file's \
+        top-level `use` statements for a direct infrastructure-crate import. \
+        `src/main.rs` is exempt from the \"reaches a concrete adapter\" check: it is \
+        the composition root, and wiring concretions together is its designed job.\n\n",
+    );
+    out.push_str(
+        "FOUND, one violation: `src/conductor.rs:7091-7096` \
+        (`reclaim_terminal_unit_mutation_scratch`, real production code - well above \
+        the `#[cfg(test)] mod tests` boundary this audit's own section 1 identified \
+        at `src/conductor.rs:10260`) calls `crate::driver::replay::cache_home_from` \
+        and `crate::driver::replay::reclaim_unit_mutation_scratch` directly by \
+        concrete module path. Read via `rigger graph --show AgentDriver`: the port \
+        `conductor.rs` actually depends on for driving agents is `trait AgentDriver \
+        { fn spawn(&self, agent: &AgentDef, prompt: &str, opts: &SpawnOpts, emit: \
+        &dyn Fn(&str, Value) -> Result<(), Error>) -> Result<AgentResult, Error>; }` \
+        (`src/conductor.rs:1083-1091`) - one method, `spawn`. Neither called \
+        function is about driving an agent or replaying a recorded run (the concern \
+        `driver::replay` otherwise owns); both are pure, driver-instance-free \
+        scratch-lifecycle utilities that happen to live inside that one concrete \
+        adapter's module. The port that should have been used: none exists for this \
+        concern yet, which is itself the defect - `conductor.rs` (a \
+        use-case/orchestration file) should not need to know which concrete \
+        `AgentDriver` implementation happens to define its own mutation-scratch \
+        cache-home resolution. Fix direction for a follow-up spec: relocate \
+        `cache_home_from` and `reclaim_unit_mutation_scratch` out of \
+        `driver::replay` into a neutral, adapter-independent module (a `scratch` or \
+        `mutation` support module conductor.rs and every driver adapter can depend \
+        on alike), so no use-case file reaches into one specific adapter's internals \
+        for a concern that adapter does not conceptually own.\n\n",
+    );
+    out.push_str(
+        "CHECKED AND CLEAN (four of five ports; each search recorded so its absence \
+        is not merely assumed):\n",
+    );
+    out.push_str(
+        "- `eventstore::EventStore` concretion reach (`rusqlite::Connection::open` \
+        outside `src/eventstore/sqlite.rs` / `src/eventstore/kurrentdb.rs` / \
+        `src/contextgraph/sqlite.rs`): two hits in all of `src/`, one a doc-comment \
+        mention (`src/main.rs:4332`) and one a deliberate, explicitly-commented \
+        test-only raw-connection bypass (`src/main.rs:23860`, inside `#[cfg(test)] \
+        mod tests` opened at `src/main.rs:12650`) that reproduces a pre-append-guard \
+        corruption shape `Store::append` itself refuses to construct - a documented \
+        test technique, not a boundary violation.\n",
+    );
+    out.push_str(
+        "- `grounder::Grounder` concretion reach (`grounder::symbols::*` from \
+        `src/conductor.rs`): every hit (`conductor.rs:14846`, `conductor.rs:29941`) \
+        sits inside `#[cfg(test)] mod tests` (both well past the `10260` boundary) - \
+        production `conductor.rs` never names a concrete grounder.\n",
+    );
+    out.push_str(
+        "- `contextgraph::Projection` concretion reach \
+        (`contextgraph::sqlite::Projector` from `src/conductor.rs`): every one of \
+        its ~20 hits likewise sits inside `#[cfg(test)] mod tests` - production \
+        `conductor.rs` only ever depends on `dyn Projection`.\n",
+    );
+    out.push_str(
+        "- Use cases importing infrastructure: grepped the top-level `use` statements \
+        of every domain-ish file this audit's own code neighborhood names \
+        (`src/conductor.rs`, `src/blocker.rs`, `src/spec.rs`, `src/watch.rs`, \
+        `src/community.rs`) for `rusqlite`, `reqwest`, `tonic`, `tokio`, `kurrentdb` \
+        - zero hits anywhere. Empty category.\n\n",
+    );
+    out.push_str(
+        "A second mutation authority for one domain: the one previously-known \
+        instance in this codebase (`src/dash.rs` reimplementing `src/reap.rs`'s \
+        `/proc` pid scan, spec 85's own Goal example, upheld at spec 62's capstone) \
+        is a duplicate READ-only reimplementation, not a bypassed MUTATION path - it \
+        is section 2's finding (`u85c2-proc-stat-worked-example`, \
+        `find_proc_stat_or_status_readers`), not re-counted here to avoid \
+        double-charging one defect to two sections. Checked git as the one other \
+        plausible second-authority candidate: every `Command::new(\"git\")` call \
+        site in `src/conductor.rs` (22 sites) is at line >= 17297, inside \
+        `#[cfg(test)] mod tests` - production `conductor.rs` never shells to git \
+        directly, so `src/worktree.rs` is confirmed the sole production git-command \
+        authority. No second mutation authority found beyond the already-cited, \
+        already-catalogued `/proc` case.\n",
+    );
+    out
+}
+
+/// Section 4, DEAD AND VESTIGIAL CODE: three instruments (a whole-tree textual-reference sweep
+/// over criterion 1's own 596-function production census, the compiler's own `dead_code` lint
+/// on both feature lanes, and the knowledge graph as the cross-check) find zero live dead
+/// functions; both named retired-feature examples (turbovec spec 57, the kurrentdb build-time
+/// feature flag spec 47) are confirmed fully clean; zero genuine stale doc-file references
+/// found (decision `u85c3-dead-code-clean-both-instruments`).
+fn render_section_4() -> String {
+    let mut out = String::new();
+    out.push_str("## 4. Dead and Vestigial Code\n\n");
+    out.push_str(
+        "FUNCTIONS WITH ZERO CALLERS. Instrument one (name-reference sweep): scoped \
+        to the 596 production (`is_test: false`) entries of the committed \
+        `docs/audit/responsibility-map.json` (`src/conductor.rs`, `src/main.rs`, \
+        `src/dash.rs` - criterion 1's own scanned scope, reused rather than \
+        re-scanned, per this criterion's own no-new-generator-code boundary). For \
+        each entry, excluded its own doc-comment and signature span (walking upward \
+        from its `start_line` over contiguous `///` / `#[...]` / blank lines) then \
+        counted the identifier's remaining whole-tree occurrences. Result: zero \
+        functions have zero external references; the lowest tier found is a single \
+        real caller (e.g. `src/conductor.rs:316-318` `postmerge_gate_verdict_key`). \
+        Instrument two (the knowledge graph, per spec 85's own instruction that it \
+        is the cross-checking instrument for this section): `rigger graph --show` \
+        resolves a qualified entity and reports a non-zero degree for every one of \
+        these low-tier candidates (e.g. `postmerge_gate_verdict_key` reports degree \
+        5), corroborating that a truly isolated function would show degree 0 - had a \
+        zero-external-reference candidate existed, the graph would be the confirming \
+        check; none did, so the list is empty and the cross-check is vacuously \
+        satisfied. A full production-scale caller-list query via `rigger graph \
+        --around` on a single small function was tried and found impractical at this \
+        scale (a depth-2 traversal pulls in thousands of unrelated GOVERNS-edge \
+        decision/finding nodes about the host file, not a clean call list) - \
+        disclosed as an instrument limitation rather than silently worked around. \
+        Instrument three (the compiler): forced a full library-plus-binary rebuild \
+        (touched `src/lib.rs`, `src/conductor.rs`, `src/dash.rs`, `src/main.rs`) on \
+        BOTH feature lanes and read rustc's own output - zero warnings on either \
+        lane, meaning the default-warn `dead_code` lint (independently enforced \
+        further by every unit's own `cargo clippy --all-targets -- -D warnings` \
+        gate) finds nothing across the WHOLE crate, not only the three scanned \
+        files. Exactly one `#[allow(dead_code)]` exists anywhere in `src/` \
+        (`src/main.rs:60`, on `mod gitsemver;`); its own preceding comment explains \
+        why: the module is shared with `build.rs`, and not every item in it is \
+        called from the `main.rs` side - a justified allow, not a live finding.\n\n",
+    );
+    out.push_str(
+        "RETIRED-FEATURE REMNANTS. `turbovec` (spec 57, \"Retire turbovec\"): grepped \
+        the whole tree (`src/`, `tests/`, `docs/`, `specs/`, `Cargo.toml`) for every \
+        mention - found only the deliberate migration-error guard code \
+        (`src/grounder/mod.rs`'s `is_retired_grounder` / the loud \
+        `retired_grounder_error`) plus the tests and docs that keep it retired \
+        (`tests/turbovec_retired.rs`, `tests/turbovec_retired_cargo_boundary.rs`, \
+        `tests/grounder_name_contract.rs`, and several others naming it as a \
+        guarded-against name). Zero implementing code, zero cargo feature, zero \
+        dependency - confirmed by reading `Cargo.toml`'s `[features]` section in \
+        full (one feature, `symbols`, on by default; no `turbovec` entry anywhere). \
+        `kurrentdb` build-time feature flag (spec 47, \"KurrentDB is always \
+        available\"): grepped `Cargo.toml` and every file under `src/` for `feature \
+        = \"kurrentdb\"` / `-F kurrentdb` - zero hits outside the tests that guard \
+        against its resurrection (`tests/kurrentdb_always_available.rs`); \
+        `kurrentdb` and `tokio` are unconditional `[dependencies]` as spec 47 \
+        requires, and `testcontainers` (the adapter's contract-test-only dependency) \
+        correctly lives under `[dev-dependencies]`, never the production dependency \
+        tree. Both named retirements are fully clean - a real, evidenced negative \
+        finding, not an assumption.\n\n",
+    );
+    out.push_str(
+        "STALE DOC CLAIMS. Scanned every `docs/*.md`, `README.md`, and \
+        `CONTRIBUTING.md` for any `src/**/*.rs` or `tests/**/*.rs` path-shaped \
+        substring and checked each cited path still exists on disk. Two misses \
+        surfaced (`src/bar.rs` in \
+        `docs/architecture-addendum-pit-of-success.md:252,256`; `src/modifier.rs` in \
+        `docs/architecture.md:1022,1027-1028`) - both read in context and confirmed \
+        generic illustrative examples in unrelated prose (`crates/foo/src/bar.rs` as \
+        a spec-criterion example path, `core-schema/src/modifier.rs` as an event-log \
+        worked example), never a real claim about this repository's own layout. Zero \
+        genuine dangling file references found.\n",
+    );
+    out
+}
+
+/// Section 5, TEST-SUITE SHAPE: a hand-derived 13-group-plus-residual subsystem breakdown of
+/// all 156 `tests/*.rs` files, a `tests/cli.rs` split plan, and shared-fixture /
+/// table-driven-test consolidation candidates cross-referenced from the ALREADY-COMMITTED
+/// `docs/audit/duplication-catalog.json` filtered to clusters whose every site sits under
+/// `tests/` (decision `u85c3-test-suite-shape-from-committed-catalog`).
+pub(crate) fn render_section_5() -> String {
+    let mut out = String::new();
+    out.push_str("## 5. Test-Suite Shape\n\n");
+    out.push_str(
+        "Instrument: `tests/` holds 156 files today (spec 85's Goal cites 153 - this \
+        criterion's own two periphery files plus criterion 2's own periphery file, \
+        all landed since the Goal text was written, account for the +3), 104,569 \
+        lines by `wc -l` (this criterion's own additions to \
+        `simplification_audit.rs` for sections 3-5 land inside that same file, \
+        growing the figure further than criteria 1 and 2 already had). Subsystem \
+        grouping is a hand-derived, ordered filename-keyword rule table (mirrors \
+        criterion 1's own per-file classification convention: first-match-wins, \
+        narrowest first, an explicit residual named rather than silently dropped). \
+        The consolidation-candidate columns below cross-reference the \
+        ALREADY-COMMITTED `docs/audit/duplication-catalog.json` (criterion 2's own \
+        generator output, not re-scanned here) filtered to the 340 clusters whose \
+        every site sits under `tests/`.\n\n",
+    );
+    out.push_str("### 5.1 Subsystem grouping and consolidation map\n\n");
+    out.push_str("| Subsystem | Files | Lines | Consolidation note |\n");
+    out.push_str("|---|---|---|---|\n");
+    out.push_str(
+        "| Dashboard: KG lenses & viz (code/concepts/community/files lenses, graph \
+        exploration, overlays, viz layout) | 53 | 23,510 | Largest group by file \
+        count; owns the single strongest shared-fixture evidence in the whole suite \
+        (5.2) |\n",
+    );
+    out.push_str(
+        "| CLI whole-binary integration (`cli.rs`, `watchdog_cli_periphery.rs`, \
+        `ci_lanes.rs`) | 3 | 28,098 | `cli.rs` alone is 27,074 of these lines; split \
+        plan at 5.3 |\n",
+    );
+    out.push_str(
+        "| Knowledge-graph ingestion & context-graph projections | 14 | 8,952 | \
+        dedup/fold/identity concerns, several already cross-clustered with the \
+        dash/viz group |\n",
+    );
+    out.push_str(
+        "| Conductor orchestration: gates, courier, step/run lifecycle | 19 | 8,257 | \
+        the `courier_registry_refresh_{boundary,fence,periphery}` trio (3 files) \
+        pair together in 6 clusters confined to just themselves (2-5 sites each; \
+        excludes the whole-codebase Command::new/`.rigger`-path mandatory-sweep \
+        clusters, section 2, that also happen to intersect them) |\n",
+    );
+    out.push_str(
+        "| Reset / log compaction / store hygiene | 7 | 8,021 | `reset_menu.rs` and \
+        `reset_menu_identity_migration_periphery.rs` pair together in 3 duplication \
+        clusters |\n",
+    );
+    out.push_str("| Worktree & scratch/mutation-scratch lifecycle | 14 | 4,592 | |\n");
+    out.push_str(
+        "| Simplification-audit generator & its own periphery (this spec) | 3 | 5,829 \
+        | `simplification_audit.rs` is itself the single largest test file after \
+        `cli.rs` |\n",
+    );
+    out.push_str("| Spec/handbook lint & architecture-doc integrity | 6 | 3,344 | |\n");
+    out.push_str(
+        "| Grounding (symbols grounder, turbovec retirement, blast radius) | 8 | \
+        3,348 | `kurrentdb_always_available.rs` and `turbovec_retired.rs` \
+        independently redefine the same 4 Cargo.toml-reading helpers plus a \
+        near-identical retired-feature-guard test (7 clusters, section 5.4/5.5) |\n",
+    );
+    out.push_str(
+        "| Process lifecycle: no-os-kill & reap discipline | 4 | 3,320 | \
+        `no_os_kill_audit.rs` and `reap_before_removal_audit.rs` pair together in 3 \
+        clusters; each also has large internal near-duplicate families (5.5) |\n",
+    );
+    out.push_str("| Event store & config precedence | 11 | 2,780 | |\n");
+    out.push_str(
+        "| Canary (review-panel judge-the-judges evaluation) | 8 | 2,455 | two pairs \
+        share a near-identical fixture shape: \
+        `canary_false_positives_periphery.rs`/`canary_unattributed_rejects_periphery.rs` \
+        and \
+        `canary_item_sharding_jobs_cap_periphery.rs`/`canary_progress_hook_periphery.rs` \
+        (2 clusters each) |\n",
+    );
+    out.push_str(
+        "| Concepts/community lens derivation & fold (non-viz) | 4 | 1,536 | \
+        `community_detection_cli.rs` and `concepts_derivation_cli.rs` pair together \
+        in 9 clusters, the densest single file-pair in the whole catalog |\n",
+    );
+    out.push_str(
+        "| Residual (no natural larger home) | 2 | 683 | \
+        `build_budget_slots_periphery.rs`, `gitsemver_derivation.rs` - named rather \
+        than forced into an ill-fitting bucket |\n",
+    );
+    out.push('\n');
+    out.push_str(
+        "Total: 156 files, 104,725 lines by this table's own per-file count (156 \
+        files summed here; the 1-line-per-file gap against `wc -l`'s 104,569 is the \
+        trailing-newline counting convention, not a missing file).\n\n",
+    );
+    out.push_str("### 5.2 Shared fixtures to extract into `tests/common`\n\n");
+    out.push_str(
+        "`tests/common/mod.rs` already exists (`product_binary_from`, `rigger_bin`, \
+        `rigger_courier`, `terminate_pid`, `stop_pid`, `is_alive`, `RestoreEnvVars`) \
+        - the gap is everything duplicated OUTSIDE it. The catalog's cross-file (2+ \
+        distinct files), all-helper-function clusters (181 of the 340 test-only \
+        clusters) are the evidence; the four widest are the headline case for \
+        extraction:\n\n",
+    );
+    out.push_str(
+        "- `page_script` - a small JS snippet fixture - independently redefined in 18 \
+        different files (`dup-0335`, exact; e.g. \
+        `tests/adaptive_labels_periphery.rs:52-61`, \
+        `tests/code_lens_overview_collapse_viz.rs:26-35`, \
+        `tests/concepts_lens_view_periphery.rs:689-698`, + 15 more), all inside the \
+        Dashboard/viz subsystem (5.1) - cross-validates that grouping.\n",
+    );
+    out.push_str(
+        "- `node_available` - a viz-fixture predicate - independently redefined in \
+        the same 18 files (`dup-0336`, semantic).\n",
+    );
+    out.push_str(
+        "- `temp_project` - a scratch-project-directory fixture - independently \
+        redefined in 18 files (`dup-0361`, semantic; e.g. \
+        `tests/canary_model_drift_periphery.rs:39-46`, \
+        `tests/cause_wire_periphery.rs:54-61`, `tests/cli.rs:19-29`), plus a \
+        near-identical 15-site variant (`dup-0366`) and a 12-site `run_rigger` \
+        companion helper that drives it (`dup-0362`).\n",
+    );
+    out.push_str(
+        "- `run_stream_identity` - a store-identity fixture - independently redefined \
+        in 18 files (`dup-0367`, semantic).\n\n",
+    );
+    out.push_str(
+        "Proposed home for all four: `tests/common` (the catalog's own \
+        `proposed_home` field already says so verbatim for each). Consolidating just \
+        these four collapses roughly 72 duplicate definitions into 4 shared ones - \
+        the single largest mechanical simplification this audit identifies anywhere \
+        in the test suite.\n\n",
+    );
+    out.push_str("### 5.3 `tests/cli.rs` split plan\n\n");
+    out.push_str(
+        "27,074 lines, 351 `#[test]` functions, exactly ONE internal banner-comment \
+        break in the whole file (`tests/cli.rs:11256-11258`, marking the `rigger \
+        replay` section) - the file is genuinely flat, not internally organized, \
+        despite being over a quarter of the whole suite's line count. A \
+        keyword-on-test-name pass (matching each test's dominant CLI verb: `step_`, \
+        `run_`, `validate_`, `reset_`, `watch_`/`watchdog_`, `canary_`, \
+        `dash_`/`status_`, `store_`/`eventstore_`, \
+        `spawn_`/`mutation_scratch_`/`scratch_`, `review_`/`gate_`, \
+        `setup_`/`precommit_`/`hook_`, `courier_`/`registry_`, `spec_`, `replay_`, \
+        `worktree_`, `emit_`/`peers_`/`decision_`, `stats_`, \
+        `heartbeat_`/`liveness_`, `prime_`/`version_`/`init_`) only cleanly covers \
+        274 of the 351 tests (78%) - disclosed honestly rather than overclaimed, \
+        because a real fraction of `cli.rs`'s scenarios are DELIBERATELY end-to-end \
+        (a single test legitimately drives `step` + `run` + `validate` + `dash` \
+        together to prove a cross-cutting property, e.g. \
+        `a_run_driver_auto_starts_a_reachable_dash_with_a_url_shown_in_status` or \
+        `docs_ships_graph_hygiene_guidance_to_consumers`), which a bare keyword \
+        match cannot and should not force into one bucket. The proposed split is BY \
+        CLI SUBCOMMAND SURFACE - `cli.rs`'s own natural organizing concept, since \
+        the whole file drives the `rigger` binary end to end - into per-surface \
+        files (`tests/cli_step.rs`, `tests/cli_run.rs`, `tests/cli_validate.rs`, \
+        `tests/cli_reset.rs`, `tests/cli_watch.rs`, `tests/cli_canary.rs`, \
+        `tests/cli_dash.rs`, `tests/cli_store.rs`, `tests/cli_review.rs`, \
+        `tests/cli_setup.rs`, plus a residual `tests/cli_misc.rs` for the genuinely \
+        cross-cutting scenarios), with each test's home decided by its DOMINANT \
+        scenario on a human/AI read, not a mechanical keyword match - the same \
+        discipline this audit's own responsibility map applied to unassignable \
+        functions (named, never silently forced). Cross-referencing the catalog: \
+        `cli.rs` also participates in 29 of the catalog's cross-file \
+        test-duplication clusters (the most of any single file), several paired \
+        against files that WOULD merge with it under this split \
+        (`tests/step_attention_periphery.rs`, paired in 6 clusters; \
+        `tests/watchdog_cli_periphery.rs`, paired in 2 clusters) - the split is \
+        expected to shrink, not grow, the duplication surface.\n\n",
+    );
+    out.push_str(
+        "### 5.4 Duplicated helpers across test files (beyond 5.2's four headline \
+        cases)\n\n",
+    );
+    out.push_str(
+        "181 test-only clusters in the committed catalog have every site as an \
+        ordinary (non-`#[test]`) helper function - the shared-fixture-extraction \
+        candidate class. Beyond the four in 5.2, the widest are: `dup-0339` \
+        (`architecture_text` / `eventstore_source` / `main_rs_source` - \
+        source-text-loading helpers for doc/architecture-integrity checks, 12 files, \
+        15 sites); `dup-0366` (a companion, 15-file/15-site variant of 5.2's \
+        `run_stream_identity` fixture, alongside `dup-0367`'s 18-file version); \
+        `dup-0395` (`write_two_stage_workflow` / \
+        `write_budget_one_two_stage_workflow` / `write_standalone_review_workflow` - \
+        workflow-YAML-literal builders duplicated across `tests/cli.rs` and \
+        `tests/step_attention_periphery.rs`, 4 files, 15 sites); \
+        `dup-0369`/`dup-0368` (`seed_run_events`, an event-seeding helper, 6-8 \
+        files); `dup-0454` (`apply_def_json` / `apply_ref_fresh`-shaped \
+        fold-application helpers, 5 files); `dup-0461` (`community` / `concept` / \
+        `def`-named single-field constructor helpers, 6 files); `dup-0657` \
+        (`code_lens` / `concepts_lens` two-line accessor helpers, 4 files). Every \
+        one of these 181 clusters, with its full site list and the catalog's own \
+        `proposed_home`, is already machine-readable in the committed \
+        `docs/audit/duplication-catalog.json` for a follow-up consolidation spec to \
+        consume directly - not re-enumerated exhaustively here to keep this section \
+        a report, not a second copy of the catalog.\n\n",
+    );
+    out.push_str("### 5.5 Table-driven test families\n\n");
+    out.push_str(
+        "159 test-only clusters have every site as a `#[test]` function - a \
+        literal-differs-only-in-input family, spec 85's own named table-driven-test \
+        candidate class. The single largest anywhere in the suite: `dup-0636` (near, \
+        42 sites, all in `tests/spec_lint.rs`, e.g. \
+        `validate_spec_reports_every_c3_defect_with_its_criterion_and_field_guide_class:54-102`, \
+        `validate_spec_attributes_a_prose_level_defect_to_no_criterion:120-163`, \
+        `validate_spec_reports_two_simultaneous_defects_on_the_same_criterion:172-209` \
+        - 42 near-identical \"feed one spec fixture through `validate`, assert one \
+        expected defect/advisory line\" bodies). Proposed table: `#[test] fn \
+        validate_spec_field_guide_defects() { for (fixture, expected) in CASES { ... \
+        } }` retiring all 42 named tests into one parametrized loop over a `(&str, \
+        &str)` (or richer struct) case table. Other large families: \
+        `dup-0583`/`dup-0585` (15+7 sites, `tests/reap_before_removal_audit.rs`, \
+        \"one fixture function body, one exemption-coverage shape, assert \
+        covered/not-covered\" - retires into one table keyed by exemption shape); \
+        `dup-0618`/`dup-0625` (15+5 sites, `tests/simplification_audit.rs` - this \
+        very unit's own scanner tests, a `(source, expected_tokens_or_clusters)` \
+        table candidate); `dup-0573`/`dup-0574` (11+4 sites, \
+        `tests/no_os_kill_audit.rs`, one process-termination-pattern-string per test \
+        - a `(pattern, is_caught)` table); `dup-0576` (4 sites, \
+        `tests/no_os_kill_test_helper_periphery.rs`, \
+        `terminate_pid_refuses_pid_zero` / `_pid_one` x `stop_pid_refuses_pid_zero` \
+        / `_pid_one` - a 2x2 `(helper, pid)` table). As with 5.4, the full \
+        157-family list lives in the committed catalog by cluster id for a follow-up \
+        test-consolidation spec to consume directly.\n",
+    );
+    out
+}
+
+/// Replace sections 3 THROUGH 5's combined span (from the `## 3. ` heading up to, but not
+/// including, the `## 6. ` heading) inside an EXISTING report `existing`, leaving sections 1,
+/// 2 and 6 byte-for-byte untouched - the same one-owner-per-span contract as
+/// [`replace_section_1`] / [`replace_section_2`] (decision `u85c1-report-section-placeholders`),
+/// widened to a THREE-section span because this criterion owns sections 3, 4 and 5 together.
+/// Deliberately searches for the NEXT criterion's `## 6. ` heading, not the next bare `## `
+/// heading (unlike `replace_section_1`/`replace_section_2`'s single-section span) - `## 4. `
+/// and `## 5. ` are internal to the content THIS function itself replaces, not a stopping
+/// point; falls back to the end of the string if no `## 6. ` heading exists (a report that
+/// somehow ends after section 5). Panics if `existing` has no `## 3. ` heading at all - that
+/// would mean the report is missing criterion 1's placeholder contract, a precondition every
+/// criterion after the first relies on, not a case to paper over silently.
+fn replace_section_3_to_5(
+    existing: &str,
+    section_3: &str,
+    section_4: &str,
+    section_5: &str,
+) -> String {
+    let start = existing.find("## 3. ").unwrap_or_else(|| {
+        panic!("{REPORT_PATH} has no '## 3. ' heading - missing criterion 1's placeholder contract")
+    });
+    let end = existing.find("## 6. ").unwrap_or(existing.len());
+    let mut out = String::new();
+    out.push_str(&existing[..start]);
+    out.push_str(section_3);
+    if !section_3.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push('\n');
+    out.push_str(section_4);
+    if !section_4.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push('\n');
+    out.push_str(section_5);
+    if !section_5.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push('\n');
+    out.push_str(&existing[end..]);
+    out
+}
+
 // -----------------------------------------------------------------------------------------
 // THE ADVERSARIAL SAMPLE (spec 85 THOROUGHNESS)
 // -----------------------------------------------------------------------------------------
@@ -4689,6 +5154,127 @@ mod tests {
         assert!(
             committed.contains(&section_2),
             "{REPORT_PATH} must contain section 2 verbatim"
+        );
+    }
+
+    // =====================================================================================
+    // Criterion 3 (`u85c3`, THIS UNIT): sections 3-5 (boundary violations, dead and
+    // vestigial code, test-suite shape)
+    // =====================================================================================
+
+    #[test]
+    fn replace_sections_3_to_5_only_touches_that_span_leaving_neighbors_intact() {
+        let existing = "# Title\n\n\
+             ## 1. Responsibility Map\n\nsection one body\n\n\
+             ## 2. Duplication Catalog\n\nsection two body\n\n\
+             ## 3. Boundary Violations\n\nold section three\n\n\
+             ## 4. Dead and Vestigial Code\n\nold section four\n\n\
+             ## 5. Test-Suite Shape\n\nold section five\n\n\
+             ## 6. Prioritized Plan\n\n_Pending - criterion 4 (`u85c4`)._\n";
+        let updated = replace_section_3_to_5(
+            existing,
+            "## 3. Boundary Violations\n\nnew section three\n",
+            "## 4. Dead and Vestigial Code\n\nnew section four\n",
+            "## 5. Test-Suite Shape\n\nnew section five\n",
+        );
+        assert!(updated.contains("new section three"));
+        assert!(updated.contains("new section four"));
+        assert!(updated.contains("new section five"));
+        assert!(!updated.contains("old section three"));
+        assert!(!updated.contains("old section four"));
+        assert!(!updated.contains("old section five"));
+        // Sections 1, 2 and 6 (this criterion's neighbors) survive byte-for-byte.
+        assert!(updated.contains("section one body"));
+        assert!(updated.contains("section two body"));
+        assert!(updated.contains("_Pending - criterion 4 (`u85c4`)._"));
+    }
+
+    #[test]
+    fn replace_sections_3_to_5_falls_back_to_end_of_string_when_no_section_6_heading_exists() {
+        // A report that (hypothetically) ends right after section 5 - no `## 6. ` heading
+        // yet to bound the replacement span against.
+        let existing = "# Title\n\n\
+             ## 1. Responsibility Map\n\nsection one body\n\n\
+             ## 3. Boundary Violations\n\nold section three\n";
+        let updated = replace_section_3_to_5(
+            existing,
+            "## 3. Boundary Violations\n\nnew section three\n",
+            "## 4. Dead and Vestigial Code\n\nnew section four\n",
+            "## 5. Test-Suite Shape\n\nnew section five\n",
+        );
+        assert!(updated.contains("new section three"));
+        assert!(updated.contains("new section four"));
+        assert!(updated.contains("new section five"));
+        assert!(updated.contains("section one body"));
+        assert!(!updated.contains("old section three"));
+    }
+
+    #[test]
+    #[should_panic(expected = "missing criterion 1's placeholder contract")]
+    fn replace_sections_3_to_5_panics_loudly_when_the_heading_is_entirely_absent() {
+        replace_section_3_to_5(
+            "# Title\n\nno sections here\n",
+            "## 3. Boundary Violations\n\nx\n",
+            "## 4. Dead and Vestigial Code\n\ny\n",
+            "## 5. Test-Suite Shape\n\nz\n",
+        );
+    }
+
+    /// THE DRIFT GUARD for sections 3-5 of the report: with `RIGGER_AUDIT_WRITE=1` set,
+    /// patch the combined 3-5 span in place (guarded by [`REPORT_WRITE_LOCK`] since
+    /// criteria 1 and 2's own drift guards write the SAME file); otherwise assert the
+    /// committed report's sections 3-5 match byte-for-byte. Mirrors
+    /// `report_section_1_matches_the_tree_or_is_rewritten` /
+    /// `report_section_2_matches_the_tree_or_is_rewritten` exactly, widened to the
+    /// three-section span this criterion owns together (`render_section_3`,
+    /// `render_section_4` and `render_section_5` are all static text - see this unit's own
+    /// module-doc banner for why no generator code backs them).
+    #[test]
+    fn report_sections_3_through_5_match_the_tree_or_are_rewritten() {
+        let root = repo_root();
+        let section_3 = render_section_3();
+        let section_4 = render_section_4();
+        let section_5 = render_section_5();
+        let path = root.join(REPORT_PATH);
+        let write = std::env::var("RIGGER_AUDIT_WRITE").as_deref() == Ok("1");
+        if write {
+            let _guard = lock_report_write();
+            let existing = fs::read_to_string(&path).ok();
+            let base = match existing {
+                Some(text) => text,
+                None => {
+                    let map = build_map(&root);
+                    let section_1 = render_section_1(&map);
+                    assemble_fresh_report(&section_1)
+                }
+            };
+            let updated = replace_section_3_to_5(&base, &section_3, &section_4, &section_5);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(&path, updated).unwrap();
+            return;
+        }
+        let committed = fs::read_to_string(&path).unwrap_or_else(|_| {
+            panic!("{REPORT_PATH} is missing - run with RIGGER_AUDIT_WRITE=1 to generate it")
+        });
+        let expected = replace_section_3_to_5(&committed, &section_3, &section_4, &section_5);
+        assert_eq!(
+            expected, committed,
+            "{REPORT_PATH} sections 3-5 have drifted from the tree - regenerate with \
+             RIGGER_AUDIT_WRITE=1"
+        );
+        assert!(
+            committed.contains(&section_3),
+            "{REPORT_PATH} must contain section 3 verbatim"
+        );
+        assert!(
+            committed.contains(&section_4),
+            "{REPORT_PATH} must contain section 4 verbatim"
+        );
+        assert!(
+            committed.contains(&section_5),
+            "{REPORT_PATH} must contain section 5 verbatim"
         );
     }
 }
