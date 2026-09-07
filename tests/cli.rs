@@ -1510,6 +1510,77 @@ fn scratch_prints_the_exact_container_rigger_result_reclaims() {
     );
 }
 
+/// PERIPHERY (spec 83 criterion 2, round 3): `cmd_scratch` must resolve `defaults.workdir`
+/// through the SAME validate-independent authority [`reclaim_spawn_scratch`] uses
+/// (`scratch_defaults`/`config::read_scratch_defaults`), never the full `config::load` -
+/// whose own required `.rigger/agents/` fleet and [`config::Config::validate`] this project's
+/// own committed `build.mutation: on` can trip whenever `cargo-mutants` is off PATH, silently
+/// zeroing a configured workdir. Round 2 fixed `cmd_status`/`watch_poll`/`reclaim_spawn_scratch`
+/// onto the shared resolver but left `cmd_scratch` on the old pattern, so the two functions -
+/// which `cmd_scratch`'s own doc comment says must resolve BYTE-IDENTICAL paths - could
+/// disagree for the first time whenever `Config::validate` failed for an unrelated reason
+/// (`arch-u83c3-cmd-scratch-diverges-from-reclaim-after-asymmetric-fix`,
+/// `sdet-u83c3r2-scratch-parity-test-masks-the-new-asymmetry`). Configures a NON-DEFAULT
+/// `defaults.workdir` at an agents-less owning root (no `.rigger/agents/` at all - `temp_project`
+/// / `seed_store` never create one) and asserts the printed path resolves under it, never
+/// silently falling back to the crate's own default `<repo>/.rigger/tmp` because a full
+/// config load failed.
+#[test]
+fn scratch_resolves_a_configured_workdir_from_the_owning_root_with_no_agents_fleet_present() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
+
+    let relocated = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.join(".rigger").join("workflow.yml"),
+        format!(
+            "name: w\ndefaults:\n  workdir: \"{}\"\n",
+            relocated.path().to_string_lossy()
+        ),
+    )
+    .expect("write the owning root's workflow.yml with a configured workdir");
+    // Fixture guard: no `.rigger/agents/` dir exists at the owning root either - confirms this
+    // test genuinely exercises the validate-independent axis of the fix.
+    assert!(
+        !root.join(".rigger").join("agents").exists(),
+        "fixture bug: this test requires an agents-less owning root to exercise the \
+         validate-independent axis of the fix"
+    );
+
+    let (out, err, ok) = run_rigger(root, &["scratch", "u/implementer#0"]);
+    assert!(
+        ok,
+        "scratch must succeed even when the owning root has no agents fleet at all; \
+         stderr: {err}"
+    );
+
+    let default_expected = root
+        .join(".rigger")
+        .join("tmp")
+        .join("agent-scratch")
+        .join("r1")
+        .join("u_2fimplementer_230");
+    let configured_expected = relocated
+        .path()
+        .join("agent-scratch")
+        .join("r1")
+        .join("u_2fimplementer_230");
+    assert_ne!(
+        default_expected, configured_expected,
+        "fixture bug: the configured workdir must resolve a distinct path from the crate's \
+         own default, else this test cannot discriminate the fix"
+    );
+    assert_eq!(
+        out.trim(),
+        configured_expected.display().to_string(),
+        "rigger scratch must resolve the owning root's CONFIGURED workdir (read without \
+         requiring a loadable agents fleet there), never silently fall back to the crate's \
+         default because a full config load failed; got: {out:?}"
+    );
+}
+
 /// PERIPHERY boundary/edge case: `spawn_scratch_path`'s own doc comment names an EMPTY
 /// spawn id as the one shape its injective encoding cannot map to a real directory name, so
 /// it returns `None` rather than a fabricated placeholder a later reclaim could wrongly
@@ -11666,6 +11737,79 @@ fn replay_leaves_no_sqlite_artifact_in_the_scratch_root() {
     assert!(
         leaked.is_empty(),
         "rigger replay must remove its whole scratch db subdir (db + WAL + SHM); leaked:\n{leaked:?}"
+    );
+}
+
+/// PERIPHERY (spec 83 criterion 2, round 3 - `adv-u83c3r2-cmd-replay-fourth-unmigrated-site`):
+/// `cmd_replay` resolved `defaults.workdir` (the throwaway scratch placement for the isolated
+/// re-drive store and the candidate config's checkout) via the SAME validate-requiring
+/// `config::load(".")` pattern round 2 fixed for `cmd_status`/`watch_poll`/
+/// `reclaim_spawn_scratch` and round 3 fixes for `cmd_dash`/`cmd_scratch` - a fourth call site
+/// no lens named until the adversary's own exhaustive re-enumeration. Configures a NON-DEFAULT
+/// `defaults.workdir` at an agents-less owning root: the agents fleet is removed from the LIVE
+/// working tree ONLY, AFTER the baseline run and the git commit the candidate rev checks out
+/// from, so the candidate's own config load at `--against HEAD` reads its own committed,
+/// agents-intact copy and is unaffected - only the live cwd read this fix targets loses its
+/// fleet. Asserts the replay still resolves scratch under the configured (previously
+/// nonexistent) directory, never silently falling back to the crate's default because a full
+/// config load failed.
+#[test]
+fn replay_resolves_a_configured_workdir_from_an_agents_less_owning_root() {
+    let dir = temp_repoless_project();
+    let root = dir.path();
+    write_gated_reviewed_workflow(root);
+    drive_baseline_run(root);
+
+    git_ok(root, &["init", "-q"]);
+    git_ok(root, &["config", "user.email", "t@example.com"]);
+    git_ok(root, &["config", "user.name", "t"]);
+    git_ok(root, &["add", ".rigger/workflow.yml", ".rigger/agents"]);
+    git_ok(root, &["commit", "-q", "-m", "config"]);
+
+    // A NON-DEFAULT workdir, configured ONLY in the live working tree (never committed) - the
+    // candidate checkout at HEAD reads its own committed workflow.yml, unaffected.
+    let relocated = tempfile::tempdir().unwrap();
+    let nested = relocated.path().join("nested-workdir");
+    assert!(
+        !nested.exists(),
+        "fixture bug: the configured workdir must not already exist, else this test cannot \
+         discriminate whether the replay actually resolved it"
+    );
+    std::fs::write(
+        root.join(".rigger").join("workflow.yml"),
+        format!(
+            "name: statstest\ndefaults:\n  workdir: \"{}\"\n",
+            nested.to_string_lossy()
+        ),
+    )
+    .unwrap();
+    // The agents fleet is removed from the LIVE working tree only (uncommitted) - the candidate
+    // rev's own checkout at HEAD still has it, from the commit above.
+    std::fs::remove_dir_all(root.join(".rigger").join("agents")).unwrap();
+    assert!(
+        !root.join(".rigger").join("agents").exists(),
+        "fixture bug: this test requires an agents-less owning root to exercise the \
+         validate-independent axis of the fix"
+    );
+
+    let mut cmd = common::rigger_courier();
+    cmd.args(["replay", "latest", "--against", "HEAD"])
+        .current_dir(root)
+        .env_remove("RIGGER_TMPDIR");
+    let output = cmd.output().expect("failed to spawn the rigger binary");
+    assert!(
+        output.status.success(),
+        "rigger replay must succeed even when the owning root has no agents fleet at all; \
+         stdout: {:?} stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(
+        nested.exists(),
+        "rigger replay must resolve the CONFIGURED workdir (read without requiring a loadable \
+         agents fleet there), never silently fall back to the crate's default scratch root \
+         because a full config load failed - the configured scratch root was never created"
     );
 }
 

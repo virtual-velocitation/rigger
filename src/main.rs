@@ -1789,23 +1789,26 @@ impl StoreLocation {
     }
 }
 
-/// The shared `defaults.workdir`/`defaults.max_retries` resolver [`cmd_status`],
-/// [`watch_poll`], and [`reclaim_spawn_scratch`] ALL delegate to (spec 83 criterion 2,
-/// round 2 - the reject's own required fix for a half-applied round-1 fix). Anchored at
-/// `loc.dir` (`<owning-root>/.rigger`) - the SAME owning root [`StoreLocation::repo_root`]
-/// resolves the scratch root from - via [`config::read_scratch_defaults`], NEVER
-/// [`config::load`]: a courier invoked from a nested unit worktree previously resolved
-/// these two fields from the process's raw cwd (`config::load(".")`), reading that
-/// worktree's own, usually absent, `workflow.yml` instead of the owning root's actual one;
-/// separately, `config::load` additionally requires a fully loadable `.rigger/agents/`
-/// fleet AND a passing [`config::Config::validate`] just to learn two string/int fields -
-/// this project's own committed `.rigger/workflow.yml` sets `build.mutation: on`, which
-/// `validate` rejects whenever `cargo-mutants` is off PATH, so ANY environment invoking
-/// `rigger status`/`rigger watch` without it on PATH silently lost a configured
-/// `defaults.workdir` (and `defaults.max_retries`) via the three call sites' own
-/// `.unwrap_or_default()`. [`config::read_scratch_defaults`] requires neither, so it can
-/// never regress on either axis. Absent/unreadable resolves to `("", 0)`, matching
-/// [`config::read_scratch_workdir`]'s own tolerant-absent contract.
+/// The shared `defaults.workdir`/`defaults.max_retries` resolver EVERY production reader of
+/// those two fields delegates to (spec 83 criterion 2): [`cmd_status`], [`watch_poll`],
+/// [`reclaim_spawn_scratch`], and [`cmd_scratch`] (round 2 + round 3's `loc`, resolved by
+/// [`require_store_dir`]'s owning-root walk), plus [`cmd_dash`] and `cmd_replay` (round 3,
+/// each passing a `StoreLocation` built from ITS OWN pre-existing repo/cwd resolution -
+/// `cmd_dash`'s raw process cwd and `cmd_replay`'s [`git_repo`] - unchanged by this function;
+/// see each caller's own doc comment for why). Every caller reads via
+/// [`config::read_scratch_defaults`], NEVER [`config::load`]: `config::load` additionally
+/// requires a fully loadable `.rigger/agents/` fleet AND a passing [`config::Config::validate`]
+/// just to learn two string/int fields - this project's own committed `.rigger/workflow.yml`
+/// sets `build.mutation: on`, which `validate` rejects whenever `cargo-mutants` is off PATH,
+/// so ANY environment invoking one of these commands without it on PATH used to silently lose
+/// a configured `defaults.workdir` (and `defaults.max_retries`) via each call site's own
+/// `.unwrap_or_default()` over `config::load`'s `Err`. Separately, for the FOUR `loc`-from-
+/// `require_store_dir` callers, `loc.dir` is `<owning-root>/.rigger` - the SAME owning root
+/// [`StoreLocation::repo_root`] resolves the scratch root from, never a nested unit
+/// worktree's own cwd (round 1's original defect). [`config::read_scratch_defaults`] requires
+/// neither a loadable fleet nor a passing validate, so it can never regress on either axis.
+/// Absent/unreadable resolves to `("", 0)`, matching [`config::read_scratch_workdir`]'s own
+/// tolerant-absent contract.
 fn scratch_defaults(loc: &StoreLocation) -> (String, u32) {
     let d = config::read_scratch_defaults(&loc.dir).unwrap_or_default();
     (d.workdir, d.max_retries)
@@ -2929,9 +2932,14 @@ fn cmd_scratch(args: &[String]) -> Res {
         .parent()
         .and_then(|p| p.to_str())
         .ok_or("scratch: could not resolve the project root")?;
-    let workdir = config::load(repo)
-        .map(|c| c.workflow.defaults.workdir)
-        .unwrap_or_default();
+    // `workdir` via the SAME shared, validate-independent `scratch_defaults` resolver
+    // `reclaim_spawn_scratch` uses (spec 83 criterion 2, round 3) - never `config::load`,
+    // which additionally requires a fully loadable `.rigger/agents/` fleet AND a passing
+    // `Config::validate` just to learn this one string field, and previously left this
+    // function diverging from the reaper it must stay byte-identical to (see this
+    // function's own doc comment) whenever `Config::validate` failed for an unrelated
+    // reason (arch-u83c3-cmd-scratch-diverges-from-reclaim-after-asymmetric-fix).
+    let (workdir, _max_retries) = scratch_defaults(&loc);
     let scratch_root = rigger::worktree::scratch_root_path_from_env(repo, &workdir);
     let run_id = runscope::current_run_id(&prior).unwrap_or_default();
     match spawn_scratch_path(&scratch_root, &run_id, id) {
@@ -5250,10 +5258,20 @@ fn cmd_replay(args: &[String]) -> Res {
         .filter(|r| !r.is_empty())
         .unwrap_or_else(|| run_id.clone());
 
-    // 2. Materialize the candidate config at <rev> in a throwaway checkout.
-    let workdir = config::load(".")
-        .map(|c| c.workflow.defaults.workdir)
-        .unwrap_or_default();
+    // 2. Materialize the candidate config at <rev> in a throwaway checkout. `workdir` is read
+    //    via the SAME shared, validate-independent `scratch_defaults` resolver
+    //    `cmd_status`/`watch_poll`/`reclaim_spawn_scratch`/`cmd_scratch`/`cmd_dash` all use
+    //    (spec 83 criterion 2, round 3) - never `config::load`, which additionally requires a
+    //    fully loadable `.rigger/agents/` fleet AND a passing `Config::validate` just to learn
+    //    this one string field; `adv-u83c3r2-cmd-replay-fourth-unmigrated-site` found this was
+    //    the fourth call site still on the old pattern, silently zeroing a configured
+    //    `defaults.workdir` (this THROWAWAY scratch placement, never the candidate's own
+    //    config at `<rev>`, which `materialize_config_at_rev` loads separately below) whenever
+    //    `Config::validate` failed for an unrelated reason. Anchored at `repo` (the resolved
+    //    git top-level, not raw cwd), matching `StoreLocation::dir`'s own convention.
+    let (workdir, _max_retries) = scratch_defaults(&StoreLocation {
+        dir: Path::new(&repo).join(RIGGER_DIR),
+    });
     let scratch_root = rigger::worktree::scratch_root_from_env(&repo, &workdir);
     std::fs::create_dir_all(&scratch_root)?;
     let (candidate_cfg, candidate_definition) =
@@ -6221,10 +6239,23 @@ fn cmd_dash(args: &[String]) -> Res {
     // either leaves it empty and the view omits ages (see the resolution below for why an
     // explicit override still resolves without a repo).
     // The configured remediation bound (same config) sets the `#n/max` on a current-blocker
-    // `reject-recurrence` line so the dashboard and `rigger status` agree.
-    let (workdir, max_retries) = config::load(".")
-        .map(|c| (c.workflow.defaults.workdir, c.workflow.defaults.max_retries))
-        .unwrap_or_default();
+    // `reject-recurrence` line so the dashboard and `rigger status` agree. Read via the SAME
+    // shared, validate-independent `scratch_defaults` resolver `cmd_status`/`watch_poll`/
+    // `reclaim_spawn_scratch`/`cmd_scratch`/`cmd_replay` all use (spec 83 criterion 2, round 3)
+    // - never `config::load`, which additionally requires a fully loadable `.rigger/agents/`
+    // fleet AND a passing `Config::validate` just to learn these two fields; `arch-u83c3-dash-
+    // scratch-defaults-not-migrated` found `cmd_dash` was left on the old pattern, silently
+    // losing a configured `defaults.workdir`/`defaults.max_retries` (and every agent's
+    // liveness age on the dashboard with it) whenever `Config::validate` failed for an
+    // unrelated reason. Anchored at the process's raw cwd (`RIGGER_DIR` alone, exactly what
+    // `config::load(".")` resolved before), matching this function's own pre-existing
+    // `git_repo()`-based `scratch_root` resolution below and its documented repo-less degrade
+    // (`cmd_dash`, unlike the courier commands, is deliberately never routed through
+    // `require_store_dir`'s owning-root walk) - only the VALIDATE-INDEPENDENCE axis changes
+    // here, not the anchor.
+    let (workdir, max_retries) = scratch_defaults(&StoreLocation {
+        dir: PathBuf::from(RIGGER_DIR),
+    });
     let scratch_root = {
         let repo = git_repo();
         // An empty `repo` alone must NOT force an empty scratch root: `RIGGER_TMPDIR` (or a

@@ -566,3 +566,87 @@ fn watch_once_suppresses_a_false_dead_driver_when_the_configured_workdir_resolve
          {stdout:?}"
     );
 }
+
+/// The SAME round-2 seam as the two tests above, at `rigger dash`'s own real-binary bound
+/// (spec 83 criterion 2, round 3 - `arch-u83c3-dash-scratch-defaults-not-migrated`): `cmd_dash`
+/// still resolved `defaults.workdir`/`defaults.max_retries` via the full, validate-requiring
+/// `config::load(".")` after round 2 moved `cmd_status`/`watch_poll`/`reclaim_spawn_scratch`
+/// onto the shared, validate-independent `scratch_defaults` resolver - a second, unreconciled
+/// implementation of the identical resolution concern for the SAME per-spawn liveness-age
+/// rendering `cmd_status` already gets right (`dash_read_liveness` is fed the identical
+/// `scratch_root`/`AgentActivity.liveness_age_s` shape `progress::consolidate` produces for
+/// `cmd_status --json`). `rigger dash --export` (a one-shot snapshot render, no server bind
+/// needed) is the lightest real-binary surface that exercises it: a configured, non-default
+/// `defaults.workdir` at an agents-less owning root must still surface the spawn's fresh
+/// heartbeat in the exported snapshot, never a silently ABSENT `liveness_age_s` (the field is
+/// `skip_serializing_if = "Option::is_none"`, so a mis-resolved workdir drops it from the JSON
+/// entirely rather than nulling it) because `config::load(".")` failed on the missing agents
+/// fleet.
+#[test]
+fn dash_export_resolves_a_configured_workdir_from_the_owning_root_with_no_agents_fleet_present() {
+    let project = main_repo_with_commit();
+    let root = project.path();
+    seed_in_flight_spawn(root);
+
+    let relocated = tempfile::tempdir().expect("create relocated workdir");
+    std::fs::write(
+        root.join(".rigger").join("workflow.yml"),
+        format!(
+            "name: w\ndefaults:\n  workdir: \"{}\"\n",
+            relocated.path().to_string_lossy()
+        ),
+    )
+    .expect("write the owning root's workflow.yml with a configured workdir");
+    // Fixture guard: no `.rigger/agents/` dir exists at the owning root either - confirms this
+    // test genuinely exercises the validate-independent axis of the fix.
+    assert!(
+        !root.join(".rigger").join("agents").exists(),
+        "fixture bug: this test requires an agents-less owning root to exercise the \
+         validate-independent axis of the fix"
+    );
+
+    // The REAL writer's path composition, using the configured workdir directly.
+    let scratch_root = real_scratch_root(root, relocated.path().to_str().unwrap());
+    let marker = rigger::liveness::marker_path(&scratch_root, RUN_ID, SPAWN_ID)
+        .expect("a spawn id must always resolve a marker path");
+    std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    std::fs::write(&marker, b"heartbeat").unwrap();
+
+    // The WRONG path a `config::load(".")` regression resolves whenever `Config::validate`
+    // fails (here: the missing agents fleet) - the empty-workdir default rung, a DIFFERENT
+    // scratch root than the configured one above, so this test cannot pass vacuously.
+    let wrong_scratch_root = real_scratch_root(root, "");
+    assert_ne!(
+        wrong_scratch_root, scratch_root,
+        "fixture bug: the default-rung resolution must differ from the owning-root-configured \
+         one, else this test cannot discriminate the fix"
+    );
+
+    let export_path = root.join("dash-snapshot.html");
+    let out = run_rigger(root, &["dash", "--export", export_path.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "rigger dash --export must succeed even when the owning root has no agents fleet at \
+         all; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let html = std::fs::read_to_string(&export_path)
+        .expect("rigger dash --export must write the snapshot file");
+    let needle = format!("\"id\":\"{SPAWN_ID}\"");
+    assert!(
+        html.contains(&needle),
+        "the exported snapshot must carry the in-flight spawn {SPAWN_ID:?}; snapshot did not \
+         contain {needle:?}"
+    );
+    // A present `liveness_age_s` key proves the marker under the CONFIGURED workdir was found -
+    // a mis-resolved workdir (silently falling back to the default, unconfigured root because
+    // `config::load(\".\")` failed on the missing agents fleet) would omit the field entirely
+    // (it is `skip_serializing_if = "Option::is_none"`, never a printed `null`).
+    assert!(
+        html.contains("\"liveness_age_s\":"),
+        "the exported snapshot must carry a liveness_age_s for the in-flight spawn: the \
+         configured defaults.workdir must be read from the owning root without requiring a \
+         loadable agents fleet there; snapshot did not contain the field at all"
+    );
+}
