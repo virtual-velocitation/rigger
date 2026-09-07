@@ -3053,21 +3053,30 @@ fn render_section_3() -> String {
         `src/conductor.rs:7903`, itself called from `src/conductor.rs:7894` well \
         above the `10260` `#[cfg(test)]` boundary) calls \
         `crate::grounder::symbols::events::project_batches_paced` directly by \
-        concrete module path to reuse the `symbols` grounder's already-persisted \
-        index for a one-time whole-project ingest walk. The `Grounder` port's own \
-        methods (`ground`, `reindex`, `blast_radius`, `index_stamp` - its \
-        provenance stamp - all at `src/grounder/mod.rs:133-175`) serve real-time \
-        per-query grounding of an \
-        agent's prompt; none exposes \"hand me every indexed file's projected \
-        events for a whole-project batch ingest,\" so `ingest.rs` - itself a \
-        domain ingest authority (its own module doc names it \"the ONE \
-        walk-and-content-key authority\"), not an adapter and not the composition \
-        root - has no port to depend on for this and reaches the concrete `symbols` \
-        module directly. Same missing-port defect class as violation 1. Fix \
+        concrete module path at line 197 to reuse the `symbols` grounder's \
+        already-persisted index for a one-time whole-project ingest walk, then at \
+        line 203 - same function, same missing-port defect, not a separate third \
+        violation - calls `crate::grounder::design::events::project_batches` \
+        directly by concrete module path for the design-doc half of the same walk. \
+        These two calls are the two named sites of section 2's own catalogued twin \
+        duplicate pair (`dup-0198`: `src/grounder/symbols/events.rs:36-38` and \
+        `src/grounder/design/events.rs:90-114`, both named `project_batches`), so \
+        this boundary violation and that duplication finding are two symptoms of \
+        one root cause - `ingest.rs` naming each concrete grounder submodule \
+        because no port exposes either. The `Grounder` port's own methods \
+        (`ground`, `reindex`, `blast_radius`, `index_stamp` - its provenance stamp \
+        - all at `src/grounder/mod.rs:133-175`) serve real-time per-query \
+        grounding of an agent's prompt; none exposes \"hand me every indexed \
+        file's projected events for a whole-project batch ingest,\" so \
+        `ingest.rs` - itself a domain ingest authority (its own module doc names \
+        it \"the ONE walk-and-content-key authority\"), not an adapter and not \
+        the composition root - has no port to depend on for either call and \
+        reaches the concrete `symbols` module (197) and the concrete `design` \
+        module (203) directly. Same missing-port defect class as violation 1. Fix \
         direction for a follow-up spec: add an ingest-shaped port method (e.g. a \
-        `Grounder::project_batches` or a standalone `SymbolProjector` trait) so \
-        `ingest.rs` depends on an abstraction instead of the concrete `symbols` \
-        module for its whole-project walk.\n\n",
+        `Grounder::project_batches` or a standalone `SymbolProjector` trait) \
+        covering both concrete modules, so `ingest.rs` depends on one abstraction \
+        instead of either concrete grounder module for its whole-project walk.\n\n",
     );
     out.push_str(
         "Also reaching `grounder::symbols::store::content_hash` from the same two \
@@ -3209,11 +3218,19 @@ fn render_section_4() -> String {
         `pub` item in that shape, regardless of its real caller count - a `pub fn` \
         with zero actual callers anywhere compiles and lints exactly as cleanly as \
         one with a hundred, because the lint treats every `pub` item as part of the \
-        library's external surface. Roughly 298 `pub fn`s exist in `src/` outside \
-        the three files instrument one scans (`src/conductor.rs`, `src/main.rs`, \
-        `src/dash.rs`), none of which instrument three (or instrument one, scoped \
-        to those three files, or instrument two, which can only cross-check a \
-        candidate the other two already named) can structurally rule dead. So this \
+        library's external surface. 399 `pub fn`s exist in `src/` outside the \
+        three files instrument one scans (`src/conductor.rs`, `src/main.rs`, \
+        `src/dash.rs`), counted over the WHOLE `src/` tree rather than only its \
+        top level: 298 in the other 30 top-level `src/*.rs` files, plus 101 more \
+        across the 23 files under `src/eventstore/`, `src/grounder/` (its \
+        `design/` and `symbols/` submodules included), `src/contextgraph/` and \
+        `src/driver/`. Whole-tree is the right scope for this claim: the same \
+        structural dead_code-lint blindness argument applies just as much to a \
+        `pub fn` in `src/grounder/symbols/store.rs` as to one in a top-level \
+        file. None of these 399 - at either level - can instrument three (or \
+        instrument one, scoped to those three files, or instrument two, which \
+        can only cross-check a candidate the other two already named) \
+        structurally rule dead. So this \
         section's zero-dead-code result is proven for the 596 scanned entries, not \
         promised for the whole crate. Exactly one `#[allow(dead_code)]` exists \
         anywhere in `src/` (`src/main.rs:60`, on `mod gitsemver;`); its own \
