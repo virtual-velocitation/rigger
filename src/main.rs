@@ -1789,6 +1789,28 @@ impl StoreLocation {
     }
 }
 
+/// The shared `defaults.workdir`/`defaults.max_retries` resolver [`cmd_status`],
+/// [`watch_poll`], and [`reclaim_spawn_scratch`] ALL delegate to (spec 83 criterion 2,
+/// round 2 - the reject's own required fix for a half-applied round-1 fix). Anchored at
+/// `loc.dir` (`<owning-root>/.rigger`) - the SAME owning root [`StoreLocation::repo_root`]
+/// resolves the scratch root from - via [`config::read_scratch_defaults`], NEVER
+/// [`config::load`]: a courier invoked from a nested unit worktree previously resolved
+/// these two fields from the process's raw cwd (`config::load(".")`), reading that
+/// worktree's own, usually absent, `workflow.yml` instead of the owning root's actual one;
+/// separately, `config::load` additionally requires a fully loadable `.rigger/agents/`
+/// fleet AND a passing [`config::Config::validate`] just to learn two string/int fields -
+/// this project's own committed `.rigger/workflow.yml` sets `build.mutation: on`, which
+/// `validate` rejects whenever `cargo-mutants` is off PATH, so ANY environment invoking
+/// `rigger status`/`rigger watch` without it on PATH silently lost a configured
+/// `defaults.workdir` (and `defaults.max_retries`) via the three call sites' own
+/// `.unwrap_or_default()`. [`config::read_scratch_defaults`] requires neither, so it can
+/// never regress on either axis. Absent/unreadable resolves to `("", 0)`, matching
+/// [`config::read_scratch_workdir`]'s own tolerant-absent contract.
+fn scratch_defaults(loc: &StoreLocation) -> (String, u32) {
+    let d = config::read_scratch_defaults(&loc.dir).unwrap_or_default();
+    (d.workdir, d.max_retries)
+}
+
 /// The [`StoreLocation`] a SERVER-backed project resolves to, anchored at `cwd`. The server
 /// holds ONE remote store, so there is no local `events.db` to walk to: identity binds to the
 /// OWNING root (the main repo root - correct even from a nested worktree, exactly as the sqlite
@@ -7233,11 +7255,10 @@ fn cmd_status(args: &[String]) -> Res {
 
     // Liveness ages: rigger stats each in-flight spawn's marker IN RUST here (this is what
     // the JS driver's haiku probe was reconstructing by proxy - unit 3 retires it). The
-    // configured remediation bound is read from the SAME config so the current-blocker
-    // classifier's `#n/max` line matches the depth the run actually escalates at.
-    let (workdir, max_retries) = config::load(".")
-        .map(|c| (c.workflow.defaults.workdir, c.workflow.defaults.max_retries))
-        .unwrap_or_default();
+    // configured remediation bound is read from the SAME config (via the shared
+    // `scratch_defaults`, spec 83 criterion 2 round 2) so the current-blocker classifier's
+    // `#n/max` line matches the depth the run actually escalates at.
+    let (workdir, max_retries) = scratch_defaults(&loc);
     let wave = spawn::step_result(run_events)?.wave;
     let liveness_ages: std::collections::HashMap<String, u64> =
         liveness_ages_for_wave(&loc.repo_root(), &workdir, &run_id, &wave, now)
@@ -7452,9 +7473,10 @@ fn parse_watch_args(args: &[String]) -> Result<WatchArgs, Box<dyn std::error::Er
 /// carried one step further: a watchdog armed unattended must also outlive a TRANSIENT fault
 /// in the very store it reads (a torn read racing a concurrent writer, a momentarily locked
 /// file) rather than itself becoming the thing that silently stops monitoring. Matches every
-/// other fallible read [`watch_poll`] already performs beyond the store (`config::load`, the
-/// step-lock probe, the liveness-marker stat, the dash-marker read) - all deliberately
-/// fail-soft; only the store reads used to be the exception.
+/// other fallible read [`watch_poll`] already performs beyond the store (the shared
+/// `scratch_defaults` config probe, the step-lock probe, the liveness-marker stat, the
+/// dash-marker read) - all deliberately fail-soft; only the store reads used to be the
+/// exception.
 fn cmd_watch(args: &[String]) -> Res {
     let WatchArgs {
         once,
@@ -7532,11 +7554,11 @@ fn watch_poll(
     let step_lock_free = acquire_step_lock(&loc.dir).is_ok();
 
     // Each currently-parked spawn's heartbeat-marker age, exactly as `cmd_status`
-    // computes `liveness_ages` (spec 19a) - the SAME "live agent processes" reading
-    // both surfaces show, so they can never disagree on who is still working.
-    let (workdir, _max_retries) = config::load(".")
-        .map(|c| (c.workflow.defaults.workdir, c.workflow.defaults.max_retries))
-        .unwrap_or_default();
+    // computes `liveness_ages` (spec 19a) - the SAME "live agent processes" reading both
+    // surfaces show, so they can never disagree on who is still working. `watch_poll` never
+    // reads `max_retries` (only `cmd_status`'s blocker-line rendering needs it), so the
+    // second half of the shared `scratch_defaults` pair is deliberately discarded here.
+    let (workdir, _max_retries) = scratch_defaults(loc);
     let wave = spawn::step_result(&run_events)?.wave;
     let wave_liveness_ages =
         liveness_ages_for_wave(&loc.repo_root(), &workdir, &run_id, &wave, now);
@@ -8872,12 +8894,11 @@ fn reclaim_spawn_scratch(loc: &StoreLocation, prior: &[Event], spawn_id: &str) {
     }
     // The run's scratch root by the SAME precedence the run assigned the path with
     // (`scratch_root_from_env`: RIGGER_TMPDIR > `defaults.workdir` > the `<repo>/.rigger/tmp`
-    // default). The courier inherits the run's `RIGGER_TMPDIR`; `workdir` loads best-effort,
-    // falling back to the repo default when the config is momentarily unreadable (the
-    // overwhelming common placement). The read-only `_path_` resolver never conjures a root.
-    let workdir = config::load(&repo)
-        .map(|c| c.workflow.defaults.workdir)
-        .unwrap_or_default();
+    // default). The courier inherits the run's `RIGGER_TMPDIR`; `workdir` reads best-effort
+    // via the shared `scratch_defaults` (spec 83 criterion 2 round 2), falling back to the
+    // repo default when the config is momentarily unreadable (the overwhelming common
+    // placement). The read-only `_path_` resolver never conjures a root.
+    let (workdir, _max_retries) = scratch_defaults(loc);
     let scratch_root = rigger::worktree::scratch_root_path_from_env(&repo, &workdir);
     let run_id = runscope::current_run_id(prior).unwrap_or_default();
     reclaim_spawn_registered_scratch(&scratch_root, &run_id, spawn_id);
@@ -23600,6 +23621,51 @@ mod tests {
             Some(5),
             "the reader must resolve the SAME scratch root the writer stamped the marker \
              under (the store's owning root), never a raw process-cwd read: {ages:?}"
+        );
+    }
+
+    /// Spec 83 criterion 2, ROUND 2 (the reject's own required fix - a half-applied fix left
+    /// standing): [`scratch_defaults`] - the shared resolver [`cmd_status`], [`watch_poll`],
+    /// and [`reclaim_spawn_scratch`] ALL now delegate to - must resolve `defaults.workdir`
+    /// AND `defaults.max_retries` from the store's OWNING root (`loc.dir`'s `workflow.yml`)
+    /// and must succeed even when that owning root has NO loadable `.rigger/agents/` fleet
+    /// at all (the exact shape `config::load` refuses outright, silently zeroing both fields
+    /// for any caller that `.unwrap_or_default()`s past that unrelated failure - the round-2
+    /// reject's second, independently-found axis of the same gap). This test never touches
+    /// the process's real cwd at all (it only ever hands `scratch_defaults` a fabricated
+    /// `StoreLocation`), which is itself part of the proof: the shared resolver has no cwd
+    /// input to leak through in the first place.
+    #[test]
+    fn scratch_defaults_reads_the_owning_roots_config_with_no_agents_fleet_present() {
+        let owning_root = tempfile::tempdir().unwrap();
+        let rigger_dir = owning_root.path().join(RIGGER_DIR);
+        std::fs::create_dir_all(&rigger_dir).unwrap();
+        std::fs::write(
+            rigger_dir.join("workflow.yml"),
+            "name: w\ndefaults:\n  workdir: \"/configured/scratch\"\n  max_retries: 5\n",
+        )
+        .unwrap();
+        // Fixture guard: no `.rigger/agents/` dir exists at all, so `config::load` (the
+        // buggy call site's own resolver) fails outright on this exact root - proving this
+        // test genuinely discriminates the validate-independent axis, not just field
+        // plumbing.
+        assert!(
+            config::load(owning_root.path().to_str().unwrap()).is_err(),
+            "fixture bug: config::load must fail on an agents-less root for this test to \
+             discriminate the lightweight resolver from the full one"
+        );
+
+        let loc = StoreLocation { dir: rigger_dir };
+        let (workdir, max_retries) = scratch_defaults(&loc);
+        assert_eq!(
+            workdir, "/configured/scratch",
+            "must read the owning root's configured workdir via the lightweight resolver, \
+             never silently defaulting to empty because config::load would have failed"
+        );
+        assert_eq!(
+            max_retries, 5,
+            "must read the owning root's configured max_retries via the lightweight \
+             resolver, never silently defaulting to 0 because config::load would have failed"
         );
     }
 

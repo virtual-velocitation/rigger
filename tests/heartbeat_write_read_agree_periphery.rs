@@ -202,21 +202,23 @@ fn run_rigger(dir: &Path, args: &[&str]) -> Output {
 }
 
 /// The scratch root the REAL writer (`rigger step`) resolves for a spawn placed at
-/// `owning_root`, using the env-override-free precedence rung (`configured` empty,
-/// `env_override: None`) - the SAME rung [`run_rigger`] guarantees for the spawned reader by
-/// clearing `RIGGER_TMPDIR` on its `Command`. Bypassing `scratch_root_from_env`'s own
-/// environment read here (rather than relying on this test PROCESS having no ambient
-/// `RIGGER_TMPDIR`, which a concurrently-running gate cannot guarantee) is what keeps this
-/// fixture deterministic regardless of what the surrounding process environment carries.
-fn real_scratch_root(owning_root: &Path) -> String {
-    rigger::worktree::scratch_root(owning_root.to_str().unwrap(), "", None)
+/// `owning_root` under a `configured` `defaults.workdir` (pass `""` for the unconfigured,
+/// default-rung case), using the env-override-free precedence rung (`env_override: None`) -
+/// the SAME rung [`run_rigger`] guarantees for the spawned reader by clearing
+/// `RIGGER_TMPDIR` on its `Command`. Bypassing `scratch_root_from_env`'s own environment
+/// read here (rather than relying on this test PROCESS having no ambient `RIGGER_TMPDIR`,
+/// which a concurrently-running gate cannot guarantee) is what keeps this fixture
+/// deterministic regardless of what the surrounding process environment carries.
+fn real_scratch_root(owning_root: &Path, configured: &str) -> String {
+    rigger::worktree::scratch_root(owning_root.to_str().unwrap(), configured, None)
 }
 
-/// Write a liveness marker at the path the REAL writer computes for `owning_root` - the same
-/// `scratch_root` + `marker_path` composition `rigger step` stamps a wave item's
-/// `marker_path` with (the wire path the thin driver frames the worker's `touch` around).
+/// Write a liveness marker at the path the REAL writer computes for `owning_root` with no
+/// configured `defaults.workdir` (the default-rung case) - the same `scratch_root` +
+/// `marker_path` composition `rigger step` stamps a wave item's `marker_path` with (the wire
+/// path the thin driver frames the worker's `touch` around).
 fn write_real_marker(owning_root: &Path) -> PathBuf {
-    let scratch_root = real_scratch_root(owning_root);
+    let scratch_root = real_scratch_root(owning_root, "");
     let marker = rigger::liveness::marker_path(&scratch_root, RUN_ID, SPAWN_ID)
         .expect("a spawn id must always resolve a marker path");
     std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
@@ -255,10 +257,10 @@ fn status_from_a_nested_worktree_reports_the_heartbeat_written_at_the_owning_roo
     // the nested worktree - proven to differ from the real one, and to hold NO marker, so a
     // regression back to cwd-based resolution would make this test fail loudly (heartbeat
     // absent) rather than pass vacuously.
-    let wrong_scratch_root = real_scratch_root(&nested);
+    let wrong_scratch_root = real_scratch_root(&nested, "");
     assert_ne!(
         wrong_scratch_root,
-        real_scratch_root(root),
+        real_scratch_root(root, ""),
         "fixture bug: the nested worktree's own scratch root must differ from the owning \
          root's, else this test cannot discriminate the fix from the cwd-based regression it \
          guards against"
@@ -335,5 +337,94 @@ fn status_human_output_from_a_nested_worktree_never_prints_a_dash_heartbeat_for_
     assert!(
         stdout.contains("heartbeat ") && stdout.contains("s ago"),
         "expected a rendered heartbeat age line (\"heartbeat <n>s ago\"); got: {stdout:?}"
+    );
+}
+
+/// ROUND 2 of this same seam (spec 83 criterion 2's own reject: a half-applied round-1
+/// fix). The round-1 fixture above (`status_from_a_nested_worktree_reports_the_heartbeat_
+/// written_at_the_owning_root`) never configures `defaults.workdir` at all, so both the
+/// buggy cwd-based read AND the fixed owning-root-based read land on the SAME default-rung
+/// scratch root (`<repo>/.rigger/tmp`) - it cannot discriminate the fix from the
+/// regression it means to guard against. This test closes that hole on TWO axes at once,
+/// exactly as sdet/the adversary found them: (1) a REAL, non-default `defaults.workdir`
+/// configured at the OWNING root, invisible from the nested worktree's own cwd (`git
+/// worktree add` only ever checks out TRACKED content, and this workflow.yml is
+/// deliberately never committed); (2) the owning root has NO `.rigger/agents/` fleet at
+/// all, the exact shape `config::load` refuses outright - proving the read does not
+/// silently fall back to the empty default merely because a full config load would have
+/// failed.
+#[test]
+fn status_resolves_a_configured_workdir_from_the_owning_root_with_no_agents_fleet_present() {
+    let project = main_repo_with_commit();
+    let root = project.path();
+    seed_in_flight_spawn(root);
+    let nested = nested_worktree(root, "rigger-wt-workdir-seam");
+
+    let relocated = tempfile::tempdir().expect("create relocated workdir");
+    std::fs::write(
+        root.join(".rigger").join("workflow.yml"),
+        format!(
+            "name: w\ndefaults:\n  workdir: \"{}\"\n",
+            relocated.path().to_string_lossy()
+        ),
+    )
+    .expect("write the owning root's workflow.yml with a configured workdir");
+    // Fixture guard: no `.rigger/agents/` dir exists at the owning root either - confirms
+    // this test genuinely exercises the validate-independent axis of the fix, not just the
+    // cwd-vs-owning-root one.
+    assert!(
+        !root.join(".rigger").join("agents").exists(),
+        "fixture bug: this test requires an agents-less owning root to exercise the \
+         validate-independent axis of the fix"
+    );
+
+    // The REAL writer's path composition, using the configured workdir directly (mirrors
+    // `write_real_marker`, generalized to a non-default workdir).
+    let scratch_root = real_scratch_root(root, relocated.path().to_str().unwrap());
+    let marker = rigger::liveness::marker_path(&scratch_root, RUN_ID, SPAWN_ID)
+        .expect("a spawn id must always resolve a marker path");
+    std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    std::fs::write(&marker, b"heartbeat").unwrap();
+
+    // The WRONG path a `config::load(".")`-from-nested-cwd regression would resolve: the
+    // nested worktree's own cwd has no workflow.yml at all (never committed), so it falls
+    // through to the empty-workdir default rung - a DIFFERENT scratch root than the
+    // configured one above, so this test cannot pass vacuously.
+    let wrong_scratch_root = real_scratch_root(&nested, "");
+    assert_ne!(
+        wrong_scratch_root, scratch_root,
+        "fixture bug: the cwd-based (nested, default-workdir) resolution must differ from \
+         the owning-root-configured one, else this test cannot discriminate the fix"
+    );
+
+    let out = run_rigger(&nested, &["status", "--json"]);
+    assert!(
+        out.status.success(),
+        "rigger status --json from a nested worktree must succeed even when the owning \
+         root has no agents fleet at all; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let line = stdout.lines().next().unwrap_or_default();
+    let value: serde_json::Value = serde_json::from_str(line)
+        .unwrap_or_else(|e| panic!("status --json must print one JSON line: {e}; got {line:?}"));
+    let agents = value.as_array().expect("status --json prints a bare array");
+    let agent = agents
+        .iter()
+        .find(|a| a.get("id").and_then(|v| v.as_str()) == Some(SPAWN_ID))
+        .unwrap_or_else(|| {
+            panic!("the in-flight spawn {SPAWN_ID:?} must appear in status --json; got {agents:?}")
+        });
+    let age = agent.get("liveness_age_s").and_then(|v| v.as_u64());
+    assert!(
+        age.is_some(),
+        "the spawn's heartbeat age must be present: the configured defaults.workdir must be \
+         read from the OWNING root (never the process's raw cwd), and that read must not \
+         require a loadable agents fleet at that root either: got {agent:?}"
+    );
+    assert!(
+        age.unwrap() < 120,
+        "the reported heartbeat age must reflect the marker just touched under the \
+         CONFIGURED workdir, not a mis-scoped read: got {age:?}"
     );
 }
