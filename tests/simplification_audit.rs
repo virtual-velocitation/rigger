@@ -3021,8 +3021,9 @@ fn render_section_3() -> String {
         `src/main.rs` is exempt from the \"reaches a concrete adapter\" check: it is \
         the composition root, and wiring concretions together is its designed job.\n\n",
     );
+    out.push_str("FOUND, two violations:\n\n");
     out.push_str(
-        "FOUND, one violation: `src/conductor.rs:7091-7096` \
+        "Violation 1 (`AgentDriver`): `src/conductor.rs:7091-7096` \
         (`reclaim_terminal_unit_mutation_scratch`, real production code - well above \
         the `#[cfg(test)] mod tests` boundary this audit's own section 1 identified \
         at `src/conductor.rs:10260`) calls `crate::driver::replay::cache_home_from` \
@@ -3047,8 +3048,47 @@ fn render_section_3() -> String {
         for a concern that adapter does not conceptually own.\n\n",
     );
     out.push_str(
-        "CHECKED AND CLEAN (four of five ports; each search recorded so its absence \
-        is not merely assumed):\n",
+        "Violation 2 (`Grounder`): `src/ingest.rs:187-211` (`walk_batches`, called \
+        from production `conductor::RunCtx::ingest_project_batches` at \
+        `src/conductor.rs:7903`, itself called from `src/conductor.rs:7894` well \
+        above the `10260` `#[cfg(test)]` boundary) calls \
+        `crate::grounder::symbols::events::project_batches_paced` directly by \
+        concrete module path to reuse the `symbols` grounder's already-persisted \
+        index for a one-time whole-project ingest walk. The `Grounder` port's own \
+        methods (`ground`, `reindex`, `blast_radius`, `index_stamp` - its \
+        provenance stamp - all at `src/grounder/mod.rs:133-175`) serve real-time \
+        per-query grounding of an \
+        agent's prompt; none exposes \"hand me every indexed file's projected \
+        events for a whole-project batch ingest,\" so `ingest.rs` - itself a \
+        domain ingest authority (its own module doc names it \"the ONE \
+        walk-and-content-key authority\"), not an adapter and not the composition \
+        root - has no port to depend on for this and reaches the concrete `symbols` \
+        module directly. Same missing-port defect class as violation 1. Fix \
+        direction for a follow-up spec: add an ingest-shaped port method (e.g. a \
+        `Grounder::project_batches` or a standalone `SymbolProjector` trait) so \
+        `ingest.rs` depends on an abstraction instead of the concrete `symbols` \
+        module for its whole-project walk.\n\n",
+    );
+    out.push_str(
+        "Also reaching `grounder::symbols::store::content_hash` from the same two \
+        call sites' neighborhood (`src/ingest.rs:230`, `src/canary.rs:213`): \
+        DISPOSITIONED as legitimate shared-primitive reuse, not a third violation. \
+        `content_hash` (`src/grounder/symbols/store.rs:49`) is documented at its own \
+        definition as \"the content-identity primitive\" the `symbols` grounder's \
+        own reindex-freshening gate keys on, and `canary.rs`'s own doc comment \
+        (`canary.rs:191`) separately calls it \"the crate's ONE stable content-hash \
+        primitive\", reused there by deliberate author intent rather than adding \
+        yet another open-coded FNV-1a copy - a generic hashing utility that happens \
+        to live in the `symbols` module, not a grounding operation reached through \
+        the port. The broader duplication this primitive is meant to fix (several \
+        open-coded FNV-1a copies elsewhere in the crate, per `src/community.rs`'s \
+        own comment at line 67) is a separately tracked cross-cutting refactor \
+        (`arch-u2i-fnv1a-fourth-parallel-copy`), not this section's concern.\n\n",
+    );
+    out.push_str(
+        "CHECKED AND CLEAN (three of five ports fully clean; the other two, \
+        `AgentDriver` and `Grounder`, are this section's two violations above - each \
+        search recorded so a clean result is not merely assumed):\n",
     );
     out.push_str(
         "- `eventstore::EventStore` concretion reach (`rusqlite::Connection::open` \
@@ -3061,16 +3101,29 @@ fn render_section_3() -> String {
         test technique, not a boundary violation.\n",
     );
     out.push_str(
-        "- `grounder::Grounder` concretion reach (`grounder::symbols::*` from \
-        `src/conductor.rs`): every hit (`conductor.rs:14846`, `conductor.rs:29941`) \
-        sits inside `#[cfg(test)] mod tests` (both well past the `10260` boundary) - \
-        production `conductor.rs` never names a concrete grounder.\n",
+        "- `contextgraph::Projection` concretion reach (`contextgraph::sqlite::*`): \
+        checked whole-tree, not only `src/conductor.rs` - every one of \
+        `conductor.rs`'s 28 hits sits inside `#[cfg(test)] mod tests` (production \
+        `conductor.rs` only ever depends on `dyn Projection`), and the same is true \
+        wherever else `contextgraph::sqlite::Projector` is imported \
+        (`src/concepts.rs`, `src/dash.rs`, `src/grounder/symbols/events.rs`, \
+        `src/grounder/design/events.rs` - every import sits after that file's own \
+        `#[cfg(test)]` boundary); `src/community.rs`'s one mention is a doc \
+        comment.\n",
     );
     out.push_str(
-        "- `contextgraph::Projection` concretion reach \
-        (`contextgraph::sqlite::Projector` from `src/conductor.rs`): every one of \
-        its ~20 hits likewise sits inside `#[cfg(test)] mod tests` - production \
-        `conductor.rs` only ever depends on `dyn Projection`.\n",
+        "- `gate::Runner` concretion reach (`gate::ExecRunner` / `RecordingRunner`): \
+        checked whole-tree, not only `src/conductor.rs`. In `conductor.rs`, \
+        production depends only on `dyn gate::Runner` (`conductor.rs:1288`); every \
+        mention of a concrete runner before that is a doc comment \
+        (`conductor.rs:6498,6545,6615,6621,6625`), and the only actual import and \
+        use of `ExecRunner` (`conductor.rs:10266` onward) plus the test-only \
+        `RecordingRunner` impl (`conductor.rs:28923,29014`) sit inside \
+        `#[cfg(test)] mod tests`, well past the `10260` boundary. Every other \
+        source-level `ExecRunner` mention in `src/` is either a doc comment \
+        (`src/worktree.rs`, `src/config.rs`, `src/budget.rs`, `src/driver/cli.rs`, \
+        `src/lib.rs`) or, in `src/driver/replay.rs`, an import and 13 parameter \
+        types that all sit inside that file's own `#[cfg(test)] mod tests` too.\n",
     );
     out.push_str(
         "- Use cases importing infrastructure: grepped the top-level `use` statements \
@@ -3088,11 +3141,24 @@ fn render_section_3() -> String {
         `find_proc_stat_or_status_readers`), not re-counted here to avoid \
         double-charging one defect to two sections. Checked git as the one other \
         plausible second-authority candidate: every `Command::new(\"git\")` call \
-        site in `src/conductor.rs` (22 sites) is at line >= 17297, inside \
+        site in `src/conductor.rs` (23 sites) is at line >= 17297, inside \
         `#[cfg(test)] mod tests` - production `conductor.rs` never shells to git \
-        directly, so `src/worktree.rs` is confirmed the sole production git-command \
-        authority. No second mutation authority found beyond the already-cited, \
-        already-catalogued `/proc` case.\n",
+        directly. `src/worktree.rs` is the sole git-worktree-mutation authority \
+        OUTSIDE the composition root. Inside it, `src/main.rs` (exempt from the \
+        port-concretion-reach check above, not from this one) holds two more \
+        git-worktree-mutation sites: `reap_then_remove_worktree` \
+        (`main.rs:2791-2805`), the sanctioned worktree half of the spec-34/spec-79 \
+        orphan-sweep and extensively reviewed across those specs - a deliberate \
+        design choice, not a gap; and `materialize_config_at_rev` \
+        (`main.rs:5510-5556`), a real, already-known, non-blocking gap \
+        (`arch-u13-config-checkout-bypasses-worktree-authority` / \
+        `arch-u2r-config-checkout-shells-git` / \
+        `arch-u2r2-replayrunner-and-config-checkout-persist-not-introduced`: the \
+        `Worktree` API is branch-creating and exposes no detach-at-rev checkout, so \
+        this is a gap in that authority rather than a competing abstraction). No \
+        second mutation authority found beyond the already-cited, \
+        already-catalogued `/proc` case and this already-dispositioned \
+        `materialize_config_at_rev` gap.\n",
     );
     out
 }
@@ -3100,9 +3166,11 @@ fn render_section_3() -> String {
 /// Section 4, DEAD AND VESTIGIAL CODE: three instruments (a whole-tree textual-reference sweep
 /// over criterion 1's own 596-function production census, the compiler's own `dead_code` lint
 /// on both feature lanes, and the knowledge graph as the cross-check) find zero live dead
-/// functions; both named retired-feature examples (turbovec spec 57, the kurrentdb build-time
-/// feature flag spec 47) are confirmed fully clean; zero genuine stale doc-file references
-/// found (decision `u85c3-dead-code-clean-both-instruments`).
+/// functions AMONG THE 596 SCANNED - the compiler's own lint structurally cannot see a dead
+/// `pub` item outside that scope, so this section says so rather than claiming a whole-crate
+/// guarantee it cannot back; both named retired-feature examples (turbovec spec 57, the
+/// kurrentdb build-time feature flag spec 47) are confirmed fully clean; zero genuine stale
+/// doc-file references found (decision `u85c3-dead-code-clean-both-instruments`).
 fn render_section_4() -> String {
     let mut out = String::new();
     out.push_str("## 4. Dead and Vestigial Code\n\n");
@@ -3134,11 +3202,24 @@ fn render_section_4() -> String {
         BOTH feature lanes and read rustc's own output - zero warnings on either \
         lane, meaning the default-warn `dead_code` lint (independently enforced \
         further by every unit's own `cargo clippy --all-targets -- -D warnings` \
-        gate) finds nothing across the WHOLE crate, not only the three scanned \
-        files. Exactly one `#[allow(dead_code)]` exists anywhere in `src/` \
-        (`src/main.rs:60`, on `mod gitsemver;`); its own preceding comment explains \
-        why: the module is shared with `build.rs`, and not every item in it is \
-        called from the `main.rs` side - a justified allow, not a live finding.\n\n",
+        gate) finds nothing among the 596 scanned entries. This instrument's reach \
+        is narrower than a whole-crate guarantee, though, and this report says so \
+        rather than overclaiming: `rigger` is both a library (`src/lib.rs`) and a \
+        binary crate, and rustc's `dead_code` lint structurally never fires on a \
+        `pub` item in that shape, regardless of its real caller count - a `pub fn` \
+        with zero actual callers anywhere compiles and lints exactly as cleanly as \
+        one with a hundred, because the lint treats every `pub` item as part of the \
+        library's external surface. Roughly 298 `pub fn`s exist in `src/` outside \
+        the three files instrument one scans (`src/conductor.rs`, `src/main.rs`, \
+        `src/dash.rs`), none of which instrument three (or instrument one, scoped \
+        to those three files, or instrument two, which can only cross-check a \
+        candidate the other two already named) can structurally rule dead. So this \
+        section's zero-dead-code result is proven for the 596 scanned entries, not \
+        promised for the whole crate. Exactly one `#[allow(dead_code)]` exists \
+        anywhere in `src/` (`src/main.rs:60`, on `mod gitsemver;`); its own \
+        preceding comment explains why: the module is shared with `build.rs`, and \
+        not every item in it is called from the `main.rs` side - a justified allow, \
+        not a live finding.\n\n",
     );
     out.push_str(
         "RETIRED-FEATURE REMNANTS. `turbovec` (spec 57, \"Retire turbovec\"): grepped \
@@ -3187,10 +3268,12 @@ pub(crate) fn render_section_5() -> String {
     out.push_str(
         "Instrument: `tests/` holds 156 files today (spec 85's Goal cites 153 - this \
         criterion's own two periphery files plus criterion 2's own periphery file, \
-        all landed since the Goal text was written, account for the +3), 104,569 \
-        lines by `wc -l` (this criterion's own additions to \
-        `simplification_audit.rs` for sections 3-5 land inside that same file, \
-        growing the figure further than criteria 1 and 2 already had). Subsystem \
+        all landed since the Goal text was written, account for the +3), 104,668 \
+        lines by `wc -l` (this section's own prose lives inside \
+        `simplification_audit.rs`, one of the 156 files this instrument counts, so \
+        this figure moves with the report's own content - a self-measurement this \
+        report states fresh at generation time rather than lets drift silently). \
+        Subsystem \
         grouping is a hand-derived, ordered filename-keyword rule table (mirrors \
         criterion 1's own per-file classification convention: first-match-wins, \
         narrowest first, an explicit residual named rather than silently dropped). \
@@ -3270,8 +3353,13 @@ pub(crate) fn render_section_5() -> String {
     out.push('\n');
     out.push_str(
         "Total: 156 files, 104,725 lines by this table's own per-file count (156 \
-        files summed here; the 1-line-per-file gap against `wc -l`'s 104,569 is the \
-        trailing-newline counting convention, not a missing file).\n\n",
+        files summed here) against 104,668 by a fresh `wc -l` above - the ~57-line \
+        gap is `simplification_audit.rs`'s own line count moving as this section's \
+        prose is written into it (the same self-measurement the instrument \
+        paragraph above names), not a missing file; the per-file counts in the \
+        table itself are not re-derived on every such move, since doing so for all \
+        156 files on every edit is outside this criterion's own \
+        no-new-generator-code scope.\n\n",
     );
     out.push_str("### 5.2 Shared fixtures to extract into `tests/common`\n\n");
     out.push_str(
@@ -3315,10 +3403,19 @@ pub(crate) fn render_section_5() -> String {
     );
     out.push_str("### 5.3 `tests/cli.rs` split plan\n\n");
     out.push_str(
-        "27,074 lines, 351 `#[test]` functions, exactly ONE internal banner-comment \
-        break in the whole file (`tests/cli.rs:11256-11258`, marking the `rigger \
-        replay` section) - the file is genuinely flat, not internally organized, \
-        despite being over a quarter of the whole suite's line count. A \
+        "27,074 lines, 351 `#[test]` functions, 15 pre-existing internal section \
+        markers in the file: 5 full box-style banner-comment pairs \
+        (`tests/cli.rs:11256/11258`, `11816/11818`, `11914/11916`, `12372/12374`, \
+        `20514/20527`) plus 10 single-line `// --- Spec NN, criterion M` headers \
+        (`21054`, `21972`, `22066`, `23403`, `25425`, `25548`, `25632`, `25770`, \
+        `25983`, `26418`). So the file carries some existing, ad hoc organization - \
+        each single-line header names the spec and criterion whose tests follow it, \
+        not a CLI subcommand or subsystem - rather than the \"genuinely flat, not \
+        internally organized\" state a first read might suggest; 15 markers spread \
+        across 351 tests still fall well short of a deliberate, complete \
+        per-surface structure. This correction does not disturb the split proposed \
+        below: it replaces the file's existing ad hoc, by-spec markers with a \
+        complete, deliberate BY CLI SUBCOMMAND SURFACE organization instead. A \
         keyword-on-test-name pass (matching each test's dominant CLI verb: `step_`, \
         `run_`, `validate_`, `reset_`, `watch_`/`watchdog_`, `canary_`, \
         `dash_`/`status_`, `store_`/`eventstore_`, \
