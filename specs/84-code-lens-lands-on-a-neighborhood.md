@@ -1,4 +1,4 @@
-# 84 - The code lens lands on a seeded neighborhood, never on the community overview
+# 84 - The code lens is a labelled map: districts, semantic zoom, and exploration without vocabulary
 
 **Goal:** the dash's code lens has three render modes in `src/dash.rs` - a clustered
 OVERVIEW of community super-nodes (spec 42 c3's render-budget answer to a 21k-node graph, spec
@@ -17,45 +17,74 @@ Concepts / Memory chips that hand off to the other lenses.
 
 ## Design
 
-LANDING RULE, decided: opening the code lens renders a seeded NEIGHBORHOOD, never the overview.
-Seed selection, in order: (1) if a run is live, the union blast radius of its in-flight units
-(the entities their worktrees touch, from the run's BlastRadiusComputed events); (2) otherwise
-the most recently changed entity in the graph (latest ingest generation); (3) otherwise the
-highest-degree entity. The neighborhood is two hops of typed directed edges (`calls`,
-`constructs`, `implements`, `reads`, whatever the graph carries) rendered with arrowheads and,
-on hover or selection, the edge label. Nodes are entities: name, kind dot, community as a
-dashed hull behind them. No file node, no per-type bucket, no storage schema name renders in
-this lens (spec 63's rule stands).
+THE MAP, decided (supersedes the earlier seeded-neighborhood-with-overview design; the operator
+reviewed the mock's map on 2026-09-06 and called it excellent): the code lens is ONE zoomable,
+pannable map with semantic zoom - not a neighborhood mode plus an overview mode. Its invariant:
+EVERY ENTITY ON SCREEN IS LABELLED; zoom controls how many entities are on screen, never
+whether they have names. Exploring means wandering a labelled map; search is a shortcut, not
+the entry.
 
-RENDER BUDGET, decided: the neighborhood is capped at 120 nodes; when two hops exceed the cap the
-second hop is truncated by degree and the truncated nodes are represented by one "+N more"
-affordance per frontier node, which expands one hop on click. Expansion never re-lays the
-whole graph; new nodes enter from their parent's position. A hub entity with hundreds of edges
-therefore shows its top neighbors and an honest count, not a hairball and not nothing.
+DISTRICTS, decided: communities are grouped into districts named by PURPOSE (a curated mapping
+from module path to purpose, e.g. `worktree` -> "worktree lifecycle", `reap` -> "reaping
+authority", `liveness`/`spawn` -> "liveness & heartbeats", `dash*` -> "dashboard rendering";
+unmapped modules fall back to the module name, never to a file name), drawn as per-community
+dashed hulls with ONE district label at the centroid - letter-spaced small caps in a pill whose
+size grows with the district's population, with the entity count beneath - collision-avoided
+against other labels. District labels are always present at every zoom.
 
-SEARCH SEEDS THE VIEW, decided: a search box (entity names, prefix and fuzzy match, kind shown
-beside each hit) re-centers the neighborhood on the chosen entity; the URL carries the seed
-(`#/code/<entity>`) so a view is shareable and the back button returns to the prior seed.
+SEMANTIC ZOOM, decided: each entity has a rank inside its community by degree; at a given zoom
+the entities shown per community are the top `budget(zoom)` by rank, so zoomed out only the
+landmarks appear (always labelled) and zooming in reveals more, each with its label. Labels
+dodge each other (four candidate positions); an entity whose label cannot be placed is NOT
+drawn - the invariant beats density. Landmark names (rank < 3) take their kind's colour; the
+selected entity is underlined; edges among visible entities are drawn with arrowheads, and a lit
+edge shows its relation type (`calls`, `reads`, `constructs`, `implements`) at its midpoint.
+Interaction: scroll zooms about the cursor, drag pans, double-click a district fits it, a
+"fit whole map" control returns to the full extent, clicking an entity lights its callers and
+callees and lists them BY NAME on the card (exploration continues by names). The camera never
+resets on its own.
 
-OVERVIEW IS ZOOM-OUT, decided: the community collapse remains as an explicit "zoom out" action
-from a neighborhood and as a breadcrumb back; it is never the landing page. In the code lens a
-community super-node is labelled by its dominant ENTITY (highest degree member) with the member
-count, never by a file name; the file lives on the card. Clicking a super-node returns to a
-neighborhood seeded on that dominant entity (the DRILL mode collapses into this one path).
+EXPLORE RAIL, decided: beside the card, four always-available starting points that need no
+vocabulary: Landmarks (busiest entities), Changing right now (the live run's blast radius),
+Argued about in review (entities with findings pinned), Bridges between districts (entities
+with the most cross-district edges). Each chip flies the camera to that entity and selects it.
+A search box (prefix and substring, kind and degree beside each hit) remains as a shortcut;
+the URL carries the selected entity (`#/code/<entity>`) so a view is shareable.
 
-THE CARD, decided: unchanged from spec 63 - title row (kind dot, name), provenance
-(file:line, degree, community), chips FILE / CONCEPTS / MEMORY with handoff into the files and
-concepts lenses and into the decision/finding trail. Files and concepts lenses are untouched by
-this spec beyond the handoff target now being a seeded neighborhood.
+LEGEND, decided: a persistent legend on the canvas names every visual class - district pill,
+entity dot and the four kind colours, the typed directed edge, "lit" for the selection and its
+neighbours, the amber ring for a live unit's blast radius - so a reader never has to infer what
+a mark belongs to. Tests are not on the map at all (spec 86): a card carries "proven by N
+tests" or an explicit no-test state.
+
+SEED, decided: the initial camera is the full extent (fit whole map); if a run is live, the
+Explore rail's "Changing right now" chips lead into its blast radius. No entity is
+auto-selected on open.
+
+RENDER BUDGET, decided: the map holds the whole graph client-side (adjacency lists; 9k entities
+after spec 86, 21k before), but per frame draws only the entities passing the rank budget inside
+the viewport plus the selection's neighbours; label placement bounds the visible count. A hub
+with hundreds of callers shows its top neighbours at the current zoom and an honest degree on
+the card, never a hairball.
+
+THE CARD, decided: spec 63's card, extended: title row (kind dot, name), provenance
+(file:line, degree, district), CALLED BY and CALLS rows listing neighbours by name with the
+relation type (each a chip that flies to and selects that entity), the PROOF row from spec 86,
+and the FILE / CONCEPTS / MEMORY chips with handoff into the files and concepts lenses and the
+decision/finding trail. Files and concepts lenses are untouched by this spec beyond their
+handoff target now being a selected entity on the map.
 
 CONSTRAINTS WALK: empty graph - the lens shows an empty-state sentence naming `rigger graph`
-as the way to build one, never an empty canvas. No live run and no ingest yet - seed rule (3).
-Seed entity deleted since - fall through to the next rule and say so in the card. Hub entity
-(degree in the hundreds) - the cap and the "+N more" affordance, proven with `src/dash.rs`'s
-own render function as the seed. Two lenses open in two tabs - each URL carries its own seed;
-no shared mutable seed state on the server. Real store - every rendering criterion is proven
-against this repository's actual graph, not a fixture: a fixture cannot reproduce the
-file-co-location degeneration this spec exists to fix.
+as the way to build one, never an empty canvas. A district with one community - the hull and
+the pill coincide, still labelled. A district label that cannot be placed without collision at
+the current zoom - it yields to larger districts and returns as the user zooms in; entity
+labels never displace district labels. A selected entity whose neighbours are outside the rank
+budget - they are drawn anyway (the selection's neighbours are always visible). Hub entity
+(degree in the hundreds) - the card shows the honest degree and the top neighbours by degree;
+the map draws those within the budget. Two lenses open in two tabs - each URL carries its own
+selection; no shared mutable camera state on the server. Real store - every rendering
+criterion is proven against this repository's actual graph, not a fixture: a fixture cannot
+reproduce the file-co-location degeneration this spec exists to fix.
 
 ## Notes (non-criteria)
 
@@ -75,21 +104,25 @@ as depth-2 neighbours is graph noise worth its own look, out of scope here.
 
 ## Done when
 
-- [ ] a test proves THE LANDING IS A NEIGHBORHOOD: opening the code lens against this
-  repository's real store renders a seeded two-hop neighborhood in which every visible node is
-  a code entity with a name and kind, every node has at least one typed directed edge drawn,
-  and no node is labelled with a file name - with the seed chosen by the Design's rule order
-  (live-run blast radius, else most recent change, else highest degree), each rule proven.
-  This criterion OWNS seed selection and the landing render; search and zoom-out are
-  criteria 2 and 3's, NOT this one's.
-- [ ] a test proves SEARCH AND EXPANSION: choosing an entity in the search box re-centers the
-  neighborhood on it with the seed in the URL, and clicking a "+N more" affordance adds exactly
-  that frontier node's next hop without re-laying existing nodes, honoring the 120-node cap with
-  an honest count. This criterion OWNS the search box, URL seeding and expansion; the landing
-  seed is criterion 1's, NOT this one's.
-- [ ] a test proves OVERVIEW IS ZOOM-OUT: the community collapse is reached only by an explicit
-  zoom-out action, its super-nodes are labelled by dominant entity name and member count
-  (never a file name), and clicking one lands on a neighborhood seeded on that entity. This
-  criterion OWNS the overview's labelling and both transitions; it introduces no new render
-  mode.
+- [ ] a test proves THE MAP LANDS LABELLED: opening the code lens against this
+  repository's real store renders the map at full extent in which every visible node is
+  a code entity with a placed label and kind dot, every district carries its purpose label,
+  and no node or district is labelled with a file name - and zooming in strictly increases
+  the labelled-entity count without ever drawing an unlabelled node. This criterion OWNS the
+  districts, semantic zoom and label placement; the rail, search and selection are
+  criterion 2's, and the legend is criterion 3's, NOT this one's.
+- [ ] a test proves EXPLORATION NEEDS NO VOCABULARY: the Explore rail offers Landmarks,
+  Changing right now (empty-state when no run is live), Argued about in review and Bridges
+  between districts, each chip flying the camera to and selecting that entity; clicking an
+  entity lights its callers and callees and lists them by name with relation types on the
+  card; the search box re-centers on a chosen entity with the selection in the URL; and the
+  camera never resets except through fit-whole-map or a district double-click. This criterion
+  OWNS the rail, search, selection and camera; districts and semantic zoom are criterion 1's,
+  NOT this one's.
+- [ ] a test proves THE LEGEND AND TEXT CLASSES: the served page carries a persistent legend
+  naming the district pill, the entity dot and its four kind colours, the typed directed edge,
+  the lit selection and the blast-radius ring, and the rendered map uses exactly those
+  treatments (small-caps pill for districts, kind-coloured landmark names, underlined
+  selection, italic relation type on lit edges). This criterion OWNS the legend and the text
+  treatments; it introduces no new render data.
 - [ ] both feature lanes green (fmt, clippy, test on default and --no-default-features).
