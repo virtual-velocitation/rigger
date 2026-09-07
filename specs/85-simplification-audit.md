@@ -44,8 +44,12 @@ THE SIX SECTIONS, decided, each claim citing `file:line`:
 4. DEAD AND VESTIGIAL CODE - functions with zero callers in the knowledge graph AND no test
    reference, retired-feature remnants (turbovec, kurrentdb feature flag), stale doc claims.
 5. TEST-SUITE SHAPE - the 153 files grouped by subsystem with a consolidation map, the shared
-   fixtures to extract into `tests/common`, the split plan for `tests/cli.rs`, and every
-   duplicated helper across test files (the strict rule applies to tests).
+   fixtures to extract into `tests/common`, the split plan for `tests/cli.rs`, every
+   duplicated helper across test files (the strict rule applies to tests), and every family of
+   single `#[test]`s that differ only in inputs or expected values - those are one table-driven
+   test wearing many names, catalogued as duplication with the proposed table and the tests it
+   retires. Operator ordering note: this audit runs BEFORE specs 86 and 84 precisely because it
+   may eliminate or merge whole tests; the graph and lens work build on the consolidated suite.
 6. PRIORITIZED PLAN - an ordered list of refactoring specs (stubs: title, scope, files, expected
    line delta, risk, what it unblocks), largest-risk-reduction first; the god-file splits and
    the duplication removals are separate entries so each can be its own run.
