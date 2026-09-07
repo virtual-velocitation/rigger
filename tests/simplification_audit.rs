@@ -3285,12 +3285,12 @@ pub(crate) fn render_section_5() -> String {
     out.push_str(
         "Instrument: `tests/` holds 156 files today (spec 85's Goal cites 153 - this \
         criterion's own two periphery files plus criterion 2's own periphery file, \
-        all landed since the Goal text was written, account for the +3), 104,668 \
+        all landed since the Goal text was written, account for the +3), 104,685 \
         lines by `wc -l` (this section's own prose lives inside \
         `simplification_audit.rs`, one of the 156 files this instrument counts, so \
-        this figure moves with the report's own content - a self-measurement this \
-        report states fresh at generation time rather than lets drift silently). \
-        Subsystem \
+        this criterion's own edits land inside this same file and this figure grows \
+        with each such edit - accurate as of this section's most recent revision, \
+        not guaranteed to remain so after further edits to this file). Subsystem \
         grouping is a hand-derived, ordered filename-keyword rule table (mirrors \
         criterion 1's own per-file classification convention: first-match-wins, \
         narrowest first, an explicit residual named rather than silently dropped). \
@@ -3370,7 +3370,7 @@ pub(crate) fn render_section_5() -> String {
     out.push('\n');
     out.push_str(
         "Total: 156 files, 104,725 lines by this table's own per-file count (156 \
-        files summed here) against 104,668 by a fresh `wc -l` above - the ~57-line \
+        files summed here) against 104,685 by a fresh `wc -l` above - the ~40-line \
         gap is `simplification_audit.rs`'s own line count moving as this section's \
         prose is written into it (the same self-measurement the instrument \
         paragraph above names), not a missing file; the per-file counts in the \
