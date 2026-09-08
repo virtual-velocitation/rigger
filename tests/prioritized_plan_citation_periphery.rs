@@ -257,12 +257,21 @@ fn number_between(block: &str, before: &str, after: &str) -> u32 {
     })
 }
 
-/// Extracts an `"A+B"`-style pair (the report's own shorthand for "one cluster of A sites, its
-/// companion cluster of B sites") sitting between `before` and `after` inside `block`.
-fn number_pair_between(block: &str, before: &str, after: &str) -> (u32, u32) {
+/// Extracts an `"A<sep>B"`-style pair (the report's own shorthand for "one cluster of A units,
+/// its companion cluster of B units") sitting between `before` and `after` inside `block`, split
+/// on the literal `sep` that actually separates the two numbers in THIS citation's own prose -
+/// `"+"` for an "A+B sites" pair, `" files, "` for an "A files, B sites)" pair, `"-file/"` for an
+/// "A-file/B-site" pair, and so on. Parameterizing the separator (rather than hardcoding one) is
+/// what lets `before`/`after` stay pure prose anchors that never embed either number: a citation
+/// with two counts is extracted as ONE span and split, instead of two separate `number_between`
+/// calls whose anchors would otherwise have to embed the other count's current digit to stay
+/// unique - which breaks `substring_between`'s own contract (only wording changes should move an
+/// anchor) and makes a single-axis drift on one count panic on the OTHER count's anchor instead
+/// of reporting a clean mismatch.
+fn number_pair_between(block: &str, before: &str, after: &str, sep: &str) -> (u32, u32) {
     let raw = substring_between(block, before, after);
-    let (a, b) = raw.split_once('+').unwrap_or_else(|| {
-        panic!("expected an \"A+B\" pair between {before:?} and {after:?}, found {raw:?}")
+    let (a, b) = raw.split_once(sep).unwrap_or_else(|| {
+        panic!("expected an \"A{sep}B\" pair between {before:?} and {after:?}, found {raw:?}")
     });
     let parse = |s: &str| {
         s.trim().parse::<u32>().unwrap_or_else(|e| {
@@ -482,6 +491,7 @@ fn section_6_named_dup_id_citations_match_the_committed_catalogs_site_counts() {
         item_16,
         "`dup-0583`/`dup-0585` (",
         " sites, `tests/reap_before_removal_audit.rs`",
+        "+",
     );
     record_mismatch(&mut mismatches, "item 16", "dup-0583", "site", a, &sites);
     record_mismatch(&mut mismatches, "item 16", "dup-0585", "site", b, &sites);
@@ -489,6 +499,7 @@ fn section_6_named_dup_id_citations_match_the_committed_catalogs_site_counts() {
         item_16,
         "`dup-0617`/`dup-0624` (",
         " sites, `tests/simplification_audit.rs`",
+        "+",
     );
     record_mismatch(&mut mismatches, "item 16", "dup-0617", "site", a, &sites);
     record_mismatch(&mut mismatches, "item 16", "dup-0624", "site", b, &sites);
@@ -496,6 +507,7 @@ fn section_6_named_dup_id_citations_match_the_committed_catalogs_site_counts() {
         item_16,
         "`dup-0573`/`dup-0574` (",
         " sites, `tests/no_os_kill_audit.rs`",
+        "+",
     );
     record_mismatch(&mut mismatches, "item 16", "dup-0573", "site", a, &sites);
     record_mismatch(&mut mismatches, "item 16", "dup-0574", "site", b, &sites);
@@ -583,57 +595,53 @@ fn section_5_named_dup_id_citations_match_the_committed_catalogs_site_counts() {
     }
 
     // 5.4: duplicated-helper citations - the cluster id comes first, then its file/site counts.
+    // dup-0339 and dup-0395 each cite an "N files, M sites" pair in one span: extracted as ONE
+    // number_pair_between call (sep " files, ") rather than two separate number_between calls,
+    // so neither anchor ever embeds the other count's digit - see number_pair_between's doc
+    // comment for why a digit-embedded anchor is unsound as a drift guard.
     let sec_5_4 = sub_section_block(&report, &lines, "### 5.4 ");
-    let cited = number_between(
+    let (file_cited, site_cited) = number_pair_between(
         sec_5_4,
         "architecture-integrity checks, ",
-        " files, 15 sites);",
+        " sites);",
+        " files, ",
     );
     record_mismatch(
         &mut mismatches,
         "section 5.4",
         "dup-0339",
         "file",
-        cited,
+        file_cited,
         &files,
-    );
-    let cited = number_between(
-        sec_5_4,
-        "architecture-integrity checks, 12 files, ",
-        " sites);",
     );
     record_mismatch(
         &mut mismatches,
         "section 5.4",
         "dup-0339",
         "site",
-        cited,
+        site_cited,
         &sites,
     );
-    let cited = number_between(
+    let (file_cited, site_cited) = number_pair_between(
         sec_5_4,
         "`tests/step_attention_periphery.rs`, ",
-        " files, 15 sites); `dup-0369`",
+        " sites); `dup-0369`",
+        " files, ",
     );
     record_mismatch(
         &mut mismatches,
         "section 5.4",
         "dup-0395",
         "file",
-        cited,
+        file_cited,
         &files,
-    );
-    let cited = number_between(
-        sec_5_4,
-        "`tests/step_attention_periphery.rs`, 4 files, ",
-        " sites); `dup-0369`",
     );
     record_mismatch(
         &mut mismatches,
         "section 5.4",
         "dup-0395",
         "site",
-        cited,
+        site_cited,
         &sites,
     );
     let cited = number_between(sec_5_4, "fold-application helpers, ", " files); `dup-0461`");
@@ -674,23 +682,25 @@ fn section_5_named_dup_id_citations_match_the_committed_catalogs_site_counts() {
     // `dup-0367`'s 18-file version)") - a distinct citation location from section 5.2's
     // site-only check above (scoped to `### 5.2`'s own span) and from section 6 item 14's
     // file-only check (a different citation site entirely), so neither one guards these. See
-    // decision `sdet-u85c4-r4-section5-4-second-citations-guarded`.
-    let cited = number_between(sec_5_4, "a companion, ", "-file/15-site variant");
+    // decision `sdet-u85c4-r4-section5-4-second-citations-guarded`. The "N-file/M-site" pair is
+    // extracted as ONE number_pair_between call (sep "-file/") - not two number_between calls -
+    // so neither anchor embeds the other count's digit; see number_pair_between's doc comment.
+    let (file_cited, site_cited) =
+        number_pair_between(sec_5_4, "a companion, ", "-site variant", "-file/");
     record_mismatch(
         &mut mismatches,
         "section 5.4 (second citation)",
         "dup-0366",
         "file",
-        cited,
+        file_cited,
         &files,
     );
-    let cited = number_between(sec_5_4, "a companion, 15-file/", "-site variant");
     record_mismatch(
         &mut mismatches,
         "section 5.4 (second citation)",
         "dup-0366",
         "site",
-        cited,
+        site_cited,
         &sites,
     );
     let cited = number_between(sec_5_4, "alongside `dup-0367`'s ", "-file version)");
@@ -722,6 +732,7 @@ fn section_5_named_dup_id_citations_match_the_committed_catalogs_site_counts() {
         sec_5_5,
         "Other large families: `dup-0583`/`dup-0585` (",
         " sites, `tests/reap_before_removal_audit.rs`",
+        "+",
     );
     record_mismatch(
         &mut mismatches,
@@ -743,6 +754,7 @@ fn section_5_named_dup_id_citations_match_the_committed_catalogs_site_counts() {
         sec_5_5,
         "`dup-0617`/`dup-0624` (",
         " sites, `tests/simplification_audit.rs`",
+        "+",
     );
     record_mismatch(
         &mut mismatches,
@@ -764,6 +776,7 @@ fn section_5_named_dup_id_citations_match_the_committed_catalogs_site_counts() {
         sec_5_5,
         "`dup-0573`/`dup-0574` (",
         " sites, `tests/no_os_kill_audit.rs`",
+        "+",
     );
     record_mismatch(
         &mut mismatches,

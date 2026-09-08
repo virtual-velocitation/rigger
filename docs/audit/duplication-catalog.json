@@ -6171,8 +6171,8 @@
       },
       {
         "file": "tests/prioritized_plan_citation_periphery.rs",
-        "start_line": 349,
-        "end_line": 349,
+        "start_line": 358,
+        "end_line": 358,
         "name": "\" `.rigger`-path string-literal sites (`dup-0051`)\""
       },
       {
@@ -9335,8 +9335,8 @@
       },
       {
         "file": "tests/prioritized_plan_citation_periphery.rs",
-        "start_line": 340,
-        "end_line": 340,
+        "start_line": 349,
+        "end_line": 349,
         "name": "\" raw `/proc`-path string literals scattered across `src/dash.rs`, \\\n                    `src/main.rs`, `src/reap.rs` and three test files with no shared composer \\\n                    (`dup-0124`)\""
       },
       {
