@@ -3272,7 +3272,7 @@ __END__
          .rigger/tmp, reclaim_unit_mutation_scratch must still reap a live process rooted in \
          it - proving the sibling test's failure is specifically the base-guard's new scope, \
          not a defect in this file's own mechanics"`
-- `tests/prioritized_plan_citation_periphery.rs:315-315` `" `.rigger`-path string-literal sites (`dup-0051`)"`
+- `tests/prioritized_plan_citation_periphery.rs:349-349` `" `.rigger`-path string-literal sites (`dup-0051`)"`
 - `tests/projections_stay_local.rs:109-109` `"the graph projection must be opened by the LOCAL sqlite Projector at .rigger/graph.db \
          (`Projector::open(&db_path(\"graph.db\") ...)`); the canonical local construction is gone"`
 - `tests/projections_stay_local.rs:116-116` `"the progress projection must be opened by the LOCAL sqlite Store at .rigger/progress.db \
@@ -4299,7 +4299,7 @@ mandatory sweep: /proc-path string literals - 60 site(s), collected mechanically
              discovery"`
 - `tests/cli.rs:27013-27013` `"/proc"`
 - `tests/duplication_catalog_contract_periphery.rs:67-67` `"/proc-path string literals"`
-- `tests/prioritized_plan_citation_periphery.rs:307-307` `" raw `/proc`-path string literals scattered across `src/dash.rs`, \
+- `tests/prioritized_plan_citation_periphery.rs:340-340` `" raw `/proc`-path string literals scattered across `src/dash.rs`, \
                     `src/main.rs`, `src/reap.rs` and three test files with no shared composer \
                     (`dup-0124`)"`
 - `tests/simplification_audit.rs:2332-2332` `"/proc-path string literals"`
@@ -8485,7 +8485,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `tests/duplication_catalog_contract_periphery.rs:76-78` `repo_root`
 - `tests/handbook_grounder_accuracy.rs:33-35` `repo_root`
-- `tests/prioritized_plan_citation_periphery.rs:67-69` `repo_root`
+- `tests/prioritized_plan_citation_periphery.rs:92-94` `repo_root`
 - `tests/responsibility_map_contract_periphery.rs:52-54` `repo_root`
 - `tests/simplification_audit.rs:1680-1682` `repo_root`
 

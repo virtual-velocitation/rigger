@@ -49,6 +49,31 @@
 //! site_counts` below closes that same gap for section 5's own named `dup-NNNN` citations, so a
 //! future population-churn drift there fails a test instead of needing a silent hand-patch again.
 //!
+//! ROUND 3 (adjudication REJECT on diff `99b73bd..619372d`): two guard-quality defects in this
+//! same drift-guard mechanism, both present-tense and both fixed here without touching any
+//! numeric citation (the numbers were already correct; only which field each check reads was
+//! wrong or missing):
+//! 1. `adv-u85c4-r2-section5-2-checks-site-count-for-file-count-citations`: section 5.2's own
+//!    loop compared all six of its dup-ids against `catalog_site_counts()`, but the report's own
+//!    prose cites `dup-0335`/`dup-0336`/`dup-0361`/`dup-0367` as DISTINCT-FILE counts ("18
+//!    files") - only `dup-0366`/`dup-0362` genuinely use site wording ("15-site variant",
+//!    "12-site ... companion"). Fixed by splitting the loop: the four file-cited ids now check
+//!    `catalog_file_counts()`, the two site-cited ids keep `catalog_site_counts()`. Sites equal
+//!    files for all six today, so this changes no pass/fail outcome now - it closes the future
+//!    drift blind spot the adversary's failure scenario described (a second site landing inside
+//!    an already-listed file would raise the site count while the file count, and the report's
+//!    own claim, stayed accurate; the old code would have failed a still-accurate report).
+//! 2. `adv-u85c4-r2-tier5-items-14-16-18-citations-unguarded`: section 6 items 14/16/18 each
+//!    independently re-type dup-id+count pairs section 5 already states (`dup-0335`/`0336`/
+//!    `0361`/`0367`, `dup-0636`, `dup-0583`/`0585`, `dup-0617`/`0624`, `dup-0573`/`0574`,
+//!    `dup-0576`), but `section_6_named_dup_id_citations_match_the_committed_catalogs_
+//!    site_counts`'s citations array covered only items 3/10-13, contradicting its own doc
+//!    comment's claim to check every named citation in section 6. Fixed by extending that same
+//!    array (item 14's four file-metric citations, item 18's `dup-0576`) and adding item 16's
+//!    "A+B sites" pairs inline (the same shorthand section 5.5 already reads) - closing the
+//!    "checks the wrong field" and "claims coverage it does not have" gaps in the guard this
+//!    unit's own prior rounds built to catch exactly this class of drift, one tier down.
+//!
 //! DELIBERATE INDEPENDENCE: this file never calls `tests/simplification_audit.rs`'s private
 //! `find_heading` / `replace_section_*` / `render_section_6` (integration test binaries cannot
 //! see another file's private items anyway) and declares its own minimal cluster shape rather
@@ -274,35 +299,43 @@ fn number_immediately_before(block: &str, marker: &str) -> u32 {
     })
 }
 
-/// One citation of a named `dup-NNNN` cluster's site count inside one numbered plan item.
+/// One citation of a named `dup-NNNN` cluster's count inside one numbered plan item. `metric`
+/// is `"site"` or `"file"`, matching whichever metric the report's own prose actually names at
+/// that citation (see `catalog_site_counts`/`catalog_file_counts`).
 struct Citation {
     item: u32,
     dup_id: &'static str,
+    metric: &'static str,
     before: &'static str,
     after: &'static str,
 }
 
 /// THE CROSS-ARTIFACT CONTRACT: section 6's own Done-when text is "cites sections 1-5 and adds
-/// no new findings" - every named `dup-NNNN` citation that carries an explicit site count is
-/// checked here against the count the SAME id carries in the committed
+/// no new findings" - every named `dup-NNNN` citation in section 6 that carries an explicit
+/// site or file count is checked here against the count the SAME id carries in the committed
 /// `docs/audit/duplication-catalog.json`, independent of however section 6's own prose was
-/// authored.
+/// authored. This covers tiers 1-5 (items 3, 10-14, 16, 18); items 15/17/19 name clusters only
+/// by bare count ("27,074 lines", "177 clusters", "327 clusters") with no `dup-NNNN` id
+/// attached to a specific number, so there is nothing for this guard to cross-check there.
 #[test]
 fn section_6_named_dup_id_citations_match_the_committed_catalogs_site_counts() {
     let report = read_report();
     let lines = lines_with_offsets(&report);
-    let counts = catalog_site_counts();
+    let sites = catalog_site_counts();
+    let files = catalog_file_counts();
 
     let citations = [
         Citation {
             item: 3,
             dup_id: "dup-0125",
+            metric: "site",
             before: "capstone previously caught (`dup-0125`, ",
             after: " sites: `src/dash.rs`",
         },
         Citation {
             item: 3,
             dup_id: "dup-0124",
+            metric: "site",
             before: ", plus ",
             after: " raw `/proc`-path string literals scattered across `src/dash.rs`, \
                     `src/main.rs`, `src/reap.rs` and three test files with no shared composer \
@@ -311,18 +344,21 @@ fn section_6_named_dup_id_citations_match_the_committed_catalogs_site_counts() {
         Citation {
             item: 10,
             dup_id: "dup-0051",
+            metric: "site",
             before: "#### 10. Consolidate the ",
             after: " `.rigger`-path string-literal sites (`dup-0051`)",
         },
         Citation {
             item: 10,
             dup_id: "dup-0051",
+            metric: "site",
             before: "`proposed_home`) every one of the ",
             after: " sites routes through instead of building its own literal.",
         },
         Citation {
             item: 10,
             dup_id: "dup-0051",
+            metric: "site",
             before: "Expected line delta: negative - ",
             after: " literal compositions collapse toward one helper's call sites; the helper \
                     itself is small.",
@@ -330,38 +366,84 @@ fn section_6_named_dup_id_citations_match_the_committed_catalogs_site_counts() {
         Citation {
             item: 10,
             dup_id: "dup-0051",
+            metric: "site",
             before: "full-suite green run, not hand-editing ",
             after: " sites.",
         },
         Citation {
             item: 11,
             dup_id: "dup-0006",
+            metric: "site",
             before: "#### 11. Consolidate the ",
             after: " `Command::new` call sites (`dup-0006`)",
         },
         Citation {
             item: 11,
             dup_id: "dup-0006",
+            metric: "site",
             before: "Risk: medium-high - several of these ",
             after: " sites sit inside `src/budget.rs`'s",
         },
         Citation {
             item: 12,
             dup_id: "dup-0105",
+            metric: "site",
             before: "#### 12. Consolidate the ",
             after: " sqlite `Connection::open` call sites (`dup-0105`)",
         },
         Citation {
             item: 12,
             dup_id: "dup-0105",
+            metric: "site",
             before: "Expected line delta: negative - ",
             after: " open calls collapse toward one function.",
         },
         Citation {
             item: 13,
             dup_id: "dup-0205",
+            metric: "site",
             before: "#### 13. Consolidate the ",
             after: " error-shaping helper sites (`dup-0205`)",
+        },
+        // Item 14 (tier 5, section 5.2's four headline fixtures): the report cites these as
+        // DISTINCT-FILE counts ("18 files"), matching section 5.2's own wording, so these use
+        // the `file` metric - not `site` - exactly mirroring the section-5.2 fix above.
+        Citation {
+            item: 14,
+            dup_id: "dup-0335",
+            metric: "file",
+            before: "`page_script` (`dup-0335`, ",
+            after: " files)",
+        },
+        Citation {
+            item: 14,
+            dup_id: "dup-0336",
+            metric: "file",
+            before: "`node_available` (`dup-0336`, ",
+            after: " files)",
+        },
+        Citation {
+            item: 14,
+            dup_id: "dup-0361",
+            metric: "file",
+            before: "`temp_project` (`dup-0361`, ",
+            after: " files)",
+        },
+        Citation {
+            item: 14,
+            dup_id: "dup-0367",
+            metric: "file",
+            before: "`run_stream_identity` (`dup-0367`, ",
+            after: " files)",
+        },
+        // Item 18's one single-value citation (its other named id, `dup-0576`, is the only
+        // one item 18 cites with an explicit count - see the item-16 pairs handled below).
+        Citation {
+            item: 18,
+            dup_id: "dup-0576",
+            metric: "site",
+            before: "`dup-0576` (",
+            after: " sites, `tests/no_os_kill_test_helper_periphery.rs`",
         },
     ];
 
@@ -369,23 +451,58 @@ fn section_6_named_dup_id_citations_match_the_committed_catalogs_site_counts() {
     for c in &citations {
         let block = item_block(&report, &lines, c.item);
         let cited = number_between(block, c.before, c.after);
-        let actual = *counts.get(c.dup_id).unwrap_or_else(|| {
-            panic!(
-                "{} is cited in section 6 item {} but has no cluster in {CATALOG_PATH}",
-                c.dup_id, c.item
-            )
-        }) as u32;
-        if cited != actual {
-            mismatches.push(format!(
-                "item {}: {} cited as {} site(s) in {REPORT_PATH}, but {CATALOG_PATH} carries \
-                 {} site(s)",
-                c.item, c.dup_id, cited, actual
-            ));
-        }
+        let counts = if c.metric == "file" { &files } else { &sites };
+        record_mismatch(
+            &mut mismatches,
+            &format!("item {}", c.item),
+            c.dup_id,
+            c.metric,
+            cited,
+            counts,
+        );
     }
+
+    // Item 16's remaining citations use the report's own "A+B sites" shorthand for a cluster's
+    // companion pair - the same shape `section_5_named_dup_id_citations_match_the_committed_
+    // catalogs_site_counts` already checks in section 5.5, reused here for section 6's own
+    // independently hand-typed copies of the identical dup-ids+counts (see
+    // `adv-u85c4-r2-tier5-items-14-16-18-citations-unguarded`: these were entirely unchecked
+    // before this fix).
+    let item_16 = item_block(&report, &lines, 16);
+    let cited = number_between(item_16, "`dup-0636` (", " sites, `tests/spec_lint.rs`");
+    record_mismatch(
+        &mut mismatches,
+        "item 16",
+        "dup-0636",
+        "site",
+        cited,
+        &sites,
+    );
+    let (a, b) = number_pair_between(
+        item_16,
+        "`dup-0583`/`dup-0585` (",
+        " sites, `tests/reap_before_removal_audit.rs`",
+    );
+    record_mismatch(&mut mismatches, "item 16", "dup-0583", "site", a, &sites);
+    record_mismatch(&mut mismatches, "item 16", "dup-0585", "site", b, &sites);
+    let (a, b) = number_pair_between(
+        item_16,
+        "`dup-0617`/`dup-0624` (",
+        " sites, `tests/simplification_audit.rs`",
+    );
+    record_mismatch(&mut mismatches, "item 16", "dup-0617", "site", a, &sites);
+    record_mismatch(&mut mismatches, "item 16", "dup-0624", "site", b, &sites);
+    let (a, b) = number_pair_between(
+        item_16,
+        "`dup-0573`/`dup-0574` (",
+        " sites, `tests/no_os_kill_audit.rs`",
+    );
+    record_mismatch(&mut mismatches, "item 16", "dup-0573", "site", a, &sites);
+    record_mismatch(&mut mismatches, "item 16", "dup-0574", "site", b, &sites);
+
     assert!(
         mismatches.is_empty(),
-        "section 6 cites stale site counts that no longer match the committed duplication \
+        "section 6 cites stale site/file counts that no longer match the committed duplication \
          catalog (section 6's own Done-when text requires accurately citing sections 1-5):\n{}",
         mismatches.join("\n")
     );
@@ -432,10 +549,27 @@ fn section_5_named_dup_id_citations_match_the_committed_catalogs_site_counts() {
 
     // 5.2: shared-fixture citations - the report cites the count BEFORE naming the cluster id
     // ("independently redefined in 18 files (`dup-0335`...)"), so these use the backward scan.
+    // The report's own wording splits by metric here: `dup-0335`/`dup-0336`/`dup-0361`/
+    // `dup-0367` are cited as DISTINCT-FILE counts ("18 different files" / "the same 18
+    // files"), while `dup-0366`/`dup-0362` are genuinely cited as SITE counts ("15-site
+    // variant", "12-site ... companion helper") - each group is checked against the metric
+    // its own prose actually names, not uniformly against site counts (see
+    // `adv-u85c4-r2-section5-2-checks-site-count-for-file-count-citations`: checking the wrong
+    // field passes today only because sites == files for these clusters by coincidence).
     let sec_5_2 = sub_section_block(&report, &lines, "### 5.2 ");
-    for dup_id in [
-        "dup-0335", "dup-0336", "dup-0361", "dup-0366", "dup-0362", "dup-0367",
-    ] {
+    for dup_id in ["dup-0335", "dup-0336", "dup-0361", "dup-0367"] {
+        let marker = format!("(`{dup_id}`");
+        let cited = number_immediately_before(sec_5_2, &marker);
+        record_mismatch(
+            &mut mismatches,
+            "section 5.2",
+            dup_id,
+            "file",
+            cited,
+            &files,
+        );
+    }
+    for dup_id in ["dup-0366", "dup-0362"] {
         let marker = format!("(`{dup_id}`");
         let cited = number_immediately_before(sec_5_2, &marker);
         record_mismatch(
