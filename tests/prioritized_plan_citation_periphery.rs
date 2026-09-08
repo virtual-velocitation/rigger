@@ -668,6 +668,41 @@ fn section_5_named_dup_id_citations_match_the_committed_catalogs_site_counts() {
         &files,
     );
 
+    // 5.4 (second citations): `dup-0366` and `dup-0367` are each named a SECOND,
+    // textually-independent time later in this same subsection's `dup-0339` paragraph ("a
+    // companion, 15-file/15-site variant of 5.2's `run_stream_identity` fixture, alongside
+    // `dup-0367`'s 18-file version)") - a distinct citation location from section 5.2's
+    // site-only check above (scoped to `### 5.2`'s own span) and from section 6 item 14's
+    // file-only check (a different citation site entirely), so neither one guards these. See
+    // decision `sdet-u85c4-r4-section5-4-second-citations-guarded`.
+    let cited = number_between(sec_5_4, "a companion, ", "-file/15-site variant");
+    record_mismatch(
+        &mut mismatches,
+        "section 5.4 (second citation)",
+        "dup-0366",
+        "file",
+        cited,
+        &files,
+    );
+    let cited = number_between(sec_5_4, "a companion, 15-file/", "-site variant");
+    record_mismatch(
+        &mut mismatches,
+        "section 5.4 (second citation)",
+        "dup-0366",
+        "site",
+        cited,
+        &sites,
+    );
+    let cited = number_between(sec_5_4, "alongside `dup-0367`'s ", "-file version)");
+    record_mismatch(
+        &mut mismatches,
+        "section 5.4 (second citation)",
+        "dup-0367",
+        "file",
+        cited,
+        &files,
+    );
+
     // 5.5: table-driven-family citations - single "N sites" citations and "A+B sites" pairs.
     let sec_5_5 = sub_section_block(&report, &lines, "### 5.5 ");
     let cited = number_between(
