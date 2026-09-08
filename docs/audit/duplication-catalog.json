@@ -18427,8 +18427,8 @@
     "sites": [
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 38,
-        "end_line": 73,
+        "start_line": 47,
+        "end_line": 82,
         "name": "is_test_false_serializes_byte_identically_to_the_pre86_form"
       },
       {
@@ -18447,8 +18447,8 @@
     "sites": [
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 130,
-        "end_line": 182,
+        "start_line": 139,
+        "end_line": 191,
         "name": "a_pre86_persisted_index_with_no_is_test_key_loads_defaulting_every_item_to_false"
       },
       {
