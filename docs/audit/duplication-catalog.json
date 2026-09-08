@@ -6170,6 +6170,12 @@
         "name": "\"control: when the registered scratch root legitimately lies under a real repo's \\\n         .rigger/tmp, reclaim_unit_mutation_scratch must still reap a live process rooted in \\\n         it - proving the sibling test's failure is specifically the base-guard's new scope, \\\n         not a defect in this file's own mechanics\""
       },
       {
+        "file": "tests/prioritized_plan_citation_periphery.rs",
+        "start_line": 211,
+        "end_line": 211,
+        "name": "\" `.rigger`-path string-literal sites (`dup-0051`)\""
+      },
+      {
         "file": "tests/projections_stay_local.rs",
         "start_line": 109,
         "end_line": 109,
@@ -7041,7 +7047,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 648 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: .rigger-path string literals - 649 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0052",
@@ -9328,6 +9334,12 @@
         "name": "\"/proc-path string literals\""
       },
       {
+        "file": "tests/prioritized_plan_citation_periphery.rs",
+        "start_line": 203,
+        "end_line": 203,
+        "name": "\" raw `/proc`-path string literals scattered across `src/dash.rs`, \\\n                    `src/main.rs`, `src/reap.rs` and three test files with no shared composer \\\n                    (`dup-0124`)\""
+      },
+      {
         "file": "tests/simplification_audit.rs",
         "start_line": 2332,
         "end_line": 2332,
@@ -9437,7 +9449,7 @@
       }
     ],
     "proposed_home": "src/reap.rs as the one /proc-reading module (dash.rs's own /proc readers already duplicate reap.rs's field-after-the-comm's-closing-paren /proc/<pid>/stat parse - see the report's worked example)",
-    "note": "mandatory sweep: /proc-path string literals - 59 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: /proc-path string literals - 60 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0125",
@@ -20162,6 +20174,12 @@
         "name": "repo_root"
       },
       {
+        "file": "tests/prioritized_plan_citation_periphery.rs",
+        "start_line": 56,
+        "end_line": 58,
+        "name": "repo_root"
+      },
+      {
         "file": "tests/responsibility_map_contract_periphery.rs",
         "start_line": 52,
         "end_line": 54,
@@ -20174,7 +20192,7 @@
         "name": "repo_root"
       }
     ],
-    "proposed_home": "a new shared module (sites span 4 files: tests/duplication_catalog_contract_periphery.rs, tests/handbook_grounder_accuracy.rs, tests/responsibility_map_contract_periphery.rs, tests/simplification_audit.rs)",
+    "proposed_home": "a new shared module (sites span 5 files: tests/duplication_catalog_contract_periphery.rs, tests/handbook_grounder_accuracy.rs, tests/prioritized_plan_citation_periphery.rs, tests/responsibility_map_contract_periphery.rs, tests/simplification_audit.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
