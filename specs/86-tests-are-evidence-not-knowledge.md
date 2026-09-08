@@ -34,7 +34,13 @@ CONSTRAINTS WALK: a product function defined inside a `#[cfg(test)]` module - ex
 rule; a test helper in `tests/common/` referenced only by tests - excluded (no product caller);
 doc-tests in `///` examples - not entities today, unchanged; a `mod tests` inside `src/*.rs` -
 excluded by the `cfg(test)` rule, and its references to siblings count as proof; the audit's
-scanner (spec 85) reads tests directly from the tree and is unaffected by graph contents.
+scanner (spec 85) reads tests directly from the tree and is unaffected by graph contents; a
+design doc's inline-code mention of a `tests/`-rooted path, or of a name defined only inside a
+`#[cfg(test)]` module or a `#[test]` function - excluded from the design-intent link pass too,
+by the SAME exclusion rule, owned by criterion 1 (not a second criterion): no placeholder node
+for test-scoped code ever enters the intent layer this way either, which is what makes the
+concepts-pass corollary in the INGESTION paragraph above hold - it needs no criterion of its
+own because criterion 1's fixture-proven exclusion is the one rule both extraction passes obey.
 
 ## Global constraints
 
