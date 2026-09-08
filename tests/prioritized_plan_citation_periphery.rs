@@ -235,6 +235,24 @@ const MAX_GAP: usize = 40;
 /// needs about 125).
 const WINDOW: usize = 220;
 
+/// Snaps `idx` FORWARD to the nearest UTF-8 char boundary at or after `idx`. `saturating_sub`
+/// computes a raw byte offset with no notion of char boundaries, and this report is human prose
+/// that can carry any non-ASCII byte (a curly quote, an accented name, an ellipsis, ...)
+/// anywhere - a lookback window's start must never land mid-character. Snapping FORWARD rather
+/// than backward SHRINKS the lookback window rather than widening it past what the caller
+/// computed, so the guard degrades to a shorter (never longer) window instead of panicking (round
+/// 7 fix for `adv-u85c4-r6-scanner-panics-on-non-ascii-byte-near-any-paren`, reproduced and
+/// confirmed independently by the round-6 adjudicator outside this tree; regression-tested by
+/// `nearest_token_before_does_not_panic_when_the_lookback_window_starts_mid_char` and
+/// `scan_citations_does_not_panic_when_a_60_byte_lookback_starts_mid_char` below).
+fn ceil_char_boundary(text: &str, idx: usize) -> usize {
+    let mut i = idx.min(text.len());
+    while i < text.len() && !text.is_char_boundary(i) {
+        i += 1;
+    }
+    i
+}
+
 /// The nearest bare integer ending at byte `pos` in `block`, skipping only non-digit filler
 /// going backward and refusing two ways a naive "walk back to any digit" scan mis-fires when run
 /// on whole, un-anchored prose rather than a small hand-picked span:
@@ -334,7 +352,7 @@ fn is_site_listing_line(text: &str, pos: usize) -> bool {
 /// needs whether the id sits bare inside its own parens or right after a paren whose own content
 /// carried no token of its own.
 fn nearest_token_before(text: &str, paren_start: usize) -> Option<(u32, &'static str)> {
-    let lo = paren_start.saturating_sub(WINDOW);
+    let lo = ceil_char_boundary(text, paren_start.saturating_sub(WINDOW));
     let mut slice = &text[lo..paren_start];
     if let Some(close) = slice.rfind(')') {
         slice = &slice[close + 1..];
@@ -411,7 +429,7 @@ fn scan_citations(report: &str) -> Vec<Citation> {
         if is_site_listing_line(report, start) {
             continue;
         }
-        let before_lo = start.saturating_sub(60);
+        let before_lo = ceil_char_boundary(report, start.saturating_sub(60));
         let before_text = &report[before_lo..start];
 
         if let Some(caps) = id_before_paren_re.captures(before_text) {
@@ -624,4 +642,48 @@ fn every_dup_id_citation_anywhere_in_the_report_matches_the_committed_catalog() 
          duplication catalog:\n{}",
         mismatches.join("\n")
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// ROUND 7 REGRESSION: the lookback slices above are raw byte-index slices with no char-boundary
+// check - a multi-byte UTF-8 character landing inside a lookback window used to panic with
+// "byte index N is not a char boundary" (adjudicator `adv-u85c4-r6-scanner-panics-on-non-ascii-
+// byte-near-any-paren`, reproduced independently outside this tree and confirmed live). Both
+// tests below construct text where the naive `saturating_sub` lookback start lands on the SECOND
+// byte of a 3-byte UTF-8 character (`'\u{2026}'`, an ellipsis) - never on a char boundary - so a
+// fix that merely avoids panicking BY LUCK on today's all-ASCII report would still fail these.
+// ---------------------------------------------------------------------------------------------
+
+/// `nearest_token_before`'s own `WINDOW`-byte lookback (periphery.rs's own `WINDOW` constant)
+/// must not panic when its computed start lands mid-character - it should degrade to a shorter
+/// window instead, exactly as the round-6 adjudication's remedy names it.
+#[test]
+fn nearest_token_before_does_not_panic_when_the_lookback_window_starts_mid_char() {
+    // Byte layout: 19 ASCII bytes, then a 3-byte char at [19..22), then `WINDOW - 2` more ASCII
+    // bytes, then the paren. `paren_start` = 19 + 3 + (WINDOW - 2) = WINDOW + 20, which exceeds
+    // `WINDOW` so `saturating_sub` does not clamp to 0; the resulting `WINDOW`-byte lookback
+    // lands at byte 20 - the SECOND byte of the 3-byte char (not a boundary) - by construction,
+    // not by luck.
+    let prefix = "a".repeat(19);
+    let pad = "b".repeat(WINDOW - 2);
+    let text = format!("{prefix}\u{2026}{pad}(");
+    let paren_start = text.len() - 1;
+    assert_eq!(&text[paren_start..], "(");
+    // Must not panic - the real defect being regression-tested.
+    let _ = nearest_token_before(&text, paren_start);
+}
+
+/// `scan_citations`'s own fixed 60-byte lookback (periphery.rs:414-415) must not panic when its
+/// computed start lands mid-character, for the same reason and the same construction as above
+/// (scaled to the 60-byte window instead of `WINDOW`).
+#[test]
+fn scan_citations_does_not_panic_when_a_60_byte_lookback_starts_mid_char() {
+    // Byte layout: 19 ASCII bytes, then a 3-byte char at [19..22), then 58 more ASCII bytes,
+    // then an outermost `(...)`. `start` (the paren's own byte offset) = 80; the 60-byte lookback
+    // lands at byte 20 - the SECOND byte of the 3-byte char (not a boundary).
+    let prefix = "a".repeat(19);
+    let pad = "b".repeat(58);
+    let text = format!("{prefix}\u{2026}{pad}(`dup-0001`)");
+    // Must not panic - the real defect being regression-tested.
+    let _ = scan_citations(&text);
 }
