@@ -28,6 +28,15 @@
 //!    so that guarantee does not rest on one role's judgment alone, so this test drives the same
 //!    Done-when independently, over a fixture of its own, through the public surface only. Lives
 //!    in the `symbols` lane only (it drives the real tree-sitter extraction pass).
+//!  - the round-2 cfg-predicate fix (review REJECT `adj-u86c1-verdict-reject` /
+//!    `adv-u86c1-cfg-predicate-negation-and-cfg-attr-inverted`), independently, through the SAME
+//!    public API: `#[cfg(not(test))]` (the production-only half of a dual-cfg mock construct) and
+//!    `#[cfg_attr(test, ..)]` (an always-compiled item) must both reach the graph as ordinary
+//!    product code-entity nodes. The implementer's own `extract.rs` unit test
+//!    (`negated_and_cfg_attr_predicates_naming_test_do_not_mark_the_item_test`) proves this at the
+//!    `FileSymbols` level, inside the crate; this test proves the SAME contract at the periphery,
+//!    end to end through `build_index` -> `index_events` -> `Projector`, so the guarantee that a
+//!    dual-cfg mock's product half is never dropped does not rest on the author's own judgment.
 
 use rigger::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef, SymbolIndex};
 use rigger::grounder::symbols::store;
@@ -299,4 +308,71 @@ fn ingesting_product_and_test_code_through_the_public_api_graphs_only_the_produc
         references_from_test_scoped_call, 0,
         "a call made only from test code must never become a REFERENCES edge"
     );
+}
+
+/// A round-2 regression fixture, independent of the implementer's own `extract.rs` fixture: the
+/// two shapes `adv-u86c1-cfg-predicate-negation-and-cfg-attr-inverted` proved were wrongly folded
+/// to `is_test: true` and dropped from the graph entirely. Neither is test code - `real_client` is
+/// the PRODUCTION half of a dual-cfg mock (it compiles whenever `test` is NOT set, so it is
+/// definitionally the item that ships), and `RealConfig` is compiled unconditionally (`cfg_attr`
+/// only conditionally attaches its trailing `derive`, it never gates the tagged item's own
+/// compilation).
+#[cfg(feature = "symbols")]
+const CFG_PREDICATE_SRC: &str = "\
+#[cfg(not(test))]
+fn real_client() {}
+
+#[cfg_attr(test, derive(Debug))]
+struct RealConfig;
+";
+
+#[cfg(feature = "symbols")]
+#[test]
+fn cfg_not_test_and_cfg_attr_predicates_graph_as_product_through_the_public_api() {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::{Projection, KIND_CODE_ENTITY};
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("cfgpred.rs"), CFG_PREDICATE_SRC).unwrap();
+
+    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
+    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.iter_mut().enumerate() {
+        event.position = zero_based as u64 + 1;
+        p.apply(event).unwrap();
+    }
+
+    let g = p.subgraph(&["cfgpred.rs".to_string()], 3).unwrap();
+
+    // `#[cfg(not(test))]` guards the production half of a dual-cfg construct: it must reach the
+    // graph as a code-entity node like any other product function, never be folded to test-only
+    // and silently dropped.
+    let real_client = g
+        .nodes
+        .iter()
+        .find(|n| n.id == "cfgpred.rs::real_client")
+        .unwrap_or_else(|| {
+            panic!(
+                "#[cfg(not(test))] fn real_client must graph as a product code-entity node; \
+                 nodes: {:?}",
+                g.nodes.iter().map(|n| &n.id).collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(real_client.kind, KIND_CODE_ENTITY);
+
+    // `cfg_attr`'s predicate governs only the inner `derive`, never the tagged item's own
+    // compilation, so `RealConfig` is compiled unconditionally and must graph too.
+    let real_config = g
+        .nodes
+        .iter()
+        .find(|n| n.id == "cfgpred.rs::RealConfig")
+        .unwrap_or_else(|| {
+            panic!(
+                "#[cfg_attr(test, ..)] struct RealConfig must graph as a product code-entity \
+                 node; nodes: {:?}",
+                g.nodes.iter().map(|n| &n.id).collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(real_config.kind, KIND_CODE_ENTITY);
 }
