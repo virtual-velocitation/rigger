@@ -23313,128 +23313,128 @@
       },
       {
         "file": "tests/spec_lint.rs",
-        "start_line": 1157,
-        "end_line": 1186,
+        "start_line": 1159,
+        "end_line": 1188,
         "name": "validate_still_flags_an_unsatisfied_either_or_as_an_open_hedge"
       },
       {
         "file": "tests/spec_lint.rs",
-        "start_line": 1202,
-        "end_line": 1233,
+        "start_line": 1204,
+        "end_line": 1235,
         "name": "validate_still_flags_a_genuine_hedge_after_an_earlier_non_disjunctive_either_on_specs_68_shape"
       },
       {
         "file": "tests/spec_lint.rs",
-        "start_line": 1241,
-        "end_line": 1262,
+        "start_line": 1243,
+        "end_line": 1264,
         "name": "validate_exempts_the_comma_separated_decided_disposition"
       },
       {
         "file": "tests/spec_lint.rs",
-        "start_line": 1269,
-        "end_line": 1290,
+        "start_line": 1271,
+        "end_line": 1292,
         "name": "validate_still_flags_a_spaced_negation_before_the_decided_idiom"
       },
       {
         "file": "tests/spec_lint.rs",
-        "start_line": 1297,
-        "end_line": 1318,
+        "start_line": 1299,
+        "end_line": 1320,
         "name": "validate_flags_a_hedge_split_across_hard_wrapped_lines"
       },
       {
         "file": "tests/spec_lint.rs",
-        "start_line": 1330,
-        "end_line": 1353,
+        "start_line": 1332,
+        "end_line": 1355,
         "name": "validate_does_not_fuse_a_hedge_across_a_heading_boundary"
       },
       {
         "file": "tests/spec_lint.rs",
-        "start_line": 1360,
-        "end_line": 1383,
+        "start_line": 1362,
+        "end_line": 1385,
         "name": "validate_does_not_fuse_a_hedge_across_a_table_row_boundary"
       },
       {
         "file": "tests/spec_lint.rs",
-        "start_line": 1397,
-        "end_line": 1424,
+        "start_line": 1399,
+        "end_line": 1426,
         "name": "validate_ignores_a_double_quoted_span_that_crosses_a_hard_wrapped_line"
       },
       {
         "file": "tests/spec_lint.rs",
-        "start_line": 1434,
-        "end_line": 1460,
+        "start_line": 1436,
+        "end_line": 1462,
         "name": "validate_ignores_a_backtick_span_that_crosses_a_hard_wrapped_line"
       },
       {
         "file": "tests/spec_lint.rs",
-        "start_line": 1475,
-        "end_line": 1500,
+        "start_line": 1477,
+        "end_line": 1502,
         "name": "validate_still_flags_a_smell_outside_a_balanced_quote_pair"
       },
       {
         "file": "tests/spec_lint.rs",
-        "start_line": 1508,
-        "end_line": 1533,
+        "start_line": 1510,
+        "end_line": 1535,
         "name": "validate_still_flags_a_smell_outside_a_balanced_backtick_pair"
       },
       {
         "file": "tests/spec_lint.rs",
-        "start_line": 1543,
-        "end_line": 1570,
+        "start_line": 1545,
+        "end_line": 1572,
         "name": "validate_fails_closed_after_a_stray_unmatched_quote_earlier_in_the_paragraph"
       },
       {
         "file": "tests/spec_lint.rs",
-        "start_line": 1577,
-        "end_line": 1603,
+        "start_line": 1579,
+        "end_line": 1605,
         "name": "validate_fails_closed_after_a_stray_unmatched_backtick_earlier_in_the_paragraph"
       },
       {
         "file": "tests/spec_lint.rs",
-        "start_line": 1619,
-        "end_line": 1646,
+        "start_line": 1621,
+        "end_line": 1648,
         "name": "validate_a_stray_unmatched_quote_does_not_unmask_a_later_real_quoted_disposition_phrase"
       },
       {
         "file": "tests/spec_lint.rs",
-        "start_line": 1666,
-        "end_line": 1692,
+        "start_line": 1668,
+        "end_line": 1694,
         "name": "validate_ignores_a_backtick_span_whose_closing_mark_is_immediately_after_a_digit"
       },
       {
         "file": "tests/spec_lint.rs",
-        "start_line": 1709,
-        "end_line": 1736,
+        "start_line": 1711,
+        "end_line": 1738,
         "name": "validate_ignores_a_quoted_span_whose_closing_quote_is_immediately_after_a_digit"
       },
       {
         "file": "tests/spec_lint.rs",
-        "start_line": 1746,
-        "end_line": 1772,
+        "start_line": 1748,
+        "end_line": 1774,
         "name": "validate_a_digit_adjacent_quote_stays_excluded_as_an_opener"
       },
       {
         "file": "tests/spec_lint.rs",
-        "start_line": 1788,
-        "end_line": 1814,
+        "start_line": 1790,
+        "end_line": 1816,
         "name": "validate_a_quote_at_the_very_start_of_a_paragraph_is_a_valid_opener"
       },
       {
         "file": "tests/spec_lint.rs",
-        "start_line": 1841,
-        "end_line": 1870,
+        "start_line": 1843,
+        "end_line": 1872,
         "name": "validate_an_embedded_digit_adjacent_mark_does_not_prematurely_close_a_real_quoted_span"
       },
       {
         "file": "tests/spec_lint.rs",
-        "start_line": 1904,
-        "end_line": 1938,
+        "start_line": 1906,
+        "end_line": 1940,
         "name": "validate_all_four_digit_adjacency_shapes_together_never_false_positive"
       },
       {
         "file": "tests/spec_lint.rs",
-        "start_line": 1966,
-        "end_line": 1993,
+        "start_line": 1968,
+        "end_line": 1995,
         "name": "validate_a_digit_glued_to_a_quotes_own_opening_mark_still_masks_the_real_span"
       }
     ],
