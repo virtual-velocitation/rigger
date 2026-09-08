@@ -1628,12 +1628,33 @@ fn assemble_fresh_report(section_1: &str) -> String {
     out
 }
 
+/// Find `marker`'s first occurrence in `haystack` that starts a genuine markdown line - the
+/// preceding byte is a newline (or `pos == 0`, never actually hit by any caller below, since
+/// every real heading this module searches for is preceded by the report's own title/intro or
+/// an earlier section's blank-line separator). A bare `str::find` is NOT safe here: once
+/// section 2's own mechanical/sweep listing embeds a captured excerpt whose raw quoted text
+/// happens to contain a heading-shaped substring (a real `#### N. ` sub-heading's own tail
+/// reads as `## N. ` too - `"#### 3. Boundary Violations"` contains `"## 3. Boundary
+/// Violations"` starting at its third character), an unanchored search finds that FALSE,
+/// earlier position instead of the real heading and a `replace_section_*` call silently
+/// truncates or overwrites the file from there (decision
+/// `u85c4-fix-heading-boundary-false-match` - found when adding this criterion's own section 6
+/// shifted which giant literal gets swept and made the corruption reproducible, though the
+/// defect class predates this unit). Every heading search below routes through this instead of
+/// `str::find` for that reason.
+fn find_heading(haystack: &str, marker: &str) -> Option<usize> {
+    haystack
+        .match_indices(marker)
+        .find(|&(pos, _)| pos == 0 || haystack.as_bytes()[pos - 1] == b'\n')
+        .map(|(pos, _)| pos)
+}
+
 /// Replace ONLY section 1's span (from its `## 1. ` heading up to, but not including, the next
 /// `## ` heading) inside an EXISTING report `existing`, leaving every other section (including
 /// placeholders a later unit has since filled in) byte-for-byte untouched. Used when the report
 /// file already exists (e.g. this test re-running after `RIGGER_AUDIT_WRITE=1` once).
 fn replace_section_1(existing: &str, section_1: &str) -> String {
-    let start = match existing.find("## 1. ") {
+    let start = match find_heading(existing, "## 1. ") {
         Some(p) => p,
         None => return assemble_fresh_report(section_1),
     };
@@ -2966,7 +2987,7 @@ fn render_adversarial_sample(files: &[FileScan], clusters: &[DupCluster]) -> Str
 /// report is missing criterion 1's placeholder contract, a precondition this criterion (and
 /// every later one) relies on, not a case to paper over silently.
 fn replace_section_2(existing: &str, section_2: &str) -> String {
-    let start = existing.find("## 2. ").unwrap_or_else(|| {
+    let start = find_heading(existing, "## 2. ").unwrap_or_else(|| {
         panic!("{REPORT_PATH} has no '## 2. ' heading - missing criterion 1's placeholder contract")
     });
     let rest_after_marker = &existing[start + "## 2. ".len()..];
@@ -3508,7 +3529,7 @@ pub(crate) fn render_section_5() -> String {
         `dup-0583`/`dup-0585` (15+7 sites, `tests/reap_before_removal_audit.rs`, \
         \"one fixture function body, one exemption-coverage shape, assert \
         covered/not-covered\" - retires into one table keyed by exemption shape); \
-        `dup-0618`/`dup-0625` (15+5 sites, `tests/simplification_audit.rs` - this \
+        `dup-0617`/`dup-0624` (15+5 sites, `tests/simplification_audit.rs` - this \
         very unit's own scanner tests, a `(source, expected_tokens_or_clusters)` \
         table candidate); `dup-0573`/`dup-0574` (11+4 sites, \
         `tests/no_os_kill_audit.rs`, one process-termination-pattern-string per test \
@@ -3540,10 +3561,10 @@ fn replace_section_3_to_5(
     section_4: &str,
     section_5: &str,
 ) -> String {
-    let start = existing.find("## 3. ").unwrap_or_else(|| {
+    let start = find_heading(existing, "## 3. ").unwrap_or_else(|| {
         panic!("{REPORT_PATH} has no '## 3. ' heading - missing criterion 1's placeholder contract")
     });
-    let end = existing.find("## 6. ").unwrap_or(existing.len());
+    let end = find_heading(existing, "## 6. ").unwrap_or(existing.len());
     let mut out = String::new();
     out.push_str(&existing[..start]);
     out.push_str(section_3);
@@ -3562,6 +3583,511 @@ fn replace_section_3_to_5(
     }
     out.push('\n');
     out.push_str(&existing[end..]);
+    out
+}
+
+// =========================================================================================
+// CRITERION 4 (`u85c4`, THIS UNIT): SECTION 6 (PRIORITIZED PLAN)
+// =========================================================================================
+//
+// This criterion's own Done-when text: "cites sections 1-5 and adds no new findings" -
+// like criterion 3, there is no new mechanical scanner here (`render_section_6` is 100%
+// hand-authored prose, built with `String::push_str` for the same reason sections 3-5 are:
+// no interpolated runtime values, and no `{{`/`}}` escaping needed for the literal braces
+// this section's own `src/conductor/{run_ctx,support,...}.rs` file-glob prose requires).
+// Every count and file:line citation below is read directly from the already-committed
+// `docs/audit/responsibility-map.json` / `docs/audit/duplication-catalog.json`, or from a
+// direct read of a god file's own `#[cfg(test)] mod tests` opening line (decision
+// `u85c4-section6-plan-structure`) - never from a fresh scan, honoring "adds no new
+// findings".
+
+/// Replace ONLY section 6's span (from its `## 6. ` heading to the end of the string - it is
+/// the LAST section, so unlike [`replace_section_1`] / [`replace_section_2`] there is no next
+/// `## ` heading to search for) inside an EXISTING report `existing`, leaving every earlier
+/// section byte-for-byte untouched - the same one-owner-per-span contract as every other
+/// `replace_section_*` function (decision `u85c1-report-section-placeholders`). Panics if
+/// `existing` has no `## 6. ` heading at all - that would mean the report is missing
+/// criterion 1's placeholder contract, the same precondition every other criterion's own
+/// `replace_section_*` relies on.
+fn replace_section_6(existing: &str, section_6: &str) -> String {
+    let start = find_heading(existing, "## 6. ").unwrap_or_else(|| {
+        panic!("{REPORT_PATH} has no '## 6. ' heading - missing criterion 1's placeholder contract")
+    });
+    let mut out = String::new();
+    out.push_str(&existing[..start]);
+    out.push_str(section_6);
+    if !section_6.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+/// Section 6, PRIORITIZED PLAN: nineteen follow-up refactoring-spec stubs across five
+/// risk-reduction tiers, plus one explicit no-follow-up-needed disposition for dead and
+/// vestigial code (section 4 found nothing to remove). See decision
+/// `u85c4-section6-plan-structure` for the tier rationale and the reconciled cluster-id
+/// accounting (340 test-only + 7 named + 327 remaining src-touching = 674 total clusters).
+fn render_section_6() -> String {
+    let mut out = String::new();
+    out.push_str("## 6. Prioritized Plan\n\n");
+    out.push_str(
+        "Nineteen follow-up refactoring specs, ordered largest risk-reduction first, plus \
+        one category with an explicit no-follow-up-needed disposition (dead and vestigial \
+        code, section 4). This section adds no new findings: every citation below points at \
+        a claim already recorded in section 1 (`docs/audit/responsibility-map.json`), \
+        section 2 (`docs/audit/duplication-catalog.json`), or sections 3-5's own prose. Two \
+        instruments ground every count below: the two committed JSON files (queried \
+        directly, never re-scanned) and, where a god file's own `#[cfg(test)] mod tests` \
+        boundary line is cited, a direct read of that file - the boundary line itself is not \
+        a scanner output, it is where in the file the earliest `is_test: true` entry begins. \
+        Six of these nineteen entries split a god file (tiers 2 and 3, two phases times \
+        three files); the other thirteen retire duplication or close a port gap (tiers 1, 4 \
+        and 5) - kept as separate entries throughout, per spec 85's own instruction that \
+        \"the god-file splits and the duplication removals are separate entries so each can \
+        be its own run.\"\n\n",
+    );
+    out.push_str("### 6.1 How this plan is ordered\n\n");
+    out.push_str(
+        "Largest risk-reduction first is read as five tiers, ranked by the KIND of risk \
+        each entry retires, highest first:\n\n\
+        1. Tier 1 - active correctness risk: a use case already depends on the wrong \
+        concretion, or two independent implementations of one concern can already drift \
+        apart silently (section 3's two boundary violations; the one already-drifted \
+        `/proc`-reading pair section 2 and section 3 both name). These are live gaps, not \
+        just size.\n\
+        2. Tier 2 - god-file test-module extraction: each of the three god files' own \
+        inline `#[cfg(test)] mod tests` is the majority of that file's bulk (56-70% by \
+        boundary-line count, per a direct read of each file), and moving it is a pure \
+        relocation with no production-behavior change - the single largest safe line-count \
+        reduction in this plan, and the precondition that makes tier 3 tractable.\n\
+        3. Tier 3 - god-file production splits: section 1's own proposed module tree \
+        applied to the (now much smaller) remaining production surface of each god file. \
+        Higher execution risk than tier 2 because it touches live orchestration and CLI \
+        logic, so it is sequenced after tier 2 shrinks the target first.\n\
+        4. Tier 4 - named production duplication sweeps: the mechanical mandatory sweeps \
+        section 2 ran regardless of the Jaccard pass (`Command::new`, `.rigger`-path \
+        literals, sqlite `Connection::open`, error-shaping helpers), each already a single \
+        committed cluster with its own proposed home.\n\
+        5. Tier 5 - test-suite consolidation: section 5's own catalogued test-only \
+        duplication. No production-correctness exposure at all (worst case a test \
+        regresses, never the product), so it is ordered last despite touching the largest \
+        raw line count anywhere in this plan.\n\n\
+        Within a tier, entries are ordered largest-first by the site or line count each \
+        retires - the same rule the tiers themselves follow, applied one level down.\n\n",
+    );
+    out.push_str("### 6.2 Tier 1: active correctness risk\n\n");
+    out.push_str("#### 1. Close the `AgentDriver` port gap around mutation-scratch reclaim\n\n");
+    out.push_str(
+        "- Scope: `conductor.rs`'s production `reclaim_terminal_unit_mutation_scratch` \
+        (`src/conductor.rs:7091-7096`, section 3 violation 1) calls \
+        `crate::driver::replay::cache_home_from` and \
+        `crate::driver::replay::reclaim_unit_mutation_scratch` by concrete module path - two \
+        pure, driver-instance-free scratch-lifecycle utilities that do not conceptually \
+        belong to the `driver::replay` concern they currently live inside. Relocate both \
+        into a neutral module every `AgentDriver` adapter and `conductor.rs` can depend on \
+        alike (no new trait needed - neither function takes a driver instance, so this is a \
+        home fix, not a port-method fix).\n\
+        - Files: `src/conductor.rs`, `src/driver/replay.rs`, a new home for the two \
+        relocated functions.\n\
+        - Expected line delta: near zero net - a pure move of two functions.\n\
+        - Risk: low-medium. The reclaim path is covered by spec 83's \
+        worktree-lifetime-fenced-by-spawn-liveness contract tests; those tests move with the \
+        functions, not get rewritten.\n\
+        - Unblocks: retires the only `AgentDriver` port violation section 3 found.\n\n",
+    );
+    out.push_str(
+        "#### 2. Close the `Grounder` port gap for whole-project batch ingest (retires \
+        dup-0198 in the same motion)\n\n",
+    );
+    out.push_str(
+        "- Scope: section 3 violation 2 (`src/ingest.rs:187-211` `walk_batches`, reaching \
+        `grounder::symbols::events::project_batches_paced` and \
+        `grounder::design::events::project_batches` by concrete module path) and \
+        duplication cluster `dup-0198` (the same two modules' own twin `project_batches` \
+        functions, `src/grounder/symbols/events.rs:36-38` / \
+        `src/grounder/design/events.rs:90-114`) are one root cause, not two - fix once. TWO \
+        CANDIDATES, ONE HOME (spec 85 CONSTRAINTS WALK): `dup-0198`'s own mechanical \
+        `proposed_home` suggests relocating into `tests/common`, but both sites are \
+        production code under `src/grounder/`, not test helpers - the mechanical heuristic \
+        has no \"add a port method\" category to route a production duplicate to, so it \
+        mis-fires here. This plan follows section 3's own reasoned disposition instead: add \
+        a `Grounder::project_batches` port method (or a standalone `SymbolProjector` trait) \
+        covering both concrete modules, and point `ingest.rs` at it.\n\
+        - Files: `src/ingest.rs`, `src/grounder/mod.rs`, `src/grounder/symbols/events.rs`, \
+        `src/grounder/design/events.rs`.\n\
+        - Expected line delta: roughly neutral - one new trait method plus two thin impls, \
+        minus the two duplicate bodies `dup-0198` catalogs.\n\
+        - Risk: medium. `ingest.rs`'s own module doc calls it \"the ONE walk-and-content-key \
+        authority\" - a load-bearing path; needs the existing whole-project-ingest and \
+        reindex-freshening coverage to stay green, not just the two duplicate-site tests.\n\
+        - Unblocks: retires the one `Grounder` port violation section 3 found and `dup-0198` \
+        together, rather than as two separately-tracked fixes.\n\n",
+    );
+    out.push_str(
+        "#### 3. Retire the duplicate `/proc`-reading authority (`dup-0124` + `dup-0125`)\n\n",
+    );
+    out.push_str(
+        "- Scope: `src/dash.rs::process_state` (`src/dash.rs:499-507`) and \
+        `src/main.rs::pgid_of` (`src/main.rs:23064-23077`) each independently re-derive \
+        `/proc/<pid>/stat` and `/proc/<pid>/status` fields that `src/reap.rs` \
+        (`pid_starttime`/`read_ppid`, `src/reap.rs:190-207`) already parses - the exact \
+        \"second mutation authority\" example spec 85's own Goal names and spec 62's \
+        capstone previously caught (`dup-0125`, 13 sites: `src/dash.rs`, `src/main.rs`, \
+        `src/reap.rs`, `tests/cli.rs`), plus 56 raw `/proc`-path string literals scattered \
+        across `src/dash.rs`, `src/main.rs`, `src/reap.rs` and three test files with no \
+        shared composer (`dup-0124`). Both clusters' own `proposed_home` agree: `src/reap.rs` \
+        becomes the one `/proc`-reading module; `dash.rs` and `main.rs` call it instead of \
+        re-parsing.\n\
+        - Files: `src/dash.rs`, `src/main.rs`, `src/reap.rs`, `tests/cli.rs` (`proc_pgid_of`, \
+        `tests/cli.rs:23419-23432`, re-points at the same call).\n\
+        - Expected line delta: negative - retires `process_state`'s and `pgid_of`'s own \
+        parsing bodies in favor of calling `reap.rs`'s existing parser.\n\
+        - Risk: low. Section 3's own disposition already establishes this is a duplicate \
+        READ-only reimplementation, never a bypassed mutation path - nothing this touches \
+        can signal or kill a process, so it carries none of the no-os-kill gate's own risk \
+        surface.\n\
+        - Unblocks: retires the codebase's only currently-known live instance of the \
+        \"duplicate implementation reconciled after the fact\" pattern the operator's \
+        strict-DRY rule targets - the concrete precedent spec 85's own Goal cites.\n\n",
+    );
+    out.push_str("### 6.3 Tier 2: god-file test-module extraction\n\n");
+    out.push_str(
+        "Each god file's inline test-module boundary is the earliest `is_test: true` \
+        entry's `start_line` in the committed `docs/audit/responsibility-map.json`, \
+        cross-checked against a direct read of the file's own `#[cfg(test)]` markers. All \
+        three checks agree no file is fully flat before this boundary: conductor.rs has one \
+        small early exception (`for_test`, `src/conductor.rs:2327-2371`) and main.rs has one \
+        (`compose_precommit`, `src/main.rs:11630-11635`); dash.rs has none. Each entry below \
+        moves an already-passing test module with no intended production-behavior change - a \
+        `cargo test` pass before and after is the whole verification. The line-delta figures \
+        below are file-length minus the boundary's own start line (a direct-read fact, not a \
+        function-span sum), so they include the module-level doc comments, `use` statements \
+        and blank lines a per-function span sum would miss.\n\n",
+    );
+    out.push_str("#### 4. Extract `src/conductor.rs`'s inline test module\n\n");
+    out.push_str(
+        "- Scope: the file's `#[cfg(test)] mod tests` opens at `src/conductor.rs:10260` and \
+        runs to end of file - roughly 24,400 of the file's 34,677 lines (70%), 417 of its \
+        612 mapped functions. On its own it is nearly as large as all of `tests/cli.rs` \
+        (27,074 lines). Partition into a `src/conductor/tests/` directory, one file per \
+        concern, reusing the same names section 1 already assigned the file's own \
+        production buckets (`budget`, `gate`, `review`, `run_ctx`, `schedule`, `spawn`, \
+        ...) so the split needs no new naming scheme.\n\
+        - Files: `src/conductor.rs` -> `src/conductor.rs` (production only) + \
+        `src/conductor/tests/*.rs`.\n\
+        - Expected line delta: 0 net (repo-wide) - roughly 24,400 lines relocated out of \
+        `conductor.rs`.\n\
+        - Risk: low - mechanical move of passing tests, zero intended behavior change.\n\
+        - Unblocks: shrinks `conductor.rs` from 34,677 to roughly 10,260 lines before tier 3 \
+        touches a single production line - the single largest reduction in this whole plan \
+        to the odds that an unrelated future unit's blast radius collides with this file.\n\n",
+    );
+    out.push_str("#### 5. Extract `src/main.rs`'s inline test module\n\n");
+    out.push_str(
+        "- Scope: the file's `#[cfg(test)] mod tests` opens at `src/main.rs:12650` (the \
+        same boundary section 3 cites for its own test-only raw-connection-bypass finding) \
+        and runs to end of file - roughly 11,374 of the file's 24,024 lines (47%), 332 of \
+        its 618 mapped functions. Same partition approach as item 4, reusing section 1's own \
+        production bucket names (`commands`, `store`, `support`, `provenance`, `dash_glue`, \
+        `setup`, ...).\n\
+        - Files: `src/main.rs` -> `src/main.rs` (production only) + \
+        `src/main/tests/*.rs`.\n\
+        - Expected line delta: 0 net - roughly 11,374 lines relocated.\n\
+        - Risk: low, same rationale as item 4.\n\
+        - Unblocks: shrinks `main.rs` to roughly 12,650 lines before tier 3's own main.rs \
+        split.\n\n",
+    );
+    out.push_str("#### 6. Extract `src/dash.rs`'s inline test module\n\n");
+    out.push_str(
+        "- Scope: the file's `#[cfg(test)] mod tests` opens at `src/dash.rs:4907` and runs \
+        to end of file - roughly 6,213 of the file's 11,120 lines (56%), 148 of its 263 \
+        mapped functions. Lower effort than items 4-5: section 1's own classifier already \
+        found five pre-existing sub-boundaries inside this one test module \
+        (`dash::tests::calls_route_c4`, `metadata_card_c2`, `rationale_overlay_c3`, \
+        `subject_view_c5`, `supervised_lifecycle`), so the partition points already exist \
+        and need only become their own files.\n\
+        - Files: `src/dash.rs` -> `src/dash.rs` (production only) + `src/dash/tests/*.rs`.\n\
+        - Expected line delta: 0 net - roughly 6,213 lines relocated.\n\
+        - Risk: low - the lowest-effort of the three, for the reason above.\n\
+        - Unblocks: shrinks `dash.rs` to roughly 4,907 lines before tier 3's own dash.rs \
+        split.\n\n",
+    );
+    out.push_str("### 6.4 Tier 3: god-file production splits\n\n");
+    out.push_str(
+        "Each entry below applies section 1's own proposed module tree to a god file's \
+        production surface, sequenced after the matching tier-2 entry removes that file's \
+        test bulk first. Every module name and function/line count below is summed directly \
+        from the committed `docs/audit/responsibility-map.json` (function-body spans only); \
+        a file's remaining non-function production lines - struct/enum/type definitions, \
+        `use` statements, module docs - are outside section 1's own function-only scan and \
+        move with whichever module they sit beside, without needing their own assignment.\n\n",
+    );
+    out.push_str(
+        "#### 7. Split `src/conductor.rs`'s production code into `src/conductor/*.rs`\n\n",
+    );
+    out.push_str(
+        "- Scope: 175 mapped functions across 14 proposed modules (roughly 6,850 lines of \
+        function bodies) plus 20 unassigned functions (952 lines, each individually named \
+        in the committed map for manual placement, per section 1's own \"unassignable \
+        functions are named as such, never omitted\" rule). Headline buckets: \
+        `conductor::run_ctx` (100 functions, 4,901 lines - more than half this remaining \
+        surface on its own), `conductor::support` (15/387), `conductor::gate` (19/133), \
+        `conductor::run` (6/122), `conductor::review` (9/102); the other nine buckets are \
+        each five functions or fewer.\n\
+        - Files: `src/conductor.rs` -> `src/conductor/mod.rs` + \
+        `src/conductor/{run_ctx,support,gate,run,review,schedule,budget,prior_failure,spawn,\
+        review_outcome,ground,error,gate_ratchet,integration_approval}.rs`.\n\
+        - Expected line delta: 0 net - pure relocation of roughly 7,800 lines; `run_ctx` \
+        alone may warrant its own second pass if it does not decompose cleanly into one \
+        file.\n\
+        - Risk: medium-high - conductor.rs is the composition root's own most complex \
+        use-case file; every intermediate commit needs the full `cargo test`, no-os-kill and \
+        reap audits green, not just the final one.\n\
+        - Unblocks: the largest reduction in production-code blast-radius collision risk \
+        this audit identifies; makes future duplication-spotting against conductor.rs's own \
+        logic tractable by a human reviewer, not only by the mechanical scanner.\n\n",
+    );
+    out.push_str("#### 8. Split `src/main.rs`'s production code into `src/main/*.rs`\n\n");
+    out.push_str(
+        "- Scope: 286 mapped functions across 15 proposed modules (roughly 8,340 lines of \
+        function bodies) plus 102 unassigned functions (2,674 lines). Headline buckets: \
+        `main::commands` (34/2,568), `main::store` (32/862), `main::support` (25/652), \
+        `main::provenance` (23/446), `main::dash_glue` (25/346), `main::setup` (18/271).\n\
+        - Files: `src/main.rs` -> `src/main.rs` (composition root, thinned) + \
+        `src/cli/{commands,store,support,provenance,dash_glue,setup,render,liveness,\
+        store_location,run_registration,docs_overlay,scaffold_report,residue_report,\
+        store_selection,replay_runner}.rs`.\n\
+        - Expected line delta: 0 net - pure relocation of roughly 11,000 lines.\n\
+        - Risk: medium - `main.rs` is the composition root itself; the split must preserve \
+        which concretions get wired where, not merely move text.\n\
+        - Unblocks: shrinks the second-largest god file to a genuine composition root plus a \
+        `cli/` module tree, matching the ports-and-adapters shape this project already \
+        mandates everywhere else.\n\n",
+    );
+    out.push_str("#### 9. Split `src/dash.rs`'s production code into `src/dash/*.rs`\n\n");
+    out.push_str(
+        "- Scope: 115 mapped functions across 9 proposed modules (roughly 2,720 lines of \
+        function bodies) plus 41 unassigned functions (848 lines). Headline buckets: \
+        `dash::render` (26/642), `dash::reproject` (12/519), `dash::server` (8/426), \
+        `dash::buckets` (8/116).\n\
+        - Files: `src/dash.rs` -> `src/dash/mod.rs` + \
+        `src/dash/{render,reproject,server,buckets,registry,response,reaped_child,lens,\
+        dash_marker}.rs`.\n\
+        - Expected line delta: 0 net - pure relocation of roughly 3,600 lines.\n\
+        - Risk: low-medium - the smallest of the three god files by production surface, and \
+        the always-on dash's own contract (loopback-only, zero-new-dependency) is unaffected \
+        by a pure module split.\n\
+        - Unblocks: completes the god-file split trio; the third program-sized file becomes \
+        an ordinary module tree.\n\n",
+    );
+    out.push_str("### 6.5 Tier 4: named production duplication sweeps\n\n");
+    out.push_str(
+        "Each entry is one of section 2's five named mandatory sweeps - collected \
+        mechanically regardless of the Jaccard pass, per spec 85's own Design.\n\n",
+    );
+    out.push_str(
+        "#### 10. Consolidate the 645 `.rigger`-path string-literal sites (`dup-0051`) - the \
+        single largest cluster in the entire catalog by site count\n\n",
+    );
+    out.push_str(
+        "- Scope: one `.rigger`-relative path-composition helper (the cluster's own \
+        `proposed_home`) every one of the 645 sites routes through instead of building its \
+        own literal.\n\
+        - Files: spans dozens of files including `src/conductor.rs`, `src/config.rs`, \
+        `src/dash.rs`, `src/docs.rs`, `src/gate.rs`, `src/grounder/mod.rs`, \
+        `src/grounder/symbols/store.rs`, `src/ingest.rs`, `src/main.rs`, `src/reap.rs`, \
+        `src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list \
+        is in the committed `docs/audit/duplication-catalog.json` under `dup-0051` for the \
+        follow-up spec to consume directly, not re-enumerated here.\n\
+        - Expected line delta: negative - 645 literal compositions collapse toward one \
+        helper's call sites; the helper itself is small.\n\
+        - Risk: medium - the largest surface-area sweep in this plan by site count, even \
+        though each individual site is trivial; needs a mechanical rewrite pass plus a \
+        full-suite green run, not hand-editing 645 sites.\n\
+        - Unblocks: the biggest single site-count reduction available anywhere in the \
+        duplication catalog.\n\n",
+    );
+    out.push_str(
+        "#### 11. Consolidate the 263 `Command::new` call sites (`dup-0006`) behind one \
+        injected process-spawn port\n\n",
+    );
+    out.push_str(
+        "- Scope: one process-spawn seam every `Command::new` site routes through (the \
+        cluster's own `proposed_home`).\n\
+        - Files: spans `src/budget.rs`, `src/conductor.rs`, `src/dash.rs`, \
+        `src/driver/cli.rs`, `src/gate.rs`, `src/main.rs`, `src/worktree.rs` plus many \
+        `tests/` files - full site list in `docs/audit/duplication-catalog.json` under \
+        `dup-0006`.\n\
+        - Expected line delta: negative, though smaller per-site than `dup-0051` since each \
+        `Command::new` call already carries real configuration (args, env, cwd) that must \
+        move with it, not just a literal.\n\
+        - Risk: medium-high - several of these 263 sites sit inside `src/budget.rs`'s and \
+        `src/conductor.rs`'s already-hardened process-lifecycle code (spec 78's no-os-kill \
+        discipline); the follow-up spec must preserve every existing handle-bound-kill \
+        invariant at each site it touches, and the no-os-kill gate is the acceptance bar, \
+        not merely `cargo test`.\n\
+        - Unblocks: one seam instead of 263 independent constructions - the next \
+        process-spawning concern added anywhere in the crate reuses it instead of adding \
+        site 264.\n\n",
+    );
+    out.push_str(
+        "#### 12. Consolidate the 46 sqlite `Connection::open` call sites (`dup-0105`)\n\n",
+    );
+    out.push_str(
+        "- Scope: one sqlite-connection-opening adapter function (the cluster's own \
+        `proposed_home`) spanning `src/contextgraph/sqlite.rs`, `src/eventstore/sqlite.rs` \
+        and `src/main.rs`, plus several `tests/` files.\n\
+        - Files: full site list in `docs/audit/duplication-catalog.json` under `dup-0105`.\n\
+        - Expected line delta: negative - 46 open calls collapse toward one function.\n\
+        - Risk: medium - touches the event store and context graph's own \
+        connection-lifecycle code; needs the store-identity and store-resolution contract \
+        tests green throughout.\n\
+        - Unblocks: one place to change pragma/timeout/journal-mode settings instead of \
+        46.\n\n",
+    );
+    out.push_str(
+        "#### 13. Consolidate the 5 error-shaping helper sites (`dup-0205`) - caution, \
+        confirm before merging\n\n",
+    );
+    out.push_str(
+        "- Scope: the cluster spans `src/grounder/mod.rs` (`retired_grounder_error`), \
+        `src/worktree.rs` (`revert_on_base_aborts_and_errors_on_a_conflicting_revert`) and \
+        three unrelated test files, at line counts from 6 to 78 - a wide spread for one \
+        claimed duplicate. This may be a threshold-gaming false cluster (spec 85's own \
+        CONSTRAINTS WALK: \"the threshold is a floor for the mechanical pass; the reading \
+        pass owns semantic duplicates\") rather than one real shared concern - the follow-up \
+        spec's first job is confirming by reading whether these five sites share actual \
+        logic before proposing one helper, not assuming the cluster label proves it.\n\
+        - Files: `src/grounder/mod.rs`, `src/worktree.rs`, plus the three test files named \
+        in `docs/audit/duplication-catalog.json` under `dup-0205`.\n\
+        - Expected line delta: unknown pending the confirmation read above - potentially \
+        zero if the cluster does not survive a human read.\n\
+        - Risk: low (the smallest-site-count sweep), but with the stated precondition.\n\
+        - Unblocks: either a genuine fifth consolidation, or a documented \"not a real \
+        duplicate\" disposition that keeps the catalog honest for whoever reads it next.\n\n",
+    );
+    out.push_str("### 6.6 Tier 5: test-suite consolidation\n\n");
+    out.push_str(
+        "Every entry cites section 5's own already-catalogued test-only duplication; none \
+        of it carries production-correctness risk.\n\n",
+    );
+    out.push_str("#### 14. Extract the four headline shared test fixtures into `tests/common` (section 5.2)\n\n");
+    out.push_str(
+        "- Scope: `page_script` (`dup-0335`, 18 files), `node_available` (`dup-0336`, 18 \
+        files), `temp_project` (`dup-0361`, 18 files) and `run_stream_identity` (`dup-0367`, \
+        18 files) - roughly 72 duplicate definitions collapsing into four shared ones, the \
+        single largest mechanical simplification section 5 identifies anywhere in the test \
+        suite.\n\
+        - Files: the 18 dashboard/viz test files section 5.1 already groups together, plus \
+        `tests/common/mod.rs`.\n\
+        - Expected line delta: negative - each fixture's small body survives once instead of \
+        up to 18 times.\n\
+        - Risk: low - test-only, and `tests/common/mod.rs` already exists with the same \
+        shape of helper (`product_binary_from`, `rigger_bin`, ...).\n\
+        - Unblocks: item 17 below (the remaining test-helper clusters) reuses the same \
+        `tests/common` home this item establishes.\n\n",
+    );
+    out.push_str(
+        "#### 15. Split `tests/cli.rs` by CLI subcommand surface (section 5.3's plan)\n\n",
+    );
+    out.push_str(
+        "- Scope: 27,074 lines, 351 tests, split into \
+        `tests/cli_{step,run,validate,reset,watch,canary,dash,store,review,setup}.rs` plus a \
+        residual `tests/cli_misc.rs` for the genuinely cross-cutting scenarios section 5.3 \
+        names, using each test's dominant scenario (a human/AI read, not the 78%-coverage \
+        keyword match section 5.3 already disclosed as insufficient alone).\n\
+        - Files: `tests/cli.rs` and the eleven new files above.\n\
+        - Expected line delta: 0 net - pure relocation of 27,074 lines into eleven files.\n\
+        - Risk: low-medium - the largest single test file in the repo, but a mechanical \
+        per-test move with `cargo test`'s full pass count as the verification.\n\
+        - Unblocks: shrinks the catalog's most cross-clustered single file (29 duplication \
+        clusters per section 5.3) and lets item 17's remaining-clusters sweep target \
+        smaller, subcommand-scoped files.\n\n",
+    );
+    out.push_str(
+        "#### 16. Convert the four largest table-driven test families into parametrized \
+        tables (section 5.5)\n\n",
+    );
+    out.push_str(
+        "- Scope, largest first: `dup-0636` (42 sites, `tests/spec_lint.rs`), \
+        `dup-0583`/`dup-0585` (15+7 sites, `tests/reap_before_removal_audit.rs`), \
+        `dup-0617`/`dup-0624` (15+5 sites, `tests/simplification_audit.rs` - this very \
+        generator's own scanner tests), `dup-0573`/`dup-0574` (11+4 sites, \
+        `tests/no_os_kill_audit.rs`) - 99 sites across 7 clusters.\n\
+        - Files: the four files named above.\n\
+        - Expected line delta: negative - each family's near-identical test bodies collapse \
+        into one parametrized loop over a table.\n\
+        - Risk: low - test-only, and each family already shares one body shape (section \
+        5.5's own finding).\n\
+        - Unblocks: the largest reduction in raw `#[test]` count available in the suite \
+        (roughly 99 named tests retiring toward 4).\n\n",
+    );
+    out.push_str(
+        "#### 17. Sweep the remaining 177 test-only helper-duplication clusters (section \
+        5.4, beyond item 14's four headline fixtures)\n\n",
+    );
+    out.push_str(
+        "- Scope: the 181 test-only, all-helper-function clusters section 5.4 names, minus \
+        the 4 item 14 already covers - consumed directly from \
+        `docs/audit/duplication-catalog.json`, not re-enumerated here (section 5.4's own \
+        stated approach). Includes the `dup-0366`/`dup-0362` `temp_project` companion and \
+        variant clusters section 5.4 itself places in this \"beyond the four\" bucket.\n\
+        - Files: per-cluster, from the committed catalog.\n\
+        - Expected line delta: negative, cumulative across 177 clusters.\n\
+        - Risk: low - test-only.\n\
+        - Unblocks: closes out the helper-duplication half of the test suite's own \
+        strict-DRY exposure.\n\n",
+    );
+    out.push_str(
+        "#### 18. Sweep the remaining 152 table-driven test families (section 5.5, beyond \
+        item 16's four headline families)\n\n",
+    );
+    out.push_str(
+        "- Scope: the 159 test-only, all-`#[test]` clusters section 5.5 names, minus the 7 \
+        cluster ids item 16 already covers - consumed directly from \
+        `docs/audit/duplication-catalog.json`. Includes `dup-0576` (4 sites, \
+        `tests/no_os_kill_test_helper_periphery.rs`), the smallest of section 5.5's own \
+        named large families, left here rather than in item 16.\n\
+        - Files: per-cluster, from the committed catalog.\n\
+        - Expected line delta: negative, cumulative.\n\
+        - Risk: low - test-only.\n\
+        - Unblocks: closes out the table-driven-test half of the test suite's own \
+        strict-DRY exposure; combined with item 17, retires all 340 test-only clusters \
+        section 2 found.\n\n",
+    );
+    out.push_str(
+        "#### 19. Sweep the remaining 327 src-touching duplication clusters (section 2, \
+        beyond tiers 1 and 4's 7 named clusters)\n\n",
+    );
+    out.push_str(
+        "- Scope: of the catalog's 674 clusters, 340 are test-only (items 14 and 16-18 \
+        above) and 7 are the named tier-1/tier-4 items (`dup-0006`, `dup-0051`, `dup-0105`, \
+        `dup-0124`, `dup-0125`, `dup-0198`, `dup-0205`); the remaining 327 clusters touching \
+        `src/` - mostly small 2-5-site exact/near matches like the two worked examples \
+        section 2 itself opens with (`dup-0001`, `dup-0002`) - are swept here, largest \
+        exact-duplicate clusters first, consumed directly from \
+        `docs/audit/duplication-catalog.json`.\n\
+        - Files: per-cluster, from the committed catalog.\n\
+        - Expected line delta: negative, cumulative; the largest single contributor is \
+        whichever exact cluster has the most sites (read from the catalog at spec-writing \
+        time, not fixed here).\n\
+        - Risk: low-medium - unlike tier 5, some of these clusters are production code, so \
+        each merge needs its own test-coverage check, not a blanket \"test-only\" pass.\n\
+        - Unblocks: the last of the catalog's 674 clusters; after items 1-3 and 10-19 all \
+        land, a future spec can state and check that the duplication catalog's own drift \
+        guard finds zero live clusters left unaddressed.\n\n",
+    );
+    out.push_str("### 6.7 Explicitly no follow-up: dead and vestigial code\n\n");
+    out.push_str(
+        "Section 4 found nothing to remove: zero of the 596 scanned production entries have \
+        zero external references (three independent instruments checked - name-reference \
+        sweep, the knowledge graph, and a full-rebuild `dead_code` lint on both feature \
+        lanes), both named retirements (`turbovec`, `kurrentdb`) are fully clean, and the \
+        two stale-looking doc paths found were confirmed generic illustrative examples, not \
+        real dangling references. No refactoring spec is proposed for this category (spec \
+        85's own CONSTRAINTS WALK: an empty section states so with the search that \
+        established it, never omitted).\n",
+    );
     out
 }
 
@@ -5389,6 +5915,139 @@ mod tests {
         assert!(
             committed.contains(&section_5),
             "{REPORT_PATH} must contain section 5 verbatim"
+        );
+    }
+
+    // =====================================================================================
+    // Criterion 4 (`u85c4`, THIS UNIT): section 6 (prioritized plan)
+    // =====================================================================================
+
+    #[test]
+    fn replace_section_6_only_touches_that_span_leaving_earlier_sections_intact() {
+        let existing = "# Title\n\n\
+             ## 1. Responsibility Map\n\nsection one body\n\n\
+             ## 2. Duplication Catalog\n\nsection two body\n\n\
+             ## 3. Boundary Violations\n\nsection three body\n\n\
+             ## 4. Dead and Vestigial Code\n\nsection four body\n\n\
+             ## 5. Test-Suite Shape\n\nsection five body\n\n\
+             ## 6. Prioritized Plan\n\n_Pending - criterion 4 (`u85c4`)._\n";
+        let updated = replace_section_6(existing, "## 6. Prioritized Plan\n\nnew section six\n");
+        assert!(updated.contains("new section six"));
+        assert!(!updated.contains("_Pending - criterion 4"));
+        // Every earlier section (not this criterion's own) survives byte-for-byte.
+        assert!(updated.contains("section one body"));
+        assert!(updated.contains("section two body"));
+        assert!(updated.contains("section three body"));
+        assert!(updated.contains("section four body"));
+        assert!(updated.contains("section five body"));
+    }
+
+    #[test]
+    fn replace_section_6_works_when_it_is_the_very_end_of_the_string() {
+        // Section 6 is the LAST section - there is no next heading to bound the
+        // replacement span against, unlike sections 1, 2 and 3-5's own combined span.
+        let existing = "# Title\n\n## 6. Prioritized Plan\n\nold body\ntrailing line\n";
+        let updated = replace_section_6(existing, "## 6. Prioritized Plan\n\nnew body\n");
+        assert_eq!(updated, "# Title\n\n## 6. Prioritized Plan\n\nnew body\n");
+    }
+
+    #[test]
+    #[should_panic(expected = "missing criterion 1's placeholder contract")]
+    fn replace_section_6_panics_loudly_when_the_heading_is_entirely_absent() {
+        replace_section_6(
+            "# Title\n\nno sections here\n",
+            "## 6. Prioritized Plan\n\nx\n",
+        );
+    }
+
+    #[test]
+    fn render_section_6_cites_every_tier_and_the_explicit_none_needed_category() {
+        let rendered = render_section_6();
+        assert!(rendered.contains("## 6. Prioritized Plan"));
+        // Ordering methodology and tier structure (largest risk-reduction first, per spec
+        // 85's own Done-when text).
+        assert!(rendered.contains("largest risk-reduction"));
+        assert!(rendered.contains("Tier 1"));
+        assert!(rendered.contains("Tier 2"));
+        assert!(rendered.contains("Tier 3"));
+        assert!(rendered.contains("Tier 4"));
+        assert!(rendered.contains("Tier 5"));
+        // God-file splits and duplication removals are separate entries (spec 85's own
+        // wording, quoted so a reader can see this criterion's own bar is met).
+        assert!(rendered.contains("separate entries"));
+        // Cites section 3's two boundary violations by name.
+        assert!(rendered.contains("AgentDriver"));
+        assert!(rendered.contains("Grounder"));
+        // The two-candidates-one-home resolution for dup-0198 (spec 85 CONSTRAINTS WALK).
+        assert!(rendered.contains("dup-0198"));
+        assert!(rendered.contains("TWO CANDIDATES, ONE HOME"));
+        // Cites the mandatory-sweep duplication clusters by id.
+        assert!(rendered.contains("dup-0006"));
+        assert!(rendered.contains("dup-0051"));
+        assert!(rendered.contains("dup-0105"));
+        assert!(rendered.contains("dup-0124"));
+        assert!(rendered.contains("dup-0125"));
+        assert!(rendered.contains("dup-0205"));
+        // Cites the god-file test/production split for all three files.
+        assert!(rendered.contains("src/conductor.rs"));
+        assert!(rendered.contains("src/main.rs"));
+        assert!(rendered.contains("src/dash.rs"));
+        // Cites section 5's own headline test-suite consolidation items.
+        assert!(rendered.contains("tests/common"));
+        assert!(rendered.contains("tests/cli.rs"));
+        assert!(rendered.contains("dup-0636"));
+        // Section 4 (dead and vestigial code) is explicitly dispositioned as needing no
+        // follow-up spec, per spec 85's own "states so with the search that established
+        // it, never omitted" rule for an empty category.
+        assert!(rendered.contains("Explicitly no follow-up"));
+        assert!(rendered.contains("turbovec"));
+        assert!(rendered.contains("kurrentdb"));
+        // Adds no new findings: every dollar figure traces back to the committed JSON, not
+        // a fresh scan - the section says so explicitly.
+        assert!(rendered.contains("adds no new findings"));
+    }
+
+    /// THE DRIFT GUARD for section 6 of the report: with `RIGGER_AUDIT_WRITE=1` set, patch
+    /// section 6's span in place (guarded by [`REPORT_WRITE_LOCK`] since criteria 1-3's own
+    /// drift guards write the SAME file); otherwise assert the committed report's section 6
+    /// matches byte-for-byte. Mirrors `report_sections_3_through_5_match_the_tree_or_are_
+    /// rewritten` exactly (`render_section_6` is static text - see this unit's own
+    /// module-doc banner for why no generator code backs it: spec 85's own Done-when text
+    /// for this criterion is "cites sections 1-5 and adds no new findings", not a new
+    /// scanner).
+    #[test]
+    fn report_section_6_matches_the_tree_or_is_rewritten() {
+        let root = repo_root();
+        let section_6 = render_section_6();
+        let path = root.join(REPORT_PATH);
+        let write = std::env::var("RIGGER_AUDIT_WRITE").as_deref() == Ok("1");
+        if write {
+            let _guard = lock_report_write();
+            let existing = fs::read_to_string(&path).unwrap_or_else(|_| {
+                panic!(
+                    "{REPORT_PATH} is missing - run criteria 1-3's own writers first \
+                     (RIGGER_AUDIT_WRITE=1)"
+                )
+            });
+            let updated = replace_section_6(&existing, &section_6);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(&path, updated).unwrap();
+            return;
+        }
+        let committed = fs::read_to_string(&path).unwrap_or_else(|_| {
+            panic!("{REPORT_PATH} is missing - run with RIGGER_AUDIT_WRITE=1 to generate it")
+        });
+        let expected = replace_section_6(&committed, &section_6);
+        assert_eq!(
+            expected, committed,
+            "{REPORT_PATH} section 6 has drifted from the tree - regenerate with \
+             RIGGER_AUDIT_WRITE=1"
+        );
+        assert!(
+            committed.contains(&section_6),
+            "{REPORT_PATH} must contain section 6 verbatim"
         );
     }
 }
