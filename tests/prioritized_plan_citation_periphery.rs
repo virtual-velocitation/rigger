@@ -1,78 +1,49 @@
 //! Spec 85 criterion 4 (`u85c4`), SDET periphery layer: a cross-artifact contract test for
-//! `docs/audit/2026-09-simplification-audit.md`'s section 6 (the prioritized plan) and for the
-//! report's own top-level heading-boundary structure.
+//! `docs/audit/2026-09-simplification-audit.md` - the report's own top-level heading-boundary
+//! structure, and (ROUND 6, see below) every `dup-NNNN` cluster citation anywhere in the report.
 //!
 //! Boundary-surface accounting (mechanical probes against base
 //! `99b73bdb44a1e0488a6b9b18b35a693b619b2e1c`, see decision `sdet-u85c4-surface-accounting`):
 //! the pub-API, trait-impl, CLI, and event/serialized-form probes all came back empty - this
 //! unit changes only `tests/simplification_audit.rs`, adds no `pub` item, no trait impl, no CLI
 //! surface, and no new `derive(Serialize/Deserialize)` type. The cross-module-seam/fold-arm
-//! probe is NOT empty, on a plain read of the diff rather than a grep:
+//! probe is NOT empty: a new private helper, `find_heading`, replaces every `replace_section_*`
+//! function's own unanchored `str::find("## N. ")` call with a line-start-anchored search - a
+//! shared boundary-detection algorithm all four report-owning criteria's generators now route
+//! through. TESTED here by `the_six_top_level_sections_appear_exactly_once_each_in_ascending_
+//! order`, an independent, non-reused heading-offset scan of the REAL committed report (never
+//! calling `find_heading` or any `replace_section_*`), proving the six top-level headings land
+//! in the correct order on the actual artifact, not merely that the generator agrees with
+//! itself.
 //!
-//! 1. A new private helper, `find_heading`, replaces every `replace_section_*` function's own
-//!    unanchored `str::find("## N. ")` call with a line-start-anchored search - a shared
-//!    boundary-detection algorithm all four report-owning criteria's generators (sections 1, 2,
-//!    3-5 and 6) now route through. Its own doc comment describes a real corruption class: a
-//!    `#### N. ` sub-heading's tail reads as `## N. ` from its third character on, so an
-//!    unanchored search can land on that false, embedded position instead of the real heading
-//!    and silently truncate or overwrite the report. None of the unit's own new inline tests
-//!    exercise this exact false-match shape directly (they cover `replace_section_6`'s ordinary
-//!    span-removal contract, not `find_heading`'s own anchoring guarantee) - TESTED here by an
-//!    independent, non-reused heading-offset scan of the REAL committed report (never calling
-//!    `find_heading` or any `replace_section_*`), proving the six top-level headings land in
-//!    the correct order on the actual artifact, not merely that the generator agrees with
-//!    itself.
-//! 2. Section 6 is a new CONSUMER of sections 1-2's data: its own text states "every citation
-//!    below points at a claim already recorded in section 1 ... section 2 ... or sections 3-5's
-//!    own prose" - a real integration seam between the hand-authored `.md` prose and the
-//!    machine-generated `docs/audit/duplication-catalog.json`. Cross-checking that claim
-//!    mechanically (rather than trusting the prose, or decision `u85c4-section6-plan-structure`'s
-//!    own "all figures pulled directly from the committed ... duplication-catalog.json" claim)
-//!    found THREE citations that do not match the committed catalog: `dup-0051` cited as 645
-//!    sites (catalog: 648), `dup-0124` cited as 56 sites (catalog: 59), `dup-0125` cited as 13
-//!    sites (catalog: 14) - all three read as STALE counts that predate this unit's own final
-//!    regeneration pass (section 2 of the SAME report already states the correct 648/59/14 for
-//!    these same three clusters). TESTED here: every numbered-tier citation of a named
-//!    `dup-NNNN` id in section 6 that carries an explicit site count is cross-checked against
-//!    the actual site count in the committed catalog; the three mismatches above make this test
-//!    fail today - a genuine boundary bug for the implementer to fix, never a reason to weaken
-//!    the check. `dup-0198` is excluded: section 6 names it without citing a bare site count.
+//! ROUNDS 1-5 (adjudication REJECT on diffs through `619372d..099bb84..c2fbc07`): built and then
+//! repeatedly hardened a citation drift-guard, one hand-anchored check per named `dup-NNNN`
+//! citation in sections 5 and 6 - each round closed a real gap (stale counts, the wrong metric
+//! checked, a citation nobody guarded, a `report:regeneration disclosed`) but round 5's own
+//! adjudication (`adj-u85c4-r5-verdict-reject`) found the anchor-per-citation MECHANISM itself
+//! was the recurring defect source: two checks whose anchors embedded each other's digit
+//! (`periphery.rs:678,687` pre-fix) coupled a single-axis drift on one metric into an
+//! uninformative panic that swallowed the other metric's own correctly-computed mismatch - and
+//! the identical coupling, unnoticed, already lived in a round-2-approved check for a different
+//! `dup-id`. Operator decision `d-u85c4-round6-remedy-is-the-generic-guard` (round 6, the final
+//! attempt) named the mechanism itself as the defect and mandated its replacement: delete every
+//! section-scoped, hand-anchored check and replace them with ONE pass that mechanically finds
+//! every `dup-NNNN` citation anywhere in the whole report and checks it against the committed
+//! catalog - "by construction" ruling out anchor coupling, embedded digits, and an unguarded
+//! citation location as findings against a round that lands it.
 //!
-//! ROUND 2 (adjudication REJECT on diff `99b73bd..e6faa6f`): the three stale section-6 counts
-//! above are now corrected in `render_section_6` (649/60/14). Separately, the adversary found
-//! this unit's own FIRST commit had silently hand-patched a citation inside section 5 (owned by
-//! criterion 3, not this one) from `dup-0618`/`dup-0625` to `dup-0617`/`dup-0624` - the same
-//! population-churn mechanism that caused section 6's own stale counts, this time landing in a
-//! different criterion's prose with no disclosing decision and no test guarding it. Disclosed via
-//! decision `sdet-u85c4-r2-section5-citations-now-guarded` (supersedes nothing - the original edit
-//! was never itself recorded). `section_5_named_dup_id_citations_match_the_committed_catalogs_
-//! site_counts` below closes that same gap for section 5's own named `dup-NNNN` citations, so a
-//! future population-churn drift there fails a test instead of needing a silent hand-patch again.
-//!
-//! ROUND 3 (adjudication REJECT on diff `99b73bd..619372d`): two guard-quality defects in this
-//! same drift-guard mechanism, both present-tense and both fixed here without touching any
-//! numeric citation (the numbers were already correct; only which field each check reads was
-//! wrong or missing):
-//! 1. `adv-u85c4-r2-section5-2-checks-site-count-for-file-count-citations`: section 5.2's own
-//!    loop compared all six of its dup-ids against `catalog_site_counts()`, but the report's own
-//!    prose cites `dup-0335`/`dup-0336`/`dup-0361`/`dup-0367` as DISTINCT-FILE counts ("18
-//!    files") - only `dup-0366`/`dup-0362` genuinely use site wording ("15-site variant",
-//!    "12-site ... companion"). Fixed by splitting the loop: the four file-cited ids now check
-//!    `catalog_file_counts()`, the two site-cited ids keep `catalog_site_counts()`. Sites equal
-//!    files for all six today, so this changes no pass/fail outcome now - it closes the future
-//!    drift blind spot the adversary's failure scenario described (a second site landing inside
-//!    an already-listed file would raise the site count while the file count, and the report's
-//!    own claim, stayed accurate; the old code would have failed a still-accurate report).
-//! 2. `adv-u85c4-r2-tier5-items-14-16-18-citations-unguarded`: section 6 items 14/16/18 each
-//!    independently re-type dup-id+count pairs section 5 already states (`dup-0335`/`0336`/
-//!    `0361`/`0367`, `dup-0636`, `dup-0583`/`0585`, `dup-0617`/`0624`, `dup-0573`/`0574`,
-//!    `dup-0576`), but `section_6_named_dup_id_citations_match_the_committed_catalogs_
-//!    site_counts`'s citations array covered only items 3/10-13, contradicting its own doc
-//!    comment's claim to check every named citation in section 6. Fixed by extending that same
-//!    array (item 14's four file-metric citations, item 18's `dup-0576`) and adding item 16's
-//!    "A+B sites" pairs inline (the same shorthand section 5.5 already reads) - closing the
-//!    "checks the wrong field" and "claims coverage it does not have" gaps in the guard this
-//!    unit's own prior rounds built to catch exactly this class of drift, one tier down.
+//! ROUND 6 (this round): `every_dup_id_citation_anywhere_in_the_report_matches_the_committed_
+//! catalog` below is that one pass. It never types a citation's own surrounding prose as an
+//! anchor (the round 1-5 mechanism this replaces); it mechanically walks the WHOLE report text
+//! (`scan_citations`), so it has no "which section did I remember to cover" gap by construction,
+//! and it reuses `number_pair_between` (already generalized in round 5) as its sole two-number
+//! extractor rather than inventing a second one. See `scan_citations`'s own doc comment for the
+//! extraction algorithm and the concrete false-attribution bugs its two safety properties (a
+//! bounded number-to-keyword gap, and a guard against a hyphenated "A-B" range read as a
+//! false per-id count) were built to close - each verified against the real committed report
+//! before landing (a corrupted single digit is caught; the correct report yields zero
+//! mismatches; a text like "6-8 files" attached to two different cluster ids, or "2-5-site"
+//! inside an unrelated sentence, is correctly left unguarded rather than mis-asserted).
 //!
 //! DELIBERATE INDEPENDENCE: this file never calls `tests/simplification_audit.rs`'s private
 //! `find_heading` / `replace_section_*` / `render_section_6` (integration test binaries cannot
@@ -83,6 +54,8 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+
+use regex::Regex;
 
 const REPORT_PATH: &str = "docs/audit/2026-09-simplification-audit.md";
 const CATALOG_PATH: &str = "docs/audit/duplication-catalog.json";
@@ -131,8 +104,6 @@ fn catalog_site_counts() -> HashMap<String, usize> {
 
 /// Per-cluster DISTINCT-file count - smaller than the site count whenever one file holds more
 /// than one site (e.g. a cluster with two sites in the same file counts as 1 file, 2 sites).
-/// Section 5's own prose cites this metric for several clusters (e.g. "5 files") where the
-/// site count itself differs (that cluster's sites span fewer files than sites).
 fn catalog_file_counts() -> HashMap<String, usize> {
     load_clusters()
         .into_iter()
@@ -145,8 +116,8 @@ fn catalog_file_counts() -> HashMap<String, usize> {
 }
 
 /// `text` split into `(byte_offset, line_including_its_newline)` pairs - the one independent
-/// building block both tests below use to reason about line-start boundaries without ever
-/// calling the producer's own `find_heading`.
+/// building block the heading-anchoring test below uses to reason about line-start boundaries
+/// without ever calling the producer's own `find_heading`.
 fn lines_with_offsets(text: &str) -> Vec<(usize, &str)> {
     let mut out = Vec::new();
     let mut pos = 0usize;
@@ -195,334 +166,403 @@ fn the_six_top_level_sections_appear_exactly_once_each_in_ascending_order() {
     );
 }
 
-/// Isolates one heading's own span (from the first line starting with `heading` up to, but not
-/// including, the next line starting with any of `stop_prefixes`) so citation anchors never need
-/// to be unique across the WHOLE report - only within their own span, mirroring the "one owner
-/// per span" contract `replace_section_*` itself relies on. The one shared building block behind
-/// both `item_block` (section 6's numbered items) and `sub_section_block` (section 5's `### 5.N`
-/// subsections) - one boundary-scoping algorithm, not two parallel copies.
-fn heading_block<'a>(
-    report: &'a str,
-    lines: &[(usize, &'a str)],
-    heading: &str,
-    stop_prefixes: &[&str],
-) -> &'a str {
-    let idx = lines
-        .iter()
-        .position(|(_, l)| l.starts_with(heading))
-        .unwrap_or_else(|| panic!("no line starts with {heading:?} in {REPORT_PATH}"));
-    let start = lines[idx].0;
-    let end = lines[idx + 1..]
-        .iter()
-        .find(|(_, l)| stop_prefixes.iter().any(|p| l.starts_with(p)))
-        .map(|(pos, _)| *pos)
-        .unwrap_or(report.len());
-    &report[start..end]
-}
-
-/// Isolates one numbered plan item's own paragraph (from its `#### N. ` heading up to, but not
-/// including, the next `#### `/`### `/`## ` line).
-fn item_block<'a>(report: &'a str, lines: &[(usize, &'a str)], n: u32) -> &'a str {
-    let marker = format!("#### {n}. ");
-    heading_block(report, lines, &marker, &["#### ", "### ", "## "])
-}
-
-/// Isolates one `### 5.N ...` subsection of section 5 (up to the next `### ` or `## ` line).
-fn sub_section_block<'a>(report: &'a str, lines: &[(usize, &'a str)], heading: &str) -> &'a str {
-    heading_block(report, lines, heading, &["### ", "## "])
-}
-
-/// Extracts the raw text sitting between `before`'s first occurrence in `block` and the first
-/// occurrence of `after` following it - both anchors are copied verbatim from the report's own
-/// current prose around a citation, so this only ever fails when the wording around the
-/// citation itself changed, never silently.
-fn substring_between<'a>(block: &'a str, before: &str, after: &str) -> &'a str {
-    let start = block
-        .find(before)
-        .unwrap_or_else(|| panic!("anchor {before:?} not found in item block {block:?}"));
-    let tail = &block[start + before.len()..];
-    let end = tail
-        .find(after)
-        .unwrap_or_else(|| panic!("anchor {after:?} not found after {before:?} in {block:?}"));
-    &tail[..end]
-}
-
-/// Extracts the plain integer sitting between `before` and `after` inside `block` - this only
-/// ever fails when the digits between them stop being a bare number (the wording around the
-/// citation changed) rather than when only the cited number itself is wrong.
-fn number_between(block: &str, before: &str, after: &str) -> u32 {
-    let digits = substring_between(block, before, after);
-    digits.trim().parse::<u32>().unwrap_or_else(|e| {
-        panic!("expected a bare number between {before:?} and {after:?}, found {digits:?}: {e}")
-    })
-}
+// ---------------------------------------------------------------------------------------------
+// ROUND 6: the one generic whole-report citation guard (see module doc for why this replaced
+// five rounds of section-scoped, hand-anchored checks).
+// ---------------------------------------------------------------------------------------------
 
 /// Extracts an `"A<sep>B"`-style pair (the report's own shorthand for "one cluster of A units,
 /// its companion cluster of B units") sitting between `before` and `after` inside `block`, split
 /// on the literal `sep` that actually separates the two numbers in THIS citation's own prose -
-/// `"+"` for an "A+B sites" pair, `" files, "` for an "A files, B sites)" pair, `"-file/"` for an
-/// "A-file/B-site" pair, and so on. Parameterizing the separator (rather than hardcoding one) is
-/// what lets `before`/`after` stay pure prose anchors that never embed either number: a citation
-/// with two counts is extracted as ONE span and split, instead of two separate `number_between`
-/// calls whose anchors would otherwise have to embed the other count's current digit to stay
-/// unique - which breaks `substring_between`'s own contract (only wording changes should move an
-/// anchor) and makes a single-axis drift on one count panic on the OTHER count's anchor instead
-/// of reporting a clean mismatch.
-fn number_pair_between(block: &str, before: &str, after: &str, sep: &str) -> (u32, u32) {
-    let raw = substring_between(block, before, after);
-    let (a, b) = raw.split_once(sep).unwrap_or_else(|| {
-        panic!("expected an \"A{sep}B\" pair between {before:?} and {after:?}, found {raw:?}")
-    });
-    let parse = |s: &str| {
-        s.trim().parse::<u32>().unwrap_or_else(|e| {
-            panic!("expected a bare number in pair {raw:?} between {before:?} and {after:?}: {e}")
-        })
-    };
-    (parse(a), parse(b))
+/// `"+"` is the only pair separator this file's scanner ever hands it (see `scan_citations`).
+/// The sole two-number extractor the generic pass reuses rather than inventing a second one.
+fn number_pair_between(block: &str, before: &str, after: &str, sep: &str) -> Option<(u32, u32)> {
+    let start = block.find(before)?;
+    let tail = &block[start + before.len()..];
+    let end = tail.find(after)?;
+    let raw = &tail[..end];
+    let (a, b) = raw.split_once(sep)?;
+    let a = a.trim().parse::<u32>().ok()?;
+    let b = b.trim().parse::<u32>().ok()?;
+    Some((a, b))
 }
 
-/// Finds the bare integer nearest to, and immediately preceding (skipping only non-digit filler
-/// text such as "-site" or " files"), `marker`'s first occurrence in `block` - the mirror image
-/// of `number_between`, for the report's own "N files (`dup-NNNN`" phrasing where the count
-/// comes BEFORE the cluster id's own citation rather than after it.
-fn number_immediately_before(block: &str, marker: &str) -> u32 {
-    let idx = block
-        .find(marker)
-        .unwrap_or_else(|| panic!("anchor {marker:?} not found in block {block:?}"));
-    let head = &block[..idx];
-    let bytes = head.as_bytes();
-    let mut end = bytes.len();
+/// Every OUTERMOST balanced `( ... )` span in `text`, as `(byte_offset_of_open_paren,
+/// inner_content)`. A flat, non-nested `\(([^()]*)\)` scan is not enough here: a citation's own
+/// descriptive clause sometimes carries a nested aside (e.g. section 5.5's "`dup-0617`/
+/// `dup-0624` (15+5 sites, ... a `(source, expected_tokens_or_clusters)` table candidate)") -
+/// under a flat scan the regex engine fails to close the OUTER paren at all (its `[^()]*` body
+/// cannot cross the nested `(`) and silently matches only the harmless inner aside instead,
+/// dropping the citation's own site/file pair entirely. Tracking paren depth and only emitting a
+/// span when depth returns to zero closes that gap without needing to know in advance which
+/// citations happen to carry a nested aside.
+fn outermost_parens(text: &str) -> Vec<(usize, &str)> {
+    let mut depth: u32 = 0;
+    let mut start = 0usize;
+    let mut out = Vec::new();
+    for (idx, ch) in text.char_indices() {
+        match ch {
+            '(' => {
+                if depth == 0 {
+                    start = idx;
+                }
+                depth += 1;
+            }
+            ')' if depth > 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    out.push((start, &text[start + 1..idx]));
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Non-digit filler bytes tolerated between a number and ITS OWN `site`/`file` keyword before
+/// giving up on that keyword (see `number_before_bounded`). Generous enough for every real
+/// keyword-adjacent citation in this report (the widest, `"46 sqlite \`Connection::open\` call
+/// sites"`, needs 33), tight enough to refuse to reach past an unrelated closer number into a
+/// distant one - the exact failure mode `number_before_bounded`'s own doc comment walks through.
+const MAX_GAP: usize = 40;
+
+/// Non-digit filler bytes a citation's number+keyword pair may sit away from the `(\`dup-NNNN\`)`
+/// paren that names it (see `nearest_token_before`). Wider than `MAX_GAP` because the NUMBER and
+/// its KEYWORD are always close together (bounded by `MAX_GAP`), but the whole (number, keyword)
+/// unit can sit well before the paren that cites it (the widest real case, item 3's "60 raw
+/// `/proc`-path string literals scattered across ... with no shared composer (`dup-0124`)",
+/// needs about 125).
+const WINDOW: usize = 220;
+
+/// The nearest bare integer ending at byte `pos` in `block`, skipping only non-digit filler
+/// going backward and refusing two ways a naive "walk back to any digit" scan mis-fires when run
+/// on whole, un-anchored prose rather than a small hand-picked span:
+///
+/// 1. UNBOUNDED filler lets an entirely unrelated, more-distant number win. E.g. scanning back
+///    from "sites" in `"#### 10. Consolidate the 649 \`.rigger\`-path string-literal sites"`
+///    with no gap limit would (correctly) find 649 - but scanning back from "sites" in `"the two
+///    named sites of section 2's own catalogued twin duplicate pair"` (a GENERIC use of the word
+///    "sites", not a citation at all) would keep skipping non-digit filler across several
+///    unrelated clauses until it reached some distant line-number digit, misattributing it.
+///    Bounding the filler to `max_gap` makes both cases resolve correctly: the real citation's
+///    number is always within a few words of its keyword; a merely-generic use of "sites" with
+///    no number of its own within that budget correctly finds nothing.
+/// 2. A digit run immediately preceded by `-<digit>` is the SECOND half of an "A-B" hyphenated
+///    RANGE ("2-5-site", "a 6-8 files" pair shared by two different cluster ids), not a bound
+///    per-id count - returning it as one would silently mis-check an approximate range against
+///    an exact catalog count. Rejected outright rather than returned.
+fn number_before_bounded(block: &str, pos: usize, max_gap: usize) -> Option<u32> {
+    let bytes = block.as_bytes();
+    let mut end = pos;
+    let mut gap = 0usize;
     while end > 0 && !bytes[end - 1].is_ascii_digit() {
         end -= 1;
+        gap += 1;
+        if gap > max_gap {
+            return None;
+        }
+    }
+    if end == 0 {
+        return None;
     }
     let mut start = end;
     while start > 0 && bytes[start - 1].is_ascii_digit() {
         start -= 1;
     }
-    assert!(start < end, "no number found before {marker:?} in {head:?}");
-    head[start..end].parse::<u32>().unwrap_or_else(|e| {
-        panic!(
-            "expected a bare number before {marker:?}, found {:?}: {e}",
-            &head[start..end]
-        )
-    })
+    if start > 0 && bytes[start - 1] == b'-' {
+        return None; // "A-B<kw>" range shape, not a single citation
+    }
+    block[start..end].parse::<u32>().ok()
 }
 
-/// One citation of a named `dup-NNNN` cluster's count inside one numbered plan item. `metric`
-/// is `"site"` or `"file"`, matching whichever metric the report's own prose actually names at
-/// that citation (see `catalog_site_counts`/`catalog_file_counts`).
+/// A `site`/`sites`/`file`/`files` keyword occurrence in `block`, as `(byte_start, metric)` -
+/// covers the hyphen-attached form (`"15-site"`), the plain word (also matching the literal
+/// `"site(s)"`/`"file(s)"` the mandatory-sweep list uses, since `\b` already ends the match right
+/// before the parenthesis), and `"string literal(s)"` - the report's own recurring synonym for a
+/// site count on all three of its named string-literal sweeps (`dup-0006`, `dup-0051`,
+/// `dup-0124`'s own mandatory-sweep headers spell it out: `"... string literals: N site(s)"`).
+fn keyword_positions(block: &str) -> Vec<(usize, &'static str)> {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(r"-(?:site|file)s?\b|\b(?:sites?|files?)\b|string\s+literals?").unwrap()
+    });
+    re.find_iter(block)
+        .map(|m| {
+            let metric = if m.as_str().contains("file") {
+                "file"
+            } else {
+                "site"
+            };
+            (m.start(), metric)
+        })
+        .collect()
+}
+
+/// Every `(number, metric, keyword_byte_start)` this file's scanner can mechanically read out of
+/// `block` - one call per keyword occurrence, each independently bounded (see
+/// `number_before_bounded`), so an unrelated keyword elsewhere in `block` can never steal a
+/// number that belongs to a different keyword.
+fn tokens_in(block: &str) -> Vec<(u32, &'static str, usize)> {
+    keyword_positions(block)
+        .into_iter()
+        .filter_map(|(kw_start, metric)| {
+            number_before_bounded(block, kw_start, MAX_GAP).map(|n| (n, metric, kw_start))
+        })
+        .collect()
+}
+
+/// The markdown site-listing bullet format every mandatory-sweep and cluster site table uses:
+/// `` - `path:line-line` `` followed by a backtick-quoted excerpt of the source text AT that
+/// location. These excerpts are raw, machine-copied source/doc text, not hand-authored citation
+/// prose - and because this report documents its OWN test files (this one included), an excerpt
+/// can coincidentally quote a real citation's exact wording verbatim, including its own
+/// `(\`dup-NNNN\`)` tag. Recognizing and skipping the bullet LINE itself (never its content)
+/// keeps such an excerpt from being read as a second, spurious citation of that id.
+fn is_site_listing_line(text: &str, pos: usize) -> bool {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"^-\s*`[^`]+:\d+-\d+`").unwrap());
+    let line_start = text[..pos].rfind('\n').map_or(0, |i| i + 1);
+    let line_end = text[pos..].find('\n').map_or(text.len(), |i| pos + i);
+    re.is_match(&text[line_start..line_end])
+}
+
+/// The nearest `(number, metric)` token appearing anywhere in the up-to-`WINDOW` bytes before
+/// byte `paren_start` in `text`, never crossing a preceding `)` (a prior, already-closed
+/// citation's own parenthetical) or newline (a preceding, unrelated paragraph) - the same
+/// "closest wins, never crosses an unrelated boundary" contract `nearest_token_before_paren`
+/// needs whether the id sits bare inside its own parens or right after a paren whose own content
+/// carried no token of its own.
+fn nearest_token_before(text: &str, paren_start: usize) -> Option<(u32, &'static str)> {
+    let lo = paren_start.saturating_sub(WINDOW);
+    let mut slice = &text[lo..paren_start];
+    if let Some(close) = slice.rfind(')') {
+        slice = &slice[close + 1..];
+    }
+    if let Some(nl) = slice.rfind('\n') {
+        slice = &slice[nl + 1..];
+    }
+    tokens_in(slice)
+        .into_iter()
+        .max_by_key(|(_, _, kw_start)| *kw_start)
+        .map(|(n, m, _)| (n, m))
+}
+
+/// One mechanically-found citation: `dup_id` was cited as `cited` `metric`(s) at `line`.
 struct Citation {
-    item: u32,
-    dup_id: &'static str,
+    line: usize,
+    dup_id: String,
     metric: &'static str,
-    before: &'static str,
-    after: &'static str,
+    cited: u32,
 }
 
-/// THE CROSS-ARTIFACT CONTRACT: section 6's own Done-when text is "cites sections 1-5 and adds
-/// no new findings" - every named `dup-NNNN` citation in section 6 that carries an explicit
-/// site or file count is checked here against the count the SAME id carries in the committed
-/// `docs/audit/duplication-catalog.json`, independent of however section 6's own prose was
-/// authored. This covers tiers 1-5 (items 3, 10-14, 16, 18); items 15/17/19 name clusters only
-/// by bare count ("27,074 lines", "177 clusters", "327 clusters") with no `dup-NNNN` id
-/// attached to a specific number, so there is nothing for this guard to cross-check there.
-#[test]
-fn section_6_named_dup_id_citations_match_the_committed_catalogs_site_counts() {
-    let report = read_report();
-    let lines = lines_with_offsets(&report);
-    let sites = catalog_site_counts();
-    let files = catalog_file_counts();
+fn line_of(text: &str, pos: usize) -> usize {
+    text[..pos].matches('\n').count() + 1
+}
 
-    let citations = [
-        Citation {
-            item: 3,
-            dup_id: "dup-0125",
-            metric: "site",
-            before: "capstone previously caught (`dup-0125`, ",
-            after: " sites: `src/dash.rs`",
-        },
-        Citation {
-            item: 3,
-            dup_id: "dup-0124",
-            metric: "site",
-            before: ", plus ",
-            after: " raw `/proc`-path string literals scattered across `src/dash.rs`, \
-                    `src/main.rs`, `src/reap.rs` and three test files with no shared composer \
-                    (`dup-0124`)",
-        },
-        Citation {
-            item: 10,
-            dup_id: "dup-0051",
-            metric: "site",
-            before: "#### 10. Consolidate the ",
-            after: " `.rigger`-path string-literal sites (`dup-0051`)",
-        },
-        Citation {
-            item: 10,
-            dup_id: "dup-0051",
-            metric: "site",
-            before: "`proposed_home`) every one of the ",
-            after: " sites routes through instead of building its own literal.",
-        },
-        Citation {
-            item: 10,
-            dup_id: "dup-0051",
-            metric: "site",
-            before: "Expected line delta: negative - ",
-            after: " literal compositions collapse toward one helper's call sites; the helper \
-                    itself is small.",
-        },
-        Citation {
-            item: 10,
-            dup_id: "dup-0051",
-            metric: "site",
-            before: "full-suite green run, not hand-editing ",
-            after: " sites.",
-        },
-        Citation {
-            item: 11,
-            dup_id: "dup-0006",
-            metric: "site",
-            before: "#### 11. Consolidate the ",
-            after: " `Command::new` call sites (`dup-0006`)",
-        },
-        Citation {
-            item: 11,
-            dup_id: "dup-0006",
-            metric: "site",
-            before: "Risk: medium-high - several of these ",
-            after: " sites sit inside `src/budget.rs`'s",
-        },
-        Citation {
-            item: 12,
-            dup_id: "dup-0105",
-            metric: "site",
-            before: "#### 12. Consolidate the ",
-            after: " sqlite `Connection::open` call sites (`dup-0105`)",
-        },
-        Citation {
-            item: 12,
-            dup_id: "dup-0105",
-            metric: "site",
-            before: "Expected line delta: negative - ",
-            after: " open calls collapse toward one function.",
-        },
-        Citation {
-            item: 13,
-            dup_id: "dup-0205",
-            metric: "site",
-            before: "#### 13. Consolidate the ",
-            after: " error-shaping helper sites (`dup-0205`)",
-        },
-        // Item 14 (tier 5, section 5.2's four headline fixtures): the report cites these as
-        // DISTINCT-FILE counts ("18 files"), matching section 5.2's own wording, so these use
-        // the `file` metric - not `site` - exactly mirroring the section-5.2 fix above.
-        Citation {
-            item: 14,
-            dup_id: "dup-0335",
-            metric: "file",
-            before: "`page_script` (`dup-0335`, ",
-            after: " files)",
-        },
-        Citation {
-            item: 14,
-            dup_id: "dup-0336",
-            metric: "file",
-            before: "`node_available` (`dup-0336`, ",
-            after: " files)",
-        },
-        Citation {
-            item: 14,
-            dup_id: "dup-0361",
-            metric: "file",
-            before: "`temp_project` (`dup-0361`, ",
-            after: " files)",
-        },
-        Citation {
-            item: 14,
-            dup_id: "dup-0367",
-            metric: "file",
-            before: "`run_stream_identity` (`dup-0367`, ",
-            after: " files)",
-        },
-        // Item 18's one single-value citation (its other named id, `dup-0576`, is the only
-        // one item 18 cites with an explicit count - see the item-16 pairs handled below).
-        Citation {
-            item: 18,
-            dup_id: "dup-0576",
-            metric: "site",
-            before: "`dup-0576` (",
-            after: " sites, `tests/no_os_kill_test_helper_periphery.rs`",
-        },
-    ];
+/// THE GENERIC PASS (round 6's whole replacement for rounds 1-5's per-section, hand-anchored
+/// checks - see module doc). Finds every `dup-NNNN` id cited ANYWHERE in `report` together with
+/// the number(s) cited near it, never typing a single citation's own surrounding prose as an
+/// anchor. Three shapes cover every citation convention this report actually uses (verified
+/// against the real committed report - see decision `sdet-u85c4-r6-generic-scanner-design`):
+///
+/// 1. One or two ids sit immediately before an `(...)` - the paren's own content (or, if that
+///    content carries no token of its own, e.g. `"(\`dup-0335\`, exact; e.g. ...)"` where the
+///    real count sits in the sentence BEFORE the paren, the nearest token before the paren
+///    instead) supplies the number(s). TWO ids joined by `/` (`` `dup-0583`/`dup-0585` ``) are
+///    only split when the paren's own content opens with an explicit `"A+B <metric>"` pair -
+///    section 5.4's `` `dup-0369`/`dup-0368` (\`seed_run_events\`, ..., 6-8 files) `` uses a
+///    hyphen, not `+`, because "6-8" is prose describing an approximate RANGE across two
+///    different cluster ids, not an exact per-id split (dup-0369 is actually 8, dup-0368 is
+///    actually 6 - the reverse of their own textual order) - correctly left unguarded rather
+///    than mis-asserting `dup-0369=6, dup-0368=8` in id order.
+/// 2. The id sits bare inside its own `(\`dup-NNNN\`)` with no other content - the nearest token
+///    before the paren supplies the number (`"the 649 \`.rigger\`-path ... sites (\`dup-0051\`)"`).
+/// 3. The id is the very first thing inside the paren, followed by its own count in the SAME
+///    paren (`"(\`dup-0125\`, 14 sites: ...)"`) - and, when a SECOND id is named later in that
+///    same paren via `` `id`'s N-metric `` (section 5.4's `"...(a companion, 15-file/15-site
+///    variant ..., alongside \`dup-0367\`'s 18-file version)"`), tokens before that mention
+///    belong to the outer id and the mention's own token belongs to the nested id - never
+///    coupling the two into one anchor the way the round-5-rejected mechanism did.
+///
+/// Plus the mandatory-sweep list's own dash format (`"263 site(s) - \`dup-0006\`"`), which has
+/// no parens at all. Machine-generated raw source/doc excerpts (`is_site_listing_line`) are
+/// skipped so a self-referential quote of a citation's own wording is never read as a second
+/// citation of it.
+fn scan_citations(report: &str) -> Vec<Citation> {
+    static ID: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static ID_BEFORE_PAREN: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static NESTED_ID_METRIC: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static PAIR: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static SWEEP: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
 
-    let mut mismatches = Vec::new();
-    for c in &citations {
-        let block = item_block(&report, &lines, c.item);
-        let cited = number_between(block, c.before, c.after);
-        let counts = if c.metric == "file" { &files } else { &sites };
-        record_mismatch(
-            &mut mismatches,
-            &format!("item {}", c.item),
-            c.dup_id,
-            c.metric,
-            cited,
-            counts,
-        );
+    let id_re = ID.get_or_init(|| Regex::new(r"`(dup-\d{4})`").unwrap());
+    let id_before_paren_re = ID_BEFORE_PAREN
+        .get_or_init(|| Regex::new(r"`(dup-\d{4})`(?:\s*/\s*`(dup-\d{4})`)?\s*$").unwrap());
+    let nested_re = NESTED_ID_METRIC
+        .get_or_init(|| Regex::new(r"`(dup-\d{4})`'s\s+(\d+)-(site|file)").unwrap());
+    let pair_re = PAIR.get_or_init(|| Regex::new(r"^\s*(\d+)\+(\d+)\s+(sites?|files?)").unwrap());
+    let sweep_re =
+        SWEEP.get_or_init(|| Regex::new(r"(\d+)\s+(site|file)\(s\)\s*-\s*`(dup-\d{4})`").unwrap());
+
+    let mut out = Vec::new();
+
+    for (start, content) in outermost_parens(report) {
+        if is_site_listing_line(report, start) {
+            continue;
+        }
+        let before_lo = start.saturating_sub(60);
+        let before_text = &report[before_lo..start];
+
+        if let Some(caps) = id_before_paren_re.captures(before_text) {
+            let id1 = caps[1].to_string();
+            let id2 = caps.get(2).map(|m| m.as_str().to_string());
+            let line = line_of(report, start);
+
+            if let Some(id2) = id2 {
+                // pair_re only GATES the shape (confirms content opens with an explicit
+                // "A+B <metric>" pair, not e.g. a hyphenated range like "6-8 files");
+                // number_pair_between - the one shared two-number extractor - does the actual
+                // pull, anchored on the keyword pair_re itself just found (so it reads exactly
+                // the same span pair_re confirmed, never a coincidental later occurrence).
+                if let Some(pm) = pair_re.captures(content) {
+                    let keyword = pm[3].to_string();
+                    if let Some((a, b)) = number_pair_between(content, "", &keyword, "+") {
+                        let metric = if keyword.contains('f') {
+                            "file"
+                        } else {
+                            "site"
+                        };
+                        out.push(Citation {
+                            line,
+                            dup_id: id1,
+                            metric,
+                            cited: a,
+                        });
+                        out.push(Citation {
+                            line,
+                            dup_id: id2,
+                            metric,
+                            cited: b,
+                        });
+                    }
+                }
+                // else: not an explicit "A+B <metric>" pair - correctly left unguarded, see
+                // this function's own doc comment.
+                continue;
+            }
+
+            // single id right before this paren
+            let nested = nested_re.captures(content);
+            let head = match &nested {
+                Some(nm) => &content[..nm.get(0).unwrap().start()],
+                None => content,
+            };
+            let mut found_any = false;
+            for (num, metric, _) in tokens_in(head) {
+                out.push(Citation {
+                    line,
+                    dup_id: id1.clone(),
+                    metric,
+                    cited: num,
+                });
+                found_any = true;
+            }
+            if let Some(nm) = nested {
+                let nested_id = nm[1].to_string();
+                let nested_num: u32 = nm[2].parse().unwrap();
+                let nested_metric = if &nm[3] == "file" { "file" } else { "site" };
+                out.push(Citation {
+                    line,
+                    dup_id: nested_id,
+                    metric: nested_metric,
+                    cited: nested_num,
+                });
+                found_any = true;
+            }
+            if !found_any {
+                if let Some((num, metric)) = nearest_token_before(report, start) {
+                    out.push(Citation {
+                        line,
+                        dup_id: id1,
+                        metric,
+                        cited: num,
+                    });
+                }
+            }
+            continue;
+        }
+
+        let content_trim = content.trim();
+        if let Some(caps) = id_re.captures(content_trim) {
+            if caps.get(0).unwrap().as_str() == content_trim {
+                // bare "(`dup-NNNN`)" - the count lives before this paren, not inside it.
+                let id1 = caps[1].to_string();
+                let line = line_of(report, start);
+                if let Some((num, metric)) = nearest_token_before(report, start) {
+                    out.push(Citation {
+                        line,
+                        dup_id: id1,
+                        metric,
+                        cited: num,
+                    });
+                }
+                continue;
+            }
+        }
+
+        if let Some(caps) = id_re.captures(content) {
+            let m = caps.get(0).unwrap();
+            if m.start() == 0 {
+                // leading-id paren: id is the first thing inside, possibly with its own count
+                // in the same paren ("(`dup-0125`, 14 sites: ...)").
+                let id1 = caps[1].to_string();
+                let rest = &content[m.end()..];
+                let line = line_of(report, start);
+                let mut found_any = false;
+                for (num, metric, _) in tokens_in(rest) {
+                    out.push(Citation {
+                        line,
+                        dup_id: id1.clone(),
+                        metric,
+                        cited: num,
+                    });
+                    found_any = true;
+                }
+                if !found_any {
+                    if let Some((num, metric)) = nearest_token_before(report, start) {
+                        out.push(Citation {
+                            line,
+                            dup_id: id1,
+                            metric,
+                            cited: num,
+                        });
+                    }
+                }
+            }
+        }
     }
 
-    // Item 16's remaining citations use the report's own "A+B sites" shorthand for a cluster's
-    // companion pair - the same shape `section_5_named_dup_id_citations_match_the_committed_
-    // catalogs_site_counts` already checks in section 5.5, reused here for section 6's own
-    // independently hand-typed copies of the identical dup-ids+counts (see
-    // `adv-u85c4-r2-tier5-items-14-16-18-citations-unguarded`: these were entirely unchecked
-    // before this fix).
-    let item_16 = item_block(&report, &lines, 16);
-    let cited = number_between(item_16, "`dup-0636` (", " sites, `tests/spec_lint.rs`");
-    record_mismatch(
-        &mut mismatches,
-        "item 16",
-        "dup-0636",
-        "site",
-        cited,
-        &sites,
-    );
-    let (a, b) = number_pair_between(
-        item_16,
-        "`dup-0583`/`dup-0585` (",
-        " sites, `tests/reap_before_removal_audit.rs`",
-        "+",
-    );
-    record_mismatch(&mut mismatches, "item 16", "dup-0583", "site", a, &sites);
-    record_mismatch(&mut mismatches, "item 16", "dup-0585", "site", b, &sites);
-    let (a, b) = number_pair_between(
-        item_16,
-        "`dup-0617`/`dup-0624` (",
-        " sites, `tests/simplification_audit.rs`",
-        "+",
-    );
-    record_mismatch(&mut mismatches, "item 16", "dup-0617", "site", a, &sites);
-    record_mismatch(&mut mismatches, "item 16", "dup-0624", "site", b, &sites);
-    let (a, b) = number_pair_between(
-        item_16,
-        "`dup-0573`/`dup-0574` (",
-        " sites, `tests/no_os_kill_audit.rs`",
-        "+",
-    );
-    record_mismatch(&mut mismatches, "item 16", "dup-0573", "site", a, &sites);
-    record_mismatch(&mut mismatches, "item 16", "dup-0574", "site", b, &sites);
+    for caps in sweep_re.captures_iter(report) {
+        let num: u32 = caps[1].parse().unwrap();
+        let metric = if &caps[2] == "file" { "file" } else { "site" };
+        let dup_id = caps[3].to_string();
+        let line = line_of(report, caps.get(0).unwrap().start());
+        out.push(Citation {
+            line,
+            dup_id,
+            metric,
+            cited: num,
+        });
+    }
 
-    assert!(
-        mismatches.is_empty(),
-        "section 6 cites stale site/file counts that no longer match the committed duplication \
-         catalog (section 6's own Done-when text requires accurately citing sections 1-5):\n{}",
-        mismatches.join("\n")
-    );
+    out
 }
 
-/// Appends a mismatch line to `mismatches` when `cited` disagrees with `counts[dup_id]` -
-/// shared by every section-5 citation check below regardless of how the number was located
-/// (immediately-before, between two anchors, or half of an "A+B" pair).
+/// Appends a mismatch line to `mismatches` when `cited` disagrees with `counts[dup_id]`, or when
+/// `dup_id` names no cluster in the committed catalog at all - a citation of an id that does not
+/// exist is exactly as much a boundary defect as a wrong count, so it is collected here rather
+/// than aborting the whole scan on the first such id (every OTHER citation still gets checked).
 fn record_mismatch(
     mismatches: &mut Vec<String>,
     location: &str,
@@ -531,287 +571,57 @@ fn record_mismatch(
     cited: u32,
     counts: &HashMap<String, usize>,
 ) {
-    let actual = *counts.get(dup_id).unwrap_or_else(|| {
-        panic!("{dup_id} is cited in {location} but has no cluster in {CATALOG_PATH}")
-    }) as u32;
-    if cited != actual {
-        mismatches.push(format!(
+    match counts.get(dup_id) {
+        None => mismatches.push(format!(
+            "{location}: {dup_id} is cited but has no cluster in {CATALOG_PATH}"
+        )),
+        Some(&actual) if actual as u32 != cited => mismatches.push(format!(
             "{location}: {dup_id} cited as {cited} {metric_name}(s) in {REPORT_PATH}, but \
              {CATALOG_PATH} carries {actual} {metric_name}(s)"
-        ));
+        )),
+        Some(_) => {}
     }
 }
 
-/// THE CROSS-ARTIFACT CONTRACT, widened to section 5 (closing the same blast-radius gap for the
-/// criterion that actually caused the drift `section_6_...` above catches only for section 6):
-/// every named `dup-NNNN` citation in section 5 that carries an explicit site or file count is
-/// checked here against the committed `docs/audit/duplication-catalog.json`, independent of
-/// however section 5's own prose was authored. See decision
-/// `sdet-u85c4-r2-section5-citations-now-guarded` for why this exists: this unit's own first
-/// commit silently hand-patched one of these citations (`dup-0618`/`dup-0625` ->
-/// `dup-0617`/`dup-0624`) with no test guarding section 5's citations against the same
-/// population-churn drift section 6's own test already caught for itself.
+/// THE CROSS-ARTIFACT CONTRACT (round 6, replacing rounds 1-5's `section_5_named_dup_id_
+/// citations_match_the_committed_catalogs_site_counts` and `section_6_named_dup_id_citations_
+/// match_the_committed_catalogs_site_counts` - see module doc): every `dup-NNNN` cluster citation
+/// mechanically found anywhere in `docs/audit/2026-09-simplification-audit.md` by `scan_citations`
+/// is checked against the committed `docs/audit/duplication-catalog.json`, independent of which
+/// section it sits in or whoever authored that prose.
 #[test]
-fn section_5_named_dup_id_citations_match_the_committed_catalogs_site_counts() {
+fn every_dup_id_citation_anywhere_in_the_report_matches_the_committed_catalog() {
     let report = read_report();
-    let lines = lines_with_offsets(&report);
     let sites = catalog_site_counts();
     let files = catalog_file_counts();
+
+    let citations = scan_citations(&report);
+    assert!(
+        citations.len() > 600,
+        "sanity: the generic scanner found only {} citations across the whole report - expected \
+         well over 600 (674 catalog clusters plus section 5/6's own narrative citations); this \
+         smells like the scanner itself broke, not that the report suddenly has far fewer \
+         citations",
+        citations.len()
+    );
+
     let mut mismatches = Vec::new();
-
-    // 5.2: shared-fixture citations - the report cites the count BEFORE naming the cluster id
-    // ("independently redefined in 18 files (`dup-0335`...)"), so these use the backward scan.
-    // The report's own wording splits by metric here: `dup-0335`/`dup-0336`/`dup-0361`/
-    // `dup-0367` are cited as DISTINCT-FILE counts ("18 different files" / "the same 18
-    // files"), while `dup-0366`/`dup-0362` are genuinely cited as SITE counts ("15-site
-    // variant", "12-site ... companion helper") - each group is checked against the metric
-    // its own prose actually names, not uniformly against site counts (see
-    // `adv-u85c4-r2-section5-2-checks-site-count-for-file-count-citations`: checking the wrong
-    // field passes today only because sites == files for these clusters by coincidence).
-    let sec_5_2 = sub_section_block(&report, &lines, "### 5.2 ");
-    for dup_id in ["dup-0335", "dup-0336", "dup-0361", "dup-0367"] {
-        let marker = format!("(`{dup_id}`");
-        let cited = number_immediately_before(sec_5_2, &marker);
+    for c in &citations {
+        let counts = if c.metric == "file" { &files } else { &sites };
         record_mismatch(
             &mut mismatches,
-            "section 5.2",
-            dup_id,
-            "file",
-            cited,
-            &files,
+            &format!("line {}", c.line),
+            &c.dup_id,
+            c.metric,
+            c.cited,
+            counts,
         );
     }
-    for dup_id in ["dup-0366", "dup-0362"] {
-        let marker = format!("(`{dup_id}`");
-        let cited = number_immediately_before(sec_5_2, &marker);
-        record_mismatch(
-            &mut mismatches,
-            "section 5.2",
-            dup_id,
-            "site",
-            cited,
-            &sites,
-        );
-    }
-
-    // 5.4: duplicated-helper citations - the cluster id comes first, then its file/site counts.
-    // dup-0339 and dup-0395 each cite an "N files, M sites" pair in one span: extracted as ONE
-    // number_pair_between call (sep " files, ") rather than two separate number_between calls,
-    // so neither anchor ever embeds the other count's digit - see number_pair_between's doc
-    // comment for why a digit-embedded anchor is unsound as a drift guard.
-    let sec_5_4 = sub_section_block(&report, &lines, "### 5.4 ");
-    let (file_cited, site_cited) = number_pair_between(
-        sec_5_4,
-        "architecture-integrity checks, ",
-        " sites);",
-        " files, ",
-    );
-    record_mismatch(
-        &mut mismatches,
-        "section 5.4",
-        "dup-0339",
-        "file",
-        file_cited,
-        &files,
-    );
-    record_mismatch(
-        &mut mismatches,
-        "section 5.4",
-        "dup-0339",
-        "site",
-        site_cited,
-        &sites,
-    );
-    let (file_cited, site_cited) = number_pair_between(
-        sec_5_4,
-        "`tests/step_attention_periphery.rs`, ",
-        " sites); `dup-0369`",
-        " files, ",
-    );
-    record_mismatch(
-        &mut mismatches,
-        "section 5.4",
-        "dup-0395",
-        "file",
-        file_cited,
-        &files,
-    );
-    record_mismatch(
-        &mut mismatches,
-        "section 5.4",
-        "dup-0395",
-        "site",
-        site_cited,
-        &sites,
-    );
-    let cited = number_between(sec_5_4, "fold-application helpers, ", " files); `dup-0461`");
-    record_mismatch(
-        &mut mismatches,
-        "section 5.4",
-        "dup-0454",
-        "file",
-        cited,
-        &files,
-    );
-    let cited = number_between(
-        sec_5_4,
-        "single-field constructor helpers, ",
-        " files); `dup-0657`",
-    );
-    record_mismatch(
-        &mut mismatches,
-        "section 5.4",
-        "dup-0461",
-        "file",
-        cited,
-        &files,
-    );
-    let cited = number_between(sec_5_4, "two-line accessor helpers, ", " files).");
-    record_mismatch(
-        &mut mismatches,
-        "section 5.4",
-        "dup-0657",
-        "file",
-        cited,
-        &files,
-    );
-
-    // 5.4 (second citations): `dup-0366` and `dup-0367` are each named a SECOND,
-    // textually-independent time later in this same subsection's `dup-0339` paragraph ("a
-    // companion, 15-file/15-site variant of 5.2's `run_stream_identity` fixture, alongside
-    // `dup-0367`'s 18-file version)") - a distinct citation location from section 5.2's
-    // site-only check above (scoped to `### 5.2`'s own span) and from section 6 item 14's
-    // file-only check (a different citation site entirely), so neither one guards these. See
-    // decision `sdet-u85c4-r4-section5-4-second-citations-guarded`. The "N-file/M-site" pair is
-    // extracted as ONE number_pair_between call (sep "-file/") - not two number_between calls -
-    // so neither anchor embeds the other count's digit; see number_pair_between's doc comment.
-    let (file_cited, site_cited) =
-        number_pair_between(sec_5_4, "a companion, ", "-site variant", "-file/");
-    record_mismatch(
-        &mut mismatches,
-        "section 5.4 (second citation)",
-        "dup-0366",
-        "file",
-        file_cited,
-        &files,
-    );
-    record_mismatch(
-        &mut mismatches,
-        "section 5.4 (second citation)",
-        "dup-0366",
-        "site",
-        site_cited,
-        &sites,
-    );
-    let cited = number_between(sec_5_4, "alongside `dup-0367`'s ", "-file version)");
-    record_mismatch(
-        &mut mismatches,
-        "section 5.4 (second citation)",
-        "dup-0367",
-        "file",
-        cited,
-        &files,
-    );
-
-    // 5.5: table-driven-family citations - single "N sites" citations and "A+B sites" pairs.
-    let sec_5_5 = sub_section_block(&report, &lines, "### 5.5 ");
-    let cited = number_between(
-        sec_5_5,
-        "single largest anywhere in the suite: `dup-0636` (near, ",
-        " sites, all in `tests/spec_lint.rs`",
-    );
-    record_mismatch(
-        &mut mismatches,
-        "section 5.5",
-        "dup-0636",
-        "site",
-        cited,
-        &sites,
-    );
-    let (a, b) = number_pair_between(
-        sec_5_5,
-        "Other large families: `dup-0583`/`dup-0585` (",
-        " sites, `tests/reap_before_removal_audit.rs`",
-        "+",
-    );
-    record_mismatch(
-        &mut mismatches,
-        "section 5.5",
-        "dup-0583",
-        "site",
-        a,
-        &sites,
-    );
-    record_mismatch(
-        &mut mismatches,
-        "section 5.5",
-        "dup-0585",
-        "site",
-        b,
-        &sites,
-    );
-    let (a, b) = number_pair_between(
-        sec_5_5,
-        "`dup-0617`/`dup-0624` (",
-        " sites, `tests/simplification_audit.rs`",
-        "+",
-    );
-    record_mismatch(
-        &mut mismatches,
-        "section 5.5",
-        "dup-0617",
-        "site",
-        a,
-        &sites,
-    );
-    record_mismatch(
-        &mut mismatches,
-        "section 5.5",
-        "dup-0624",
-        "site",
-        b,
-        &sites,
-    );
-    let (a, b) = number_pair_between(
-        sec_5_5,
-        "`dup-0573`/`dup-0574` (",
-        " sites, `tests/no_os_kill_audit.rs`",
-        "+",
-    );
-    record_mismatch(
-        &mut mismatches,
-        "section 5.5",
-        "dup-0573",
-        "site",
-        a,
-        &sites,
-    );
-    record_mismatch(
-        &mut mismatches,
-        "section 5.5",
-        "dup-0574",
-        "site",
-        b,
-        &sites,
-    );
-    let cited = number_between(
-        sec_5_5,
-        "`dup-0576` (",
-        " sites, `tests/no_os_kill_test_helper_periphery.rs`",
-    );
-    record_mismatch(
-        &mut mismatches,
-        "section 5.5",
-        "dup-0576",
-        "site",
-        cited,
-        &sites,
-    );
 
     assert!(
         mismatches.is_empty(),
-        "section 5 cites stale site/file counts that no longer match the committed duplication \
-         catalog:\n{}",
+        "{REPORT_PATH} cites stale site/file counts that no longer match the committed \
+         duplication catalog:\n{}",
         mismatches.join("\n")
     );
 }
