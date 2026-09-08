@@ -1710,6 +1710,20 @@ const CATALOG_PATH: &str = "docs/audit/duplication-catalog.json";
 const ADVERSARIAL_SEED: u64 = 85_072_026;
 const ADVERSARIAL_SAMPLE_SIZE: usize = 30;
 
+/// Criterion 4's (`u85c4`) own citation-guard periphery test - excluded from the adversarial
+/// draw's POPULATION (never from the duplication catalog itself, which still scans and clusters
+/// this file's functions like any other). [`sample_indices`] seeds purely on population SIZE, so
+/// without this exclusion every function this file gains or loses as its citation-drift-guard
+/// mechanism hardens round over round (`tests/prioritized_plan_citation_periphery.rs`'s own
+/// module doc walks that history) silently redraws the WHOLE 30-function sample - discarding
+/// this criterion's own already hand-verified reading pass with no re-reading to match it
+/// (decision `u85c4-r7-exclude-periphery-file-from-adversarial-population`, the preferred remedy
+/// named by `adj-u85c4-r6-uphold-adversarial-sample-donewhen-violation` /
+/// `adv-u85c4-r6-adversarial-sample-silently-reshuffled-with-no-reading-pass`: "stop this unit's
+/// own file-count growth from perturbing a criterion-2-owned artifact at all"). A citation-guard
+/// rewrite by this criterion can now never perturb another criterion's owned artifact again.
+const ADVERSARIAL_SAMPLE_EXCLUDED_FILE: &str = "tests/prioritized_plan_citation_periphery.rs";
+
 /// Every `.rs` file strictly under `dir`, recursively, appended to `out`, in deterministic
 /// (sorted) finding order - mirrors `tests/no_os_kill_audit.rs::collect_rs_files`'s own
 /// precedent (kept as this criterion's own copy: spec 85 "WHAT THIS SPEC DOES NOT DO... no test
@@ -2116,6 +2130,16 @@ fn all_fn_refs(files: &[FileScan]) -> Vec<FnRef> {
         (&fa.file, fa.start_line).cmp(&(&fb.file, fb.start_line))
     });
     refs
+}
+
+/// [`all_fn_refs`] restricted to the population [`render_adversarial_sample`]'s draw pulls from -
+/// see [`ADVERSARIAL_SAMPLE_EXCLUDED_FILE`] for why one file is excluded here but nowhere else
+/// (the duplication catalog itself still scans and clusters that file's functions normally).
+fn adversarial_sample_population(files: &[FileScan]) -> Vec<FnRef> {
+    all_fn_refs(files)
+        .into_iter()
+        .filter(|r| r.scanned(files).file != ADVERSARIAL_SAMPLE_EXCLUDED_FILE)
+        .collect()
 }
 
 // -----------------------------------------------------------------------------------------
@@ -2883,7 +2907,7 @@ fn render_section_2(files: &[FileScan], clusters: &[DupCluster]) -> String {
 /// to change what it covers.
 fn render_adversarial_sample(files: &[FileScan], clusters: &[DupCluster]) -> String {
     let mut out = String::new();
-    let refs = all_fn_refs(files);
+    let refs = adversarial_sample_population(files);
     let picked = sample_indices(refs.len(), ADVERSARIAL_SAMPLE_SIZE, ADVERSARIAL_SEED);
     let _ = writeln!(out, "### Adversarial sample");
     let _ = writeln!(out);
@@ -2891,10 +2915,13 @@ fn render_adversarial_sample(files: &[FileScan], clusters: &[DupCluster]) -> Str
         out,
         "Recall check (spec 85 THOROUGHNESS): {} functions drawn by seeded random index (seed \
          `{ADVERSARIAL_SEED}`, `sample_indices` over all {} functions scanned in `src/` and \
-         `tests/`), each read by hand - together with its host file's surrounding context, since \
-         a duplicate can live anywhere in the file or a sibling file - to judge whether a \
-         duplicate exists that the mechanical pass and the five sweeps above did not already \
-         catch.",
+         `tests/`, excluding `{ADVERSARIAL_SAMPLE_EXCLUDED_FILE}` - criterion 4's own citation-\
+         guard periphery test, whose function count grows as its citation-drift-guard mechanism \
+         hardens round over round; excluding it keeps that unrelated growth from ever reshuffling \
+         this already-verified draw), each read by hand - together with its host file's \
+         surrounding context, since a duplicate can live anywhere in the file or a sibling file - \
+         to judge whether a duplicate exists that the mechanical pass and the five sweeps above \
+         did not already catch.",
         picked.len(),
         refs.len(),
     );
@@ -2958,22 +2985,28 @@ fn render_adversarial_sample(files: &[FileScan], clusters: &[DupCluster]) -> Str
          across the group when at least one comes from an actual `\" for \"` trait impl (decision \
          `u85c2-same-named-helper-trait-impl-precision-fix`), mirroring \
          `find_parallel_constructor_clusters`'s own `(file, Self type)` keying one function away. \
-         Reading every remaining function above marked \"no duplicate found by reading\" (plus \
-         the rest of its host file) found none live in more than one place; three shapes are \
-         worth naming so a later refactor spec does not mistake them for a miss: `apply_batch` \
-         has three unrelated bodies - `src/contextgraph/mod.rs`'s `Projection` trait-default loop \
-         over `apply`, `src/contextgraph/sqlite.rs`'s concrete single-transaction override, and a \
-         `#[cfg(test)]` mock counter in `src/conductor.rs` - a port default, an adapter override \
-         and a test double, not a duplicate; `spawn` on `AgentDriver` has three adapter bodies - \
-         `src/driver/cli.rs`'s subprocess `Command`, `src/driver/workflow.rs`'s channel handoff \
-         to the MCP shim, `src/driver/replay.rs`'s log replay/park - three genuinely different \
-         mechanisms behind one port, again not a duplicate; and `src/main.rs`'s eight \
-         `parse_*_args` functions (including this draw's own `parse_canary_args`) share a \
-         while-loop-match argument-scanning IDIOM - each handles a disjoint set of flags for a \
-         different subcommand, a control-flow convention `parse_canary_args`'s own doc comment \
-         names by pointing at its sibling, not duplicated business logic, so no sweep targets it. \
-         Re-drawing this same 30-function sample after all four fixes land finds zero further \
-         gaps."
+         Round 7 (decision `u85c4-r7-exclude-periphery-file-from-adversarial-population`) \
+         excluded this criterion's own citation-guard periphery file from the draw's population \
+         (see this subsection's opening paragraph) and redrew the sample; every one of the 19 \
+         functions above marked \"no duplicate found by reading\" was re-read by hand against \
+         its host file's surrounding context, exactly as this THOROUGHNESS check requires \
+         whenever the draw changes. 18 of the 19 are genuinely not duplicates; `apply` at \
+         `src/conductor.rs:29832-29834` is one shape worth naming so it is not mistaken for a \
+         miss - a `Projection` test double's own required trait-impl body, the same \
+         port-default/adapter-override/test-double shape `find_same_named_helper_functions`'s \
+         trait-impl-precision fix (decision `u85c2-same-named-helper-trait-impl-precision-fix`) \
+         already excludes from clustering by design, confirmed to still hold for this draw's own \
+         instance of it. The 19th is a genuine small duplicate this catalog's `fn`-only scanner \
+         (module doc, THE SCANNER) structurally cannot represent as a cluster: `gate_verdict_event` \
+         (`src/conductor.rs:29191-29200`) and the `verdict` closure inside \
+         `integrating_a_unit_stales_the_intersecting_downstream_units_cached_verdict_not_the_rest` \
+         (`src/conductor.rs:30596-30605`) do the identical job - find the recorded `GateVerdict` \
+         for a `\"<unit>/gate:g#<attempt>\"` replay key, panicking with the same message when none \
+         exists - differing only in whether the unit segment is the literal `\"s\"` or a \
+         parameter. A `let`-bound closure is not a `fn` item, so no change to this scanner short \
+         of teaching it to see closures could catalog this pair as a cluster; named here, \
+         prominently, rather than silently, so a later refactor - or a scanner that learns to see \
+         closures - does not miss it."
     );
     let _ = writeln!(out);
     out
@@ -5003,6 +5036,41 @@ mod tests {
             .map(|r| r.scanned(&files).name.as_str())
             .collect();
         assert_eq!(names, vec!["outer", "inner"]);
+    }
+
+    /// [`adversarial_sample_population`] excludes ONLY [`ADVERSARIAL_SAMPLE_EXCLUDED_FILE`]'s own
+    /// functions from the draw's population, leaving [`all_fn_refs`] (and so the duplication
+    /// catalog itself) untouched - see [`ADVERSARIAL_SAMPLE_EXCLUDED_FILE`]'s own doc comment for
+    /// why this one file is singled out.
+    #[test]
+    fn adversarial_sample_population_excludes_only_the_citation_guard_periphery_file() {
+        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
+        write_fixture(dir.path(), "src/a.rs", "fn included_one() {}\n");
+        write_fixture(
+            dir.path(),
+            ADVERSARIAL_SAMPLE_EXCLUDED_FILE,
+            "fn excluded_one() {}\nfn excluded_two() {}\n",
+        );
+        let files = scan_tree(dir.path());
+
+        let all = all_fn_refs(&files);
+        assert_eq!(
+            all.len(),
+            3,
+            "sanity: all_fn_refs (the catalog's own population) must still see all 3 fns"
+        );
+
+        let population = adversarial_sample_population(&files);
+        let names: Vec<&str> = population
+            .iter()
+            .map(|r| r.scanned(&files).name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["included_one"],
+            "the adversarial draw's population must exclude every fn from {}",
+            ADVERSARIAL_SAMPLE_EXCLUDED_FILE
+        );
     }
 
     // -------------------------------------------------------------------------------------
