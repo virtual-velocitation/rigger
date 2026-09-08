@@ -688,3 +688,84 @@ fn a_comment_mentioning_test_attribute_text_does_not_exclude_the_item_through_th
         });
     assert_eq!(not_a_test.kind, KIND_CODE_ENTITY);
 }
+
+/// A round-4 sdet-author case, independent of round 4's own two mandated fixtures above: round
+/// 4's BRAND NEW `comma_separated_groups` (extract.rs) - which replaces rounds 1-3's text-based
+/// `split_top_level_args` entirely - splits a `cfg` combinator's argument `token_tree` into its
+/// top-level comma-separated groups by pushing `current` via `std::mem::take` at each `,` and
+/// only pushing one FINAL group past the loop when `current` is non-empty. A TRAILING comma -
+/// exactly the shape `rustfmt` itself produces whenever it wraps a comma-separated argument list,
+/// attribute lists included, across multiple lines - is the one input this guard exists for: a
+/// mis-handled trailing comma would leave a spurious EMPTY final group, and `any`'s own semantics
+/// ("names test iff EVERY group does") would then fold the whole predicate to `false` on that
+/// vacuous empty group (`group.first()` -> `None`) even though the sole real predicate is bare
+/// `test` - silently UN-EXCLUDING a `#[test]`-bearing module the moment `rustfmt` wraps its own
+/// `cfg` predicate. Combined here with round 4's own mandated multi-line shape (a single-element
+/// `any(\n    test,\n)` is both wrapped across lines AND trailing-comma-terminated - the sharpest
+/// discriminator: a spurious empty group flips this fixture's answer, where a two-element list
+/// would not, since `any`'s own real element ("test") already answers independently of a
+/// trailing empty one in a longer list). This guarantee was correct in the round-4 diff (verified
+/// against the real parsed tree before authoring this test) but rested on no test anywhere in the
+/// tree - not the implementer's own unit test, not either of round 4's own two mandated periphery
+/// cases, both of which use single-line, no-trailing-comma predicates.
+#[cfg(feature = "symbols")]
+const TRAILING_COMMA_CFG_TEST_SRC: &str = "\
+fn product() {}
+
+#[cfg(any(
+    test,
+))]
+mod tests {
+    fn helper() {}
+
+    #[test]
+    fn it_works() {}
+}
+";
+
+#[cfg(feature = "symbols")]
+#[test]
+fn a_trailing_comma_in_a_wrapped_cfg_predicate_still_excludes_the_module_through_the_public_api() {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::{Projection, KIND_CODE_ENTITY};
+    use std::collections::BTreeSet;
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("trailingcomma.rs"),
+        TRAILING_COMMA_CFG_TEST_SRC,
+    )
+    .unwrap();
+
+    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
+    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.iter_mut().enumerate() {
+        event.position = zero_based as u64 + 1;
+        p.apply(event).unwrap();
+    }
+
+    let g = p.subgraph(&["trailingcomma.rs".to_string()], 3).unwrap();
+    let node_ids: BTreeSet<&str> = g.nodes.iter().map(|n| n.id.as_str()).collect();
+
+    let product = g
+        .nodes
+        .iter()
+        .find(|n| n.id == "trailingcomma.rs::product")
+        .expect("product graphs normally, unaffected by a trailing comma elsewhere in the file");
+    assert_eq!(product.kind, KIND_CODE_ENTITY);
+
+    let must_be_absent: BTreeSet<&str> = BTreeSet::from([
+        "trailingcomma.rs::tests",
+        "trailingcomma.rs::helper",
+        "trailingcomma.rs::it_works",
+    ]);
+    let leaked: BTreeSet<&str> = node_ids.intersection(&must_be_absent).copied().collect();
+    assert!(
+        leaked.is_empty(),
+        "a #[cfg(any(\\n    test,\\n))] attribute - a single-element predicate with a \
+         rustfmt-style trailing comma - must still gate the module it decorates, and everything \
+         nested inside it, out of the graph; a mis-handled trailing comma (a spurious empty final \
+         group) would silently un-exclude this instead; leaked: {leaked:?}"
+    );
+}
