@@ -125,16 +125,18 @@ fn test_regions(
 
 /// Whether the construct starting at byte `start` in `source` is directly preceded - skipping
 /// only blank lines and `//`-led comments (plain `//`, doc `///`/`//!`) - by an attribute line
-/// naming the `test` token: `#[test]` itself, or any `#[cfg(...)]` (`cfg_attr` included) whose
-/// predicate mentions `test` as a standalone word (`#[cfg(test)]`,
-/// `#[cfg(all(test, feature = "x"))]`, `#[cfg(any(test))]`, ...). Attributes are authored one per
-/// line throughout this codebase (and every fixture this rule is proven against), so the scan is
-/// LINE based: it walks upward from the line immediately above `start` and stops at the first
-/// line that is neither blank, a `//` comment, nor a single-line `#[...]` attribute - the boundary
-/// of the contiguous attribute/comment stack directly above the construct. Every attribute in
-/// that stack is inspected (not just the nearest), so `#[test]` two lines above a
-/// `#[should_panic]` still matches, and a stray `//` remark between two stacked attributes never
-/// severs the scan.
+/// that GATES THE ITEM'S OWN COMPILATION on `test`: bare `#[test]`, or `#[cfg(...)]` whose
+/// predicate names `test` as a standalone word (`#[cfg(test)]`, `#[cfg(all(test, feature =
+/// "x"))]`, `#[cfg(any(test))]`, ...) and is not itself wrapped in a leading `not(..)` (see
+/// [`attribute_names_test`] for the two shapes this deliberately does NOT match: a negated
+/// predicate and `cfg_attr`, neither of which makes the tagged item test-only). Attributes are
+/// authored one per line throughout this codebase (and every fixture this rule is proven
+/// against), so the scan is LINE based: it walks upward from the line immediately above `start`
+/// and stops at the first line that is neither blank, a `//` comment, nor a single-line `#[...]`
+/// attribute - the boundary of the contiguous attribute/comment stack directly above the
+/// construct. Every attribute in that stack is inspected (not just the nearest), so `#[test]` two
+/// lines above a `#[should_panic]` still matches, and a stray `//` remark between two stacked
+/// attributes never severs the scan.
 fn preceded_by_test_attribute(source: &str, start: usize) -> bool {
     let mut found = false;
     for line in source[..start.min(source.len())].lines().rev() {
@@ -143,7 +145,7 @@ fn preceded_by_test_attribute(source: &str, start: usize) -> bool {
             continue;
         }
         if let Some(inner) = trimmed.strip_prefix("#[").and_then(|s| s.strip_suffix(']')) {
-            if names_test_token(inner) {
+            if attribute_names_test(inner) {
                 found = true;
             }
             continue;
@@ -153,12 +155,59 @@ fn preceded_by_test_attribute(source: &str, start: usize) -> bool {
     found
 }
 
-/// Whether an attribute's bracket contents name `test` as a standalone identifier/cfg-predicate -
-/// split on every non-alphanumeric, non-underscore byte and matched EXACTLY, so `#[test]` and
-/// `#[cfg(test)]` match while a similarly-spelled but distinct token (`testing`, `latest`,
-/// `test_helper`) never does.
-fn names_test_token(attr_body: &str) -> bool {
-    attr_body
+/// Split an attribute's bracket contents (`inner`, everything between `#[` and `]`) into its
+/// leading NAME and, when the attribute takes a parenthesized argument list, that argument
+/// string with the outer parens stripped: `"test"` -> `("test", None)`, `"cfg(test)"` ->
+/// `("cfg", Some("test"))`, `"cfg_attr(test, derive(Debug))"` -> `("cfg_attr", Some("test,
+/// derive(Debug)"))`. An attribute with no `(` at all, or one that does not end in `)`
+/// (malformed/truncated), yields the whole trimmed `inner` as the name with no argument.
+fn attribute_name_and_args(inner: &str) -> (&str, Option<&str>) {
+    match inner.find('(') {
+        Some(open) if inner.ends_with(')') => (
+            inner[..open].trim(),
+            Some(&inner[open + 1..inner.len() - 1]),
+        ),
+        _ => (inner.trim(), None),
+    }
+}
+
+/// Whether an attribute (`inner`, its bracket contents) gates the tagged item's OWN COMPILATION
+/// on `test` being set - the question [`preceded_by_test_attribute`] actually needs, not merely
+/// whether the text mentions the word `test` anywhere. Three cases:
+/// - `test` (bare `#[test]`, the only shape the real attribute ever takes - it accepts no
+///   arguments): always gates on test - matches, whatever its (nonexistent-in-real-Rust) args
+///   name, so a stray `Some(..)` here is not worth a second branch just to distinguish it.
+/// - `#[cfg(PRED)]` (name `cfg`): matches iff `PRED` [`cfg_predicate_names_test`]s.
+/// - `#[cfg_attr(PRED, ..)]` (name `cfg_attr`) and everything else (`#[allow(..)]`,
+///   `#[derive(..)]`, ...): NEVER matches, regardless of what `PRED`/the args name. `cfg_attr`
+///   conditionally attaches its trailing attribute(s) - it does not gate compilation of the
+///   tagged item itself, so an item under `#[cfg_attr(test, derive(Debug))]` is compiled
+///   unconditionally and is unambiguously product code.
+fn attribute_names_test(inner: &str) -> bool {
+    let (name, args) = attribute_name_and_args(inner);
+    match name {
+        "test" => true,
+        "cfg" => args.is_some_and(cfg_predicate_names_test),
+        _ => false,
+    }
+}
+
+/// Whether a `#[cfg(..)]` PREDICATE (the parenthesized argument of `cfg`, e.g. `"test"`,
+/// `"all(test, feature = \"x\")"`, `"not(test)"`) names `test` as a standalone word, WITHOUT
+/// being wrapped in a leading `not(..)` spanning the whole predicate. A predicate whose entire
+/// text is `not(..)`-wrapped is excluded from the token scan entirely (never treated as naming
+/// `test`, whatever its inner text is): `#[cfg(not(test))]` is Rust's standard idiom for the
+/// PRODUCTION-only half of a dual-cfg mock construct - the item it guards compiles whenever
+/// `test` is NOT set, so it is definitionally the item that SHIPS, never test code. Anything
+/// else is matched by splitting on every non-alphanumeric, non-underscore byte and comparing
+/// tokens EXACTLY, so `test` matches while a similarly-spelled but distinct token (`testing`,
+/// `latest`, `test_helper`) never does.
+fn cfg_predicate_names_test(predicate: &str) -> bool {
+    let trimmed = predicate.trim();
+    if trimmed.starts_with("not(") && trimmed.ends_with(')') {
+        return false;
+    }
+    trimmed
         .split(|c: char| !c.is_alphanumeric() && c != '_')
         .any(|tok| tok == "test")
 }
@@ -528,6 +577,60 @@ fn a_stacked_non_test_attribute_above_does_not_hide_the_real_one() {}
             def_is_test("a_stacked_non_test_attribute_above_does_not_hide_the_real_one"),
             "every attribute in the stack is inspected, not just the one nearest the item"
         );
+    }
+
+    #[test]
+    fn negated_and_cfg_attr_predicates_naming_test_do_not_mark_the_item_test() {
+        // Round-2 regression (review REJECT adj-u86c1-verdict-reject / adv-u86c1-cfg-predicate-
+        // negation-and-cfg-attr-inverted): the token scan named `test` as a standalone word with
+        // zero cfg-predicate structure, so it wrongly folded two common, ALWAYS-product Rust
+        // idioms to `is_test: true`.
+        let src = "\
+#[cfg(not(test))]
+fn real_client() {}
+
+#[cfg_attr(test, derive(Debug))]
+struct RealConfig;
+";
+        let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
+        let fs = extract(src, Lang::Rust, &language, tree_sitter_rust::TAGS_QUERY).unwrap();
+        let def_is_test = |name: &str| {
+            fs.defs
+                .iter()
+                .find(|d| d.name == name)
+                .unwrap_or_else(|| panic!("no def named {name:?}; got {:?}", fs.defs))
+                .is_test
+        };
+        // `#[cfg(not(test))]` is the PRODUCTION-only half of a dual-cfg mock construct: the item
+        // it guards is definitionally the one that SHIPS (compiled whenever `test` is NOT set),
+        // never test code, so it must never be excluded from the graph.
+        assert!(
+            !def_is_test("real_client"),
+            "#[cfg(not(test))] guards the production half of a dual-cfg construct - never test code"
+        );
+        // `cfg_attr` never gates compilation of the tagged item itself - it only conditionally
+        // attaches the inner attribute - so the item is ALWAYS compiled regardless of what its
+        // predicate names, and must never be excluded on that predicate's account.
+        assert!(
+            !def_is_test("RealConfig"),
+            "cfg_attr's predicate governs the inner attribute, not the tagged item's own compilation"
+        );
+    }
+
+    #[test]
+    fn attribute_name_and_args_splits_the_leading_name_from_a_parenthesized_argument_list() {
+        // Pins the exact (name, args) split `attribute_names_test`/`cfg_predicate_names_test`
+        // build on: the argument list has BOTH its wrapping parens stripped (neither the `(` nor
+        // the trailing `)` survives into `args`), so a downstream predicate scan never sees a
+        // stray paren character it would otherwise have to tolerate.
+        assert_eq!(attribute_name_and_args("test"), ("test", None));
+        assert_eq!(attribute_name_and_args("cfg(test)"), ("cfg", Some("test")));
+        assert_eq!(
+            attribute_name_and_args("cfg_attr(test, derive(Debug))"),
+            ("cfg_attr", Some("test, derive(Debug)"))
+        );
+        // No `(` at all: the whole trimmed text is the name, no argument list.
+        assert_eq!(attribute_name_and_args("allow"), ("allow", None));
     }
 
     #[test]

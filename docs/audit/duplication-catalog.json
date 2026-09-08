@@ -11529,15 +11529,15 @@
     "sites": [
       {
         "file": "src/grounder/symbols/extract.rs",
-        "start_line": 579,
-        "end_line": 625,
-        "name": "extent_spans_a_destructuring_or_default_brace_signature_to_the_full_body"
+        "start_line": 542,
+        "end_line": 580,
+        "name": "cfg_predicates_naming_test_are_recognized_and_similarly_spelled_tokens_are_not"
       },
       {
         "file": "src/grounder/symbols/extract.rs",
-        "start_line": 628,
-        "end_line": 690,
-        "name": "extent_generalizes_across_grammars_python_nested_def_and_js_brace_string"
+        "start_line": 583,
+        "end_line": 618,
+        "name": "negated_and_cfg_attr_predicates_naming_test_do_not_mark_the_item_test"
       }
     ],
     "proposed_home": "extract::support (consolidate these 2 sites into one function in this file)",
@@ -11545,6 +11545,26 @@
   },
   {
     "id": "dup-0208",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "src/grounder/symbols/extract.rs",
+        "start_line": 682,
+        "end_line": 728,
+        "name": "extent_spans_a_destructuring_or_default_brace_signature_to_the_full_body"
+      },
+      {
+        "file": "src/grounder/symbols/extract.rs",
+        "start_line": 731,
+        "end_line": 793,
+        "name": "extent_generalizes_across_grammars_python_nested_def_and_js_brace_string"
+      }
+    ],
+    "proposed_home": "extract::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+  },
+  {
+    "id": "dup-0209",
     "classification": "semantic",
     "sites": [
       {
@@ -11564,7 +11584,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0209",
+    "id": "dup-0210",
     "classification": "near",
     "sites": [
       {
@@ -11590,7 +11610,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0210",
+    "id": "dup-0211",
     "classification": "near",
     "sites": [
       {
@@ -11610,7 +11630,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0211",
+    "id": "dup-0212",
     "classification": "exact",
     "sites": [
       {
@@ -11630,7 +11650,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0212",
+    "id": "dup-0213",
     "classification": "near",
     "sites": [
       {
@@ -11650,7 +11670,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0213",
+    "id": "dup-0214",
     "classification": "semantic",
     "sites": [
       {
@@ -11670,7 +11690,7 @@
     "note": "mandatory sweep: parallel constructor functions - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0214",
+    "id": "dup-0215",
     "classification": "near",
     "sites": [
       {
@@ -11690,7 +11710,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0215",
+    "id": "dup-0216",
     "classification": "near",
     "sites": [
       {
@@ -11734,7 +11754,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0216",
+    "id": "dup-0217",
     "classification": "near",
     "sites": [
       {
@@ -11754,7 +11774,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0217",
+    "id": "dup-0218",
     "classification": "exact",
     "sites": [
       {
@@ -11774,7 +11794,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0218",
+    "id": "dup-0219",
     "classification": "near",
     "sites": [
       {
@@ -11794,7 +11814,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0219",
+    "id": "dup-0220",
     "classification": "exact",
     "sites": [
       {
@@ -11820,7 +11840,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0220",
+    "id": "dup-0221",
     "classification": "near",
     "sites": [
       {
@@ -11840,7 +11860,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0221",
+    "id": "dup-0222",
     "classification": "near",
     "sites": [
       {
@@ -11866,7 +11886,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0222",
+    "id": "dup-0223",
     "classification": "semantic",
     "sites": [
       {
@@ -11886,7 +11906,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0223",
+    "id": "dup-0224",
     "classification": "exact",
     "sites": [
       {
@@ -11906,7 +11926,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0224",
+    "id": "dup-0225",
     "classification": "near",
     "sites": [
       {
@@ -11926,7 +11946,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0225",
+    "id": "dup-0226",
     "classification": "near",
     "sites": [
       {
@@ -11946,7 +11966,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0226",
+    "id": "dup-0227",
     "classification": "exact",
     "sites": [
       {
@@ -11966,7 +11986,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0227",
+    "id": "dup-0228",
     "classification": "near",
     "sites": [
       {
@@ -11992,7 +12012,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0228",
+    "id": "dup-0229",
     "classification": "exact",
     "sites": [
       {
@@ -12012,7 +12032,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0229",
+    "id": "dup-0230",
     "classification": "exact",
     "sites": [
       {
@@ -12038,7 +12058,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0230",
+    "id": "dup-0231",
     "classification": "near",
     "sites": [
       {
@@ -12058,7 +12078,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0231",
+    "id": "dup-0232",
     "classification": "near",
     "sites": [
       {
@@ -12078,7 +12098,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0232",
+    "id": "dup-0233",
     "classification": "near",
     "sites": [
       {
@@ -12104,7 +12124,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0233",
+    "id": "dup-0234",
     "classification": "exact",
     "sites": [
       {
@@ -12250,7 +12270,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0234",
+    "id": "dup-0235",
     "classification": "near",
     "sites": [
       {
@@ -12288,7 +12308,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0235",
+    "id": "dup-0236",
     "classification": "near",
     "sites": [
       {
@@ -12320,7 +12340,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0236",
+    "id": "dup-0237",
     "classification": "exact",
     "sites": [
       {
@@ -12340,7 +12360,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0237",
+    "id": "dup-0238",
     "classification": "near",
     "sites": [
       {
@@ -12366,7 +12386,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0238",
+    "id": "dup-0239",
     "classification": "exact",
     "sites": [
       {
@@ -12386,7 +12406,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0239",
+    "id": "dup-0240",
     "classification": "near",
     "sites": [
       {
@@ -12412,7 +12432,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0240",
+    "id": "dup-0241",
     "classification": "exact",
     "sites": [
       {
@@ -12432,7 +12452,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0241",
+    "id": "dup-0242",
     "classification": "exact",
     "sites": [
       {
@@ -12458,7 +12478,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0242",
+    "id": "dup-0243",
     "classification": "near",
     "sites": [
       {
@@ -12478,7 +12498,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0243",
+    "id": "dup-0244",
     "classification": "near",
     "sites": [
       {
@@ -12498,7 +12518,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0244",
+    "id": "dup-0245",
     "classification": "near",
     "sites": [
       {
@@ -12518,7 +12538,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0245",
+    "id": "dup-0246",
     "classification": "near",
     "sites": [
       {
@@ -12538,7 +12558,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0246",
+    "id": "dup-0247",
     "classification": "near",
     "sites": [
       {
@@ -12570,7 +12590,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0247",
+    "id": "dup-0248",
     "classification": "exact",
     "sites": [
       {
@@ -12590,7 +12610,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0248",
+    "id": "dup-0249",
     "classification": "exact",
     "sites": [
       {
@@ -12634,7 +12654,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0249",
+    "id": "dup-0250",
     "classification": "near",
     "sites": [
       {
@@ -12654,7 +12674,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0250",
+    "id": "dup-0251",
     "classification": "near",
     "sites": [
       {
@@ -12674,7 +12694,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0251",
+    "id": "dup-0252",
     "classification": "near",
     "sites": [
       {
@@ -12694,7 +12714,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0252",
+    "id": "dup-0253",
     "classification": "near",
     "sites": [
       {
@@ -12714,7 +12734,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0253",
+    "id": "dup-0254",
     "classification": "near",
     "sites": [
       {
@@ -12734,7 +12754,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0254",
+    "id": "dup-0255",
     "classification": "near",
     "sites": [
       {
@@ -12754,7 +12774,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0255",
+    "id": "dup-0256",
     "classification": "exact",
     "sites": [
       {
@@ -12774,7 +12794,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0256",
+    "id": "dup-0257",
     "classification": "near",
     "sites": [
       {
@@ -12794,7 +12814,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0257",
+    "id": "dup-0258",
     "classification": "near",
     "sites": [
       {
@@ -12814,7 +12834,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0258",
+    "id": "dup-0259",
     "classification": "exact",
     "sites": [
       {
@@ -12834,7 +12854,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0259",
+    "id": "dup-0260",
     "classification": "semantic",
     "sites": [
       {
@@ -12866,7 +12886,7 @@
     "note": "mandatory sweep: parallel constructor functions - 4 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0260",
+    "id": "dup-0261",
     "classification": "near",
     "sites": [
       {
@@ -12886,7 +12906,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0261",
+    "id": "dup-0262",
     "classification": "near",
     "sites": [
       {
@@ -12906,7 +12926,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0262",
+    "id": "dup-0263",
     "classification": "near",
     "sites": [
       {
@@ -12938,7 +12958,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0263",
+    "id": "dup-0264",
     "classification": "exact",
     "sites": [
       {
@@ -12988,7 +13008,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0264",
+    "id": "dup-0265",
     "classification": "exact",
     "sites": [
       {
@@ -13008,7 +13028,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0265",
+    "id": "dup-0266",
     "classification": "semantic",
     "sites": [
       {
@@ -13028,7 +13048,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0266",
+    "id": "dup-0267",
     "classification": "exact",
     "sites": [
       {
@@ -13048,7 +13068,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0267",
+    "id": "dup-0268",
     "classification": "exact",
     "sites": [
       {
@@ -13074,7 +13094,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0268",
+    "id": "dup-0269",
     "classification": "near",
     "sites": [
       {
@@ -13118,7 +13138,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0269",
+    "id": "dup-0270",
     "classification": "near",
     "sites": [
       {
@@ -13156,7 +13176,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0270",
+    "id": "dup-0271",
     "classification": "near",
     "sites": [
       {
@@ -13176,7 +13196,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0271",
+    "id": "dup-0272",
     "classification": "near",
     "sites": [
       {
@@ -13196,7 +13216,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0272",
+    "id": "dup-0273",
     "classification": "near",
     "sites": [
       {
@@ -13216,7 +13236,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0273",
+    "id": "dup-0274",
     "classification": "near",
     "sites": [
       {
@@ -13236,7 +13256,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0274",
+    "id": "dup-0275",
     "classification": "near",
     "sites": [
       {
@@ -13256,7 +13276,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0275",
+    "id": "dup-0276",
     "classification": "near",
     "sites": [
       {
@@ -13300,7 +13320,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0276",
+    "id": "dup-0277",
     "classification": "exact",
     "sites": [
       {
@@ -13332,7 +13352,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0277",
+    "id": "dup-0278",
     "classification": "exact",
     "sites": [
       {
@@ -13352,7 +13372,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0278",
+    "id": "dup-0279",
     "classification": "near",
     "sites": [
       {
@@ -13372,7 +13392,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0279",
+    "id": "dup-0280",
     "classification": "near",
     "sites": [
       {
@@ -13470,7 +13490,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0280",
+    "id": "dup-0281",
     "classification": "near",
     "sites": [
       {
@@ -13496,7 +13516,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0281",
+    "id": "dup-0282",
     "classification": "near",
     "sites": [
       {
@@ -13516,7 +13536,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0282",
+    "id": "dup-0283",
     "classification": "near",
     "sites": [
       {
@@ -13536,7 +13556,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0283",
+    "id": "dup-0284",
     "classification": "near",
     "sites": [
       {
@@ -13556,7 +13576,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0284",
+    "id": "dup-0285",
     "classification": "near",
     "sites": [
       {
@@ -13576,7 +13596,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0285",
+    "id": "dup-0286",
     "classification": "exact",
     "sites": [
       {
@@ -13602,7 +13622,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0286",
+    "id": "dup-0287",
     "classification": "exact",
     "sites": [
       {
@@ -13622,7 +13642,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0287",
+    "id": "dup-0288",
     "classification": "near",
     "sites": [
       {
@@ -13642,7 +13662,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0288",
+    "id": "dup-0289",
     "classification": "near",
     "sites": [
       {
@@ -13668,7 +13688,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0289",
+    "id": "dup-0290",
     "classification": "exact",
     "sites": [
       {
@@ -13700,7 +13720,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0290",
+    "id": "dup-0291",
     "classification": "exact",
     "sites": [
       {
@@ -13726,7 +13746,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0291",
+    "id": "dup-0292",
     "classification": "exact",
     "sites": [
       {
@@ -13746,7 +13766,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0292",
+    "id": "dup-0293",
     "classification": "exact",
     "sites": [
       {
@@ -13766,7 +13786,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0293",
+    "id": "dup-0294",
     "classification": "near",
     "sites": [
       {
@@ -13786,7 +13806,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0294",
+    "id": "dup-0295",
     "classification": "semantic",
     "sites": [
       {
@@ -13812,7 +13832,7 @@
     "note": "mandatory sweep: parallel constructor functions - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0295",
+    "id": "dup-0296",
     "classification": "semantic",
     "sites": [
       {
@@ -13832,7 +13852,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0296",
+    "id": "dup-0297",
     "classification": "exact",
     "sites": [
       {
@@ -13852,7 +13872,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0297",
+    "id": "dup-0298",
     "classification": "near",
     "sites": [
       {
@@ -13872,7 +13892,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0298",
+    "id": "dup-0299",
     "classification": "near",
     "sites": [
       {
@@ -13892,7 +13912,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0299",
+    "id": "dup-0300",
     "classification": "near",
     "sites": [
       {
@@ -13912,7 +13932,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0300",
+    "id": "dup-0301",
     "classification": "near",
     "sites": [
       {
@@ -13932,7 +13952,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0301",
+    "id": "dup-0302",
     "classification": "near",
     "sites": [
       {
@@ -13952,7 +13972,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0302",
+    "id": "dup-0303",
     "classification": "exact",
     "sites": [
       {
@@ -13978,7 +13998,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0303",
+    "id": "dup-0304",
     "classification": "exact",
     "sites": [
       {
@@ -13998,7 +14018,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0304",
+    "id": "dup-0305",
     "classification": "exact",
     "sites": [
       {
@@ -14108,7 +14128,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0305",
+    "id": "dup-0306",
     "classification": "near",
     "sites": [
       {
@@ -14128,7 +14148,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0306",
+    "id": "dup-0307",
     "classification": "near",
     "sites": [
       {
@@ -14148,7 +14168,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0307",
+    "id": "dup-0308",
     "classification": "exact",
     "sites": [
       {
@@ -14168,7 +14188,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0308",
+    "id": "dup-0309",
     "classification": "near",
     "sites": [
       {
@@ -14188,7 +14208,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0309",
+    "id": "dup-0310",
     "classification": "near",
     "sites": [
       {
@@ -14208,7 +14228,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0310",
+    "id": "dup-0311",
     "classification": "exact",
     "sites": [
       {
@@ -14228,7 +14248,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0311",
+    "id": "dup-0312",
     "classification": "near",
     "sites": [
       {
@@ -14260,7 +14280,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0312",
+    "id": "dup-0313",
     "classification": "exact",
     "sites": [
       {
@@ -14280,7 +14300,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0313",
+    "id": "dup-0314",
     "classification": "exact",
     "sites": [
       {
@@ -14300,7 +14320,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0314",
+    "id": "dup-0315",
     "classification": "exact",
     "sites": [
       {
@@ -14320,7 +14340,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0315",
+    "id": "dup-0316",
     "classification": "exact",
     "sites": [
       {
@@ -14340,7 +14360,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0316",
+    "id": "dup-0317",
     "classification": "near",
     "sites": [
       {
@@ -14372,7 +14392,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0317",
+    "id": "dup-0318",
     "classification": "near",
     "sites": [
       {
@@ -14392,7 +14412,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0318",
+    "id": "dup-0319",
     "classification": "near",
     "sites": [
       {
@@ -14418,7 +14438,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0319",
+    "id": "dup-0320",
     "classification": "near",
     "sites": [
       {
@@ -14444,7 +14464,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0320",
+    "id": "dup-0321",
     "classification": "exact",
     "sites": [
       {
@@ -14464,7 +14484,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0321",
+    "id": "dup-0322",
     "classification": "near",
     "sites": [
       {
@@ -14484,7 +14504,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0322",
+    "id": "dup-0323",
     "classification": "near",
     "sites": [
       {
@@ -14504,7 +14524,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0323",
+    "id": "dup-0324",
     "classification": "exact",
     "sites": [
       {
@@ -14524,7 +14544,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0324",
+    "id": "dup-0325",
     "classification": "exact",
     "sites": [
       {
@@ -14544,7 +14564,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0325",
+    "id": "dup-0326",
     "classification": "near",
     "sites": [
       {
@@ -14570,7 +14590,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0326",
+    "id": "dup-0327",
     "classification": "near",
     "sites": [
       {
@@ -14590,7 +14610,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0327",
+    "id": "dup-0328",
     "classification": "near",
     "sites": [
       {
@@ -14610,7 +14630,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0328",
+    "id": "dup-0329",
     "classification": "near",
     "sites": [
       {
@@ -14630,7 +14650,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0329",
+    "id": "dup-0330",
     "classification": "near",
     "sites": [
       {
@@ -14662,7 +14682,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0330",
+    "id": "dup-0331",
     "classification": "near",
     "sites": [
       {
@@ -14682,7 +14702,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0331",
+    "id": "dup-0332",
     "classification": "near",
     "sites": [
       {
@@ -14708,7 +14728,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0332",
+    "id": "dup-0333",
     "classification": "near",
     "sites": [
       {
@@ -14728,7 +14748,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0333",
+    "id": "dup-0334",
     "classification": "near",
     "sites": [
       {
@@ -14748,7 +14768,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0334",
+    "id": "dup-0335",
     "classification": "near",
     "sites": [
       {
@@ -14774,7 +14794,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0335",
+    "id": "dup-0336",
     "classification": "exact",
     "sites": [
       {
@@ -14890,7 +14910,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0336",
+    "id": "dup-0337",
     "classification": "semantic",
     "sites": [
       {
@@ -15006,7 +15026,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 18 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0337",
+    "id": "dup-0338",
     "classification": "exact",
     "sites": [
       {
@@ -15032,7 +15052,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0338",
+    "id": "dup-0339",
     "classification": "exact",
     "sites": [
       {
@@ -15064,7 +15084,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0339",
+    "id": "dup-0340",
     "classification": "near",
     "sites": [
       {
@@ -15162,7 +15182,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0340",
+    "id": "dup-0341",
     "classification": "semantic",
     "sites": [
       {
@@ -15182,7 +15202,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0341",
+    "id": "dup-0342",
     "classification": "near",
     "sites": [
       {
@@ -15208,7 +15228,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0342",
+    "id": "dup-0343",
     "classification": "exact",
     "sites": [
       {
@@ -15228,7 +15248,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0343",
+    "id": "dup-0344",
     "classification": "exact",
     "sites": [
       {
@@ -15260,7 +15280,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0344",
+    "id": "dup-0345",
     "classification": "exact",
     "sites": [
       {
@@ -15292,7 +15312,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0345",
+    "id": "dup-0346",
     "classification": "exact",
     "sites": [
       {
@@ -15318,7 +15338,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0346",
+    "id": "dup-0347",
     "classification": "semantic",
     "sites": [
       {
@@ -15356,7 +15376,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 5 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0347",
+    "id": "dup-0348",
     "classification": "exact",
     "sites": [
       {
@@ -15376,7 +15396,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0348",
+    "id": "dup-0349",
     "classification": "near",
     "sites": [
       {
@@ -15402,7 +15422,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0349",
+    "id": "dup-0350",
     "classification": "near",
     "sites": [
       {
@@ -15422,7 +15442,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0350",
+    "id": "dup-0351",
     "classification": "near",
     "sites": [
       {
@@ -15442,7 +15462,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0351",
+    "id": "dup-0352",
     "classification": "semantic",
     "sites": [
       {
@@ -15468,7 +15488,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0352",
+    "id": "dup-0353",
     "classification": "near",
     "sites": [
       {
@@ -15494,7 +15514,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0353",
+    "id": "dup-0354",
     "classification": "near",
     "sites": [
       {
@@ -15514,7 +15534,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0354",
+    "id": "dup-0355",
     "classification": "near",
     "sites": [
       {
@@ -15534,7 +15554,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0355",
+    "id": "dup-0356",
     "classification": "exact",
     "sites": [
       {
@@ -15560,7 +15580,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0356",
+    "id": "dup-0357",
     "classification": "near",
     "sites": [
       {
@@ -15598,7 +15618,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0357",
+    "id": "dup-0358",
     "classification": "near",
     "sites": [
       {
@@ -15618,7 +15638,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0358",
+    "id": "dup-0359",
     "classification": "exact",
     "sites": [
       {
@@ -15638,7 +15658,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0359",
+    "id": "dup-0360",
     "classification": "near",
     "sites": [
       {
@@ -15664,7 +15684,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0360",
+    "id": "dup-0361",
     "classification": "near",
     "sites": [
       {
@@ -15744,7 +15764,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0361",
+    "id": "dup-0362",
     "classification": "semantic",
     "sites": [
       {
@@ -15860,7 +15880,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 18 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0362",
+    "id": "dup-0363",
     "classification": "exact",
     "sites": [
       {
@@ -15940,7 +15960,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0363",
+    "id": "dup-0364",
     "classification": "near",
     "sites": [
       {
@@ -15960,7 +15980,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0364",
+    "id": "dup-0365",
     "classification": "near",
     "sites": [
       {
@@ -15980,7 +16000,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0365",
+    "id": "dup-0366",
     "classification": "exact",
     "sites": [
       {
@@ -16018,7 +16038,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0366",
+    "id": "dup-0367",
     "classification": "near",
     "sites": [
       {
@@ -16116,7 +16136,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0367",
+    "id": "dup-0368",
     "classification": "semantic",
     "sites": [
       {
@@ -16232,7 +16252,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 18 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0368",
+    "id": "dup-0369",
     "classification": "near",
     "sites": [
       {
@@ -16276,7 +16296,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0369",
+    "id": "dup-0370",
     "classification": "semantic",
     "sites": [
       {
@@ -16332,7 +16352,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 8 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0370",
+    "id": "dup-0371",
     "classification": "near",
     "sites": [
       {
@@ -16382,7 +16402,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0371",
+    "id": "dup-0372",
     "classification": "exact",
     "sites": [
       {
@@ -16402,7 +16422,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0372",
+    "id": "dup-0373",
     "classification": "exact",
     "sites": [
       {
@@ -16422,7 +16442,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0373",
+    "id": "dup-0374",
     "classification": "semantic",
     "sites": [
       {
@@ -16442,7 +16462,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0374",
+    "id": "dup-0375",
     "classification": "near",
     "sites": [
       {
@@ -16462,7 +16482,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0375",
+    "id": "dup-0376",
     "classification": "semantic",
     "sites": [
       {
@@ -16488,7 +16508,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0376",
+    "id": "dup-0377",
     "classification": "exact",
     "sites": [
       {
@@ -16508,7 +16528,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0377",
+    "id": "dup-0378",
     "classification": "semantic",
     "sites": [
       {
@@ -16540,7 +16560,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 4 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0378",
+    "id": "dup-0379",
     "classification": "exact",
     "sites": [
       {
@@ -16560,7 +16580,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0379",
+    "id": "dup-0380",
     "classification": "exact",
     "sites": [
       {
@@ -16580,7 +16600,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0380",
+    "id": "dup-0381",
     "classification": "exact",
     "sites": [
       {
@@ -16612,7 +16632,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0381",
+    "id": "dup-0382",
     "classification": "semantic",
     "sites": [
       {
@@ -16638,7 +16658,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0382",
+    "id": "dup-0383",
     "classification": "exact",
     "sites": [
       {
@@ -16658,7 +16678,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0383",
+    "id": "dup-0384",
     "classification": "near",
     "sites": [
       {
@@ -16702,7 +16722,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0384",
+    "id": "dup-0385",
     "classification": "near",
     "sites": [
       {
@@ -16722,7 +16742,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0385",
+    "id": "dup-0386",
     "classification": "semantic",
     "sites": [
       {
@@ -16742,7 +16762,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0386",
+    "id": "dup-0387",
     "classification": "exact",
     "sites": [
       {
@@ -16762,7 +16782,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0387",
+    "id": "dup-0388",
     "classification": "near",
     "sites": [
       {
@@ -16794,7 +16814,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0388",
+    "id": "dup-0389",
     "classification": "near",
     "sites": [
       {
@@ -16814,7 +16834,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0389",
+    "id": "dup-0390",
     "classification": "near",
     "sites": [
       {
@@ -16846,7 +16866,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0390",
+    "id": "dup-0391",
     "classification": "near",
     "sites": [
       {
@@ -16872,7 +16892,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0391",
+    "id": "dup-0392",
     "classification": "near",
     "sites": [
       {
@@ -16892,7 +16912,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0392",
+    "id": "dup-0393",
     "classification": "near",
     "sites": [
       {
@@ -16912,7 +16932,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0393",
+    "id": "dup-0394",
     "classification": "semantic",
     "sites": [
       {
@@ -16956,7 +16976,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 6 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0394",
+    "id": "dup-0395",
     "classification": "near",
     "sites": [
       {
@@ -16976,7 +16996,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0395",
+    "id": "dup-0396",
     "classification": "near",
     "sites": [
       {
@@ -17074,7 +17094,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0396",
+    "id": "dup-0397",
     "classification": "semantic",
     "sites": [
       {
@@ -17094,7 +17114,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0397",
+    "id": "dup-0398",
     "classification": "near",
     "sites": [
       {
@@ -17114,7 +17134,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0398",
+    "id": "dup-0399",
     "classification": "near",
     "sites": [
       {
@@ -17140,7 +17160,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0399",
+    "id": "dup-0400",
     "classification": "near",
     "sites": [
       {
@@ -17178,7 +17198,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0400",
+    "id": "dup-0401",
     "classification": "near",
     "sites": [
       {
@@ -17198,7 +17218,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0401",
+    "id": "dup-0402",
     "classification": "near",
     "sites": [
       {
@@ -17218,7 +17238,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0402",
+    "id": "dup-0403",
     "classification": "near",
     "sites": [
       {
@@ -17238,7 +17258,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0403",
+    "id": "dup-0404",
     "classification": "exact",
     "sites": [
       {
@@ -17258,7 +17278,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0404",
+    "id": "dup-0405",
     "classification": "semantic",
     "sites": [
       {
@@ -17278,7 +17298,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0405",
+    "id": "dup-0406",
     "classification": "near",
     "sites": [
       {
@@ -17298,7 +17318,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0406",
+    "id": "dup-0407",
     "classification": "near",
     "sites": [
       {
@@ -17324,7 +17344,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0407",
+    "id": "dup-0408",
     "classification": "near",
     "sites": [
       {
@@ -17344,7 +17364,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0408",
+    "id": "dup-0409",
     "classification": "exact",
     "sites": [
       {
@@ -17370,7 +17390,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0409",
+    "id": "dup-0410",
     "classification": "near",
     "sites": [
       {
@@ -17390,7 +17410,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0410",
+    "id": "dup-0411",
     "classification": "near",
     "sites": [
       {
@@ -17416,7 +17436,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0411",
+    "id": "dup-0412",
     "classification": "exact",
     "sites": [
       {
@@ -17436,7 +17456,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0412",
+    "id": "dup-0413",
     "classification": "semantic",
     "sites": [
       {
@@ -17456,7 +17476,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0413",
+    "id": "dup-0414",
     "classification": "exact",
     "sites": [
       {
@@ -17488,7 +17508,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0414",
+    "id": "dup-0415",
     "classification": "near",
     "sites": [
       {
@@ -17508,7 +17528,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0415",
+    "id": "dup-0416",
     "classification": "near",
     "sites": [
       {
@@ -17528,7 +17548,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0416",
+    "id": "dup-0417",
     "classification": "near",
     "sites": [
       {
@@ -17578,7 +17598,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0417",
+    "id": "dup-0418",
     "classification": "exact",
     "sites": [
       {
@@ -17598,7 +17618,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0418",
+    "id": "dup-0419",
     "classification": "near",
     "sites": [
       {
@@ -17618,7 +17638,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0419",
+    "id": "dup-0420",
     "classification": "near",
     "sites": [
       {
@@ -17638,7 +17658,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0420",
+    "id": "dup-0421",
     "classification": "near",
     "sites": [
       {
@@ -17658,7 +17678,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0421",
+    "id": "dup-0422",
     "classification": "near",
     "sites": [
       {
@@ -17684,7 +17704,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0422",
+    "id": "dup-0423",
     "classification": "near",
     "sites": [
       {
@@ -17704,7 +17724,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0423",
+    "id": "dup-0424",
     "classification": "near",
     "sites": [
       {
@@ -17742,7 +17762,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0424",
+    "id": "dup-0425",
     "classification": "near",
     "sites": [
       {
@@ -17762,7 +17782,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0425",
+    "id": "dup-0426",
     "classification": "near",
     "sites": [
       {
@@ -17794,7 +17814,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0426",
+    "id": "dup-0427",
     "classification": "semantic",
     "sites": [
       {
@@ -17814,7 +17834,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0427",
+    "id": "dup-0428",
     "classification": "near",
     "sites": [
       {
@@ -17834,7 +17854,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0428",
+    "id": "dup-0429",
     "classification": "near",
     "sites": [
       {
@@ -17860,7 +17880,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0429",
+    "id": "dup-0430",
     "classification": "near",
     "sites": [
       {
@@ -17880,7 +17900,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0430",
+    "id": "dup-0431",
     "classification": "near",
     "sites": [
       {
@@ -17906,7 +17926,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0431",
+    "id": "dup-0432",
     "classification": "near",
     "sites": [
       {
@@ -17926,7 +17946,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0432",
+    "id": "dup-0433",
     "classification": "near",
     "sites": [
       {
@@ -17946,7 +17966,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0433",
+    "id": "dup-0434",
     "classification": "exact",
     "sites": [
       {
@@ -17966,7 +17986,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0434",
+    "id": "dup-0435",
     "classification": "near",
     "sites": [
       {
@@ -17986,7 +18006,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0435",
+    "id": "dup-0436",
     "classification": "near",
     "sites": [
       {
@@ -18006,7 +18026,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0436",
+    "id": "dup-0437",
     "classification": "near",
     "sites": [
       {
@@ -18044,7 +18064,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0437",
+    "id": "dup-0438",
     "classification": "near",
     "sites": [
       {
@@ -18070,7 +18090,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0438",
+    "id": "dup-0439",
     "classification": "near",
     "sites": [
       {
@@ -18114,7 +18134,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0439",
+    "id": "dup-0440",
     "classification": "near",
     "sites": [
       {
@@ -18134,7 +18154,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0440",
+    "id": "dup-0441",
     "classification": "near",
     "sites": [
       {
@@ -18154,7 +18174,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0441",
+    "id": "dup-0442",
     "classification": "near",
     "sites": [
       {
@@ -18174,7 +18194,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0442",
+    "id": "dup-0443",
     "classification": "near",
     "sites": [
       {
@@ -18224,7 +18244,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0443",
+    "id": "dup-0444",
     "classification": "near",
     "sites": [
       {
@@ -18244,7 +18264,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0444",
+    "id": "dup-0445",
     "classification": "near",
     "sites": [
       {
@@ -18264,7 +18284,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0445",
+    "id": "dup-0446",
     "classification": "near",
     "sites": [
       {
@@ -18296,7 +18316,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0446",
+    "id": "dup-0447",
     "classification": "near",
     "sites": [
       {
@@ -18322,7 +18342,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0447",
+    "id": "dup-0448",
     "classification": "near",
     "sites": [
       {
@@ -18342,7 +18362,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0448",
+    "id": "dup-0449",
     "classification": "near",
     "sites": [
       {
@@ -18362,7 +18382,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0449",
+    "id": "dup-0450",
     "classification": "near",
     "sites": [
       {
@@ -18382,7 +18402,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0450",
+    "id": "dup-0451",
     "classification": "near",
     "sites": [
       {
@@ -18402,7 +18422,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0451",
+    "id": "dup-0452",
     "classification": "near",
     "sites": [
       {
@@ -18422,7 +18442,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0452",
+    "id": "dup-0453",
     "classification": "near",
     "sites": [
       {
@@ -18442,7 +18462,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0453",
+    "id": "dup-0454",
     "classification": "exact",
     "sites": [
       {
@@ -18486,7 +18506,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0454",
+    "id": "dup-0455",
     "classification": "near",
     "sites": [
       {
@@ -18506,7 +18526,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0455",
+    "id": "dup-0456",
     "classification": "near",
     "sites": [
       {
@@ -18526,7 +18546,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0456",
+    "id": "dup-0457",
     "classification": "near",
     "sites": [
       {
@@ -18588,7 +18608,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0457",
+    "id": "dup-0458",
     "classification": "near",
     "sites": [
       {
@@ -18608,7 +18628,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0458",
+    "id": "dup-0459",
     "classification": "exact",
     "sites": [
       {
@@ -18628,7 +18648,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0459",
+    "id": "dup-0460",
     "classification": "semantic",
     "sites": [
       {
@@ -18660,7 +18680,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 4 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0460",
+    "id": "dup-0461",
     "classification": "exact",
     "sites": [
       {
@@ -18698,7 +18718,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0461",
+    "id": "dup-0462",
     "classification": "semantic",
     "sites": [
       {
@@ -18736,7 +18756,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 5 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0462",
+    "id": "dup-0463",
     "classification": "exact",
     "sites": [
       {
@@ -18774,7 +18794,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0463",
+    "id": "dup-0464",
     "classification": "near",
     "sites": [
       {
@@ -18830,7 +18850,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0464",
+    "id": "dup-0465",
     "classification": "exact",
     "sites": [
       {
@@ -18856,7 +18876,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0465",
+    "id": "dup-0466",
     "classification": "near",
     "sites": [
       {
@@ -18876,7 +18896,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0466",
+    "id": "dup-0467",
     "classification": "exact",
     "sites": [
       {
@@ -18896,7 +18916,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0467",
+    "id": "dup-0468",
     "classification": "near",
     "sites": [
       {
@@ -18916,7 +18936,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0468",
+    "id": "dup-0469",
     "classification": "exact",
     "sites": [
       {
@@ -18936,7 +18956,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0469",
+    "id": "dup-0470",
     "classification": "exact",
     "sites": [
       {
@@ -18956,7 +18976,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0470",
+    "id": "dup-0471",
     "classification": "exact",
     "sites": [
       {
@@ -18976,7 +18996,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0471",
+    "id": "dup-0472",
     "classification": "exact",
     "sites": [
       {
@@ -18996,7 +19016,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0472",
+    "id": "dup-0473",
     "classification": "near",
     "sites": [
       {
@@ -19022,7 +19042,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0473",
+    "id": "dup-0474",
     "classification": "exact",
     "sites": [
       {
@@ -19042,7 +19062,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0474",
+    "id": "dup-0475",
     "classification": "exact",
     "sites": [
       {
@@ -19062,7 +19082,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0475",
+    "id": "dup-0476",
     "classification": "near",
     "sites": [
       {
@@ -19094,7 +19114,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0476",
+    "id": "dup-0477",
     "classification": "semantic",
     "sites": [
       {
@@ -19114,7 +19134,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0477",
+    "id": "dup-0478",
     "classification": "exact",
     "sites": [
       {
@@ -19134,7 +19154,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0478",
+    "id": "dup-0479",
     "classification": "exact",
     "sites": [
       {
@@ -19154,7 +19174,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0479",
+    "id": "dup-0480",
     "classification": "exact",
     "sites": [
       {
@@ -19174,7 +19194,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0480",
+    "id": "dup-0481",
     "classification": "exact",
     "sites": [
       {
@@ -19194,7 +19214,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0481",
+    "id": "dup-0482",
     "classification": "exact",
     "sites": [
       {
@@ -19214,7 +19234,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0482",
+    "id": "dup-0483",
     "classification": "exact",
     "sites": [
       {
@@ -19234,7 +19254,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0483",
+    "id": "dup-0484",
     "classification": "exact",
     "sites": [
       {
@@ -19254,7 +19274,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0484",
+    "id": "dup-0485",
     "classification": "semantic",
     "sites": [
       {
@@ -19274,7 +19294,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0485",
+    "id": "dup-0486",
     "classification": "exact",
     "sites": [
       {
@@ -19294,7 +19314,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0486",
+    "id": "dup-0487",
     "classification": "semantic",
     "sites": [
       {
@@ -19314,7 +19334,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0487",
+    "id": "dup-0488",
     "classification": "near",
     "sites": [
       {
@@ -19334,7 +19354,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0488",
+    "id": "dup-0489",
     "classification": "near",
     "sites": [
       {
@@ -19354,7 +19374,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0489",
+    "id": "dup-0490",
     "classification": "near",
     "sites": [
       {
@@ -19374,7 +19394,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0490",
+    "id": "dup-0491",
     "classification": "near",
     "sites": [
       {
@@ -19394,7 +19414,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0491",
+    "id": "dup-0492",
     "classification": "near",
     "sites": [
       {
@@ -19414,7 +19434,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0492",
+    "id": "dup-0493",
     "classification": "near",
     "sites": [
       {
@@ -19500,7 +19520,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0493",
+    "id": "dup-0494",
     "classification": "near",
     "sites": [
       {
@@ -19532,7 +19552,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0494",
+    "id": "dup-0495",
     "classification": "exact",
     "sites": [
       {
@@ -19552,7 +19572,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0495",
+    "id": "dup-0496",
     "classification": "near",
     "sites": [
       {
@@ -19572,7 +19592,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0496",
+    "id": "dup-0497",
     "classification": "near",
     "sites": [
       {
@@ -19598,7 +19618,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0497",
+    "id": "dup-0498",
     "classification": "exact",
     "sites": [
       {
@@ -19630,7 +19650,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0498",
+    "id": "dup-0499",
     "classification": "near",
     "sites": [
       {
@@ -19668,7 +19688,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0499",
+    "id": "dup-0500",
     "classification": "semantic",
     "sites": [
       {
@@ -19706,7 +19726,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 5 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0500",
+    "id": "dup-0501",
     "classification": "near",
     "sites": [
       {
@@ -19726,7 +19746,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0501",
+    "id": "dup-0502",
     "classification": "semantic",
     "sites": [
       {
@@ -19746,7 +19766,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0502",
+    "id": "dup-0503",
     "classification": "near",
     "sites": [
       {
@@ -19766,7 +19786,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0503",
+    "id": "dup-0504",
     "classification": "exact",
     "sites": [
       {
@@ -19786,7 +19806,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0504",
+    "id": "dup-0505",
     "classification": "near",
     "sites": [
       {
@@ -19824,7 +19844,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0505",
+    "id": "dup-0506",
     "classification": "semantic",
     "sites": [
       {
@@ -19844,7 +19864,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0506",
+    "id": "dup-0507",
     "classification": "exact",
     "sites": [
       {
@@ -19864,7 +19884,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0507",
+    "id": "dup-0508",
     "classification": "near",
     "sites": [
       {
@@ -19884,7 +19904,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0508",
+    "id": "dup-0509",
     "classification": "semantic",
     "sites": [
       {
@@ -19904,7 +19924,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0509",
+    "id": "dup-0510",
     "classification": "semantic",
     "sites": [
       {
@@ -19930,7 +19950,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0510",
+    "id": "dup-0511",
     "classification": "near",
     "sites": [
       {
@@ -19956,7 +19976,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0511",
+    "id": "dup-0512",
     "classification": "semantic",
     "sites": [
       {
@@ -19982,7 +20002,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0512",
+    "id": "dup-0513",
     "classification": "exact",
     "sites": [
       {
@@ -20014,7 +20034,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0513",
+    "id": "dup-0514",
     "classification": "near",
     "sites": [
       {
@@ -20034,7 +20054,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0514",
+    "id": "dup-0515",
     "classification": "exact",
     "sites": [
       {
@@ -20054,7 +20074,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0515",
+    "id": "dup-0516",
     "classification": "semantic",
     "sites": [
       {
@@ -20074,7 +20094,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0516",
+    "id": "dup-0517",
     "classification": "near",
     "sites": [
       {
@@ -20106,7 +20126,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0517",
+    "id": "dup-0518",
     "classification": "near",
     "sites": [
       {
@@ -20126,7 +20146,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0518",
+    "id": "dup-0519",
     "classification": "near",
     "sites": [
       {
@@ -20146,7 +20166,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0519",
+    "id": "dup-0520",
     "classification": "near",
     "sites": [
       {
@@ -20166,7 +20186,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0520",
+    "id": "dup-0521",
     "classification": "near",
     "sites": [
       {
@@ -20186,7 +20206,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0521",
+    "id": "dup-0522",
     "classification": "exact",
     "sites": [
       {
@@ -20224,7 +20244,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0522",
+    "id": "dup-0523",
     "classification": "exact",
     "sites": [
       {
@@ -20244,7 +20264,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0523",
+    "id": "dup-0524",
     "classification": "exact",
     "sites": [
       {
@@ -20264,7 +20284,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0524",
+    "id": "dup-0525",
     "classification": "exact",
     "sites": [
       {
@@ -20284,7 +20304,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0525",
+    "id": "dup-0526",
     "classification": "exact",
     "sites": [
       {
@@ -20304,7 +20324,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0526",
+    "id": "dup-0527",
     "classification": "exact",
     "sites": [
       {
@@ -20324,7 +20344,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0527",
+    "id": "dup-0528",
     "classification": "semantic",
     "sites": [
       {
@@ -20344,7 +20364,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0528",
+    "id": "dup-0529",
     "classification": "near",
     "sites": [
       {
@@ -20364,7 +20384,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0529",
+    "id": "dup-0530",
     "classification": "semantic",
     "sites": [
       {
@@ -20390,7 +20410,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0530",
+    "id": "dup-0531",
     "classification": "exact",
     "sites": [
       {
@@ -20410,7 +20430,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0531",
+    "id": "dup-0532",
     "classification": "exact",
     "sites": [
       {
@@ -20430,7 +20450,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0532",
+    "id": "dup-0533",
     "classification": "exact",
     "sites": [
       {
@@ -20450,7 +20470,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0533",
+    "id": "dup-0534",
     "classification": "exact",
     "sites": [
       {
@@ -20470,7 +20490,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0534",
+    "id": "dup-0535",
     "classification": "near",
     "sites": [
       {
@@ -20490,7 +20510,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0535",
+    "id": "dup-0536",
     "classification": "near",
     "sites": [
       {
@@ -20522,7 +20542,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0536",
+    "id": "dup-0537",
     "classification": "exact",
     "sites": [
       {
@@ -20548,7 +20568,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0537",
+    "id": "dup-0538",
     "classification": "semantic",
     "sites": [
       {
@@ -20568,7 +20588,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0538",
+    "id": "dup-0539",
     "classification": "exact",
     "sites": [
       {
@@ -20600,7 +20620,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0539",
+    "id": "dup-0540",
     "classification": "exact",
     "sites": [
       {
@@ -20620,7 +20640,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0540",
+    "id": "dup-0541",
     "classification": "near",
     "sites": [
       {
@@ -20640,7 +20660,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0541",
+    "id": "dup-0542",
     "classification": "exact",
     "sites": [
       {
@@ -20666,7 +20686,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0542",
+    "id": "dup-0543",
     "classification": "exact",
     "sites": [
       {
@@ -20692,7 +20712,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0543",
+    "id": "dup-0544",
     "classification": "semantic",
     "sites": [
       {
@@ -20718,7 +20738,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0544",
+    "id": "dup-0545",
     "classification": "exact",
     "sites": [
       {
@@ -20744,7 +20764,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0545",
+    "id": "dup-0546",
     "classification": "near",
     "sites": [
       {
@@ -20770,7 +20790,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0546",
+    "id": "dup-0547",
     "classification": "exact",
     "sites": [
       {
@@ -20790,7 +20810,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0547",
+    "id": "dup-0548",
     "classification": "exact",
     "sites": [
       {
@@ -20810,7 +20830,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0548",
+    "id": "dup-0549",
     "classification": "semantic",
     "sites": [
       {
@@ -20830,7 +20850,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0549",
+    "id": "dup-0550",
     "classification": "semantic",
     "sites": [
       {
@@ -20850,7 +20870,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0550",
+    "id": "dup-0551",
     "classification": "near",
     "sites": [
       {
@@ -20936,7 +20956,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0551",
+    "id": "dup-0552",
     "classification": "semantic",
     "sites": [
       {
@@ -20956,7 +20976,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0552",
+    "id": "dup-0553",
     "classification": "near",
     "sites": [
       {
@@ -20976,7 +20996,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0553",
+    "id": "dup-0554",
     "classification": "exact",
     "sites": [
       {
@@ -20996,7 +21016,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0554",
+    "id": "dup-0555",
     "classification": "semantic",
     "sites": [
       {
@@ -21016,7 +21036,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0555",
+    "id": "dup-0556",
     "classification": "exact",
     "sites": [
       {
@@ -21036,7 +21056,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0556",
+    "id": "dup-0557",
     "classification": "exact",
     "sites": [
       {
@@ -21056,7 +21076,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0557",
+    "id": "dup-0558",
     "classification": "semantic",
     "sites": [
       {
@@ -21076,7 +21096,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0558",
+    "id": "dup-0559",
     "classification": "exact",
     "sites": [
       {
@@ -21096,7 +21116,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0559",
+    "id": "dup-0560",
     "classification": "semantic",
     "sites": [
       {
@@ -21116,7 +21136,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0560",
+    "id": "dup-0561",
     "classification": "near",
     "sites": [
       {
@@ -21136,7 +21156,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0561",
+    "id": "dup-0562",
     "classification": "near",
     "sites": [
       {
@@ -21156,7 +21176,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0562",
+    "id": "dup-0563",
     "classification": "semantic",
     "sites": [
       {
@@ -21194,7 +21214,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 5 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0563",
+    "id": "dup-0564",
     "classification": "near",
     "sites": [
       {
@@ -21220,7 +21240,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0564",
+    "id": "dup-0565",
     "classification": "semantic",
     "sites": [
       {
@@ -21252,7 +21272,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 4 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0565",
+    "id": "dup-0566",
     "classification": "exact",
     "sites": [
       {
@@ -21272,7 +21292,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0566",
+    "id": "dup-0567",
     "classification": "exact",
     "sites": [
       {
@@ -21292,7 +21312,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0567",
+    "id": "dup-0568",
     "classification": "exact",
     "sites": [
       {
@@ -21312,7 +21332,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0568",
+    "id": "dup-0569",
     "classification": "exact",
     "sites": [
       {
@@ -21344,7 +21364,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0569",
+    "id": "dup-0570",
     "classification": "near",
     "sites": [
       {
@@ -21364,7 +21384,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0570",
+    "id": "dup-0571",
     "classification": "exact",
     "sites": [
       {
@@ -21384,7 +21404,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0571",
+    "id": "dup-0572",
     "classification": "near",
     "sites": [
       {
@@ -21404,7 +21424,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0572",
+    "id": "dup-0573",
     "classification": "exact",
     "sites": [
       {
@@ -21430,7 +21450,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0573",
+    "id": "dup-0574",
     "classification": "semantic",
     "sites": [
       {
@@ -21456,7 +21476,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0574",
+    "id": "dup-0575",
     "classification": "exact",
     "sites": [
       {
@@ -21476,7 +21496,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0575",
+    "id": "dup-0576",
     "classification": "near",
     "sites": [
       {
@@ -21550,7 +21570,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0576",
+    "id": "dup-0577",
     "classification": "near",
     "sites": [
       {
@@ -21582,7 +21602,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0577",
+    "id": "dup-0578",
     "classification": "exact",
     "sites": [
       {
@@ -21602,7 +21622,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0578",
+    "id": "dup-0579",
     "classification": "exact",
     "sites": [
       {
@@ -21634,7 +21654,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0579",
+    "id": "dup-0580",
     "classification": "exact",
     "sites": [
       {
@@ -21654,7 +21674,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0580",
+    "id": "dup-0581",
     "classification": "near",
     "sites": [
       {
@@ -21674,7 +21694,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0581",
+    "id": "dup-0582",
     "classification": "near",
     "sites": [
       {
@@ -21700,7 +21720,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0582",
+    "id": "dup-0583",
     "classification": "semantic",
     "sites": [
       {
@@ -21720,7 +21740,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0583",
+    "id": "dup-0584",
     "classification": "semantic",
     "sites": [
       {
@@ -21740,7 +21760,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0584",
+    "id": "dup-0585",
     "classification": "near",
     "sites": [
       {
@@ -21760,7 +21780,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0585",
+    "id": "dup-0586",
     "classification": "exact",
     "sites": [
       {
@@ -21858,7 +21878,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0586",
+    "id": "dup-0587",
     "classification": "near",
     "sites": [
       {
@@ -21932,7 +21952,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0587",
+    "id": "dup-0588",
     "classification": "exact",
     "sites": [
       {
@@ -21982,7 +22002,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0588",
+    "id": "dup-0589",
     "classification": "exact",
     "sites": [
       {
@@ -22008,7 +22028,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0589",
+    "id": "dup-0590",
     "classification": "near",
     "sites": [
       {
@@ -22040,7 +22060,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0590",
+    "id": "dup-0591",
     "classification": "near",
     "sites": [
       {
@@ -22060,7 +22080,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0591",
+    "id": "dup-0592",
     "classification": "exact",
     "sites": [
       {
@@ -22080,7 +22100,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0592",
+    "id": "dup-0593",
     "classification": "near",
     "sites": [
       {
@@ -22100,7 +22120,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0593",
+    "id": "dup-0594",
     "classification": "near",
     "sites": [
       {
@@ -22120,7 +22140,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0594",
+    "id": "dup-0595",
     "classification": "near",
     "sites": [
       {
@@ -22146,7 +22166,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0595",
+    "id": "dup-0596",
     "classification": "exact",
     "sites": [
       {
@@ -22172,7 +22192,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0596",
+    "id": "dup-0597",
     "classification": "near",
     "sites": [
       {
@@ -22222,7 +22242,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0597",
+    "id": "dup-0598",
     "classification": "near",
     "sites": [
       {
@@ -22242,7 +22262,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0598",
+    "id": "dup-0599",
     "classification": "semantic",
     "sites": [
       {
@@ -22262,7 +22282,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0599",
+    "id": "dup-0600",
     "classification": "exact",
     "sites": [
       {
@@ -22288,7 +22308,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0600",
+    "id": "dup-0601",
     "classification": "semantic",
     "sites": [
       {
@@ -22308,7 +22328,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0601",
+    "id": "dup-0602",
     "classification": "near",
     "sites": [
       {
@@ -22334,7 +22354,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0602",
+    "id": "dup-0603",
     "classification": "near",
     "sites": [
       {
@@ -22366,7 +22386,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0603",
+    "id": "dup-0604",
     "classification": "near",
     "sites": [
       {
@@ -22386,7 +22406,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0604",
+    "id": "dup-0605",
     "classification": "near",
     "sites": [
       {
@@ -22406,7 +22426,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0605",
+    "id": "dup-0606",
     "classification": "exact",
     "sites": [
       {
@@ -22426,7 +22446,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0606",
+    "id": "dup-0607",
     "classification": "exact",
     "sites": [
       {
@@ -22452,7 +22472,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0607",
+    "id": "dup-0608",
     "classification": "exact",
     "sites": [
       {
@@ -22472,7 +22492,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0608",
+    "id": "dup-0609",
     "classification": "semantic",
     "sites": [
       {
@@ -22492,7 +22512,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0609",
+    "id": "dup-0610",
     "classification": "near",
     "sites": [
       {
@@ -22512,7 +22532,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0610",
+    "id": "dup-0611",
     "classification": "exact",
     "sites": [
       {
@@ -22532,7 +22552,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0611",
+    "id": "dup-0612",
     "classification": "exact",
     "sites": [
       {
@@ -22552,7 +22572,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0612",
+    "id": "dup-0613",
     "classification": "exact",
     "sites": [
       {
@@ -22572,7 +22592,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0613",
+    "id": "dup-0614",
     "classification": "near",
     "sites": [
       {
@@ -22604,7 +22624,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0614",
+    "id": "dup-0615",
     "classification": "exact",
     "sites": [
       {
@@ -22624,7 +22644,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0615",
+    "id": "dup-0616",
     "classification": "exact",
     "sites": [
       {
@@ -22644,7 +22664,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0616",
+    "id": "dup-0617",
     "classification": "near",
     "sites": [
       {
@@ -22664,7 +22684,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0617",
+    "id": "dup-0618",
     "classification": "near",
     "sites": [
       {
@@ -22696,7 +22716,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0618",
+    "id": "dup-0619",
     "classification": "near",
     "sites": [
       {
@@ -22716,7 +22736,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0619",
+    "id": "dup-0620",
     "classification": "exact",
     "sites": [
       {
@@ -22790,7 +22810,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0620",
+    "id": "dup-0621",
     "classification": "near",
     "sites": [
       {
@@ -22816,7 +22836,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0621",
+    "id": "dup-0622",
     "classification": "near",
     "sites": [
       {
@@ -22836,7 +22856,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0622",
+    "id": "dup-0623",
     "classification": "near",
     "sites": [
       {
@@ -22862,7 +22882,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0623",
+    "id": "dup-0624",
     "classification": "near",
     "sites": [
       {
@@ -22888,7 +22908,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0624",
+    "id": "dup-0625",
     "classification": "near",
     "sites": [
       {
@@ -22908,7 +22928,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0625",
+    "id": "dup-0626",
     "classification": "exact",
     "sites": [
       {
@@ -22928,7 +22948,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0626",
+    "id": "dup-0627",
     "classification": "near",
     "sites": [
       {
@@ -22948,7 +22968,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0627",
+    "id": "dup-0628",
     "classification": "near",
     "sites": [
       {
@@ -22968,7 +22988,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0628",
+    "id": "dup-0629",
     "classification": "near",
     "sites": [
       {
@@ -22988,7 +23008,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0629",
+    "id": "dup-0630",
     "classification": "near",
     "sites": [
       {
@@ -23008,7 +23028,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0630",
+    "id": "dup-0631",
     "classification": "exact",
     "sites": [
       {
@@ -23028,7 +23048,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0631",
+    "id": "dup-0632",
     "classification": "near",
     "sites": [
       {
@@ -23054,7 +23074,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0632",
+    "id": "dup-0633",
     "classification": "exact",
     "sites": [
       {
@@ -23074,7 +23094,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0633",
+    "id": "dup-0634",
     "classification": "exact",
     "sites": [
       {
@@ -23094,7 +23114,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0634",
+    "id": "dup-0635",
     "classification": "near",
     "sites": [
       {
@@ -23120,7 +23140,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0635",
+    "id": "dup-0636",
     "classification": "near",
     "sites": [
       {
@@ -23140,7 +23160,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0636",
+    "id": "dup-0637",
     "classification": "near",
     "sites": [
       {
@@ -23160,7 +23180,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0637",
+    "id": "dup-0638",
     "classification": "near",
     "sites": [
       {
@@ -23180,7 +23200,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0638",
+    "id": "dup-0639",
     "classification": "near",
     "sites": [
       {
@@ -23440,7 +23460,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0639",
+    "id": "dup-0640",
     "classification": "near",
     "sites": [
       {
@@ -23466,7 +23486,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0640",
+    "id": "dup-0641",
     "classification": "near",
     "sites": [
       {
@@ -23486,7 +23506,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0641",
+    "id": "dup-0642",
     "classification": "near",
     "sites": [
       {
@@ -23506,7 +23526,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0642",
+    "id": "dup-0643",
     "classification": "exact",
     "sites": [
       {
@@ -23526,7 +23546,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0643",
+    "id": "dup-0644",
     "classification": "semantic",
     "sites": [
       {
@@ -23558,7 +23578,7 @@
     "note": "mandatory sweep: parallel constructor functions - 4 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0644",
+    "id": "dup-0645",
     "classification": "exact",
     "sites": [
       {
@@ -23578,7 +23598,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0645",
+    "id": "dup-0646",
     "classification": "near",
     "sites": [
       {
@@ -23598,7 +23618,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0646",
+    "id": "dup-0647",
     "classification": "semantic",
     "sites": [
       {
@@ -23630,7 +23650,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 4 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0647",
+    "id": "dup-0648",
     "classification": "near",
     "sites": [
       {
@@ -23662,7 +23682,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0648",
+    "id": "dup-0649",
     "classification": "semantic",
     "sites": [
       {
@@ -23682,7 +23702,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0649",
+    "id": "dup-0650",
     "classification": "exact",
     "sites": [
       {
@@ -23702,7 +23722,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0650",
+    "id": "dup-0651",
     "classification": "semantic",
     "sites": [
       {
@@ -23728,7 +23748,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0651",
+    "id": "dup-0652",
     "classification": "semantic",
     "sites": [
       {
@@ -23748,7 +23768,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0652",
+    "id": "dup-0653",
     "classification": "near",
     "sites": [
       {
@@ -23774,7 +23794,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0653",
+    "id": "dup-0654",
     "classification": "exact",
     "sites": [
       {
@@ -23794,7 +23814,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0654",
+    "id": "dup-0655",
     "classification": "semantic",
     "sites": [
       {
@@ -23814,7 +23834,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0655",
+    "id": "dup-0656",
     "classification": "near",
     "sites": [
       {
@@ -23840,7 +23860,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0656",
+    "id": "dup-0657",
     "classification": "exact",
     "sites": [
       {
@@ -23860,7 +23880,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0657",
+    "id": "dup-0658",
     "classification": "exact",
     "sites": [
       {
@@ -23880,7 +23900,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0658",
+    "id": "dup-0659",
     "classification": "exact",
     "sites": [
       {
@@ -23906,7 +23926,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0659",
+    "id": "dup-0660",
     "classification": "exact",
     "sites": [
       {
@@ -23956,7 +23976,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0660",
+    "id": "dup-0661",
     "classification": "semantic",
     "sites": [
       {
@@ -23982,7 +24002,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0661",
+    "id": "dup-0662",
     "classification": "exact",
     "sites": [
       {
@@ -24008,7 +24028,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0662",
+    "id": "dup-0663",
     "classification": "near",
     "sites": [
       {
@@ -24034,7 +24054,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0663",
+    "id": "dup-0664",
     "classification": "exact",
     "sites": [
       {
@@ -24054,7 +24074,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0664",
+    "id": "dup-0665",
     "classification": "semantic",
     "sites": [
       {
@@ -24074,7 +24094,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0665",
+    "id": "dup-0666",
     "classification": "near",
     "sites": [
       {
@@ -24094,7 +24114,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0666",
+    "id": "dup-0667",
     "classification": "near",
     "sites": [
       {
@@ -24120,7 +24140,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0667",
+    "id": "dup-0668",
     "classification": "near",
     "sites": [
       {
@@ -24140,7 +24160,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0668",
+    "id": "dup-0669",
     "classification": "near",
     "sites": [
       {
@@ -24190,7 +24210,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0669",
+    "id": "dup-0670",
     "classification": "near",
     "sites": [
       {
@@ -24210,7 +24230,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0670",
+    "id": "dup-0671",
     "classification": "near",
     "sites": [
       {
@@ -24230,7 +24250,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0671",
+    "id": "dup-0672",
     "classification": "exact",
     "sites": [
       {
@@ -24250,7 +24270,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0672",
+    "id": "dup-0673",
     "classification": "near",
     "sites": [
       {
@@ -24276,7 +24296,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0673",
+    "id": "dup-0674",
     "classification": "near",
     "sites": [
       {
@@ -24302,7 +24322,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0674",
+    "id": "dup-0675",
     "classification": "near",
     "sites": [
       {
@@ -24322,7 +24342,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0675",
+    "id": "dup-0676",
     "classification": "near",
     "sites": [
       {
@@ -24342,7 +24362,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0676",
+    "id": "dup-0677",
     "classification": "near",
     "sites": [
       {
