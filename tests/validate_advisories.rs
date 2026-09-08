@@ -113,6 +113,7 @@ fn persist_index(root: &Path, entries: &[(&str, &str)]) {
                     kind: Kind::Function,
                     name: "f".into(),
                     line: 1,
+                    is_test: false,
                 }],
                 refs: vec![],
             },

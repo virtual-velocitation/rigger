@@ -46,17 +46,20 @@ fn a_caller_less_reference_serializes_byte_identically_to_the_pre37_form() {
                 kind: Kind::Function,
                 name: "f".into(),
                 line: 1,
+                is_test: false,
             }],
             refs: vec![
                 SymRef {
                     name: "G".into(),
                     line: 2,
                     enclosing: None,
+                    is_test: false,
                 },
                 SymRef {
                     name: "H".into(),
                     line: 3,
                     enclosing: None,
+                    is_test: false,
                 },
             ],
         },
@@ -88,11 +91,13 @@ fn a_caller_attributed_reference_serializes_and_reloads_its_enclosing_name() {
                 kind: Kind::Function,
                 name: "f".into(),
                 line: 1,
+                is_test: false,
             }],
             refs: vec![SymRef {
                 name: "G".into(),
                 line: 2,
                 enclosing: Some("f".into()),
+                is_test: false,
             }],
         },
     );

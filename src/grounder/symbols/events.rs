@@ -72,11 +72,34 @@ pub fn project_batches_paced(root: &str, workers: usize) -> (Vec<(String, Vec<Ev
 /// historical query still reaches them). Which event is first is deterministic (the first
 /// definition when the file defines anything, else the first reference), so a refs-only file still
 /// supersedes; a file that extracts to nothing emits no events and thus no boundary.
+///
+/// Spec 86 criterion 1 (TESTS ARE NOT NODES): this is "the code-entity pass" the criterion names,
+/// so the exclusion rule lives here, at the ONE place both what a file's definitions/references
+/// ARE (`fs`) and where the file LIVES (`file`) are in hand together. Two exclusions, applied in
+/// this order:
+///
+/// 1. **Whole file under a `tests/` directory** ([`is_under_tests_dir`]): emits NOTHING at all -
+///    no `CodeEntityExtracted`, no `EdgeInferred`, for any item the file defines or references,
+///    product-shaped or not. `fs` is left untouched (still PARSED, for grounding); this file
+///    simply contributes no batch, exactly like a file that extracts to nothing.
+/// 2. **A `#[test]`/`#[cfg(test)]` region inside an otherwise-included file**
+///    ([`crate::grounder::symbols::model::Def::is_test`] /
+///    [`crate::grounder::symbols::model::SymRef::is_test`], computed once at extraction time):
+///    that ONE definition or reference is skipped, so a product file's own entities and edges
+///    still emit normally around it.
+///
+/// Either way, excluded code creates no NODE and no structural edge "on the canvas" - the graph
+/// holds the product's own structure, never the tests that prove it. (The EVIDENCE those excluded
+/// references carry - `proven_by` counts and their `file:line`s - is a separate concern this
+/// criterion does not own.)
 pub fn extract_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
+    if is_under_tests_dir(file) {
+        return Vec::new();
+    }
     let lang = lang_str(fs.lang);
     let mut events = Vec::with_capacity(fs.defs.len() + fs.refs.len());
 
-    let mut defs: Vec<&Def> = fs.defs.iter().collect();
+    let mut defs: Vec<&Def> = fs.defs.iter().filter(|d| !d.is_test).collect();
     defs.sort_by(|a, b| {
         a.name
             .cmp(&b.name)
@@ -99,7 +122,7 @@ pub fn extract_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
         ));
     }
 
-    let mut refs: Vec<&SymRef> = fs.refs.iter().collect();
+    let mut refs: Vec<&SymRef> = fs.refs.iter().filter(|r| !r.is_test).collect();
     refs.sort_by(|a, b| a.name.cmp(&b.name).then(a.line.cmp(&b.line)));
     for r in refs {
         let payload = EdgeInferred {
@@ -153,6 +176,19 @@ fn set_fresh(e: &mut Event) {
         }
         other => unreachable!("extract_events emits only code events, got {other}"),
     }
+}
+
+/// Spec 86 criterion 1: whether `file` (a '/'-separated, project-relative path, matching what
+/// [`extract_events`]'s `file` parameter and every batch key already carry) is UNDER a `tests/`
+/// directory - the Rust (and this repo's own) convention for out-of-tree integration test
+/// sources, distinct from an in-file `#[cfg(test)]` module. Matched on DIRECTORY components only
+/// (every segment except the file's own name), so `tests/foo.rs` and `crate/tests/bar.rs` are
+/// excluded while `src/testsuite.rs` (a product file that merely reads close to "tests") is not -
+/// the file's own component is never compared against the exact segment `"tests"`.
+fn is_under_tests_dir(file: &str) -> bool {
+    let mut segments: Vec<&str> = file.split('/').collect();
+    segments.pop(); // the file's own name is never a directory component
+    segments.contains(&"tests")
 }
 
 /// The lowercase, stable string for a rigger definition `Kind`, carried on the emitted event and
@@ -294,17 +330,20 @@ mod tests {
                     kind: Kind::Function,
                     name: "beta".to_string(),
                     line: 9,
+                    is_test: false,
                 },
                 Def {
                     kind: Kind::Function,
                     name: "alpha".to_string(),
                     line: 3,
+                    is_test: false,
                 },
             ],
             refs: vec![SymRef {
                 name: "helper".to_string(),
                 line: 5,
                 enclosing: None,
+                is_test: false,
             }],
         };
         let events = extract_events("src/a.rs", &fs);
@@ -350,11 +389,13 @@ mod tests {
                     name: "clamp".to_string(),
                     line: 2,
                     enclosing: None,
+                    is_test: false,
                 },
                 SymRef {
                     name: "apply".to_string(),
                     line: 4,
                     enclosing: None,
+                    is_test: false,
                 },
             ],
         };
@@ -392,6 +433,7 @@ mod tests {
                 kind: Kind::Function,
                 name: "F".to_string(),
                 line: 1,
+                is_test: false,
             }],
             refs: vec![
                 // A call to `G` from inside the body of `F`: attributed to its enclosing caller.
@@ -399,12 +441,14 @@ mod tests {
                     name: "G".to_string(),
                     line: 2,
                     enclosing: Some("F".to_string()),
+                    is_test: false,
                 },
                 // A top-level `use` outside every definition: no caller.
                 SymRef {
                     name: "std_thing".to_string(),
                     line: 5,
                     enclosing: None,
+                    is_test: false,
                 },
             ],
         };
@@ -463,6 +507,246 @@ mod tests {
         assert!(
             events.is_empty(),
             "a file that extracts to nothing emits no events; got {events:?}"
+        );
+    }
+
+    /// A `FileSymbols` carrying a product-shaped (non-test) definition and reference alongside a
+    /// non-empty index - reused across the spec-86 tests below so each fixture is built the same
+    /// way and only ITS `file` path or `is_test` marking varies.
+    fn product_fs() -> FileSymbols {
+        FileSymbols {
+            lang: Lang::Rust,
+            defs: vec![Def {
+                kind: Kind::Function,
+                name: "product_fn".into(),
+                line: 1,
+                is_test: false,
+            }],
+            refs: vec![SymRef {
+                name: "product_fn".into(),
+                line: 2,
+                enclosing: None,
+                is_test: false,
+            }],
+        }
+    }
+
+    #[test]
+    fn extract_events_excludes_a_file_under_a_tests_directory_entirely() {
+        // Spec 86 criterion 1: EVERY file under a `tests/` directory is excluded from the
+        // code-entity pass, wholesale - no CodeEntityExtracted, no EdgeInferred - regardless of
+        // what it defines or references (product-shaped content included, so the rule is a path
+        // rule, not a content sniff). A SIBLING file at the same content but a `src/` path still
+        // emits normally, proving the exclusion keys on the DIRECTORY, not the content.
+        let fs = product_fs();
+        assert!(
+            extract_events("tests/foo.rs", &fs).is_empty(),
+            "a top-level tests/ file emits nothing"
+        );
+        assert!(
+            extract_events("crate/tests/bar.rs", &fs).is_empty(),
+            "a NESTED tests/ directory (not just a top-level one) is excluded too"
+        );
+        assert!(
+            !extract_events("src/foo.rs", &fs).is_empty(),
+            "the exclusion is a DIRECTORY rule: a product path with the identical content still \
+             emits"
+        );
+        assert!(
+            !extract_events("src/testsuite.rs", &fs).is_empty(),
+            "a file that merely reads close to \"tests\" in its OWN name (not a directory \
+             component) is never excluded"
+        );
+    }
+
+    #[test]
+    fn extract_events_skips_is_test_items_and_the_fresh_boundary_lands_on_the_first_survivor() {
+        // Spec 86 criterion 1, the in-file case: a definition/reference the extraction pass
+        // marked `is_test` (a `#[cfg(test)]`/`#[test]` region) emits no event, while a product
+        // sibling in the SAME file emits normally. `aaa_test_item` sorts BEFORE `product_fn`, so
+        // this also proves the `fresh` batch-boundary marker lands on the first SURVIVING event,
+        // not on a test item that would have sorted first had it not been filtered out.
+        let fs = FileSymbols {
+            lang: Lang::Rust,
+            defs: vec![
+                Def {
+                    kind: Kind::Function,
+                    name: "aaa_test_item".into(),
+                    line: 5,
+                    is_test: true,
+                },
+                Def {
+                    kind: Kind::Function,
+                    name: "product_fn".into(),
+                    line: 1,
+                    is_test: false,
+                },
+            ],
+            refs: vec![
+                SymRef {
+                    name: "test_only_callee".into(),
+                    line: 6,
+                    enclosing: Some("aaa_test_item".into()),
+                    is_test: true,
+                },
+                SymRef {
+                    name: "product_fn".into(),
+                    line: 2,
+                    enclosing: None,
+                    is_test: false,
+                },
+            ],
+        };
+        let events = extract_events("src/mixed.rs", &fs);
+
+        let names: Vec<String> = events
+            .iter()
+            .map(|e| {
+                serde_json::from_slice::<serde_json::Value>(&e.data)
+                    .unwrap()
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec!["product_fn".to_string(), "product_fn".to_string()],
+            "only the product definition and the product reference emit; the two is_test items \
+             emit nothing; got {names:?}"
+        );
+        assert_eq!(
+            events[0].type_, TYPE_CODE_ENTITY_EXTRACTED,
+            "the surviving definition emits before the surviving reference"
+        );
+        let fresh_of = |e: &Event| -> bool {
+            serde_json::from_slice::<serde_json::Value>(&e.data)
+                .unwrap()
+                .get("fresh")
+                .and_then(|f| f.as_bool())
+                .unwrap_or(false)
+        };
+        assert!(
+            fresh_of(&events[0]),
+            "the batch boundary lands on the first SURVIVING event (product_fn), not on the \
+             filtered-out aaa_test_item that would have sorted first"
+        );
+        assert!(
+            !fresh_of(&events[1]),
+            "only the first surviving event carries the boundary"
+        );
+    }
+
+    #[test]
+    fn ingesting_a_fixture_with_product_and_test_code_graphs_only_the_product_and_lists_no_test_file(
+    ) {
+        // Spec 86 criterion 1's own Done-when, end to end: a fixture with product code, a
+        // `tests/` file, a `#[cfg(test)]` module, and `#[test]` functions - ingested through the
+        // REAL extraction + emit + fold pipeline (`build_index` -> `index_events` -> `Projector`).
+        // The graph must hold a code-entity node for the product item and NONE for any test item;
+        // the test file must carry no KIND_FILE container node at all (the concrete mechanism
+        // behind "the files lens lists no test file as a subject" - the files lens folds each
+        // code entity by its own file, so a file with no code-entity node can never be one of its
+        // subjects).
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("product.rs"),
+            "\
+fn product_fn() {
+    helper();
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn it_works() {
+        product_fn();
+    }
+}
+",
+        )
+        .unwrap();
+        std::fs::create_dir(dir.path().join("tests")).unwrap();
+        std::fs::write(
+            dir.path().join("tests").join("integration.rs"),
+            "\
+#[test]
+fn an_integration_test() {
+    also_calls_product();
+}
+",
+        )
+        .unwrap();
+
+        let idx = build_index(dir.path().to_str().unwrap(), None);
+        let events = index_events(&idx);
+
+        let p = Projector::open(":memory:", "test").unwrap();
+        for (i, mut e) in events.into_iter().enumerate() {
+            e.position = (i + 1) as u64;
+            p.apply(&e).unwrap();
+        }
+
+        let g = p
+            .subgraph(
+                &["product.rs".to_string(), "tests/integration.rs".to_string()],
+                3,
+            )
+            .unwrap();
+
+        // The product item has a code-entity node...
+        assert!(
+            g.nodes
+                .iter()
+                .any(|n| n.kind == KIND_CODE_ENTITY && n.id == "product.rs::product_fn"),
+            "the product definition folds into a code-entity node; got {:?}",
+            g.nodes
+        );
+        // ...and its own file has a container node (it has product content to hold).
+        assert!(
+            g.nodes
+                .iter()
+                .any(|n| n.kind == KIND_FILE && n.id == "product.rs"),
+            "the product file carries its own KIND_FILE container node; got {:?}",
+            g.nodes
+        );
+        assert!(
+            g.edges
+                .iter()
+                .any(|e| e.rel == REL_CONTAINS && e.to == "product.rs::product_fn"),
+            "a CONTAINS edge ties the product file to its product definition; got {:?}",
+            g.edges
+        );
+
+        // NONE of the test items - the #[cfg(test)] module, its #[test] fn, or the whole
+        // tests/integration.rs file's #[test] fn - ever became a code-entity node.
+        for excluded in [
+            "product.rs::tests",
+            "product.rs::it_works",
+            "tests/integration.rs::an_integration_test",
+        ] {
+            assert!(
+                !g.nodes.iter().any(|n| n.id == excluded),
+                "{excluded:?} is test code and must NEVER become a graph node; got {:?}",
+                g.nodes
+            );
+        }
+        // The tests/ file carries NO KIND_FILE node at all - it contributed no batch (whole-file
+        // exclusion), so there is nothing for the files lens to ever list as a subject.
+        assert!(
+            !g.nodes
+                .iter()
+                .any(|n| n.kind == KIND_FILE && n.id == "tests/integration.rs"),
+            "an all-test file must not even carry a file container node; got {:?}",
+            g.nodes
+        );
+        // No REFERENCES edge from the test file's call into `also_calls_product` ever landed
+        // "on the canvas" either - the whole file emitted nothing.
+        assert!(
+            !g.edges.iter().any(|e| e.from == "tests/integration.rs"),
+            "an excluded file's references never become structural edges; got {:?}",
+            g.edges
         );
     }
 }

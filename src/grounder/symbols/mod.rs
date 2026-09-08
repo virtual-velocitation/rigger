@@ -285,6 +285,7 @@ mod staleness_tests {
                         kind: Kind::Function,
                         name: "f".into(),
                         line: 1,
+                        is_test: false,
                     }],
                     refs: vec![],
                 },

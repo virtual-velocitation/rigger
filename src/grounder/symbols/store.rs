@@ -213,11 +213,13 @@ mod tests {
                         kind: Kind::Function,
                         name: "b".into(),
                         line: 2,
+                        is_test: false,
                     },
                     Def {
                         kind: Kind::Function,
                         name: "a".into(),
                         line: 1,
+                        is_test: false,
                     },
                 ],
                 refs: vec![],

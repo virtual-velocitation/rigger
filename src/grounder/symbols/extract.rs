@@ -66,6 +66,9 @@ pub fn extract(
                 kind: kind_of(syntax),
                 name,
                 line,
+                // Resolved below, once every definition's range is known (test_regions needs the
+                // WHOLE set to decide containment, not just what has been seen so far).
+                is_test: false,
             });
         } else {
             ref_positions.push(tag.range.start);
@@ -73,6 +76,7 @@ pub fn extract(
                 name,
                 line,
                 enclosing: None,
+                is_test: false,
             });
         }
     }
@@ -82,7 +86,81 @@ pub fn extract(
     for (r, &pos) in refs.iter_mut().zip(ref_positions.iter()) {
         r.enclosing = enclosing_def(&def_ranges, pos);
     }
+    // Spec 86 criterion 1: mark every definition and reference that falls inside a TEST REGION -
+    // a definition directly annotated `#[test]`/`#[cfg(test)]` (or nested inside one). Byte-range
+    // based, so it is exact regardless of which line a construct starts or ends on; computed
+    // AFTER every def's range is known, so a def's own containment check can see siblings and
+    // ancestors alike whatever order the tags happened to arrive in.
+    let regions = test_regions(source, &def_ranges);
+    if !regions.is_empty() {
+        for (d, (range, _)) in defs.iter_mut().zip(def_ranges.iter()) {
+            d.is_test = regions
+                .iter()
+                .any(|r| r.start <= range.start && range.end <= r.end);
+        }
+        for (r, &pos) in refs.iter_mut().zip(ref_positions.iter()) {
+            r.is_test = regions.iter().any(|region| region.contains(&pos));
+        }
+    }
     Ok(FileSymbols { lang, defs, refs })
+}
+
+/// The byte ranges of every SELF-ATTRIBUTED test definition in `def_ranges` - one whose own
+/// `#[test]`/`#[cfg(..test..)]` attribute stack sits directly above it in `source`
+/// ([`preceded_by_test_attribute`]). A definition NESTED inside one of these ranges (a plain
+/// helper with no attribute of its own, living inside a `#[cfg(test)] mod tests { .. }`) is test
+/// code too, but it earns that status by CONTAINMENT, not by appearing in this list - the caller
+/// checks containment against the ranges this returns, so a doubly-nested item is covered by the
+/// SAME outer range without this function needing to recurse.
+fn test_regions(
+    source: &str,
+    def_ranges: &[(std::ops::Range<usize>, String)],
+) -> Vec<std::ops::Range<usize>> {
+    def_ranges
+        .iter()
+        .filter(|(range, _)| preceded_by_test_attribute(source, range.start))
+        .map(|(range, _)| range.clone())
+        .collect()
+}
+
+/// Whether the construct starting at byte `start` in `source` is directly preceded - skipping
+/// only blank lines and `//`-led comments (plain `//`, doc `///`/`//!`) - by an attribute line
+/// naming the `test` token: `#[test]` itself, or any `#[cfg(...)]` (`cfg_attr` included) whose
+/// predicate mentions `test` as a standalone word (`#[cfg(test)]`,
+/// `#[cfg(all(test, feature = "x"))]`, `#[cfg(any(test))]`, ...). Attributes are authored one per
+/// line throughout this codebase (and every fixture this rule is proven against), so the scan is
+/// LINE based: it walks upward from the line immediately above `start` and stops at the first
+/// line that is neither blank, a `//` comment, nor a single-line `#[...]` attribute - the boundary
+/// of the contiguous attribute/comment stack directly above the construct. Every attribute in
+/// that stack is inspected (not just the nearest), so `#[test]` two lines above a
+/// `#[should_panic]` still matches, and a stray `//` remark between two stacked attributes never
+/// severs the scan.
+fn preceded_by_test_attribute(source: &str, start: usize) -> bool {
+    let mut found = false;
+    for line in source[..start.min(source.len())].lines().rev() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with("//") {
+            continue;
+        }
+        if let Some(inner) = trimmed.strip_prefix("#[").and_then(|s| s.strip_suffix(']')) {
+            if names_test_token(inner) {
+                found = true;
+            }
+            continue;
+        }
+        break;
+    }
+    found
+}
+
+/// Whether an attribute's bracket contents name `test` as a standalone identifier/cfg-predicate -
+/// split on every non-alphanumeric, non-underscore byte and matched EXACTLY, so `#[test]` and
+/// `#[cfg(test)]` match while a similarly-spelled but distinct token (`testing`, `latest`,
+/// `test_helper`) never does.
+fn names_test_token(attr_body: &str) -> bool {
+    attr_body
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .any(|tok| tok == "test")
 }
 
 /// The name of the INNERMOST definition whose byte range contains `pos`, or `None` when `pos`
@@ -337,6 +415,118 @@ fn outer() {
             g_nested.enclosing.as_deref(),
             Some("inner"),
             "a call in a nested definition attributes to the innermost enclosing definition"
+        );
+    }
+
+    #[test]
+    fn test_annotated_definitions_and_everything_nested_inside_them_are_marked_is_test() {
+        // Spec 86 criterion 1's own fixture shape: product code alongside a `#[cfg(test)]` module
+        // that itself holds a plain, UNATTRIBUTED helper and a `#[test]` function. A `#[test]`
+        // function, a `#[cfg(test)]` module, and everything - definitions AND references - nested
+        // inside either, are marked `is_test`; product code (and a reference PRODUCT code makes)
+        // stays `is_test: false`.
+        let src = "\
+fn product() {
+    helper_call();
+}
+
+#[cfg(test)]
+mod tests {
+    // A plain helper with NO attribute of its own - still test code, by CONTAINMENT inside the
+    // cfg(test) module, not by its own annotation.
+    fn helper() {
+        product();
+    }
+
+    #[test]
+    fn it_works() {
+        helper();
+    }
+}
+";
+        let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
+        let fs = extract(src, Lang::Rust, &language, tree_sitter_rust::TAGS_QUERY).unwrap();
+
+        let def_is_test = |name: &str| {
+            fs.defs
+                .iter()
+                .find(|d| d.name == name)
+                .unwrap_or_else(|| panic!("no def named {name:?}; got {:?}", fs.defs))
+                .is_test
+        };
+        assert!(!def_is_test("product"), "product code is never test code");
+        assert!(
+            def_is_test("tests"),
+            "the #[cfg(test)] module itself is test code"
+        );
+        assert!(
+            def_is_test("helper"),
+            "a plain helper with no attribute of its own is test code by CONTAINMENT inside the \
+             cfg(test) module"
+        );
+        assert!(def_is_test("it_works"), "a #[test] function is test code");
+
+        // References: the call inside product code is not test code; the calls inside the
+        // (transitively) test-scoped `helper`/`it_works` bodies are.
+        let ref_is_test = |name: &str, line: u32| {
+            fs.refs
+                .iter()
+                .find(|r| r.name == name && r.line == line)
+                .unwrap_or_else(|| panic!("no ref {name:?}@{line}; got {:?}", fs.refs))
+                .is_test
+        };
+        assert!(
+            !ref_is_test("helper_call", 2),
+            "a reference from product code is not test code"
+        );
+        assert!(
+            ref_is_test("product", 10),
+            "a reference from the unattributed helper nested in cfg(test) is test code"
+        );
+        assert!(
+            ref_is_test("helper", 15),
+            "a reference from the #[test] function is test code"
+        );
+    }
+
+    #[test]
+    fn cfg_predicates_naming_test_are_recognized_and_similarly_spelled_tokens_are_not() {
+        // `#[cfg(all(test, feature = "x"))]` is the exact shape this repository's own source uses
+        // (e.g. a `#[cfg(all(test, feature = "symbols"))] mod tests` gate) - a compound predicate
+        // naming `test` as one of several conjuncts must still be recognized. Conversely a
+        // similarly-spelled but DISTINCT token (`testing`) must never false-positive: `test` is
+        // matched as a whole word, never a substring.
+        let src = "\
+#[cfg(all(test, feature = \"x\"))]
+fn compound_predicate() {}
+
+#[cfg(feature = \"testing\")]
+fn similarly_spelled_feature_is_not_a_test() {}
+
+#[allow(dead_code)]
+#[cfg(test)]
+fn a_stacked_non_test_attribute_above_does_not_hide_the_real_one() {}
+";
+        let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
+        let fs = extract(src, Lang::Rust, &language, tree_sitter_rust::TAGS_QUERY).unwrap();
+        let def_is_test = |name: &str| {
+            fs.defs
+                .iter()
+                .find(|d| d.name == name)
+                .unwrap_or_else(|| panic!("no def named {name:?}; got {:?}", fs.defs))
+                .is_test
+        };
+        assert!(
+            def_is_test("compound_predicate"),
+            "#[cfg(all(test, ..))] names the test token as one conjunct and must match"
+        );
+        assert!(
+            !def_is_test("similarly_spelled_feature_is_not_a_test"),
+            "\"testing\" is a distinct token from \"test\" and must never false-positive"
+        );
+        assert!(
+            def_is_test("a_stacked_non_test_attribute_above_does_not_hide_the_real_one"),
+            "every attribute in the stack is inspected, not just the one nearest the item"
         );
     }
 

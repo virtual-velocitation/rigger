@@ -40,6 +40,22 @@ pub struct Def {
     pub kind: Kind,
     pub name: String,
     pub line: u32,
+    /// Spec 86 criterion 1: whether this definition is TEST code - directly annotated
+    /// `#[test]`/`#[cfg(test)]` (or any `cfg(...)` predicate naming the `test` token, e.g.
+    /// `#[cfg(all(test, feature = "x"))]`), or nested inside such a definition (a plain helper
+    /// `fn` inside a `#[cfg(test)] mod tests { .. }` with no attribute of its own). Computed ONCE
+    /// during extraction ([`crate::grounder::symbols::extract::extract`]) from the source text
+    /// and byte ranges, which are NOT available downstream (a reused persisted index never
+    /// re-reads the source), so it must be carried on the definition itself rather than
+    /// re-derived later. The code-entity EMIT pass reads it to exclude test code from graph NODE
+    /// creation; the parser-free model here still records it - "still PARSED" - so grounding and
+    /// the reference-degree/hub primitives stay UNCHANGED (this field adds information, it drops
+    /// nothing). `#[serde(default)]` so a pre-86 persisted index loads with every definition
+    /// `is_test: false` (the safe default - never manufacturing a false exclusion of old data),
+    /// and the false (overwhelmingly common) case serializes with no key at all, byte-identical
+    /// to the pre-86 wire form.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_test: bool,
 }
 
 /// A reference site: the referenced name, its 1-based line, and the ENCLOSING definition the
@@ -54,6 +70,14 @@ pub struct SymRef {
     pub line: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enclosing: Option<String>,
+    /// Spec 86 criterion 1, the reference-side twin of [`Def::is_test`]: whether this reference
+    /// occurs INSIDE a test region (a `#[test]` function, a `#[cfg(test)]` module, or anything
+    /// nested inside either). Computed the same way, at the same time, over the same byte ranges.
+    /// The code-entity emit pass reads it to exclude a test-scoped reference from becoming a
+    /// structural edge "on the canvas"; serde-defaulted and omitted when false for the same
+    /// byte-identical-wire-form reason as `Def::is_test`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_test: bool,
 }
 
 /// One file's extracted symbols, tagged with the language it was parsed as (the scope key for
@@ -228,11 +252,13 @@ mod tests {
                     kind: Kind::Function,
                     name: "parse".into(),
                     line: 3,
+                    is_test: false,
                 }],
                 refs: vec![SymRef {
                     name: "parse".into(),
                     line: 9,
                     enclosing: None,
+                    is_test: false,
                 }],
             },
         );
@@ -244,6 +270,7 @@ mod tests {
                     kind: Kind::Function,
                     name: "parse".into(),
                     line: 1,
+                    is_test: false,
                 }],
                 refs: vec![],
             },
@@ -271,6 +298,7 @@ mod tests {
                         name: "new".into(),
                         line: 1,
                         enclosing: None,
+                        is_test: false,
                     }],
                 },
             );
@@ -283,11 +311,13 @@ mod tests {
                     kind: Kind::Function,
                     name: "apply_damage".into(),
                     line: 1,
+                    is_test: false,
                 }],
                 refs: vec![SymRef {
                     name: "apply_damage".into(),
                     line: 2,
                     enclosing: None,
+                    is_test: false,
                 }],
             },
         );
@@ -320,6 +350,7 @@ mod tests {
                 name: format!("hapax_{i}"),
                 line: 1,
                 enclosing: None,
+                is_test: false,
             });
         }
         // Two genuine high-degree outliers (degree 15 each) - the real hubs.
@@ -328,11 +359,13 @@ mod tests {
                 name: "hub_a".into(),
                 line: 1,
                 enclosing: None,
+                is_test: false,
             });
             refs.push(SymRef {
                 name: "hub_b".into(),
                 line: 1,
                 enclosing: None,
+                is_test: false,
             });
         }
         idx.insert_file(
@@ -384,6 +417,7 @@ mod tests {
                     name: name.into(),
                     line: 1,
                     enclosing: None,
+                    is_test: false,
                 });
             }
         }
@@ -420,6 +454,7 @@ mod tests {
                         name: "parse".into(),
                         line: 1,
                         enclosing: None,
+                        is_test: false,
                     }],
                 },
             );
@@ -434,6 +469,7 @@ mod tests {
                     name: "parse".into(),
                     line: 3,
                     enclosing: None,
+                    is_test: false,
                 }],
             },
         );
@@ -447,6 +483,7 @@ mod tests {
                         name: "new".into(),
                         line: 1,
                         enclosing: None,
+                        is_test: false,
                     }],
                 },
             );
@@ -487,11 +524,13 @@ mod tests {
                     kind: Kind::Method,
                     name: "apply_damage".into(),
                     line: 7,
+                    is_test: false,
                 }],
                 refs: vec![SymRef {
                     name: "clamp".into(),
                     line: 9,
                     enclosing: None,
+                    is_test: false,
                 }],
             },
         );
