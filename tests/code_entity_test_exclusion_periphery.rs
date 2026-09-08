@@ -574,3 +574,117 @@ fn a_url_bearing_attribute_between_test_and_the_item_does_not_leak_the_item_into
         g.nodes.iter().map(|n| &n.id).collect::<Vec<_>>()
     );
 }
+
+/// Round 4 (`op-u86c1-r4-structural-attribute-walk-is-the-only-remedy`): the operator ruling
+/// mandates a periphery case for a multi-line attribute on top of every rounds 1-3 shape above -
+/// a case the LINE-based scan those rounds patched could never pass in general (it walked upward
+/// one physical line at a time, so an attribute wrapped across several lines was never one
+/// contiguous unit to it). Reading the grammar's own `attribute_item` node - whatever its own
+/// text spans - makes this fall out for free rather than needing its own fix.
+#[cfg(feature = "symbols")]
+const MULTILINE_CFG_TEST_SRC: &str = "\
+fn product() {}
+
+#[cfg(
+    test
+)]
+mod tests {
+    fn helper() {}
+
+    #[test]
+    fn it_works() {}
+}
+";
+
+#[cfg(feature = "symbols")]
+#[test]
+fn a_multiline_cfg_test_attribute_still_excludes_the_module_through_the_public_api() {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::{Projection, KIND_CODE_ENTITY};
+    use std::collections::BTreeSet;
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("multiline.rs"), MULTILINE_CFG_TEST_SRC).unwrap();
+
+    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
+    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.iter_mut().enumerate() {
+        event.position = zero_based as u64 + 1;
+        p.apply(event).unwrap();
+    }
+
+    let g = p.subgraph(&["multiline.rs".to_string()], 3).unwrap();
+    let node_ids: BTreeSet<&str> = g.nodes.iter().map(|n| n.id.as_str()).collect();
+
+    let product = g
+        .nodes
+        .iter()
+        .find(|n| n.id == "multiline.rs::product")
+        .expect("product graphs normally, unaffected by a multi-line attribute elsewhere");
+    assert_eq!(product.kind, KIND_CODE_ENTITY);
+
+    let must_be_absent: BTreeSet<&str> = BTreeSet::from([
+        "multiline.rs::tests",
+        "multiline.rs::helper",
+        "multiline.rs::it_works",
+    ]);
+    let leaked: BTreeSet<&str> = node_ids.intersection(&must_be_absent).copied().collect();
+    assert!(
+        leaked.is_empty(),
+        "a #[cfg(\\n test\\n)] attribute wrapped across three physical lines must still gate the \
+         module it decorates, and everything nested inside it, out of the graph; leaked: {leaked:?}"
+    );
+}
+
+/// Round 4 (`op-u86c1-r4-structural-attribute-walk-is-the-only-remedy`): the operator ruling's
+/// second mandated case - a COMMENT whose own text happens to contain the literal characters
+/// `#[test]` must never be mistaken for a real attribute. A line-based text scan that looked for
+/// `#[...]`-shaped lines above an item, stripping only a RECOGNIZED comment prefix, could in
+/// principle be tempted to pattern-match inside a comment's text too; the structural walk cannot
+/// make that mistake even in principle, because a `line_comment` node is inspected only for ITS
+/// OWN kind (to skip over it) and its text is never parsed as an attribute - only a real
+/// `attribute_item` node, produced by the grammar for actual `#[...]` syntax, is ever handed to
+/// the attribute-name/predicate reader.
+#[cfg(feature = "symbols")]
+const COMMENT_MENTIONING_TEST_ATTRIBUTE_SRC: &str = "\
+// #[test] this comment just talks about the #[test] attribute, it does not apply one
+fn not_actually_a_test() {}
+";
+
+#[cfg(feature = "symbols")]
+#[test]
+fn a_comment_mentioning_test_attribute_text_does_not_exclude_the_item_through_the_public_api() {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::{Projection, KIND_CODE_ENTITY};
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("commentmention.rs"),
+        COMMENT_MENTIONING_TEST_ATTRIBUTE_SRC,
+    )
+    .unwrap();
+
+    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
+    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.iter_mut().enumerate() {
+        event.position = zero_based as u64 + 1;
+        p.apply(event).unwrap();
+    }
+
+    let g = p.subgraph(&["commentmention.rs".to_string()], 3).unwrap();
+
+    let not_a_test = g
+        .nodes
+        .iter()
+        .find(|n| n.id == "commentmention.rs::not_actually_a_test")
+        .unwrap_or_else(|| {
+            panic!(
+                "a plain comment that merely mentions #[test] as text must never exclude the \
+                 item beneath it; nodes: {:?}",
+                g.nodes.iter().map(|n| &n.id).collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(not_a_test.kind, KIND_CODE_ENTITY);
+}
