@@ -37,6 +37,15 @@
 //!    `FileSymbols` level, inside the crate; this test proves the SAME contract at the periphery,
 //!    end to end through `build_index` -> `index_events` -> `Projector`, so the guarantee that a
 //!    dual-cfg mock's product half is never dropped does not rest on the author's own judgment.
+//!  - the round-3 fix for round 2's own recurrence (review REJECT `adj-u86c1-verdict-reject`
+//!    round 2, findings `arch-u86c1-r2-compound-not-predicate-still-marks-product-code-test` /
+//!    `sdet-u86c1-r2-cfg-predicate-fix-does-not-generalize-to-nested-negation-or-any` /
+//!    `adv-u86c1-r2-trailing-comment-severs-the-attribute-stack-scan`), independently, through the
+//!    SAME public API: a `not(test)` nested inside `all(..)`, a `test` disjunct sitting alongside a
+//!    non-test one inside `any(..)`, and a `#[cfg(test)]` attribute carrying a trailing same-line
+//!    `//` comment, must each resolve exactly as their un-nested/un-commented counterparts already
+//!    do - the two compound predicates graphing their item as ordinary product code, and the
+//!    trailing-commented module (and everything nested inside it) staying excluded end to end.
 
 use rigger::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef, SymbolIndex};
 use rigger::grounder::symbols::store;
@@ -375,4 +384,123 @@ fn cfg_not_test_and_cfg_attr_predicates_graph_as_product_through_the_public_api(
             )
         });
     assert_eq!(real_config.kind, KIND_CODE_ENTITY);
+}
+
+/// A round-3 regression fixture, independent of the implementer's own `extract.rs` fixture: the
+/// two compound-predicate shapes `arch-u86c1-r2-compound-not-predicate-still-marks-product-code-
+/// test` / `sdet-u86c1-r2-cfg-predicate-fix-does-not-generalize-to-nested-negation-or-any` proved
+/// round 2's top-level-only `not(..)` special case did not generalize to. Neither item is test
+/// code: `dual_cfg_mock_production_half` compiles whenever `test` is NOT set (a `not(test)`
+/// conjunct nested inside `all(..)` - the production half of a dual-cfg construct), and
+/// `debug_only_helper` compiles whenever `debug_assertions` is set regardless of `test` (a `test`
+/// disjunct inside `any(..)` alongside a non-test one - a debug-only helper that ships in every
+/// non-release build).
+#[cfg(feature = "symbols")]
+const COMPOUND_CFG_PREDICATE_SRC: &str = "\
+#[cfg(all(not(test), feature = \"x\"))]
+fn dual_cfg_mock_production_half() {}
+
+#[cfg(any(debug_assertions, test))]
+fn debug_only_helper() {}
+";
+
+#[cfg(feature = "symbols")]
+#[test]
+fn compound_cfg_predicates_graph_as_product_through_the_public_api() {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::{Projection, KIND_CODE_ENTITY};
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("compoundcfg.rs"),
+        COMPOUND_CFG_PREDICATE_SRC,
+    )
+    .unwrap();
+
+    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
+    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.iter_mut().enumerate() {
+        event.position = zero_based as u64 + 1;
+        p.apply(event).unwrap();
+    }
+
+    let g = p.subgraph(&["compoundcfg.rs".to_string()], 3).unwrap();
+
+    for name in ["dual_cfg_mock_production_half", "debug_only_helper"] {
+        let id = format!("compoundcfg.rs::{name}");
+        assert!(
+            g.nodes
+                .iter()
+                .any(|n| n.id == id && n.kind == KIND_CODE_ENTITY),
+            "{name} (a compound cfg predicate naming test only as a non-controlling sub-clause) \
+             must graph as a product code-entity node; nodes: {:?}",
+            g.nodes.iter().map(|n| &n.id).collect::<Vec<_>>()
+        );
+    }
+}
+
+/// A round-3 regression fixture for `adv-u86c1-r2-trailing-comment-severs-the-attribute-stack-
+/// scan`: a same-line trailing `//` comment on a `#[cfg(test)]` attribute must not stop the
+/// module - or anything nested inside it - from being recognized as test-scoped and excluded
+/// from the graph, exactly as the un-commented shape already is
+/// (`test_annotated_definitions_and_everything_nested_inside_them_are_marked_is_test` in
+/// `extract.rs`, and `ingesting_product_and_test_code_through_the_public_api_graphs_only_the_
+/// product` above).
+#[cfg(feature = "symbols")]
+const TRAILING_COMMENT_CFG_TEST_SRC: &str = "\
+fn product() {}
+
+#[cfg(test)] // module gate, trailing comment
+mod tests {
+    fn helper() {}
+
+    #[test]
+    fn it_works() {}
+}
+";
+
+#[cfg(feature = "symbols")]
+#[test]
+fn a_trailing_comment_on_cfg_test_still_excludes_the_module_through_the_public_api() {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::{Projection, KIND_CODE_ENTITY};
+    use std::collections::BTreeSet;
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("trailingcomment.rs"),
+        TRAILING_COMMENT_CFG_TEST_SRC,
+    )
+    .unwrap();
+
+    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
+    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.iter_mut().enumerate() {
+        event.position = zero_based as u64 + 1;
+        p.apply(event).unwrap();
+    }
+
+    let g = p.subgraph(&["trailingcomment.rs".to_string()], 3).unwrap();
+    let node_ids: BTreeSet<&str> = g.nodes.iter().map(|n| n.id.as_str()).collect();
+
+    let product = g
+        .nodes
+        .iter()
+        .find(|n| n.id == "trailingcomment.rs::product")
+        .expect("product graphs normally, unaffected by the fix");
+    assert_eq!(product.kind, KIND_CODE_ENTITY);
+
+    let must_be_absent: BTreeSet<&str> = BTreeSet::from([
+        "trailingcomment.rs::tests",
+        "trailingcomment.rs::helper",
+        "trailingcomment.rs::it_works",
+    ]);
+    let leaked: BTreeSet<&str> = node_ids.intersection(&must_be_absent).copied().collect();
+    assert!(
+        leaked.is_empty(),
+        "a #[cfg(test)] module with a trailing same-line comment on its own attribute, and \
+         everything nested inside it, must still be excluded from the graph; leaked: {leaked:?}"
+    );
 }
