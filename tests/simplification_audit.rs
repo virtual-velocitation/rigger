@@ -3535,9 +3535,9 @@ pub(crate) fn render_section_5() -> String {
         workflow-YAML-literal builders duplicated across `tests/cli.rs` and \
         `tests/step_attention_periphery.rs`, 4 files, 15 sites); \
         `dup-0370`/`dup-0371` (`seed_run_events`, an event-seeding helper, 6-8 \
-        files); `dup-0458` (`apply_def_json` / `apply_ref_fresh`-shaped \
-        fold-application helpers, 5 files); `dup-0465` (`community` / `concept` / \
-        `def`-named single-field constructor helpers, 6 files); `dup-0661` \
+        files); `dup-0459` (`apply_def_json` / `apply_ref_fresh`-shaped \
+        fold-application helpers, 5 files); `dup-0466` (`community` / `concept` / \
+        `def`-named single-field constructor helpers, 6 files); `dup-0662` \
         (`code_lens` / `concepts_lens` two-line accessor helpers, 4 files). Every \
         one of these 181 clusters, with its full site list and the catalog's own \
         `proposed_home`, is already machine-readable in the committed \
@@ -3549,7 +3549,7 @@ pub(crate) fn render_section_5() -> String {
     out.push_str(
         "159 test-only clusters have every site as a `#[test]` function - a \
         literal-differs-only-in-input family, spec 85's own named table-driven-test \
-        candidate class. The single largest anywhere in the suite: `dup-0640` (near, \
+        candidate class. The single largest anywhere in the suite: `dup-0641` (near, \
         42 sites, all in `tests/spec_lint.rs`, e.g. \
         `validate_spec_reports_every_c3_defect_with_its_criterion_and_field_guide_class:54-102`, \
         `validate_spec_attributes_a_prose_level_defect_to_no_criterion:120-163`, \
@@ -3559,14 +3559,14 @@ pub(crate) fn render_section_5() -> String {
         validate_spec_field_guide_defects() { for (fixture, expected) in CASES { ... \
         } }` retiring all 42 named tests into one parametrized loop over a `(&str, \
         &str)` (or richer struct) case table. Other large families: \
-        `dup-0587`/`dup-0589` (15+7 sites, `tests/reap_before_removal_audit.rs`, \
+        `dup-0588`/`dup-0590` (15+7 sites, `tests/reap_before_removal_audit.rs`, \
         \"one fixture function body, one exemption-coverage shape, assert \
         covered/not-covered\" - retires into one table keyed by exemption shape); \
-        `dup-0621` (11 sites, `tests/simplification_audit.rs` - this \
+        `dup-0622` (11 sites, `tests/simplification_audit.rs` - this \
         very unit's own scanner tests, a `(source, expected_tokens_or_clusters)` \
-        table candidate); `dup-0577`/`dup-0578` (11+4 sites, \
+        table candidate); `dup-0578`/`dup-0579` (11+4 sites, \
         `tests/no_os_kill_audit.rs`, one process-termination-pattern-string per test \
-        - a `(pattern, is_caught)` table); `dup-0580` (4 sites, \
+        - a `(pattern, is_caught)` table); `dup-0581` (4 sites, \
         `tests/no_os_kill_test_helper_periphery.rs`, \
         `terminate_pid_refuses_pid_zero` / `_pid_one` x `stop_pid_refuses_pid_zero` \
         / `_pid_one` - a 2x2 `(helper, pid)` table). As with 5.4, the full \
@@ -4059,10 +4059,10 @@ fn render_section_6() -> String {
         tables (section 5.5)\n\n",
     );
     out.push_str(
-        "- Scope, largest first: `dup-0640` (42 sites, `tests/spec_lint.rs`), \
-        `dup-0587`/`dup-0589` (15+7 sites, `tests/reap_before_removal_audit.rs`), \
-        `dup-0577`/`dup-0578` (11+4 sites, `tests/no_os_kill_audit.rs`), \
-        `dup-0621` (11 sites, `tests/simplification_audit.rs` - this very \
+        "- Scope, largest first: `dup-0641` (42 sites, `tests/spec_lint.rs`), \
+        `dup-0588`/`dup-0590` (15+7 sites, `tests/reap_before_removal_audit.rs`), \
+        `dup-0578`/`dup-0579` (11+4 sites, `tests/no_os_kill_audit.rs`), \
+        `dup-0622` (11 sites, `tests/simplification_audit.rs` - this very \
         generator's own scanner tests) - 90 sites across 6 clusters.\n\
         - Files: the four files named above.\n\
         - Expected line delta: negative - each family's near-identical test bodies collapse \
@@ -4095,7 +4095,7 @@ fn render_section_6() -> String {
     out.push_str(
         "- Scope: the 159 test-only, all-`#[test]` clusters section 5.5 names, minus the 6 \
         cluster ids item 16 already covers - consumed directly from \
-        `docs/audit/duplication-catalog.json`. Includes `dup-0580` (4 sites, \
+        `docs/audit/duplication-catalog.json`. Includes `dup-0581` (4 sites, \
         `tests/no_os_kill_test_helper_periphery.rs`), the smallest of section 5.5's own \
         named large families, left here rather than in item 16.\n\
         - Files: per-cluster, from the committed catalog.\n\
@@ -6131,7 +6131,7 @@ mod tests {
         // Cites section 5's own headline test-suite consolidation items.
         assert!(rendered.contains("tests/common"));
         assert!(rendered.contains("tests/cli.rs"));
-        assert!(rendered.contains("dup-0640"));
+        assert!(rendered.contains("dup-0641"));
         // Section 4 (dead and vestigial code) is explicitly dispositioned as needing no
         // follow-up spec, per spec 85's own "states so with the search that established
         // it, never omitted" rule for an empty category.
