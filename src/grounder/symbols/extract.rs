@@ -133,10 +133,12 @@ fn test_regions(
 /// authored one per line throughout this codebase (and every fixture this rule is proven
 /// against), so the scan is LINE based: it walks upward from the line immediately above `start`
 /// and stops at the first line that is neither blank, a `//` comment, nor a single-line `#[...]`
-/// attribute - the boundary of the contiguous attribute/comment stack directly above the
-/// construct. Every attribute in that stack is inspected (not just the nearest), so `#[test]` two
-/// lines above a `#[should_panic]` still matches, and a stray `//` remark between two stacked
-/// attributes never severs the scan.
+/// attribute (a trailing `// ...` comment ON the attribute's own line, e.g. `#[cfg(test)] //
+/// module gate`, is stripped before that shape check so it does not sever the scan - see below) -
+/// the boundary of the contiguous attribute/comment stack directly above the construct. Every
+/// attribute in that stack is inspected (not just the nearest), so `#[test]` two lines above a
+/// `#[should_panic]` still matches, and a stray `//` remark between two stacked attributes never
+/// severs the scan.
 fn preceded_by_test_attribute(source: &str, start: usize) -> bool {
     let mut found = false;
     for line in source[..start.min(source.len())].lines().rev() {
@@ -144,7 +146,21 @@ fn preceded_by_test_attribute(source: &str, start: usize) -> bool {
         if trimmed.is_empty() || trimmed.starts_with("//") {
             continue;
         }
-        if let Some(inner) = trimmed.strip_prefix("#[").and_then(|s| s.strip_suffix(']')) {
+        // The line already has the plain `#[...]` shape (this covers an attribute whose OWN
+        // text happens to contain `//`, e.g. `#[doc = "https://example.com"]`) - use it as-is,
+        // never comment-stripped. Only when it does NOT (round-2 REJECT
+        // adv-u86c1-r2-trailing-comment-severs-the-attribute-stack-scan: a same-line trailing
+        // `//` comment made the whole-line `strip_suffix(']')` fail) does stripping a trailing
+        // `// ...` comment get a second try at the same shape check, so an ordinary trailing
+        // explanatory comment never stops the upward scan.
+        let code = if trimmed.starts_with("#[") && trimmed.ends_with(']') {
+            trimmed
+        } else if let Some(pos) = trimmed.find("//") {
+            trimmed[..pos].trim_end()
+        } else {
+            trimmed
+        };
+        if let Some(inner) = code.strip_prefix("#[").and_then(|s| s.strip_suffix(']')) {
             if attribute_names_test(inner) {
                 found = true;
             }
@@ -193,23 +209,86 @@ fn attribute_names_test(inner: &str) -> bool {
 }
 
 /// Whether a `#[cfg(..)]` PREDICATE (the parenthesized argument of `cfg`, e.g. `"test"`,
-/// `"all(test, feature = \"x\")"`, `"not(test)"`) names `test` as a standalone word, WITHOUT
-/// being wrapped in a leading `not(..)` spanning the whole predicate. A predicate whose entire
-/// text is `not(..)`-wrapped is excluded from the token scan entirely (never treated as naming
-/// `test`, whatever its inner text is): `#[cfg(not(test))]` is Rust's standard idiom for the
-/// PRODUCTION-only half of a dual-cfg mock construct - the item it guards compiles whenever
-/// `test` is NOT set, so it is definitionally the item that SHIPS, never test code. Anything
-/// else is matched by splitting on every non-alphanumeric, non-underscore byte and comparing
-/// tokens EXACTLY, so `test` matches while a similarly-spelled but distinct token (`testing`,
-/// `latest`, `test_helper`) never does.
+/// `"all(test, feature = \"x\")"`, `"not(test)"`, `"all(not(test), feature = \"x\")"`,
+/// `"any(debug_assertions, test)"`) GATES the tagged item's compilation ON `test` being set - a
+/// minimal recursive descent over the cfg predicate grammar `ident | not(P) | all(P, ...) |
+/// any(P, ...)`, evaluating test-truthiness STRUCTURALLY rather than by a flat token search:
+/// - a bare identifier (or a `key = "value"` attribute, e.g. `feature = "x"`) names `test` iff
+///   the identifier ITSELF - the text before any `=` - is EXACTLY `test`, so a similarly-spelled
+///   but distinct identifier (`testing`, `test_helper`) or a value merely spelled `"test"`
+///   (`feature = "test"`) never matches.
+/// - `not(P)` inverts P's answer: `not(test)` never names test (`#[cfg(not(test))]` is Rust's
+///   standard idiom for the PRODUCTION-only half of a dual-cfg mock construct - the item it
+///   guards compiles whenever `test` is NOT set, so it is definitionally the item that SHIPS).
+/// - `all(P1, .., Pn)` (every conjunct must hold to compile) names test iff ANY Pi does - one
+///   conjunct requiring `test` is enough to make the WHOLE predicate satisfiable only under
+///   test (`all(test, feature = "x")`), and that holds wherever the `not(test)` production-half
+///   idiom sits too: `all(not(test), feature = "x")` still means "compiles whenever test is NOT
+///   set", never test-only, because its `not(test)` conjunct answers `false`.
+/// - `any(P1, .., Pn)` (any ONE disjunct is enough to compile) names test iff EVERY Pi does - a
+///   disjunct that does not need `test` (`any(debug_assertions, test)`) gives the item a path
+///   to compile with `test` unset (a debug-only helper that ships in every non-release build),
+///   so the whole predicate is not test-only even though one disjunct names the `test` token.
+///
+/// This replaces a flat "does the token `test` appear anywhere, unless the WHOLE predicate is
+/// `not(..)`-wrapped" scan (round-2 REJECT: a `not(test)` nested inside `all(..)`/`any(..)`, or
+/// a `test` disjunct sitting alongside a non-test one inside `any(..)`, both fell through that
+/// flat scan to a bare token match and wrongly excluded real product items from the graph) with
+/// a structural walk that recognizes `not`/`all`/`any` wherever they sit in the predicate tree,
+/// not only at the top.
 fn cfg_predicate_names_test(predicate: &str) -> bool {
     let trimmed = predicate.trim();
-    if trimmed.starts_with("not(") && trimmed.ends_with(')') {
-        return false;
+    if let Some(inner) = trimmed
+        .strip_prefix("not(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
+        return !cfg_predicate_names_test(inner);
+    }
+    if let Some(inner) = trimmed
+        .strip_prefix("all(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
+        return split_top_level_args(inner)
+            .into_iter()
+            .any(cfg_predicate_names_test);
+    }
+    if let Some(inner) = trimmed
+        .strip_prefix("any(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
+        return split_top_level_args(inner)
+            .into_iter()
+            .all(cfg_predicate_names_test);
     }
     trimmed
-        .split(|c: char| !c.is_alphanumeric() && c != '_')
-        .any(|tok| tok == "test")
+        .split('=')
+        .next()
+        .is_some_and(|ident| ident.trim() == "test")
+}
+
+/// Split a `cfg` combinator's argument list (the text between its outer parens, e.g. the
+/// `all`/`any` inner text [`cfg_predicate_names_test`] strips) into its top-level,
+/// comma-separated predicate arguments: a comma nested inside a parenthesized sub-predicate
+/// (`all(not(test), feature = "x")`'s `not(test)` argument) is part of THAT argument, never a
+/// split point, so the split is depth-tracked over `(`/`)` rather than a plain `str::split(',')`.
+/// Each returned slice is trimmed, so a caller never re-trims before recursing.
+fn split_top_level_args(inner: &str) -> Vec<&str> {
+    let mut args = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    for (i, c) in inner.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            ',' if depth == 0 => {
+                args.push(inner[start..i].trim());
+                start = i + c.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    args.push(inner[start..].trim());
+    args
 }
 
 /// The name of the INNERMOST definition whose byte range contains `pos`, or `None` when `pos`
@@ -614,6 +693,104 @@ struct RealConfig;
         assert!(
             !def_is_test("RealConfig"),
             "cfg_attr's predicate governs the inner attribute, not the tagged item's own compilation"
+        );
+    }
+
+    #[test]
+    fn compound_predicates_with_nested_negation_or_a_non_test_disjunct_do_not_mark_the_item_test() {
+        // Round-3 regression (review REJECT adj-u86c1-verdict-reject round 2, findings
+        // arch-u86c1-r2-compound-not-predicate-still-marks-product-code-test and
+        // sdet-u86c1-r2-cfg-predicate-fix-does-not-generalize-to-nested-negation-or-any):
+        // round 2's fix only special-cased a `not(..)` wrapping the WHOLE predicate. A
+        // `not(test)` nested as a sub-clause of `all(..)`, or a `test` disjunct sitting
+        // alongside a non-test one inside `any(..)`, both fell through the flat token scan
+        // and were wrongly folded to `is_test: true`, excluding real product items from the
+        // graph.
+        let src = "\
+#[cfg(all(not(test), feature = \"x\"))]
+fn dual_cfg_mock_production_half() {}
+
+#[cfg(any(debug_assertions, test))]
+fn debug_only_helper_that_ships_in_every_non_release_build() {}
+";
+        let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
+        let fs = extract(src, Lang::Rust, &language, tree_sitter_rust::TAGS_QUERY).unwrap();
+        let def_is_test = |name: &str| {
+            fs.defs
+                .iter()
+                .find(|d| d.name == name)
+                .unwrap_or_else(|| panic!("no def named {name:?}; got {:?}", fs.defs))
+                .is_test
+        };
+        assert!(
+            !def_is_test("dual_cfg_mock_production_half"),
+            "not(test) nested inside all(..) still means the item compiles whenever test is \
+             NOT set - the production half of a dual-cfg construct, never test code"
+        );
+        assert!(
+            !def_is_test("debug_only_helper_that_ships_in_every_non_release_build"),
+            "any(debug_assertions, test) gives the item a path to compile with test unset - it \
+             is not test-only even though the predicate names the test token"
+        );
+    }
+
+    #[test]
+    fn a_trailing_same_line_comment_on_a_cfg_test_attribute_does_not_sever_the_scan() {
+        // Round-3 regression (review REJECT adj-u86c1-verdict-reject round 2, finding
+        // adv-u86c1-r2-trailing-comment-severs-the-attribute-stack-scan): a same-line `//`
+        // comment after the attribute's closing `]` made `strip_suffix(']')` fail on the
+        // whole line, hit the else-arm `break`, and stopped the upward scan immediately - so
+        // a `#[cfg(test)]` module with a trailing same-line comment on its own attribute was
+        // never recognized as self-attributed test, and the whole module (and everything
+        // nested inside it) leaked into the graph as ordinary product code.
+        let src = "\
+fn product() {}
+
+#[cfg(test)] // module gate, trailing comment
+mod tests {
+    fn helper() {}
+
+    #[test]
+    fn it_works() {}
+}
+";
+        let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
+        let fs = extract(src, Lang::Rust, &language, tree_sitter_rust::TAGS_QUERY).unwrap();
+        let def_is_test = |name: &str| {
+            fs.defs
+                .iter()
+                .find(|d| d.name == name)
+                .unwrap_or_else(|| panic!("no def named {name:?}; got {:?}", fs.defs))
+                .is_test
+        };
+        assert!(!def_is_test("product"), "product code is never test code");
+        assert!(
+            def_is_test("tests"),
+            "the #[cfg(test)] module is still recognized as self-attributed test despite the \
+             trailing same-line comment on its attribute"
+        );
+        assert!(
+            def_is_test("helper"),
+            "an unattributed helper nested inside the trailing-commented cfg(test) module is \
+             test code by containment"
+        );
+        assert!(def_is_test("it_works"), "a #[test] function is test code");
+    }
+
+    #[test]
+    fn split_top_level_args_only_splits_commas_outside_nested_parens() {
+        // Depth-tracking coverage: a comma nested inside a sub-predicate's own parens
+        // (`all(x, y)`'s inner comma) must never split - only the comma AFTER the closing
+        // paren, back at depth 0, is a real top-level split point. Discriminates every one of
+        // the three depth-tracking operations (the `(` increment, the `)` decrement, and the
+        // `depth == 0` split guard): breaking any one of them collapses "all(x, y), z" to a
+        // single unsplit argument or mis-splits inside "all(x, y)" instead of the 2-argument
+        // split asserted here.
+        assert_eq!(
+            split_top_level_args("all(x, y), z"),
+            vec!["all(x, y)", "z"],
+            "the nested comma inside all(x, y) stays part of that one argument; only the \
+             comma after its closing paren, at depth 0, is a real top-level split point"
         );
     }
 
