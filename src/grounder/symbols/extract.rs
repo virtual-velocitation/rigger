@@ -91,7 +91,27 @@ pub fn extract(
     // based, so it is exact regardless of which line a construct starts or ends on; computed
     // AFTER every def's range is known, so a def's own containment check can see siblings and
     // ancestors alike whatever order the tags happened to arrive in.
-    let regions = test_regions(source, &def_ranges);
+    //
+    // Round 4 (review REJECT `adj-u86c1-verdict-reject` round 3, findings
+    // `sdet-u86c1-r3-embedded-slash-attribute-plus-trailing-comment-severs-scan` /
+    // `arch-u86c1-r3-recurring-scan-defects-are-a-structural-parser-gap`): the 6th recurrence of a
+    // hand-rolled text scan of `#[...]` attribute shape. `test_regions` now reads the SAME parsed
+    // tree `tags_query` runs against - a second, full-grammar `tree_sitter::Parser::parse` over
+    // this same `source` - and walks its `attribute_item` nodes structurally instead of
+    // re-deriving attribute/comment boundaries from characters; this is still the one function
+    // touching tree-sitter, so the single-parsing-authority invariant (5.5.3) survives. A
+    // `Parser::set_language` or `parse` failure here is defensive only: `ts_language` already
+    // parsed successfully above via `TagsConfiguration::new`/`generate_tags`, using the identical
+    // language, so this path degrades to an `Err` rather than a panic without ever being expected
+    // to fire in practice.
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(ts_language)
+        .map_err(|e| format!("symbols: parser language: {e}"))?;
+    let tree = parser
+        .parse(source, None)
+        .ok_or_else(|| "symbols: parse: tree-sitter produced no syntax tree".to_string())?;
+    let regions = test_regions(source.as_bytes(), tree.root_node(), &def_ranges);
     if !regions.is_empty() {
         for (d, (range, _)) in defs.iter_mut().zip(def_ranges.iter()) {
             d.is_test = regions
@@ -106,189 +126,191 @@ pub fn extract(
 }
 
 /// The byte ranges of every SELF-ATTRIBUTED test definition in `def_ranges` - one whose own
-/// `#[test]`/`#[cfg(..test..)]` attribute stack sits directly above it in `source`
-/// ([`preceded_by_test_attribute`]). A definition NESTED inside one of these ranges (a plain
-/// helper with no attribute of its own, living inside a `#[cfg(test)] mod tests { .. }`) is test
-/// code too, but it earns that status by CONTAINMENT, not by appearing in this list - the caller
-/// checks containment against the ranges this returns, so a doubly-nested item is covered by the
-/// SAME outer range without this function needing to recurse.
+/// `#[test]`/`#[cfg(..test..)]` attribute stack sits directly above it in the parsed tree rooted
+/// at `root` ([`preceded_by_test_attribute`]). A definition NESTED inside one of these ranges (a
+/// plain helper with no attribute of its own, living inside a `#[cfg(test)] mod tests { .. }`) is
+/// test code too, but it earns that status by CONTAINMENT, not by appearing in this list - the
+/// caller checks containment against the ranges this returns, so a doubly-nested item is covered
+/// by the SAME outer range without this function needing to recurse.
 fn test_regions(
-    source: &str,
+    source: &[u8],
+    root: tree_sitter::Node,
     def_ranges: &[(std::ops::Range<usize>, String)],
 ) -> Vec<std::ops::Range<usize>> {
     def_ranges
         .iter()
-        .filter(|(range, _)| preceded_by_test_attribute(source, range.start))
+        .filter(|(range, _)| preceded_by_test_attribute(source, root, range))
         .map(|(range, _)| range.clone())
         .collect()
 }
 
-/// Whether the construct starting at byte `start` in `source` is directly preceded - skipping
-/// only blank lines and `//`-led comments (plain `//`, doc `///`/`//!`) - by an attribute line
-/// that GATES THE ITEM'S OWN COMPILATION on `test`: bare `#[test]`, or `#[cfg(...)]` whose
-/// predicate names `test` as a standalone word (`#[cfg(test)]`, `#[cfg(all(test, feature =
-/// "x"))]`, `#[cfg(any(test))]`, ...) and is not itself wrapped in a leading `not(..)` (see
-/// [`attribute_names_test`] for the two shapes this deliberately does NOT match: a negated
-/// predicate and `cfg_attr`, neither of which makes the tagged item test-only). Attributes are
-/// authored one per line throughout this codebase (and every fixture this rule is proven
-/// against), so the scan is LINE based: it walks upward from the line immediately above `start`
-/// and stops at the first line that is neither blank, a `//` comment, nor a single-line `#[...]`
-/// attribute (a trailing `// ...` comment ON the attribute's own line, e.g. `#[cfg(test)] //
-/// module gate`, is stripped before that shape check so it does not sever the scan - see below) -
-/// the boundary of the contiguous attribute/comment stack directly above the construct. Every
-/// attribute in that stack is inspected (not just the nearest), so `#[test]` two lines above a
-/// `#[should_panic]` still matches, and a stray `//` remark between two stacked attributes never
-/// severs the scan.
-fn preceded_by_test_attribute(source: &str, start: usize) -> bool {
+/// Whether the definition spanning `range` is directly preceded - skipping only comment nodes
+/// (`line_comment`, which covers plain `//` and doc `///`/`//!` alike, and `block_comment`) - by
+/// an attribute node that GATES THE ITEM'S OWN COMPILATION on `test`: bare `#[test]`, or
+/// `#[cfg(...)]` whose predicate names `test` ([`attribute_item_names_test`] /
+/// [`cfg_predicate_token_tree_names_test`]). `range` is looked up in the ALREADY-PARSED tree
+/// rooted at `root` ([`root.descendant_for_byte_range`]) - the SAME node the tags query captured,
+/// since a tag's range is exactly its underlying grammar node's range - and the scan walks that
+/// node's `prev_sibling()` chain: an `attribute_item` (or comment) is a sibling of the item it
+/// decorates in every grammar shape this crate has ever seen it in (a top-level item, a `mod`
+/// body, an `impl` body), so this generalizes to any nesting depth without a separate case for
+/// each. The walk stops at the first sibling that is neither a comment nor an `attribute_item` -
+/// the boundary of the contiguous attribute/comment stack directly above the item - and every
+/// attribute in that stack is inspected (not just the nearest), so `#[test]` two attributes above
+/// a `#[should_panic]` still matches, and a comment between two stacked attributes never severs
+/// the scan.
+///
+/// Round 4 (review REJECT `adj-u86c1-verdict-reject` round 3, finding
+/// `sdet-u86c1-r3-embedded-slash-attribute-plus-trailing-comment-severs-scan`): this REPLACES a
+/// hand-rolled LINE-based text scan that had already gone through 5 shape-specific patches (bare
+/// `not(test)`/`cfg_attr` in round 1, compound `not()`/`any()` in round 2, a same-line
+/// trailing-comment strip in round 2, a `#[...]`-shape-preserving guard and a `find("//")`
+/// trailing-comment fallback in round 3) and STILL broke a 6th time: an ordinary
+/// `#[doc = "https://..."]` attribute carrying a genuine trailing comment truncated at the URL's
+/// OWN `//` instead of the comment's, failed the shape check, and severed the scan before it ever
+/// reached a `#[test]` one line further up. Reading the grammar's own parsed nodes instead of
+/// re-deriving attribute/string/comment boundaries from characters eliminates the whole defect
+/// class by construction - a string literal's content (an embedded `//`, an embedded `]`, a
+/// multi-line value) can never perturb where one node ends and the next begins, because the
+/// parser already resolved that - rather than requiring a 7th, 8th, ... point patch per new shape.
+fn preceded_by_test_attribute(
+    source: &[u8],
+    root: tree_sitter::Node,
+    range: &std::ops::Range<usize>,
+) -> bool {
+    let Some(node) = root.descendant_for_byte_range(range.start, range.end) else {
+        return false;
+    };
     let mut found = false;
-    for line in source[..start.min(source.len())].lines().rev() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with("//") {
-            continue;
-        }
-        // The line already has the plain `#[...]` shape (this covers an attribute whose OWN
-        // text happens to contain `//`, e.g. `#[doc = "https://example.com"]`) - use it as-is,
-        // never comment-stripped. Only when it does NOT (round-2 REJECT
-        // adv-u86c1-r2-trailing-comment-severs-the-attribute-stack-scan: a same-line trailing
-        // `//` comment made the whole-line `strip_suffix(']')` fail) does stripping a trailing
-        // `// ...` comment get a second try at the same shape check, so an ordinary trailing
-        // explanatory comment never stops the upward scan.
-        let code = if trimmed.starts_with("#[") && trimmed.ends_with(']') {
-            trimmed
-        } else if let Some(pos) = trimmed.find("//") {
-            trimmed[..pos].trim_end()
-        } else {
-            trimmed
-        };
-        if let Some(inner) = code.strip_prefix("#[").and_then(|s| s.strip_suffix(']')) {
-            if attribute_names_test(inner) {
-                found = true;
+    let mut prev = node.prev_sibling();
+    while let Some(sibling) = prev {
+        match sibling.kind() {
+            "line_comment" | "block_comment" => {}
+            "attribute_item" => {
+                if attribute_item_names_test(sibling, source) {
+                    found = true;
+                }
             }
-            continue;
+            _ => break,
         }
-        break;
+        prev = sibling.prev_sibling();
     }
     found
 }
 
-/// Split an attribute's bracket contents (`inner`, everything between `#[` and `]`) into its
-/// leading NAME and, when the attribute takes a parenthesized argument list, that argument
-/// string with the outer parens stripped: `"test"` -> `("test", None)`, `"cfg(test)"` ->
-/// `("cfg", Some("test"))`, `"cfg_attr(test, derive(Debug))"` -> `("cfg_attr", Some("test,
-/// derive(Debug)"))`. An attribute with no `(` at all, or one that does not end in `)`
-/// (malformed/truncated), yields the whole trimmed `inner` as the name with no argument.
-fn attribute_name_and_args(inner: &str) -> (&str, Option<&str>) {
-    match inner.find('(') {
-        Some(open) if inner.ends_with(')') => (
-            inner[..open].trim(),
-            Some(&inner[open + 1..inner.len() - 1]),
-        ),
-        _ => (inner.trim(), None),
-    }
-}
-
-/// Whether an attribute (`inner`, its bracket contents) gates the tagged item's OWN COMPILATION
-/// on `test` being set - the question [`preceded_by_test_attribute`] actually needs, not merely
-/// whether the text mentions the word `test` anywhere. Three cases:
+/// Whether a parsed `attribute_item` node (an outer `#[...]` attribute) gates the tagged item's
+/// OWN COMPILATION on `test` being set - the question [`preceded_by_test_attribute`] actually
+/// needs, not merely whether its text mentions the word `test` anywhere. An `attribute_item`'s
+/// sole named child is an `attribute` node, whose own first named child names the attribute
+/// (`test`, `cfg`, `cfg_attr`, `doc`, `allow`, ...) and whose OPTIONAL `arguments` field (present
+/// only on a parenthesized attribute) is the `token_tree` this walks structurally for `cfg`. Three
+/// cases, mirroring real Rust semantics:
 /// - `test` (bare `#[test]`, the only shape the real attribute ever takes - it accepts no
-///   arguments): always gates on test - matches, whatever its (nonexistent-in-real-Rust) args
-///   name, so a stray `Some(..)` here is not worth a second branch just to distinguish it.
-/// - `#[cfg(PRED)]` (name `cfg`): matches iff `PRED` [`cfg_predicate_names_test`]s.
+///   arguments): always gates on test.
+/// - `#[cfg(PRED)]` (name `cfg`): matches iff `PRED` [`cfg_predicate_token_tree_names_test`]s.
 /// - `#[cfg_attr(PRED, ..)]` (name `cfg_attr`) and everything else (`#[allow(..)]`,
-///   `#[derive(..)]`, ...): NEVER matches, regardless of what `PRED`/the args name. `cfg_attr`
-///   conditionally attaches its trailing attribute(s) - it does not gate compilation of the
-///   tagged item itself, so an item under `#[cfg_attr(test, derive(Debug))]` is compiled
-///   unconditionally and is unambiguously product code.
-fn attribute_names_test(inner: &str) -> bool {
-    let (name, args) = attribute_name_and_args(inner);
-    match name {
+///   `#[derive(..)]`, `#[doc = ".."]`, ...): NEVER matches, regardless of what `PRED`/the args
+///   name. `cfg_attr` conditionally attaches its trailing attribute(s) - it does not gate
+///   compilation of the tagged item itself, so an item under `#[cfg_attr(test, derive(Debug))]`
+///   is compiled unconditionally and is unambiguously product code.
+fn attribute_item_names_test(item: tree_sitter::Node, source: &[u8]) -> bool {
+    let Some(attribute) = item.named_child(0) else {
+        return false;
+    };
+    let Some(name_node) = attribute.named_child(0) else {
+        return false;
+    };
+    match name_node.utf8_text(source).unwrap_or_default() {
         "test" => true,
-        "cfg" => args.is_some_and(cfg_predicate_names_test),
+        "cfg" => attribute
+            .child_by_field_name("arguments")
+            .is_some_and(|args| cfg_predicate_token_tree_names_test(args, source)),
         _ => false,
     }
 }
 
-/// Whether a `#[cfg(..)]` PREDICATE (the parenthesized argument of `cfg`, e.g. `"test"`,
-/// `"all(test, feature = \"x\")"`, `"not(test)"`, `"all(not(test), feature = \"x\")"`,
-/// `"any(debug_assertions, test)"`) GATES the tagged item's compilation ON `test` being set - a
-/// minimal recursive descent over the cfg predicate grammar `ident | not(P) | all(P, ...) |
-/// any(P, ...)`, evaluating test-truthiness STRUCTURALLY rather than by a flat token search:
-/// - a bare identifier (or a `key = "value"` attribute, e.g. `feature = "x"`) names `test` iff
-///   the identifier ITSELF - the text before any `=` - is EXACTLY `test`, so a similarly-spelled
-///   but distinct identifier (`testing`, `test_helper`) or a value merely spelled `"test"`
-///   (`feature = "test"`) never matches.
-/// - `not(P)` inverts P's answer: `not(test)` never names test (`#[cfg(not(test))]` is Rust's
-///   standard idiom for the PRODUCTION-only half of a dual-cfg mock construct - the item it
-///   guards compiles whenever `test` is NOT set, so it is definitionally the item that SHIPS).
-/// - `all(P1, .., Pn)` (every conjunct must hold to compile) names test iff ANY Pi does - one
-///   conjunct requiring `test` is enough to make the WHOLE predicate satisfiable only under
-///   test (`all(test, feature = "x")`), and that holds wherever the `not(test)` production-half
-///   idiom sits too: `all(not(test), feature = "x")` still means "compiles whenever test is NOT
-///   set", never test-only, because its `not(test)` conjunct answers `false`.
-/// - `any(P1, .., Pn)` (any ONE disjunct is enough to compile) names test iff EVERY Pi does - a
-///   disjunct that does not need `test` (`any(debug_assertions, test)`) gives the item a path
-///   to compile with `test` unset (a debug-only helper that ships in every non-release build),
-///   so the whole predicate is not test-only even though one disjunct names the `test` token.
-///
-/// This replaces a flat "does the token `test` appear anywhere, unless the WHOLE predicate is
-/// `not(..)`-wrapped" scan (round-2 REJECT: a `not(test)` nested inside `all(..)`/`any(..)`, or
-/// a `test` disjunct sitting alongside a non-test one inside `any(..)`, both fell through that
-/// flat scan to a bare token match and wrongly excluded real product items from the graph) with
-/// a structural walk that recognizes `not`/`all`/`any` wherever they sit in the predicate tree,
-/// not only at the top.
-fn cfg_predicate_names_test(predicate: &str) -> bool {
-    let trimmed = predicate.trim();
-    if let Some(inner) = trimmed
-        .strip_prefix("not(")
-        .and_then(|s| s.strip_suffix(')'))
-    {
-        return !cfg_predicate_names_test(inner);
-    }
-    if let Some(inner) = trimmed
-        .strip_prefix("all(")
-        .and_then(|s| s.strip_suffix(')'))
-    {
-        return split_top_level_args(inner)
-            .into_iter()
-            .any(cfg_predicate_names_test);
-    }
-    if let Some(inner) = trimmed
-        .strip_prefix("any(")
-        .and_then(|s| s.strip_suffix(')'))
-    {
-        return split_top_level_args(inner)
-            .into_iter()
-            .all(cfg_predicate_names_test);
-    }
-    trimmed
-        .split('=')
-        .next()
-        .is_some_and(|ident| ident.trim() == "test")
+/// Whether a `#[cfg(..)]` attribute's parenthesized argument list, `tt` (a `token_tree` node,
+/// e.g. the parse of `"(test)"`, `"(all(test, feature = \"x\"))"`, `"(not(test))"`,
+/// `"(all(not(test), feature = \"x\"))"`, `"(any(debug_assertions, test))"`) GATES the tagged
+/// item's compilation ON `test` being set. `cfg` always takes exactly ONE predicate argument, so
+/// this reads `tt`'s single top-level [`comma_separated_groups`] group and hands it to
+/// [`predicate_group_names_test`] - the same entry point `not`'s own single-argument
+/// `token_tree` reuses (see there), since both combinators take one predicate the identical way.
+fn cfg_predicate_token_tree_names_test(tt: tree_sitter::Node, source: &[u8]) -> bool {
+    comma_separated_groups(tt)
+        .first()
+        .is_some_and(|group| predicate_group_names_test(group, source))
 }
 
-/// Split a `cfg` combinator's argument list (the text between its outer parens, e.g. the
-/// `all`/`any` inner text [`cfg_predicate_names_test`] strips) into its top-level,
-/// comma-separated predicate arguments: a comma nested inside a parenthesized sub-predicate
-/// (`all(not(test), feature = "x")`'s `not(test)` argument) is part of THAT argument, never a
-/// split point, so the split is depth-tracked over `(`/`)` rather than a plain `str::split(',')`.
-/// Each returned slice is trimmed, so a caller never re-trims before recursing.
-fn split_top_level_args(inner: &str) -> Vec<&str> {
-    let mut args = Vec::new();
-    let mut depth = 0i32;
-    let mut start = 0usize;
-    for (i, c) in inner.char_indices() {
-        match c {
-            '(' => depth += 1,
-            ')' => depth -= 1,
-            ',' if depth == 0 => {
-                args.push(inner[start..i].trim());
-                start = i + c.len_utf8();
-            }
-            _ => {}
+/// Whether one comma-separated argument GROUP (a `Vec` of sibling nodes with no top-level comma
+/// between them - see [`comma_separated_groups`]) inside a `cfg` predicate names `test`, by a
+/// minimal recursive descent over the cfg predicate grammar `ident | not(P) | all(P, ...) |
+/// any(P, ...)`, evaluating test-truthiness STRUCTURALLY off the group's leading node rather than
+/// by a flat token search:
+/// - a bare identifier (or a `key = "value"` attribute, e.g. `feature = "x"` - the leading
+///   identifier plus a non-`token_tree` value node, so the `not`/`all`/`any` match below never
+///   fires) names `test` iff that LEADING identifier is EXACTLY `test`, so a similarly-spelled but
+///   distinct identifier (`testing`, `test_helper`) or a value merely spelled `"test"` (`feature =
+///   "test"`) never matches - only the identifier the parser resolved as the predicate's own name
+///   is ever compared, never a substring of an unrelated string literal.
+/// - `not(P)` (leading identifier `not` followed by its own `token_tree` argument) inverts P's
+///   answer: `not(test)` never names test (`#[cfg(not(test))]` is Rust's standard idiom for the
+///   PRODUCTION-only half of a dual-cfg mock construct - the item it guards compiles whenever
+///   `test` is NOT set, so it is definitionally the item that SHIPS).
+/// - `all(P1, .., Pn)` (every conjunct must hold to compile) names test iff ANY Pi does - one
+///   conjunct requiring `test` is enough to make the WHOLE predicate satisfiable only under test
+///   (`all(test, feature = "x")`), and that holds wherever the `not(test)` production-half idiom
+///   sits too: `all(not(test), feature = "x")` still means "compiles whenever test is NOT set",
+///   never test-only, because its `not(test)` conjunct answers `false`.
+/// - `any(P1, .., Pn)` (any ONE disjunct is enough to compile) names test iff EVERY Pi does - a
+///   disjunct that does not need `test` (`any(debug_assertions, test)`) gives the item a path to
+///   compile with `test` unset (a debug-only helper that ships in every non-release build), so the
+///   whole predicate is not test-only even though one disjunct names the `test` token.
+fn predicate_group_names_test(group: &[tree_sitter::Node], source: &[u8]) -> bool {
+    let Some(head) = group.first() else {
+        return false;
+    };
+    let name = head.utf8_text(source).unwrap_or_default();
+    let combinator_args = group.get(1).filter(|n| n.kind() == "token_tree");
+    match (name, combinator_args) {
+        ("not", Some(&args)) => !cfg_predicate_token_tree_names_test(args, source),
+        ("all", Some(&args)) => comma_separated_groups(args)
+            .iter()
+            .any(|g| predicate_group_names_test(g, source)),
+        ("any", Some(&args)) => comma_separated_groups(args)
+            .iter()
+            .all(|g| predicate_group_names_test(g, source)),
+        _ => name == "test",
+    }
+}
+
+/// The DIRECT named children of a `cfg`/`not`/`all`/`any` combinator's own parenthesized
+/// argument-list node, `tt` (a `token_tree`), split into its top-level comma-separated GROUPS: a
+/// nested sub-predicate's own parens are already grouped into a single nested `token_tree` child
+/// by the grammar itself (`not(test)` parses as the two named children `identifier("not")` and
+/// `token_tree("(test)")`, never a flat run of tokens), so this needs no depth tracking of its
+/// own - only a `,` directly among `tt`'s children marks a group boundary, and `,` is always
+/// anonymous so it is never itself collected into a group. Every other anonymous token (`(`, `)`,
+/// the `=` in a `key = "value"` argument, ...) is dropped - the named nodes on either side of it
+/// are what a caller inspects. Each returned group is a `Vec` (never a single node) because a
+/// `key = "value"` argument is TWO sibling named nodes (`identifier`, `string_literal`) with no
+/// grouping node of their own, so `predicate_group_names_test` must see both to read the leading
+/// identifier.
+fn comma_separated_groups(tt: tree_sitter::Node) -> Vec<Vec<tree_sitter::Node>> {
+    let mut groups = Vec::new();
+    let mut current = Vec::new();
+    let mut cursor = tt.walk();
+    for child in tt.children(&mut cursor) {
+        if child.kind() == "," {
+            groups.push(std::mem::take(&mut current));
+        } else if child.is_named() {
+            current.push(child);
         }
     }
-    args.push(inner[start..].trim());
-    args
+    if !current.is_empty() {
+        groups.push(current);
+    }
+    groups
 }
 
 /// The name of the INNERMOST definition whose byte range contains `pos`, or `None` when `pos`
@@ -778,36 +800,46 @@ mod tests {
     }
 
     #[test]
-    fn split_top_level_args_only_splits_commas_outside_nested_parens() {
-        // Depth-tracking coverage: a comma nested inside a sub-predicate's own parens
-        // (`all(x, y)`'s inner comma) must never split - only the comma AFTER the closing
-        // paren, back at depth 0, is a real top-level split point. Discriminates every one of
-        // the three depth-tracking operations (the `(` increment, the `)` decrement, and the
-        // `depth == 0` split guard): breaking any one of them collapses "all(x, y), z" to a
-        // single unsplit argument or mis-splits inside "all(x, y)" instead of the 2-argument
-        // split asserted here.
-        assert_eq!(
-            split_top_level_args("all(x, y), z"),
-            vec!["all(x, y)", "z"],
-            "the nested comma inside all(x, y) stays part of that one argument; only the \
-             comma after its closing paren, at depth 0, is a real top-level split point"
-        );
-    }
+    fn comma_separated_groups_keeps_a_nested_parenthesized_comma_grouped_and_splits_only_the_outer_one(
+    ) {
+        // Structural analogue of the round 1-3 text scan's own depth-tracking property, now
+        // proven against a real parsed tree rather than a hand-rolled character loop: a comma
+        // nested one level deeper than the group being split (`all(x, y)`'s own internal comma,
+        // itself already isolated into a nested `token_tree` child by the grammar) must never
+        // count as a split point for the OUTER group - only the comma directly among the outer
+        // group's own children does. Reached by parsing `#[cfg(any(all(x, y), z))]` and reading
+        // `any`'s own argument list, `"(all(x, y), z)"` - the exact shape `predicate_group_names_
+        // test`'s `all`/`any` case recurses into via this same function.
+        let src = "#[cfg(any(all(x, y), z))]\nfn f() {}\n";
+        let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        let root = tree.root_node();
+        let attribute_item = root.named_child(0).expect("the leading attribute_item");
+        let attribute = attribute_item
+            .named_child(0)
+            .expect("attribute_item's sole named child is the attribute node");
+        let cfg_args = attribute
+            .child_by_field_name("arguments")
+            .expect("cfg's own parenthesized arguments");
+        // cfg always has exactly one top-level group: [identifier("any"), token_tree(the rest)].
+        let any_group = comma_separated_groups(cfg_args)
+            .into_iter()
+            .next()
+            .expect("cfg(..) has exactly one top-level group");
+        let any_args = any_group[1];
+        assert_eq!(any_args.kind(), "token_tree", "any's own argument list");
 
-    #[test]
-    fn attribute_name_and_args_splits_the_leading_name_from_a_parenthesized_argument_list() {
-        // Pins the exact (name, args) split `attribute_names_test`/`cfg_predicate_names_test`
-        // build on: the argument list has BOTH its wrapping parens stripped (neither the `(` nor
-        // the trailing `)` survives into `args`), so a downstream predicate scan never sees a
-        // stray paren character it would otherwise have to tolerate.
-        assert_eq!(attribute_name_and_args("test"), ("test", None));
-        assert_eq!(attribute_name_and_args("cfg(test)"), ("cfg", Some("test")));
+        let groups = comma_separated_groups(any_args);
         assert_eq!(
-            attribute_name_and_args("cfg_attr(test, derive(Debug))"),
-            ("cfg_attr", Some("test, derive(Debug)"))
+            groups.len(),
+            2,
+            "\"all(x, y), z\" splits into exactly 2 top-level groups; the comma nested inside \
+             all(x, y)'s own parens must never count as a split point, got {groups:?}"
         );
-        // No `(` at all: the whole trimmed text is the name, no argument list.
-        assert_eq!(attribute_name_and_args("allow"), ("allow", None));
+        assert_eq!(groups[0][0].utf8_text(src.as_bytes()).unwrap(), "all");
+        assert_eq!(groups[1][0].utf8_text(src.as_bytes()).unwrap(), "z");
     }
 
     #[test]

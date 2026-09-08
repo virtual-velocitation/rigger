@@ -3443,7 +3443,7 @@ pub(crate) fn render_section_5() -> String {
     );
     out.push_str(
         "- `page_script` - a small JS snippet fixture - independently redefined in 18 \
-        different files (`dup-0337`, exact; e.g. \
+        different files (`dup-0336`, exact; e.g. \
         `tests/adaptive_labels_periphery.rs:52-61`, \
         `tests/code_lens_overview_collapse_viz.rs:26-35`, \
         `tests/concepts_lens_view_periphery.rs:689-698`, + 15 more), all inside the \
@@ -3451,19 +3451,19 @@ pub(crate) fn render_section_5() -> String {
     );
     out.push_str(
         "- `node_available` - a viz-fixture predicate - independently redefined in \
-        the same 18 files (`dup-0338`, semantic).\n",
+        the same 18 files (`dup-0337`, semantic).\n",
     );
     out.push_str(
         "- `temp_project` - a scratch-project-directory fixture - independently \
-        redefined in 18 files (`dup-0363`, semantic; e.g. \
+        redefined in 18 files (`dup-0362`, semantic; e.g. \
         `tests/canary_model_drift_periphery.rs:39-46`, \
         `tests/cause_wire_periphery.rs:54-61`, `tests/cli.rs:19-29`), plus a \
-        near-identical 12-site variant (`dup-0362`) and a 12-site `run_rigger` \
-        companion helper that drives it (`dup-0364`).\n",
+        near-identical 12-site variant (`dup-0361`) and a 12-site `run_rigger` \
+        companion helper that drives it (`dup-0363`).\n",
     );
     out.push_str(
         "- `run_stream_identity` - a store-identity fixture - independently redefined \
-        in 18 files (`dup-0369`, semantic).\n\n",
+        in 18 files (`dup-0368`, semantic).\n\n",
     );
     out.push_str(
         "Proposed home for all four: `tests/common` (the catalog's own \
@@ -3525,16 +3525,16 @@ pub(crate) fn render_section_5() -> String {
     out.push_str(
         "181 test-only clusters in the committed catalog have every site as an \
         ordinary (non-`#[test]`) helper function - the shared-fixture-extraction \
-        candidate class. Beyond the four in 5.2, the widest are: `dup-0341` \
+        candidate class. Beyond the four in 5.2, the widest are: `dup-0340` \
         (`architecture_text` / `eventstore_source` / `main_rs_source` - \
         source-text-loading helpers for doc/architecture-integrity checks, 12 files, \
-        15 sites); `dup-0368` (a companion, 15-file/15-site variant of 5.2's \
-        `run_stream_identity` fixture, alongside `dup-0369`'s 18-file version); \
-        `dup-0397` (`write_two_stage_workflow` / \
+        15 sites); `dup-0367` (a companion, 15-file/15-site variant of 5.2's \
+        `run_stream_identity` fixture, alongside `dup-0368`'s 18-file version); \
+        `dup-0396` (`write_two_stage_workflow` / \
         `write_budget_one_two_stage_workflow` / `write_standalone_review_workflow` - \
         workflow-YAML-literal builders duplicated across `tests/cli.rs` and \
         `tests/step_attention_periphery.rs`, 4 files, 15 sites); \
-        `dup-0370`/`dup-0371` (`seed_run_events`, an event-seeding helper, 6-8 \
+        `dup-0369`/`dup-0370` (`seed_run_events`, an event-seeding helper, 6-8 \
         files); `dup-0459` (`apply_def_json` / `apply_ref_fresh`-shaped \
         fold-application helpers, 5 files); `dup-0466` (`community` / `concept` / \
         `def`-named single-field constructor helpers, 6 files); `dup-0662` \
@@ -4023,8 +4023,8 @@ fn render_section_6() -> String {
     );
     out.push_str("#### 14. Extract the four headline shared test fixtures into `tests/common` (section 5.2)\n\n");
     out.push_str(
-        "- Scope: `page_script` (`dup-0337`, 18 files), `node_available` (`dup-0338`, 18 \
-        files), `temp_project` (`dup-0363`, 18 files) and `run_stream_identity` (`dup-0369`, \
+        "- Scope: `page_script` (`dup-0336`, 18 files), `node_available` (`dup-0337`, 18 \
+        files), `temp_project` (`dup-0362`, 18 files) and `run_stream_identity` (`dup-0368`, \
         18 files) - roughly 72 duplicate definitions collapsing into four shared ones, the \
         single largest mechanical simplification section 5 identifies anywhere in the test \
         suite.\n\
@@ -4080,7 +4080,7 @@ fn render_section_6() -> String {
         "- Scope: the 181 test-only, all-helper-function clusters section 5.4 names, minus \
         the 4 item 14 already covers - consumed directly from \
         `docs/audit/duplication-catalog.json`, not re-enumerated here (section 5.4's own \
-        stated approach). Includes the `dup-0362`/`dup-0364` `temp_project` companion and \
+        stated approach). Includes the `dup-0361`/`dup-0363` `temp_project` companion and \
         variant clusters section 5.4 itself places in this \"beyond the four\" bucket.\n\
         - Files: per-cluster, from the committed catalog.\n\
         - Expected line delta: negative, cumulative across 177 clusters.\n\
