@@ -46,6 +46,15 @@
 //!    `//` comment, must each resolve exactly as their un-nested/un-commented counterparts already
 //!    do - the two compound predicates graphing their item as ordinary product code, and the
 //!    trailing-commented module (and everything nested inside it) staying excluded end to end.
+//!  - a round-3 sdet-author finding the round-3 fix's own two fixtures do not reach
+//!    (`sdet-u86c1-r3-embedded-slash-attribute-plus-trailing-comment-severs-scan`): round 3's
+//!    trailing-comment remedy truncates a line at its FIRST `//`, which is the comment marker
+//!    only when the attribute's OWN text contains no `//` of its own. An ordinary
+//!    `#[doc = "https://..."]` attribute, carrying a genuine trailing comment, sitting between a
+//!    `#[test]` attribute and the item it tags, truncates at the URL's `//` instead, fails the
+//!    `#[...]` shape check, and severs the upward scan before it ever reaches `#[test]` - the
+//!    tagged item leaks into the graph as ordinary product code, the same failure direction as
+//!    the round-2 finding this file already guards above.
 
 use rigger::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef, SymbolIndex};
 use rigger::grounder::symbols::store;
@@ -502,5 +511,66 @@ fn a_trailing_comment_on_cfg_test_still_excludes_the_module_through_the_public_a
         leaked.is_empty(),
         "a #[cfg(test)] module with a trailing same-line comment on its own attribute, and \
          everything nested inside it, must still be excluded from the graph; leaked: {leaked:?}"
+    );
+}
+
+/// A round-3 sdet-author finding (`sdet-u86c1-r3-embedded-slash-attribute-plus-trailing-comment-
+/// severs-scan`), independent of the round-3 fix's own two fixtures above: round 3's remedy for
+/// `adv-u86c1-r2-trailing-comment-severs-the-attribute-stack-scan` truncates a line at its FIRST
+/// `//`, assuming that is always the trailing comment's own marker. It is not, whenever an
+/// attribute's OWN text legitimately contains `//` before a genuine trailing comment - the
+/// ordinary `#[doc = "https://..."]` idiom is exactly this shape. `it_works` below has `#[test]`
+/// directly in its attribute stack, but the closer `#[doc = "..."]` line's first `//` sits INSIDE
+/// the URL, so the naive truncation cuts the line to `#[doc = "see https:` (no longer ending in
+/// `]`), the shape check fails, and the scan hits the same `break` that severed
+/// `adv-u86c1-r2-trailing-comment-severs-the-attribute-stack-scan` - stopping before it ever
+/// reaches `#[test]` above. `it_works` leaks into the graph as an ordinary product code-entity
+/// node: the same "test code IN" failure direction as the round-2 finding, one attribute-value
+/// shape further than round 3's fix reaches.
+#[cfg(feature = "symbols")]
+const URL_BEARING_ATTRIBUTE_SRC: &str = "\
+fn product() {}
+
+#[test]
+#[doc = \"see https://example.com for context\"] // kept for reference
+fn it_works() {}
+";
+
+#[cfg(feature = "symbols")]
+#[test]
+fn a_url_bearing_attribute_between_test_and_the_item_does_not_leak_the_item_into_the_graph() {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::{Projection, KIND_CODE_ENTITY};
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("urlattr.rs"), URL_BEARING_ATTRIBUTE_SRC).unwrap();
+
+    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
+    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.iter_mut().enumerate() {
+        event.position = zero_based as u64 + 1;
+        p.apply(event).unwrap();
+    }
+
+    let g = p.subgraph(&["urlattr.rs".to_string()], 3).unwrap();
+
+    let product = g
+        .nodes
+        .iter()
+        .find(|n| n.id == "urlattr.rs::product")
+        .expect("product graphs normally, unaffected by this scenario");
+    assert_eq!(product.kind, KIND_CODE_ENTITY);
+
+    let it_works_leaked = g
+        .nodes
+        .iter()
+        .any(|n| n.id == "urlattr.rs::it_works" && n.kind == KIND_CODE_ENTITY);
+    assert!(
+        !it_works_leaked,
+        "it_works has #[test] in its own attribute stack (one line further up than a \
+         url-bearing #[doc] attribute carrying a genuine trailing comment); it must never graph \
+         as a product code-entity node, but it did: nodes: {:?}",
+        g.nodes.iter().map(|n| &n.id).collect::<Vec<_>>()
     );
 }
