@@ -6171,8 +6171,8 @@
       },
       {
         "file": "tests/prioritized_plan_citation_periphery.rs",
-        "start_line": 211,
-        "end_line": 211,
+        "start_line": 315,
+        "end_line": 315,
         "name": "\" `.rigger`-path string-literal sites (`dup-0051`)\""
       },
       {
@@ -6569,30 +6569,30 @@
         "file": "tests/simplification_audit.rs",
         "start_line": 3651,
         "end_line": 3651,
-        "name": "\"Largest risk-reduction first is read as five tiers, ranked by the KIND of risk \\\n        each entry retires, highest first:\\n\\n\\\n        1. Tier 1 - active correctness risk: a use case already depends on the wrong \\\n        concretion, or two independent implementations of one concern can already drift \\\n        apart silently (section 3's two boundary violations; the one already-drifted \\\n        `/proc`-reading pair section 2 and section 3 both name). These are live gaps, not \\\n        just size.\\n\\\n        2. Tier 2 - god-file test-module extraction: each of the three god files' own \\\n        inline `#[cfg(test)] mod tests` is the majority of that file's bulk (56-70% by \\\n        boundary-line count, per a direct read of each file), and moving it is a pure \\\n        relocation with no production-behavior change - the single largest safe line-count \\\n        reduction in this plan, and the precondition that makes tier 3 tractable.\\n\\\n        3. Tier 3 - god-file production splits: section 1's own proposed module tree \\\n        applied to the (now much smaller) remaining production surface of each god file. \\\n        Higher execution risk than tier 2 because it touches live orchestration and CLI \\\n        logic, so it is sequenced after tier 2 shrinks the target first.\\n\\\n        4. Tier 4 - named production duplication sweeps: the mechanical mandatory sweeps \\\n        section 2 ran regardless of the Jaccard pass (`Command::new`, `.rigger`-path \\\n        literals, sqlite `Connection::open`, error-shaping helpers), each already a single \\\n        committed cluster with its own proposed home.\\n\\\n        5. Tier 5 - test-suite consolidation: section 5's own catalogued test-only \\\n        duplication. No production-correctness exposure at all (worst case a test \\\n        regresses, never the product), so it is ordered last despite touching the largest \\\n        raw line count anywhere in this plan.\\n\\n\\\n        Within a tier, entries are ordered largest-first by the site or line count each \\\n        retires - the same rule the tiers themselves follow, applied one level down.\\n\\n\""
+        "name": "\"Largest risk-reduction first is read as six tiers, ranked by the KIND of risk \\\n        each entry retires, highest first:\\n\\n\\\n        1. Tier 1 - active correctness risk: a use case already depends on the wrong \\\n        concretion, or two independent implementations of one concern can already drift \\\n        apart silently (section 3's two boundary violations; the one already-drifted \\\n        `/proc`-reading pair section 2 and section 3 both name). These are live gaps, not \\\n        just size.\\n\\\n        2. Tier 2 - god-file test-module extraction: each of the three god files' own \\\n        inline `#[cfg(test)] mod tests` is the majority of that file's bulk (56-70% by \\\n        boundary-line count, per a direct read of each file), and moving it is a pure \\\n        relocation with no production-behavior change - the single largest safe line-count \\\n        reduction in this plan, and the precondition that makes tier 3 tractable.\\n\\\n        3. Tier 3 - god-file production splits: section 1's own proposed module tree \\\n        applied to the (now much smaller) remaining production surface of each god file. \\\n        Higher execution risk than tier 2 because it touches live orchestration and CLI \\\n        logic, so it is sequenced after tier 2 shrinks the target first.\\n\\\n        4. Tier 4 - named production duplication sweeps: the mechanical mandatory sweeps \\\n        section 2 ran regardless of the Jaccard pass (`Command::new`, `.rigger`-path \\\n        literals, sqlite `Connection::open`, error-shaping helpers), each already a single \\\n        committed cluster with its own proposed home.\\n\\\n        5. Tier 5 - test-suite consolidation: section 5's own catalogued test-only \\\n        duplication. No production-correctness exposure at all (worst case a test \\\n        regresses, never the product), so it is ordered ahead only of tier 6 despite \\\n        touching the largest raw line count anywhere in this plan.\\n\\\n        6. Tier 6 - remaining catalog sweep: the 327 src-touching clusters section 2 found \\\n        but tiers 1 and 4 did not individually name. Unlike every other tier, none of these \\\n        327 have been read and risk-assessed one at a time the way tiers 1-4's named \\\n        clusters have - they are consumed straight from the catalog - so this tier carries \\\n        production-correctness exposure tiers 2, 3 and 5 do not, and is ordered last: the \\\n        follow-up spec must triage each cluster's own production-or-test status before \\\n        merging it, not assume tier 5's blanket test-only treatment applies here too.\\n\\n\\\n        Within a tier, entries are ordered largest-first by the site or line count each \\\n        retires - the same rule the tiers themselves follow, applied one level down.\\n\\n\""
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3889,
-        "end_line": 3889,
-        "name": "\"#### 10. Consolidate the 645 `.rigger`-path string-literal sites (`dup-0051`) - the \\\n        single largest cluster in the entire catalog by site count\\n\\n\""
+        "start_line": 3906,
+        "end_line": 3906,
+        "name": "\"#### 10. Consolidate the 649 `.rigger`-path string-literal sites (`dup-0051`) - the \\\n        single largest cluster in the entire catalog by site count\\n\\n\""
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3893,
-        "end_line": 3893,
-        "name": "\"- Scope: one `.rigger`-relative path-composition helper (the cluster's own \\\n        `proposed_home`) every one of the 645 sites routes through instead of building its \\\n        own literal.\\n\\\n        - Files: spans dozens of files including `src/conductor.rs`, `src/config.rs`, \\\n        `src/dash.rs`, `src/docs.rs`, `src/gate.rs`, `src/grounder/mod.rs`, \\\n        `src/grounder/symbols/store.rs`, `src/ingest.rs`, `src/main.rs`, `src/reap.rs`, \\\n        `src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list \\\n        is in the committed `docs/audit/duplication-catalog.json` under `dup-0051` for the \\\n        follow-up spec to consume directly, not re-enumerated here.\\n\\\n        - Expected line delta: negative - 645 literal compositions collapse toward one \\\n        helper's call sites; the helper itself is small.\\n\\\n        - Risk: medium - the largest surface-area sweep in this plan by site count, even \\\n        though each individual site is trivial; needs a mechanical rewrite pass plus a \\\n        full-suite green run, not hand-editing 645 sites.\\n\\\n        - Unblocks: the biggest single site-count reduction available anywhere in the \\\n        duplication catalog.\\n\\n\""
+        "start_line": 3910,
+        "end_line": 3910,
+        "name": "\"- Scope: one `.rigger`-relative path-composition helper (the cluster's own \\\n        `proposed_home`) every one of the 649 sites routes through instead of building its \\\n        own literal.\\n\\\n        - Files: spans dozens of files including `src/conductor.rs`, `src/config.rs`, \\\n        `src/dash.rs`, `src/docs.rs`, `src/gate.rs`, `src/grounder/mod.rs`, \\\n        `src/grounder/symbols/store.rs`, `src/ingest.rs`, `src/main.rs`, `src/reap.rs`, \\\n        `src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list \\\n        is in the committed `docs/audit/duplication-catalog.json` under `dup-0051` for the \\\n        follow-up spec to consume directly, not re-enumerated here.\\n\\\n        - Expected line delta: negative - 649 literal compositions collapse toward one \\\n        helper's call sites; the helper itself is small.\\n\\\n        - Risk: medium - the largest surface-area sweep in this plan by site count, even \\\n        though each individual site is trivial; needs a mechanical rewrite pass plus a \\\n        full-suite green run, not hand-editing 649 sites.\\n\\\n        - Unblocks: the biggest single site-count reduction available anywhere in the \\\n        duplication catalog.\\n\\n\""
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5158,
-        "end_line": 5158,
+        "start_line": 5180,
+        "end_line": 5180,
         "name": "\"fn a() {\\n    let _ = \\\".rigger/tmp\\\";\\n}\\n\""
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5161,
-        "end_line": 5161,
+        "start_line": 5183,
+        "end_line": 5183,
         "name": "\".rigger\""
       },
       {
@@ -8123,8 +8123,8 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5165,
-        "end_line": 5173,
+        "start_line": 5187,
+        "end_line": 5195,
         "name": "looks_error_shaping_matches_error_and_underscore_bounded_err_but_not_an_incidental_substring"
       }
     ],
@@ -9335,8 +9335,8 @@
       },
       {
         "file": "tests/prioritized_plan_citation_periphery.rs",
-        "start_line": 203,
-        "end_line": 203,
+        "start_line": 307,
+        "end_line": 307,
         "name": "\" raw `/proc`-path string literals scattered across `src/dash.rs`, \\\n                    `src/main.rs`, `src/reap.rs` and three test files with no shared composer \\\n                    (`dup-0124`)\""
       },
       {
@@ -9391,60 +9391,60 @@
         "file": "tests/simplification_audit.rs",
         "start_line": 3651,
         "end_line": 3651,
-        "name": "\"Largest risk-reduction first is read as five tiers, ranked by the KIND of risk \\\n        each entry retires, highest first:\\n\\n\\\n        1. Tier 1 - active correctness risk: a use case already depends on the wrong \\\n        concretion, or two independent implementations of one concern can already drift \\\n        apart silently (section 3's two boundary violations; the one already-drifted \\\n        `/proc`-reading pair section 2 and section 3 both name). These are live gaps, not \\\n        just size.\\n\\\n        2. Tier 2 - god-file test-module extraction: each of the three god files' own \\\n        inline `#[cfg(test)] mod tests` is the majority of that file's bulk (56-70% by \\\n        boundary-line count, per a direct read of each file), and moving it is a pure \\\n        relocation with no production-behavior change - the single largest safe line-count \\\n        reduction in this plan, and the precondition that makes tier 3 tractable.\\n\\\n        3. Tier 3 - god-file production splits: section 1's own proposed module tree \\\n        applied to the (now much smaller) remaining production surface of each god file. \\\n        Higher execution risk than tier 2 because it touches live orchestration and CLI \\\n        logic, so it is sequenced after tier 2 shrinks the target first.\\n\\\n        4. Tier 4 - named production duplication sweeps: the mechanical mandatory sweeps \\\n        section 2 ran regardless of the Jaccard pass (`Command::new`, `.rigger`-path \\\n        literals, sqlite `Connection::open`, error-shaping helpers), each already a single \\\n        committed cluster with its own proposed home.\\n\\\n        5. Tier 5 - test-suite consolidation: section 5's own catalogued test-only \\\n        duplication. No production-correctness exposure at all (worst case a test \\\n        regresses, never the product), so it is ordered last despite touching the largest \\\n        raw line count anywhere in this plan.\\n\\n\\\n        Within a tier, entries are ordered largest-first by the site or line count each \\\n        retires - the same rule the tiers themselves follow, applied one level down.\\n\\n\""
+        "name": "\"Largest risk-reduction first is read as six tiers, ranked by the KIND of risk \\\n        each entry retires, highest first:\\n\\n\\\n        1. Tier 1 - active correctness risk: a use case already depends on the wrong \\\n        concretion, or two independent implementations of one concern can already drift \\\n        apart silently (section 3's two boundary violations; the one already-drifted \\\n        `/proc`-reading pair section 2 and section 3 both name). These are live gaps, not \\\n        just size.\\n\\\n        2. Tier 2 - god-file test-module extraction: each of the three god files' own \\\n        inline `#[cfg(test)] mod tests` is the majority of that file's bulk (56-70% by \\\n        boundary-line count, per a direct read of each file), and moving it is a pure \\\n        relocation with no production-behavior change - the single largest safe line-count \\\n        reduction in this plan, and the precondition that makes tier 3 tractable.\\n\\\n        3. Tier 3 - god-file production splits: section 1's own proposed module tree \\\n        applied to the (now much smaller) remaining production surface of each god file. \\\n        Higher execution risk than tier 2 because it touches live orchestration and CLI \\\n        logic, so it is sequenced after tier 2 shrinks the target first.\\n\\\n        4. Tier 4 - named production duplication sweeps: the mechanical mandatory sweeps \\\n        section 2 ran regardless of the Jaccard pass (`Command::new`, `.rigger`-path \\\n        literals, sqlite `Connection::open`, error-shaping helpers), each already a single \\\n        committed cluster with its own proposed home.\\n\\\n        5. Tier 5 - test-suite consolidation: section 5's own catalogued test-only \\\n        duplication. No production-correctness exposure at all (worst case a test \\\n        regresses, never the product), so it is ordered ahead only of tier 6 despite \\\n        touching the largest raw line count anywhere in this plan.\\n\\\n        6. Tier 6 - remaining catalog sweep: the 327 src-touching clusters section 2 found \\\n        but tiers 1 and 4 did not individually name. Unlike every other tier, none of these \\\n        327 have been read and risk-assessed one at a time the way tiers 1-4's named \\\n        clusters have - they are consumed straight from the catalog - so this tier carries \\\n        production-correctness exposure tiers 2, 3 and 5 do not, and is ordered last: the \\\n        follow-up spec must triage each cluster's own production-or-test status before \\\n        merging it, not assume tier 5's blanket test-only treatment applies here too.\\n\\n\\\n        Within a tier, entries are ordered largest-first by the site or line count each \\\n        retires - the same rule the tiers themselves follow, applied one level down.\\n\\n\""
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3727,
-        "end_line": 3727,
+        "start_line": 3734,
+        "end_line": 3734,
         "name": "\"#### 3. Retire the duplicate `/proc`-reading authority (`dup-0124` + `dup-0125`)\\n\\n\""
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3730,
-        "end_line": 3730,
-        "name": "\"- Scope: `src/dash.rs::process_state` (`src/dash.rs:499-507`) and \\\n        `src/main.rs::pgid_of` (`src/main.rs:23064-23077`) each independently re-derive \\\n        `/proc/<pid>/stat` and `/proc/<pid>/status` fields that `src/reap.rs` \\\n        (`pid_starttime`/`read_ppid`, `src/reap.rs:190-207`) already parses - the exact \\\n        \\\"second mutation authority\\\" example spec 85's own Goal names and spec 62's \\\n        capstone previously caught (`dup-0125`, 13 sites: `src/dash.rs`, `src/main.rs`, \\\n        `src/reap.rs`, `tests/cli.rs`), plus 56 raw `/proc`-path string literals scattered \\\n        across `src/dash.rs`, `src/main.rs`, `src/reap.rs` and three test files with no \\\n        shared composer (`dup-0124`). Both clusters' own `proposed_home` agree: `src/reap.rs` \\\n        becomes the one `/proc`-reading module; `dash.rs` and `main.rs` call it instead of \\\n        re-parsing.\\n\\\n        - Files: `src/dash.rs`, `src/main.rs`, `src/reap.rs`, `tests/cli.rs` (`proc_pgid_of`, \\\n        `tests/cli.rs:23419-23432`, re-points at the same call).\\n\\\n        - Expected line delta: negative - retires `process_state`'s and `pgid_of`'s own \\\n        parsing bodies in favor of calling `reap.rs`'s existing parser.\\n\\\n        - Risk: low. Section 3's own disposition already establishes this is a duplicate \\\n        READ-only reimplementation, never a bypassed mutation path - nothing this touches \\\n        can signal or kill a process, so it carries none of the no-os-kill gate's own risk \\\n        surface.\\n\\\n        - Unblocks: retires the codebase's only currently-known live instance of the \\\n        \\\"duplicate implementation reconciled after the fact\\\" pattern the operator's \\\n        strict-DRY rule targets - the concrete precedent spec 85's own Goal cites.\\n\\n\""
+        "start_line": 3737,
+        "end_line": 3737,
+        "name": "\"- Scope: `src/dash.rs::process_state` (`src/dash.rs:499-507`) and \\\n        `src/main.rs::pgid_of` (`src/main.rs:23064-23077`) each independently re-derive \\\n        `/proc/<pid>/stat` and `/proc/<pid>/status` fields that `src/reap.rs` \\\n        (`pid_starttime`/`read_ppid`, `src/reap.rs:190-207`) already parses - the exact \\\n        \\\"second mutation authority\\\" example spec 85's own Goal names and spec 62's \\\n        capstone previously caught (`dup-0125`, 14 sites: `src/dash.rs`, `src/main.rs`, \\\n        `src/reap.rs`, `tests/cli.rs`), plus 60 raw `/proc`-path string literals scattered \\\n        across `src/dash.rs`, `src/main.rs`, `src/reap.rs` and three test files with no \\\n        shared composer (`dup-0124`). Both clusters' own `proposed_home` agree: `src/reap.rs` \\\n        becomes the one `/proc`-reading module; `dash.rs` and `main.rs` call it instead of \\\n        re-parsing. NOT SYMMETRIC: `process_state` is reachable from `dash`'s own always-on \\\n        production server, so it is the actual active-correctness risk this tier-1 placement \\\n        is about; `pgid_of` sits inside `main.rs`'s `mod tests` (opened at `src/main.rs:12650`) \\\n        and is called only by `#[test]` fns, so on its own it earns no tier-1 placement - it \\\n        rides in this same item only because it shares `dup-0124`/`dup-0125`'s one root cause \\\n        and one proposed fix with `process_state`, not because retiring it retires any live \\\n        risk of its own.\\n\\\n        - Files: `src/dash.rs`, `src/main.rs`, `src/reap.rs`, `tests/cli.rs` (`proc_pgid_of`, \\\n        `tests/cli.rs:23419-23432`, re-points at the same call).\\n\\\n        - Expected line delta: negative - retires `process_state`'s and `pgid_of`'s own \\\n        parsing bodies in favor of calling `reap.rs`'s existing parser.\\n\\\n        - Risk: low for both halves, for two different reasons. Section 3's own disposition \\\n        already establishes `process_state` as a duplicate READ-only reimplementation, never a \\\n        bypassed mutation path - nothing this touches can signal or kill a process, so it \\\n        carries none of the no-os-kill gate's own risk surface. `pgid_of`'s own risk is lower \\\n        still: being test-only, retiring it is ordinary test cleanup, not a \\\n        correctness-risk retirement - it is sequenced here for shared-fix convenience, not \\\n        because it independently needed tier-1 urgency.\\n\\\n        - Unblocks: retires the codebase's only currently-known live instance of the \\\n        \\\"duplicate implementation reconciled after the fact\\\" pattern the operator's \\\n        strict-DRY rule targets - the concrete precedent spec 85's own Goal cites - and, as a \\\n        free byproduct, `main.rs`'s own test-only duplicate parser.\\n\\n\""
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5043,
-        "end_line": 5043,
+        "start_line": 5065,
+        "end_line": 5065,
         "name": "\"fn state_of(pid: u32) -> Option<char> {\\n    let stat = std::fs::read_to_string(format!(\\\"/proc/{pid}/stat\\\")).ok()?;\\n    stat.rsplit_once(')')?.1.split_whitespace().next()?.chars().next()\\n}\\n\""
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5048,
-        "end_line": 5048,
+        "start_line": 5070,
+        "end_line": 5070,
         "name": "\"fn starttime_of(pid: u32) -> Option<u64> {\\n    let stat = std::fs::read_to_string(format!(\\\"/proc/{pid}/stat\\\")).ok()?;\\n    stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.parse().ok()\\n}\\n\""
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5053,
-        "end_line": 5053,
+        "start_line": 5075,
+        "end_line": 5075,
         "name": "\"fn ppid_of(pid: u32) -> Option<u32> {\\n    let stat = std::fs::read_to_string(format!(\\\"/proc/{pid}/stat\\\")).ok()?;\\n    stat.rsplit_once(')')?.1.split_whitespace().nth(1)?.parse().ok()\\n}\\n\""
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5144,
-        "end_line": 5144,
+        "start_line": 5166,
+        "end_line": 5166,
         "name": "\"fn a() {\\n    let _ = std::fs::read_to_string(\\\"/proc/1/stat\\\");\\n    let _ = \\\"hello\\\";\\n}\\n\""
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5147,
-        "end_line": 5147,
+        "start_line": 5169,
+        "end_line": 5169,
         "name": "\"/proc\""
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5149,
-        "end_line": 5149,
+        "start_line": 5171,
+        "end_line": 5171,
         "name": "\"/proc\""
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5213,
-        "end_line": 5213,
+        "start_line": 5235,
+        "end_line": 5235,
         "name": "\"fn state_of(pid: u32) -> Option<char> {\\n    let s = std::fs::read_to_string(format!(\\\"/proc/{pid}/stat\\\")).ok()?;\\n    s.chars().next()\\n}\\nfn ppid_of(pid: u32) -> Option<u32> {\\n    let s = std::fs::read_to_string(format!(\\\"/proc/{pid}/status\\\")).ok()?;\\n    s.parse().ok()\\n}\\nfn unrelated() -> u32 {\\n    1\\n}\\n\""
       }
     ],
@@ -9518,25 +9518,25 @@
       {
         "file": "tests/simplification_audit.rs",
         "start_line": 3630,
-        "end_line": 4092,
+        "end_line": 4114,
         "name": "render_section_6"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5035,
-        "end_line": 5061,
+        "start_line": 5057,
+        "end_line": 5083,
         "name": "three_near_but_not_identical_functions_cluster_as_near_with_every_site_and_one_home"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5139,
-        "end_line": 5150,
+        "start_line": 5161,
+        "end_line": 5172,
         "name": "proc_literal_sweep_finds_a_proc_path_string_and_ignores_an_unrelated_one"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5207,
-        "end_line": 5220,
+        "start_line": 5229,
+        "end_line": 5242,
         "name": "proc_stat_or_status_reader_sweep_finds_a_stat_reader_and_a_status_reader_but_not_an_unrelated_fn"
       }
     ],
@@ -10637,8 +10637,8 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4491,
-        "end_line": 4493,
+        "start_line": 4513,
+        "end_line": 4515,
         "name": "impl_self_type_still_handles_a_generic_self_type_with_a_where_clause"
       },
       {
@@ -11719,26 +11719,26 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4477,
-        "end_line": 4488,
+        "start_line": 4499,
+        "end_line": 4510,
         "name": "impl_self_type_strips_a_trailing_where_clause_on_a_non_generic_self_type"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4496,
-        "end_line": 4502,
+        "start_line": 4518,
+        "end_line": 4524,
         "name": "strip_trailing_where_clause_is_a_word_boundary_match_not_a_substring_match"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4544,
-        "end_line": 4548,
+        "start_line": 4566,
+        "end_line": 4570,
         "name": "pluralize_functions_uses_singular_only_at_exactly_one"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4838,
-        "end_line": 4848,
+        "start_line": 4860,
+        "end_line": 4870,
         "name": "ident_kind_marker_classifies_by_casing"
       }
     ],
@@ -14323,8 +14323,8 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4259,
-        "end_line": 4263,
+        "start_line": 4281,
+        "end_line": 4285,
         "name": "a_trait_method_signature_without_a_body_is_not_recorded"
       }
     ],
@@ -20175,8 +20175,8 @@
       },
       {
         "file": "tests/prioritized_plan_citation_periphery.rs",
-        "start_line": 56,
-        "end_line": 58,
+        "start_line": 67,
+        "end_line": 69,
         "name": "repo_root"
       },
       {
@@ -22660,7 +22660,7 @@
       {
         "file": "tests/simplification_audit.rs",
         "start_line": 3630,
-        "end_line": 4092,
+        "end_line": 4114,
         "name": "render_section_6"
       }
     ],
@@ -22673,14 +22673,14 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4141,
-        "end_line": 4150,
+        "start_line": 4163,
+        "end_line": 4172,
         "name": "a_simple_free_function_is_found_with_its_line_span"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4381,
-        "end_line": 4387,
+        "start_line": 4403,
+        "end_line": 4409,
         "name": "production_functions_before_a_cfg_test_mod_are_not_flagged_test"
       }
     ],
@@ -22693,92 +22693,92 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4153,
-        "end_line": 4161,
+        "start_line": 4175,
+        "end_line": 4183,
         "name": "two_sibling_functions_are_both_found_in_order"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4171,
-        "end_line": 4176,
+        "start_line": 4193,
+        "end_line": 4198,
         "name": "fnv1a_is_not_mistaken_for_the_fn_keyword"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4183,
-        "end_line": 4188,
+        "start_line": 4205,
+        "end_line": 4210,
         "name": "a_brace_inside_a_line_comment_is_ignored"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4191,
-        "end_line": 4196,
+        "start_line": 4213,
+        "end_line": 4218,
         "name": "a_brace_inside_a_block_comment_is_ignored"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4199,
-        "end_line": 4204,
+        "start_line": 4221,
+        "end_line": 4226,
         "name": "nested_block_comments_are_handled"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4207,
-        "end_line": 4212,
+        "start_line": 4229,
+        "end_line": 4234,
         "name": "a_brace_inside_a_string_literal_is_ignored"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4215,
-        "end_line": 4220,
+        "start_line": 4237,
+        "end_line": 4242,
         "name": "a_brace_inside_a_raw_string_with_hashes_is_ignored"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4223,
-        "end_line": 4228,
+        "start_line": 4245,
+        "end_line": 4250,
         "name": "a_brace_inside_a_byte_string_is_ignored"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4231,
-        "end_line": 4236,
+        "start_line": 4253,
+        "end_line": 4258,
         "name": "a_brace_char_literal_is_not_mistaken_for_real_braces"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4239,
-        "end_line": 4244,
+        "start_line": 4261,
+        "end_line": 4266,
         "name": "a_lifetime_is_not_mistaken_for_a_char_literal"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4247,
-        "end_line": 4252,
+        "start_line": 4269,
+        "end_line": 4274,
         "name": "an_escaped_quote_char_literal_does_not_confuse_the_scanner"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4266,
-        "end_line": 4271,
+        "start_line": 4288,
+        "end_line": 4293,
         "name": "a_trait_default_method_with_a_body_is_recorded"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4274,
-        "end_line": 4279,
+        "start_line": 4296,
+        "end_line": 4301,
         "name": "a_fn_pointer_type_usage_is_not_recorded"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4282,
-        "end_line": 4288,
+        "start_line": 4304,
+        "end_line": 4310,
         "name": "a_semicolon_inside_an_array_type_param_does_not_end_the_signature_early"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4406,
-        "end_line": 4412,
+        "start_line": 4428,
+        "end_line": 4434,
         "name": "braces_from_if_match_and_closures_do_not_break_the_enclosing_fns_span"
       }
     ],
@@ -22791,20 +22791,20 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4295,
-        "end_line": 4301,
+        "start_line": 4317,
+        "end_line": 4323,
         "name": "a_method_inside_an_impl_block_carries_its_header"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4304,
-        "end_line": 4312,
+        "start_line": 4326,
+        "end_line": 4334,
         "name": "a_trait_impl_header_keeps_the_trait_for_type_text"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4315,
-        "end_line": 4327,
+        "start_line": 4337,
+        "end_line": 4349,
         "name": "a_method_inside_an_impl_nested_in_a_cfg_test_mod_is_flagged_test"
       }
     ],
@@ -22817,14 +22817,14 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4352,
-        "end_line": 4358,
+        "start_line": 4374,
+        "end_line": 4380,
         "name": "a_function_directly_in_a_cfg_test_mod_is_flagged_test"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4361,
-        "end_line": 4370,
+        "start_line": 4383,
+        "end_line": 4392,
         "name": "a_nested_named_test_submodule_is_still_flagged_test_and_named"
       }
     ],
@@ -22837,20 +22837,20 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4456,
-        "end_line": 4462,
+        "start_line": 4478,
+        "end_line": 4484,
         "name": "a_method_is_classified_under_its_impl_self_type"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4465,
-        "end_line": 4474,
+        "start_line": 4487,
+        "end_line": 4496,
         "name": "a_method_on_a_generic_impl_block_strips_the_impls_own_leading_generics"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4505,
-        "end_line": 4510,
+        "start_line": 4527,
+        "end_line": 4532,
         "name": "a_trait_impl_method_is_classified_under_the_implementing_type_not_the_trait"
       }
     ],
@@ -22863,20 +22863,20 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4625,
-        "end_line": 4631,
+        "start_line": 4647,
+        "end_line": 4653,
         "name": "replace_section_1_only_touches_section_1_leaving_later_sections_intact"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5589,
-        "end_line": 5596,
+        "start_line": 5611,
+        "end_line": 5618,
         "name": "replace_section_2_only_touches_section_2_leaving_neighbors_intact"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5926,
-        "end_line": 5943,
+        "start_line": 5994,
+        "end_line": 6011,
         "name": "replace_section_6_only_touches_that_span_leaving_earlier_sections_intact"
       }
     ],
@@ -22889,14 +22889,14 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4675,
-        "end_line": 4697,
+        "start_line": 4697,
+        "end_line": 4719,
         "name": "responsibility_map_json_matches_the_tree_or_is_rewritten"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5732,
-        "end_line": 5754,
+        "start_line": 5754,
+        "end_line": 5776,
         "name": "duplication_catalog_json_matches_the_tree_or_is_rewritten"
       }
     ],
@@ -22909,14 +22909,14 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4792,
-        "end_line": 4800,
+        "start_line": 4814,
+        "end_line": 4822,
         "name": "string_and_raw_string_literals_are_one_lit_token_each"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4812,
-        "end_line": 4820,
+        "start_line": 4834,
+        "end_line": 4842,
         "name": "number_literals_including_a_fraction_are_lit_tokens"
       }
     ],
@@ -22929,32 +22929,32 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5035,
-        "end_line": 5061,
+        "start_line": 5057,
+        "end_line": 5083,
         "name": "three_near_but_not_identical_functions_cluster_as_near_with_every_site_and_one_home"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5064,
-        "end_line": 5082,
+        "start_line": 5086,
+        "end_line": 5104,
         "name": "cluster_ids_are_assigned_after_deterministic_sort_and_sites_are_sorted_within_a_cluster"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5085,
-        "end_line": 5096,
+        "start_line": 5107,
+        "end_line": 5118,
         "name": "same_impl_block_duplicate_methods_propose_that_types_home"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5103,
-        "end_line": 5115,
+        "start_line": 5125,
+        "end_line": 5137,
         "name": "command_new_sweep_finds_a_call_site_and_names_it"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5176,
-        "end_line": 5188,
+        "start_line": 5198,
+        "end_line": 5210,
         "name": "error_shaping_sweep_requires_both_the_name_shape_and_a_format_call"
       }
     ],
@@ -22967,14 +22967,14 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5207,
-        "end_line": 5220,
+        "start_line": 5229,
+        "end_line": 5242,
         "name": "proc_stat_or_status_reader_sweep_finds_a_stat_reader_and_a_status_reader_but_not_an_unrelated_fn"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5467,
-        "end_line": 5484,
+        "start_line": 5489,
+        "end_line": 5506,
         "name": "bespoke_lexer_sweep_finds_the_named_trio_but_not_an_unrelated_fn"
       }
     ],
@@ -22987,14 +22987,14 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5227,
-        "end_line": 5240,
+        "start_line": 5249,
+        "end_line": 5262,
         "name": "the_dash_reap_proc_stat_pair_the_spec_names_lands_in_one_real_cluster"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5339,
-        "end_line": 5354,
+        "start_line": 5361,
+        "end_line": 5376,
         "name": "the_two_exploration_graph_fixture_builders_the_adversarial_sample_found_land_in_one_real_cluster"
       }
     ],
@@ -23007,14 +23007,14 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5243,
-        "end_line": 5250,
+        "start_line": 5265,
+        "end_line": 5272,
         "name": "constructs_own_type_literal_matches_self_and_the_named_type_but_not_an_unrelated_call"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5253,
-        "end_line": 5261,
+        "start_line": 5275,
+        "end_line": 5283,
         "name": "constructs_own_type_literal_matches_shorthand_field_init_too"
       }
     ],
@@ -23027,14 +23027,14 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5287,
-        "end_line": 5305,
+        "start_line": 5309,
+        "end_line": 5327,
         "name": "the_spawn_result_constructor_triple_the_adversarial_sample_found_lands_in_one_real_cluster"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5491,
-        "end_line": 5508,
+        "start_line": 5513,
+        "end_line": 5530,
         "name": "the_bespoke_lexer_and_canonical_extractor_the_lens_routed_land_in_one_real_cluster"
       }
     ],
@@ -23047,20 +23047,20 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5357,
-        "end_line": 5385,
+        "start_line": 5379,
+        "end_line": 5407,
         "name": "same_named_helper_sweep_excludes_required_trait_impl_methods_across_adapters"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5388,
-        "end_line": 5417,
+        "start_line": 5410,
+        "end_line": 5439,
         "name": "same_named_helper_sweep_excludes_a_trait_default_method_and_its_override"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5420,
-        "end_line": 5444,
+        "start_line": 5442,
+        "end_line": 5466,
         "name": "same_named_helper_sweep_still_catches_two_inherent_impls_sharing_a_method_name"
       }
     ],
@@ -23073,14 +23073,14 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5600,
-        "end_line": 5605,
+        "start_line": 5622,
+        "end_line": 5627,
         "name": "replace_section_2_panics_loudly_when_the_heading_is_entirely_absent"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5956,
-        "end_line": 5961,
+        "start_line": 6024,
+        "end_line": 6029,
         "name": "replace_section_6_panics_loudly_when_the_heading_is_entirely_absent"
       }
     ],
@@ -23093,14 +23093,14 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5612,
-        "end_line": 5616,
+        "start_line": 5634,
+        "end_line": 5638,
         "name": "sample_indices_is_deterministic_for_a_fixed_seed"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5642,
-        "end_line": 5646,
+        "start_line": 5664,
+        "end_line": 5668,
         "name": "different_seeds_produce_different_draws"
       }
     ],
@@ -23113,20 +23113,20 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5761,
-        "end_line": 5798,
+        "start_line": 5783,
+        "end_line": 5820,
         "name": "report_section_2_matches_the_tree_or_is_rewritten"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5873,
-        "end_line": 5919,
+        "start_line": 5895,
+        "end_line": 5941,
         "name": "report_sections_3_through_5_match_the_tree_or_are_rewritten"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6019,
-        "end_line": 6052,
+        "start_line": 6087,
+        "end_line": 6120,
         "name": "report_section_6_matches_the_tree_or_is_rewritten"
       }
     ],
@@ -23139,14 +23139,14 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5806,
-        "end_line": 5830,
+        "start_line": 5828,
+        "end_line": 5852,
         "name": "replace_sections_3_to_5_only_touches_that_span_leaving_neighbors_intact"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5833,
-        "end_line": 5850,
+        "start_line": 5855,
+        "end_line": 5872,
         "name": "replace_sections_3_to_5_falls_back_to_end_of_string_when_no_section_6_heading_exists"
       }
     ],

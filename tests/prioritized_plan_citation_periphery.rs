@@ -38,6 +38,17 @@
 //!    fail today - a genuine boundary bug for the implementer to fix, never a reason to weaken
 //!    the check. `dup-0198` is excluded: section 6 names it without citing a bare site count.
 //!
+//! ROUND 2 (adjudication REJECT on diff `99b73bd..e6faa6f`): the three stale section-6 counts
+//! above are now corrected in `render_section_6` (649/60/14). Separately, the adversary found
+//! this unit's own FIRST commit had silently hand-patched a citation inside section 5 (owned by
+//! criterion 3, not this one) from `dup-0618`/`dup-0625` to `dup-0617`/`dup-0624` - the same
+//! population-churn mechanism that caused section 6's own stale counts, this time landing in a
+//! different criterion's prose with no disclosing decision and no test guarding it. Disclosed via
+//! decision `sdet-u85c4-r2-section5-citations-now-guarded` (supersedes nothing - the original edit
+//! was never itself recorded). `section_5_named_dup_id_citations_match_the_committed_catalogs_
+//! site_counts` below closes that same gap for section 5's own named `dup-NNNN` citations, so a
+//! future population-churn drift there fails a test instead of needing a silent hand-patch again.
+//!
 //! DELIBERATE INDEPENDENCE: this file never calls `tests/simplification_audit.rs`'s private
 //! `find_heading` / `replace_section_*` / `render_section_6` (integration test binaries cannot
 //! see another file's private items anyway) and declares its own minimal cluster shape rather
@@ -62,23 +73,49 @@ fn read_report() -> String {
         .unwrap_or_else(|e| panic!("{REPORT_PATH} is missing or unreadable ({e})"))
 }
 
-/// Only the fields this file needs to count sites per cluster - deliberately independent of
-/// the producer's own `DupCluster` shape (see module doc's DELIBERATE INDEPENDENCE note).
+/// Only the fields this file needs per site - deliberately independent of the producer's own
+/// `DupSite` shape (see module doc's DELIBERATE INDEPENDENCE note).
+#[derive(serde::Deserialize)]
+struct MinimalSite {
+    file: String,
+}
+
+/// Only the fields this file needs to count sites/files per cluster - deliberately independent
+/// of the producer's own `DupCluster` shape (see module doc's DELIBERATE INDEPENDENCE note).
 #[derive(serde::Deserialize)]
 struct MinimalCluster {
     id: String,
     #[serde(default)]
-    sites: Vec<serde_json::Value>,
+    sites: Vec<MinimalSite>,
 }
 
-fn catalog_site_counts() -> HashMap<String, usize> {
+fn load_clusters() -> Vec<MinimalCluster> {
     let raw = fs::read_to_string(repo_root().join(CATALOG_PATH))
         .unwrap_or_else(|e| panic!("{CATALOG_PATH} is missing or unreadable ({e})"));
-    let clusters: Vec<MinimalCluster> = serde_json::from_str(&raw)
-        .unwrap_or_else(|e| panic!("{CATALOG_PATH} does not deserialize as a cluster list: {e}"));
-    clusters
+    serde_json::from_str(&raw)
+        .unwrap_or_else(|e| panic!("{CATALOG_PATH} does not deserialize as a cluster list: {e}"))
+}
+
+/// Per-cluster site count (every catalogued occurrence, files or not).
+fn catalog_site_counts() -> HashMap<String, usize> {
+    load_clusters()
         .into_iter()
         .map(|c| (c.id, c.sites.len()))
+        .collect()
+}
+
+/// Per-cluster DISTINCT-file count - smaller than the site count whenever one file holds more
+/// than one site (e.g. a cluster with two sites in the same file counts as 1 file, 2 sites).
+/// Section 5's own prose cites this metric for several clusters (e.g. "5 files") where the
+/// site count itself differs (that cluster's sites span fewer files than sites).
+fn catalog_file_counts() -> HashMap<String, usize> {
+    load_clusters()
+        .into_iter()
+        .map(|c| {
+            let files: std::collections::HashSet<String> =
+                c.sites.into_iter().map(|s| s.file).collect();
+            (c.id, files.len())
+        })
         .collect()
 }
 
@@ -133,30 +170,48 @@ fn the_six_top_level_sections_appear_exactly_once_each_in_ascending_order() {
     );
 }
 
-/// Isolates one numbered plan item's own paragraph (from its `#### N. ` heading up to, but not
-/// including, the next `#### `/`### `/`## ` line) so the citation anchors below never need to
-/// be unique across the WHOLE report - only within their own item, mirroring the "one owner per
-/// span" contract `replace_section_*` itself relies on.
-fn item_block<'a>(report: &'a str, lines: &[(usize, &'a str)], n: u32) -> &'a str {
-    let marker = format!("#### {n}. ");
+/// Isolates one heading's own span (from the first line starting with `heading` up to, but not
+/// including, the next line starting with any of `stop_prefixes`) so citation anchors never need
+/// to be unique across the WHOLE report - only within their own span, mirroring the "one owner
+/// per span" contract `replace_section_*` itself relies on. The one shared building block behind
+/// both `item_block` (section 6's numbered items) and `sub_section_block` (section 5's `### 5.N`
+/// subsections) - one boundary-scoping algorithm, not two parallel copies.
+fn heading_block<'a>(
+    report: &'a str,
+    lines: &[(usize, &'a str)],
+    heading: &str,
+    stop_prefixes: &[&str],
+) -> &'a str {
     let idx = lines
         .iter()
-        .position(|(_, l)| l.starts_with(marker.as_str()))
-        .unwrap_or_else(|| panic!("no line starts with {marker:?} in {REPORT_PATH}"));
+        .position(|(_, l)| l.starts_with(heading))
+        .unwrap_or_else(|| panic!("no line starts with {heading:?} in {REPORT_PATH}"));
     let start = lines[idx].0;
     let end = lines[idx + 1..]
         .iter()
-        .find(|(_, l)| l.starts_with("#### ") || l.starts_with("### ") || l.starts_with("## "))
+        .find(|(_, l)| stop_prefixes.iter().any(|p| l.starts_with(p)))
         .map(|(pos, _)| *pos)
         .unwrap_or(report.len());
     &report[start..end]
 }
 
-/// Extracts the plain integer sitting between `before` and `after` inside `block` - both
-/// anchors are copied verbatim from the report's own current prose around a citation, so this
-/// only ever fails when the digits between them stop being a bare number (the wording around
-/// the citation changed) rather than when only the cited number itself is wrong.
-fn number_between(block: &str, before: &str, after: &str) -> u32 {
+/// Isolates one numbered plan item's own paragraph (from its `#### N. ` heading up to, but not
+/// including, the next `#### `/`### `/`## ` line).
+fn item_block<'a>(report: &'a str, lines: &[(usize, &'a str)], n: u32) -> &'a str {
+    let marker = format!("#### {n}. ");
+    heading_block(report, lines, &marker, &["#### ", "### ", "## "])
+}
+
+/// Isolates one `### 5.N ...` subsection of section 5 (up to the next `### ` or `## ` line).
+fn sub_section_block<'a>(report: &'a str, lines: &[(usize, &'a str)], heading: &str) -> &'a str {
+    heading_block(report, lines, heading, &["### ", "## "])
+}
+
+/// Extracts the raw text sitting between `before`'s first occurrence in `block` and the first
+/// occurrence of `after` following it - both anchors are copied verbatim from the report's own
+/// current prose around a citation, so this only ever fails when the wording around the
+/// citation itself changed, never silently.
+fn substring_between<'a>(block: &'a str, before: &str, after: &str) -> &'a str {
     let start = block
         .find(before)
         .unwrap_or_else(|| panic!("anchor {before:?} not found in item block {block:?}"));
@@ -164,9 +219,58 @@ fn number_between(block: &str, before: &str, after: &str) -> u32 {
     let end = tail
         .find(after)
         .unwrap_or_else(|| panic!("anchor {after:?} not found after {before:?} in {block:?}"));
-    let digits = &tail[..end];
+    &tail[..end]
+}
+
+/// Extracts the plain integer sitting between `before` and `after` inside `block` - this only
+/// ever fails when the digits between them stop being a bare number (the wording around the
+/// citation changed) rather than when only the cited number itself is wrong.
+fn number_between(block: &str, before: &str, after: &str) -> u32 {
+    let digits = substring_between(block, before, after);
     digits.trim().parse::<u32>().unwrap_or_else(|e| {
         panic!("expected a bare number between {before:?} and {after:?}, found {digits:?}: {e}")
+    })
+}
+
+/// Extracts an `"A+B"`-style pair (the report's own shorthand for "one cluster of A sites, its
+/// companion cluster of B sites") sitting between `before` and `after` inside `block`.
+fn number_pair_between(block: &str, before: &str, after: &str) -> (u32, u32) {
+    let raw = substring_between(block, before, after);
+    let (a, b) = raw.split_once('+').unwrap_or_else(|| {
+        panic!("expected an \"A+B\" pair between {before:?} and {after:?}, found {raw:?}")
+    });
+    let parse = |s: &str| {
+        s.trim().parse::<u32>().unwrap_or_else(|e| {
+            panic!("expected a bare number in pair {raw:?} between {before:?} and {after:?}: {e}")
+        })
+    };
+    (parse(a), parse(b))
+}
+
+/// Finds the bare integer nearest to, and immediately preceding (skipping only non-digit filler
+/// text such as "-site" or " files"), `marker`'s first occurrence in `block` - the mirror image
+/// of `number_between`, for the report's own "N files (`dup-NNNN`" phrasing where the count
+/// comes BEFORE the cluster id's own citation rather than after it.
+fn number_immediately_before(block: &str, marker: &str) -> u32 {
+    let idx = block
+        .find(marker)
+        .unwrap_or_else(|| panic!("anchor {marker:?} not found in block {block:?}"));
+    let head = &block[..idx];
+    let bytes = head.as_bytes();
+    let mut end = bytes.len();
+    while end > 0 && !bytes[end - 1].is_ascii_digit() {
+        end -= 1;
+    }
+    let mut start = end;
+    while start > 0 && bytes[start - 1].is_ascii_digit() {
+        start -= 1;
+    }
+    assert!(start < end, "no number found before {marker:?} in {head:?}");
+    head[start..end].parse::<u32>().unwrap_or_else(|e| {
+        panic!(
+            "expected a bare number before {marker:?}, found {:?}: {e}",
+            &head[start..end]
+        )
     })
 }
 
@@ -283,6 +387,249 @@ fn section_6_named_dup_id_citations_match_the_committed_catalogs_site_counts() {
         mismatches.is_empty(),
         "section 6 cites stale site counts that no longer match the committed duplication \
          catalog (section 6's own Done-when text requires accurately citing sections 1-5):\n{}",
+        mismatches.join("\n")
+    );
+}
+
+/// Appends a mismatch line to `mismatches` when `cited` disagrees with `counts[dup_id]` -
+/// shared by every section-5 citation check below regardless of how the number was located
+/// (immediately-before, between two anchors, or half of an "A+B" pair).
+fn record_mismatch(
+    mismatches: &mut Vec<String>,
+    location: &str,
+    dup_id: &str,
+    metric_name: &str,
+    cited: u32,
+    counts: &HashMap<String, usize>,
+) {
+    let actual = *counts.get(dup_id).unwrap_or_else(|| {
+        panic!("{dup_id} is cited in {location} but has no cluster in {CATALOG_PATH}")
+    }) as u32;
+    if cited != actual {
+        mismatches.push(format!(
+            "{location}: {dup_id} cited as {cited} {metric_name}(s) in {REPORT_PATH}, but \
+             {CATALOG_PATH} carries {actual} {metric_name}(s)"
+        ));
+    }
+}
+
+/// THE CROSS-ARTIFACT CONTRACT, widened to section 5 (closing the same blast-radius gap for the
+/// criterion that actually caused the drift `section_6_...` above catches only for section 6):
+/// every named `dup-NNNN` citation in section 5 that carries an explicit site or file count is
+/// checked here against the committed `docs/audit/duplication-catalog.json`, independent of
+/// however section 5's own prose was authored. See decision
+/// `sdet-u85c4-r2-section5-citations-now-guarded` for why this exists: this unit's own first
+/// commit silently hand-patched one of these citations (`dup-0618`/`dup-0625` ->
+/// `dup-0617`/`dup-0624`) with no test guarding section 5's citations against the same
+/// population-churn drift section 6's own test already caught for itself.
+#[test]
+fn section_5_named_dup_id_citations_match_the_committed_catalogs_site_counts() {
+    let report = read_report();
+    let lines = lines_with_offsets(&report);
+    let sites = catalog_site_counts();
+    let files = catalog_file_counts();
+    let mut mismatches = Vec::new();
+
+    // 5.2: shared-fixture citations - the report cites the count BEFORE naming the cluster id
+    // ("independently redefined in 18 files (`dup-0335`...)"), so these use the backward scan.
+    let sec_5_2 = sub_section_block(&report, &lines, "### 5.2 ");
+    for dup_id in [
+        "dup-0335", "dup-0336", "dup-0361", "dup-0366", "dup-0362", "dup-0367",
+    ] {
+        let marker = format!("(`{dup_id}`");
+        let cited = number_immediately_before(sec_5_2, &marker);
+        record_mismatch(
+            &mut mismatches,
+            "section 5.2",
+            dup_id,
+            "site",
+            cited,
+            &sites,
+        );
+    }
+
+    // 5.4: duplicated-helper citations - the cluster id comes first, then its file/site counts.
+    let sec_5_4 = sub_section_block(&report, &lines, "### 5.4 ");
+    let cited = number_between(
+        sec_5_4,
+        "architecture-integrity checks, ",
+        " files, 15 sites);",
+    );
+    record_mismatch(
+        &mut mismatches,
+        "section 5.4",
+        "dup-0339",
+        "file",
+        cited,
+        &files,
+    );
+    let cited = number_between(
+        sec_5_4,
+        "architecture-integrity checks, 12 files, ",
+        " sites);",
+    );
+    record_mismatch(
+        &mut mismatches,
+        "section 5.4",
+        "dup-0339",
+        "site",
+        cited,
+        &sites,
+    );
+    let cited = number_between(
+        sec_5_4,
+        "`tests/step_attention_periphery.rs`, ",
+        " files, 15 sites); `dup-0369`",
+    );
+    record_mismatch(
+        &mut mismatches,
+        "section 5.4",
+        "dup-0395",
+        "file",
+        cited,
+        &files,
+    );
+    let cited = number_between(
+        sec_5_4,
+        "`tests/step_attention_periphery.rs`, 4 files, ",
+        " sites); `dup-0369`",
+    );
+    record_mismatch(
+        &mut mismatches,
+        "section 5.4",
+        "dup-0395",
+        "site",
+        cited,
+        &sites,
+    );
+    let cited = number_between(sec_5_4, "fold-application helpers, ", " files); `dup-0461`");
+    record_mismatch(
+        &mut mismatches,
+        "section 5.4",
+        "dup-0454",
+        "file",
+        cited,
+        &files,
+    );
+    let cited = number_between(
+        sec_5_4,
+        "single-field constructor helpers, ",
+        " files); `dup-0657`",
+    );
+    record_mismatch(
+        &mut mismatches,
+        "section 5.4",
+        "dup-0461",
+        "file",
+        cited,
+        &files,
+    );
+    let cited = number_between(sec_5_4, "two-line accessor helpers, ", " files).");
+    record_mismatch(
+        &mut mismatches,
+        "section 5.4",
+        "dup-0657",
+        "file",
+        cited,
+        &files,
+    );
+
+    // 5.5: table-driven-family citations - single "N sites" citations and "A+B sites" pairs.
+    let sec_5_5 = sub_section_block(&report, &lines, "### 5.5 ");
+    let cited = number_between(
+        sec_5_5,
+        "single largest anywhere in the suite: `dup-0636` (near, ",
+        " sites, all in `tests/spec_lint.rs`",
+    );
+    record_mismatch(
+        &mut mismatches,
+        "section 5.5",
+        "dup-0636",
+        "site",
+        cited,
+        &sites,
+    );
+    let (a, b) = number_pair_between(
+        sec_5_5,
+        "Other large families: `dup-0583`/`dup-0585` (",
+        " sites, `tests/reap_before_removal_audit.rs`",
+    );
+    record_mismatch(
+        &mut mismatches,
+        "section 5.5",
+        "dup-0583",
+        "site",
+        a,
+        &sites,
+    );
+    record_mismatch(
+        &mut mismatches,
+        "section 5.5",
+        "dup-0585",
+        "site",
+        b,
+        &sites,
+    );
+    let (a, b) = number_pair_between(
+        sec_5_5,
+        "`dup-0617`/`dup-0624` (",
+        " sites, `tests/simplification_audit.rs`",
+    );
+    record_mismatch(
+        &mut mismatches,
+        "section 5.5",
+        "dup-0617",
+        "site",
+        a,
+        &sites,
+    );
+    record_mismatch(
+        &mut mismatches,
+        "section 5.5",
+        "dup-0624",
+        "site",
+        b,
+        &sites,
+    );
+    let (a, b) = number_pair_between(
+        sec_5_5,
+        "`dup-0573`/`dup-0574` (",
+        " sites, `tests/no_os_kill_audit.rs`",
+    );
+    record_mismatch(
+        &mut mismatches,
+        "section 5.5",
+        "dup-0573",
+        "site",
+        a,
+        &sites,
+    );
+    record_mismatch(
+        &mut mismatches,
+        "section 5.5",
+        "dup-0574",
+        "site",
+        b,
+        &sites,
+    );
+    let cited = number_between(
+        sec_5_5,
+        "`dup-0576` (",
+        " sites, `tests/no_os_kill_test_helper_periphery.rs`",
+    );
+    record_mismatch(
+        &mut mismatches,
+        "section 5.5",
+        "dup-0576",
+        "site",
+        cited,
+        &sites,
+    );
+
+    assert!(
+        mismatches.is_empty(),
+        "section 5 cites stale site/file counts that no longer match the committed duplication \
+         catalog:\n{}",
         mismatches.join("\n")
     );
 }

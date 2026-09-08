@@ -3272,7 +3272,7 @@ __END__
          .rigger/tmp, reclaim_unit_mutation_scratch must still reap a live process rooted in \
          it - proving the sibling test's failure is specifically the base-guard's new scope, \
          not a defect in this file's own mechanics"`
-- `tests/prioritized_plan_citation_periphery.rs:211-211` `" `.rigger`-path string-literal sites (`dup-0051`)"`
+- `tests/prioritized_plan_citation_periphery.rs:315-315` `" `.rigger`-path string-literal sites (`dup-0051`)"`
 - `tests/projections_stay_local.rs:109-109` `"the graph projection must be opened by the LOCAL sqlite Projector at .rigger/graph.db \
          (`Projector::open(&db_path(\"graph.db\") ...)`); the canonical local construction is gone"`
 - `tests/projections_stay_local.rs:116-116` `"the progress projection must be opened by the LOCAL sqlite Store at .rigger/progress.db \
@@ -3356,7 +3356,7 @@ __END__
         pair together in 6 clusters confined to just themselves (2-5 sites each; \
         excludes the whole-codebase Command::new/`.rigger`-path mandatory-sweep \
         clusters, section 2, that also happen to intersect them) |\n"`
-- `tests/simplification_audit.rs:3651-3651` `"Largest risk-reduction first is read as five tiers, ranked by the KIND of risk \
+- `tests/simplification_audit.rs:3651-3651` `"Largest risk-reduction first is read as six tiers, ranked by the KIND of risk \
         each entry retires, highest first:\n\n\
         1. Tier 1 - active correctness risk: a use case already depends on the wrong \
         concretion, or two independent implementations of one concern can already drift \
@@ -3378,14 +3378,21 @@ __END__
         committed cluster with its own proposed home.\n\
         5. Tier 5 - test-suite consolidation: section 5's own catalogued test-only \
         duplication. No production-correctness exposure at all (worst case a test \
-        regresses, never the product), so it is ordered last despite touching the largest \
-        raw line count anywhere in this plan.\n\n\
+        regresses, never the product), so it is ordered ahead only of tier 6 despite \
+        touching the largest raw line count anywhere in this plan.\n\
+        6. Tier 6 - remaining catalog sweep: the 327 src-touching clusters section 2 found \
+        but tiers 1 and 4 did not individually name. Unlike every other tier, none of these \
+        327 have been read and risk-assessed one at a time the way tiers 1-4's named \
+        clusters have - they are consumed straight from the catalog - so this tier carries \
+        production-correctness exposure tiers 2, 3 and 5 do not, and is ordered last: the \
+        follow-up spec must triage each cluster's own production-or-test status before \
+        merging it, not assume tier 5's blanket test-only treatment applies here too.\n\n\
         Within a tier, entries are ordered largest-first by the site or line count each \
         retires - the same rule the tiers themselves follow, applied one level down.\n\n"`
-- `tests/simplification_audit.rs:3889-3889` `"#### 10. Consolidate the 645 `.rigger`-path string-literal sites (`dup-0051`) - the \
+- `tests/simplification_audit.rs:3906-3906` `"#### 10. Consolidate the 649 `.rigger`-path string-literal sites (`dup-0051`) - the \
         single largest cluster in the entire catalog by site count\n\n"`
-- `tests/simplification_audit.rs:3893-3893` `"- Scope: one `.rigger`-relative path-composition helper (the cluster's own \
-        `proposed_home`) every one of the 645 sites routes through instead of building its \
+- `tests/simplification_audit.rs:3910-3910` `"- Scope: one `.rigger`-relative path-composition helper (the cluster's own \
+        `proposed_home`) every one of the 649 sites routes through instead of building its \
         own literal.\n\
         - Files: spans dozens of files including `src/conductor.rs`, `src/config.rs`, \
         `src/dash.rs`, `src/docs.rs`, `src/gate.rs`, `src/grounder/mod.rs`, \
@@ -3393,15 +3400,15 @@ __END__
         `src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list \
         is in the committed `docs/audit/duplication-catalog.json` under `dup-0051` for the \
         follow-up spec to consume directly, not re-enumerated here.\n\
-        - Expected line delta: negative - 645 literal compositions collapse toward one \
+        - Expected line delta: negative - 649 literal compositions collapse toward one \
         helper's call sites; the helper itself is small.\n\
         - Risk: medium - the largest surface-area sweep in this plan by site count, even \
         though each individual site is trivial; needs a mechanical rewrite pass plus a \
-        full-suite green run, not hand-editing 645 sites.\n\
+        full-suite green run, not hand-editing 649 sites.\n\
         - Unblocks: the biggest single site-count reduction available anywhere in the \
         duplication catalog.\n\n"`
-- `tests/simplification_audit.rs:5158-5158` `"fn a() {\n    let _ = \".rigger/tmp\";\n}\n"`
-- `tests/simplification_audit.rs:5161-5161` `".rigger"`
+- `tests/simplification_audit.rs:5180-5180` `"fn a() {\n    let _ = \".rigger/tmp\";\n}\n"`
+- `tests/simplification_audit.rs:5183-5183` `".rigger"`
 - `tests/spawn_scratch_reap_authorized_root_periphery.rs:57-57` `".rigger"`
 - `tests/spawn_scratch_reap_authorized_root_periphery.rs:76-76` `".rigger"`
 - `tests/spawn_scratch_reap_authorized_root_periphery.rs:98-98` `".rigger"`
@@ -3934,7 +3941,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `src/config.rs:1922-1955` `literal_is_emit_payload_binds_only_an_abutting_payload_or_emit_word`
 - `src/main.rs:15713-15719` `is_uuid8_accepts_exactly_eight_hex_digits`
-- `tests/simplification_audit.rs:5165-5173` `looks_error_shaping_matches_error_and_underscore_bounded_err_but_not_an_incidental_substring`
+- `tests/simplification_audit.rs:5187-5195` `looks_error_shaping_matches_error_and_underscore_bounded_err_but_not_an_incidental_substring`
 
 #### `dup-0098` (near, 2 sites)
 
@@ -4292,7 +4299,7 @@ mandatory sweep: /proc-path string literals - 60 site(s), collected mechanically
              discovery"`
 - `tests/cli.rs:27013-27013` `"/proc"`
 - `tests/duplication_catalog_contract_periphery.rs:67-67` `"/proc-path string literals"`
-- `tests/prioritized_plan_citation_periphery.rs:203-203` `" raw `/proc`-path string literals scattered across `src/dash.rs`, \
+- `tests/prioritized_plan_citation_periphery.rs:307-307` `" raw `/proc`-path string literals scattered across `src/dash.rs`, \
                     `src/main.rs`, `src/reap.rs` and three test files with no shared composer \
                     (`dup-0124`)"`
 - `tests/simplification_audit.rs:2332-2332` `"/proc-path string literals"`
@@ -4379,7 +4386,7 @@ mandatory sweep: /proc-path string literals - 60 site(s), collected mechanically
         second mutation authority found beyond the already-cited, \
         already-catalogued `/proc` case and this already-dispositioned \
         `materialize_config_at_rev` gap.\n"`
-- `tests/simplification_audit.rs:3651-3651` `"Largest risk-reduction first is read as five tiers, ranked by the KIND of risk \
+- `tests/simplification_audit.rs:3651-3651` `"Largest risk-reduction first is read as six tiers, ranked by the KIND of risk \
         each entry retires, highest first:\n\n\
         1. Tier 1 - active correctness risk: a use case already depends on the wrong \
         concretion, or two independent implementations of one concern can already drift \
@@ -4401,40 +4408,57 @@ mandatory sweep: /proc-path string literals - 60 site(s), collected mechanically
         committed cluster with its own proposed home.\n\
         5. Tier 5 - test-suite consolidation: section 5's own catalogued test-only \
         duplication. No production-correctness exposure at all (worst case a test \
-        regresses, never the product), so it is ordered last despite touching the largest \
-        raw line count anywhere in this plan.\n\n\
+        regresses, never the product), so it is ordered ahead only of tier 6 despite \
+        touching the largest raw line count anywhere in this plan.\n\
+        6. Tier 6 - remaining catalog sweep: the 327 src-touching clusters section 2 found \
+        but tiers 1 and 4 did not individually name. Unlike every other tier, none of these \
+        327 have been read and risk-assessed one at a time the way tiers 1-4's named \
+        clusters have - they are consumed straight from the catalog - so this tier carries \
+        production-correctness exposure tiers 2, 3 and 5 do not, and is ordered last: the \
+        follow-up spec must triage each cluster's own production-or-test status before \
+        merging it, not assume tier 5's blanket test-only treatment applies here too.\n\n\
         Within a tier, entries are ordered largest-first by the site or line count each \
         retires - the same rule the tiers themselves follow, applied one level down.\n\n"`
-- `tests/simplification_audit.rs:3727-3727` `"#### 3. Retire the duplicate `/proc`-reading authority (`dup-0124` + `dup-0125`)\n\n"`
-- `tests/simplification_audit.rs:3730-3730` `"- Scope: `src/dash.rs::process_state` (`src/dash.rs:499-507`) and \
+- `tests/simplification_audit.rs:3734-3734` `"#### 3. Retire the duplicate `/proc`-reading authority (`dup-0124` + `dup-0125`)\n\n"`
+- `tests/simplification_audit.rs:3737-3737` `"- Scope: `src/dash.rs::process_state` (`src/dash.rs:499-507`) and \
         `src/main.rs::pgid_of` (`src/main.rs:23064-23077`) each independently re-derive \
         `/proc/<pid>/stat` and `/proc/<pid>/status` fields that `src/reap.rs` \
         (`pid_starttime`/`read_ppid`, `src/reap.rs:190-207`) already parses - the exact \
         \"second mutation authority\" example spec 85's own Goal names and spec 62's \
-        capstone previously caught (`dup-0125`, 13 sites: `src/dash.rs`, `src/main.rs`, \
-        `src/reap.rs`, `tests/cli.rs`), plus 56 raw `/proc`-path string literals scattered \
+        capstone previously caught (`dup-0125`, 14 sites: `src/dash.rs`, `src/main.rs`, \
+        `src/reap.rs`, `tests/cli.rs`), plus 60 raw `/proc`-path string literals scattered \
         across `src/dash.rs`, `src/main.rs`, `src/reap.rs` and three test files with no \
         shared composer (`dup-0124`). Both clusters' own `proposed_home` agree: `src/reap.rs` \
         becomes the one `/proc`-reading module; `dash.rs` and `main.rs` call it instead of \
-        re-parsing.\n\
+        re-parsing. NOT SYMMETRIC: `process_state` is reachable from `dash`'s own always-on \
+        production server, so it is the actual active-correctness risk this tier-1 placement \
+        is about; `pgid_of` sits inside `main.rs`'s `mod tests` (opened at `src/main.rs:12650`) \
+        and is called only by `#[test]` fns, so on its own it earns no tier-1 placement - it \
+        rides in this same item only because it shares `dup-0124`/`dup-0125`'s one root cause \
+        and one proposed fix with `process_state`, not because retiring it retires any live \
+        risk of its own.\n\
         - Files: `src/dash.rs`, `src/main.rs`, `src/reap.rs`, `tests/cli.rs` (`proc_pgid_of`, \
         `tests/cli.rs:23419-23432`, re-points at the same call).\n\
         - Expected line delta: negative - retires `process_state`'s and `pgid_of`'s own \
         parsing bodies in favor of calling `reap.rs`'s existing parser.\n\
-        - Risk: low. Section 3's own disposition already establishes this is a duplicate \
-        READ-only reimplementation, never a bypassed mutation path - nothing this touches \
-        can signal or kill a process, so it carries none of the no-os-kill gate's own risk \
-        surface.\n\
+        - Risk: low for both halves, for two different reasons. Section 3's own disposition \
+        already establishes `process_state` as a duplicate READ-only reimplementation, never a \
+        bypassed mutation path - nothing this touches can signal or kill a process, so it \
+        carries none of the no-os-kill gate's own risk surface. `pgid_of`'s own risk is lower \
+        still: being test-only, retiring it is ordinary test cleanup, not a \
+        correctness-risk retirement - it is sequenced here for shared-fix convenience, not \
+        because it independently needed tier-1 urgency.\n\
         - Unblocks: retires the codebase's only currently-known live instance of the \
         \"duplicate implementation reconciled after the fact\" pattern the operator's \
-        strict-DRY rule targets - the concrete precedent spec 85's own Goal cites.\n\n"`
-- `tests/simplification_audit.rs:5043-5043` `"fn state_of(pid: u32) -> Option<char> {\n    let stat = std::fs::read_to_string(format!(\"/proc/{pid}/stat\")).ok()?;\n    stat.rsplit_once(')')?.1.split_whitespace().next()?.chars().next()\n}\n"`
-- `tests/simplification_audit.rs:5048-5048` `"fn starttime_of(pid: u32) -> Option<u64> {\n    let stat = std::fs::read_to_string(format!(\"/proc/{pid}/stat\")).ok()?;\n    stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.parse().ok()\n}\n"`
-- `tests/simplification_audit.rs:5053-5053` `"fn ppid_of(pid: u32) -> Option<u32> {\n    let stat = std::fs::read_to_string(format!(\"/proc/{pid}/stat\")).ok()?;\n    stat.rsplit_once(')')?.1.split_whitespace().nth(1)?.parse().ok()\n}\n"`
-- `tests/simplification_audit.rs:5144-5144` `"fn a() {\n    let _ = std::fs::read_to_string(\"/proc/1/stat\");\n    let _ = \"hello\";\n}\n"`
-- `tests/simplification_audit.rs:5147-5147` `"/proc"`
-- `tests/simplification_audit.rs:5149-5149` `"/proc"`
-- `tests/simplification_audit.rs:5213-5213` `"fn state_of(pid: u32) -> Option<char> {\n    let s = std::fs::read_to_string(format!(\"/proc/{pid}/stat\")).ok()?;\n    s.chars().next()\n}\nfn ppid_of(pid: u32) -> Option<u32> {\n    let s = std::fs::read_to_string(format!(\"/proc/{pid}/status\")).ok()?;\n    s.parse().ok()\n}\nfn unrelated() -> u32 {\n    1\n}\n"`
+        strict-DRY rule targets - the concrete precedent spec 85's own Goal cites - and, as a \
+        free byproduct, `main.rs`'s own test-only duplicate parser.\n\n"`
+- `tests/simplification_audit.rs:5065-5065` `"fn state_of(pid: u32) -> Option<char> {\n    let stat = std::fs::read_to_string(format!(\"/proc/{pid}/stat\")).ok()?;\n    stat.rsplit_once(')')?.1.split_whitespace().next()?.chars().next()\n}\n"`
+- `tests/simplification_audit.rs:5070-5070` `"fn starttime_of(pid: u32) -> Option<u64> {\n    let stat = std::fs::read_to_string(format!(\"/proc/{pid}/stat\")).ok()?;\n    stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.parse().ok()\n}\n"`
+- `tests/simplification_audit.rs:5075-5075` `"fn ppid_of(pid: u32) -> Option<u32> {\n    let stat = std::fs::read_to_string(format!(\"/proc/{pid}/stat\")).ok()?;\n    stat.rsplit_once(')')?.1.split_whitespace().nth(1)?.parse().ok()\n}\n"`
+- `tests/simplification_audit.rs:5166-5166` `"fn a() {\n    let _ = std::fs::read_to_string(\"/proc/1/stat\");\n    let _ = \"hello\";\n}\n"`
+- `tests/simplification_audit.rs:5169-5169` `"/proc"`
+- `tests/simplification_audit.rs:5171-5171` `"/proc"`
+- `tests/simplification_audit.rs:5235-5235` `"fn state_of(pid: u32) -> Option<char> {\n    let s = std::fs::read_to_string(format!(\"/proc/{pid}/stat\")).ok()?;\n    s.chars().next()\n}\nfn ppid_of(pid: u32) -> Option<u32> {\n    let s = std::fs::read_to_string(format!(\"/proc/{pid}/status\")).ok()?;\n    s.parse().ok()\n}\nfn unrelated() -> u32 {\n    1\n}\n"`
 
 #### `dup-0125` (semantic, 14 sites)
 
@@ -4452,10 +4476,10 @@ mandatory sweep: /proc/<pid>/stat or /proc/<pid>/status field-extraction functio
 - `tests/simplification_audit.rs:2453-2484` `build_sweep_clusters`
 - `tests/simplification_audit.rs:2723-2744` `build_extra_semantic_clusters`
 - `tests/simplification_audit.rs:2884-2980` `render_adversarial_sample`
-- `tests/simplification_audit.rs:3630-4092` `render_section_6`
-- `tests/simplification_audit.rs:5035-5061` `three_near_but_not_identical_functions_cluster_as_near_with_every_site_and_one_home`
-- `tests/simplification_audit.rs:5139-5150` `proc_literal_sweep_finds_a_proc_path_string_and_ignores_an_unrelated_one`
-- `tests/simplification_audit.rs:5207-5220` `proc_stat_or_status_reader_sweep_finds_a_stat_reader_and_a_status_reader_but_not_an_unrelated_fn`
+- `tests/simplification_audit.rs:3630-4114` `render_section_6`
+- `tests/simplification_audit.rs:5057-5083` `three_near_but_not_identical_functions_cluster_as_near_with_every_site_and_one_home`
+- `tests/simplification_audit.rs:5161-5172` `proc_literal_sweep_finds_a_proc_path_string_and_ignores_an_unrelated_one`
+- `tests/simplification_audit.rs:5229-5242` `proc_stat_or_status_reader_sweep_finds_a_stat_reader_and_a_status_reader_but_not_an_unrelated_fn`
 
 #### `dup-0126` (exact, 3 sites)
 
@@ -4888,7 +4912,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/eventstore/mod.rs:891-896` `strips_a_userinfo_with_no_password`
 - `src/eventstore/mod.rs:930-935` `plain_text_with_no_url_is_untouched`
 - `src/spec.rs:1567-1573` `ownership_check_recognizes_owner_inside_a_hyphenated_compound`
-- `tests/simplification_audit.rs:4491-4493` `impl_self_type_still_handles_a_generic_self_type_with_a_where_clause`
+- `tests/simplification_audit.rs:4513-4515` `impl_self_type_still_handles_a_generic_self_type_with_a_where_clause`
 - `tests/store_secrets_periphery.rs:92-94` `redact_conn_on_the_empty_string_is_empty`
 
 #### `dup-0170` (exact, 2 sites)
@@ -5329,10 +5353,10 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `src/ledger.rs:814-821` `short_run_id_truncates_to_twelve_chars_and_passes_shorter_ids_through`
 - `src/ledger.rs:824-839` `spec_stem_extracts_and_sanitizes_the_file_stem`
-- `tests/simplification_audit.rs:4477-4488` `impl_self_type_strips_a_trailing_where_clause_on_a_non_generic_self_type`
-- `tests/simplification_audit.rs:4496-4502` `strip_trailing_where_clause_is_a_word_boundary_match_not_a_substring_match`
-- `tests/simplification_audit.rs:4544-4548` `pluralize_functions_uses_singular_only_at_exactly_one`
-- `tests/simplification_audit.rs:4838-4848` `ident_kind_marker_classifies_by_casing`
+- `tests/simplification_audit.rs:4499-4510` `impl_self_type_strips_a_trailing_where_clause_on_a_non_generic_self_type`
+- `tests/simplification_audit.rs:4518-4524` `strip_trailing_where_clause_is_a_word_boundary_match_not_a_substring_match`
+- `tests/simplification_audit.rs:4566-4570` `pluralize_functions_uses_singular_only_at_exactly_one`
+- `tests/simplification_audit.rs:4860-4870` `ident_kind_marker_classifies_by_casing`
 
 #### `dup-0216` (near, 2 sites)
 
@@ -6324,7 +6348,7 @@ Proposed home: `a new shared module (sites span 2 files: src/spec.rs, tests/simp
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/spec.rs:1835-1847` `disposition_check_fails_closed_after_a_stray_unmatched_quote_earlier_in_the_paragraph`
-- `tests/simplification_audit.rs:4259-4263` `a_trait_method_signature_without_a_body_is_not_recorded`
+- `tests/simplification_audit.rs:4281-4285` `a_trait_method_signature_without_a_body_is_not_recorded`
 
 #### `dup-0315` (exact, 2 sites)
 
@@ -8461,7 +8485,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `tests/duplication_catalog_contract_periphery.rs:76-78` `repo_root`
 - `tests/handbook_grounder_accuracy.rs:33-35` `repo_root`
-- `tests/prioritized_plan_citation_periphery.rs:56-58` `repo_root`
+- `tests/prioritized_plan_citation_periphery.rs:67-69` `repo_root`
 - `tests/responsibility_map_contract_periphery.rs:52-54` `repo_root`
 - `tests/simplification_audit.rs:1680-1682` `repo_root`
 
@@ -9419,7 +9443,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/simplification_audit.rs:3032-3194` `render_section_3`
 - `tests/simplification_audit.rs:3204-3296` `render_section_4`
 - `tests/simplification_audit.rs:3303-3544` `render_section_5`
-- `tests/simplification_audit.rs:3630-4092` `render_section_6`
+- `tests/simplification_audit.rs:3630-4114` `render_section_6`
 
 #### `dup-0616` (near, 2 sites)
 
@@ -9427,8 +9451,8 @@ Proposed home: `simplification_audit::support (consolidate these 2 sites into on
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/simplification_audit.rs:4141-4150` `a_simple_free_function_is_found_with_its_line_span`
-- `tests/simplification_audit.rs:4381-4387` `production_functions_before_a_cfg_test_mod_are_not_flagged_test`
+- `tests/simplification_audit.rs:4163-4172` `a_simple_free_function_is_found_with_its_line_span`
+- `tests/simplification_audit.rs:4403-4409` `production_functions_before_a_cfg_test_mod_are_not_flagged_test`
 
 #### `dup-0617` (near, 15 sites)
 
@@ -9436,21 +9460,21 @@ Proposed home: `simplification_audit::support (consolidate these 15 sites into o
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/simplification_audit.rs:4153-4161` `two_sibling_functions_are_both_found_in_order`
-- `tests/simplification_audit.rs:4171-4176` `fnv1a_is_not_mistaken_for_the_fn_keyword`
-- `tests/simplification_audit.rs:4183-4188` `a_brace_inside_a_line_comment_is_ignored`
-- `tests/simplification_audit.rs:4191-4196` `a_brace_inside_a_block_comment_is_ignored`
-- `tests/simplification_audit.rs:4199-4204` `nested_block_comments_are_handled`
-- `tests/simplification_audit.rs:4207-4212` `a_brace_inside_a_string_literal_is_ignored`
-- `tests/simplification_audit.rs:4215-4220` `a_brace_inside_a_raw_string_with_hashes_is_ignored`
-- `tests/simplification_audit.rs:4223-4228` `a_brace_inside_a_byte_string_is_ignored`
-- `tests/simplification_audit.rs:4231-4236` `a_brace_char_literal_is_not_mistaken_for_real_braces`
-- `tests/simplification_audit.rs:4239-4244` `a_lifetime_is_not_mistaken_for_a_char_literal`
-- `tests/simplification_audit.rs:4247-4252` `an_escaped_quote_char_literal_does_not_confuse_the_scanner`
-- `tests/simplification_audit.rs:4266-4271` `a_trait_default_method_with_a_body_is_recorded`
-- `tests/simplification_audit.rs:4274-4279` `a_fn_pointer_type_usage_is_not_recorded`
-- `tests/simplification_audit.rs:4282-4288` `a_semicolon_inside_an_array_type_param_does_not_end_the_signature_early`
-- `tests/simplification_audit.rs:4406-4412` `braces_from_if_match_and_closures_do_not_break_the_enclosing_fns_span`
+- `tests/simplification_audit.rs:4175-4183` `two_sibling_functions_are_both_found_in_order`
+- `tests/simplification_audit.rs:4193-4198` `fnv1a_is_not_mistaken_for_the_fn_keyword`
+- `tests/simplification_audit.rs:4205-4210` `a_brace_inside_a_line_comment_is_ignored`
+- `tests/simplification_audit.rs:4213-4218` `a_brace_inside_a_block_comment_is_ignored`
+- `tests/simplification_audit.rs:4221-4226` `nested_block_comments_are_handled`
+- `tests/simplification_audit.rs:4229-4234` `a_brace_inside_a_string_literal_is_ignored`
+- `tests/simplification_audit.rs:4237-4242` `a_brace_inside_a_raw_string_with_hashes_is_ignored`
+- `tests/simplification_audit.rs:4245-4250` `a_brace_inside_a_byte_string_is_ignored`
+- `tests/simplification_audit.rs:4253-4258` `a_brace_char_literal_is_not_mistaken_for_real_braces`
+- `tests/simplification_audit.rs:4261-4266` `a_lifetime_is_not_mistaken_for_a_char_literal`
+- `tests/simplification_audit.rs:4269-4274` `an_escaped_quote_char_literal_does_not_confuse_the_scanner`
+- `tests/simplification_audit.rs:4288-4293` `a_trait_default_method_with_a_body_is_recorded`
+- `tests/simplification_audit.rs:4296-4301` `a_fn_pointer_type_usage_is_not_recorded`
+- `tests/simplification_audit.rs:4304-4310` `a_semicolon_inside_an_array_type_param_does_not_end_the_signature_early`
+- `tests/simplification_audit.rs:4428-4434` `braces_from_if_match_and_closures_do_not_break_the_enclosing_fns_span`
 
 #### `dup-0618` (near, 3 sites)
 
@@ -9458,9 +9482,9 @@ Proposed home: `simplification_audit::support (consolidate these 3 sites into on
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/simplification_audit.rs:4295-4301` `a_method_inside_an_impl_block_carries_its_header`
-- `tests/simplification_audit.rs:4304-4312` `a_trait_impl_header_keeps_the_trait_for_type_text`
-- `tests/simplification_audit.rs:4315-4327` `a_method_inside_an_impl_nested_in_a_cfg_test_mod_is_flagged_test`
+- `tests/simplification_audit.rs:4317-4323` `a_method_inside_an_impl_block_carries_its_header`
+- `tests/simplification_audit.rs:4326-4334` `a_trait_impl_header_keeps_the_trait_for_type_text`
+- `tests/simplification_audit.rs:4337-4349` `a_method_inside_an_impl_nested_in_a_cfg_test_mod_is_flagged_test`
 
 #### `dup-0619` (near, 2 sites)
 
@@ -9468,8 +9492,8 @@ Proposed home: `simplification_audit::support (consolidate these 2 sites into on
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/simplification_audit.rs:4352-4358` `a_function_directly_in_a_cfg_test_mod_is_flagged_test`
-- `tests/simplification_audit.rs:4361-4370` `a_nested_named_test_submodule_is_still_flagged_test_and_named`
+- `tests/simplification_audit.rs:4374-4380` `a_function_directly_in_a_cfg_test_mod_is_flagged_test`
+- `tests/simplification_audit.rs:4383-4392` `a_nested_named_test_submodule_is_still_flagged_test_and_named`
 
 #### `dup-0620` (near, 3 sites)
 
@@ -9477,9 +9501,9 @@ Proposed home: `simplification_audit::support (consolidate these 3 sites into on
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/simplification_audit.rs:4456-4462` `a_method_is_classified_under_its_impl_self_type`
-- `tests/simplification_audit.rs:4465-4474` `a_method_on_a_generic_impl_block_strips_the_impls_own_leading_generics`
-- `tests/simplification_audit.rs:4505-4510` `a_trait_impl_method_is_classified_under_the_implementing_type_not_the_trait`
+- `tests/simplification_audit.rs:4478-4484` `a_method_is_classified_under_its_impl_self_type`
+- `tests/simplification_audit.rs:4487-4496` `a_method_on_a_generic_impl_block_strips_the_impls_own_leading_generics`
+- `tests/simplification_audit.rs:4527-4532` `a_trait_impl_method_is_classified_under_the_implementing_type_not_the_trait`
 
 #### `dup-0621` (near, 3 sites)
 
@@ -9487,9 +9511,9 @@ Proposed home: `simplification_audit::support (consolidate these 3 sites into on
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/simplification_audit.rs:4625-4631` `replace_section_1_only_touches_section_1_leaving_later_sections_intact`
-- `tests/simplification_audit.rs:5589-5596` `replace_section_2_only_touches_section_2_leaving_neighbors_intact`
-- `tests/simplification_audit.rs:5926-5943` `replace_section_6_only_touches_that_span_leaving_earlier_sections_intact`
+- `tests/simplification_audit.rs:4647-4653` `replace_section_1_only_touches_section_1_leaving_later_sections_intact`
+- `tests/simplification_audit.rs:5611-5618` `replace_section_2_only_touches_section_2_leaving_neighbors_intact`
+- `tests/simplification_audit.rs:5994-6011` `replace_section_6_only_touches_that_span_leaving_earlier_sections_intact`
 
 #### `dup-0622` (near, 2 sites)
 
@@ -9497,8 +9521,8 @@ Proposed home: `simplification_audit::support (consolidate these 2 sites into on
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/simplification_audit.rs:4675-4697` `responsibility_map_json_matches_the_tree_or_is_rewritten`
-- `tests/simplification_audit.rs:5732-5754` `duplication_catalog_json_matches_the_tree_or_is_rewritten`
+- `tests/simplification_audit.rs:4697-4719` `responsibility_map_json_matches_the_tree_or_is_rewritten`
+- `tests/simplification_audit.rs:5754-5776` `duplication_catalog_json_matches_the_tree_or_is_rewritten`
 
 #### `dup-0623` (exact, 2 sites)
 
@@ -9506,8 +9530,8 @@ Proposed home: `simplification_audit::support (consolidate these 2 sites into on
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/simplification_audit.rs:4792-4800` `string_and_raw_string_literals_are_one_lit_token_each`
-- `tests/simplification_audit.rs:4812-4820` `number_literals_including_a_fraction_are_lit_tokens`
+- `tests/simplification_audit.rs:4814-4822` `string_and_raw_string_literals_are_one_lit_token_each`
+- `tests/simplification_audit.rs:4834-4842` `number_literals_including_a_fraction_are_lit_tokens`
 
 #### `dup-0624` (near, 5 sites)
 
@@ -9515,11 +9539,11 @@ Proposed home: `simplification_audit::support (consolidate these 5 sites into on
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/simplification_audit.rs:5035-5061` `three_near_but_not_identical_functions_cluster_as_near_with_every_site_and_one_home`
-- `tests/simplification_audit.rs:5064-5082` `cluster_ids_are_assigned_after_deterministic_sort_and_sites_are_sorted_within_a_cluster`
-- `tests/simplification_audit.rs:5085-5096` `same_impl_block_duplicate_methods_propose_that_types_home`
-- `tests/simplification_audit.rs:5103-5115` `command_new_sweep_finds_a_call_site_and_names_it`
-- `tests/simplification_audit.rs:5176-5188` `error_shaping_sweep_requires_both_the_name_shape_and_a_format_call`
+- `tests/simplification_audit.rs:5057-5083` `three_near_but_not_identical_functions_cluster_as_near_with_every_site_and_one_home`
+- `tests/simplification_audit.rs:5086-5104` `cluster_ids_are_assigned_after_deterministic_sort_and_sites_are_sorted_within_a_cluster`
+- `tests/simplification_audit.rs:5107-5118` `same_impl_block_duplicate_methods_propose_that_types_home`
+- `tests/simplification_audit.rs:5125-5137` `command_new_sweep_finds_a_call_site_and_names_it`
+- `tests/simplification_audit.rs:5198-5210` `error_shaping_sweep_requires_both_the_name_shape_and_a_format_call`
 
 #### `dup-0625` (near, 2 sites)
 
@@ -9527,8 +9551,8 @@ Proposed home: `simplification_audit::support (consolidate these 2 sites into on
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/simplification_audit.rs:5207-5220` `proc_stat_or_status_reader_sweep_finds_a_stat_reader_and_a_status_reader_but_not_an_unrelated_fn`
-- `tests/simplification_audit.rs:5467-5484` `bespoke_lexer_sweep_finds_the_named_trio_but_not_an_unrelated_fn`
+- `tests/simplification_audit.rs:5229-5242` `proc_stat_or_status_reader_sweep_finds_a_stat_reader_and_a_status_reader_but_not_an_unrelated_fn`
+- `tests/simplification_audit.rs:5489-5506` `bespoke_lexer_sweep_finds_the_named_trio_but_not_an_unrelated_fn`
 
 #### `dup-0626` (near, 2 sites)
 
@@ -9536,8 +9560,8 @@ Proposed home: `simplification_audit::support (consolidate these 2 sites into on
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/simplification_audit.rs:5227-5240` `the_dash_reap_proc_stat_pair_the_spec_names_lands_in_one_real_cluster`
-- `tests/simplification_audit.rs:5339-5354` `the_two_exploration_graph_fixture_builders_the_adversarial_sample_found_land_in_one_real_cluster`
+- `tests/simplification_audit.rs:5249-5262` `the_dash_reap_proc_stat_pair_the_spec_names_lands_in_one_real_cluster`
+- `tests/simplification_audit.rs:5361-5376` `the_two_exploration_graph_fixture_builders_the_adversarial_sample_found_land_in_one_real_cluster`
 
 #### `dup-0627` (near, 2 sites)
 
@@ -9545,8 +9569,8 @@ Proposed home: `simplification_audit::support (consolidate these 2 sites into on
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/simplification_audit.rs:5243-5250` `constructs_own_type_literal_matches_self_and_the_named_type_but_not_an_unrelated_call`
-- `tests/simplification_audit.rs:5253-5261` `constructs_own_type_literal_matches_shorthand_field_init_too`
+- `tests/simplification_audit.rs:5265-5272` `constructs_own_type_literal_matches_self_and_the_named_type_but_not_an_unrelated_call`
+- `tests/simplification_audit.rs:5275-5283` `constructs_own_type_literal_matches_shorthand_field_init_too`
 
 #### `dup-0628` (exact, 2 sites)
 
@@ -9554,8 +9578,8 @@ Proposed home: `simplification_audit::support (consolidate these 2 sites into on
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/simplification_audit.rs:5287-5305` `the_spawn_result_constructor_triple_the_adversarial_sample_found_lands_in_one_real_cluster`
-- `tests/simplification_audit.rs:5491-5508` `the_bespoke_lexer_and_canonical_extractor_the_lens_routed_land_in_one_real_cluster`
+- `tests/simplification_audit.rs:5309-5327` `the_spawn_result_constructor_triple_the_adversarial_sample_found_lands_in_one_real_cluster`
+- `tests/simplification_audit.rs:5513-5530` `the_bespoke_lexer_and_canonical_extractor_the_lens_routed_land_in_one_real_cluster`
 
 #### `dup-0629` (near, 3 sites)
 
@@ -9563,9 +9587,9 @@ Proposed home: `simplification_audit::support (consolidate these 3 sites into on
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/simplification_audit.rs:5357-5385` `same_named_helper_sweep_excludes_required_trait_impl_methods_across_adapters`
-- `tests/simplification_audit.rs:5388-5417` `same_named_helper_sweep_excludes_a_trait_default_method_and_its_override`
-- `tests/simplification_audit.rs:5420-5444` `same_named_helper_sweep_still_catches_two_inherent_impls_sharing_a_method_name`
+- `tests/simplification_audit.rs:5379-5407` `same_named_helper_sweep_excludes_required_trait_impl_methods_across_adapters`
+- `tests/simplification_audit.rs:5410-5439` `same_named_helper_sweep_excludes_a_trait_default_method_and_its_override`
+- `tests/simplification_audit.rs:5442-5466` `same_named_helper_sweep_still_catches_two_inherent_impls_sharing_a_method_name`
 
 #### `dup-0630` (exact, 2 sites)
 
@@ -9573,8 +9597,8 @@ Proposed home: `simplification_audit::support (consolidate these 2 sites into on
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/simplification_audit.rs:5600-5605` `replace_section_2_panics_loudly_when_the_heading_is_entirely_absent`
-- `tests/simplification_audit.rs:5956-5961` `replace_section_6_panics_loudly_when_the_heading_is_entirely_absent`
+- `tests/simplification_audit.rs:5622-5627` `replace_section_2_panics_loudly_when_the_heading_is_entirely_absent`
+- `tests/simplification_audit.rs:6024-6029` `replace_section_6_panics_loudly_when_the_heading_is_entirely_absent`
 
 #### `dup-0631` (exact, 2 sites)
 
@@ -9582,8 +9606,8 @@ Proposed home: `simplification_audit::support (consolidate these 2 sites into on
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/simplification_audit.rs:5612-5616` `sample_indices_is_deterministic_for_a_fixed_seed`
-- `tests/simplification_audit.rs:5642-5646` `different_seeds_produce_different_draws`
+- `tests/simplification_audit.rs:5634-5638` `sample_indices_is_deterministic_for_a_fixed_seed`
+- `tests/simplification_audit.rs:5664-5668` `different_seeds_produce_different_draws`
 
 #### `dup-0632` (near, 3 sites)
 
@@ -9591,9 +9615,9 @@ Proposed home: `simplification_audit::support (consolidate these 3 sites into on
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/simplification_audit.rs:5761-5798` `report_section_2_matches_the_tree_or_is_rewritten`
-- `tests/simplification_audit.rs:5873-5919` `report_sections_3_through_5_match_the_tree_or_are_rewritten`
-- `tests/simplification_audit.rs:6019-6052` `report_section_6_matches_the_tree_or_is_rewritten`
+- `tests/simplification_audit.rs:5783-5820` `report_section_2_matches_the_tree_or_is_rewritten`
+- `tests/simplification_audit.rs:5895-5941` `report_sections_3_through_5_match_the_tree_or_are_rewritten`
+- `tests/simplification_audit.rs:6087-6120` `report_section_6_matches_the_tree_or_is_rewritten`
 
 #### `dup-0633` (near, 2 sites)
 
@@ -9601,8 +9625,8 @@ Proposed home: `simplification_audit::support (consolidate these 2 sites into on
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/simplification_audit.rs:5806-5830` `replace_sections_3_to_5_only_touches_that_span_leaving_neighbors_intact`
-- `tests/simplification_audit.rs:5833-5850` `replace_sections_3_to_5_falls_back_to_end_of_string_when_no_section_6_heading_exists`
+- `tests/simplification_audit.rs:5828-5852` `replace_sections_3_to_5_only_touches_that_span_leaving_neighbors_intact`
+- `tests/simplification_audit.rs:5855-5872` `replace_sections_3_to_5_falls_back_to_end_of_string_when_no_section_6_heading_exists`
 
 #### `dup-0634` (near, 2 sites)
 
@@ -10042,38 +10066,38 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded random index (seed `85072026`, `sample_indices` over all 5823 functions scanned in `src/` and `tests/`), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded random index (seed `85072026`, `sample_indices` over all 5834 functions scanned in `src/` and `tests/`), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
-- `src/blocker.rs:203-236` `classify` - no duplicate found by reading
-- `src/conductor.rs:18084-18128` `an_exhaustive_gate_failure_on_an_approved_unit_records_a_gate_cause` - no duplicate found by reading
-- `src/conductor.rs:34411-34448` `a_rule_7_or_8_defect_rejects_then_releases_on_the_revision` - caught: `dup-0091`
-- `src/config.rs:745-750` `dash_enabled` - no duplicate found by reading
-- `src/contextgraph/sqlite.rs:1841-1851` `one_hop_degree` - no duplicate found by reading
-- `src/dash.rs:855-876` `instance_views` - no duplicate found by reading
-- `src/eventstore/kurrentdb.rs:562-573` `current_thread_rt` - no duplicate found by reading
-- `src/eventstore/sqlite.rs:158-165` `open` - no duplicate found by reading
-- `src/metrics.rs:526-532` `ratio` - no duplicate found by reading
-- `src/metrics.rs:3035-3054` `model_drift_needs_a_prior_run_and_a_shared_tier` - no duplicate found by reading
-- `src/reap.rs:299-320` `is_reapable_base` - no duplicate found by reading
-- `src/run.rs:137-142` `current_run` - no duplicate found by reading
-- `src/worktree.rs:1246-1268` `heal_corrupt_worktree_admin` - no duplicate found by reading
-- `src/worktree.rs:1424-1444` `integrate_lands_work_in_the_repo` - caught: `dup-0325`
-- `src/worktree.rs:3148-3202` `discard_resets_a_throwaway_review_worktree_to_the_current_head` - no duplicate found by reading
-- `tests/cli.rs:12076-12106` `validate_reports_cache_dir_and_budget_alongside_the_wrapper` - caught: `dup-0416`
-- `tests/cli.rs:12437-12458` `validate_fails_before_any_output_when_mutation_is_on_and_cargo_mutants_is_absent` - caught: `dup-0418`
-- `tests/cli.rs:25448-25465` `prime_given_a_spec_path_names_the_spec_lint_as_a_next_step` - no duplicate found by reading
-- `tests/community_resolution_knob.rs:247-330` `a_higher_resolution_yields_at_least_as_many_communities` - no duplicate found by reading
-- `tests/design_intent_events.rs:965-1054` `a_design_word_in_a_non_handbook_usage_doc_does_not_leak_the_handbook_content_keep` - caught: `dup-0518`
-- `tests/gate_store_fence_periphery.rs:507-577` `a_real_fenced_couriers_scratch_store_is_reclaimed_when_the_worktree_is_removed` - caught: `dup-0526`
-- `tests/readable_graph_density_scaled_spacing.rs:219-255` `the_layout_extent_scales_with_density_and_edges_are_drawable` - caught: `dup-0490`
-- `tests/reap_before_removal_audit.rs:345-389` `call_args_text` - no duplicate found by reading
+- `src/blocker.rs:419-441` `approved_not_integrated_reads_as_integration_pending_not_channel_stall` - no duplicate found by reading
+- `src/conductor.rs:660-662` `from` - caught: `dup-0027`
+- `src/config.rs:1412-1434` `verdict_presented_as_output` - no duplicate found by reading
+- `src/contextgraph/sqlite.rs:1741-1757` `invalidate_finding_edges` - no duplicate found by reading
+- `src/dash.rs:4968-4992` `dropping_the_peers_sidecar_reaps_its_collector_thread` - no duplicate found by reading
+- `src/driver/replay.rs:881-918` `a_non_infra_labeled_liveness_fault_is_still_re_parked_no_charge` - no duplicate found by reading
+- `src/eventstore/mod.rs:530-532` `err` - caught: `dup-0040`
+- `src/eventstore/sqlite.rs:1780-1785` `direction_sql` - caught: `dup-0175`
+- `src/main.rs:738-740` `registry_heartbeat_interval` - no duplicate found by reading
+- `src/main.rs:3106-3115` `anchor_run_branch` - no duplicate found by reading
+- `src/main.rs:5482-5496` `baseline_run_slice` - no duplicate found by reading
+- `src/main.rs:13624-13725` `precommit_block_resolves_a_tree_built_binary_before_path` - no duplicate found by reading
+- `src/main.rs:15330-15345` `behind_the_tree_git` - caught: `dup-0234`
+- `src/mcpserver.rs:1344-1366` `malformed_json_gets_a_parse_error` - caught: `dup-0262`
+- `src/metrics.rs:1158-1160` `stability_rate` - caught: `dup-0263`
+- `src/spawn.rs:2067-2096` `step_serializes_to_a_wave_array_and_a_done_bool` - no duplicate found by reading
+- `src/worktree.rs:588-621` `remove` - no duplicate found by reading
+- `src/worktree.rs:2861-2911` `reclaim_worktree_on_branch_prunes_a_stale_registration_whose_dir_was_deleted_and_frees_the_branch` - caught: `dup-0333`
+- `tests/cli.rs:2165-2212` `a_dotdot_spawn_id_never_escapes_the_pre_existing_agent_scratch_root_either` - caught: `dup-0389`
+- `tests/cli.rs:26948-27026` `held_port_holder_public_contract_holds_at_the_crate_boundary` - no duplicate found by reading
+- `tests/graph_click_to_seed_repoint.rs:216-259` `repoint_seed_preserves_a_real_node_click_and_falls_back_gracefully` - no duplicate found by reading
+- `tests/graph_fold_dedup_live_only_scoping.rs:110-130` `subgraph_collapses_a_governs_re_assert_with_no_intervening_supersession_to_one_live_edge` - no duplicate found by reading
+- `tests/grep_fallback_metric_periphery.rs:56-65` `progress_ev` - no duplicate found by reading
+- `tests/reap_before_removal_audit.rs:1381-1399` `a_doc_comment_mentioning_the_cfg_test_attribute_in_prose_is_never_mistaken_for_it` - caught: `dup-0585`
 - `tests/reset_derived_compaction.rs:86-101` `run_rigger_envs` - caught: `dup-0380`
-- `tests/reset_derived_live_writer_guard_periphery.rs:693-722` `runs_composed_with_a_refused_derived_still_completes_its_own_prune` - caught: `dup-0600`
-- `tests/simplification_audit.rs:1946-1966` `normalize_tokens` - no duplicate found by reading
-- `tests/simplification_audit.rs:5589-5596` `replace_section_2_only_touches_section_2_leaving_neighbors_intact` - caught: `dup-0621`
-- `tests/spawn_scratch_reap_authorized_root_periphery.rs:93-112` `seed_run_started` - no duplicate found by reading
-- `tests/subject_lens_reprojection_contract.rs:671-691` `reprojection_clears_the_empty_state_caption_when_a_real_membership_lands_a_bucket` - no duplicate found by reading
-- `tests/symbol_ref_caller_attribution.rs:175-220` `extractor_attribution_survives_the_build_index_save_load_pipeline` - no duplicate found by reading
+- `tests/simplification_audit.rs:2791-2794` `real_catalog` - caught: `dup-0614`
+- `tests/spawn_scratch_reap_authorized_root_periphery.rs:65-87` `run_stream_identity` - caught: `dup-0366`
+- `tests/store_content_identity_periphery.rs:1515-1517` `inverted` - caught: `dup-0643`
+- `tests/validate_behind_the_tree_periphery.rs:139-145` `gitsemver_available` - caught: `dup-0233`
+- `tests/worker_persona_label_periphery.rs:304-330` `the_subject_is_the_titles_first_sentence_passed_whole_with_no_truncation` - no duplicate found by reading
 
 Two real recall gaps surfaced this way and were closed by widening the mechanical sweep with a new generalizable detector each - not a one-off citation - so the fix catches every present and future instance of its class, each pinned by a real-tree regression test: `find_proc_stat_or_status_readers` (decision `u85c2-proc-stat-worked-example`) groups every function reading a `/proc/<pid>/stat` or `/proc/<pid>/status` literal, closing the spec's own named worked example - `src/dash.rs:499-507` `process_state` next to `src/reap.rs:190-197` `pid_starttime`, the same job on the same file with a different field/shape, upheld at spec 62's capstone; `find_parallel_constructor_clusters` (decision `u85c2-parallel-constructor-sweep`) groups 2+ non-test functions per `(file, Self type)` that build a `Self { .. }` / `TypeName { .. }` literal, closing `src/spawn.rs`'s `SpawnResult::liveness_fault` reading MISSING from its own `ok`/`failed` cluster even though all three are parallel constructors for one struct. A third worked example, `exploration_graph` (independently defined test-fixture builders in `tests/dash_exploration_route_client_contract.rs` and `tests/dash_kg_graph_route.rs`), was already caught correctly by the plain Jaccard pass with no sweep needed - confirming the mechanical pass itself has real recall, not only the two widened sweeps. Two further real defects, found on review rather than in this draw, were closed the same way: a RECALL gap the architecture lens routed to this criterion by name across two prior review rounds - this file's own bespoke source-text lexer (`scan_file`/`tokenize`) duplicating the codebase's ONE canonical tree-sitter extractor, `src/grounder/symbols/extract.rs::extract` (its own module doc's claim, architecture 5.5.3) - closed by `find_bespoke_lexer_vs_canonical_extractor` (decision `u85c2-bespoke-lexer-sweep`), a fourth generalizable sweep; and a PRECISION defect the adversary found by reading every `same-named helper` cluster against `ScannedFn::enclosing_impl` - `find_same_named_helper_functions` was misclassifying REQUIRED trait-impl methods as coincidental duplication (`subscribe_all`/`subscribe_stream` across the `EventStore` trait's three backend adapters plus a test double, `blast_radius` across the `Grounder` trait's own default method, its override, and a test double) - closed by excluding members whose extracted Self type differs across the group when at least one comes from an actual `" for "` trait impl (decision `u85c2-same-named-helper-trait-impl-precision-fix`), mirroring `find_parallel_constructor_clusters`'s own `(file, Self type)` keying one function away. Reading every remaining function above marked "no duplicate found by reading" (plus the rest of its host file) found none live in more than one place; three shapes are worth naming so a later refactor spec does not mistake them for a miss: `apply_batch` has three unrelated bodies - `src/contextgraph/mod.rs`'s `Projection` trait-default loop over `apply`, `src/contextgraph/sqlite.rs`'s concrete single-transaction override, and a `#[cfg(test)]` mock counter in `src/conductor.rs` - a port default, an adapter override and a test double, not a duplicate; `spawn` on `AgentDriver` has three adapter bodies - `src/driver/cli.rs`'s subprocess `Command`, `src/driver/workflow.rs`'s channel handoff to the MCP shim, `src/driver/replay.rs`'s log replay/park - three genuinely different mechanisms behind one port, again not a duplicate; and `src/main.rs`'s eight `parse_*_args` functions (including this draw's own `parse_canary_args`) share a while-loop-match argument-scanning IDIOM - each handles a disjoint set of flags for a different subcommand, a control-flow convention `parse_canary_args`'s own doc comment names by pointing at its sibling, not duplicated business logic, so no sweep targets it. Re-drawing this same 30-function sample after all four fixes land finds zero further gaps.
 
@@ -10160,13 +10184,14 @@ Nineteen follow-up refactoring specs, ordered largest risk-reduction first, plus
 
 ### 6.1 How this plan is ordered
 
-Largest risk-reduction first is read as five tiers, ranked by the KIND of risk each entry retires, highest first:
+Largest risk-reduction first is read as six tiers, ranked by the KIND of risk each entry retires, highest first:
 
 1. Tier 1 - active correctness risk: a use case already depends on the wrong concretion, or two independent implementations of one concern can already drift apart silently (section 3's two boundary violations; the one already-drifted `/proc`-reading pair section 2 and section 3 both name). These are live gaps, not just size.
 2. Tier 2 - god-file test-module extraction: each of the three god files' own inline `#[cfg(test)] mod tests` is the majority of that file's bulk (56-70% by boundary-line count, per a direct read of each file), and moving it is a pure relocation with no production-behavior change - the single largest safe line-count reduction in this plan, and the precondition that makes tier 3 tractable.
 3. Tier 3 - god-file production splits: section 1's own proposed module tree applied to the (now much smaller) remaining production surface of each god file. Higher execution risk than tier 2 because it touches live orchestration and CLI logic, so it is sequenced after tier 2 shrinks the target first.
 4. Tier 4 - named production duplication sweeps: the mechanical mandatory sweeps section 2 ran regardless of the Jaccard pass (`Command::new`, `.rigger`-path literals, sqlite `Connection::open`, error-shaping helpers), each already a single committed cluster with its own proposed home.
-5. Tier 5 - test-suite consolidation: section 5's own catalogued test-only duplication. No production-correctness exposure at all (worst case a test regresses, never the product), so it is ordered last despite touching the largest raw line count anywhere in this plan.
+5. Tier 5 - test-suite consolidation: section 5's own catalogued test-only duplication. No production-correctness exposure at all (worst case a test regresses, never the product), so it is ordered ahead only of tier 6 despite touching the largest raw line count anywhere in this plan.
+6. Tier 6 - remaining catalog sweep: the 327 src-touching clusters section 2 found but tiers 1 and 4 did not individually name. Unlike every other tier, none of these 327 have been read and risk-assessed one at a time the way tiers 1-4's named clusters have - they are consumed straight from the catalog - so this tier carries production-correctness exposure tiers 2, 3 and 5 do not, and is ordered last: the follow-up spec must triage each cluster's own production-or-test status before merging it, not assume tier 5's blanket test-only treatment applies here too.
 
 Within a tier, entries are ordered largest-first by the site or line count each retires - the same rule the tiers themselves follow, applied one level down.
 
@@ -10190,11 +10215,11 @@ Within a tier, entries are ordered largest-first by the site or line count each 
 
 #### 3. Retire the duplicate `/proc`-reading authority (`dup-0124` + `dup-0125`)
 
-- Scope: `src/dash.rs::process_state` (`src/dash.rs:499-507`) and `src/main.rs::pgid_of` (`src/main.rs:23064-23077`) each independently re-derive `/proc/<pid>/stat` and `/proc/<pid>/status` fields that `src/reap.rs` (`pid_starttime`/`read_ppid`, `src/reap.rs:190-207`) already parses - the exact "second mutation authority" example spec 85's own Goal names and spec 62's capstone previously caught (`dup-0125`, 13 sites: `src/dash.rs`, `src/main.rs`, `src/reap.rs`, `tests/cli.rs`), plus 56 raw `/proc`-path string literals scattered across `src/dash.rs`, `src/main.rs`, `src/reap.rs` and three test files with no shared composer (`dup-0124`). Both clusters' own `proposed_home` agree: `src/reap.rs` becomes the one `/proc`-reading module; `dash.rs` and `main.rs` call it instead of re-parsing.
+- Scope: `src/dash.rs::process_state` (`src/dash.rs:499-507`) and `src/main.rs::pgid_of` (`src/main.rs:23064-23077`) each independently re-derive `/proc/<pid>/stat` and `/proc/<pid>/status` fields that `src/reap.rs` (`pid_starttime`/`read_ppid`, `src/reap.rs:190-207`) already parses - the exact "second mutation authority" example spec 85's own Goal names and spec 62's capstone previously caught (`dup-0125`, 14 sites: `src/dash.rs`, `src/main.rs`, `src/reap.rs`, `tests/cli.rs`), plus 60 raw `/proc`-path string literals scattered across `src/dash.rs`, `src/main.rs`, `src/reap.rs` and three test files with no shared composer (`dup-0124`). Both clusters' own `proposed_home` agree: `src/reap.rs` becomes the one `/proc`-reading module; `dash.rs` and `main.rs` call it instead of re-parsing. NOT SYMMETRIC: `process_state` is reachable from `dash`'s own always-on production server, so it is the actual active-correctness risk this tier-1 placement is about; `pgid_of` sits inside `main.rs`'s `mod tests` (opened at `src/main.rs:12650`) and is called only by `#[test]` fns, so on its own it earns no tier-1 placement - it rides in this same item only because it shares `dup-0124`/`dup-0125`'s one root cause and one proposed fix with `process_state`, not because retiring it retires any live risk of its own.
 - Files: `src/dash.rs`, `src/main.rs`, `src/reap.rs`, `tests/cli.rs` (`proc_pgid_of`, `tests/cli.rs:23419-23432`, re-points at the same call).
 - Expected line delta: negative - retires `process_state`'s and `pgid_of`'s own parsing bodies in favor of calling `reap.rs`'s existing parser.
-- Risk: low. Section 3's own disposition already establishes this is a duplicate READ-only reimplementation, never a bypassed mutation path - nothing this touches can signal or kill a process, so it carries none of the no-os-kill gate's own risk surface.
-- Unblocks: retires the codebase's only currently-known live instance of the "duplicate implementation reconciled after the fact" pattern the operator's strict-DRY rule targets - the concrete precedent spec 85's own Goal cites.
+- Risk: low for both halves, for two different reasons. Section 3's own disposition already establishes `process_state` as a duplicate READ-only reimplementation, never a bypassed mutation path - nothing this touches can signal or kill a process, so it carries none of the no-os-kill gate's own risk surface. `pgid_of`'s own risk is lower still: being test-only, retiring it is ordinary test cleanup, not a correctness-risk retirement - it is sequenced here for shared-fix convenience, not because it independently needed tier-1 urgency.
+- Unblocks: retires the codebase's only currently-known live instance of the "duplicate implementation reconciled after the fact" pattern the operator's strict-DRY rule targets - the concrete precedent spec 85's own Goal cites - and, as a free byproduct, `main.rs`'s own test-only duplicate parser.
 
 ### 6.3 Tier 2: god-file test-module extraction
 
@@ -10256,12 +10281,12 @@ Each entry below applies section 1's own proposed module tree to a god file's pr
 
 Each entry is one of section 2's five named mandatory sweeps - collected mechanically regardless of the Jaccard pass, per spec 85's own Design.
 
-#### 10. Consolidate the 645 `.rigger`-path string-literal sites (`dup-0051`) - the single largest cluster in the entire catalog by site count
+#### 10. Consolidate the 649 `.rigger`-path string-literal sites (`dup-0051`) - the single largest cluster in the entire catalog by site count
 
-- Scope: one `.rigger`-relative path-composition helper (the cluster's own `proposed_home`) every one of the 645 sites routes through instead of building its own literal.
+- Scope: one `.rigger`-relative path-composition helper (the cluster's own `proposed_home`) every one of the 649 sites routes through instead of building its own literal.
 - Files: spans dozens of files including `src/conductor.rs`, `src/config.rs`, `src/dash.rs`, `src/docs.rs`, `src/gate.rs`, `src/grounder/mod.rs`, `src/grounder/symbols/store.rs`, `src/ingest.rs`, `src/main.rs`, `src/reap.rs`, `src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list is in the committed `docs/audit/duplication-catalog.json` under `dup-0051` for the follow-up spec to consume directly, not re-enumerated here.
-- Expected line delta: negative - 645 literal compositions collapse toward one helper's call sites; the helper itself is small.
-- Risk: medium - the largest surface-area sweep in this plan by site count, even though each individual site is trivial; needs a mechanical rewrite pass plus a full-suite green run, not hand-editing 645 sites.
+- Expected line delta: negative - 649 literal compositions collapse toward one helper's call sites; the helper itself is small.
+- Risk: medium - the largest surface-area sweep in this plan by site count, even though each individual site is trivial; needs a mechanical rewrite pass plus a full-suite green run, not hand-editing 649 sites.
 - Unblocks: the biggest single site-count reduction available anywhere in the duplication catalog.
 
 #### 11. Consolidate the 263 `Command::new` call sites (`dup-0006`) behind one injected process-spawn port
@@ -10332,6 +10357,10 @@ Every entry cites section 5's own already-catalogued test-only duplication; none
 - Risk: low - test-only.
 - Unblocks: closes out the table-driven-test half of the test suite's own strict-DRY exposure; combined with item 17, retires all 340 test-only clusters section 2 found.
 
+### 6.7 Tier 6: remaining catalog sweep
+
+Unlike tier 5, this entry's own clusters are NOT known to be test-only - each one needs its own read before merging (see `### 6.1`'s tier 6 rationale above).
+
 #### 19. Sweep the remaining 327 src-touching duplication clusters (section 2, beyond tiers 1 and 4's 7 named clusters)
 
 - Scope: of the catalog's 674 clusters, 340 are test-only (items 14 and 16-18 above) and 7 are the named tier-1/tier-4 items (`dup-0006`, `dup-0051`, `dup-0105`, `dup-0124`, `dup-0125`, `dup-0198`, `dup-0205`); the remaining 327 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-0001`, `dup-0002`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
@@ -10340,6 +10369,6 @@ Every entry cites section 5's own already-catalogued test-only duplication; none
 - Risk: low-medium - unlike tier 5, some of these clusters are production code, so each merge needs its own test-coverage check, not a blanket "test-only" pass.
 - Unblocks: the last of the catalog's 674 clusters; after items 1-3 and 10-19 all land, a future spec can state and check that the duplication catalog's own drift guard finds zero live clusters left unaddressed.
 
-### 6.7 Explicitly no follow-up: dead and vestigial code
+### 6.8 Explicitly no follow-up: dead and vestigial code
 
 Section 4 found nothing to remove: zero of the 596 scanned production entries have zero external references (three independent instruments checked - name-reference sweep, the knowledge graph, and a full-rebuild `dead_code` lint on both feature lanes), both named retirements (`turbovec`, `kurrentdb`) are fully clean, and the two stale-looking doc paths found were confirmed generic illustrative examples, not real dangling references. No refactoring spec is proposed for this category (spec 85's own CONSTRAINTS WALK: an empty section states so with the search that established it, never omitted).

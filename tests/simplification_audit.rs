@@ -3648,7 +3648,7 @@ fn render_section_6() -> String {
     );
     out.push_str("### 6.1 How this plan is ordered\n\n");
     out.push_str(
-        "Largest risk-reduction first is read as five tiers, ranked by the KIND of risk \
+        "Largest risk-reduction first is read as six tiers, ranked by the KIND of risk \
         each entry retires, highest first:\n\n\
         1. Tier 1 - active correctness risk: a use case already depends on the wrong \
         concretion, or two independent implementations of one concern can already drift \
@@ -3670,8 +3670,15 @@ fn render_section_6() -> String {
         committed cluster with its own proposed home.\n\
         5. Tier 5 - test-suite consolidation: section 5's own catalogued test-only \
         duplication. No production-correctness exposure at all (worst case a test \
-        regresses, never the product), so it is ordered last despite touching the largest \
-        raw line count anywhere in this plan.\n\n\
+        regresses, never the product), so it is ordered ahead only of tier 6 despite \
+        touching the largest raw line count anywhere in this plan.\n\
+        6. Tier 6 - remaining catalog sweep: the 327 src-touching clusters section 2 found \
+        but tiers 1 and 4 did not individually name. Unlike every other tier, none of these \
+        327 have been read and risk-assessed one at a time the way tiers 1-4's named \
+        clusters have - they are consumed straight from the catalog - so this tier carries \
+        production-correctness exposure tiers 2, 3 and 5 do not, and is ordered last: the \
+        follow-up spec must triage each cluster's own production-or-test status before \
+        merging it, not assume tier 5's blanket test-only treatment applies here too.\n\n\
         Within a tier, entries are ordered largest-first by the site or line count each \
         retires - the same rule the tiers themselves follow, applied one level down.\n\n",
     );
@@ -3732,23 +3739,33 @@ fn render_section_6() -> String {
         `/proc/<pid>/stat` and `/proc/<pid>/status` fields that `src/reap.rs` \
         (`pid_starttime`/`read_ppid`, `src/reap.rs:190-207`) already parses - the exact \
         \"second mutation authority\" example spec 85's own Goal names and spec 62's \
-        capstone previously caught (`dup-0125`, 13 sites: `src/dash.rs`, `src/main.rs`, \
-        `src/reap.rs`, `tests/cli.rs`), plus 56 raw `/proc`-path string literals scattered \
+        capstone previously caught (`dup-0125`, 14 sites: `src/dash.rs`, `src/main.rs`, \
+        `src/reap.rs`, `tests/cli.rs`), plus 60 raw `/proc`-path string literals scattered \
         across `src/dash.rs`, `src/main.rs`, `src/reap.rs` and three test files with no \
         shared composer (`dup-0124`). Both clusters' own `proposed_home` agree: `src/reap.rs` \
         becomes the one `/proc`-reading module; `dash.rs` and `main.rs` call it instead of \
-        re-parsing.\n\
+        re-parsing. NOT SYMMETRIC: `process_state` is reachable from `dash`'s own always-on \
+        production server, so it is the actual active-correctness risk this tier-1 placement \
+        is about; `pgid_of` sits inside `main.rs`'s `mod tests` (opened at `src/main.rs:12650`) \
+        and is called only by `#[test]` fns, so on its own it earns no tier-1 placement - it \
+        rides in this same item only because it shares `dup-0124`/`dup-0125`'s one root cause \
+        and one proposed fix with `process_state`, not because retiring it retires any live \
+        risk of its own.\n\
         - Files: `src/dash.rs`, `src/main.rs`, `src/reap.rs`, `tests/cli.rs` (`proc_pgid_of`, \
         `tests/cli.rs:23419-23432`, re-points at the same call).\n\
         - Expected line delta: negative - retires `process_state`'s and `pgid_of`'s own \
         parsing bodies in favor of calling `reap.rs`'s existing parser.\n\
-        - Risk: low. Section 3's own disposition already establishes this is a duplicate \
-        READ-only reimplementation, never a bypassed mutation path - nothing this touches \
-        can signal or kill a process, so it carries none of the no-os-kill gate's own risk \
-        surface.\n\
+        - Risk: low for both halves, for two different reasons. Section 3's own disposition \
+        already establishes `process_state` as a duplicate READ-only reimplementation, never a \
+        bypassed mutation path - nothing this touches can signal or kill a process, so it \
+        carries none of the no-os-kill gate's own risk surface. `pgid_of`'s own risk is lower \
+        still: being test-only, retiring it is ordinary test cleanup, not a \
+        correctness-risk retirement - it is sequenced here for shared-fix convenience, not \
+        because it independently needed tier-1 urgency.\n\
         - Unblocks: retires the codebase's only currently-known live instance of the \
         \"duplicate implementation reconciled after the fact\" pattern the operator's \
-        strict-DRY rule targets - the concrete precedent spec 85's own Goal cites.\n\n",
+        strict-DRY rule targets - the concrete precedent spec 85's own Goal cites - and, as a \
+        free byproduct, `main.rs`'s own test-only duplicate parser.\n\n",
     );
     out.push_str("### 6.3 Tier 2: god-file test-module extraction\n\n");
     out.push_str(
@@ -3886,12 +3903,12 @@ fn render_section_6() -> String {
         mechanically regardless of the Jaccard pass, per spec 85's own Design.\n\n",
     );
     out.push_str(
-        "#### 10. Consolidate the 645 `.rigger`-path string-literal sites (`dup-0051`) - the \
+        "#### 10. Consolidate the 649 `.rigger`-path string-literal sites (`dup-0051`) - the \
         single largest cluster in the entire catalog by site count\n\n",
     );
     out.push_str(
         "- Scope: one `.rigger`-relative path-composition helper (the cluster's own \
-        `proposed_home`) every one of the 645 sites routes through instead of building its \
+        `proposed_home`) every one of the 649 sites routes through instead of building its \
         own literal.\n\
         - Files: spans dozens of files including `src/conductor.rs`, `src/config.rs`, \
         `src/dash.rs`, `src/docs.rs`, `src/gate.rs`, `src/grounder/mod.rs`, \
@@ -3899,11 +3916,11 @@ fn render_section_6() -> String {
         `src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list \
         is in the committed `docs/audit/duplication-catalog.json` under `dup-0051` for the \
         follow-up spec to consume directly, not re-enumerated here.\n\
-        - Expected line delta: negative - 645 literal compositions collapse toward one \
+        - Expected line delta: negative - 649 literal compositions collapse toward one \
         helper's call sites; the helper itself is small.\n\
         - Risk: medium - the largest surface-area sweep in this plan by site count, even \
         though each individual site is trivial; needs a mechanical rewrite pass plus a \
-        full-suite green run, not hand-editing 645 sites.\n\
+        full-suite green run, not hand-editing 649 sites.\n\
         - Unblocks: the biggest single site-count reduction available anywhere in the \
         duplication catalog.\n\n",
     );
@@ -4055,6 +4072,11 @@ fn render_section_6() -> String {
         strict-DRY exposure; combined with item 17, retires all 340 test-only clusters \
         section 2 found.\n\n",
     );
+    out.push_str("### 6.7 Tier 6: remaining catalog sweep\n\n");
+    out.push_str(
+        "Unlike tier 5, this entry's own clusters are NOT known to be test-only - each one \
+        needs its own read before merging (see `### 6.1`'s tier 6 rationale above).\n\n",
+    );
     out.push_str(
         "#### 19. Sweep the remaining 327 src-touching duplication clusters (section 2, \
         beyond tiers 1 and 4's 7 named clusters)\n\n",
@@ -4077,7 +4099,7 @@ fn render_section_6() -> String {
         land, a future spec can state and check that the duplication catalog's own drift \
         guard finds zero live clusters left unaddressed.\n\n",
     );
-    out.push_str("### 6.7 Explicitly no follow-up: dead and vestigial code\n\n");
+    out.push_str("### 6.8 Explicitly no follow-up: dead and vestigial code\n\n");
     out.push_str(
         "Section 4 found nothing to remove: zero of the 596 scanned production entries have \
         zero external references (three independent instruments checked - name-reference \
@@ -5921,6 +5943,52 @@ mod tests {
     // =====================================================================================
     // Criterion 4 (`u85c4`, THIS UNIT): section 6 (prioritized plan)
     // =====================================================================================
+
+    #[test]
+    fn find_heading_skips_a_heading_shaped_substring_embedded_inside_a_sub_heading() {
+        // The exact corruption shape `find_heading`'s own doc comment describes (decision
+        // `u85c4-fix-heading-boundary-false-match`): a `#### 3. ` sub-heading's tail reads as
+        // `## 3. ` starting at its own third byte, so an unanchored `str::find("## 3. ")` would
+        // land INSIDE this sub-heading instead of the real `## 3. ` heading further down. Built
+        // directly here rather than relying on the committed report's current, incidental
+        // content (`sdet-u85c4-find-heading-lacks-direct-adversarial-unit-test`) - this fails a
+        // regression to plain `str::find` even after a future edit removes today's coincidental
+        // collision from the real artifact.
+        let haystack = "intro text\n\n\
+             #### 3. A Sub-Heading Whose Tail Reads As A Real One\n\n\
+             body under the sub-heading\n\n\
+             ## 3. The Real Heading\n\n\
+             body under the real heading\n";
+
+        // Sanity: the adversarial substring really is embedded where this test assumes - an
+        // unanchored search would find it at the sub-heading's own third byte, two bytes past
+        // where `#### 3. ` itself starts.
+        let sub_heading_start = haystack.find("#### 3. ").unwrap();
+        let false_match = sub_heading_start + 2;
+        assert_eq!(
+            &haystack[false_match..false_match + "## 3. ".len()],
+            "## 3. "
+        );
+        assert_ne!(haystack.as_bytes()[false_match - 1], b'\n');
+
+        let real_match = haystack.rfind("\n## 3. ").map(|p| p + 1).unwrap();
+        assert_eq!(
+            find_heading(haystack, "## 3. "),
+            Some(real_match),
+            "find_heading must skip the heading-shaped substring embedded inside the sub-heading \
+             (at byte {false_match}, not preceded by a newline) and land on the real line-start \
+             heading at byte {real_match} instead"
+        );
+    }
+
+    #[test]
+    fn find_heading_returns_none_when_no_genuine_line_start_match_exists() {
+        // Only the false, embedded match exists here - no real `## 3. ` heading anywhere. A
+        // regression to plain `str::find` would wrongly return the embedded position instead of
+        // `None`.
+        let haystack = "intro\n\n#### 3. A Sub-Heading Whose Tail Reads As A Real One\n\nbody\n";
+        assert_eq!(find_heading(haystack, "## 3. "), None);
+    }
 
     #[test]
     fn replace_section_6_only_touches_that_span_leaving_earlier_sections_intact() {
