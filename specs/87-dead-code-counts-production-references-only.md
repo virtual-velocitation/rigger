@@ -18,7 +18,20 @@ only from tests is dead, and its tests are dead with it.
 
 ## Design
 
-INSTRUMENT, decided: extend `tests/simplification_audit.rs`'s scanner (which already classifies
+TWO STAGES, decided (operator direction 2026-09-08: "cargo minify and then the dead_code lint
+should reduce the noise and confusion"). STAGE 1, compiler-driven, runs first and lands first:
+`cargo minify` (tweedegolf's tool, operator-installed: `cargo install cargo-minify`; CI gets it
+via `taiki-e/install-action` when its manifest carries it, else a cached `cargo install`)
+applied in the unit's worktree on both feature
+lanes, followed by a build on both lanes with `RUSTFLAGS="-D dead_code -D unused_imports
+-D unused_variables -D unreachable_pub"` - whatever the compiler proves unreachable is removed
+in this stage, with the removed items listed in the report (name, file:line) as
+`delete (compiler)`. Stage 1's known blind spot is the reason stage 2 exists: in a crate that
+is both a library and a binary, the `dead_code` lint never fires on a `pub` item, so every
+`pub fn` with zero real callers survives stage 1 looking clean. STAGE 2 is the reference sweep
+below, run on the tree stage 1 leaves behind.
+
+INSTRUMENT (stage 2), decided: extend `tests/simplification_audit.rs`'s scanner (which already classifies
 every fn frame as `is_test` via enclosing `#[cfg(test)]` mods and `#[test]` attributes) to
 cover the whole `src/` tree, and add a reference pass that, for each production (`is_test:
 false`) fn, counts references to its name from PRODUCTION code only: every `src/` file with its
@@ -74,17 +87,23 @@ cross-check follows the "before 86" rule above.
 
 ## Done when
 
+- [ ] a test proves THE COMPILER PASS LANDED FIRST: `cargo minify` has been applied on both
+  feature lanes and a build on both lanes with `dead_code`, `unused_imports`,
+  `unused_variables` and `unreachable_pub` promoted to errors is clean, with every item the
+  compiler removed listed in the report as `delete (compiler)` with file:line, and the
+  no-os-kill and reap audits still green on the reduced tree. This criterion OWNS stage 1; the
+  reference sweep is criterion 2's, NOT this one's.
 - [ ] a test proves THE SWEEP COUNTS PRODUCTION ONLY: the generator, over the whole `src/`
   tree, classifies every fn as production or test, counts references to each production fn from
   production code only (test spans and `tests/` excluded, definition span excluded, code-shaped
   references only), writes `docs/audit/dead-code.json` and asserts the committed file matches;
   a fixture with a fn referenced only by its own test lists that fn, and a fn referenced from a
-  production caller does not appear. This criterion OWNS the instrument and the JSON; the
-  report and dispositions are criterion 2's, NOT this one's.
+  production caller does not appear. This criterion OWNS the stage-2 instrument and the JSON; the
+  report and dispositions are criterion 3's, NOT this one's.
 - [ ] a test proves EVERY CANDIDATE IS DISPOSITIONED: section 4 of the report is regenerated
   from the JSON with the count, per-file distribution and full list, every entry carries exactly
   one of `delete` / `keep-public-surface` / `keep-pending` with its cited reason, the knowledge
   graph degree is reported beside each, and section 6 gains item 0 "Delete the dead-code set"
   with the deletion list and its delta. This criterion OWNS section 4's text, the dispositions
-  and the section 6 item; the instrument is criterion 1's, NOT this one's.
+  and the section 6 item; the instruments are criteria 1 and 2's, NOT this one's.
 - [ ] both feature lanes green (fmt, clippy, test on default and --no-default-features).
