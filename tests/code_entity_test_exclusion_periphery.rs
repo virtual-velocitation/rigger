@@ -243,6 +243,122 @@ fn a_pre86_persisted_index_with_no_is_test_key_loads_defaulting_every_item_to_fa
     assert_eq!(file.refs[0].name, "callee");
 }
 
+// ---- the round-6 is_out_of_line_module field's own wire-format / back-compat contract -----
+// (`Def::is_out_of_line_module`, `op-u86c1-r5-close-every-remaining-test-shape` item 2). The
+// implementer's own round-6 fixtures set this field on every literal they touch (mechanical
+// ripple), but no test anywhere - implementer or periphery - independently pins ITS OWN
+// serde(default, skip_serializing_if) contract the way `is_test`'s trio above does; the three
+// tests above only assert on the `is_test` key's presence/absence, never `is_out_of_line_module`'s,
+// so a regression dropping this field's own `skip_serializing_if` (rewriting every historical
+// index's bytes) or its own `#[serde(default)]` (erroring a pre-round-6 index dead instead of
+// loading it) would pass every existing test in this file undetected. Mirrors the `is_test` trio
+// exactly, one field later.
+
+#[test]
+fn is_out_of_line_module_false_serializes_byte_identically_to_the_pre_round6_form() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap();
+    let mut idx = SymbolIndex::default();
+    idx.insert_file(
+        "a.rs".into(),
+        FileSymbols {
+            lang: Lang::Rust,
+            defs: vec![Def {
+                kind: Kind::Module,
+                name: "inline_mod".into(),
+                line: 1,
+                is_test: false,
+                is_out_of_line_module: false,
+            }],
+            refs: vec![],
+        },
+    );
+    store::save(&idx, root).unwrap();
+    let bytes = std::fs::read_to_string(store::index_path(root)).unwrap();
+    assert!(
+        !bytes.contains("is_out_of_line_module"),
+        "an inline (has-a-body) module - is_out_of_line_module: false - must omit the key \
+         entirely, byte-identical to the pre-round-6 on-disk form; got:\n{bytes}"
+    );
+}
+
+#[test]
+fn is_out_of_line_module_true_serializes_the_key_and_round_trips() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap();
+    let mut idx = SymbolIndex::default();
+    idx.insert_file(
+        "parent.rs".into(),
+        FileSymbols {
+            lang: Lang::Rust,
+            defs: vec![Def {
+                kind: Kind::Module,
+                name: "contract".into(),
+                line: 1,
+                is_test: true,
+                is_out_of_line_module: true,
+            }],
+            refs: vec![],
+        },
+    );
+    store::save(&idx, root).unwrap();
+    let bytes = std::fs::read_to_string(store::index_path(root)).unwrap();
+    assert!(
+        bytes.contains("is_out_of_line_module"),
+        "an out-of-line `mod name;` declaration - is_out_of_line_module: true - must serialize \
+         the key; got:\n{bytes}"
+    );
+    let loaded = store::load(root).expect("the persisted index loads");
+    let file = &loaded.files()["parent.rs"];
+    assert!(
+        file.defs
+            .iter()
+            .find(|d| d.name == "contract")
+            .unwrap()
+            .is_out_of_line_module,
+        "is_out_of_line_module: true survives a save/load round-trip"
+    );
+}
+
+#[test]
+fn a_pre_round6_persisted_index_with_no_is_out_of_line_module_key_loads_defaulting_to_false() {
+    // Simulates an index written by the round-1..5 binary: `is_test` already exists on the wire
+    // (round 1 shipped it), but `is_out_of_line_module` (round 6) does not - the narrower,
+    // more-realistic back-compat gap than the full pre-86 fixture above, which has NEITHER key.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap();
+    let path = store::index_path(root);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let legacy = r#"{
+  "files": {
+    "legacy_mod.rs": {
+      "lang": "Rust",
+      "defs": [
+        { "kind": "Module", "name": "legacy_child", "line": 1, "is_test": true }
+      ],
+      "refs": []
+    }
+  }
+}"#;
+    std::fs::write(&path, legacy).unwrap();
+
+    let loaded = store::load(root)
+        .expect("a round-1..5 index (is_test present, is_out_of_line_module absent) must load");
+    let file = loaded
+        .files()
+        .get("legacy_mod.rs")
+        .expect("the legacy file entry is present");
+    assert!(
+        file.defs[0].is_test,
+        "the pre-existing is_test key still loads true, unaffected by the new field's absence"
+    );
+    assert!(
+        !file.defs[0].is_out_of_line_module,
+        "a definition persisted before is_out_of_line_module existed defaults to false, not an \
+         error and not true - never manufacturing a false cross-file exclusion of old data"
+    );
+}
+
 // ---- the exclusion rule's Done-when, end to end via the public API (symbols lane only) ----
 
 /// A fixture independent of the implementer's own in-crate one: a product file defining
@@ -469,6 +585,45 @@ fn a_not_wrapping_a_non_test_atom_graphs_as_product_through_the_public_api() {
             )
         });
     assert_eq!(real_client.kind, KIND_CODE_ENTITY);
+}
+
+/// sdet-author gap: the round-6 fix's own `double_negation_is_test_only` (`not(not(test))` cancels
+/// back to test-only, since the inner `not(test)` IS pure) is pinned only at the `extract.rs`
+/// `FileSymbols` level by the implementer's own unit test - never independently through the public
+/// API the way its sibling `not(feature = "x")` shape is above. Proving it here closes that gap:
+/// unlike the mixed-predicate case, a doubly-negated `test` is PURE test algebra throughout, so
+/// the item must be EXCLUDED, the opposite assertion direction from the test above.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_double_negation_of_test_excludes_the_item_through_the_public_api() {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::Projection;
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("doublenot.rs"),
+        "#[cfg(not(not(test)))]\nfn double_negation_is_test_only() {}\n",
+    )
+    .unwrap();
+
+    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
+    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.iter_mut().enumerate() {
+        event.position = zero_based as u64 + 1;
+        p.apply(event).unwrap();
+    }
+
+    let g = p.subgraph(&["doublenot.rs".to_string()], 3).unwrap();
+    assert!(
+        !g.nodes
+            .iter()
+            .any(|n| n.id == "doublenot.rs::double_negation_is_test_only"),
+        "#[cfg(not(not(test)))] cancels back to a PURE test-only predicate (unlike the mixed \
+         not(feature = \"x\") case above) and must be excluded exactly like a bare #[cfg(test)]; \
+         nodes: {:?}",
+        g.nodes
+    );
 }
 
 /// A round-3 regression fixture, independent of the implementer's own `extract.rs` fixture: the
@@ -995,6 +1150,192 @@ fn an_out_of_line_cfg_test_module_declaration_excludes_its_declared_file_through
     );
 }
 
+/// sdet-author gap: the test above and `a_non_test_out_of_line_mod_and_an_inline_test_mod_never_
+/// exclude_a_coincidentally_named_sibling_file` below both place the declaring file and its
+/// out-of-line target at the tempdir ROOT (`dir` empty), so `out_of_line_test_module_files`'s
+/// `dir.is_empty()` branch is the only one any test in this round exercises. This repo's OWN two
+/// round-5-disclosed live instances - `src/eventstore/mod.rs` (`#[cfg(test)] pub mod contract;`)
+/// resolving to `src/eventstore/contract.rs`, and `src/lib.rs` (`#[cfg(test)] mod
+/// blast_radius_eval;`) resolving to `src/blast_radius_eval.rs` - are BOTH the OTHER branch: a
+/// declaring file that itself lives in a subdirectory, so the resolved sibling path carries that
+/// same directory prefix (`format!("{dir}/{}.rs", d.name)`). Mirrors that exact shape so the
+/// guarantee criterion 1 makes about this very tree is proven by a fixture, not merely inferred
+/// from the flat-root case generalizing.
+#[cfg(feature = "symbols")]
+#[test]
+fn an_out_of_line_cfg_test_module_declaration_in_a_subdirectory_excludes_its_sibling_through_the_public_api(
+) {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::Projection;
+    use std::collections::BTreeSet;
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("nested")).unwrap();
+    std::fs::write(
+        root.path().join("nested").join("parent.rs"),
+        "fn nested_product() {}\n\n#[cfg(test)]\npub mod child;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.path().join("nested").join("child.rs"),
+        "pub fn nested_assert() {}\n",
+    )
+    .unwrap();
+
+    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
+    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.iter_mut().enumerate() {
+        event.position = zero_based as u64 + 1;
+        p.apply(event).unwrap();
+    }
+
+    let g = p
+        .subgraph(
+            &[
+                "nested/parent.rs".to_string(),
+                "nested/child.rs".to_string(),
+            ],
+            3,
+        )
+        .unwrap();
+    let node_ids: BTreeSet<&str> = g.nodes.iter().map(|n| n.id.as_str()).collect();
+
+    assert!(
+        node_ids.contains("nested/parent.rs::nested_product"),
+        "the declaring file's own product code stays graphed; nodes: {node_ids:?}"
+    );
+    let must_be_absent: BTreeSet<&str> =
+        BTreeSet::from(["nested/child.rs::nested_assert", "nested/child.rs"]);
+    let leaked: BTreeSet<&str> = node_ids.intersection(&must_be_absent).copied().collect();
+    assert!(
+        leaked.is_empty(),
+        "a subdirectory sibling named only by an out-of-line `#[cfg(test)] mod name;` \
+         declaration must be excluded in FULL exactly like the flat-root-level case, proving the \
+         `dir` prefix (never just the bare `<name>.rs` the root-level fixtures alone would leave \
+         untested) is threaded correctly into the resolved path; leaked: {leaked:?}"
+    );
+}
+
+/// sdet-author gap: every out-of-line-resolution fixture in this file names a `mod` that DOES
+/// resolve to a real file `idx` holds. `out_of_line_test_module_files`'s own doc comment claims
+/// the resolution is matched against paths the index ACTUALLY holds, "never assumed" - a
+/// `#[cfg(test)] mod name;` declaration whose named file genuinely does not exist (a stale
+/// declaration, or a form this resolver does not yet reach - `#[path = ".."]`,
+/// `dec-u86c1-r6-path-and-nested-mod-not-yet-covered`) must not panic the whole ingest and must
+/// not exclude some unrelated file by accident; the declaring file's own product code must still
+/// graph normally.
+#[cfg(feature = "symbols")]
+#[test]
+fn an_out_of_line_test_mod_declaration_naming_no_real_file_neither_panics_nor_excludes_anything_else(
+) {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::{Projection, KIND_CODE_ENTITY};
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("dangling_parent.rs"),
+        "fn still_graphs() {}\n\n#[cfg(test)]\nmod nonexistent_child;\n",
+    )
+    .unwrap();
+    // An unrelated file that must be entirely unaffected by the dangling declaration above.
+    std::fs::write(
+        root.path().join("unrelated.rs"),
+        "pub fn unrelated_fn() {}\n",
+    )
+    .unwrap();
+
+    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
+    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.iter_mut().enumerate() {
+        event.position = zero_based as u64 + 1;
+        p.apply(event).unwrap();
+    }
+
+    let g = p
+        .subgraph(
+            &["dangling_parent.rs".to_string(), "unrelated.rs".to_string()],
+            3,
+        )
+        .unwrap();
+    let product = g
+        .nodes
+        .iter()
+        .find(|n| n.id == "dangling_parent.rs::still_graphs")
+        .expect(
+            "a #[cfg(test)] mod declaration naming no real file must not prevent the declaring \
+             file's own product code from graphing",
+        );
+    assert_eq!(product.kind, KIND_CODE_ENTITY);
+    let unrelated = g
+        .nodes
+        .iter()
+        .find(|n| n.id == "unrelated.rs::unrelated_fn")
+        .expect(
+            "an unrelated file must never be swept into exclusion by a dangling out-of-line \
+             declaration elsewhere; nodes: {:?}",
+        );
+    assert_eq!(unrelated.kind, KIND_CODE_ENTITY);
+}
+
+/// sdet-author gap: every out-of-line-resolution test above drives `index_events`. The mandate
+/// (`op-u86c1-r5-close-every-remaining-test-shape` item 2, quoted in this file's own module doc)
+/// names TWO production entry points needing the fix - `events.rs`'s `is_under_tests_dir` /
+/// `project_batches` - and `project_batches` is the ACTUAL entry point a live run drives
+/// (`conductor::RunCtx::ingest_project_batches`, spec 29c), not merely a test convenience;
+/// `out_of_line_test_module_files` is computed and applied at BOTH call sites independently (two
+/// inline `.filter(|(path, _)| !excluded.contains(...))` sites over the SAME shared helper, per
+/// `events.rs`'s own source), so nothing so far proves `project_batches`'s OWN copy of that wiring
+/// is correct rather than merely the `index_events` one exercised everywhere else in this file.
+#[cfg(feature = "symbols")]
+#[test]
+fn project_batches_also_excludes_an_out_of_line_test_module_declarations_target_file() {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::Projection;
+    use rigger::grounder::symbols::events::project_batches;
+    use std::collections::BTreeSet;
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("parent.rs"), PARENT_SRC).unwrap();
+    std::fs::write(root.path().join("contract.rs"), OUT_OF_LINE_CHILD_SRC).unwrap();
+
+    let batches = project_batches(root.path().to_str().unwrap());
+    let files: BTreeSet<&str> = batches.iter().map(|(f, _)| f.as_str()).collect();
+    assert!(
+        files.contains("parent.rs"),
+        "the declaring file still contributes its own batch; files: {files:?}"
+    );
+    assert!(
+        !files.contains("contract.rs"),
+        "project_batches (the entry point a live run actually drives, spec 29c) must exclude \
+         the out-of-line test module's declared file's batch entirely too, not merely \
+         index_events's own copy of the same filter; files: {files:?}"
+    );
+
+    let p = Projector::open(":memory:", "test").unwrap();
+    let mut pos = 0u64;
+    for (_, events) in &batches {
+        for e in events {
+            pos += 1;
+            let mut ev = e.clone();
+            ev.position = pos;
+            p.apply(&ev).unwrap();
+        }
+    }
+    let g = p
+        .subgraph(&["parent.rs".to_string(), "contract.rs".to_string()], 3)
+        .unwrap();
+    assert!(
+        !g.nodes
+            .iter()
+            .any(|n| n.id == "contract.rs::assert_contract"),
+        "the excluded file's own definition must never reach the graph through this entry \
+         point either; nodes: {:?}",
+        g.nodes
+    );
+}
+
 /// Mutation-efficacy pin (round 6 `cargo mutants` finding, events.rs `out_of_line_test_module_files`'s
 /// `d.kind != Kind::Module || !d.is_out_of_line_module || !d.is_test` skip guard): BOTH the
 /// `is_out_of_line_module` and `is_test` conjuncts are required before a Module-kind definition is
@@ -1169,6 +1510,75 @@ fn a_cfg_test_impl_block_excludes_its_methods_through_the_public_api() {
         "a method inside an ORDINARY (non-test) impl block must stay graphed even though the same \
          file also has a #[cfg(test)]-attributed impl block elsewhere; got {:?}",
         g.nodes
+    );
+}
+
+/// sdet-author gap: `a_cfg_test_impl_block_excludes_its_methods_through_the_public_api` above only
+/// exercises the OUTER attribute form (`#[cfg(test)] impl Widget { .. }`, a sibling BEFORE the
+/// `impl_item`). `collect_self_attributed_impl_regions` calls the SAME shared
+/// `node_preceded_by_test_attribute` the round-5 inner-module fix already made check
+/// `leading_inner_test_attribute` first - so an `impl` block gated by the INNER form
+/// (`impl Widget { #![cfg(test)] .. }`, the attribute as the body's own first child rather than a
+/// sibling before the `impl` keyword) should already be caught by construction, but no test
+/// anywhere - implementer's own `extract.rs` unit tests or this file - poses that exact
+/// node-kind/attribute-direction COMBINATION. Proving it independently rather than inferring it
+/// from the two mechanisms each working in isolation.
+#[cfg(feature = "symbols")]
+const INNER_ATTR_IMPL_SRC: &str = "\
+struct Widget;
+
+impl Widget {
+    #![cfg(test)]
+
+    fn helper() {
+        product();
+    }
+
+    #[test]
+    fn it_works() {
+        helper();
+    }
+}
+
+fn product() {}
+";
+
+#[cfg(feature = "symbols")]
+#[test]
+fn a_cfg_test_impl_block_using_the_inner_attribute_form_excludes_its_methods_through_the_public_api(
+) {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::{Projection, KIND_CODE_ENTITY};
+    use std::collections::BTreeSet;
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("innerimpl.rs"), INNER_ATTR_IMPL_SRC).unwrap();
+
+    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
+    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.iter_mut().enumerate() {
+        event.position = zero_based as u64 + 1;
+        p.apply(event).unwrap();
+    }
+
+    let g = p.subgraph(&["innerimpl.rs".to_string()], 3).unwrap();
+    let node_ids: BTreeSet<&str> = g.nodes.iter().map(|n| n.id.as_str()).collect();
+
+    let product = g
+        .nodes
+        .iter()
+        .find(|n| n.id == "innerimpl.rs::product")
+        .expect("product code stays graphed, unaffected by the inner-attribute impl elsewhere");
+    assert_eq!(product.kind, KIND_CODE_ENTITY);
+
+    let must_be_absent: BTreeSet<&str> =
+        BTreeSet::from(["innerimpl.rs::helper", "innerimpl.rs::it_works"]);
+    let leaked: BTreeSet<&str> = node_ids.intersection(&must_be_absent).copied().collect();
+    assert!(
+        leaked.is_empty(),
+        "an impl block gated by its OWN inner #![cfg(test)] attribute must exclude its methods \
+         exactly like the outer-attribute form already does; leaked: {leaked:?}"
     );
 }
 
