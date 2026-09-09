@@ -18684,9 +18684,15 @@
         "start_line": 2573,
         "end_line": 2622,
         "name": "a_path_attribute_override_with_an_explicit_dot_slash_prefix_still_resolves_to_the_same_directory_target"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "start_line": 2641,
+        "end_line": 2693,
+        "name": "a_path_attribute_override_with_chained_dotdot_walks_up_every_popped_level"
       }
     ],
-    "proposed_home": "code_entity_test_exclusion_periphery::support (consolidate these 18 sites into one function in this file)",
+    "proposed_home": "code_entity_test_exclusion_periphery::support (consolidate these 19 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {

@@ -2620,3 +2620,74 @@ fn a_path_attribute_override_with_an_explicit_dot_slash_prefix_still_resolves_to
          test code graphed as product; nodes: {node_ids:?}"
     );
 }
+
+/// sdet-author gap, round 8: both round-8 fixtures
+/// (`a_path_attribute_override_that_walks_upward_with_dotdot_still_excludes_its_target`,
+/// `a_path_attribute_override_with_an_explicit_dot_slash_prefix_still_resolves_to_the_same_directory_target`)
+/// exercise `normalize_logical_path` with exactly ONE `..` (or `.`) segment popping exactly ONE
+/// real segment off the declaring file's own SINGLE-level directory (`src/`). Neither proves the
+/// general segment-STACK behaviour `normalize_logical_path`'s own doc comment claims (a `..`
+/// segment pops "the most recently pushed real segment" - repeated pops must walk back MULTIPLE
+/// levels, not just one): a narrower fix that strips a single leading `../` occurrence (matching
+/// both existing fixtures, since each only ever has one `..`) would satisfy both without
+/// implementing a real stack, and would silently mis-resolve a value with two-or-more `..`
+/// segments walking up through a multi-level declaring directory. `pkg/sub/parent.rs` (a
+/// two-segment declaring directory) with override `"../../fixtures/actual.rs"` must walk up past
+/// BOTH `sub/` and `pkg/` to resolve at the project root - stopping after popping only one level
+/// would compute the wrong, nonexistent `pkg/fixtures/actual.rs` and fall through to `None`,
+/// leaving the real target graphed as product code.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_path_attribute_override_with_chained_dotdot_walks_up_every_popped_level() {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::{Projection, KIND_CODE_ENTITY};
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("pkg").join("sub")).unwrap();
+    std::fs::write(
+        root.path().join("pkg").join("sub").join("parent.rs"),
+        "pub fn parent_product() {}\n\n#[cfg(test)]\n#[path = \"../../fixtures/actual.rs\"]\nmod helper;\n",
+    )
+    .unwrap();
+    // A directory NOT named `tests` - see the `..dotdot..` fixture above for why.
+    std::fs::create_dir(root.path().join("fixtures")).unwrap();
+    std::fs::write(
+        root.path().join("fixtures").join("actual.rs"),
+        "pub fn overridden_test_helper() {}\n",
+    )
+    .unwrap();
+
+    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
+    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.iter_mut().enumerate() {
+        event.position = zero_based as u64 + 1;
+        p.apply(event).unwrap();
+    }
+
+    let g = p
+        .subgraph(
+            &[
+                "pkg/sub/parent.rs".to_string(),
+                "fixtures/actual.rs".to_string(),
+            ],
+            2,
+        )
+        .unwrap();
+    let node_ids: std::collections::BTreeSet<&str> =
+        g.nodes.iter().map(|n| n.id.as_str()).collect();
+
+    assert!(
+        node_ids.contains("pkg/sub/parent.rs::parent_product"),
+        "the declaring file's own product code stays graphed; nodes: {node_ids:?}"
+    );
+    let has_test_helper = g.nodes.iter().any(|n| {
+        n.kind == KIND_CODE_ENTITY && n.id == "fixtures/actual.rs::overridden_test_helper"
+    });
+    assert!(
+        !has_test_helper,
+        "a #[path=\"../../x.rs\"] override must pop EVERY `..` off the declaring file's own \
+         multi-level directory, not just the first one, and still resolve and exclude its real \
+         target; nodes: {node_ids:?}"
+    );
+}
