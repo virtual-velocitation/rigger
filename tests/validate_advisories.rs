@@ -115,6 +115,7 @@ fn persist_index(root: &Path, entries: &[(&str, &str)]) {
                     line: 1,
                     is_test: false,
                     is_out_of_line_module: false,
+                    path_override: None,
                 }],
                 refs: vec![],
             },

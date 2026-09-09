@@ -73,6 +73,22 @@ pub struct Def {
     /// pre-86-index-compatibility reason as `is_test`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_out_of_line_module: bool,
+    /// Round 7 (`op-u86c1-r7-out-of-line-module-resolution-follows-rust`): the string value of a
+    /// `#[path = ".."]` attribute directly governing this `Module`-kind out-of-line declaration,
+    /// when one is present - rustc's own escape hatch from the file-per-module convention, taking
+    /// precedence over it entirely. `None` when no `#[path]` attribute governs this declaration
+    /// (the overwhelmingly common case) or the definition is not an out-of-line module at all.
+    /// Captured structurally in [`crate::grounder::symbols::extract::extract`] alongside
+    /// `is_out_of_line_module`, for the SAME reason: only the declaring file's own parsed tree
+    /// carries the attribute, so it must be carried on the definition since a reused persisted
+    /// index never re-reads the source. Consumed at the events/index layer
+    /// ([`crate::grounder::symbols::events`]'s `out_of_line_test_module_files`), which resolves it
+    /// relative to the declaring file's own directory. `#[serde(default)]` for the same
+    /// pre-86-index-compatibility reason as `is_test`/`is_out_of_line_module`; omitted from the
+    /// wire form when `None` so the overwhelmingly common case stays byte-identical to before this
+    /// field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_override: Option<String>,
 }
 
 /// A reference site: the referenced name, its 1-based line, and the ENCLOSING definition the
@@ -271,6 +287,7 @@ mod tests {
                     line: 3,
                     is_test: false,
                     is_out_of_line_module: false,
+                    path_override: None,
                 }],
                 refs: vec![SymRef {
                     name: "parse".into(),
@@ -290,6 +307,7 @@ mod tests {
                     line: 1,
                     is_test: false,
                     is_out_of_line_module: false,
+                    path_override: None,
                 }],
                 refs: vec![],
             },
@@ -332,6 +350,7 @@ mod tests {
                     line: 1,
                     is_test: false,
                     is_out_of_line_module: false,
+                    path_override: None,
                 }],
                 refs: vec![SymRef {
                     name: "apply_damage".into(),
@@ -546,6 +565,7 @@ mod tests {
                     line: 7,
                     is_test: false,
                     is_out_of_line_module: false,
+                    path_override: None,
                 }],
                 refs: vec![SymRef {
                     name: "clamp".into(),

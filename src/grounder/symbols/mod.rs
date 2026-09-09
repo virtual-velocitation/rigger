@@ -287,6 +287,7 @@ mod staleness_tests {
                         line: 1,
                         is_test: false,
                         is_out_of_line_module: false,
+                        path_override: None,
                     }],
                     refs: vec![],
                 },

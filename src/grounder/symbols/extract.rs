@@ -72,6 +72,7 @@ pub fn extract(
                 // Resolved below too, from the second parsed tree (only a `Module`-kind def can
                 // ever be true here; see `Def::is_out_of_line_module`).
                 is_out_of_line_module: false,
+                path_override: None,
             });
         } else {
             ref_positions.push(tag.range.start);
@@ -144,12 +145,23 @@ pub fn extract(
     // declaration is ALSO test-attributed is already carried on `is_test` by that same pass (a
     // `mod_item`, in or out of line, is itself a `def_ranges` entry, so `test_regions` already
     // covers it); this only adds the "has no body" fact the events/index layer needs to act on it.
+    // Round 7 (`op-u86c1-r7-out-of-line-module-resolution-follows-rust`): an out-of-line
+    // declaration's own `#[path = ".."]` attribute, if any, is captured here too
+    // ([`out_of_line_path_override`]) - the SAME reason as `is_out_of_line_module` itself: only
+    // this file's own parsed tree carries the attribute, so the events/index layer that resolves
+    // it needs it carried on the definition, not re-derived from source it no longer has.
     for (d, (range, _)) in defs.iter_mut().zip(def_ranges.iter()) {
         if d.kind == Kind::Module {
-            d.is_out_of_line_module = tree
+            if let Some(n) = tree
                 .root_node()
                 .descendant_for_byte_range(range.start, range.end)
-                .is_some_and(|n| n.kind() == "mod_item" && n.child_by_field_name("body").is_none());
+            {
+                d.is_out_of_line_module =
+                    n.kind() == "mod_item" && n.child_by_field_name("body").is_none();
+                if d.is_out_of_line_module {
+                    d.path_override = out_of_line_path_override(n, source.as_bytes());
+                }
+            }
         }
     }
     Ok(FileSymbols { lang, defs, refs })
@@ -301,25 +313,28 @@ fn leading_inner_test_attribute(node: tree_sitter::Node, source: &[u8]) -> bool 
 
 /// The one walk shared by both [`preceded_by_test_attribute`] (backward over `prev_sibling`) and
 /// [`leading_inner_test_attribute`] (forward over `next_named_sibling`, from a body's first named
-/// child): starting at `first`, follow `advance` across a contiguous run of comment
-/// (`line_comment`, `block_comment`) and attribute (`attribute_item`, `inner_attribute_item`)
-/// nodes, stopping at the first node that is neither - the boundary of the stack - and answering
-/// whether ANY attribute node encountered along the way [`attribute_item_names_test`]s, not merely
-/// the nearest one, so a comment or an unrelated attribute sitting between two stacked attributes
-/// never severs the scan and never hides a `#[test]`/`#![cfg(test)]` two attributes further along.
-fn attribute_stack_names_test<'a>(
+/// child), and (round 7) [`out_of_line_path_override`]: starting at `first`, follow `advance`
+/// across a contiguous run of comment (`line_comment`, `block_comment`) and attribute
+/// (`attribute_item`, `inner_attribute_item`) nodes, stopping at the first node that is neither -
+/// the boundary of the stack. `visit` is asked of every attribute node encountered along the way
+/// (not merely the nearest one), and the LAST `Some` it returns wins - so a comment or an unrelated
+/// attribute sitting between two stacked attributes never severs the scan, and (for
+/// [`attribute_stack_names_test`]'s boolean-shaped `visit`) a match two attributes further along is
+/// never hidden by a nearer one that does not match.
+fn scan_attribute_stack<'a, T>(
     source: &[u8],
     first: Option<tree_sitter::Node<'a>>,
     advance: impl Fn(tree_sitter::Node<'a>) -> Option<tree_sitter::Node<'a>>,
-) -> bool {
-    let mut found = false;
+    mut visit: impl FnMut(tree_sitter::Node<'a>, &[u8]) -> Option<T>,
+) -> Option<T> {
+    let mut found = None;
     let mut cur = first;
     while let Some(node) = cur {
         match node.kind() {
             "line_comment" | "block_comment" => {}
             "attribute_item" | "inner_attribute_item" => {
-                if attribute_item_names_test(node, source) {
-                    found = true;
+                if let Some(v) = visit(node, source) {
+                    found = Some(v);
                 }
             }
             _ => break,
@@ -327,6 +342,55 @@ fn attribute_stack_names_test<'a>(
         cur = advance(node);
     }
     found
+}
+
+/// [`scan_attribute_stack`] applied to the "does any attribute in the stack gate on `test`"
+/// question [`preceded_by_test_attribute`]/[`leading_inner_test_attribute`] both need -
+/// [`attribute_item_names_test`] is the `visit` closure, and presence-of-a-match (`Some(())`)
+/// collapses to the boolean this and every caller actually wants.
+fn attribute_stack_names_test<'a>(
+    source: &[u8],
+    first: Option<tree_sitter::Node<'a>>,
+    advance: impl Fn(tree_sitter::Node<'a>) -> Option<tree_sitter::Node<'a>>,
+) -> bool {
+    scan_attribute_stack(source, first, advance, |n, s| {
+        attribute_item_names_test(n, s).then_some(())
+    })
+    .is_some()
+}
+
+/// Round 7 (`op-u86c1-r7-out-of-line-module-resolution-follows-rust`): the string value of a
+/// `#[path = ".."]` attribute directly governing `node` - an out-of-line `mod_item`, which (having
+/// no body of its own) can never carry an INNER `#![path]` the way a test attribute can, so this
+/// only ever walks the OUTER (`prev_sibling`) direction, unlike `node_preceded_by_test_attribute`'s
+/// two-directional check. Reuses the SAME [`scan_attribute_stack`] walk `attribute_stack_names_test`
+/// runs (never a second, hand-rolled stack scan), so a `#[cfg(test)]` and a `#[path = ".."]`
+/// stacked over the same declaration in either order are both found regardless of which is nearer.
+fn out_of_line_path_override(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    scan_attribute_stack(
+        source,
+        node.prev_sibling(),
+        |n| n.prev_sibling(),
+        path_attribute_value,
+    )
+}
+
+/// Whether a parsed `attribute_item` node is a `#[path = "value"]` key-value attribute - the ONLY
+/// shape `path` ever takes (unlike `cfg`'s parenthesized `arguments`, `path` uses the grammar's
+/// `value` field; see `tree-sitter-rust`'s own `node-types.json`, `attribute`'s `value` field) -
+/// and if so, its string literal's content with the surrounding quote characters stripped. `None`
+/// for every other attribute name, and for a `path` attribute whose value is not a plain
+/// double-quoted string literal (round-7 scope: rustc itself requires one here, so this is
+/// defensive only, never expected to fire on real source).
+fn path_attribute_value(item: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let attribute = item.named_child(0)?;
+    let name_node = attribute.named_child(0)?;
+    if name_node.utf8_text(source).unwrap_or_default() != "path" {
+        return None;
+    }
+    let value = attribute.child_by_field_name("value")?;
+    let text = value.utf8_text(source).ok()?;
+    Some(text.trim_matches('"').to_string())
 }
 
 /// Whether a parsed `attribute_item` node (an outer `#[...]` attribute) gates the tagged item's
