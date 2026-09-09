@@ -1741,7 +1741,10 @@ fn an_out_of_line_test_mod_declared_inside_a_non_directory_style_file_resolves_c
         .unwrap();
     let node_ids: BTreeSet<&str> = g.nodes.iter().map(|n| n.id.as_str()).collect();
 
-    let unrelated = g.nodes.iter().find(|n| n.id == "helper.rs::totally_unrelated_helper");
+    let unrelated = g
+        .nodes
+        .iter()
+        .find(|n| n.id == "helper.rs::totally_unrelated_helper");
     assert!(
         unrelated.map(|n| n.kind == KIND_CODE_ENTITY).unwrap_or(false),
         "an unrelated top-level file must never be swept into exclusion just because a DIFFERENT \
