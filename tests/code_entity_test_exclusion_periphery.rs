@@ -485,6 +485,132 @@ fn a_pre_round7_persisted_index_with_no_path_override_key_loads_defaulting_to_no
     );
 }
 
+// `Def.enclosing_inline_module_path` (round 9,
+// `op-u86-c1-path-attribute-contract-is-rustc-s-and-unresolvable-never-excludes`) is a THIRD
+// additive field this unit introduces, with its own independent
+// `#[serde(default, skip_serializing_if = "Option::is_none")]` contract - neither the
+// `is_out_of_line_module` trio nor the `path_override` trio above ever touches it. Mirrors both
+// exactly, one field later, for the same reason: no unit test anywhere else pins this field's own
+// byte-identity/round-trip/legacy-default behavior, and the round-9 fix that introduced it added
+// no serialized-form fixture of its own alongside its resolution fixtures.
+
+#[test]
+fn enclosing_inline_module_path_none_serializes_byte_identically_to_the_pre_round9_form() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap();
+    let mut idx = SymbolIndex::default();
+    idx.insert_file(
+        "parent.rs".into(),
+        FileSymbols {
+            lang: Lang::Rust,
+            defs: vec![Def {
+                kind: Kind::Module,
+                name: "child".into(),
+                line: 1,
+                is_test: true,
+                is_out_of_line_module: true,
+                path_override: Some("custom/dir/actual.rs".into()),
+                enclosing_inline_module_path: None,
+            }],
+            refs: vec![],
+        },
+    );
+    store::save(&idx, root).unwrap();
+    let bytes = std::fs::read_to_string(store::index_path(root)).unwrap();
+    assert!(
+        !bytes.contains("enclosing_inline_module_path"),
+        "a declaration with no enclosing inline module - enclosing_inline_module_path: None - \
+         must omit the key entirely, byte-identical to the pre-round-9 on-disk form; got:\n{bytes}"
+    );
+}
+
+#[test]
+fn enclosing_inline_module_path_some_serializes_the_key_and_round_trips() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap();
+    let mut idx = SymbolIndex::default();
+    idx.insert_file(
+        "parent.rs".into(),
+        FileSymbols {
+            lang: Lang::Rust,
+            defs: vec![Def {
+                kind: Kind::Module,
+                name: "child".into(),
+                line: 1,
+                is_test: true,
+                is_out_of_line_module: true,
+                path_override: Some("actual.rs".into()),
+                enclosing_inline_module_path: Some("outer/middle".into()),
+            }],
+            refs: vec![],
+        },
+    );
+    store::save(&idx, root).unwrap();
+    let bytes = std::fs::read_to_string(store::index_path(root)).unwrap();
+    assert!(
+        bytes.contains("enclosing_inline_module_path"),
+        "a declaration nested inside one or more inline modules - \
+         enclosing_inline_module_path: Some(..) - must serialize the key; got:\n{bytes}"
+    );
+    let loaded = store::load(root).expect("the persisted index loads");
+    let file = &loaded.files()["parent.rs"];
+    assert_eq!(
+        file.defs
+            .iter()
+            .find(|d| d.name == "child")
+            .unwrap()
+            .enclosing_inline_module_path,
+        Some("outer/middle".to_string()),
+        "enclosing_inline_module_path's exact chain string survives a save/load round-trip"
+    );
+}
+
+#[test]
+fn a_pre_round9_persisted_index_with_no_enclosing_inline_module_path_key_loads_defaulting_to_none()
+{
+    // Simulates an index written by the round-1..8 binary: is_test, is_out_of_line_module and
+    // path_override are already on the wire, but enclosing_inline_module_path (round 9) is not -
+    // the narrower, more-realistic back-compat gap than a full pre-86 fixture missing all four
+    // keys.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap();
+    let path = store::index_path(root);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let legacy = r#"{
+  "files": {
+    "legacy_parent.rs": {
+      "lang": "Rust",
+      "defs": [
+        { "kind": "Module", "name": "legacy_child", "line": 1, "is_test": true, "is_out_of_line_module": true, "path_override": "custom/actual.rs" }
+      ],
+      "refs": []
+    }
+  }
+}"#;
+    std::fs::write(&path, legacy).unwrap();
+
+    let loaded = store::load(root).expect(
+        "a round-1..8 index (is_test/is_out_of_line_module/path_override present, \
+         enclosing_inline_module_path absent) must load",
+    );
+    let file = loaded
+        .files()
+        .get("legacy_parent.rs")
+        .expect("the legacy file entry is present");
+    assert_eq!(
+        file.defs[0].path_override,
+        Some("custom/actual.rs".to_string()),
+        "the pre-existing path_override key still loads its value, unaffected by the new \
+         field's absence"
+    );
+    assert_eq!(
+        file.defs[0].enclosing_inline_module_path, None,
+        "a definition persisted before enclosing_inline_module_path existed defaults to None, \
+         not an error and not some stale guess - never manufacturing a false enclosing-module \
+         chain for old data"
+    );
+}
+
 // ---- the exclusion rule's Done-when, end to end via the public API (symbols lane only) ----
 
 /// A fixture independent of the implementer's own in-crate one: a product file defining
@@ -2876,6 +3002,126 @@ fn a_path_attribute_override_nested_inside_an_inline_module_resolves_under_the_d
     );
 }
 
+/// sdet-author gap in the round-9 fix's own coverage: every inline-module fixture above nests the
+/// override exactly ONE level deep (a single enclosing `mod outer { .. }`), so
+/// `enclosing_inline_module_path`'s walk in `extract.rs` (push each enclosing inline module name
+/// while walking outward, then `chain.reverse()` at the end to read outermost-first) is never
+/// actually exercised on a chain of length 2+ - reversing a one-element vector is a no-op, so a
+/// single-level fixture cannot distinguish a correct outermost-first walk from an INNERMOST-first
+/// one (i.e. a missing or backwards `reverse()`). This mirrors round 8's own
+/// `sdet-u86c1-r8-chained-dotdot-gap` finding exactly: a fix proven only on a depth-1 case can
+/// hide a single-occurrence bug that a depth-2 case exposes. Verified against real rustc before
+/// writing this fixture (throwaway probe crate, not committed): `mod outer { mod middle { #[path
+/// = "foo.rs"] mod inner; } }` in a leaf file `src/parent.rs` resolves `foo.rs` against
+/// `src/parent/outer/middle/foo.rs` - `outer` THEN `middle`, matching the nesting order in
+/// source, never `middle` then `outer`. This fixture proves both halves at once, mirroring the
+/// single-level fixture's own technique: the real target sits at the CORRECT outermost-first
+/// path (`src/parent/outer/middle/actual.rs`) and must resolve and exclude, while a decoy at the
+/// REVERSED (innermost-first) path (`src/parent/middle/outer/actual.rs`) a backwards `reverse()`
+/// would compute instead must stay graphed as ordinary product code.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_path_attribute_override_nested_inside_chained_inline_modules_resolves_under_every_enclosing_modules_directory_in_outermost_first_order(
+) {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::{Projection, KIND_CODE_ENTITY};
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("src")).unwrap();
+    std::fs::write(
+        root.path().join("src").join("parent.rs"),
+        "pub fn parent_product() {}\n\nmod outer {\n    mod middle {\n        #[cfg(test)]\n        #[path = \"actual.rs\"]\n        mod helper;\n    }\n}\n",
+    )
+    .unwrap();
+    // The CORRECT target: outermost-first, `outer` THEN `middle`, appended to the declaring
+    // file's own module directory.
+    std::fs::create_dir_all(
+        root.path()
+            .join("src")
+            .join("parent")
+            .join("outer")
+            .join("middle"),
+    )
+    .unwrap();
+    std::fs::write(
+        root.path()
+            .join("src")
+            .join("parent")
+            .join("outer")
+            .join("middle")
+            .join("actual.rs"),
+        "pub fn overridden_test_helper() {}\n",
+    )
+    .unwrap();
+    // The WRONG target a backwards (innermost-first) chain would compute instead: `middle` THEN
+    // `outer`. Real, unrelated product code - must stay graphed.
+    std::fs::create_dir_all(
+        root.path()
+            .join("src")
+            .join("parent")
+            .join("middle")
+            .join("outer"),
+    )
+    .unwrap();
+    std::fs::write(
+        root.path()
+            .join("src")
+            .join("parent")
+            .join("middle")
+            .join("outer")
+            .join("actual.rs"),
+        "pub fn reversed_order_decoy_product() {}\n",
+    )
+    .unwrap();
+
+    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
+    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.iter_mut().enumerate() {
+        event.position = zero_based as u64 + 1;
+        p.apply(event).unwrap();
+    }
+
+    let g = p
+        .subgraph(
+            &[
+                "src/parent.rs".to_string(),
+                "src/parent/outer/middle/actual.rs".to_string(),
+                "src/parent/middle/outer/actual.rs".to_string(),
+            ],
+            2,
+        )
+        .unwrap();
+    let node_ids: std::collections::BTreeSet<&str> =
+        g.nodes.iter().map(|n| n.id.as_str()).collect();
+
+    assert!(
+        node_ids.contains("src/parent.rs::parent_product"),
+        "the declaring file's own product code stays graphed; nodes: {node_ids:?}"
+    );
+    let has_real_target = g.nodes.iter().any(|n| {
+        n.kind == KIND_CODE_ENTITY
+            && n.id == "src/parent/outer/middle/actual.rs::overridden_test_helper"
+    });
+    assert!(
+        !has_real_target,
+        "a #[path] override nested inside TWO enclosing inline modules must resolve outermost- \
+         first (outer/middle), not silently fail to match and leave the real test target graphed \
+         as product; nodes: {node_ids:?}"
+    );
+    let has_reversed_decoy = g.nodes.iter().any(|n| {
+        n.kind == KIND_CODE_ENTITY
+            && n.id == "src/parent/middle/outer/actual.rs::reversed_order_decoy_product"
+    });
+    assert!(
+        has_reversed_decoy,
+        "the REVERSED (innermost-first, middle/outer) location a backwards chain walk would \
+         compute instead must stay graphed as ordinary product code, never wrongly excluded - \
+         proving the chain is built outermost-first, not merely that SOME two-component chain \
+         resolves; nodes: {node_ids:?}"
+    );
+}
+
 /// operator ruling `op-u86-c1-path-attribute-contract-is-rustc-s-and-unresolvable-never-excludes`
 /// item 2 (NORMALIZATION): an ABSOLUTE `#[path]` value is UNRESOLVABLE, never joined onto the
 /// declaring directory. Verified against real rustc before writing this fixture: `#[path =
@@ -2938,6 +3184,146 @@ fn a_path_attribute_override_that_is_an_absolute_path_does_not_silently_collide_
         "an ABSOLUTE #[path] override must resolve to nothing (rustc uses it as an OS-absolute \
          path directly, never relative to any project directory), not silently normalize its \
          leading `/` away and collide with an unrelated real root-level file; nodes: {node_ids:?}"
+    );
+}
+
+/// operator ruling `op-u86-c1-path-attribute-contract-is-rustc-s-and-unresolvable-never-excludes`
+/// item 2 (NORMALIZATION): a `#[path]` value carrying a URI SCHEME is UNRESOLVABLE, the same as an
+/// absolute path - `path_override_names_an_unresolvable_shape`'s `p.contains("://")` branch. The
+/// round-9 fix's own fixture for this function only exercises the leading-`/` branch (the
+/// absolute-path fixture above); the `://` branch is otherwise reached by no unit test and no
+/// other periphery fixture (verified: no fixture anywhere in this file passes a `://`-bearing
+/// override), so this proves it directly rather than resting on the leading-`/` branch's coverage
+/// alone.
+///
+/// A genuine collision, constructed the same way the over-count-`..`/absolute-path fixtures
+/// above construct theirs: with the guard REMOVED, a root-level declaring file's empty base
+/// directory lets `#[path = "https://actual.rs"]` join to the raw string unchanged, and
+/// `normalize_logical_path` (which only ever drops a `""`/`"."` segment, never a `:`-bearing one)
+/// collapses the doubled slash after the scheme to a single one - `"https://actual.rs".split('/')`
+/// yields `["https:", "", "actual.rs"]`, the middle empty segment drops, leaving the syntactically
+/// ordinary-looking relative path `"https:/actual.rs"`. Colons ARE legal in a Linux directory
+/// name, so this fixture plants a REAL file at exactly that computed key (a directory literally
+/// named `https:` containing `actual.rs`) to prove the guard - not a lucky absence of any real
+/// file at that path - is what keeps it unexcluded.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_path_attribute_override_naming_a_uri_scheme_does_not_silently_collide_with_an_unrelated_real_file(
+) {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::{Projection, KIND_CODE_ENTITY};
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("parent.rs"),
+        "pub fn parent_product() {}\n\n#[cfg(test)]\n#[path = \"https://actual.rs\"]\nmod helper;\n",
+    )
+    .unwrap();
+    // The unrelated real file sitting at exactly the key the guard's absence would compute:
+    // a directory literally named `https:` (colons are legal in Linux filenames) holding
+    // `actual.rs`.
+    std::fs::create_dir(root.path().join("https:")).unwrap();
+    std::fs::write(
+        root.path().join("https:").join("actual.rs"),
+        "pub fn totally_unrelated_product() {}\n",
+    )
+    .unwrap();
+
+    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
+    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.iter_mut().enumerate() {
+        event.position = zero_based as u64 + 1;
+        p.apply(event).unwrap();
+    }
+
+    let g = p
+        .subgraph(
+            &["parent.rs".to_string(), "https:/actual.rs".to_string()],
+            2,
+        )
+        .unwrap();
+    let node_ids: std::collections::BTreeSet<&str> =
+        g.nodes.iter().map(|n| n.id.as_str()).collect();
+
+    assert!(
+        node_ids.contains("parent.rs::parent_product"),
+        "the declaring file's own product code stays graphed; nodes: {node_ids:?}"
+    );
+    let has_unrelated_product = g.nodes.iter().any(|n| {
+        n.kind == KIND_CODE_ENTITY && n.id == "https:/actual.rs::totally_unrelated_product"
+    });
+    assert!(
+        has_unrelated_product,
+        "a URI-SCHEME #[path] override must resolve to nothing, not silently normalize to a \
+         plausible relative path and collide with an unrelated real file sitting at that exact \
+         key; nodes: {node_ids:?}"
+    );
+}
+
+/// operator ruling `op-u86-c1-path-attribute-contract-is-rustc-s-and-unresolvable-never-excludes`
+/// item 2 (NORMALIZATION): a `#[path]` value naming a WINDOWS DRIVE LETTER is UNRESOLVABLE, the
+/// same as an absolute path or a URI scheme - `path_override_names_an_unresolvable_shape`'s
+/// `bytes[0].is_ascii_alphabetic() && bytes[1] == b':'` branch. Like the URI-scheme branch above,
+/// reached by no unit test and no other periphery fixture (verified: no fixture anywhere in this
+/// file passes a drive-letter-shaped override).
+///
+/// Constructed the same way: with the guard REMOVED, a root-level declaring file's empty base
+/// lets `#[path = "C:/actual.rs"]` join to the raw string unchanged, and `normalize_logical_path`
+/// has no `""`/`"."` segment to drop here at all (`"C:/actual.rs".split('/')` yields exactly
+/// `["C:", "actual.rs"]`, both real, non-empty segments) - the resolved key comes out byte-for-byte
+/// identical to the raw override, `"C:/actual.rs"`. This fixture plants a real file at exactly
+/// that path (a directory literally named `C:` holding `actual.rs`) to prove the guard, not a
+/// lucky absence of any file there, is what keeps it unexcluded.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_path_attribute_override_naming_a_windows_drive_letter_does_not_silently_collide_with_an_unrelated_real_file(
+) {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::{Projection, KIND_CODE_ENTITY};
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("parent.rs"),
+        "pub fn parent_product() {}\n\n#[cfg(test)]\n#[path = \"C:/actual.rs\"]\nmod helper;\n",
+    )
+    .unwrap();
+    // The unrelated real file sitting at exactly the key the guard's absence would compute:
+    // a directory literally named `C:` holding `actual.rs`.
+    std::fs::create_dir(root.path().join("C:")).unwrap();
+    std::fs::write(
+        root.path().join("C:").join("actual.rs"),
+        "pub fn totally_unrelated_product() {}\n",
+    )
+    .unwrap();
+
+    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
+    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.iter_mut().enumerate() {
+        event.position = zero_based as u64 + 1;
+        p.apply(event).unwrap();
+    }
+
+    let g = p
+        .subgraph(&["parent.rs".to_string(), "C:/actual.rs".to_string()], 2)
+        .unwrap();
+    let node_ids: std::collections::BTreeSet<&str> =
+        g.nodes.iter().map(|n| n.id.as_str()).collect();
+
+    assert!(
+        node_ids.contains("parent.rs::parent_product"),
+        "the declaring file's own product code stays graphed; nodes: {node_ids:?}"
+    );
+    let has_unrelated_product = g
+        .nodes
+        .iter()
+        .any(|n| n.kind == KIND_CODE_ENTITY && n.id == "C:/actual.rs::totally_unrelated_product");
+    assert!(
+        has_unrelated_product,
+        "a WINDOWS-DRIVE-LETTER #[path] override must resolve to nothing, not silently pass \
+         through normalization unchanged and collide with an unrelated real file sitting at \
+         that exact key; nodes: {node_ids:?}"
     );
 }
 
