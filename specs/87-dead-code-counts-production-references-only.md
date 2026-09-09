@@ -10,9 +10,13 @@ functions in `src/`, counting references from production code only, found 89 wit
 production references, every one of them referenced from tests alone (e.g.
 `src/grounder/symbols/events.rs:17 index_events`, 21 test references; the `SpawnRequest`
 builders `with_title`/`with_reviews`/`with_model`/`with_blast_radius` in `src/spawn.rs`;
-`src/worktree.rs` `expect_merged` and `is_dirty`; most of `src/blast_radius_eval.rs`). That pass
-is itself approximate (its `#[cfg(test)]` stripping over-counts `src/dash.rs`), which is why the
-precise instrument belongs in the audit's own generator. Operator rule: a dead-code sweep counts
+`src/worktree.rs` `expect_merged` and `is_dirty`). That pass is itself approximate in both
+directions: its `#[cfg(test)]` stripping over-counts `src/dash.rs`, and it misclassified
+`src/blast_radius_eval.rs` and `src/eventstore/contract.rs` as production when both are
+OUT-OF-LINE test modules (`src/lib.rs` declares `#[cfg(test)] mod blast_radius_eval;`,
+`src/eventstore/mod.rs` declares `#[cfg(test)] mod contract;`) - the module file carries no
+attribute of its own, so a per-file scan cannot see it. That is why the precise instrument
+belongs in the audit's own generator. Operator rule: a dead-code sweep counts
 PRODUCTION references only, over the whole crate, definitions excluded; a function referenced
 only from tests is dead, and its tests are dead with it.
 
@@ -33,7 +37,11 @@ below, run on the tree stage 1 leaves behind.
 
 INSTRUMENT (stage 2), decided: extend `tests/simplification_audit.rs`'s scanner (which already classifies
 every fn frame as `is_test` via enclosing `#[cfg(test)]` mods and `#[test]` attributes) to
-cover the whole `src/` tree, and add a reference pass that, for each production (`is_test:
+cover the whole `src/` tree, with `is_test` made FILE-AWARE: a file declared by a parent's
+`#[cfg(test)] mod name;` (resolving `name.rs`, `name/mod.rs`, or a `#[path = ".."]` target) is
+test code in full, and so is everything nested under it; `tests/` files likewise. The same rule
+governs spec 86's graph exclusion (op-u86c1-r5-close-every-remaining-test-shape), so the two
+instruments agree on what a test is. Then add a reference pass that, for each production (`is_test:
 false`) fn, counts references to its name from PRODUCTION code only: every `src/` file with its
 `is_test` spans removed, and no `tests/` file at all. A reference is the identifier used as
 code - followed by `(`, `::`, `.`, `<`, or used as a path segment - not a bare word inside a
