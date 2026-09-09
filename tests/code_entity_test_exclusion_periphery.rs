@@ -55,6 +55,16 @@
 //!    `#[...]` shape check, and severs the upward scan before it ever reaches `#[test]` - the
 //!    tagged item leaks into the graph as ordinary product code, the same failure direction as
 //!    the round-2 finding this file already guards above.
+//!  - the round-4 recurrence (review REJECT `adj-u86c1-verdict-reject` round 4, finding
+//!    `adv-u86c1-r4-inner-cfg-test-attribute-not-recognized`), independently, through the SAME
+//!    public API: the INNER-attribute form of a test module, `mod tests { #![cfg(test)] .. }`
+//!    (the attribute the FIRST node inside the mod's own body, rather than a sibling before the
+//!    `mod` keyword), must exclude the module and everything nested inside it exactly as the
+//!    already-covered OUTER-attribute form `#[cfg(test)] mod tests { .. }` does. The
+//!    implementer's own `extract.rs` unit test
+//!    (`an_inner_cfg_test_attribute_marks_its_enclosing_module_and_the_module_marks_its_children`)
+//!    proves this at the `FileSymbols` level; this test proves the SAME contract at the
+//!    periphery, end to end through `build_index` -> `index_events` -> `Projector`.
 
 use rigger::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef, SymbolIndex};
 use rigger::grounder::symbols::store;
@@ -767,5 +777,76 @@ fn a_trailing_comma_in_a_wrapped_cfg_predicate_still_excludes_the_module_through
          rustfmt-style trailing comma - must still gate the module it decorates, and everything \
          nested inside it, out of the graph; a mis-handled trailing comma (a spurious empty final \
          group) would silently un-exclude this instead; leaked: {leaked:?}"
+    );
+}
+
+/// The round-4 mandated regression (review REJECT `adj-u86c1-verdict-reject` round 4, finding
+/// `adv-u86c1-r4-inner-cfg-test-attribute-not-recognized`), independently, through the SAME
+/// public API: the INNER-attribute form `mod tests { #![cfg(test)] .. }` - the attribute is the
+/// FIRST node inside the mod's own body rather than a sibling preceding the `mod` keyword - must
+/// exclude the mod itself, an unattributed helper sitting alongside the attribute, AND a
+/// `#[test]` function nested inside, exactly as the already-covered OUTER-attribute form does.
+#[cfg(feature = "symbols")]
+const INNER_CFG_TEST_ATTRIBUTE_SRC: &str = "\
+fn product() {}
+
+mod tests {
+    #![cfg(test)]
+
+    fn helper() {
+        product();
+    }
+
+    #[test]
+    fn it_works() {
+        helper();
+    }
+}
+";
+
+#[cfg(feature = "symbols")]
+#[test]
+fn an_inner_cfg_test_attribute_excludes_its_module_through_the_public_api() {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::{Projection, KIND_CODE_ENTITY};
+    use std::collections::BTreeSet;
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("innerattr.rs"),
+        INNER_CFG_TEST_ATTRIBUTE_SRC,
+    )
+    .unwrap();
+
+    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
+    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.iter_mut().enumerate() {
+        event.position = zero_based as u64 + 1;
+        p.apply(event).unwrap();
+    }
+
+    let g = p.subgraph(&["innerattr.rs".to_string()], 3).unwrap();
+    let node_ids: BTreeSet<&str> = g.nodes.iter().map(|n| n.id.as_str()).collect();
+
+    let product = g
+        .nodes
+        .iter()
+        .find(|n| n.id == "innerattr.rs::product")
+        .expect("product code stays graphed, unaffected by the inner-attribute mod elsewhere");
+    assert_eq!(product.kind, KIND_CODE_ENTITY);
+
+    let must_be_absent: BTreeSet<&str> = BTreeSet::from([
+        "innerattr.rs::tests",
+        "innerattr.rs::helper",
+        "innerattr.rs::it_works",
+    ]);
+    let leaked: BTreeSet<&str> = node_ids.intersection(&must_be_absent).copied().collect();
+    assert!(
+        leaked.is_empty(),
+        "a mod gated by the INNER #![cfg(test)] attribute form (the attribute as the first node \
+         inside the mod's own body, not a sibling preceding it) must exclude the mod itself, an \
+         unattributed helper beside the attribute, and a nested #[test] function, exactly as the \
+         outer #[cfg(test)] mod form already does; leaked: {leaked:?}"
     );
 }
