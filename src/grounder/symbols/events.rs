@@ -217,6 +217,31 @@ fn dir_of(path: &str) -> &str {
     path.rfind('/').map(|i| &path[..i]).unwrap_or("")
 }
 
+/// Resolves `.` and `..` components, at ANY position, in a `/`-separated LOGICAL path string - the
+/// ONE place [`resolve_out_of_line_target`]'s `#[path]`-override branch normalizes a raw attribute
+/// value joined onto a directory before matching it against [`SymbolIndex::files`]'s keys. Those
+/// keys are always the project's own already-clean relative paths (never containing a literal `.`
+/// or `..` segment), so `std::fs::canonicalize` does not apply here - there is no real filesystem
+/// to resolve against at every intermediate step, only a string key to compute, matching rustc's
+/// own purely lexical handling of a `#[path]` value. A `.` segment is dropped; a `..` segment pops
+/// the most recently pushed real segment off the stack (or is itself dropped, harmlessly, if the
+/// stack is already empty - an override that walks back above the project root normalizes to a
+/// string no real key can match, which is the correct "unresolvable" outcome the caller's
+/// `contains_key` check already handles).
+fn normalize_logical_path(path: &str) -> String {
+    let mut stack: Vec<&str> = Vec::new();
+    for segment in path.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                stack.pop();
+            }
+            real => stack.push(real),
+        }
+    }
+    stack.join("/")
+}
+
 /// Round 7 (`op-u86c1-r7-out-of-line-module-resolution-follows-rust`): the MODULE DIRECTORY a
 /// declaring file `path`'s own out-of-line children resolve under, per Rust's real file-per-module
 /// convention - never simply `path`'s own directory (the round-6 bug,
@@ -248,18 +273,26 @@ fn module_dir(path: &str) -> String {
 ///    relative to the DECLARING file's own directory - never [`module_dir`], since `#[path]` is
 ///    rustc's own escape hatch FROM the file-per-module convention and is unconditionally
 ///    directory-of-file-relative regardless of whether the declaring file is itself a
-///    directory-style module.
+///    directory-style module. The joined `<declaring_dir>/<override>` string is then
+///    [`normalize_logical_path`]'d (round 8,
+///    `sdet-u86c1-r7-path-override-dotdot-unresolved` /
+///    `adv-u86c1-r7-dot-slash-override-also-unresolved-not-just-dotdot`): a raw `#[path]` value
+///    may itself contain `.` or `..` segments at any position (rustc resolves those purely
+///    lexically too), and `idx.files()`'s keys are always already-clean, so an unnormalized join
+///    would silently fail every `contains_key` lookup for such a value and leave its target
+///    unexcluded.
 /// 2. Otherwise, the flat sibling `<module_dir>/<name>.rs`.
 /// 3. Otherwise, the nested directory-module form `<module_dir>/<name>/mod.rs`.
 /// 4. Otherwise `None` - a stale or unresolvable declaration excludes nothing.
 fn resolve_out_of_line_target(idx: &SymbolIndex, declaring_path: &str, d: &Def) -> Option<String> {
     if let Some(p) = &d.path_override {
         let declaring_dir = dir_of(declaring_path);
-        let resolved = if declaring_dir.is_empty() {
+        let joined = if declaring_dir.is_empty() {
             p.clone()
         } else {
             format!("{declaring_dir}/{p}")
         };
+        let resolved = normalize_logical_path(&joined);
         return idx.files().contains_key(&resolved).then_some(resolved);
     }
     let dir = module_dir(declaring_path);
