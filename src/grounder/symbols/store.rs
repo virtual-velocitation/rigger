@@ -215,6 +215,7 @@ mod tests {
                         line: 2,
                         is_test: false,
                         is_out_of_line_module: false,
+                        path_override: None,
                     },
                     Def {
                         kind: Kind::Function,
@@ -222,6 +223,7 @@ mod tests {
                         line: 1,
                         is_test: false,
                         is_out_of_line_module: false,
+                        path_override: None,
                     },
                 ],
                 refs: vec![],

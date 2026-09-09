@@ -21,9 +21,18 @@ files lens no longer lists test files as subjects; the concepts pass no longer d
 from test bodies (a concept's evidence is product code, docs and decisions).
 
 MIGRATION, decided: existing test-entity nodes are retired by the fold's supersession
-mechanism on the next ingest, not by a store wipe; `rigger validate` reports the count of
-retired test entities once so the operator sees the graph shrink deliberately. The derived
-index dedup handles the re-record.
+mechanism on the next ingest, not by a store wipe. Supersession is keyed on a file's FRESH
+BOUNDARY, and a file that now extracts to NOTHING (every entity it held was test code, the
+central case: a `tests/*.rs` file) still stamps one: the ingest emits that file's boundary with
+an empty entity set instead of skipping the file. Today `src/grounder/symbols/events.rs`
+drops a file that yields no entities from the batch list, and the fold's `supersede_file_edges`
+runs only on a fresh boundary, so a non-empty-to-empty file never retires its old nodes; both
+change so that empty-after-exclusion is a first-class boundary, riding the existing batch
+record with zero entities (no new event type), and the fold retires every entity the old
+boundary held. This is the ONE retirement mechanism; the community fold's orphan handling is
+not a substitute and is not touched. `rigger validate` reports the count of retired test
+entities once so the operator sees the graph shrink deliberately. The derived index dedup
+handles the re-record.
 
 WHERE PROOF RENDERS, decided: the card gains a PROOF row - "proven by N tests" with the list on
 expand - and an explicit `no test reaches this entity` state (amber, not silent), since absence
@@ -34,7 +43,13 @@ CONSTRAINTS WALK: a product function defined inside a `#[cfg(test)]` module - ex
 rule; a test helper in `tests/common/` referenced only by tests - excluded (no product caller);
 doc-tests in `///` examples - not entities today, unchanged; a `mod tests` inside `src/*.rs` -
 excluded by the `cfg(test)` rule, and its references to siblings count as proof; the audit's
-scanner (spec 85) reads tests directly from the tree and is unaffected by graph contents.
+scanner (spec 85) reads tests directly from the tree and is unaffected by graph contents; a
+design doc's inline-code mention of a `tests/`-rooted path, or of a name defined only inside a
+`#[cfg(test)]` module or a `#[test]` function - excluded from the design-intent link pass too,
+by the SAME exclusion rule, owned by criterion 1 (not a second criterion): no placeholder node
+for test-scoped code ever enters the intent layer this way either, which is what makes the
+concepts-pass corollary in the INGESTION paragraph above hold - it needs no criterion of its
+own because criterion 1's fixture-proven exclusion is the one rule both extraction passes obey.
 
 ## Global constraints
 

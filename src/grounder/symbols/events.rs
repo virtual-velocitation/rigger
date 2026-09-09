@@ -196,50 +196,143 @@ fn set_fresh(e: &mut Event) {
 /// (every segment except the file's own name), so `tests/foo.rs` and `crate/tests/bar.rs` are
 /// excluded while `src/testsuite.rs` (a product file that merely reads close to "tests") is not -
 /// the file's own component is never compared against the exact segment `"tests"`.
-fn is_under_tests_dir(file: &str) -> bool {
+///
+/// `pub(crate)`, not `fn`: the CONSTRAINTS WALK amendment to spec 86 assigns a second consumer to
+/// this SAME rule - a design doc's inline-code mention of a `tests/`-rooted path is excluded from
+/// the design-intent link pass too, "by the SAME exclusion rule... it needs no criterion of its
+/// own because criterion 1's fixture-proven exclusion is the one rule both extraction passes
+/// obey." [`crate::grounder::design::extract::doc_links`] reuses this exact function rather than
+/// re-deriving the directory-component check a second time.
+pub(crate) fn is_under_tests_dir(file: &str) -> bool {
     let mut segments: Vec<&str> = file.split('/').collect();
     segments.pop(); // the file's own name is never a directory component
     segments.contains(&"tests")
 }
 
-/// Round 6 (`op-u86c1-r5-close-every-remaining-test-shape` item 2): the set of file paths in `idx`
-/// that are declared, OUT OF LINE, by a `#[cfg(test)] mod name;` item somewhere in another file -
-/// Rust's out-of-tree module form, distinct from an INLINE `#[cfg(test)] mod name { .. }` (which
-/// already excludes its own contents by containment, `Def::is_test`/`extract::test_regions`,
-/// needing no cross-file lookup at all). A per-file extraction pass can structurally never see this
-/// on the DECLARED file's own side - the attribute governing it lives in the DECLARING file's tree
+/// The directory component of a project-relative `path` (every segment except the file's own
+/// name) - the ONE place this repo splits a path this way, shared by [`module_dir`] and
+/// [`resolve_out_of_line_target`]'s `#[path]`-override branch, so the split-off-the-last-`/`
+/// idiom exists exactly once rather than twice with the identical shape.
+fn dir_of(path: &str) -> &str {
+    path.rfind('/').map(|i| &path[..i]).unwrap_or("")
+}
+
+/// Round 7 (`op-u86c1-r7-out-of-line-module-resolution-follows-rust`): the MODULE DIRECTORY a
+/// declaring file `path`'s own out-of-line children resolve under, per Rust's real file-per-module
+/// convention - never simply `path`'s own directory (the round-6 bug,
+/// `sdet-u86c1-r6-out-of-line-mod-resolution-uses-declaring-files-directory-not-rusts-own-module-
+/// nesting-path`). A directory-style file (`mod.rs`, `lib.rs`, `main.rs` - a crate root or a
+/// directory module's own body-carrying file) owns its OWN directory: its `mod name;` children are
+/// same-directory siblings. Every OTHER file is itself a leaf submodule and, per Rust's convention,
+/// puts ITS OWN children in a NEW subdirectory named after its own stem (`foo.rs` -> `foo/`) -
+/// never a same-directory sibling.
+fn module_dir(path: &str) -> String {
+    let dir = dir_of(path);
+    let base = path.rsplit('/').next().unwrap_or(path);
+    if base == "mod.rs" || base == "lib.rs" || base == "main.rs" {
+        dir.to_string()
+    } else {
+        let stem = base.strip_suffix(".rs").unwrap_or(base);
+        if dir.is_empty() {
+            stem.to_string()
+        } else {
+            format!("{dir}/{stem}")
+        }
+    }
+}
+
+/// Round 7: the single file `d.name` names from `declaring_path`, resolved EXACTLY as rustc
+/// resolves it, matched against paths `idx` ACTUALLY holds (never assumed) at every step:
+/// 1. A `#[path = ".."]` override on the declaration ([`Def::path_override`], captured
+///    structurally at extraction time) takes precedence over the convention entirely, resolved
+///    relative to the DECLARING file's own directory - never [`module_dir`], since `#[path]` is
+///    rustc's own escape hatch FROM the file-per-module convention and is unconditionally
+///    directory-of-file-relative regardless of whether the declaring file is itself a
+///    directory-style module.
+/// 2. Otherwise, the flat sibling `<module_dir>/<name>.rs`.
+/// 3. Otherwise, the nested directory-module form `<module_dir>/<name>/mod.rs`.
+/// 4. Otherwise `None` - a stale or unresolvable declaration excludes nothing.
+fn resolve_out_of_line_target(idx: &SymbolIndex, declaring_path: &str, d: &Def) -> Option<String> {
+    if let Some(p) = &d.path_override {
+        let declaring_dir = dir_of(declaring_path);
+        let resolved = if declaring_dir.is_empty() {
+            p.clone()
+        } else {
+            format!("{declaring_dir}/{p}")
+        };
+        return idx.files().contains_key(&resolved).then_some(resolved);
+    }
+    let dir = module_dir(declaring_path);
+    let flat = if dir.is_empty() {
+        format!("{}.rs", d.name)
+    } else {
+        format!("{dir}/{}.rs", d.name)
+    };
+    if idx.files().contains_key(&flat) {
+        return Some(flat);
+    }
+    let nested = if dir.is_empty() {
+        format!("{}/mod.rs", d.name)
+    } else {
+        format!("{dir}/{}/mod.rs", d.name)
+    };
+    idx.files().contains_key(&nested).then_some(nested)
+}
+
+/// Round 6 (`op-u86c1-r5-close-every-remaining-test-shape` item 2), resolution fixed in round 7
+/// (`op-u86c1-r7-out-of-line-module-resolution-follows-rust`): the set of file paths in `idx` that
+/// are declared, OUT OF LINE, by a `#[cfg(test)] mod name;` item somewhere in another file - Rust's
+/// out-of-tree module form, distinct from an INLINE `#[cfg(test)] mod name { .. }` (which already
+/// excludes its own contents by containment, `Def::is_test`/`extract::test_regions`, needing no
+/// cross-file lookup at all). A per-file extraction pass can structurally never see this on the
+/// DECLARED file's own side - the attribute governing it lives in the DECLARING file's tree
 /// entirely (`Def::is_out_of_line_module`'s doc) - so this resolves it here, at the events/index
 /// layer, the ONE place every file's path in the project is already known together.
 ///
-/// Resolution mirrors Rust's own file-per-module convention: a flat sibling `<dir>/<name>.rs` in
-/// the declaring file's OWN directory, matched against paths `idx` ACTUALLY holds (never assumed),
-/// so a name that merely looks like a module path but names no real file resolves to nothing. This
-/// is the shape this repo's own two round-5-disclosed live instances take -
-/// `src/eventstore/mod.rs` -> `src/eventstore/contract.rs`, `src/lib.rs` ->
-/// `src/blast_radius_eval.rs` - and the one this round's periphery test pins; the mandate
-/// (`op-u86c1-r5-close-every-remaining-test-shape` item 2) additionally names a nested
-/// `<dir>/<name>/mod.rs` directory-module form and a `#[path = ".."]` override, NEITHER of which
-/// has a live occurrence or a failing test pinning it today (`dec-u86c1-r6-path-and-nested-mod-not-
-/// yet-covered`) - left for a future round with a concrete fixture, rather than adding an untested
-/// branch here now.
+/// Two passes over [`resolve_out_of_line_target`]:
+/// 1. SEED: every `Module`-kind definition that is itself out-of-line AND directly test-attributed
+///    (`is_test`, set by the SAME attribute stack `extract::test_regions` reads - a `#[cfg(test)]`
+///    sibling of the `mod name;` item) contributes its resolved target.
+/// 2. CLOSURE: "Everything under a resolved test module file (its own nested out-of-line children,
+///    resolved recursively by the same rule) is test code." A file pulled in by step 1 is now
+///    wholly test code, so EVERY out-of-line module IT declares is excluded too, REGARDLESS of
+///    whether that declaration line carries its own `#[cfg(test)]` - there is nothing left for it
+///    to gate, since the whole file it lives in is already test-only. A worklist walks newly
+///    excluded files to a fixed point; `excluded.insert` returning `false` for an already-seen
+///    target both terminates the closure and guards against a cycle looping forever.
 fn out_of_line_test_module_files(idx: &SymbolIndex) -> BTreeSet<String> {
     let mut excluded = BTreeSet::new();
+    let mut worklist: Vec<String> = Vec::new();
+
     for (path, fs) in idx.files() {
-        let dir = path.rfind('/').map(|i| &path[..i]).unwrap_or("");
         for d in &fs.defs {
             if d.kind != Kind::Module || !d.is_out_of_line_module || !d.is_test {
                 continue;
             }
-            let flat = if dir.is_empty() {
-                format!("{}.rs", d.name)
-            } else {
-                format!("{dir}/{}.rs", d.name)
-            };
-            if idx.files().contains_key(&flat) {
-                excluded.insert(flat);
+            if let Some(target) = resolve_out_of_line_target(idx, path, d) {
+                if excluded.insert(target.clone()) {
+                    worklist.push(target);
+                }
             }
         }
     }
+
+    while let Some(path) = worklist.pop() {
+        let Some(fs) = idx.files().get(&path) else {
+            continue;
+        };
+        for d in &fs.defs {
+            if d.kind != Kind::Module || !d.is_out_of_line_module {
+                continue;
+            }
+            if let Some(target) = resolve_out_of_line_target(idx, &path, d) {
+                if excluded.insert(target.clone()) {
+                    worklist.push(target);
+                }
+            }
+        }
+    }
+
     excluded
 }
 
@@ -384,6 +477,7 @@ mod tests {
                     line: 9,
                     is_test: false,
                     is_out_of_line_module: false,
+                    path_override: None,
                 },
                 Def {
                     kind: Kind::Function,
@@ -391,6 +485,7 @@ mod tests {
                     line: 3,
                     is_test: false,
                     is_out_of_line_module: false,
+                    path_override: None,
                 },
             ],
             refs: vec![SymRef {
@@ -489,6 +584,7 @@ mod tests {
                 line: 1,
                 is_test: false,
                 is_out_of_line_module: false,
+                path_override: None,
             }],
             refs: vec![
                 // A call to `G` from inside the body of `F`: attributed to its enclosing caller.
@@ -577,6 +673,7 @@ mod tests {
                 line: 1,
                 is_test: false,
                 is_out_of_line_module: false,
+                path_override: None,
             }],
             refs: vec![SymRef {
                 name: "product_fn".into(),
@@ -631,6 +728,7 @@ mod tests {
                     line: 5,
                     is_test: true,
                     is_out_of_line_module: false,
+                    path_override: None,
                 },
                 Def {
                     kind: Kind::Function,
@@ -638,6 +736,7 @@ mod tests {
                     line: 1,
                     is_test: false,
                     is_out_of_line_module: false,
+                    path_override: None,
                 },
             ],
             refs: vec![

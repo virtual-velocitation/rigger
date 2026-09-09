@@ -115,6 +115,7 @@ fn is_test_false_serializes_byte_identically_to_the_pre86_form() {
                 line: 1,
                 is_test: false,
                 is_out_of_line_module: false,
+                path_override: None,
             }],
             refs: vec![SymRef {
                 name: "g".into(),
@@ -153,6 +154,7 @@ fn is_test_true_serializes_the_key_and_round_trips() {
                 line: 1,
                 is_test: true,
                 is_out_of_line_module: false,
+                path_override: None,
             }],
             refs: vec![SymRef {
                 name: "helper".into(),
@@ -269,6 +271,7 @@ fn is_out_of_line_module_false_serializes_byte_identically_to_the_pre_round6_for
                 line: 1,
                 is_test: false,
                 is_out_of_line_module: false,
+                path_override: None,
             }],
             refs: vec![],
         },
@@ -297,6 +300,7 @@ fn is_out_of_line_module_true_serializes_the_key_and_round_trips() {
                 line: 1,
                 is_test: true,
                 is_out_of_line_module: true,
+                path_override: None,
             }],
             refs: vec![],
         },
@@ -356,6 +360,122 @@ fn a_pre_round6_persisted_index_with_no_is_out_of_line_module_key_loads_defaulti
         !file.defs[0].is_out_of_line_module,
         "a definition persisted before is_out_of_line_module existed defaults to false, not an \
          error and not true - never manufacturing a false cross-file exclusion of old data"
+    );
+}
+
+// `Def.path_override` (round 7, `op-u86c1-r7-out-of-line-module-resolution-follows-rust`) is a
+// SECOND additive field this same round introduces, with its own independent
+// `#[serde(default, skip_serializing_if = "Option::is_none")]` contract - the `is_out_of_line_module`
+// trio above never touches it. Mirrors that trio exactly, one field later, for the SAME reason: no
+// unit test anywhere else pins this field's own byte-identity/round-trip/legacy-default behavior.
+
+#[test]
+fn path_override_none_serializes_byte_identically_to_the_pre_round7_form() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap();
+    let mut idx = SymbolIndex::default();
+    idx.insert_file(
+        "parent.rs".into(),
+        FileSymbols {
+            lang: Lang::Rust,
+            defs: vec![Def {
+                kind: Kind::Module,
+                name: "child".into(),
+                line: 1,
+                is_test: true,
+                is_out_of_line_module: true,
+                path_override: None,
+            }],
+            refs: vec![],
+        },
+    );
+    store::save(&idx, root).unwrap();
+    let bytes = std::fs::read_to_string(store::index_path(root)).unwrap();
+    assert!(
+        !bytes.contains("path_override"),
+        "an out-of-line declaration with no #[path] attribute - path_override: None - must omit \
+         the key entirely, byte-identical to the pre-round-7 on-disk form; got:\n{bytes}"
+    );
+}
+
+#[test]
+fn path_override_some_serializes_the_key_and_round_trips() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap();
+    let mut idx = SymbolIndex::default();
+    idx.insert_file(
+        "parent.rs".into(),
+        FileSymbols {
+            lang: Lang::Rust,
+            defs: vec![Def {
+                kind: Kind::Module,
+                name: "child".into(),
+                line: 1,
+                is_test: true,
+                is_out_of_line_module: true,
+                path_override: Some("custom/dir/actual.rs".into()),
+            }],
+            refs: vec![],
+        },
+    );
+    store::save(&idx, root).unwrap();
+    let bytes = std::fs::read_to_string(store::index_path(root)).unwrap();
+    assert!(
+        bytes.contains("path_override"),
+        "a #[path = \"..\"]-overridden declaration - path_override: Some(..) - must serialize \
+         the key; got:\n{bytes}"
+    );
+    let loaded = store::load(root).expect("the persisted index loads");
+    let file = &loaded.files()["parent.rs"];
+    assert_eq!(
+        file.defs
+            .iter()
+            .find(|d| d.name == "child")
+            .unwrap()
+            .path_override,
+        Some("custom/dir/actual.rs".to_string()),
+        "path_override's exact string survives a save/load round-trip"
+    );
+}
+
+#[test]
+fn a_pre_round7_persisted_index_with_no_path_override_key_loads_defaulting_to_none() {
+    // Simulates an index written by the round-1..6 binary: is_test and is_out_of_line_module are
+    // already on the wire, but path_override (round 7) is not - the narrower, more-realistic
+    // back-compat gap than the full pre-86 fixture above, which has none of the three keys.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap();
+    let path = store::index_path(root);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let legacy = r#"{
+  "files": {
+    "legacy_parent.rs": {
+      "lang": "Rust",
+      "defs": [
+        { "kind": "Module", "name": "legacy_child", "line": 1, "is_test": true, "is_out_of_line_module": true }
+      ],
+      "refs": []
+    }
+  }
+}"#;
+    std::fs::write(&path, legacy).unwrap();
+
+    let loaded = store::load(root).expect(
+        "a round-1..6 index (is_test/is_out_of_line_module present, path_override absent) must load",
+    );
+    let file = loaded
+        .files()
+        .get("legacy_parent.rs")
+        .expect("the legacy file entry is present");
+    assert!(
+        file.defs[0].is_out_of_line_module,
+        "the pre-existing is_out_of_line_module key still loads true, unaffected by the new \
+         field's absence"
+    );
+    assert_eq!(
+        file.defs[0].path_override, None,
+        "a definition persisted before path_override existed defaults to None, not an error and \
+         not some stale guess - never manufacturing a false #[path] override for old data"
     );
 }
 
@@ -1080,11 +1200,15 @@ fn an_inner_cfg_test_attribute_excludes_its_module_through_the_public_api() {
 /// (Rust's module system, not this repo's convention, is what gates its compilation), so a
 /// per-file structural walk over that file's OWN parsed tree ([`preceded_by_test_attribute`] in
 /// `extract.rs`) can never see the attribute that excludes it - it lives in a DIFFERENT file. This
-/// is LIVE in rigger's own tree today, not a hypothetical: `src/eventstore/mod.rs` declares
-/// `#[cfg(test)] pub mod contract;` (`src/eventstore/contract.rs`) and `src/lib.rs` declares
-/// `#[cfg(test)] mod blast_radius_eval;` (`src/blast_radius_eval.rs`), and this fixture is the
-/// minimal shape of both: a plain, unattributed `pub fn` in the declared file, exactly like
-/// `contract.rs`'s own `pub fn assert_contract`.
+/// is LIVE in rigger's own tree today, not a hypothetical: `src/lib.rs` declares `#[cfg(test)] mod
+/// blast_radius_eval;` (`src/blast_radius_eval.rs`), and this fixture is that exact shape, using a
+/// plain, unattributed `pub fn` in the declared file exactly like
+/// `blast_radius_eval.rs`'s own product functions. The declaring file here is deliberately named
+/// `lib.rs` (round 7, `op-u86c1-r7-out-of-line-module-resolution-follows-rust`): a
+/// crate-root/directory-owning basename is what makes a FLAT sibling the Rust-correct resolution
+/// at all, since a non-`lib.rs`/`mod.rs`/`main.rs` declaring file's own children resolve under a
+/// subdirectory named after itself instead (see
+/// `an_out_of_line_test_mod_declared_inside_a_non_directory_style_file_resolves_correctly`).
 ///
 /// SURFACE CONFIRMED STILL OPEN (`sdet-u86c1-r5-two-confirmed-live-gaps`): probed empirically
 /// through this same public API before writing this test - `child.rs::helper` emitted a genuine
@@ -1114,7 +1238,9 @@ fn an_out_of_line_cfg_test_module_declaration_excludes_its_declared_file_through
     use std::collections::BTreeSet;
 
     let root = tempfile::tempdir().unwrap();
-    std::fs::write(root.path().join("parent.rs"), PARENT_SRC).unwrap();
+    // `lib.rs` (round 7: a directory-owning basename, matching the live `src/lib.rs` shape this
+    // fixture models) - its out-of-line children resolve as FLAT same-directory siblings.
+    std::fs::write(root.path().join("lib.rs"), PARENT_SRC).unwrap();
     std::fs::write(root.path().join("contract.rs"), OUT_OF_LINE_CHILD_SRC).unwrap();
 
     let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
@@ -1126,12 +1252,12 @@ fn an_out_of_line_cfg_test_module_declaration_excludes_its_declared_file_through
     }
 
     let g = p
-        .subgraph(&["parent.rs".to_string(), "contract.rs".to_string()], 3)
+        .subgraph(&["lib.rs".to_string(), "contract.rs".to_string()], 3)
         .unwrap();
     let node_ids: BTreeSet<&str> = g.nodes.iter().map(|n| n.id.as_str()).collect();
 
     assert!(
-        node_ids.contains("parent.rs::product"),
+        node_ids.contains("lib.rs::product"),
         "the parent file's own product code stays graphed, unaffected by what its out-of-line \
          mod declaration points at; nodes: {node_ids:?}"
     );
@@ -1153,12 +1279,16 @@ fn an_out_of_line_cfg_test_module_declaration_excludes_its_declared_file_through
 /// sdet-author gap: the test above and `a_non_test_out_of_line_mod_and_an_inline_test_mod_never_
 /// exclude_a_coincidentally_named_sibling_file` below both place the declaring file and its
 /// out-of-line target at the tempdir ROOT (`dir` empty), so `out_of_line_test_module_files`'s
-/// `dir.is_empty()` branch is the only one any test in this round exercises. This repo's OWN two
-/// round-5-disclosed live instances - `src/eventstore/mod.rs` (`#[cfg(test)] pub mod contract;`)
-/// resolving to `src/eventstore/contract.rs`, and `src/lib.rs` (`#[cfg(test)] mod
-/// blast_radius_eval;`) resolving to `src/blast_radius_eval.rs` - are BOTH the OTHER branch: a
-/// declaring file that itself lives in a subdirectory, so the resolved sibling path carries that
-/// same directory prefix (`format!("{dir}/{}.rs", d.name)`). Mirrors that exact shape so the
+/// `dir.is_empty()` branch is the only one any test in this round exercises. This repo's OWN
+/// round-5-disclosed live instance `src/eventstore/mod.rs` (`#[cfg(test)] pub mod contract;`
+/// resolving to `src/eventstore/contract.rs`) is the OTHER branch: a `mod.rs`-named declaring file
+/// that itself lives in a subdirectory, so the resolved sibling path carries that same directory
+/// prefix. Mirrors that exact shape (round 7,
+/// `op-u86c1-r7-out-of-line-module-resolution-follows-rust`: `mod.rs` is a directory-owning
+/// basename, so a FLAT sibling is the Rust-correct resolution here - a non-`mod.rs`/`lib.rs`/
+/// `main.rs` declaring file's own children resolve under a subdirectory named after itself
+/// instead, see
+/// `an_out_of_line_test_mod_declared_inside_a_non_directory_style_file_resolves_correctly`) so the
 /// guarantee criterion 1 makes about this very tree is proven by a fixture, not merely inferred
 /// from the flat-root case generalizing.
 #[cfg(feature = "symbols")]
@@ -1171,8 +1301,11 @@ fn an_out_of_line_cfg_test_module_declaration_in_a_subdirectory_excludes_its_sib
 
     let root = tempfile::tempdir().unwrap();
     std::fs::create_dir(root.path().join("nested")).unwrap();
+    // `mod.rs` (round 7: a directory-owning basename, matching the live `src/eventstore/mod.rs`
+    // shape this fixture models) - its out-of-line children resolve as FLAT same-directory
+    // siblings.
     std::fs::write(
-        root.path().join("nested").join("parent.rs"),
+        root.path().join("nested").join("mod.rs"),
         "fn nested_product() {}\n\n#[cfg(test)]\npub mod child;\n",
     )
     .unwrap();
@@ -1192,17 +1325,14 @@ fn an_out_of_line_cfg_test_module_declaration_in_a_subdirectory_excludes_its_sib
 
     let g = p
         .subgraph(
-            &[
-                "nested/parent.rs".to_string(),
-                "nested/child.rs".to_string(),
-            ],
+            &["nested/mod.rs".to_string(), "nested/child.rs".to_string()],
             3,
         )
         .unwrap();
     let node_ids: BTreeSet<&str> = g.nodes.iter().map(|n| n.id.as_str()).collect();
 
     assert!(
-        node_ids.contains("nested/parent.rs::nested_product"),
+        node_ids.contains("nested/mod.rs::nested_product"),
         "the declaring file's own product code stays graphed; nodes: {node_ids:?}"
     );
     let must_be_absent: BTreeSet<&str> =
@@ -1297,13 +1427,15 @@ fn project_batches_also_excludes_an_out_of_line_test_module_declarations_target_
     use std::collections::BTreeSet;
 
     let root = tempfile::tempdir().unwrap();
-    std::fs::write(root.path().join("parent.rs"), PARENT_SRC).unwrap();
+    // `lib.rs` (round 7: a directory-owning basename, see the sibling test above) - its
+    // out-of-line children resolve as FLAT same-directory siblings.
+    std::fs::write(root.path().join("lib.rs"), PARENT_SRC).unwrap();
     std::fs::write(root.path().join("contract.rs"), OUT_OF_LINE_CHILD_SRC).unwrap();
 
     let batches = project_batches(root.path().to_str().unwrap());
     let files: BTreeSet<&str> = batches.iter().map(|(f, _)| f.as_str()).collect();
     assert!(
-        files.contains("parent.rs"),
+        files.contains("lib.rs"),
         "the declaring file still contributes its own batch; files: {files:?}"
     );
     assert!(
@@ -1324,7 +1456,7 @@ fn project_batches_also_excludes_an_out_of_line_test_module_declarations_target_
         }
     }
     let g = p
-        .subgraph(&["parent.rs".to_string(), "contract.rs".to_string()], 3)
+        .subgraph(&["lib.rs".to_string(), "contract.rs".to_string()], 3)
         .unwrap();
     assert!(
         !g.nodes
@@ -1337,21 +1469,33 @@ fn project_batches_also_excludes_an_out_of_line_test_module_declarations_target_
 }
 
 /// Mutation-efficacy pin (round 6 `cargo mutants` finding, events.rs `out_of_line_test_module_files`'s
-/// `d.kind != Kind::Module || !d.is_out_of_line_module || !d.is_test` skip guard): BOTH the
-/// `is_out_of_line_module` and `is_test` conjuncts are required before a Module-kind definition is
-/// even a CANDIDATE for cross-file exclusion - dropping either gate (mutating either `||` to `&&`)
-/// only misbehaves observably when a coincidentally-named SIBLING FILE exists to wrongly sweep in,
-/// which every earlier fixture in this file never sets up. Two such collisions, in one project:
+/// seed-loop `d.kind != Kind::Module || !d.is_out_of_line_module || !d.is_test` guard; the fixture's
+/// own target paths updated in round 7 to `module_dir`'s real per-file-module convention -
+/// `host_a.rs`/`host_b.rs` are non-mod.rs leaves, so their out-of-line children resolve under
+/// `host_a/`/`host_b/`, never as root-level same-directory siblings, or this fixture stops
+/// exercising the guard at all under round 7's corrected resolution and both mutants below go
+/// unnoticed again): BOTH the `is_out_of_line_module` and `is_test` conjuncts are required before a
+/// Module-kind definition is even a CANDIDATE for cross-file exclusion - dropping either gate
+/// (mutating either `||` to `&&`) only misbehaves observably when a REAL file sits exactly where
+/// resolution would wrongly reach, which every earlier fixture in this file never sets up. Two such
+/// collisions, in one project:
 ///
 /// - `host_a.rs` declares a PLAIN out-of-line `pub mod sibling;` (no `#[cfg(test)]` at all -
-///   `is_out_of_line_module: true`, `is_test: false`) and a REAL `sibling.rs` file happens to
-///   exist; the `is_test` gate must keep `sibling.rs` OUT of exclusion (it is ordinary product
-///   code merely declared from another file).
+///   `is_out_of_line_module: true`, `is_test: false`) and a REAL `host_a/sibling.rs` file happens
+///   to exist at exactly the location `module_dir("host_a.rs")` resolves to; the `is_test` gate
+///   must keep it OUT of exclusion (it is ordinary product code merely declared from another
+///   file).
 /// - `host_b.rs` declares an INLINE `#[cfg(test)] mod contract { .. }` (has its own body -
-///   `is_out_of_line_module: false`, `is_test: true`) and a REAL, UNRELATED `contract.rs` file
-///   happens to share that name; the `is_out_of_line_module` gate must keep `contract.rs` OUT of
-///   exclusion (the inline module governs only its OWN contents by containment, never a
-///   same-named sibling file it never declared).
+///   `is_out_of_line_module: false`, `is_test: true`) and a REAL, UNRELATED `host_b/contract.rs`
+///   file happens to sit at exactly the location `module_dir("host_b.rs")` would resolve an
+///   out-of-line `contract` to; the `is_out_of_line_module` gate must keep it OUT of exclusion
+///   (the inline module governs only its OWN contents by containment, never a same-named file
+///   sitting where an out-of-line declaration of that name would have resolved). This half also
+///   pins round 7's own `extract.rs` mutation-efficacy finding
+///   (`n.kind() == "mod_item" && n.child_by_field_name("body").is_none()` mutated `&&` to `||`):
+///   under the mutant every Module-kind definition - inline or out-of-line alike, since
+///   `n.kind()` is `"mod_item"` for both - would wrongly compute `is_out_of_line_module: true`,
+///   which this fixture's coincidental `host_b/contract.rs` placement is what makes observable.
 #[cfg(feature = "symbols")]
 #[test]
 fn a_non_test_out_of_line_mod_and_an_inline_test_mod_never_exclude_a_coincidentally_named_sibling_file(
@@ -1365,13 +1509,23 @@ fn a_non_test_out_of_line_mod_and_an_inline_test_mod_never_exclude_a_coincidenta
         "fn product_a() {}\n\npub mod sibling;\n",
     )
     .unwrap();
-    std::fs::write(root.path().join("sibling.rs"), "pub fn sibling_fn() {}\n").unwrap();
+    std::fs::create_dir(root.path().join("host_a")).unwrap();
+    std::fs::write(
+        root.path().join("host_a").join("sibling.rs"),
+        "pub fn sibling_fn() {}\n",
+    )
+    .unwrap();
     std::fs::write(
         root.path().join("host_b.rs"),
         "fn product_b() {}\n\n#[cfg(test)]\nmod contract {\n    #[test]\n    fn it_works() {}\n}\n",
     )
     .unwrap();
-    std::fs::write(root.path().join("contract.rs"), "pub fn contract_fn() {}\n").unwrap();
+    std::fs::create_dir(root.path().join("host_b")).unwrap();
+    std::fs::write(
+        root.path().join("host_b").join("contract.rs"),
+        "pub fn contract_fn() {}\n",
+    )
+    .unwrap();
 
     let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
     let mut events = rigger::grounder::symbols::events::index_events(&idx);
@@ -1385,9 +1539,9 @@ fn a_non_test_out_of_line_mod_and_an_inline_test_mod_never_exclude_a_coincidenta
         .subgraph(
             &[
                 "host_a.rs".to_string(),
-                "sibling.rs".to_string(),
+                "host_a/sibling.rs".to_string(),
                 "host_b.rs".to_string(),
-                "contract.rs".to_string(),
+                "host_b/contract.rs".to_string(),
             ],
             3,
         )
@@ -1396,16 +1550,102 @@ fn a_non_test_out_of_line_mod_and_an_inline_test_mod_never_exclude_a_coincidenta
         g.nodes.iter().map(|n| n.id.as_str()).collect();
 
     assert!(
-        node_ids.contains("sibling.rs::sibling_fn"),
-        "a REAL sibling.rs must stay graphed when the only thing naming it is a NON-test \
+        node_ids.contains("host_a/sibling.rs::sibling_fn"),
+        "a REAL host_a/sibling.rs must stay graphed when the only thing naming it is a NON-test \
          out-of-line `pub mod sibling;` - the is_test gate must block exclusion here; nodes: \
          {node_ids:?}"
     );
     assert!(
-        node_ids.contains("contract.rs::contract_fn"),
-        "a REAL contract.rs must stay graphed when the only coincidence is an INLINE \
+        node_ids.contains("host_b/contract.rs::contract_fn"),
+        "a REAL host_b/contract.rs must stay graphed when the only coincidence is an INLINE \
          `#[cfg(test)] mod contract {{ .. }}` elsewhere sharing its name - the \
          is_out_of_line_module gate must block exclusion here; nodes: {node_ids:?}"
+    );
+}
+
+/// Round 7 mutation-efficacy pin (`cargo mutants` finding, events.rs `out_of_line_test_module_files`'s
+/// CLOSURE-loop guard `d.kind != Kind::Module || !d.is_out_of_line_module`, mutated `||` to `&&`):
+/// through the REAL extraction pipeline, `is_out_of_line_module` is set true ONLY inside
+/// `extract()`'s `if d.kind == Kind::Module` arm (`model.rs`'s own field doc), so a
+/// non-`Module`-kind `Def` with `is_out_of_line_module: true` can never arise from parsing real
+/// source - but `Def`'s fields are plain `pub` and independently loadable from a PERSISTED index
+/// (`#[serde(default)]`, never re-derived from source on load), so a hand-edited or foreign-written
+/// index file CAN carry exactly this combination. The `d.kind != Kind::Module` half of the guard is
+/// what stops such a stray flag on an ordinary function/type/etc. from being treated as an
+/// out-of-line module declaration and resolved against unrelated files. Built directly via
+/// `SymbolIndex::insert_file` (bypassing `extract()` on purpose - the whole point is to model a
+/// hand-edited/persisted index, not real parsing): `host.rs` seeds a genuine out-of-line
+/// `#[cfg(test)]` module `excluded_file`, resolving to `host/excluded_file.rs`; that file's own
+/// `victim` definition is a `Function` (never a `Module`) but carries a STRAY
+/// `is_out_of_line_module: true` it could only get from tampered/foreign persisted data. Under the
+/// mutant this stray flag is enough to make `victim` resolve as if it declared an out-of-line
+/// module named `victim`, at `host/excluded_file/victim.rs` (`module_dir`'s convention for the
+/// leaf file `host/excluded_file.rs`) - a REAL, wholly unrelated product file placed exactly there
+/// to make the wrong exclusion observable.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_non_module_definitions_stray_out_of_line_flag_never_triggers_cross_file_exclusion() {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::Projection;
+
+    // One shared single-def-file builder for this test's three hand-crafted fixture files, rather
+    // than three near-identical struct literals - the varying bits (kind/name/is_test/
+    // is_out_of_line_module) are exactly this test's own point of interest.
+    fn one_def_file(
+        kind: Kind,
+        name: &str,
+        is_test: bool,
+        is_out_of_line_module: bool,
+    ) -> FileSymbols {
+        FileSymbols {
+            lang: Lang::Rust,
+            defs: vec![Def {
+                kind,
+                name: name.into(),
+                line: 1,
+                is_test,
+                is_out_of_line_module,
+                path_override: None,
+            }],
+            refs: vec![],
+        }
+    }
+
+    let mut idx = SymbolIndex::default();
+    idx.insert_file(
+        "host.rs".into(),
+        one_def_file(Kind::Module, "excluded_file", true, true),
+    );
+    // `victim`'s is_out_of_line_module: true is never reachable via real extraction on a
+    // non-Module def (model.rs's own field doc); modeling a hand-edited/foreign persisted index
+    // on purpose - see the test's own doc comment above.
+    idx.insert_file(
+        "host/excluded_file.rs".into(),
+        one_def_file(Kind::Function, "victim", false, true),
+    );
+    idx.insert_file(
+        "host/excluded_file/victim.rs".into(),
+        one_def_file(Kind::Function, "victim_fn", false, false),
+    );
+
+    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.iter_mut().enumerate() {
+        event.position = zero_based as u64 + 1;
+        p.apply(event).unwrap();
+    }
+
+    let g = p
+        .subgraph(&["host/excluded_file/victim.rs".to_string()], 3)
+        .unwrap();
+    assert!(
+        g.nodes
+            .iter()
+            .any(|n| n.id == "host/excluded_file/victim.rs::victim_fn"),
+        "a real, unrelated product file must never be swept into exclusion by a stray \
+         is_out_of_line_module flag on a NON-Module definition inside an already-excluded file - \
+         the kind guard must block cross-file resolution here regardless of that flag; nodes: {:?}",
+        g.nodes
     );
 }
 
@@ -1677,18 +1917,22 @@ fn cfg_test_on_every_other_item_kind_excludes_or_stays_scoped_through_the_public
     );
 }
 
-/// PROBE (lens:sdet review, not yet a claimed regression test): `out_of_line_test_module_files`
-/// resolves a `#[cfg(test)] mod name;` declaration to `<directory containing the DECLARING
-/// file>/<name>.rs`. That coincides with Rust's own file-per-module convention only when the
-/// declaring file is itself a directory-style module (`mod.rs`/`lib.rs`/`main.rs`) - both of this
-/// repo's two disclosed live instances (`src/eventstore/mod.rs`, `src/lib.rs`) are exactly that
-/// shape, and so is this file's own `nested/parent.rs` fixture in
+/// Round 7 fix (`op-u86c1-r7-out-of-line-module-resolution-follows-rust`, closing round-6 finding
+/// `sdet-u86c1-r6-out-of-line-mod-resolution-uses-declaring-files-directory-not-rusts-own-module-
+/// nesting-path`): `out_of_line_test_module_files` used to resolve a `#[cfg(test)] mod name;`
+/// declaration to `<directory containing the DECLARING file>/<name>.rs`. That coincides with
+/// Rust's own file-per-module convention only when the declaring file is itself a directory-style
+/// module (`mod.rs`/`lib.rs`/`main.rs`) - both of this repo's two disclosed live instances
+/// (`src/eventstore/mod.rs`, `src/lib.rs`) are exactly that shape, and so is this file's own
+/// `nested/parent.rs` fixture in
 /// `an_out_of_line_cfg_test_module_declaration_in_a_subdirectory_excludes_its_sibling_through_the_public_api`
 /// above, which places the target in the SAME directory as the declaring file. But an ORDINARY,
 /// non-`mod.rs` file that is itself a non-root submodule (e.g. `src/extract.rs`, declared via
 /// `mod extract;` from its own parent) puts ITS OWN children in a subdirectory named after
 /// itself - `src/extract/child.rs` - never as a sibling in `src/`. This fixture reproduces that
-/// exact shape and checks which of the two failure modes actually fires.
+/// exact shape and pins the fix: `module_dir` now computes the declaring file's own MODULE
+/// directory (its own directory only for mod.rs/lib.rs/main.rs, else `<its own directory>/<its own
+/// stem>`) instead of the raw directory-of-file.
 #[cfg(feature = "symbols")]
 #[test]
 fn an_out_of_line_test_mod_declared_inside_a_non_directory_style_file_resolves_correctly() {
@@ -1759,6 +2003,306 @@ fn an_out_of_line_test_mod_declared_inside_a_non_directory_style_file_resolves_c
         "the ACTUAL Rust-resolved target of `mod helper;` inside a non-`mod.rs` `parent.rs` is \
          `parent/helper.rs`, not a same-directory sibling - real test code at that path must still \
          be excluded, not merely whatever same-named file sits beside the declaring file instead; \
+         nodes: {node_ids:?}"
+    );
+}
+
+/// Round 7 (`op-u86c1-r7-out-of-line-module-resolution-follows-rust`): the algorithm's own text
+/// names TWO candidate targets in order - `<module_dir>/<name>.rs` first, then
+/// `<module_dir>/<name>/mod.rs` - and every out-of-line fixture in this file so far only ever
+/// creates the FLAT sibling, so the nested `mod.rs` fallback branch has never been exercised by
+/// any test. This fixture declares `#[cfg(test)] mod helper;` from a non-`mod.rs` leaf file with
+/// NO flat `parent/helper.rs` on disk at all - only the nested directory-module form
+/// `parent/helper/mod.rs` - so resolution can only succeed by trying the second candidate.
+#[cfg(feature = "symbols")]
+#[test]
+fn an_out_of_line_test_mod_declaration_falls_back_to_a_nested_mod_rs_when_no_flat_sibling_exists() {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::{Projection, KIND_CODE_ENTITY};
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("parent.rs"),
+        "pub fn parent_product() {}\n\n#[cfg(test)]\nmod helper;\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.path().join("parent").join("helper")).unwrap();
+    std::fs::write(
+        root.path().join("parent").join("helper").join("mod.rs"),
+        "pub fn real_test_helper() {}\n",
+    )
+    .unwrap();
+    // An unrelated top-level file that must stay untouched by this resolution entirely.
+    std::fs::write(
+        root.path().join("helper.rs"),
+        "pub fn totally_unrelated_helper() {}\n",
+    )
+    .unwrap();
+
+    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
+    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.iter_mut().enumerate() {
+        event.position = zero_based as u64 + 1;
+        p.apply(event).unwrap();
+    }
+
+    let g = p
+        .subgraph(
+            &[
+                "parent.rs".to_string(),
+                "parent/helper/mod.rs".to_string(),
+                "helper.rs".to_string(),
+            ],
+            3,
+        )
+        .unwrap();
+    let node_ids: std::collections::BTreeSet<&str> =
+        g.nodes.iter().map(|n| n.id.as_str()).collect();
+
+    assert!(
+        node_ids.contains("parent.rs::parent_product"),
+        "the declaring file's own product code stays graphed; nodes: {node_ids:?}"
+    );
+    let unrelated = g
+        .nodes
+        .iter()
+        .find(|n| n.id == "helper.rs::totally_unrelated_helper");
+    assert!(
+        unrelated
+            .map(|n| n.kind == KIND_CODE_ENTITY)
+            .unwrap_or(false),
+        "an unrelated top-level file must stay product code, unaffected by a nested-mod.rs \
+         resolution elsewhere; nodes: {node_ids:?}"
+    );
+    assert!(
+        !node_ids.contains("parent/helper/mod.rs::real_test_helper"),
+        "when no flat `<module_dir>/<name>.rs` sibling exists, resolution must fall back to the \
+         nested `<module_dir>/<name>/mod.rs` directory-module form and exclude it there; \
+         nodes: {node_ids:?}"
+    );
+}
+
+/// Round 7 (`op-u86c1-r7-out-of-line-module-resolution-follows-rust`): a `#[path = "..."]`
+/// attribute on the out-of-line declaration overrides BOTH candidate forms of the file-per-module
+/// convention entirely, resolved relative to the declaring file's own directory - rustc's real
+/// escape hatch, never yet exercised by any fixture in this file
+/// (`dec-u86c1-r6-path-and-nested-mod-not-yet-covered`, closed by this round). A file that
+/// happens to sit at the conventional (un-taken) location is proven to stay ordinary product
+/// code, showing the override strictly REDIRECTS rather than additionally excluding the
+/// convention's own guess.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_path_attribute_override_redirects_out_of_line_resolution_through_the_public_api() {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::{Projection, KIND_CODE_ENTITY};
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("parent.rs"),
+        "pub fn parent_product() {}\n\n#[cfg(test)]\n#[path = \"custom/dir/actual_test.rs\"]\nmod helper;\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.path().join("custom").join("dir")).unwrap();
+    std::fs::write(
+        root.path()
+            .join("custom")
+            .join("dir")
+            .join("actual_test.rs"),
+        "pub fn overridden_test_helper() {}\n",
+    )
+    .unwrap();
+    // The location the file-per-module CONVENTION would have guessed, left un-taken by the
+    // override - must stay ordinary product code, proving the override REDIRECTS rather than
+    // ADDS to what gets excluded.
+    std::fs::create_dir(root.path().join("parent")).unwrap();
+    std::fs::write(
+        root.path().join("parent").join("helper.rs"),
+        "pub fn default_location_helper() {}\n",
+    )
+    .unwrap();
+
+    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
+    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.iter_mut().enumerate() {
+        event.position = zero_based as u64 + 1;
+        p.apply(event).unwrap();
+    }
+
+    let g = p
+        .subgraph(
+            &[
+                "parent.rs".to_string(),
+                "custom/dir/actual_test.rs".to_string(),
+                "parent/helper.rs".to_string(),
+            ],
+            3,
+        )
+        .unwrap();
+    let node_ids: std::collections::BTreeSet<&str> =
+        g.nodes.iter().map(|n| n.id.as_str()).collect();
+
+    assert!(
+        node_ids.contains("parent.rs::parent_product"),
+        "the declaring file's own product code stays graphed; nodes: {node_ids:?}"
+    );
+    assert!(
+        !node_ids.contains("custom/dir/actual_test.rs::overridden_test_helper"),
+        "the #[path]-named file is the ACTUAL out-of-line target and must be excluded; \
+         nodes: {node_ids:?}"
+    );
+    let default_location = g
+        .nodes
+        .iter()
+        .find(|n| n.id == "parent/helper.rs::default_location_helper");
+    assert!(
+        default_location
+            .map(|n| n.kind == KIND_CODE_ENTITY)
+            .unwrap_or(false),
+        "the file-per-module convention's own un-taken guess must stay ordinary product code - \
+         the #[path] override redirects resolution, it does not ALSO exclude the location the \
+         convention would have guessed; nodes: {node_ids:?}"
+    );
+}
+
+/// Round 7 (`op-u86c1-r7-out-of-line-module-resolution-follows-rust`): "Everything under a
+/// resolved test module file (its own nested out-of-line children, resolved recursively by the
+/// same rule) is test code." A file pulled in wholesale by an out-of-line `#[cfg(test)]`
+/// declaration is itself entirely test code, so ITS OWN out-of-line children inherit that status
+/// even when the nested `mod` statement carries no `#[cfg(test)]` of its own (there is nothing
+/// left for it to gate - the whole file it lives in is already test-only). `a.rs` (leaf) declares
+/// `#[cfg(test)] mod b;`, resolving to `a/b.rs`; `a/b.rs` (itself a leaf, not mod.rs) declares a
+/// PLAIN `mod c;` with no attribute of its own, resolving to `a/b/c.rs` - which must be excluded
+/// too, transitively.
+#[cfg(feature = "symbols")]
+#[test]
+fn an_out_of_line_test_module_files_own_out_of_line_declarations_are_excluded_recursively_through_the_public_api(
+) {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::{Projection, KIND_CODE_ENTITY};
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("a.rs"),
+        "pub fn a_product() {}\n\n#[cfg(test)]\nmod b;\n",
+    )
+    .unwrap();
+    std::fs::create_dir(root.path().join("a")).unwrap();
+    std::fs::write(
+        root.path().join("a").join("b.rs"),
+        "pub fn b_helper() {}\n\nmod c;\n",
+    )
+    .unwrap();
+    std::fs::create_dir(root.path().join("a").join("b")).unwrap();
+    std::fs::write(
+        root.path().join("a").join("b").join("c.rs"),
+        "pub fn c_helper() {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.path().join("unrelated.rs"),
+        "pub fn unrelated_fn() {}\n",
+    )
+    .unwrap();
+
+    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
+    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.iter_mut().enumerate() {
+        event.position = zero_based as u64 + 1;
+        p.apply(event).unwrap();
+    }
+
+    let g = p
+        .subgraph(
+            &[
+                "a.rs".to_string(),
+                "a/b.rs".to_string(),
+                "a/b/c.rs".to_string(),
+                "unrelated.rs".to_string(),
+            ],
+            3,
+        )
+        .unwrap();
+    let node_ids: std::collections::BTreeSet<&str> =
+        g.nodes.iter().map(|n| n.id.as_str()).collect();
+
+    assert!(
+        node_ids.contains("a.rs::a_product"),
+        "the outermost declaring file's own product code stays graphed; nodes: {node_ids:?}"
+    );
+    let unrelated = g
+        .nodes
+        .iter()
+        .find(|n| n.id == "unrelated.rs::unrelated_fn");
+    assert!(
+        unrelated
+            .map(|n| n.kind == KIND_CODE_ENTITY)
+            .unwrap_or(false),
+        "an unrelated file must stay product code, unaffected by the recursive closure; \
+         nodes: {node_ids:?}"
+    );
+    assert!(
+        !node_ids.contains("a/b.rs::b_helper"),
+        "the directly-declared out-of-line test file must be excluded; nodes: {node_ids:?}"
+    );
+    assert!(
+        !node_ids.contains("a/b/c.rs::c_helper"),
+        "a/b.rs's OWN out-of-line `mod c;` declaration carries no #[cfg(test)] of its own, but \
+         a/b.rs itself is wholly test code once pulled in - its child must be excluded \
+         RECURSIVELY, not merely the one directly-declared file; nodes: {node_ids:?}"
+    );
+}
+
+/// Spec 86 criterion 1's CONSTRAINTS WALK amendment (the file's own module doc covers the
+/// code-entity pass; this ONE test covers the OTHER extraction pass the same amendment names): a
+/// design doc's inline-code mention (and its markdown-citation form) of a `tests/`-rooted path
+/// must be excluded from the design-intent link pass too, "by the SAME exclusion rule... no
+/// placeholder node for test-scoped code ever enters the intent layer this way either." Drives the
+/// REAL `extract_concepts`/`extract_links` pass (`grounder::design::extract`) end to end through
+/// `link_events`/`concept_events` and the always-compiled fold, the same outside-the-crate
+/// discipline this file's other tests hold the code-entity pass to - so the guarantee that no bare
+/// `KIND_ARTIFACT` placeholder ever lands for a `tests/`-rooted mention does not rest on the
+/// extraction unit test (`grounder::design::extract::tests::
+/// a_tests_rooted_path_mention_never_links_inline_or_by_citation`) alone.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_tests_rooted_design_doc_mention_never_becomes_a_live_node_through_the_public_api() {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::Projection;
+    use rigger::grounder::design::events::{concept_events, link_events};
+    use rigger::grounder::design::extract::{extract_concepts, extract_links};
+    use std::collections::BTreeSet;
+
+    let md = "# Reference architecture\n\n\
+              See `tests/cli.rs` inline and cite [the suite](tests/no_os_kill_audit.rs). Real \
+              product code `src/conductor.rs` still links normally.\n";
+    let mut events = concept_events(&extract_concepts("docs/architecture.md", md));
+    events.extend(link_events(&extract_links("docs/architecture.md", md)));
+
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.iter_mut().enumerate() {
+        event.position = zero_based as u64 + 1;
+        p.apply(event).unwrap();
+    }
+
+    // Seed from the doc alone (never from the excluded targets, which must not exist to seed
+    // from) and walk far enough to reach any real edge the doc's own links created.
+    let g = p
+        .subgraph(&["docs/architecture.md".to_string()], 3)
+        .unwrap();
+    let node_ids: BTreeSet<&str> = g.nodes.iter().map(|n| n.id.as_str()).collect();
+
+    assert!(
+        !node_ids.contains("tests/cli.rs") && !node_ids.contains("tests/no_os_kill_audit.rs"),
+        "a design doc's mention of a tests/-rooted path - inline SPECIFIES carrier or markdown \
+         REFERENCES citation carrier alike - must never mint a live node (not even a bare \
+         artifact placeholder) reachable from the doc; nodes: {node_ids:?}"
+    );
+    assert!(
+        node_ids.contains("src/conductor.rs"),
+        "a genuine product-code mention in the SAME doc must still reach the graph normally; \
          nodes: {node_ids:?}"
     );
 }
