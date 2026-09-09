@@ -116,6 +116,7 @@ fn is_test_false_serializes_byte_identically_to_the_pre86_form() {
                 is_test: false,
                 is_out_of_line_module: false,
                 path_override: None,
+                enclosing_inline_module_path: None,
             }],
             refs: vec![SymRef {
                 name: "g".into(),
@@ -155,6 +156,7 @@ fn is_test_true_serializes_the_key_and_round_trips() {
                 is_test: true,
                 is_out_of_line_module: false,
                 path_override: None,
+                enclosing_inline_module_path: None,
             }],
             refs: vec![SymRef {
                 name: "helper".into(),
@@ -272,6 +274,7 @@ fn is_out_of_line_module_false_serializes_byte_identically_to_the_pre_round6_for
                 is_test: false,
                 is_out_of_line_module: false,
                 path_override: None,
+                enclosing_inline_module_path: None,
             }],
             refs: vec![],
         },
@@ -301,6 +304,7 @@ fn is_out_of_line_module_true_serializes_the_key_and_round_trips() {
                 is_test: true,
                 is_out_of_line_module: true,
                 path_override: None,
+                enclosing_inline_module_path: None,
             }],
             refs: vec![],
         },
@@ -385,6 +389,7 @@ fn path_override_none_serializes_byte_identically_to_the_pre_round7_form() {
                 is_test: true,
                 is_out_of_line_module: true,
                 path_override: None,
+                enclosing_inline_module_path: None,
             }],
             refs: vec![],
         },
@@ -414,6 +419,7 @@ fn path_override_some_serializes_the_key_and_round_trips() {
                 is_test: true,
                 is_out_of_line_module: true,
                 path_override: Some("custom/dir/actual.rs".into()),
+                enclosing_inline_module_path: None,
             }],
             refs: vec![],
         },
@@ -1606,6 +1612,7 @@ fn a_non_module_definitions_stray_out_of_line_flag_never_triggers_cross_file_exc
                 is_test,
                 is_out_of_line_module,
                 path_override: None,
+                enclosing_inline_module_path: None,
             }],
             refs: vec![],
         }
@@ -2689,5 +2696,341 @@ fn a_path_attribute_override_with_chained_dotdot_walks_up_every_popped_level() {
         "a #[path=\"../../x.rs\"] override must pop EVERY `..` off the declaring file's own \
          multi-level directory, not just the first one, and still resolve and exclude its real \
          target; nodes: {node_ids:?}"
+    );
+}
+
+/// round 9 (ADJUDICATION `adj-u86c1-r8-verdict-reject`, upheld finding
+/// `adv-u86c1-r8-overcount-dotdot-silently-excludes-an-unrelated-real-file`): every `..` fixture
+/// above pins a value whose `..` COUNT matches or stays within the declaring directory's own
+/// depth, so `stack.pop()` on the round-8 `normalize_logical_path` always pops a REAL segment.
+/// None of them exercises the OVER-count case - a `..` segment reached once the stack is already
+/// empty - which `Vec::pop` on an empty stack resolves as Rust's own silent no-op: the walk
+/// continues, and the remaining segments alone become the "resolved" string. That collapsed
+/// string is syntactically a valid relative path but semantically WRONG (it walked back further
+/// than the declaring file's own tree allows), and nothing stops it from coincidentally matching
+/// a real, unrelated file's key - at which point `resolve_out_of_line_target` treats that
+/// unrelated product file as the out-of-line module's resolved target and silently drops its
+/// whole entity set from the graph. This fixture reproduces the adjudication's own probe exactly:
+/// a ROOT-level declaring file (`parent.rs`, so its own directory is the empty string) whose
+/// `#[path = "../actual.rs"]` override has one MORE `..` than its zero-deep directory can satisfy,
+/// joined with the empty `declaring_dir` to the raw string `"../actual.rs"`, popping past an
+/// already-empty stack on its very first segment - and a genuine, ALSO-root-level `actual.rs`
+/// that the collapsed remainder (`"actual.rs"`) happens to name, product code with no relation to
+/// the test module at all. The correct behaviour is `resolve_out_of_line_target` finding no
+/// resolvable target for the malformed override (falling through to `None`, excluding nothing) -
+/// so `actual.rs`'s own product item must stay graphed, exactly as it would if the declaring
+/// file's stray override did not exist.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_path_attribute_override_whose_dotdot_count_overflows_the_declaring_directorys_depth_does_not_silently_collide_with_an_unrelated_real_file(
+) {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::{Projection, KIND_CODE_ENTITY};
+
+    let root = tempfile::tempdir().unwrap();
+    // Both files sit at the PROJECT ROOT (no `src/`): `parent.rs`'s own directory is the empty
+    // string, so a single `..` in its override already has nothing real to pop.
+    std::fs::write(
+        root.path().join("parent.rs"),
+        "pub fn parent_product() {}\n\n#[cfg(test)]\n#[path = \"../actual.rs\"]\nmod helper;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.path().join("actual.rs"),
+        "pub fn totally_unrelated_product() {}\n",
+    )
+    .unwrap();
+
+    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
+    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.iter_mut().enumerate() {
+        event.position = zero_based as u64 + 1;
+        p.apply(event).unwrap();
+    }
+
+    let g = p
+        .subgraph(&["parent.rs".to_string(), "actual.rs".to_string()], 2)
+        .unwrap();
+    let node_ids: std::collections::BTreeSet<&str> =
+        g.nodes.iter().map(|n| n.id.as_str()).collect();
+
+    assert!(
+        node_ids.contains("parent.rs::parent_product"),
+        "the declaring file's own product code stays graphed; nodes: {node_ids:?}"
+    );
+    let has_unrelated_product = g
+        .nodes
+        .iter()
+        .any(|n| n.kind == KIND_CODE_ENTITY && n.id == "actual.rs::totally_unrelated_product");
+    assert!(
+        has_unrelated_product,
+        "a #[path] override whose `..` count exceeds the declaring directory's own depth must \
+         resolve to nothing (excluding no file), not silently collapse to a shorter string that \
+         happens to name an unrelated real file and exclude ITS product code instead; \
+         nodes: {node_ids:?}"
+    );
+}
+
+/// operator ruling `op-u86-c1-path-attribute-contract-is-rustc-s-and-unresolvable-never-excludes`
+/// item 1 (BASE DIR): a `#[path]` override on a declaration nested inside one or more INLINE
+/// `mod outer { .. }` blocks resolves relative to the declaring file's own MODULE directory (the
+/// SAME directory a plain, non-overridden nested `mod name;` sibling would use) PLUS one
+/// directory component per enclosing inline module name - never the file's own bare directory,
+/// which is what every prior round's fixture (declaring the override directly at the file's top
+/// level) happened to leave untested. Verified against REAL rustc before writing this fixture
+/// (throwaway probe crates, not committed): `mod outer { #[path = "foo.rs"] mod inner; }`
+/// declared inside `src/lib.rs` resolves `foo.rs` against `src/outer/foo.rs`, and the identical
+/// shape inside a LEAF file `src/parent.rs` resolves against `src/parent/outer/foo.rs` - the
+/// leaf file's OWN module directory (`src/parent/`, the directory its OWN non-overridden
+/// out-of-line children would already use) with `outer/` appended, never the file's bare
+/// directory `src/` a top-level override on the same file would use.
+///
+/// This fixture pins the leaf-file shape (the more surprising of the two, since the file's own
+/// bare directory `src/` and its module directory `src/parent/` visibly differ) and, per the
+/// ruling's own requirement, proves BOTH halves: the real target
+/// (`src/parent/outer/actual.rs::overridden_test_helper`) resolves and excludes, AND a decoy
+/// planted at exactly the WRONG location a directory-of-file-only resolver (the pre-round-9
+/// shape, ignorant of inline nesting) would have computed instead
+/// (`src/actual.rs::wrong_location_decoy_product`) is left untouched - proving the fix reaches
+/// the CORRECT directory rather than merely widening what it accepts.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_path_attribute_override_nested_inside_an_inline_module_resolves_under_the_declaring_files_own_module_directory_plus_the_inline_chain(
+) {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::{Projection, KIND_CODE_ENTITY};
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("src")).unwrap();
+    std::fs::write(
+        root.path().join("src").join("parent.rs"),
+        "pub fn parent_product() {}\n\nmod outer {\n    #[cfg(test)]\n    #[path = \"actual.rs\"]\n    mod helper;\n}\n",
+    )
+    .unwrap();
+    // The CORRECT target: declaring file `src/parent.rs`'s own module directory (`src/parent/`,
+    // per Rust's file-per-module convention for a leaf file) with the enclosing inline module
+    // name (`outer`) appended.
+    std::fs::create_dir_all(root.path().join("src").join("parent").join("outer")).unwrap();
+    std::fs::write(
+        root.path()
+            .join("src")
+            .join("parent")
+            .join("outer")
+            .join("actual.rs"),
+        "pub fn overridden_test_helper() {}\n",
+    )
+    .unwrap();
+    // The WRONG target a directory-of-file-only (pre-round-9) resolver would have computed:
+    // `src/parent.rs`'s own bare directory `src/`, with no inline-module component at all. Real,
+    // unrelated product code - must stay graphed.
+    std::fs::write(
+        root.path().join("src").join("actual.rs"),
+        "pub fn wrong_location_decoy_product() {}\n",
+    )
+    .unwrap();
+
+    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
+    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.iter_mut().enumerate() {
+        event.position = zero_based as u64 + 1;
+        p.apply(event).unwrap();
+    }
+
+    let g = p
+        .subgraph(
+            &[
+                "src/parent.rs".to_string(),
+                "src/parent/outer/actual.rs".to_string(),
+                "src/actual.rs".to_string(),
+            ],
+            2,
+        )
+        .unwrap();
+    let node_ids: std::collections::BTreeSet<&str> =
+        g.nodes.iter().map(|n| n.id.as_str()).collect();
+
+    assert!(
+        node_ids.contains("src/parent.rs::parent_product"),
+        "the declaring file's own product code stays graphed; nodes: {node_ids:?}"
+    );
+    let has_real_target = g.nodes.iter().any(|n| {
+        n.kind == KIND_CODE_ENTITY && n.id == "src/parent/outer/actual.rs::overridden_test_helper"
+    });
+    assert!(
+        !has_real_target,
+        "a #[path] override nested inside an inline `mod outer {{ .. }}` block must resolve \
+         under the declaring file's own module directory plus the inline chain \
+         (src/parent/outer/actual.rs), not silently fail to match and leave the real test \
+         target graphed as product; nodes: {node_ids:?}"
+    );
+    let has_decoy = g.nodes.iter().any(|n| {
+        n.kind == KIND_CODE_ENTITY && n.id == "src/actual.rs::wrong_location_decoy_product"
+    });
+    assert!(
+        has_decoy,
+        "the declaring file's own BARE directory (src/actual.rs) - the wrong location a \
+         directory-of-file-only resolver would compute, ignoring the enclosing inline module - \
+         must stay graphed as ordinary product code, never wrongly excluded; nodes: {node_ids:?}"
+    );
+}
+
+/// operator ruling `op-u86-c1-path-attribute-contract-is-rustc-s-and-unresolvable-never-excludes`
+/// item 2 (NORMALIZATION): an ABSOLUTE `#[path]` value is UNRESOLVABLE, never joined onto the
+/// declaring directory. Verified against real rustc before writing this fixture: `#[path =
+/// "/etc/hostname"]` reads `/etc/hostname` directly - an OS-absolute path is used AS-IS, never
+/// relative to anything - so it can never name a project-relative key this index's `files()`
+/// holds. Left unguarded, the naive join-then-normalize path this unit's own round-8/round-9 fix
+/// already hardens against a different failure shape (an over-count `..`) has a SECOND way to
+/// reach the identical silent-collision failure: for a ROOT-level declaring file (an empty
+/// `declaring_dir`), `format!("{declaring_dir}/{p}")` degenerates to `p` itself unchanged, so an
+/// absolute override `"/actual.rs"` normalizes (via the SAME leading-empty-segment-drops rule
+/// that handles an ordinary `.`) to the bare string `"actual.rs"` - which can coincidentally name
+/// a real, unrelated root-level file, exactly the class of defect
+/// `adv-u86c1-r8-overcount-dotdot-silently-excludes-an-unrelated-real-file` found via a `..`
+/// overflow. This fixture pins the identical failure reached through an absolute path instead.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_path_attribute_override_that_is_an_absolute_path_does_not_silently_collide_with_an_unrelated_real_file(
+) {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::{Projection, KIND_CODE_ENTITY};
+
+    let root = tempfile::tempdir().unwrap();
+    // Both files sit at the PROJECT ROOT, exactly like the over-count `..` fixture above, so an
+    // absolute override's leading `/` is the ONLY thing under test here.
+    std::fs::write(
+        root.path().join("parent.rs"),
+        "pub fn parent_product() {}\n\n#[cfg(test)]\n#[path = \"/actual.rs\"]\nmod helper;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.path().join("actual.rs"),
+        "pub fn totally_unrelated_product() {}\n",
+    )
+    .unwrap();
+
+    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
+    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.iter_mut().enumerate() {
+        event.position = zero_based as u64 + 1;
+        p.apply(event).unwrap();
+    }
+
+    let g = p
+        .subgraph(&["parent.rs".to_string(), "actual.rs".to_string()], 2)
+        .unwrap();
+    let node_ids: std::collections::BTreeSet<&str> =
+        g.nodes.iter().map(|n| n.id.as_str()).collect();
+
+    assert!(
+        node_ids.contains("parent.rs::parent_product"),
+        "the declaring file's own product code stays graphed; nodes: {node_ids:?}"
+    );
+    let has_unrelated_product = g
+        .nodes
+        .iter()
+        .any(|n| n.kind == KIND_CODE_ENTITY && n.id == "actual.rs::totally_unrelated_product");
+    assert!(
+        has_unrelated_product,
+        "an ABSOLUTE #[path] override must resolve to nothing (rustc uses it as an OS-absolute \
+         path directly, never relative to any project directory), not silently normalize its \
+         leading `/` away and collide with an unrelated real root-level file; nodes: {node_ids:?}"
+    );
+}
+
+/// Round 9 mutation-efficacy remedy (`u86c1-r9-mutation-accounting`, missed mutant
+/// `extract.rs:401:35: replace && with || in enclosing_inline_module_path`): the walk's guard is
+/// `n.kind() == "mod_item" && n.child_by_field_name("body").is_some()` - BOTH conditions, not
+/// either. Every fixture above nests the override only inside INLINE `mod outer { .. }` blocks,
+/// where an ancestor satisfying one half of the AND always also satisfies the other (a `mod_item`
+/// ancestor here always has a body; an ancestor with a body is always a `mod_item`), so `&&` and
+/// `||` agree on every one of them - none can distinguish the two. A `fn` body is the one common,
+/// syntactically legal Rust shape that satisfies EXACTLY the WRONG half alone: `function_item`
+/// has a `body` field (its block) but is never `"mod_item"`, so under the mutant `||` it would be
+/// wrongly treated as a module frame and its OWN name spliced into the chain, corrupting the base
+/// directory for an out-of-line `#[path]` declared inside a function.
+///
+/// Verified against real rustc first (throwaway probe crate in my rigger scratch dir, not
+/// committed): `pub fn outer_fn() { let _ = 1; #[path = "actual.rs"] mod helper; }` compiles and
+/// resolves `helper` against the declaring file's OWN directory - `outer_fn` contributes NO
+/// directory component, exactly as the correct `&&` guard computes (a `function_item` ancestor is
+/// skipped, so the chain stays empty and the base falls back to `dir_of(declaring_path)`). Under
+/// the `||` mutant the walk would instead push `"outer_fn"` onto the chain, compute the wrong
+/// base `src/outer_fn`, fail to match any real file, and leave the test-only target UNEXCLUDED -
+/// which this fixture pins by asserting the real target's entity is ABSENT from the graph.
+///
+/// The `let _ = 1;` placeholder statement before the declaration is deliberate, not filler: it
+/// keeps the `mod helper;` declaration from being the function body's OWN first named child. A
+/// leading statement there would otherwise walk into a DIFFERENT, pre-existing, out-of-scope
+/// defect this fixture is not about (`leading_inner_test_attribute`, extract.rs, predates round
+/// 9 entirely): it does not distinguish an OUTER `#[cfg(test)]` attached to a following sibling
+/// item from a genuine INNER `#![cfg(test)]` marking the body's own container, so a body whose
+/// first child happens to be an outer-attributed item reads as if the CONTAINER itself were
+/// test-attributed. Flagged separately as `sdet-u86c1-r9-leading-attribute-inner-outer-conflation`
+/// (out of this round's #[path]-contract scope, not fixed here) rather than folded silently into
+/// this fixture, which stays a clean, single-variable proof of the `&&`/`||` distinction alone.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_path_attribute_override_on_a_mod_declared_inside_a_function_body_is_not_treated_as_nested_in_a_module(
+) {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::{Projection, KIND_CODE_ENTITY};
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("src")).unwrap();
+    std::fs::write(
+        root.path().join("src").join("parent.rs"),
+        "pub fn parent_product() {}\n\npub fn outer_fn() {\n    let _placeholder = 1;\n    \
+         #[cfg(test)]\n    #[path = \"actual.rs\"]\n    mod helper;\n}\n",
+    )
+    .unwrap();
+    // The CORRECT target: the declaring file's own directory (`src/`), matching real rustc - a
+    // function body contributes NO directory component, unlike an inline `mod { .. }` block.
+    std::fs::write(
+        root.path().join("src").join("actual.rs"),
+        "pub fn fn_body_nested_test_helper() {}\n",
+    )
+    .unwrap();
+
+    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
+    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.iter_mut().enumerate() {
+        event.position = zero_based as u64 + 1;
+        p.apply(event).unwrap();
+    }
+
+    let g = p
+        .subgraph(
+            &["src/parent.rs".to_string(), "src/actual.rs".to_string()],
+            2,
+        )
+        .unwrap();
+    let node_ids: std::collections::BTreeSet<&str> =
+        g.nodes.iter().map(|n| n.id.as_str()).collect();
+
+    assert!(
+        node_ids.contains("src/parent.rs::parent_product"),
+        "the declaring file's own product code stays graphed; nodes: {node_ids:?}"
+    );
+    assert!(
+        node_ids.contains("src/parent.rs::outer_fn"),
+        "the enclosing function itself is ordinary product code and stays graphed; \
+         nodes: {node_ids:?}"
+    );
+    let has_target = g
+        .nodes
+        .iter()
+        .any(|n| n.kind == KIND_CODE_ENTITY && n.id == "src/actual.rs::fn_body_nested_test_helper");
+    assert!(
+        !has_target,
+        "a #[path] override on a mod declared inside a FUNCTION body must resolve relative to \
+         the declaring file's own directory (a function contributes no directory component, \
+         unlike an inline `mod {{ .. }}` block) and exclude its real target; if the function's \
+         own name were wrongly spliced into the base directory, resolution would fail to match \
+         and this test-only file would stay graphed as product; nodes: {node_ids:?}"
     );
 }

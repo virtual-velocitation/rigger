@@ -89,6 +89,26 @@ pub struct Def {
     /// field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path_override: Option<String>,
+    /// Round 9 (`op-u86-c1-path-attribute-contract-is-rustc-s-and-unresolvable-never-excludes`):
+    /// the `/`-joined chain of enclosing INLINE `mod name { .. }` names (outermost first) this
+    /// out-of-line declaration sits nested inside, when any - the EXTRA directory-component chain
+    /// a `#[path]` override on it resolves under, one level per enclosing inline module, on top of
+    /// the declaring file's own module directory. `None` when the declaration sits directly at the
+    /// file's own top level (the overwhelmingly common case), in which case the override stays
+    /// directory-of-file-relative exactly as before this field existed. Verified against real
+    /// rustc (throwaway probe crates, not part of this tree): `mod outer { #[path = "foo.rs"] mod
+    /// inner; }` in `src/lib.rs` resolves `foo.rs` against `src/outer/foo.rs`, and the identical
+    /// nesting inside a LEAF file `src/parent.rs` resolves against `src/parent/outer/foo.rs` - the
+    /// file's own MODULE directory (what a plain, non-overridden out-of-line sibling of `parent.rs`
+    /// would already use) with `outer/` appended, never the file's bare directory. Captured
+    /// structurally in [`crate::grounder::symbols::extract::extract`] alongside
+    /// `is_out_of_line_module`/`path_override`, for the same reason: only the declaring file's own
+    /// parsed tree can see its ancestor `mod_item` nodes. Consumed at the events/index layer
+    /// ([`crate::grounder::symbols::events::resolve_out_of_line_target`]'s `#[path]`-override
+    /// branch). `#[serde(default)]` for the same pre-round-9-index-compatibility reason as the
+    /// other out-of-line fields; omitted from the wire form when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enclosing_inline_module_path: Option<String>,
 }
 
 /// A reference site: the referenced name, its 1-based line, and the ENCLOSING definition the
@@ -288,6 +308,7 @@ mod tests {
                     is_test: false,
                     is_out_of_line_module: false,
                     path_override: None,
+                    enclosing_inline_module_path: None,
                 }],
                 refs: vec![SymRef {
                     name: "parse".into(),
@@ -308,6 +329,7 @@ mod tests {
                     is_test: false,
                     is_out_of_line_module: false,
                     path_override: None,
+                    enclosing_inline_module_path: None,
                 }],
                 refs: vec![],
             },
@@ -351,6 +373,7 @@ mod tests {
                     is_test: false,
                     is_out_of_line_module: false,
                     path_override: None,
+                    enclosing_inline_module_path: None,
                 }],
                 refs: vec![SymRef {
                     name: "apply_damage".into(),
@@ -566,6 +589,7 @@ mod tests {
                     is_test: false,
                     is_out_of_line_module: false,
                     path_override: None,
+                    enclosing_inline_module_path: None,
                 }],
                 refs: vec![SymRef {
                     name: "clamp".into(),
