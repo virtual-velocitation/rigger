@@ -114,6 +114,7 @@ fn is_test_false_serializes_byte_identically_to_the_pre86_form() {
                 name: "f".into(),
                 line: 1,
                 is_test: false,
+                is_out_of_line_module: false,
             }],
             refs: vec![SymRef {
                 name: "g".into(),
@@ -151,6 +152,7 @@ fn is_test_true_serializes_the_key_and_round_trips() {
                 name: "it_works".into(),
                 line: 1,
                 is_test: true,
+                is_out_of_line_module: false,
             }],
             refs: vec![SymRef {
                 name: "helper".into(),
@@ -426,6 +428,47 @@ fn cfg_not_test_and_cfg_attr_predicates_graph_as_product_through_the_public_api(
             )
         });
     assert_eq!(real_config.kind, KIND_CODE_ENTITY);
+}
+
+/// Mutation-efficacy pin (round 6 `cargo mutants` finding, `predicate_group_names_test`'s `not`
+/// arm): `not(P)`'s test-only-ness is only answerable by inverting P's answer when P is built
+/// PURELY from `test` - inverting a MIXED predicate like `feature = "x"` (independent of `test`
+/// altogether) is unsound and wrongly marked this ordinary product function as test code,
+/// independently proved here through the SAME public API as the sibling `not(test)` fixture above.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_not_wrapping_a_non_test_atom_graphs_as_product_through_the_public_api() {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::{Projection, KIND_CODE_ENTITY};
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("notfeature.rs"),
+        "#[cfg(not(feature = \"x\"))]\nfn real_client() {}\n",
+    )
+    .unwrap();
+
+    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
+    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.iter_mut().enumerate() {
+        event.position = zero_based as u64 + 1;
+        p.apply(event).unwrap();
+    }
+
+    let g = p.subgraph(&["notfeature.rs".to_string()], 3).unwrap();
+    let real_client = g
+        .nodes
+        .iter()
+        .find(|n| n.id == "notfeature.rs::real_client")
+        .unwrap_or_else(|| {
+            panic!(
+                "#[cfg(not(feature = \"x\"))] fn real_client is independent of test altogether \
+                 and must graph as a product code-entity node; nodes: {:?}",
+                g.nodes.iter().map(|n| &n.id).collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(real_client.kind, KIND_CODE_ENTITY);
 }
 
 /// A round-3 regression fixture, independent of the implementer's own `extract.rs` fixture: the
@@ -952,6 +995,79 @@ fn an_out_of_line_cfg_test_module_declaration_excludes_its_declared_file_through
     );
 }
 
+/// Mutation-efficacy pin (round 6 `cargo mutants` finding, events.rs `out_of_line_test_module_files`'s
+/// `d.kind != Kind::Module || !d.is_out_of_line_module || !d.is_test` skip guard): BOTH the
+/// `is_out_of_line_module` and `is_test` conjuncts are required before a Module-kind definition is
+/// even a CANDIDATE for cross-file exclusion - dropping either gate (mutating either `||` to `&&`)
+/// only misbehaves observably when a coincidentally-named SIBLING FILE exists to wrongly sweep in,
+/// which every earlier fixture in this file never sets up. Two such collisions, in one project:
+///
+/// - `host_a.rs` declares a PLAIN out-of-line `pub mod sibling;` (no `#[cfg(test)]` at all -
+///   `is_out_of_line_module: true`, `is_test: false`) and a REAL `sibling.rs` file happens to
+///   exist; the `is_test` gate must keep `sibling.rs` OUT of exclusion (it is ordinary product
+///   code merely declared from another file).
+/// - `host_b.rs` declares an INLINE `#[cfg(test)] mod contract { .. }` (has its own body -
+///   `is_out_of_line_module: false`, `is_test: true`) and a REAL, UNRELATED `contract.rs` file
+///   happens to share that name; the `is_out_of_line_module` gate must keep `contract.rs` OUT of
+///   exclusion (the inline module governs only its OWN contents by containment, never a
+///   same-named sibling file it never declared).
+#[cfg(feature = "symbols")]
+#[test]
+fn a_non_test_out_of_line_mod_and_an_inline_test_mod_never_exclude_a_coincidentally_named_sibling_file(
+) {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::Projection;
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("host_a.rs"),
+        "fn product_a() {}\n\npub mod sibling;\n",
+    )
+    .unwrap();
+    std::fs::write(root.path().join("sibling.rs"), "pub fn sibling_fn() {}\n").unwrap();
+    std::fs::write(
+        root.path().join("host_b.rs"),
+        "fn product_b() {}\n\n#[cfg(test)]\nmod contract {\n    #[test]\n    fn it_works() {}\n}\n",
+    )
+    .unwrap();
+    std::fs::write(root.path().join("contract.rs"), "pub fn contract_fn() {}\n").unwrap();
+
+    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
+    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.iter_mut().enumerate() {
+        event.position = zero_based as u64 + 1;
+        p.apply(event).unwrap();
+    }
+
+    let g = p
+        .subgraph(
+            &[
+                "host_a.rs".to_string(),
+                "sibling.rs".to_string(),
+                "host_b.rs".to_string(),
+                "contract.rs".to_string(),
+            ],
+            3,
+        )
+        .unwrap();
+    let node_ids: std::collections::BTreeSet<&str> =
+        g.nodes.iter().map(|n| n.id.as_str()).collect();
+
+    assert!(
+        node_ids.contains("sibling.rs::sibling_fn"),
+        "a REAL sibling.rs must stay graphed when the only thing naming it is a NON-test \
+         out-of-line `pub mod sibling;` - the is_test gate must block exclusion here; nodes: \
+         {node_ids:?}"
+    );
+    assert!(
+        node_ids.contains("contract.rs::contract_fn"),
+        "a REAL contract.rs must stay graphed when the only coincidence is an INLINE \
+         `#[cfg(test)] mod contract {{ .. }}` elsewhere sharing its name - the \
+         is_out_of_line_module gate must block exclusion here; nodes: {node_ids:?}"
+    );
+}
+
 /// Round-5 mandated surface (`op-u86c1-r5-close-every-remaining-test-shape` item 3): "any item
 /// kind" names `impl_item` explicitly among the node kinds an excluding attribute may sit on.
 /// Rust's own `tags.scm` (`tree-sitter-rust` 0.24.2) captures an `impl_item` ONLY as
@@ -990,6 +1106,12 @@ impl Widget {
 }
 
 fn product() {}
+
+struct Ordinary;
+
+impl Ordinary {
+    fn ordinary_method() {}
+}
 ";
 
 #[cfg(feature = "symbols")]
@@ -1030,6 +1152,23 @@ fn a_cfg_test_impl_block_excludes_its_methods_through_the_public_api() {
          already is by containment - since an impl_item is never itself a tags-query definition, \
          nothing currently treats the attributed impl block as a test-region container the way a \
          mod_item already is; leaked: {leaked:?}"
+    );
+
+    // Mutation-efficacy pin (round 6 `cargo mutants` finding, extract.rs `collect_self_attributed_
+    // impl_regions`): an ORDINARY (non-`#[cfg(test)]`) impl block's method must NOT be swept up as
+    // test code merely because SOME OTHER impl block in the file is self-attributed test - the
+    // check is `node.kind() == "impl_item" && node_preceded_by_test_attribute(..)`, both conjuncts
+    // required. Mutating that `&&` to `||` would treat EVERY `impl_item` in the file as a test
+    // region regardless of its own attribution (the first disjunct alone is enough), which every
+    // assertion above is blind to (`product`/`helper`/`it_works` are never themselves inside an
+    // ordinary impl block) - only a method inside a genuinely ordinary impl block catches it.
+    assert!(
+        g.nodes
+            .iter()
+            .any(|n| n.id == "widgetimpl.rs::ordinary_method"),
+        "a method inside an ORDINARY (non-test) impl block must stay graphed even though the same \
+         file also has a #[cfg(test)]-attributed impl block elsewhere; got {:?}",
+        g.nodes
     );
 }
 
