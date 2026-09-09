@@ -10,13 +10,19 @@ use crate::contextgraph::{
 };
 use crate::eventstore::Event;
 use crate::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef, SymbolIndex};
+use std::collections::BTreeSet;
 
 /// Emit the whole index as events: for each file (in the index's sorted path order) its
 /// definitions and references, lowered through [`extract_events`]. Deterministic by construction -
-/// the index iterates a `BTreeMap`, so identical source yields byte-identical events.
+/// the index iterates a `BTreeMap`, so identical source yields byte-identical events. Round 6: a
+/// file [`out_of_line_test_module_files`] resolves as the target of a `#[cfg(test)] mod name;`
+/// declaration elsewhere in `idx` is skipped entirely - the same "no batch at all" treatment
+/// [`is_under_tests_dir`] already gives a file directly under `tests/`.
 pub fn index_events(idx: &SymbolIndex) -> Vec<Event> {
+    let excluded = out_of_line_test_module_files(idx);
     idx.files()
         .iter()
+        .filter(|(path, _)| !excluded.contains(path.as_str()))
         .flat_map(|(path, fs)| extract_events(path, fs))
         .collect()
 }
@@ -47,7 +53,12 @@ pub fn project_batches(root: &str) -> Vec<(String, Vec<Event>)> {
 pub fn project_batches_paced(root: &str, workers: usize) -> (Vec<(String, Vec<Event>)>, usize) {
     let idx = crate::grounder::symbols::store::load(root)
         .unwrap_or_else(|| crate::grounder::symbols::build_index(root, None));
-    let files: Vec<(&String, &FileSymbols)> = idx.files().iter().collect();
+    let excluded = out_of_line_test_module_files(&idx);
+    let files: Vec<(&String, &FileSymbols)> = idx
+        .files()
+        .iter()
+        .filter(|(path, _)| !excluded.contains(path.as_str()))
+        .collect();
     // Parse/lower per file in parallel; `map_ordered` returns the per-file results in the input
     // (sorted-path) order, so the emit sequence is independent of which worker finished first.
     let (per_file, workers_engaged) =
@@ -191,6 +202,47 @@ fn is_under_tests_dir(file: &str) -> bool {
     segments.contains(&"tests")
 }
 
+/// Round 6 (`op-u86c1-r5-close-every-remaining-test-shape` item 2): the set of file paths in `idx`
+/// that are declared, OUT OF LINE, by a `#[cfg(test)] mod name;` item somewhere in another file -
+/// Rust's out-of-tree module form, distinct from an INLINE `#[cfg(test)] mod name { .. }` (which
+/// already excludes its own contents by containment, `Def::is_test`/`extract::test_regions`,
+/// needing no cross-file lookup at all). A per-file extraction pass can structurally never see this
+/// on the DECLARED file's own side - the attribute governing it lives in the DECLARING file's tree
+/// entirely (`Def::is_out_of_line_module`'s doc) - so this resolves it here, at the events/index
+/// layer, the ONE place every file's path in the project is already known together.
+///
+/// Resolution mirrors Rust's own file-per-module convention: a flat sibling `<dir>/<name>.rs` in
+/// the declaring file's OWN directory, matched against paths `idx` ACTUALLY holds (never assumed),
+/// so a name that merely looks like a module path but names no real file resolves to nothing. This
+/// is the shape this repo's own two round-5-disclosed live instances take -
+/// `src/eventstore/mod.rs` -> `src/eventstore/contract.rs`, `src/lib.rs` ->
+/// `src/blast_radius_eval.rs` - and the one this round's periphery test pins; the mandate
+/// (`op-u86c1-r5-close-every-remaining-test-shape` item 2) additionally names a nested
+/// `<dir>/<name>/mod.rs` directory-module form and a `#[path = ".."]` override, NEITHER of which
+/// has a live occurrence or a failing test pinning it today (`dec-u86c1-r6-path-and-nested-mod-not-
+/// yet-covered`) - left for a future round with a concrete fixture, rather than adding an untested
+/// branch here now.
+fn out_of_line_test_module_files(idx: &SymbolIndex) -> BTreeSet<String> {
+    let mut excluded = BTreeSet::new();
+    for (path, fs) in idx.files() {
+        let dir = path.rfind('/').map(|i| &path[..i]).unwrap_or("");
+        for d in &fs.defs {
+            if d.kind != Kind::Module || !d.is_out_of_line_module || !d.is_test {
+                continue;
+            }
+            let flat = if dir.is_empty() {
+                format!("{}.rs", d.name)
+            } else {
+                format!("{dir}/{}.rs", d.name)
+            };
+            if idx.files().contains_key(&flat) {
+                excluded.insert(flat);
+            }
+        }
+    }
+    excluded
+}
+
 /// The lowercase, stable string for a rigger definition `Kind`, carried on the emitted event and
 /// folded onto the code-entity node's `kind` attr. A rigger-owned rendering, never a grammar tag.
 fn kind_str(k: Kind) -> &'static str {
@@ -331,12 +383,14 @@ mod tests {
                     name: "beta".to_string(),
                     line: 9,
                     is_test: false,
+                    is_out_of_line_module: false,
                 },
                 Def {
                     kind: Kind::Function,
                     name: "alpha".to_string(),
                     line: 3,
                     is_test: false,
+                    is_out_of_line_module: false,
                 },
             ],
             refs: vec![SymRef {
@@ -434,6 +488,7 @@ mod tests {
                 name: "F".to_string(),
                 line: 1,
                 is_test: false,
+                is_out_of_line_module: false,
             }],
             refs: vec![
                 // A call to `G` from inside the body of `F`: attributed to its enclosing caller.
@@ -521,6 +576,7 @@ mod tests {
                 name: "product_fn".into(),
                 line: 1,
                 is_test: false,
+                is_out_of_line_module: false,
             }],
             refs: vec![SymRef {
                 name: "product_fn".into(),
@@ -574,12 +630,14 @@ mod tests {
                     name: "aaa_test_item".into(),
                     line: 5,
                     is_test: true,
+                    is_out_of_line_module: false,
                 },
                 Def {
                     kind: Kind::Function,
                     name: "product_fn".into(),
                     line: 1,
                     is_test: false,
+                    is_out_of_line_module: false,
                 },
             ],
             refs: vec![

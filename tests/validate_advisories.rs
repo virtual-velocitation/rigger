@@ -114,6 +114,7 @@ fn persist_index(root: &Path, entries: &[(&str, &str)]) {
                     name: "f".into(),
                     line: 1,
                     is_test: false,
+                    is_out_of_line_module: false,
                 }],
                 refs: vec![],
             },

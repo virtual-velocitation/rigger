@@ -69,6 +69,9 @@ pub fn extract(
                 // Resolved below, once every definition's range is known (test_regions needs the
                 // WHOLE set to decide containment, not just what has been seen so far).
                 is_test: false,
+                // Resolved below too, from the second parsed tree (only a `Module`-kind def can
+                // ever be true here; see `Def::is_out_of_line_module`).
+                is_out_of_line_module: false,
             });
         } else {
             ref_positions.push(tag.range.start);
@@ -111,7 +114,19 @@ pub fn extract(
     let tree = parser
         .parse(source, None)
         .ok_or_else(|| "symbols: parse: tree-sitter produced no syntax tree".to_string())?;
-    let regions = test_regions(source.as_bytes(), tree.root_node(), &def_ranges);
+    // Round 6 (`op-u86c1-r5-close-every-remaining-test-shape` item 3): a self-attributed
+    // `#[cfg(test)] impl Widget { .. }` is a test-region container exactly like a self-attributed
+    // `mod_item` already is, but `impl_item` is never itself a `def_ranges` entry (tags.scm tags it
+    // only as `@reference.implementation`, never a `@definition.*` - see
+    // `self_attributed_impl_regions`'s doc), so `test_regions` alone can never find it. Found by a
+    // direct tree walk instead and merged into the SAME `regions` list, so the containment check
+    // below covers a plain method nested in such an impl by the identical mechanism that already
+    // covers a plain helper nested in a `#[cfg(test)] mod`.
+    let mut regions = test_regions(source.as_bytes(), tree.root_node(), &def_ranges);
+    regions.extend(self_attributed_impl_regions(
+        tree.root_node(),
+        source.as_bytes(),
+    ));
     if !regions.is_empty() {
         for (d, (range, _)) in defs.iter_mut().zip(def_ranges.iter()) {
             d.is_test = regions
@@ -120,6 +135,21 @@ pub fn extract(
         }
         for (r, &pos) in refs.iter_mut().zip(ref_positions.iter()) {
             r.is_test = regions.iter().any(|region| region.contains(&pos));
+        }
+    }
+    // Round 6 (`op-u86c1-r5-close-every-remaining-test-shape` item 2): mark every `Module`-kind
+    // definition that is an OUT-OF-LINE declaration (`mod name;`, no body of its own - see
+    // `Def::is_out_of_line_module`'s doc for why this file's own extraction can never resolve what
+    // it names, only flag that it IS one). Independent of the test-region pass above: whether the
+    // declaration is ALSO test-attributed is already carried on `is_test` by that same pass (a
+    // `mod_item`, in or out of line, is itself a `def_ranges` entry, so `test_regions` already
+    // covers it); this only adds the "has no body" fact the events/index layer needs to act on it.
+    for (d, (range, _)) in defs.iter_mut().zip(def_ranges.iter()) {
+        if d.kind == Kind::Module {
+            d.is_out_of_line_module = tree
+                .root_node()
+                .descendant_for_byte_range(range.start, range.end)
+                .is_some_and(|n| n.kind() == "mod_item" && n.child_by_field_name("body").is_none());
         }
     }
     Ok(FileSymbols { lang, defs, refs })
@@ -190,6 +220,11 @@ fn test_regions(
 /// attribute-bearing node kinds is exactly `attribute_item` and `inner_attribute_item` (grepped
 /// `node-types.json`; `attribute` itself is never a sibling - it is always the sole named child of
 /// one of the other two), so these two checks are exhaustive.
+///
+/// Round 6: the actual test - both directions - is [`node_preceded_by_test_attribute`], factored
+/// out so [`self_attributed_impl_regions`] can ask it of a node it already has in hand (from a
+/// direct tree walk) without a redundant `descendant_for_byte_range` round-trip through a range
+/// that was never in `def_ranges` to begin with (`impl_item` never is - see that function's doc).
 fn preceded_by_test_attribute(
     source: &[u8],
     root: tree_sitter::Node,
@@ -198,8 +233,52 @@ fn preceded_by_test_attribute(
     let Some(node) = root.descendant_for_byte_range(range.start, range.end) else {
         return false;
     };
+    node_preceded_by_test_attribute(node, source)
+}
+
+/// The shared core [`preceded_by_test_attribute`] and [`self_attributed_impl_regions`] both apply
+/// once a candidate node is in hand: self-attributed test either through the node's OWN leading
+/// inner attribute ([`leading_inner_test_attribute`]) or through an outer attribute stack sitting
+/// as its sibling immediately before it.
+fn node_preceded_by_test_attribute(node: tree_sitter::Node, source: &[u8]) -> bool {
     leading_inner_test_attribute(node, source)
         || attribute_stack_names_test(source, node.prev_sibling(), |n| n.prev_sibling())
+}
+
+/// Round 6 (`op-u86c1-r5-close-every-remaining-test-shape` item 3): every self-attributed
+/// `impl_item` node's own byte range, found by walking the parsed tree DIRECTLY rather than through
+/// `def_ranges` the way [`test_regions`] finds a self-attributed `mod_item`/`function_item`/etc. -
+/// `tree-sitter-rust`'s own `tags.scm` captures `impl_item` ONLY as `@reference.implementation`,
+/// never as any `@definition.*`, so an impl block can never appear in `def_ranges` in the first
+/// place and `test_regions`'s filter-over-`def_ranges` can structurally never see it, no matter how
+/// it is attributed. The caller merges these ranges into the SAME `regions` list `test_regions`
+/// returns, so a plain method (or any other item) nested inside a self-attributed impl block is
+/// marked test BY CONTAINMENT - the identical mechanism that already covers a plain helper nested
+/// inside a self-attributed `#[cfg(test)] mod`, with no separate containment rule needed here.
+fn self_attributed_impl_regions(
+    root: tree_sitter::Node,
+    source: &[u8],
+) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::new();
+    collect_self_attributed_impl_regions(root, source, &mut out);
+    out
+}
+
+/// The preorder tree walk behind [`self_attributed_impl_regions`]: every `impl_item` node anywhere
+/// under `node` (not merely at the top level - a `#[cfg(test)] impl` can itself sit inside another
+/// container) that [`node_preceded_by_test_attribute`]s contributes its own `byte_range()`.
+fn collect_self_attributed_impl_regions(
+    node: tree_sitter::Node,
+    source: &[u8],
+    out: &mut Vec<std::ops::Range<usize>>,
+) {
+    if node.kind() == "impl_item" && node_preceded_by_test_attribute(node, source) {
+        out.push(node.byte_range());
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_self_attributed_impl_regions(child, source, out);
+    }
 }
 
 /// Whether `node` (a definition such as a `mod_item`, `function_item`, `impl_item`, ...) is
@@ -285,54 +364,106 @@ fn attribute_item_names_test(item: tree_sitter::Node, source: &[u8]) -> bool {
 /// e.g. the parse of `"(test)"`, `"(all(test, feature = \"x\"))"`, `"(not(test))"`,
 /// `"(all(not(test), feature = \"x\"))"`, `"(any(debug_assertions, test))"`) GATES the tagged
 /// item's compilation ON `test` being set. `cfg` always takes exactly ONE predicate argument, so
-/// this reads `tt`'s single top-level [`comma_separated_groups`] group and hands it to
-/// [`predicate_group_names_test`] - the same entry point `not`'s own single-argument
-/// `token_tree` reuses (see there), since both combinators take one predicate the identical way.
+/// this reads the "names test" half of [`token_tree_facts`] - the "is pure test algebra" half it
+/// also computes exists only so a NESTED `not(..)` can invert soundly (see
+/// [`predicate_group_facts`]'s doc), and is never needed at this, the outermost, call.
 fn cfg_predicate_token_tree_names_test(tt: tree_sitter::Node, source: &[u8]) -> bool {
+    token_tree_facts(tt, source).0
+}
+
+/// [`predicate_group_facts`] applied to a combinator's own parenthesized `token_tree` ARGUMENT
+/// (rather than an already-split GROUP): `cfg`/`not` always take exactly one predicate argument,
+/// so this reads the token tree's single top-level [`comma_separated_groups`] group. `(false,
+/// false)` when the token tree is empty (never test-only, and trivially pure by having nothing
+/// impure in it - though this shape does not arise from any real `cfg` syntax).
+fn token_tree_facts(tt: tree_sitter::Node, source: &[u8]) -> (bool, bool) {
     comma_separated_groups(tt)
         .first()
-        .is_some_and(|group| predicate_group_names_test(group, source))
+        .map(|group| predicate_group_facts(group, source))
+        .unwrap_or((false, false))
 }
 
 /// Whether one comma-separated argument GROUP (a `Vec` of sibling nodes with no top-level comma
-/// between them - see [`comma_separated_groups`]) inside a `cfg` predicate names `test`, by a
-/// minimal recursive descent over the cfg predicate grammar `ident | not(P) | all(P, ...) |
-/// any(P, ...)`, evaluating test-truthiness STRUCTURALLY off the group's leading node rather than
-/// by a flat token search:
+/// between them - see [`comma_separated_groups`]) inside a `cfg` predicate BOTH (a) names `test` -
+/// the predicate is satisfiable only when `test` is set - and (b) is PURE test algebra - built
+/// EXCLUSIVELY from `test`/`not`/`all`/`any`, naming no other cfg atom (a feature flag,
+/// `target_os`, a bare `debug_assertions`, ...) anywhere in it. Computed TOGETHER in one minimal
+/// recursive descent over the cfg predicate grammar `ident | not(P) | all(P, ...) | any(P, ...)`,
+/// never as two separate walks over the identical shape (a round-6 `cargo mutants` finding /
+/// `docs/audit`'s own duplication scan: an earlier version of this fix shipped "names test" and
+/// "is pure" as two near-identical functions, exactly the duplicate-implementation shape this
+/// repo's own audit exists to catch) - `not(P)`'s "names test" answer can only be obtained by
+/// inverting P's own "names test" answer WHEN P is ALSO pure, so the `not` arm needs both facts
+/// about P at once:
 /// - a bare identifier (or a `key = "value"` attribute, e.g. `feature = "x"` - the leading
 ///   identifier plus a non-`token_tree` value node, so the `not`/`all`/`any` match below never
-///   fires) names `test` iff that LEADING identifier is EXACTLY `test`, so a similarly-spelled but
-///   distinct identifier (`testing`, `test_helper`) or a value merely spelled `"test"` (`feature =
-///   "test"`) never matches - only the identifier the parser resolved as the predicate's own name
-///   is ever compared, never a substring of an unrelated string literal.
-/// - `not(P)` (leading identifier `not` followed by its own `token_tree` argument) inverts P's
-///   answer: `not(test)` never names test (`#[cfg(not(test))]` is Rust's standard idiom for the
-///   PRODUCTION-only half of a dual-cfg mock construct - the item it guards compiles whenever
-///   `test` is NOT set, so it is definitionally the item that SHIPS).
+///   fires) names test, and is pure, iff that LEADING identifier is EXACTLY `test` - so a
+///   similarly-spelled but distinct identifier (`testing`, `test_helper`) or a value merely
+///   spelled `"test"` (`feature = "test"`) never matches either fact - only the identifier the
+///   parser resolved as the predicate's own name is ever compared, never a substring of an
+///   unrelated string literal.
+/// - `not(P)` (leading identifier `not` followed by its own `token_tree` argument) is pure iff P
+///   is, and names test iff P is pure AND P does NOT name test: `not(test)` never names test
+///   (`#[cfg(not(test))]` is Rust's standard idiom for the PRODUCTION-only half of a dual-cfg
+///   mock construct - the item it guards compiles whenever `test` is NOT set, so it is
+///   definitionally the item that SHIPS), and `not(not(test))` (double negation) DOES name test.
+///   A MIXED inner predicate - `not(feature = "x")`, naming no `test` anywhere and therefore NOT
+///   pure - is never inverted: `feature = "x"`'s own truth is independent of `test` altogether
+///   (it can be on or off regardless of `test`), so inverting its unrelated answer would tell you
+///   nothing sound about test-exclusivity; the item it guards compiles whenever `feature` is off,
+///   in EITHER a test or a non-test build, so it is definitively NOT test-only (a round-6 `cargo
+///   mutants` finding: reading an earlier, un-guarded `!inner_names_test` as a general "P is not
+///   itself test, so not(P) IS test" leap - sound only for a pure `test` subtree - wrongly marked
+///   `#[cfg(not(feature = "x"))] fn real_client() {}`, an ordinary product function, as test code
+///   and excluded it from the graph).
 /// - `all(P1, .., Pn)` (every conjunct must hold to compile) names test iff ANY Pi does - one
 ///   conjunct requiring `test` is enough to make the WHOLE predicate satisfiable only under test
 ///   (`all(test, feature = "x")`), and that holds wherever the `not(test)` production-half idiom
 ///   sits too: `all(not(test), feature = "x")` still means "compiles whenever test is NOT set",
-///   never test-only, because its `not(test)` conjunct answers `false`.
+///   never test-only, because its `not(test)` conjunct answers `false`. Pure iff EVERY Pi is
+///   (one impure conjunct is enough to make an ENCLOSING `not`'s inversion of this whole group
+///   unsound, even though `all` itself never inverts anything - purity must still propagate
+///   outward).
 /// - `any(P1, .., Pn)` (any ONE disjunct is enough to compile) names test iff EVERY Pi does - a
 ///   disjunct that does not need `test` (`any(debug_assertions, test)`) gives the item a path to
 ///   compile with `test` unset (a debug-only helper that ships in every non-release build), so the
-///   whole predicate is not test-only even though one disjunct names the `test` token.
-fn predicate_group_names_test(group: &[tree_sitter::Node], source: &[u8]) -> bool {
+///   whole predicate is not test-only even though one disjunct names the `test` token. Pure iff
+///   EVERY Pi is, for the same outward-propagation reason as `all`.
+fn predicate_group_facts(group: &[tree_sitter::Node], source: &[u8]) -> (bool, bool) {
     let Some(head) = group.first() else {
-        return false;
+        return (false, false);
     };
     let name = head.utf8_text(source).unwrap_or_default();
     let combinator_args = group.get(1).filter(|n| n.kind() == "token_tree");
     match (name, combinator_args) {
-        ("not", Some(&args)) => !cfg_predicate_token_tree_names_test(args, source),
-        ("all", Some(&args)) => comma_separated_groups(args)
-            .iter()
-            .any(|g| predicate_group_names_test(g, source)),
-        ("any", Some(&args)) => comma_separated_groups(args)
-            .iter()
-            .all(|g| predicate_group_names_test(g, source)),
-        _ => name == "test",
+        ("not", Some(&args)) => {
+            let (inner_names_test, inner_pure) = token_tree_facts(args, source);
+            (inner_pure && !inner_names_test, inner_pure)
+        }
+        ("all", Some(&args)) => {
+            let facts: Vec<(bool, bool)> = comma_separated_groups(args)
+                .iter()
+                .map(|g| predicate_group_facts(g, source))
+                .collect();
+            (
+                facts.iter().any(|&(names_test, _)| names_test),
+                facts.iter().all(|&(_, pure)| pure),
+            )
+        }
+        ("any", Some(&args)) => {
+            let facts: Vec<(bool, bool)> = comma_separated_groups(args)
+                .iter()
+                .map(|g| predicate_group_facts(g, source))
+                .collect();
+            (
+                facts.iter().all(|&(names_test, _)| names_test),
+                facts.iter().all(|&(_, pure)| pure),
+            )
+        }
+        _ => {
+            let is_test = name == "test";
+            (is_test, is_test)
+        }
     }
 }
 
@@ -346,7 +477,7 @@ fn predicate_group_names_test(group: &[tree_sitter::Node], source: &[u8]) -> boo
 /// the `=` in a `key = "value"` argument, ...) is dropped - the named nodes on either side of it
 /// are what a caller inspects. Each returned group is a `Vec` (never a single node) because a
 /// `key = "value"` argument is TWO sibling named nodes (`identifier`, `string_literal`) with no
-/// grouping node of their own, so `predicate_group_names_test` must see both to read the leading
+/// grouping node of their own, so `predicate_group_facts` must see both to read the leading
 /// identifier.
 fn comma_separated_groups(tt: tree_sitter::Node) -> Vec<Vec<tree_sitter::Node>> {
     let mut groups = Vec::new();
@@ -767,6 +898,44 @@ struct RealConfig;
         assert!(
             !def_is_test("RealConfig"),
             "cfg_attr's predicate governs the inner attribute, not the tagged item's own compilation"
+        );
+    }
+
+    #[test]
+    fn a_not_wrapping_a_non_test_atom_never_marks_the_item_test() {
+        // Round-6 `cargo mutants` finding: `predicate_group_facts`'s `not` arm used to (in an
+        // earlier version of this fix) invert its inner predicate's answer UNCONDITIONALLY -
+        // sound only when the inner
+        // predicate is built purely from `test` (a `not(test)`/`not(not(test))`/... chain), but
+        // wrongly also applied to a `not(P)` wrapping an UNRELATED atom. `feature = "x"`'s own
+        // truth is independent of `test` altogether (on or off regardless of `test`'s value), so
+        // `not(feature = "x")` compiles whenever `feature` is OFF - in EITHER a test or a
+        // non-test build - and must never be marked test code, exactly as an item under an
+        // ordinary, un-negated `#[cfg(feature = "x")]` never is.
+        let src = "\
+#[cfg(not(feature = \"x\"))]
+fn real_client() {}
+
+#[cfg(not(not(test)))]
+fn double_negation_is_test_only() {}
+";
+        let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
+        let fs = extract(src, Lang::Rust, &language, tree_sitter_rust::TAGS_QUERY).unwrap();
+        let def_is_test = |name: &str| {
+            fs.defs
+                .iter()
+                .find(|d| d.name == name)
+                .unwrap_or_else(|| panic!("no def named {name:?}; got {:?}", fs.defs))
+                .is_test
+        };
+        assert!(
+            !def_is_test("real_client"),
+            "not(feature = \"x\") is independent of test altogether - never test code"
+        );
+        assert!(
+            def_is_test("double_negation_is_test_only"),
+            "not(not(test)) cancels back to test-only - a PURE test predicate, so inversion is \
+             sound here and must still recognize it as test code"
         );
     }
 

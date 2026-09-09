@@ -6933,8 +6933,8 @@
       },
       {
         "file": "tests/validate_advisories.rs",
-        "start_line": 241,
-        "end_line": 241,
+        "start_line": 242,
+        "end_line": 242,
         "name": "\".rigger\""
       },
       {
@@ -10751,14 +10751,14 @@
       },
       {
         "file": "src/grounder/symbols/events.rs",
-        "start_line": 196,
-        "end_line": 207,
+        "start_line": 248,
+        "end_line": 259,
         "name": "kind_str"
       },
       {
         "file": "src/grounder/symbols/events.rs",
-        "start_line": 211,
-        "end_line": 220,
+        "start_line": 263,
+        "end_line": 272,
         "name": "lang_str"
       }
     ],
@@ -11313,8 +11313,8 @@
       },
       {
         "file": "src/grounder/symbols/events.rs",
-        "start_line": 36,
-        "end_line": 38,
+        "start_line": 42,
+        "end_line": 44,
         "name": "project_batches"
       }
     ],
@@ -11504,7 +11504,7 @@
       {
         "file": "src/grounder/symbols/extract.rs",
         "start_line": 34,
-        "end_line": 126,
+        "end_line": 156,
         "name": "extract"
       },
       {
@@ -11529,42 +11529,48 @@
     "sites": [
       {
         "file": "src/grounder/symbols/extract.rs",
-        "start_line": 624,
-        "end_line": 692,
+        "start_line": 755,
+        "end_line": 823,
         "name": "test_annotated_definitions_and_everything_nested_inside_them_are_marked_is_test"
       },
       {
         "file": "src/grounder/symbols/extract.rs",
-        "start_line": 695,
-        "end_line": 733,
+        "start_line": 826,
+        "end_line": 864,
         "name": "cfg_predicates_naming_test_are_recognized_and_similarly_spelled_tokens_are_not"
       },
       {
         "file": "src/grounder/symbols/extract.rs",
-        "start_line": 736,
-        "end_line": 771,
+        "start_line": 867,
+        "end_line": 902,
         "name": "negated_and_cfg_attr_predicates_naming_test_do_not_mark_the_item_test"
       },
       {
         "file": "src/grounder/symbols/extract.rs",
-        "start_line": 774,
-        "end_line": 809,
+        "start_line": 905,
+        "end_line": 940,
+        "name": "a_not_wrapping_a_non_test_atom_never_marks_the_item_test"
+      },
+      {
+        "file": "src/grounder/symbols/extract.rs",
+        "start_line": 943,
+        "end_line": 978,
         "name": "compound_predicates_with_nested_negation_or_a_non_test_disjunct_do_not_mark_the_item_test"
       },
       {
         "file": "src/grounder/symbols/extract.rs",
-        "start_line": 812,
-        "end_line": 852,
+        "start_line": 981,
+        "end_line": 1021,
         "name": "a_trailing_same_line_comment_on_a_cfg_test_attribute_does_not_sever_the_scan"
       },
       {
         "file": "src/grounder/symbols/extract.rs",
-        "start_line": 855,
-        "end_line": 908,
+        "start_line": 1024,
+        "end_line": 1077,
         "name": "an_inner_cfg_test_attribute_marks_its_enclosing_module_and_the_module_marks_its_children"
       }
     ],
-    "proposed_home": "extract::support (consolidate these 6 sites into one function in this file)",
+    "proposed_home": "extract::support (consolidate these 7 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -11573,14 +11579,14 @@
     "sites": [
       {
         "file": "src/grounder/symbols/extract.rs",
-        "start_line": 999,
-        "end_line": 1045,
+        "start_line": 1168,
+        "end_line": 1214,
         "name": "extent_spans_a_destructuring_or_default_brace_signature_to_the_full_body"
       },
       {
         "file": "src/grounder/symbols/extract.rs",
-        "start_line": 1048,
-        "end_line": 1110,
+        "start_line": 1217,
+        "end_line": 1279,
         "name": "extent_generalizes_across_grammars_python_nested_def_and_js_brace_string"
       }
     ],
@@ -11639,14 +11645,14 @@
     "sites": [
       {
         "file": "src/grounder/symbols/mod.rs",
-        "start_line": 316,
-        "end_line": 326,
+        "start_line": 317,
+        "end_line": 327,
         "name": "a_file_added_to_the_tree_since_the_index_was_built_is_flagged"
       },
       {
         "file": "src/grounder/symbols/mod.rs",
-        "start_line": 329,
-        "end_line": 344,
+        "start_line": 330,
+        "end_line": 345,
         "name": "a_file_removed_from_the_tree_since_the_index_was_built_is_flagged"
       }
     ],
@@ -11659,14 +11665,14 @@
     "sites": [
       {
         "file": "src/grounder/symbols/model.rs",
-        "start_line": 116,
-        "end_line": 118,
+        "start_line": 133,
+        "end_line": 135,
         "name": "insert_file"
       },
       {
         "file": "src/grounder/symbols/model.rs",
-        "start_line": 136,
-        "end_line": 138,
+        "start_line": 153,
+        "end_line": 155,
         "name": "set_hash"
       }
     ],
@@ -17829,8 +17835,8 @@
       },
       {
         "file": "tests/validate_advisories.rs",
-        "start_line": 268,
-        "end_line": 293,
+        "start_line": 269,
+        "end_line": 294,
         "name": "validate_warns_of_log_bloat_with_the_measured_factor_and_names_reset_derived"
       }
     ],
@@ -18452,13 +18458,13 @@
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
         "start_line": 98,
-        "end_line": 133,
+        "end_line": 134,
         "name": "is_test_false_serializes_byte_identically_to_the_pre86_form"
       },
       {
         "file": "tests/symbol_ref_caller_attribution.rs",
         "start_line": 32,
-        "end_line": 74,
+        "end_line": 75,
         "name": "a_caller_less_reference_serializes_byte_identically_to_the_pre37_form"
       }
     ],
@@ -18471,14 +18477,14 @@
     "sites": [
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 190,
-        "end_line": 242,
+        "start_line": 192,
+        "end_line": 244,
         "name": "a_pre86_persisted_index_with_no_is_test_key_loads_defaulting_every_item_to_false"
       },
       {
         "file": "tests/symbol_ref_caller_attribution.rs",
-        "start_line": 124,
-        "end_line": 174,
+        "start_line": 126,
+        "end_line": 176,
         "name": "a_pre37_persisted_index_loads_folding_references_caller_less"
       }
     ],
@@ -18491,24 +18497,30 @@
     "sites": [
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 382,
-        "end_line": 429,
+        "start_line": 384,
+        "end_line": 431,
         "name": "cfg_not_test_and_cfg_attr_predicates_graph_as_product_through_the_public_api"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 574,
-        "end_line": 609,
+        "start_line": 440,
+        "end_line": 472,
+        "name": "a_not_wrapping_a_non_test_atom_graphs_as_product_through_the_public_api"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "start_line": 617,
+        "end_line": 652,
         "name": "a_url_bearing_attribute_between_test_and_the_item_does_not_leak_the_item_into_the_graph"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 690,
-        "end_line": 723,
+        "start_line": 733,
+        "end_line": 766,
         "name": "a_comment_mentioning_test_attribute_text_does_not_exclude_the_item_through_the_public_api"
       }
     ],
-    "proposed_home": "code_entity_test_exclusion_periphery::support (consolidate these 3 sites into one function in this file)",
+    "proposed_home": "code_entity_test_exclusion_periphery::support (consolidate these 4 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -18517,44 +18529,44 @@
     "sites": [
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 507,
-        "end_line": 548,
+        "start_line": 550,
+        "end_line": 591,
         "name": "a_trailing_comment_on_cfg_test_still_excludes_the_module_through_the_public_api"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 634,
-        "end_line": 671,
+        "start_line": 677,
+        "end_line": 714,
         "name": "a_multiline_cfg_test_attribute_still_excludes_the_module_through_the_public_api"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 761,
-        "end_line": 804,
+        "start_line": 804,
+        "end_line": 847,
         "name": "a_trailing_comma_in_a_wrapped_cfg_predicate_still_excludes_the_module_through_the_public_api"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 832,
-        "end_line": 875,
+        "start_line": 875,
+        "end_line": 918,
         "name": "an_inner_cfg_test_attribute_excludes_its_module_through_the_public_api"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 913,
-        "end_line": 953,
+        "start_line": 956,
+        "end_line": 996,
         "name": "an_out_of_line_cfg_test_module_declaration_excludes_its_declared_file_through_the_public_api"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 997,
-        "end_line": 1034,
+        "start_line": 1119,
+        "end_line": 1173,
         "name": "a_cfg_test_impl_block_excludes_its_methods_through_the_public_api"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 1084,
-        "end_line": 1129,
+        "start_line": 1223,
+        "end_line": 1268,
         "name": "cfg_test_on_every_other_item_kind_excludes_or_stays_scoped_through_the_public_api"
       }
     ],
@@ -24355,14 +24367,14 @@
     "sites": [
       {
         "file": "tests/validate_advisories.rs",
-        "start_line": 296,
-        "end_line": 309,
+        "start_line": 297,
+        "end_line": 310,
         "name": "validate_is_silent_on_log_bloat_when_every_key_is_recorded_once"
       },
       {
         "file": "tests/validate_advisories.rs",
-        "start_line": 312,
-        "end_line": 340,
+        "start_line": 313,
+        "end_line": 341,
         "name": "validate_is_silent_on_log_bloat_when_the_same_key_recurs_only_across_different_covered_types"
       }
     ],

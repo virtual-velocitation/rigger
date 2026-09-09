@@ -47,6 +47,7 @@ fn a_caller_less_reference_serializes_byte_identically_to_the_pre37_form() {
                 name: "f".into(),
                 line: 1,
                 is_test: false,
+                is_out_of_line_module: false,
             }],
             refs: vec![
                 SymRef {
@@ -92,6 +93,7 @@ fn a_caller_attributed_reference_serializes_and_reloads_its_enclosing_name() {
                 name: "f".into(),
                 line: 1,
                 is_test: false,
+                is_out_of_line_module: false,
             }],
             refs: vec![SymRef {
                 name: "G".into(),

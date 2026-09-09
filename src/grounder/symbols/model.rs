@@ -56,6 +56,23 @@ pub struct Def {
     /// to the pre-86 wire form.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_test: bool,
+    /// Round 6 (`op-u86c1-r5-close-every-remaining-test-shape` item 2): whether this `Module`-kind
+    /// definition is an OUT-OF-LINE declaration - Rust's `mod name;` form, which has no body of its
+    /// own and instead names a SEPARATE file the compiler resolves by its own file-per-module
+    /// convention. `mod name { .. }` (an INLINE module WITH a body) is never this - any
+    /// `#[cfg(test)]` on it already governs its own nested definitions directly, by containment
+    /// (`is_test`/`extract::test_regions`), with no cross-file resolution needed. Always `false` for
+    /// every non-`Module` kind, which never declares a file this way. Computed structurally in
+    /// [`crate::grounder::symbols::extract::extract`] (the node's own `body` field is absent iff the
+    /// declaration is out-of-line - a fact only the parsed tree, not the tags pass, can see), and
+    /// consumed at the events/index layer ([`crate::grounder::symbols::events::extract_events`]'s
+    /// module), the ONE place a `mod name;` declaration's OWN file and every OTHER file's path are
+    /// both already known, to resolve which file `name` names and exclude it wholesale when the
+    /// declaration is also `is_test` - the per-file extractor can never see that attribute itself,
+    /// since it lives in a DIFFERENT file's tree entirely. `#[serde(default)]` for the same
+    /// pre-86-index-compatibility reason as `is_test`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_out_of_line_module: bool,
 }
 
 /// A reference site: the referenced name, its 1-based line, and the ENCLOSING definition the
@@ -253,6 +270,7 @@ mod tests {
                     name: "parse".into(),
                     line: 3,
                     is_test: false,
+                    is_out_of_line_module: false,
                 }],
                 refs: vec![SymRef {
                     name: "parse".into(),
@@ -271,6 +289,7 @@ mod tests {
                     name: "parse".into(),
                     line: 1,
                     is_test: false,
+                    is_out_of_line_module: false,
                 }],
                 refs: vec![],
             },
@@ -312,6 +331,7 @@ mod tests {
                     name: "apply_damage".into(),
                     line: 1,
                     is_test: false,
+                    is_out_of_line_module: false,
                 }],
                 refs: vec![SymRef {
                     name: "apply_damage".into(),
@@ -525,6 +545,7 @@ mod tests {
                     name: "apply_damage".into(),
                     line: 7,
                     is_test: false,
+                    is_out_of_line_module: false,
                 }],
                 refs: vec![SymRef {
                     name: "clamp".into(),
