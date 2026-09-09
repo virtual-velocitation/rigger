@@ -2556,3 +2556,67 @@ fn a_path_attribute_override_that_walks_upward_with_dotdot_still_excludes_its_ta
          code graphed as product; nodes: {node_ids:?}"
     );
 }
+
+/// adversary finding, round 7 (`adv-u86c1-r7-dot-slash-override-also-unresolved-not-just-dotdot`):
+/// the identical unnormalized-join defect that leaves an upward `#[path = "../x.rs"]` override
+/// unresolved (see the `..dotdot..` test above) also breaks the SAME-DIRECTORY-EXPLICIT shape
+/// `#[path = "./x.rs"]`: `format!("{declaring_dir}/{p}")` on a declaring file `src/parent.rs` and
+/// override value `"./actual.rs"` yields the literal string `"src/./actual.rs"`, which never
+/// matches `idx.files()`'s clean key `"src/actual.rs"` either, so `resolve_out_of_line_target`
+/// falls through to `None` and the actual target's test code graphs as ordinary product code. A
+/// narrow fix that only strips a leading/embedded `..` (matching just the sibling test's shape)
+/// would leave this `./` shape open - the fix under test is real logical path-segment
+/// normalization (both `.` and `..`, any position), so this fixture pins the SECOND known-broken
+/// shape rather than only the one that happened to get a committed RED test first.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_path_attribute_override_with_an_explicit_dot_slash_prefix_still_resolves_to_the_same_directory_target(
+) {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::{Projection, KIND_CODE_ENTITY};
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("src")).unwrap();
+    std::fs::write(
+        root.path().join("src").join("parent.rs"),
+        "pub fn parent_product() {}\n\n#[cfg(test)]\n#[path = \"./actual.rs\"]\nmod helper;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.path().join("src").join("actual.rs"),
+        "pub fn overridden_test_helper() {}\n",
+    )
+    .unwrap();
+
+    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
+    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.iter_mut().enumerate() {
+        event.position = zero_based as u64 + 1;
+        p.apply(event).unwrap();
+    }
+
+    let g = p
+        .subgraph(
+            &["src/parent.rs".to_string(), "src/actual.rs".to_string()],
+            2,
+        )
+        .unwrap();
+    let node_ids: std::collections::BTreeSet<&str> =
+        g.nodes.iter().map(|n| n.id.as_str()).collect();
+
+    assert!(
+        node_ids.contains("src/parent.rs::parent_product"),
+        "the declaring file's own product code stays graphed; nodes: {node_ids:?}"
+    );
+    let has_test_helper = g
+        .nodes
+        .iter()
+        .any(|n| n.kind == KIND_CODE_ENTITY && n.id == "src/actual.rs::overridden_test_helper");
+    assert!(
+        !has_test_helper,
+        "a #[path=\"./x.rs\"] override (same-directory-explicit) must still resolve and exclude its \
+         real target, not silently fail to match on the unnormalized \"./\" segment and leave the \
+         test code graphed as product; nodes: {node_ids:?}"
+    );
+}
