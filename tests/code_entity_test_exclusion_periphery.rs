@@ -2306,3 +2306,171 @@ fn a_tests_rooted_design_doc_mention_never_becomes_a_live_node_through_the_publi
          nodes: {node_ids:?}"
     );
 }
+
+/// sdet-author gap, round 7: `resolve_out_of_line_target`'s nested `<module_dir>/<name>/mod.rs`
+/// fallback (`an_out_of_line_test_mod_declaration_falls_back_to_a_nested_mod_rs_when_no_flat_
+/// sibling_exists`) only ever exercises it with `module_dir` NON-empty (a non-`mod.rs` leaf
+/// declaring file at the tempdir root, whose own `module_dir` is its own bare stem - a non-empty
+/// string even though the declaring file itself has no directory prefix). A directory-owning
+/// declaring file (`mod.rs`/`lib.rs`/`main.rs`) at the tempdir root has `module_dir` EMPTY
+/// (`dir_of` returns `""`, and the directory-owning branch returns that empty string as-is), so
+/// the nested candidate's OWN `dir.is_empty()` branch (`format!("{}/mod.rs", d.name)`, no `/`
+/// prefix at all) has never been taken by any fixture in this file - the empty-`dir` case was only
+/// ever proven for the FLAT candidate, not the nested one. `lib.rs` here declares `mod helper;`
+/// with NO flat `helper.rs` on disk anywhere - only the nested `helper/mod.rs` - so resolution can
+/// only succeed via that specific empty-`dir` nested branch.
+#[cfg(feature = "symbols")]
+#[test]
+fn an_out_of_line_test_mod_declaration_falls_back_to_a_root_level_nested_mod_rs_when_module_dir_is_empty(
+) {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::{Projection, KIND_CODE_ENTITY};
+
+    let root = tempfile::tempdir().unwrap();
+    // `lib.rs` at the tempdir ROOT: a directory-owning basename, so `module_dir("lib.rs")` is the
+    // EMPTY string, not merely a non-empty bare stem.
+    std::fs::write(
+        root.path().join("lib.rs"),
+        "pub fn product() {}\n\n#[cfg(test)]\nmod helper;\n",
+    )
+    .unwrap();
+    // Deliberately NO `helper.rs` flat sibling anywhere - only the nested directory-module form.
+    std::fs::create_dir(root.path().join("helper")).unwrap();
+    std::fs::write(
+        root.path().join("helper").join("mod.rs"),
+        "pub fn nested_test_helper() {}\n",
+    )
+    .unwrap();
+    // An unrelated top-level file that must stay untouched by this resolution entirely.
+    std::fs::write(
+        root.path().join("unrelated.rs"),
+        "pub fn unrelated_fn() {}\n",
+    )
+    .unwrap();
+
+    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
+    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.iter_mut().enumerate() {
+        event.position = zero_based as u64 + 1;
+        p.apply(event).unwrap();
+    }
+
+    let g = p
+        .subgraph(
+            &[
+                "lib.rs".to_string(),
+                "helper/mod.rs".to_string(),
+                "unrelated.rs".to_string(),
+            ],
+            3,
+        )
+        .unwrap();
+    let node_ids: std::collections::BTreeSet<&str> =
+        g.nodes.iter().map(|n| n.id.as_str()).collect();
+
+    assert!(
+        node_ids.contains("lib.rs::product"),
+        "the declaring file's own product code stays graphed; nodes: {node_ids:?}"
+    );
+    let unrelated = g
+        .nodes
+        .iter()
+        .find(|n| n.id == "unrelated.rs::unrelated_fn");
+    assert!(
+        unrelated
+            .map(|n| n.kind == KIND_CODE_ENTITY)
+            .unwrap_or(false),
+        "an unrelated file must stay product code, unaffected by an empty-module_dir nested \
+         resolution elsewhere; nodes: {node_ids:?}"
+    );
+    assert!(
+        !node_ids.contains("helper/mod.rs::nested_test_helper"),
+        "when module_dir is the empty string (a root-level directory-owning declaring file) and \
+         no flat sibling exists, resolution must still fall back to the nested `<name>/mod.rs` \
+         form with no leading '/' and exclude it there; nodes: {node_ids:?}"
+    );
+}
+
+/// sdet-author gap, round 7: `resolve_out_of_line_target`'s `#[path]`-override branch
+/// (`a_path_attribute_override_redirects_out_of_line_resolution_through_the_public_api`) only ever
+/// places the declaring file at the tempdir ROOT, so `dir_of(declaring_path)` is empty and the
+/// override is resolved as the bare attribute string with no directory prefix at all
+/// (`resolved = p.clone()`). The OTHER branch - a declaring file that itself lives in a
+/// subdirectory, so the override must be resolved relative to THAT directory
+/// (`format!("{declaring_dir}/{p}")`) - has never been exercised. `pkg/parent.rs` here declares
+/// the override; a correct resolution must join it under `pkg/`, not treat it as project-root-
+/// relative.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_path_attribute_override_resolves_relative_to_a_declaring_files_own_subdirectory() {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::{Projection, KIND_CODE_ENTITY};
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("pkg")).unwrap();
+    std::fs::write(
+        root.path().join("pkg").join("parent.rs"),
+        "pub fn parent_product() {}\n\n#[cfg(test)]\n#[path = \"override/actual.rs\"]\nmod helper;\n",
+    )
+    .unwrap();
+    // The override is relative to `pkg/`, NOT the project root - a wrong (root-relative)
+    // resolution would look for `override/actual.rs` at the top level, which does not exist here.
+    std::fs::create_dir_all(root.path().join("pkg").join("override")).unwrap();
+    std::fs::write(
+        root.path().join("pkg").join("override").join("actual.rs"),
+        "pub fn overridden_test_helper() {}\n",
+    )
+    .unwrap();
+    // The location the file-per-module CONVENTION would have guessed (`pkg/helper.rs`), left
+    // un-taken by the override - must stay ordinary product code.
+    std::fs::write(
+        root.path().join("pkg").join("helper.rs"),
+        "pub fn default_location_helper() {}\n",
+    )
+    .unwrap();
+
+    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
+    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.iter_mut().enumerate() {
+        event.position = zero_based as u64 + 1;
+        p.apply(event).unwrap();
+    }
+
+    let g = p
+        .subgraph(
+            &[
+                "pkg/parent.rs".to_string(),
+                "pkg/override/actual.rs".to_string(),
+                "pkg/helper.rs".to_string(),
+            ],
+            3,
+        )
+        .unwrap();
+    let node_ids: std::collections::BTreeSet<&str> =
+        g.nodes.iter().map(|n| n.id.as_str()).collect();
+
+    assert!(
+        node_ids.contains("pkg/parent.rs::parent_product"),
+        "the declaring file's own product code stays graphed; nodes: {node_ids:?}"
+    );
+    assert!(
+        !node_ids.contains("pkg/override/actual.rs::overridden_test_helper"),
+        "the #[path]-named file, resolved relative to the declaring file's OWN subdirectory, is \
+         the actual out-of-line target and must be excluded; nodes: {node_ids:?}"
+    );
+    let default_location = g
+        .nodes
+        .iter()
+        .find(|n| n.id == "pkg/helper.rs::default_location_helper");
+    assert!(
+        default_location
+            .map(|n| n.kind == KIND_CODE_ENTITY)
+            .unwrap_or(false),
+        "the file-per-module convention's own un-taken guess must stay ordinary product code - \
+         the #[path] override redirects resolution relative to the declaring file's directory, it \
+         does not ALSO exclude the location the convention would have guessed; \
+         nodes: {node_ids:?}"
+    );
+}
