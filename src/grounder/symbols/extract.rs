@@ -73,6 +73,9 @@ pub fn extract(
                 // ever be true here; see `Def::is_out_of_line_module`).
                 is_out_of_line_module: false,
                 path_override: None,
+                // Resolved below too, alongside `path_override`, from the same ancestor walk of
+                // the second parsed tree.
+                enclosing_inline_module_path: None,
             });
         } else {
             ref_positions.push(tag.range.start);
@@ -160,6 +163,13 @@ pub fn extract(
                     n.kind() == "mod_item" && n.child_by_field_name("body").is_none();
                 if d.is_out_of_line_module {
                     d.path_override = out_of_line_path_override(n, source.as_bytes());
+                    // Round 9 (`op-u86-c1-path-attribute-contract-is-rustc-s-and-unresolvable-
+                    // never-excludes`): which enclosing INLINE modules, if any, this declaration
+                    // sits nested inside - the events/index layer's `#[path]`-override branch
+                    // needs this to compute the correct base directory (`Def::
+                    // enclosing_inline_module_path`'s doc).
+                    d.enclosing_inline_module_path =
+                        enclosing_inline_module_path(n, source.as_bytes());
                 }
             }
         }
@@ -373,6 +383,37 @@ fn out_of_line_path_override(node: tree_sitter::Node, source: &[u8]) -> Option<S
         |n| n.prev_sibling(),
         path_attribute_value,
     )
+}
+
+/// Round 9 (`op-u86-c1-path-attribute-contract-is-rustc-s-and-unresolvable-never-excludes`): the
+/// `/`-joined chain of every ancestor `mod_item` of `node` that is INLINE (carries a `body`
+/// field, `mod outer { .. }`, as opposed to the out-of-line `mod outer;`), outermost first.
+/// Walks `node.parent()` to the file's root, skipping every non-`mod_item` ancestor (a
+/// `declaration_list` wrapper, in particular) and every OUT-OF-LINE ancestor `mod_item`
+/// encountered along the way (an out-of-line declaration has no `body` of its own in THIS
+/// file's tree at all, so it can never be an ancestor here, defensive only). `None` when `node`
+/// sits directly at the file's own top level (no inline-module ancestor found), the
+/// overwhelmingly common case, and the one every pre-round-9 fixture exercised.
+fn enclosing_inline_module_path(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let mut chain = Vec::new();
+    let mut current = node.parent();
+    while let Some(n) = current {
+        if n.kind() == "mod_item" && n.child_by_field_name("body").is_some() {
+            if let Some(name) = n
+                .child_by_field_name("name")
+                .and_then(|nm| nm.utf8_text(source).ok())
+            {
+                chain.push(name.to_string());
+            }
+        }
+        current = n.parent();
+    }
+    if chain.is_empty() {
+        None
+    } else {
+        chain.reverse();
+        Some(chain.join("/"))
+    }
 }
 
 /// Whether a parsed `attribute_item` node is a `#[path = "value"]` key-value attribute - the ONLY

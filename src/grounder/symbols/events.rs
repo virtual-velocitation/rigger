@@ -224,22 +224,58 @@ fn dir_of(path: &str) -> &str {
 /// or `..` segment), so `std::fs::canonicalize` does not apply here - there is no real filesystem
 /// to resolve against at every intermediate step, only a string key to compute, matching rustc's
 /// own purely lexical handling of a `#[path]` value. A `.` segment is dropped; a `..` segment pops
-/// the most recently pushed real segment off the stack (or is itself dropped, harmlessly, if the
-/// stack is already empty - an override that walks back above the project root normalizes to a
-/// string no real key can match, which is the correct "unresolvable" outcome the caller's
-/// `contains_key` check already handles).
-fn normalize_logical_path(path: &str) -> String {
+/// the most recently pushed real segment off the stack.
+///
+/// Round 9 (ADJUDICATION `adj-u86c1-r8-verdict-reject`, upheld finding
+/// `adv-u86c1-r8-overcount-dotdot-silently-excludes-an-unrelated-real-file`): a `..` reached once
+/// the stack is already EMPTY - an override whose `..` count exceeds the declaring directory's own
+/// depth - is an IRRECOVERABLE overflow, not a harmless one to keep walking past. `Vec::pop` on an
+/// empty stack is Rust's own silent no-op with no signal to the caller; continuing the walk after
+/// one and joining whatever segments remain computes a string that is syntactically a valid
+/// relative path but semantically WRONG (it claims to walk back further than the declaring file's
+/// own tree allows) - and nothing stops that wrong-but-plausible string from coincidentally
+/// matching a real, UNRELATED file's key, at which point the caller's `contains_key` check finds a
+/// match and silently drops that unrelated file's whole entity set from the graph. So this now
+/// returns `None` the instant a `..` has nothing real left to pop, letting the caller short-circuit
+/// to "unresolvable" immediately rather than running a lookup against a value that only LOOKS like
+/// a real path.
+fn normalize_logical_path(path: &str) -> Option<String> {
     let mut stack: Vec<&str> = Vec::new();
     for segment in path.split('/') {
         match segment {
             "" | "." => {}
             ".." => {
-                stack.pop();
+                stack.pop()?;
             }
             real => stack.push(real),
         }
     }
-    stack.join("/")
+    Some(stack.join("/"))
+}
+
+/// Round 9 (`op-u86-c1-path-attribute-contract-is-rustc-s-and-unresolvable-never-excludes`,
+/// NORMALIZATION rule): whether a raw `#[path]` override value `p` is a shape
+/// [`normalize_logical_path`] must never be asked to join onto any base directory at all - an
+/// OS-absolute path, a URI scheme, or a Windows drive letter, none of which a real project's
+/// `idx.files()` (always `/`-separated, repo-relative, drive-and-scheme-free keys) could ever
+/// hold. Verified against real rustc before this was written: `#[path = "/etc/hostname"]` reads
+/// `/etc/hostname` directly, an OS-absolute path used AS-IS rather than joined onto anything.
+/// Checked on the RAW override, before joining onto the base directory: joining first and only
+/// then normalizing would let a leading `/` on `p` silently vanish via the SAME
+/// `"" | "." => {}` rule that drops an ordinary `.` segment (an empty split segment either way),
+/// reproducing the identical wrong-but-plausible-collapsed-string failure
+/// [`normalize_logical_path`]'s own `..`-overflow guard closes, through a different front door -
+/// most sharply for a ROOT-level declaring file, whose empty base directory lets the join
+/// degenerate to `p` completely unchanged.
+fn path_override_names_an_unresolvable_shape(p: &str) -> bool {
+    if p.starts_with('/') {
+        return true;
+    }
+    if p.contains("://") {
+        return true;
+    }
+    let bytes = p.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
 /// Round 7 (`op-u86c1-r7-out-of-line-module-resolution-follows-rust`): the MODULE DIRECTORY a
@@ -267,32 +303,68 @@ fn module_dir(path: &str) -> String {
 }
 
 /// Round 7: the single file `d.name` names from `declaring_path`, resolved EXACTLY as rustc
-/// resolves it, matched against paths `idx` ACTUALLY holds (never assumed) at every step:
+/// resolves it, matched against paths `idx` ACTUALLY holds (never assumed) at every step. Round 9
+/// (`op-u86-c1-path-attribute-contract-is-rustc-s-and-unresolvable-never-excludes`) closes the
+/// whole `#[path]`-override contract as one enumerated list:
 /// 1. A `#[path = ".."]` override on the declaration ([`Def::path_override`], captured
-///    structurally at extraction time) takes precedence over the convention entirely, resolved
-///    relative to the DECLARING file's own directory - never [`module_dir`], since `#[path]` is
-///    rustc's own escape hatch FROM the file-per-module convention and is unconditionally
+///    structurally at extraction time) takes precedence over the convention entirely. BASE
+///    DIRECTORY: when the declaration sits at the declaring file's own top level (the
+///    overwhelmingly common case), the base is the declaring file's own DIRECTORY
+///    ([`dir_of`]) - never [`module_dir`], since `#[path]` is rustc's own escape hatch FROM the
+///    file-per-module convention and is, at the file's top level, unconditionally
 ///    directory-of-file-relative regardless of whether the declaring file is itself a
-///    directory-style module. The joined `<declaring_dir>/<override>` string is then
-///    [`normalize_logical_path`]'d (round 8,
+///    directory-style module. When the declaration is instead nested inside one or more INLINE
+///    `mod outer { .. }` blocks ([`Def::enclosing_inline_module_path`]), the base is the
+///    declaring file's own MODULE directory ([`module_dir`]) with the enclosing inline chain
+///    appended - one directory component per inline module, outermost first - verified against
+///    real rustc (`Def::enclosing_inline_module_path`'s doc). ABSOLUTE / SCHEME REJECTION: an
+///    override that is itself an OS-absolute path, a URI scheme, or a Windows drive letter
+///    ([`path_override_names_an_unresolvable_shape`]) is UNRESOLVABLE outright, joined onto
+///    nothing - rustc uses an absolute `#[path]` as-is, never relative to any Rust-side
+///    directory, so it can never name a key this project-relative index holds; left unguarded, a
+///    root-level declaring file's EMPTY base directory would let the join degenerate to the raw
+///    override unchanged, and its leading `/` would then silently drop during normalization
+///    (the SAME rule that drops an ordinary `.` segment), coincidentally colliding with an
+///    unrelated real file exactly like the `..`-overflow defect below. NORMALIZATION: the joined
+///    `<base>/<override>` string is then [`normalize_logical_path`]'d (round 8,
 ///    `sdet-u86c1-r7-path-override-dotdot-unresolved` /
 ///    `adv-u86c1-r7-dot-slash-override-also-unresolved-not-just-dotdot`): a raw `#[path]` value
 ///    may itself contain `.` or `..` segments at any position (rustc resolves those purely
 ///    lexically too), and `idx.files()`'s keys are always already-clean, so an unnormalized join
 ///    would silently fail every `contains_key` lookup for such a value and leave its target
-///    unexcluded.
+///    unexcluded. Round 9 (`adv-u86c1-r8-overcount-dotdot-silently-excludes-an-unrelated-real-file`):
+///    normalization can itself fail - a `..` count exceeding the declaring directory's own depth -
+///    and that failure short-circuits this whole branch to `None` via `?` rather than running a
+///    `contains_key` lookup on a collapsed-but-wrong string that might coincidentally name a real,
+///    unrelated file. LOOKUP: the normalized key must equal a file `idx` actually holds; no match
+///    is UNRESOLVABLE. Every UNRESOLVABLE outcome above returns `None` - the declaration is
+///    ignored for exclusion purposes and nothing collapses onto another file; never a silent
+///    match on a wrong-but-plausible string.
 /// 2. Otherwise, the flat sibling `<module_dir>/<name>.rs`.
 /// 3. Otherwise, the nested directory-module form `<module_dir>/<name>/mod.rs`.
 /// 4. Otherwise `None` - a stale or unresolvable declaration excludes nothing.
 fn resolve_out_of_line_target(idx: &SymbolIndex, declaring_path: &str, d: &Def) -> Option<String> {
     if let Some(p) = &d.path_override {
-        let declaring_dir = dir_of(declaring_path);
-        let joined = if declaring_dir.is_empty() {
+        if path_override_names_an_unresolvable_shape(p) {
+            return None;
+        }
+        let base = match &d.enclosing_inline_module_path {
+            Some(chain) => {
+                let module_dir = module_dir(declaring_path);
+                if module_dir.is_empty() {
+                    chain.clone()
+                } else {
+                    format!("{module_dir}/{chain}")
+                }
+            }
+            None => dir_of(declaring_path).to_string(),
+        };
+        let joined = if base.is_empty() {
             p.clone()
         } else {
-            format!("{declaring_dir}/{p}")
+            format!("{base}/{p}")
         };
-        let resolved = normalize_logical_path(&joined);
+        let resolved = normalize_logical_path(&joined)?;
         return idx.files().contains_key(&resolved).then_some(resolved);
     }
     let dir = module_dir(declaring_path);
@@ -511,6 +583,7 @@ mod tests {
                     is_test: false,
                     is_out_of_line_module: false,
                     path_override: None,
+                    enclosing_inline_module_path: None,
                 },
                 Def {
                     kind: Kind::Function,
@@ -519,6 +592,7 @@ mod tests {
                     is_test: false,
                     is_out_of_line_module: false,
                     path_override: None,
+                    enclosing_inline_module_path: None,
                 },
             ],
             refs: vec![SymRef {
@@ -618,6 +692,7 @@ mod tests {
                 is_test: false,
                 is_out_of_line_module: false,
                 path_override: None,
+                enclosing_inline_module_path: None,
             }],
             refs: vec![
                 // A call to `G` from inside the body of `F`: attributed to its enclosing caller.
@@ -707,6 +782,7 @@ mod tests {
                 is_test: false,
                 is_out_of_line_module: false,
                 path_override: None,
+                enclosing_inline_module_path: None,
             }],
             refs: vec![SymRef {
                 name: "product_fn".into(),
@@ -762,6 +838,7 @@ mod tests {
                     is_test: true,
                     is_out_of_line_module: false,
                     path_override: None,
+                    enclosing_inline_module_path: None,
                 },
                 Def {
                     kind: Kind::Function,
@@ -770,6 +847,7 @@ mod tests {
                     is_test: false,
                     is_out_of_line_module: false,
                     path_override: None,
+                    enclosing_inline_module_path: None,
                 },
             ],
             refs: vec![
