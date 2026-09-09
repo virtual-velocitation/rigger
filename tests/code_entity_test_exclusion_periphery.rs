@@ -65,6 +65,29 @@
 //!    (`an_inner_cfg_test_attribute_marks_its_enclosing_module_and_the_module_marks_its_children`)
 //!    proves this at the `FileSymbols` level; this test proves the SAME contract at the
 //!    periphery, end to end through `build_index` -> `index_events` -> `Projector`.
+//!  - the rest of `op-u86c1-r5-close-every-remaining-test-shape` (amending
+//!    `op-u86c1-r4-structural-attribute-walk-is-the-only-remedy`), which mandates round 5 close
+//!    every remaining test-shape item in one round, not one per round. Item 1 (the inner-attribute
+//!    module form) is covered above; item 4 (`#[cfg_attr(test, ..)]` staying product) was already
+//!    covered since round 1/2. The remaining two are periphery-tested here, empirically confirmed
+//!    (probe-then-revert, `sdet-u86c1-r5-two-confirmed-live-gaps`) as LIVE, currently-open gaps -
+//!    these two tests are EXPECTED TO FAIL until a future round's fix lands, exactly like the
+//!    round-3 sdet commit's own URL-bearing-attribute case did before round 4 closed it:
+//!    - item 2, an OUT-OF-LINE `#[cfg(test)] mod name;` declaration whose declared FILE carries no
+//!      attribute of its own (the attribute lives in a different file's tree entirely) - LIVE in
+//!      this repo today (`src/eventstore/mod.rs`'s `mod contract`, `src/lib.rs`'s `mod
+//!      blast_radius_eval`) - must exclude the declared file in full
+//!      (`an_out_of_line_cfg_test_module_declaration_excludes_its_declared_file_through_the_public_api`).
+//!    - item 3's `impl_item` case: `tags.scm` never tags an `impl_item` as a definition (only
+//!      `@reference.implementation`), so a `#[cfg(test)]`-attributed impl block never becomes a
+//!      test-region container the way an attributed `mod` already is, and an unattributed method
+//!      inside it leaks as product code
+//!      (`a_cfg_test_impl_block_excludes_its_methods_through_the_public_api`).
+//!
+//!    Item 3's remaining kinds (`struct_item`, `enum_item`, `trait_item`, `type_item`,
+//!    `macro_definition`, plus the non-tagged `use_declaration`/`const_item`/`static_item`) are
+//!    verified ALREADY correct - the sibling walk is kind-agnostic by construction - and PASS
+//!    (`cfg_test_on_every_other_item_kind_excludes_or_stays_scoped_through_the_public_api`).
 
 use rigger::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef, SymbolIndex};
 use rigger::grounder::symbols::store;
@@ -848,5 +871,259 @@ fn an_inner_cfg_test_attribute_excludes_its_module_through_the_public_api() {
          inside the mod's own body, not a sibling preceding it) must exclude the mod itself, an \
          unattributed helper beside the attribute, and a nested #[test] function, exactly as the \
          outer #[cfg(test)] mod form already does; leaked: {leaked:?}"
+    );
+}
+
+/// Round-5 mandated surface (`op-u86c1-r5-close-every-remaining-test-shape` item 2, amending
+/// `op-u86c1-r4-structural-attribute-walk-is-the-only-remedy`): an OUT-OF-LINE test module - a
+/// parent file's `#[cfg(test)] mod name;` (no body of its own; the declaration merely names a
+/// SEPARATE file) - must exclude the declared file IN FULL, the same way a whole file directly
+/// under a `tests/` directory already is. The declared file itself carries no attribute at all
+/// (Rust's module system, not this repo's convention, is what gates its compilation), so a
+/// per-file structural walk over that file's OWN parsed tree ([`preceded_by_test_attribute`] in
+/// `extract.rs`) can never see the attribute that excludes it - it lives in a DIFFERENT file. This
+/// is LIVE in rigger's own tree today, not a hypothetical: `src/eventstore/mod.rs` declares
+/// `#[cfg(test)] pub mod contract;` (`src/eventstore/contract.rs`) and `src/lib.rs` declares
+/// `#[cfg(test)] mod blast_radius_eval;` (`src/blast_radius_eval.rs`), and this fixture is the
+/// minimal shape of both: a plain, unattributed `pub fn` in the declared file, exactly like
+/// `contract.rs`'s own `pub fn assert_contract`.
+///
+/// SURFACE CONFIRMED STILL OPEN (`sdet-u86c1-r5-two-confirmed-live-gaps`): probed empirically
+/// through this same public API before writing this test - `child.rs::helper` emitted a genuine
+/// `CodeEntityExtracted` event and reached the graph as ordinary product code, exactly the failure
+/// this test pins. The round-5 fix (`fix-u86c1-r5-inner-attribute-item`) closed item 1 of the
+/// mandate (the inner-attribute module form) only; this test is expected to FAIL until a future
+/// round resolves each test-shaped out-of-line module declaration to its file(s) at the
+/// events/index layer (where every file's path is known - `events.rs`'s `is_under_tests_dir` /
+/// `project_batches`, per the mandate) and excludes them there, since a per-file extractor
+/// structurally cannot see an attribute that lives in a different file.
+#[cfg(feature = "symbols")]
+const PARENT_SRC: &str = "\
+fn product() {}
+
+#[cfg(test)]
+pub mod contract;
+";
+
+#[cfg(feature = "symbols")]
+const OUT_OF_LINE_CHILD_SRC: &str = "pub fn assert_contract() {}\n";
+
+#[cfg(feature = "symbols")]
+#[test]
+fn an_out_of_line_cfg_test_module_declaration_excludes_its_declared_file_through_the_public_api() {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::Projection;
+    use std::collections::BTreeSet;
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("parent.rs"), PARENT_SRC).unwrap();
+    std::fs::write(root.path().join("contract.rs"), OUT_OF_LINE_CHILD_SRC).unwrap();
+
+    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
+    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.iter_mut().enumerate() {
+        event.position = zero_based as u64 + 1;
+        p.apply(event).unwrap();
+    }
+
+    let g = p
+        .subgraph(&["parent.rs".to_string(), "contract.rs".to_string()], 3)
+        .unwrap();
+    let node_ids: BTreeSet<&str> = g.nodes.iter().map(|n| n.id.as_str()).collect();
+
+    assert!(
+        node_ids.contains("parent.rs::product"),
+        "the parent file's own product code stays graphed, unaffected by what its out-of-line \
+         mod declaration points at; nodes: {node_ids:?}"
+    );
+
+    let must_be_absent: BTreeSet<&str> =
+        BTreeSet::from(["contract.rs::assert_contract", "contract.rs"]);
+    let leaked: BTreeSet<&str> = node_ids.intersection(&must_be_absent).copied().collect();
+    assert!(
+        leaked.is_empty(),
+        "a file named only by an out-of-line `#[cfg(test)] mod name;` declaration in another \
+         file must be excluded in FULL - no code-entity node for anything it defines and no file \
+         container node for the file itself - exactly as a file directly under a tests/ \
+         directory already is; a plain `pub fn` with no attribute of its own here has no way to \
+         self-exclude, since the attribute gating it lives in the OTHER file's tree entirely; \
+         leaked: {leaked:?}"
+    );
+}
+
+/// Round-5 mandated surface (`op-u86c1-r5-close-every-remaining-test-shape` item 3): "any item
+/// kind" names `impl_item` explicitly among the node kinds an excluding attribute may sit on.
+/// Rust's own `tags.scm` (`tree-sitter-rust` 0.24.2) captures an `impl_item` ONLY as
+/// `@reference.implementation` - never as a `@definition.*` - so it never enters `def_ranges` and
+/// [`test_regions`] (which only ever considers SELF-ATTRIBUTED items from `def_ranges`) can never
+/// treat a `#[cfg(test)] impl Widget { .. }` block itself as a test region the way it already does
+/// for a `#[cfg(test)] mod tests { .. }` (a `mod_item` IS a `@definition.module`). A method nested
+/// inside such an impl - a plain `fn helper()` with no attribute of its own, or even a `#[test] fn
+/// it_works()` calling it - is a real `@definition.method`/`function_item` and so IS covered by
+/// [`preceded_by_test_attribute`]'s generic, kind-agnostic sibling walk when the attribute sits
+/// directly on the method itself; but nothing propagates the ENCLOSING impl's own `#[cfg(test)]`
+/// onto a plain sibling method that carries no attribute of its own.
+///
+/// SURFACE CONFIRMED STILL OPEN (`sdet-u86c1-r5-two-confirmed-live-gaps`): probed empirically
+/// through `extract()` directly before writing this test - for this exact fixture shape, `helper`
+/// (no attribute of its own) came back `is_test=false` while `it_works` (its own direct `#[test]`)
+/// came back `is_test=true`, confirming the leak is specifically the impl-level attribute failing
+/// to propagate onto its unattributed sibling, not a defect in the sibling walk itself. This test
+/// is expected to FAIL until a future round extends test-region detection to also treat a
+/// `#[cfg(test)]`/`#[cfg(any(..test..))]`-attributed `impl_item` as a container whose ENTIRE body
+/// is a test region, mirroring what already happens for `mod_item`.
+#[cfg(feature = "symbols")]
+const CFG_TEST_IMPL_SRC: &str = "\
+struct Widget;
+
+#[cfg(test)]
+impl Widget {
+    fn helper() {
+        product();
+    }
+
+    #[test]
+    fn it_works() {
+        helper();
+    }
+}
+
+fn product() {}
+";
+
+#[cfg(feature = "symbols")]
+#[test]
+fn a_cfg_test_impl_block_excludes_its_methods_through_the_public_api() {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::{Projection, KIND_CODE_ENTITY};
+    use std::collections::BTreeSet;
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("widgetimpl.rs"), CFG_TEST_IMPL_SRC).unwrap();
+
+    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
+    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.iter_mut().enumerate() {
+        event.position = zero_based as u64 + 1;
+        p.apply(event).unwrap();
+    }
+
+    let g = p.subgraph(&["widgetimpl.rs".to_string()], 3).unwrap();
+    let node_ids: BTreeSet<&str> = g.nodes.iter().map(|n| n.id.as_str()).collect();
+
+    let product = g
+        .nodes
+        .iter()
+        .find(|n| n.id == "widgetimpl.rs::product")
+        .expect("product code stays graphed, unaffected by the cfg(test) impl block elsewhere");
+    assert_eq!(product.kind, KIND_CODE_ENTITY);
+
+    let must_be_absent: BTreeSet<&str> =
+        BTreeSet::from(["widgetimpl.rs::helper", "widgetimpl.rs::it_works"]);
+    let leaked: BTreeSet<&str> = node_ids.intersection(&must_be_absent).copied().collect();
+    assert!(
+        leaked.is_empty(),
+        "every method inside a #[cfg(test)]-attributed impl block is test code, whether or not \
+         it carries an attribute of its own - exactly as a plain helper inside a #[cfg(test)] mod \
+         already is by containment - since an impl_item is never itself a tags-query definition, \
+         nothing currently treats the attributed impl block as a test-region container the way a \
+         mod_item already is; leaked: {leaked:?}"
+    );
+}
+
+/// Round-5 mandated surface (`op-u86c1-r5-close-every-remaining-test-shape` item 3), the rest of
+/// "any item kind" beyond the `mod_item`/`function_item` shapes every earlier round already
+/// exercised: [`preceded_by_test_attribute`]'s sibling walk is kind-agnostic by construction (it
+/// dispatches on the ATTRIBUTE node's kind, never the attributed item's), so a directly-attributed
+/// `struct_item`, `enum_item`, `trait_item`, `type_item` (a type alias) and `macro_definition`
+/// should already self-exclude exactly like a `#[cfg(test)] mod`/`fn` does - this proves that
+/// generalization holds empirically, through the public API, rather than resting on reading the
+/// walk's kind-agnostic shape as sufficient by inspection. Also covers the three item kinds the
+/// mandate names that `tags.scm` never tags as a definition or reference AT ALL
+/// (`use_declaration`, `const_item`, `static_item`): each is attributed `#[cfg(test)]` here
+/// immediately before the plain product `fn` this test pins, proving such an attribute stays
+/// scoped to the leaf item it sits on and never leaks onto - or wrongly excludes - an unrelated
+/// sibling that carries no attribute of its own.
+#[cfg(feature = "symbols")]
+const OTHER_ITEM_KINDS_SRC: &str = "\
+#[cfg(test)]
+struct TestStruct;
+
+#[cfg(test)]
+enum TestEnum {
+    A,
+}
+
+#[cfg(test)]
+trait TestTrait {}
+
+#[cfg(test)]
+type TestAlias = i32;
+
+#[cfg(test)]
+macro_rules! test_macro {
+    () => {};
+}
+
+#[cfg(test)]
+use std::string::String as ImportedForTestOnly;
+
+#[cfg(test)]
+const TEST_CONST: i32 = 1;
+
+#[cfg(test)]
+static TEST_STATIC: i32 = 1;
+
+fn product() {}
+";
+
+#[cfg(feature = "symbols")]
+#[test]
+fn cfg_test_on_every_other_item_kind_excludes_or_stays_scoped_through_the_public_api() {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::{Projection, KIND_CODE_ENTITY};
+    use std::collections::BTreeSet;
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("kinds.rs"), OTHER_ITEM_KINDS_SRC).unwrap();
+
+    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
+    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.iter_mut().enumerate() {
+        event.position = zero_based as u64 + 1;
+        p.apply(event).unwrap();
+    }
+
+    let g = p.subgraph(&["kinds.rs".to_string()], 3).unwrap();
+    let node_ids: BTreeSet<&str> = g.nodes.iter().map(|n| n.id.as_str()).collect();
+
+    // The plain product fn - the ONLY item here with no #[cfg(test)] of its own - must stay
+    // graphed; none of `use`/`const`/`static`'s attributes (kinds tags.scm never tags as a
+    // definition at all) may leak onto it.
+    let product = g.nodes.iter().find(|n| n.id == "kinds.rs::product").expect(
+        "the plain product fn stays graphed - a #[cfg(test)] on a preceding use/const/static \
+             (none of which are definitions at all) must never leak onto an unrelated sibling",
+    );
+    assert_eq!(product.kind, KIND_CODE_ENTITY);
+
+    // Every directly-#[cfg(test)]-attributed definition, whatever its grammar kind, self-excludes
+    // exactly like the already-covered fn/mod shapes.
+    let must_be_absent: BTreeSet<&str> = BTreeSet::from([
+        "kinds.rs::TestStruct",
+        "kinds.rs::TestEnum",
+        "kinds.rs::TestTrait",
+        "kinds.rs::TestAlias",
+        "kinds.rs::test_macro",
+    ]);
+    let leaked: BTreeSet<&str> = node_ids.intersection(&must_be_absent).copied().collect();
+    assert!(
+        leaked.is_empty(),
+        "a directly #[cfg(test)]-attributed struct/enum/trait/type-alias/macro_rules! definition \
+         must self-exclude exactly like an attributed fn or mod already does - the sibling walk \
+         dispatches on the ATTRIBUTE node's kind, never the attributed item's, so this must hold \
+         for every definition-producing grammar kind uniformly; leaked: {leaked:?}"
     );
 }

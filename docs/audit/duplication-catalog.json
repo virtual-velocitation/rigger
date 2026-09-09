@@ -18451,8 +18451,8 @@
     "sites": [
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 75,
-        "end_line": 110,
+        "start_line": 98,
+        "end_line": 133,
         "name": "is_test_false_serializes_byte_identically_to_the_pre86_form"
       },
       {
@@ -18471,8 +18471,8 @@
     "sites": [
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 167,
-        "end_line": 219,
+        "start_line": 190,
+        "end_line": 242,
         "name": "a_pre86_persisted_index_with_no_is_test_key_loads_defaulting_every_item_to_false"
       },
       {
@@ -18491,20 +18491,20 @@
     "sites": [
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 359,
-        "end_line": 406,
+        "start_line": 382,
+        "end_line": 429,
         "name": "cfg_not_test_and_cfg_attr_predicates_graph_as_product_through_the_public_api"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 551,
-        "end_line": 586,
+        "start_line": 574,
+        "end_line": 609,
         "name": "a_url_bearing_attribute_between_test_and_the_item_does_not_leak_the_item_into_the_graph"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 667,
-        "end_line": 700,
+        "start_line": 690,
+        "end_line": 723,
         "name": "a_comment_mentioning_test_attribute_text_does_not_exclude_the_item_through_the_public_api"
       }
     ],
@@ -18517,30 +18517,48 @@
     "sites": [
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 484,
-        "end_line": 525,
+        "start_line": 507,
+        "end_line": 548,
         "name": "a_trailing_comment_on_cfg_test_still_excludes_the_module_through_the_public_api"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 611,
-        "end_line": 648,
+        "start_line": 634,
+        "end_line": 671,
         "name": "a_multiline_cfg_test_attribute_still_excludes_the_module_through_the_public_api"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 738,
-        "end_line": 781,
+        "start_line": 761,
+        "end_line": 804,
         "name": "a_trailing_comma_in_a_wrapped_cfg_predicate_still_excludes_the_module_through_the_public_api"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 809,
-        "end_line": 852,
+        "start_line": 832,
+        "end_line": 875,
         "name": "an_inner_cfg_test_attribute_excludes_its_module_through_the_public_api"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "start_line": 913,
+        "end_line": 953,
+        "name": "an_out_of_line_cfg_test_module_declaration_excludes_its_declared_file_through_the_public_api"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "start_line": 997,
+        "end_line": 1034,
+        "name": "a_cfg_test_impl_block_excludes_its_methods_through_the_public_api"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "start_line": 1084,
+        "end_line": 1129,
+        "name": "cfg_test_on_every_other_item_kind_excludes_or_stays_scoped_through_the_public_api"
       }
     ],
-    "proposed_home": "code_entity_test_exclusion_periphery::support (consolidate these 4 sites into one function in this file)",
+    "proposed_home": "code_entity_test_exclusion_periphery::support (consolidate these 7 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
