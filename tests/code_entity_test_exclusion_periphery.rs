@@ -2474,3 +2474,85 @@ fn a_path_attribute_override_resolves_relative_to_a_declaring_files_own_subdirec
          nodes: {node_ids:?}"
     );
 }
+
+/// sdet finding, round 7: `resolve_out_of_line_target`'s `#[path]`-override branch
+/// (`src/grounder/symbols/events.rs`) joins the declaring file's own directory onto the raw
+/// attribute string with a single `format!("{declaring_dir}/{p}")` and does no `..`/`.`
+/// normalization before looking the result up in `idx.files()`, whose keys are always the
+/// project's real, already-clean relative paths (never containing a literal `..` segment). A
+/// `#[path]` value that walks back up past the declaring file's own directory (`#[path =
+/// "../fixtures/actual.rs"]`, resolving `src/parent.rs`'s override to the literal string
+/// `"src/../fixtures/actual.rs"`) therefore never matches any real key, `resolve_out_of_line_target`
+/// falls through its `contains_key` check to `None` ("a stale or unresolvable declaration excludes
+/// nothing" per its own doc), and the actual target file is left OUT of `out_of_line_test_module_files`,
+/// so its test code graphs as ordinary product code: the exact `Kind::Module`/`is_out_of_line_module`
+/// failure class every prior round of this unit was rejected for. This is not a contrived shape: this
+/// very repository's own house style already writes an upward-escaping `#[path = "../build/gitsemver.rs"]`
+/// (`src/main.rs:59`, `tests/gitsemver_derivation.rs:34`, `tests/gitsemver_worktree_periphery.rs:44`,
+/// `tests/build_watch_paths.rs:33`), not `#[cfg(test)]`-gated today so not itself live-broken, but
+/// proof the idiom this resolver cannot follow is one this codebase actually writes, one `#[cfg(test)]`
+/// away from tripping it. Neither existing round-7 `#[path]` fixture
+/// (`a_path_attribute_override_redirects_out_of_line_resolution_through_the_public_api`,
+/// `a_path_attribute_override_resolves_relative_to_a_declaring_files_own_subdirectory`) uses a value
+/// containing `..`: both only ever resolve DOWNWARD into a subdirectory, so this branch's upward case
+/// was untested. Reproduced empirically against round-7 HEAD before authoring this test: `idx.files()`
+/// holds the clean key `fixtures/actual.rs`, the resolver computes the unnormalized
+/// `src/../fixtures/actual.rs` and finds no match, and `overridden_test_helper` graphs as a live
+/// `KIND_CODE_ENTITY` node.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_path_attribute_override_that_walks_upward_with_dotdot_still_excludes_its_target() {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::{Projection, KIND_CODE_ENTITY};
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("src")).unwrap();
+    std::fs::write(
+        root.path().join("src").join("parent.rs"),
+        "pub fn parent_product() {}\n\n#[cfg(test)]\n#[path = \"../fixtures/actual.rs\"]\nmod helper;\n",
+    )
+    .unwrap();
+    // A directory NOT named `tests` - a fixture rooted at a literal `tests/` path would already be
+    // excluded by the unrelated `is_under_tests_dir` rule, masking the `#[path]`-resolution question
+    // this test isolates.
+    std::fs::create_dir(root.path().join("fixtures")).unwrap();
+    std::fs::write(
+        root.path().join("fixtures").join("actual.rs"),
+        "pub fn overridden_test_helper() {}\n",
+    )
+    .unwrap();
+
+    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
+    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.iter_mut().enumerate() {
+        event.position = zero_based as u64 + 1;
+        p.apply(event).unwrap();
+    }
+
+    let g = p
+        .subgraph(
+            &[
+                "src/parent.rs".to_string(),
+                "fixtures/actual.rs".to_string(),
+            ],
+            2,
+        )
+        .unwrap();
+    let node_ids: std::collections::BTreeSet<&str> =
+        g.nodes.iter().map(|n| n.id.as_str()).collect();
+
+    assert!(
+        node_ids.contains("src/parent.rs::parent_product"),
+        "the declaring file's own product code stays graphed; nodes: {node_ids:?}"
+    );
+    let has_test_helper = g.nodes.iter().any(|n| {
+        n.kind == KIND_CODE_ENTITY && n.id == "fixtures/actual.rs::overridden_test_helper"
+    });
+    assert!(
+        !has_test_helper,
+        "a #[path=\"..\"] override that walks upward out of the declaring file's own directory must \
+         still resolve and exclude its real target, not silently fail to match and leave the test \
+         code graphed as product; nodes: {node_ids:?}"
+    );
+}
