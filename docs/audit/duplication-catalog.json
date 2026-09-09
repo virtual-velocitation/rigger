@@ -18474,6 +18474,12 @@
         "name": "path_override_none_serializes_byte_identically_to_the_pre_round7_form"
       },
       {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "start_line": 498,
+        "end_line": 525,
+        "name": "enclosing_inline_module_path_none_serializes_byte_identically_to_the_pre_round9_form"
+      },
+      {
         "file": "tests/symbol_ref_caller_attribution.rs",
         "start_line": 32,
         "end_line": 77,
@@ -18504,9 +18510,15 @@
         "start_line": 407,
         "end_line": 445,
         "name": "path_override_some_serializes_the_key_and_round_trips"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "start_line": 528,
+        "end_line": 566,
+        "name": "enclosing_inline_module_path_some_serializes_the_key_and_round_trips"
       }
     ],
-    "proposed_home": "code_entity_test_exclusion_periphery::support (consolidate these 3 sites into one function in this file)",
+    "proposed_home": "code_entity_test_exclusion_periphery::support (consolidate these 4 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -18532,6 +18544,12 @@
         "name": "a_pre_round7_persisted_index_with_no_path_override_key_loads_defaulting_to_none"
       },
       {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "start_line": 569,
+        "end_line": 612,
+        "name": "a_pre_round9_persisted_index_with_no_enclosing_inline_module_path_key_loads_defaulting_to_none"
+      },
+      {
         "file": "tests/symbol_ref_caller_attribution.rs",
         "start_line": 130,
         "end_line": 180,
@@ -18547,26 +18565,26 @@
     "sites": [
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 626,
-        "end_line": 673,
+        "start_line": 752,
+        "end_line": 799,
         "name": "cfg_not_test_and_cfg_attr_predicates_graph_as_product_through_the_public_api"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 682,
-        "end_line": 714,
+        "start_line": 808,
+        "end_line": 840,
         "name": "a_not_wrapping_a_non_test_atom_graphs_as_product_through_the_public_api"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 898,
-        "end_line": 933,
+        "start_line": 1024,
+        "end_line": 1059,
         "name": "a_url_bearing_attribute_between_test_and_the_item_does_not_leak_the_item_into_the_graph"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 1014,
-        "end_line": 1047,
+        "start_line": 1140,
+        "end_line": 1173,
         "name": "a_comment_mentioning_test_attribute_text_does_not_exclude_the_item_through_the_public_api"
       }
     ],
@@ -18579,144 +18597,162 @@
     "sites": [
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 831,
-        "end_line": 872,
+        "start_line": 957,
+        "end_line": 998,
         "name": "a_trailing_comment_on_cfg_test_still_excludes_the_module_through_the_public_api"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 958,
-        "end_line": 995,
+        "start_line": 1084,
+        "end_line": 1121,
         "name": "a_multiline_cfg_test_attribute_still_excludes_the_module_through_the_public_api"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 1085,
-        "end_line": 1128,
+        "start_line": 1211,
+        "end_line": 1254,
         "name": "a_trailing_comma_in_a_wrapped_cfg_predicate_still_excludes_the_module_through_the_public_api"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 1156,
-        "end_line": 1199,
+        "start_line": 1282,
+        "end_line": 1325,
         "name": "an_inner_cfg_test_attribute_excludes_its_module_through_the_public_api"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 1241,
-        "end_line": 1283,
+        "start_line": 1367,
+        "end_line": 1409,
         "name": "an_out_of_line_cfg_test_module_declaration_excludes_its_declared_file_through_the_public_api"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 1302,
-        "end_line": 1354,
+        "start_line": 1428,
+        "end_line": 1480,
         "name": "an_out_of_line_cfg_test_module_declaration_in_a_subdirectory_excludes_its_sibling_through_the_public_api"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 1507,
-        "end_line": 1570,
+        "start_line": 1633,
+        "end_line": 1696,
         "name": "a_non_test_out_of_line_mod_and_an_inline_test_mod_never_exclude_a_coincidentally_named_sibling_file"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 1707,
-        "end_line": 1761,
+        "start_line": 1833,
+        "end_line": 1887,
         "name": "a_cfg_test_impl_block_excludes_its_methods_through_the_public_api"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 1795,
-        "end_line": 1830,
+        "start_line": 1921,
+        "end_line": 1956,
         "name": "a_cfg_test_impl_block_using_the_inner_attribute_form_excludes_its_methods_through_the_public_api"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 1880,
-        "end_line": 1925,
+        "start_line": 2006,
+        "end_line": 2051,
         "name": "cfg_test_on_every_other_item_kind_excludes_or_stays_scoped_through_the_public_api"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 1945,
-        "end_line": 2015,
+        "start_line": 2071,
+        "end_line": 2141,
         "name": "an_out_of_line_test_mod_declared_inside_a_non_directory_style_file_resolves_correctly"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 2026,
-        "end_line": 2091,
+        "start_line": 2152,
+        "end_line": 2217,
         "name": "an_out_of_line_test_mod_declaration_falls_back_to_a_nested_mod_rs_when_no_flat_sibling_exists"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 2103,
-        "end_line": 2174,
+        "start_line": 2229,
+        "end_line": 2300,
         "name": "a_path_attribute_override_redirects_out_of_line_resolution_through_the_public_api"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 2187,
-        "end_line": 2263,
+        "start_line": 2313,
+        "end_line": 2389,
         "name": "an_out_of_line_test_module_files_own_out_of_line_declarations_are_excluded_recursively_through_the_public_api"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 2331,
-        "end_line": 2400,
+        "start_line": 2457,
+        "end_line": 2526,
         "name": "an_out_of_line_test_mod_declaration_falls_back_to_a_root_level_nested_mod_rs_when_module_dir_is_empty"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 2413,
-        "end_line": 2483,
+        "start_line": 2539,
+        "end_line": 2609,
         "name": "a_path_attribute_override_resolves_relative_to_a_declaring_files_own_subdirectory"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 2511,
-        "end_line": 2565,
+        "start_line": 2637,
+        "end_line": 2691,
         "name": "a_path_attribute_override_that_walks_upward_with_dotdot_still_excludes_its_target"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 2580,
-        "end_line": 2629,
+        "start_line": 2706,
+        "end_line": 2755,
         "name": "a_path_attribute_override_with_an_explicit_dot_slash_prefix_still_resolves_to_the_same_directory_target"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 2648,
-        "end_line": 2700,
+        "start_line": 2774,
+        "end_line": 2826,
         "name": "a_path_attribute_override_with_chained_dotdot_walks_up_every_popped_level"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 2725,
-        "end_line": 2773,
+        "start_line": 2851,
+        "end_line": 2899,
         "name": "a_path_attribute_override_whose_dotdot_count_overflows_the_declaring_directorys_depth_does_not_silently_collide_with_an_unrelated_real_file"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 2799,
-        "end_line": 2877,
+        "start_line": 2925,
+        "end_line": 3003,
         "name": "a_path_attribute_override_nested_inside_an_inline_module_resolves_under_the_declaring_files_own_module_directory_plus_the_inline_chain"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 2895,
-        "end_line": 2942,
+        "start_line": 3024,
+        "end_line": 3123,
+        "name": "a_path_attribute_override_nested_inside_chained_inline_modules_resolves_under_every_enclosing_modules_directory_in_outermost_first_order"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "start_line": 3141,
+        "end_line": 3188,
         "name": "a_path_attribute_override_that_is_an_absolute_path_does_not_silently_collide_with_an_unrelated_real_file"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 2977,
-        "end_line": 3036,
+        "start_line": 3211,
+        "end_line": 3262,
+        "name": "a_path_attribute_override_naming_a_uri_scheme_does_not_silently_collide_with_an_unrelated_real_file"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "start_line": 3280,
+        "end_line": 3328,
+        "name": "a_path_attribute_override_naming_a_windows_drive_letter_does_not_silently_collide_with_an_unrelated_real_file"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "start_line": 3363,
+        "end_line": 3422,
         "name": "a_path_attribute_override_on_a_mod_declared_inside_a_function_body_is_not_treated_as_nested_in_a_module"
       }
     ],
-    "proposed_home": "code_entity_test_exclusion_periphery::support (consolidate these 23 sites into one function in this file)",
+    "proposed_home": "code_entity_test_exclusion_periphery::support (consolidate these 26 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
