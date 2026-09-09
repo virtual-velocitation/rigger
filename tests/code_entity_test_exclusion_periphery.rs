@@ -1676,3 +1676,86 @@ fn cfg_test_on_every_other_item_kind_excludes_or_stays_scoped_through_the_public
          for every definition-producing grammar kind uniformly; leaked: {leaked:?}"
     );
 }
+
+/// PROBE (lens:sdet review, not yet a claimed regression test): `out_of_line_test_module_files`
+/// resolves a `#[cfg(test)] mod name;` declaration to `<directory containing the DECLARING
+/// file>/<name>.rs`. That coincides with Rust's own file-per-module convention only when the
+/// declaring file is itself a directory-style module (`mod.rs`/`lib.rs`/`main.rs`) - both of this
+/// repo's two disclosed live instances (`src/eventstore/mod.rs`, `src/lib.rs`) are exactly that
+/// shape, and so is this file's own `nested/parent.rs` fixture in
+/// `an_out_of_line_cfg_test_module_declaration_in_a_subdirectory_excludes_its_sibling_through_the_public_api`
+/// above, which places the target in the SAME directory as the declaring file. But an ORDINARY,
+/// non-`mod.rs` file that is itself a non-root submodule (e.g. `src/extract.rs`, declared via
+/// `mod extract;` from its own parent) puts ITS OWN children in a subdirectory named after
+/// itself - `src/extract/child.rs` - never as a sibling in `src/`. This fixture reproduces that
+/// exact shape and checks which of the two failure modes actually fires.
+#[cfg(feature = "symbols")]
+#[test]
+fn an_out_of_line_test_mod_declared_inside_a_non_directory_style_file_resolves_correctly() {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::{Projection, KIND_CODE_ENTITY};
+    use std::collections::BTreeSet;
+
+    let root = tempfile::tempdir().unwrap();
+    // `parent.rs` is an ordinary (non-`mod.rs`) file, itself a leaf submodule of the crate. Its
+    // own `#[cfg(test)] mod helper;` declaration, per Rust's real file-per-module convention,
+    // names `parent/helper.rs` - a NEW subdirectory named after `parent`, not a sibling of
+    // `parent.rs`.
+    std::fs::write(
+        root.path().join("parent.rs"),
+        "pub fn parent_product() {}\n\n#[cfg(test)]\nmod helper;\n",
+    )
+    .unwrap();
+    std::fs::create_dir(root.path().join("parent")).unwrap();
+    std::fs::write(
+        root.path().join("parent").join("helper.rs"),
+        "pub fn real_test_helper() {}\n",
+    )
+    .unwrap();
+    // An UNRELATED top-level file that merely happens to share the submodule's bare name, sitting
+    // where `out_of_line_test_module_files`'s "same directory as the declaring file" heuristic
+    // would actually look.
+    std::fs::write(
+        root.path().join("helper.rs"),
+        "pub fn totally_unrelated_helper() {}\n",
+    )
+    .unwrap();
+
+    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
+    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.iter_mut().enumerate() {
+        event.position = zero_based as u64 + 1;
+        p.apply(event).unwrap();
+    }
+
+    let g = p
+        .subgraph(
+            &[
+                "parent.rs".to_string(),
+                "parent/helper.rs".to_string(),
+                "helper.rs".to_string(),
+            ],
+            3,
+        )
+        .unwrap();
+    let node_ids: BTreeSet<&str> = g.nodes.iter().map(|n| n.id.as_str()).collect();
+
+    let unrelated = g.nodes.iter().find(|n| n.id == "helper.rs::totally_unrelated_helper");
+    assert!(
+        unrelated.map(|n| n.kind == KIND_CODE_ENTITY).unwrap_or(false),
+        "an unrelated top-level file must never be swept into exclusion just because a DIFFERENT \
+         file's own child submodule happens to share its bare name - `out_of_line_test_module_files` \
+         resolves off the DECLARING FILE's directory, not off Rust's actual per-file module-nesting \
+         rule, so a same-named sibling of the declaring file is wrongly treated as the declared \
+         module's target; node present: {:?}, all nodes: {node_ids:?}",
+        unrelated.is_some()
+    );
+    assert!(
+        !node_ids.contains("parent/helper.rs::real_test_helper"),
+        "the ACTUAL Rust-resolved target of `mod helper;` inside a non-`mod.rs` `parent.rs` is \
+         `parent/helper.rs`, not a same-directory sibling - real test code at that path must still \
+         be excluded, not merely whatever same-named file sits beside the declaring file instead; \
+         nodes: {node_ids:?}"
+    );
+}
