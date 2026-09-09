@@ -173,6 +173,23 @@ fn test_regions(
 /// class by construction - a string literal's content (an embedded `//`, an embedded `]`, a
 /// multi-line value) can never perturb where one node ends and the next begins, because the
 /// parser already resolved that - rather than requiring a 7th, 8th, ... point patch per new shape.
+///
+/// Round 5 (review REJECT `adj-u86c1-verdict-reject` round 4, finding
+/// `adv-u86c1-r4-inner-cfg-test-attribute-not-recognized`): an OUTER `#[cfg(test)]` (a sibling
+/// BEFORE the item it gates) and an INNER `#![cfg(test)]` (the FIRST node INSIDE the item's own
+/// body, gating the item that body belongs to - `mod tests { #![cfg(test)] .. }`) are two
+/// grammar-distinct shapes for the identical Rust idiom. Two checks now cover both, both riding
+/// the SAME shared walk ([`attribute_stack_names_test`]) in opposite directions over different
+/// sibling sets: `node.prev_sibling()` for an item that sits AFTER an inner attribute as a normal
+/// sibling inside a shared body (e.g. a plain helper following `#![cfg(test)]` in the same `mod`'s
+/// `declaration_list` - also how the pre-existing OUTER `#[cfg(test)]` shape is found, unchanged);
+/// [`leading_inner_test_attribute`]'s `body.named_child(0)` / `next_named_sibling()` for the item
+/// the inner attribute itself governs (e.g. the `mod` whose body the `#![cfg(test)]` opens), which
+/// has no PRECEDING sibling of its own to walk - the attribute lives inside its body, never before
+/// it - so the sibling walk alone can never self-attribute it. `tree-sitter-rust`'s complete set of
+/// attribute-bearing node kinds is exactly `attribute_item` and `inner_attribute_item` (grepped
+/// `node-types.json`; `attribute` itself is never a sibling - it is always the sole named child of
+/// one of the other two), so these two checks are exhaustive.
 fn preceded_by_test_attribute(
     source: &[u8],
     root: tree_sitter::Node,
@@ -181,19 +198,54 @@ fn preceded_by_test_attribute(
     let Some(node) = root.descendant_for_byte_range(range.start, range.end) else {
         return false;
     };
+    leading_inner_test_attribute(node, source)
+        || attribute_stack_names_test(source, node.prev_sibling(), |n| n.prev_sibling())
+}
+
+/// Whether `node` (a definition such as a `mod_item`, `function_item`, `impl_item`, ...) is
+/// self-attributed test THROUGH ITS OWN BODY: Rust's `#![..]` inner-attribute form governs the
+/// item whose body it opens, not a sibling item - `mod tests { #![cfg(test)] fn helper() {} }`
+/// parses `#![cfg(test)]` as the FIRST named child of the `mod`'s own `declaration_list`, never as
+/// a sibling of the `mod_item` node itself, so [`preceded_by_test_attribute`]'s sibling walk (which
+/// only ever looks at what comes BEFORE `node`) can never see it. Reads `node`'s `body` field
+/// (present on every item kind that can carry inner attributes - `mod_item`, `function_item`,
+/// `impl_item`, `trait_item`, ...; absent, hence always `false`, on a leafy definition kind such as
+/// a `const_item` that has no body to open one in) and walks forward from its first named child via
+/// the SAME [`attribute_stack_names_test`] the sibling-before case uses, so a doc comment or a
+/// stacked `#![allow(..)]` ahead of the real `#![cfg(test)]` never hides it either.
+fn leading_inner_test_attribute(node: tree_sitter::Node, source: &[u8]) -> bool {
+    let Some(body) = node.child_by_field_name("body") else {
+        return false;
+    };
+    attribute_stack_names_test(source, body.named_child(0), |n| n.next_named_sibling())
+}
+
+/// The one walk shared by both [`preceded_by_test_attribute`] (backward over `prev_sibling`) and
+/// [`leading_inner_test_attribute`] (forward over `next_named_sibling`, from a body's first named
+/// child): starting at `first`, follow `advance` across a contiguous run of comment
+/// (`line_comment`, `block_comment`) and attribute (`attribute_item`, `inner_attribute_item`)
+/// nodes, stopping at the first node that is neither - the boundary of the stack - and answering
+/// whether ANY attribute node encountered along the way [`attribute_item_names_test`]s, not merely
+/// the nearest one, so a comment or an unrelated attribute sitting between two stacked attributes
+/// never severs the scan and never hides a `#[test]`/`#![cfg(test)]` two attributes further along.
+fn attribute_stack_names_test<'a>(
+    source: &[u8],
+    first: Option<tree_sitter::Node<'a>>,
+    advance: impl Fn(tree_sitter::Node<'a>) -> Option<tree_sitter::Node<'a>>,
+) -> bool {
     let mut found = false;
-    let mut prev = node.prev_sibling();
-    while let Some(sibling) = prev {
-        match sibling.kind() {
+    let mut cur = first;
+    while let Some(node) = cur {
+        match node.kind() {
             "line_comment" | "block_comment" => {}
-            "attribute_item" => {
-                if attribute_item_names_test(sibling, source) {
+            "attribute_item" | "inner_attribute_item" => {
+                if attribute_item_names_test(node, source) {
                     found = true;
                 }
             }
             _ => break,
         }
-        prev = sibling.prev_sibling();
+        cur = advance(node);
     }
     found
 }
@@ -797,6 +849,62 @@ mod tests {
              test code by containment"
         );
         assert!(def_is_test("it_works"), "a #[test] function is test code");
+    }
+
+    #[test]
+    fn an_inner_cfg_test_attribute_marks_its_enclosing_module_and_the_module_marks_its_children() {
+        // Round-5 regression (review REJECT adj-u86c1-verdict-reject round 4, finding
+        // adv-u86c1-r4-inner-cfg-test-attribute-not-recognized): `preceded_by_test_attribute`'s
+        // sibling walk matched only the OUTER `attribute_item` shape (`#[cfg(test)] mod tests {
+        // .. }`, the attribute a sibling BEFORE the mod). The equally idiomatic INNER-attribute
+        // form - `mod tests { #![cfg(test)] fn helper() {} }`, where the attribute is the FIRST
+        // node INSIDE the mod's own body instead - parses to a distinct grammar kind,
+        // `inner_attribute_item` (verified against the real parsed tree: `mod_item body:
+        // declaration_list(inner_attribute_item, function_item)`), which the match fell through
+        // to its `_ => break` arm on, silently treating both the mod and its plain nested helper
+        // as ordinary product code.
+        //
+        // Two distinct gaps, both closed here: (1) `helper` is a normal SIBLING of the inner
+        // attribute inside the mod's declaration_list, so it is caught the same way an
+        // outer-attributed item's sibling stack already was - `inner_attribute_item` added to the
+        // existing sibling-walk match arm. (2) the mod ITSELF has no preceding sibling at all (the
+        // attribute lives inside its own body, not before it), so the sibling walk alone can never
+        // self-attribute it; `leading_inner_test_attribute` closes this by checking whether the
+        // definition's own body OPENS with a test-naming inner attribute, mirroring Rust's actual
+        // semantic (an inner attribute governs the item whose body contains it).
+        let src = "\
+mod tests {
+    #![cfg(test)]
+
+    // A plain helper with NO attribute of its own - still test code, both by its own inner-
+    // attribute-preceded sibling position AND by containment inside the now-self-attributed mod.
+    fn helper() {
+        product();
+    }
+}
+
+fn product() {}
+";
+        let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
+        let fs = extract(src, Lang::Rust, &language, tree_sitter_rust::TAGS_QUERY).unwrap();
+        let def_is_test = |name: &str| {
+            fs.defs
+                .iter()
+                .find(|d| d.name == name)
+                .unwrap_or_else(|| panic!("no def named {name:?}; got {:?}", fs.defs))
+                .is_test
+        };
+        assert!(
+            def_is_test("tests"),
+            "a mod whose OWN body opens with #![cfg(test)] is self-attributed test code, exactly \
+             as the equivalent outer #[cfg(test)] mod form already is"
+        );
+        assert!(
+            def_is_test("helper"),
+            "a plain helper with no attribute of its own, sitting inside a #![cfg(test)]-gated \
+             mod's body, is test code - by direct sibling position and by containment alike"
+        );
+        assert!(!def_is_test("product"), "product code is never test code");
     }
 
     #[test]
