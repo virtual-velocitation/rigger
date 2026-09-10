@@ -1221,14 +1221,14 @@
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
-        "start_line": 409,
-        "end_line": 409,
+        "start_line": 450,
+        "end_line": 450,
         "name": "Command::new"
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
-        "start_line": 423,
-        "end_line": 423,
+        "start_line": 464,
+        "end_line": 464,
         "name": "Command::new"
       },
       {
@@ -6167,38 +6167,38 @@
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
-        "start_line": 413,
-        "end_line": 413,
+        "start_line": 454,
+        "end_line": 454,
         "name": "\".rigger\""
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
-        "start_line": 413,
-        "end_line": 413,
+        "start_line": 454,
+        "end_line": 454,
         "name": "\"create .rigger\""
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
-        "start_line": 433,
-        "end_line": 433,
+        "start_line": 474,
+        "end_line": 474,
         "name": "\".rigger\""
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
-        "start_line": 477,
-        "end_line": 477,
+        "start_line": 518,
+        "end_line": 518,
         "name": "\".rigger\""
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
-        "start_line": 508,
-        "end_line": 508,
+        "start_line": 549,
+        "end_line": 549,
         "name": "\".rigger\""
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
-        "start_line": 575,
-        "end_line": 575,
+        "start_line": 616,
+        "end_line": 616,
         "name": "\".rigger\""
       },
       {
@@ -16015,8 +16015,8 @@
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
-        "start_line": 407,
-        "end_line": 415,
+        "start_line": 448,
+        "end_line": 456,
         "name": "temp_project"
       },
       {
@@ -16113,8 +16113,8 @@
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
-        "start_line": 450,
-        "end_line": 462,
+        "start_line": 491,
+        "end_line": 503,
         "name": "run_rigger"
       },
       {
@@ -16289,8 +16289,8 @@
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
-        "start_line": 422,
-        "end_line": 444,
+        "start_line": 463,
+        "end_line": 485,
         "name": "project_identity_of"
       },
       {
@@ -18033,8 +18033,8 @@
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
-        "start_line": 525,
-        "end_line": 550,
+        "start_line": 566,
+        "end_line": 591,
         "name": "validate_warns_of_retired_code_entities_with_the_measured_count_and_never_fails"
       },
       {
@@ -21777,8 +21777,8 @@
     "sites": [
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
-        "start_line": 407,
-        "end_line": 415,
+        "start_line": 448,
+        "end_line": 456,
         "name": "temp_project"
       },
       {
@@ -21833,14 +21833,14 @@
     "sites": [
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
-        "start_line": 471,
-        "end_line": 498,
+        "start_line": 512,
+        "end_line": 539,
         "name": "seed_a_retired_entity"
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
-        "start_line": 502,
-        "end_line": 522,
+        "start_line": 543,
+        "end_line": 563,
         "name": "seed_a_live_entity"
       }
     ],

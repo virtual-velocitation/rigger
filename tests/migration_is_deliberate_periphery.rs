@@ -24,7 +24,12 @@
 //!    `RunCtx` machinery - so neither proves the crate's PUBLIC `extract_events` ->
 //!    `Projector::apply` composition an external caller (or a future refactor of either side
 //!    alone) actually holds; the third (out-of-line) shape had NO coverage anywhere reaching the
-//!    real fold before this file's own addition below. Mirrors
+//!    real fold before this file's own addition below. `index_events` and `project_batches_paced`
+//!    are TWO independently-coded call sites for the identical `for_extraction` hollowing (round 5
+//!    fixed the same drop-the-batch defect in both, separately), and `project_batches_paced` -
+//!    never `index_events` - is the one `src/ingest.rs` actually calls in production, so this
+//!    shape's probe runs against BOTH entry points (one shared body, round-1-review addendum
+//!    below) rather than resting on one proving the other by inference. Mirrors
 //!    `proof_lands_on_the_card_periphery.rs`'s own stated precedent for criterion 2's identical
 //!    class of gap.
 //!  - `rigger validate`'s RETIRED CODE-ENTITY advisory, driven end to end through the COMPILED
@@ -304,22 +309,24 @@ fn a_product_file_rewrapped_entirely_into_cfg_test_retires_its_prior_entity_thro
 /// The THIRD exclusion shape criterion 1 established, and the one this criterion's mechanism
 /// missed on the first attempt (round 5, adj-u86c3-r4-out-of-line-exclusion-still-unmigrated): an
 /// OUT-OF-LINE `#[cfg(test)] mod name;` declaration. Unlike the two siblings above, this exclusion
-/// is computed by `index_events`/`project_batches_paced`, one layer above `extract_events` itself
-/// (only there is every file's path in the project known together, so only there can the
-/// DECLARING file's attribute be resolved against its TARGET file) - so this test drives the
-/// PUBLIC `index_events`, not `extract_events` directly, reproducing the exact probe the
-/// adjudicator's own rejection ran by hand (`tests/_adjudicator_probe_out_of_line.rs`, reverted)
-/// through this crate's permanent test suite instead.
+/// is computed one layer above `extract_events` itself (only there is every file's path in the
+/// project known together, so only there can the DECLARING file's attribute be resolved against
+/// its TARGET file) - by TWO independently-coded call sites, `index_events` and
+/// `project_batches_paced`, both of which dropped the excluded file's batch entirely before round
+/// 5's fix gave each its OWN `for_extraction` hollowing call. Parameterized over `entry` so one
+/// body proves the retirement fires through EITHER site rather than one standing in for the other
+/// by inference - see the two `#[test]`s below, reproducing the exact probe the adjudicator's own
+/// rejection ran by hand (`tests/_adjudicator_probe_out_of_line.rs`, reverted) through this
+/// crate's permanent test suite instead.
 #[cfg(feature = "symbols")]
-#[test]
-fn an_out_of_line_cfg_test_mod_declarations_target_retires_through_the_real_index_events_and_fold_seam(
+fn assert_out_of_line_declaration_retires_through_the_real_fold_seam(
+    entry: impl Fn(&str) -> Vec<rigger::eventstore::Event>,
 ) {
     use rigger::contextgraph::sqlite::Projector;
     use rigger::contextgraph::Projection;
-    use rigger::grounder::symbols::build_index;
-    use rigger::grounder::symbols::events::index_events;
 
     let root = tempfile::tempdir().unwrap();
+    let root_str = root.path().to_str().unwrap();
     let lib_path = root.path().join("lib.rs");
     // Generation 1: `lib.rs` and `contract.rs` are both ordinary product files - `contract.rs` is
     // not yet named by any `mod` declaration at all, so it indexes and extracts as plain product
@@ -333,8 +340,7 @@ fn an_out_of_line_cfg_test_mod_declarations_target_retires_through_the_real_inde
 
     let p = Projector::open(":memory:", "test").unwrap();
     let mut pos = 1u64;
-    let idx1 = build_index(root.path().to_str().unwrap(), None);
-    for mut ev in index_events(&idx1) {
+    for mut ev in entry(root_str) {
         ev.position = pos;
         pos += 1;
         p.apply(&ev).unwrap();
@@ -356,19 +362,17 @@ fn an_out_of_line_cfg_test_mod_declarations_target_retires_through_the_real_inde
     // Generation 2: `lib.rs` grows an out-of-line `#[cfg(test)] mod contract;` - `contract.rs`
     // itself is untouched (Rust's own module system, not an attribute on the file itself, is what
     // gates this), so a per-file view of `contract.rs` alone could never see the exclusion; only
-    // `index_events`'s own cross-file `out_of_line_test_module_files` resolution can.
+    // `entry`'s own cross-file `out_of_line_test_module_files` resolution can.
     std::fs::write(
         &lib_path,
         "pub fn keep_me() {}\n\n#[cfg(test)]\nmod contract;\n",
     )
     .unwrap();
-    let idx2 = build_index(root.path().to_str().unwrap(), None);
-    let mut events = index_events(&idx2);
     // Deterministic re-ingest through the real PUBLIC pipeline, never a hand-built payload.
-    for ev in events.iter_mut() {
+    for mut ev in entry(root_str) {
         ev.position = pos;
         pos += 1;
-        p.apply(ev).unwrap();
+        p.apply(&ev).unwrap();
     }
 
     assert_eq!(
@@ -396,6 +400,43 @@ fn an_out_of_line_cfg_test_mod_declarations_target_retires_through_the_real_inde
          unchanged; nodes: {:?}",
         after.nodes
     );
+}
+
+#[cfg(feature = "symbols")]
+#[test]
+fn an_out_of_line_cfg_test_mod_declarations_target_retires_through_the_real_index_events_and_fold_seam(
+) {
+    use rigger::grounder::symbols::build_index;
+    use rigger::grounder::symbols::events::index_events;
+
+    assert_out_of_line_declaration_retires_through_the_real_fold_seam(|root| {
+        index_events(&build_index(root, None))
+    });
+}
+
+/// The SAME shape as its `index_events` sibling above, through `project_batches_paced` instead -
+/// the site `src/ingest.rs` actually calls in production (`index_events` has no production
+/// caller of its own). Round 5 fixed this exact defect in `index_events` and
+/// `project_batches_paced` as two SEPARATE edits (each had its own `.filter(|(path, _)|
+/// !excluded.contains(path.as_str()))` line dropping the batch before `extract_events` ever ran),
+/// so proving the fix through one is not evidence it holds through the other; `workers: 2`
+/// exercises the parallel dispatch path (`crate::parallel::map_ordered`), not merely the `workers
+/// <= 1` inline fallback - width-invariance across worker counts is `parallel_ordered_emit.rs`'s
+/// own, separate, general-purpose guarantee, so this does not re-prove that, only that THIS
+/// fixture's retirement holds at a width that actually engages the pool.
+#[cfg(feature = "symbols")]
+#[test]
+fn an_out_of_line_cfg_test_mod_declarations_target_retires_through_the_real_project_batches_paced_and_fold_seam(
+) {
+    use rigger::grounder::symbols::events::project_batches_paced;
+
+    assert_out_of_line_declaration_retires_through_the_real_fold_seam(|root| {
+        project_batches_paced(root, 2)
+            .0
+            .into_iter()
+            .flat_map(|(_, evs)| evs)
+            .collect()
+    });
 }
 
 // =========================================================================================
