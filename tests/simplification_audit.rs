@@ -3257,8 +3257,9 @@ fn render_section_4() -> String {
         (target-only) flags - four builds total, all clean. `cargo rustc`'s trailing flags \
         were chosen deliberately over a whole-crate `RUSTFLAGS` env var (tried first): \
         `RUSTFLAGS` also strict-lints `build.rs`'s own compilation, which then fails on two \
-        items in `build/gitsemver.rs` that are correctly `pub` for their other two `#[path]` \
-        inclusion sites (`src/main.rs`, `tests/gitsemver_derivation.rs`) but register as \
+        items in `build/gitsemver.rs` that are correctly `pub` for their other three \
+        `#[path]` inclusion sites (`src/main.rs`, `tests/gitsemver_derivation.rs`, \
+        `tests/gitsemver_worktree_periphery.rs`) but register as \
         `unreachable_pub` from `build.rs`'s own isolated crate view - a false positive from \
         the blunt instrument, not a real defect in `build.rs`. `cargo rustc`'s trailing flags \
         apply only to the one named target's own rustc invocation, never to a dependency and \
@@ -3276,10 +3277,11 @@ fn render_section_4() -> String {
         instrument stage 2 builds, not a compiler diagnostic; this stage's near-empty yield is \
         exactly why stage 2 exists.\n\n\
         FOUND, outside `src/` (`build/gitsemver.rs`, spec 74's compile-time \
-        version-derivation seam, shared via `#[path]` into three separate compilations - \
-        `build.rs`, `src/main.rs`, and `tests/gitsemver_derivation.rs`): two items, \
+        version-derivation seam, shared via `#[path]` into four separate compilations - \
+        `build.rs`, `src/main.rs`, `tests/gitsemver_derivation.rs`, and \
+        `tests/gitsemver_worktree_periphery.rs`): two items, \
         `UNVERSIONED_SUFFIX` (line 45) and `derive_version` (line 129), were `pub` when \
-        nothing outside their own defining crate ever reaches them at any of those three \
+        nothing outside their own defining crate ever reaches them at any of those four \
         inclusion sites - `pub(crate)` satisfies every site independently, since each \
         `#[path]` inclusion recompiles the same source text fresh as part of whichever crate \
         includes it. Applied as the compiler's own suggested fix (`rustc`: \"consider \

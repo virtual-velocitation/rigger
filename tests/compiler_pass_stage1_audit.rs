@@ -7,8 +7,10 @@
 //! (the whole-crate `cargo build` + a plain `RUSTFLAGS` env var were both tried first and
 //! rejected - see the JSON's own `mechanism_note` - because either strict-lints `build.rs`
 //! too, which fails on `build/gitsemver.rs`'s two items even though they are correctly `pub`
-//! for their OTHER two `#[path]` inclusion sites; `cargo rustc`'s trailing flags apply only
-//! to the one named target's own rustc invocation, never to a dependency or to `build.rs`).
+//! for their OTHER three `#[path]` inclusion sites (`src/main.rs`,
+//! `tests/gitsemver_derivation.rs`, `tests/gitsemver_worktree_periphery.rs`); `cargo rustc`'s
+//! trailing flags apply only to the one named target's own rustc invocation, never to a
+//! dependency or to `build.rs`).
 //!
 //! THE SPLIT THIS FILE MAKES, deliberately: the two checks below that are cheap (pure Rust,
 //! no subprocess) run on every `cargo test`, always. The one check that is not cheap - it
