@@ -8299,8 +8299,8 @@
     "sites": [
       {
         "file": "src/contextgraph/mod.rs",
-        "start_line": 468,
-        "end_line": 470,
+        "start_line": 475,
+        "end_line": 477,
         "name": "is_false"
       },
       {
@@ -8331,14 +8331,14 @@
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 6478,
-        "end_line": 6478,
+        "start_line": 6640,
+        "end_line": 6640,
         "name": "Connection::open"
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7288,
-        "end_line": 7288,
+        "start_line": 7450,
+        "end_line": 7450,
         "name": "Connection::open"
       },
       {
@@ -8747,14 +8747,14 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 2557,
-        "end_line": 2571,
+        "start_line": 2696,
+        "end_line": 2710,
         "name": "apply_decision"
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4229,
-        "end_line": 4236,
+        "start_line": 4391,
+        "end_line": 4398,
         "name": "apply_batch_ref_caller"
       },
       {
@@ -8785,14 +8785,14 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 2646,
-        "end_line": 2659,
+        "start_line": 2785,
+        "end_line": 2798,
         "name": "subgraph_finds_the_governing_decision"
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7645,
-        "end_line": 7665,
+        "start_line": 7807,
+        "end_line": 7827,
         "name": "recording_proof_never_wipes_the_entitys_own_name_kind_and_line_attrs"
       }
     ],
@@ -8805,8 +8805,8 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 2790,
-        "end_line": 2798,
+        "start_line": 2929,
+        "end_line": 2937,
         "name": "apply_governs_at"
       },
       {
@@ -8831,26 +8831,26 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 3081,
-        "end_line": 3099,
+        "start_line": 3220,
+        "end_line": 3238,
         "name": "apply_code_entity"
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 3132,
-        "end_line": 3151,
+        "start_line": 3294,
+        "end_line": 3313,
         "name": "apply_community"
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4203,
-        "end_line": 4214,
+        "start_line": 4365,
+        "end_line": 4376,
         "name": "apply_batch_def"
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4497,
-        "end_line": 4517,
+        "start_line": 4659,
+        "end_line": 4679,
         "name": "apply_batch_def_at"
       },
       {
@@ -8893,50 +8893,50 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 3101,
-        "end_line": 3106,
+        "start_line": 3240,
+        "end_line": 3245,
         "name": "apply_edge_inferred"
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 3112,
-        "end_line": 3117,
+        "start_line": 3251,
+        "end_line": 3256,
         "name": "apply_edge_inferred_evidence"
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 3122,
-        "end_line": 3128,
+        "start_line": 3284,
+        "end_line": 3290,
         "name": "apply_ref_caller"
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 3881,
-        "end_line": 3889,
+        "start_line": 4043,
+        "end_line": 4051,
         "name": "apply_doc_concept"
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 3992,
-        "end_line": 4000,
+        "start_line": 4154,
+        "end_line": 4162,
         "name": "apply_doc_link"
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4218,
-        "end_line": 4224,
+        "start_line": 4380,
+        "end_line": 4386,
         "name": "apply_batch_ref"
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 5832,
-        "end_line": 5840,
+        "start_line": 5994,
+        "end_line": 6002,
         "name": "apply_unit_integrated"
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7094,
-        "end_line": 7104,
+        "start_line": 7256,
+        "end_line": 7266,
         "name": "apply_def"
       },
       {
@@ -8955,14 +8955,14 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4242,
-        "end_line": 4256,
+        "start_line": 4404,
+        "end_line": 4418,
         "name": "edges_from"
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 6551,
-        "end_line": 6569,
+        "start_line": 6713,
+        "end_line": 6731,
         "name": "edges_touching"
       }
     ],
@@ -8975,14 +8975,14 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4920,
-        "end_line": 5060,
+        "start_line": 5082,
+        "end_line": 5222,
         "name": "calls_down_walks_the_execution_path_as_a_layered_deduped_dag_with_a_back_edge"
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 5258,
-        "end_line": 5448,
+        "start_line": 5420,
+        "end_line": 5610,
         "name": "calls_up_walks_the_call_sites_as_a_layered_deduped_dag_and_lists_referenced_but_not_called"
       }
     ],
@@ -8995,14 +8995,14 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 5565,
-        "end_line": 5598,
+        "start_line": 5727,
+        "end_line": 5760,
         "name": "decision_fold_projects_no_agent_node_or_decided_edge"
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 5652,
-        "end_line": 5680,
+        "start_line": 5814,
+        "end_line": 5842,
         "name": "review_finding_projects_no_raised_edge_even_with_an_event_actor"
       }
     ],
@@ -9015,14 +9015,14 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 6366,
-        "end_line": 6375,
+        "start_line": 6528,
+        "end_line": 6537,
         "name": "edge_projects"
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7453,
-        "end_line": 7465,
+        "start_line": 7615,
+        "end_line": 7627,
         "name": "index_names"
       }
     ],
@@ -9035,14 +9035,14 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 6378,
-        "end_line": 6460,
+        "start_line": 6540,
+        "end_line": 6622,
         "name": "every_node_and_edge_carries_the_projects_scope_on_fold"
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 6572,
-        "end_line": 6663,
+        "start_line": 6734,
+        "end_line": 6825,
         "name": "prune_is_project_scoped_leaving_another_projects_same_id_node_intact"
       }
     ],
@@ -9055,8 +9055,8 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7107,
-        "end_line": 7112,
+        "start_line": 7269,
+        "end_line": 7274,
         "name": "apply_ref"
       },
       {
@@ -9075,14 +9075,14 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7192,
-        "end_line": 7233,
+        "start_line": 7354,
+        "end_line": 7395,
         "name": "the_cross_file_inferred_tier_is_order_independent"
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7236,
-        "end_line": 7251,
+        "start_line": 7398,
+        "end_line": 7413,
         "name": "the_definition_upgrade_never_demotes_a_same_file_extracted_reference"
       },
       {
@@ -9101,8 +9101,8 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7362,
-        "end_line": 7364,
+        "start_line": 7524,
+        "end_line": 7526,
         "name": "edge_desc"
       },
       {
@@ -9121,14 +9121,14 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7563,
-        "end_line": 7582,
+        "start_line": 7725,
+        "end_line": 7744,
         "name": "a_same_file_test_reference_increments_proven_by_and_records_its_evidence"
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7585,
-        "end_line": 7608,
+        "start_line": 7747,
+        "end_line": 7770,
         "name": "two_test_references_accumulate_proven_by_to_2_with_both_evidence_entries"
       }
     ],
@@ -10829,14 +10829,14 @@
       },
       {
         "file": "src/grounder/symbols/events.rs",
-        "start_line": 531,
-        "end_line": 542,
+        "start_line": 550,
+        "end_line": 561,
         "name": "kind_str"
       },
       {
         "file": "src/grounder/symbols/events.rs",
-        "start_line": 546,
-        "end_line": 555,
+        "start_line": 565,
+        "end_line": 574,
         "name": "lang_str"
       }
     ],

@@ -424,6 +424,13 @@ pub(crate) struct EdgeInferred {
     /// The extraction-batch boundary marker; see [`CodeEntityExtracted::fresh`]. A refs-only file
     /// (no definitions) carries it on its first reference instead, so every re-extracted file
     /// supersedes its prior edges regardless of whether it defines anything.
+    ///
+    /// Spec 86 criterion 2 (round 2) double duty: on a TEST-ORIGIN event (`is_test`), this same
+    /// flag instead marks the boundary of the referencing file's own EVIDENCE batch (stamped by
+    /// [`crate::grounder::symbols::events::proof_events`], never `extract_events`), and the fold
+    /// reads it as `supersede_file_proof`'s trigger rather than `supersede_file_edges`'s - the two
+    /// concerns share the field because they share the same "first event of this file's re-emitted
+    /// batch" shape, never because one is defined in terms of the other.
     #[serde(default, skip_serializing_if = "is_false")]
     pub fresh: bool,
     /// The enclosing definition this reference was attributed to during extraction (spec 37): the

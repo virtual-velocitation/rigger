@@ -4014,7 +4014,7 @@ Proposed home: `a new shared module (sites span 2 files: src/contextgraph/mod.rs
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/mod.rs:468-470` `is_false`
+- `src/contextgraph/mod.rs:475-477` `is_false`
 - `src/dash.rs:1151-1153` `is_not_back`
 - `src/dash.rs:1158-1160` `is_not_shared`
 
@@ -4025,8 +4025,8 @@ Proposed home: `one sqlite-connection-opening adapter function every caller is i
 mandatory sweep: sqlite Connection::open call sites - 46 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `src/contextgraph/sqlite.rs:132-132` `Connection::open`
-- `src/contextgraph/sqlite.rs:6478-6478` `Connection::open`
-- `src/contextgraph/sqlite.rs:7288-7288` `Connection::open`
+- `src/contextgraph/sqlite.rs:6640-6640` `Connection::open`
+- `src/contextgraph/sqlite.rs:7450-7450` `Connection::open`
 - `src/eventstore/sqlite.rs:159-159` `Connection::open`
 - `src/eventstore/sqlite.rs:2792-2792` `Connection::open`
 - `src/eventstore/sqlite.rs:3484-3484` `Connection::open`
@@ -4134,8 +4134,8 @@ Proposed home: `a new shared module (sites span 4 files: src/contextgraph/sqlite
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/sqlite.rs:2557-2571` `apply_decision`
-- `src/contextgraph/sqlite.rs:4229-4236` `apply_batch_ref_caller`
+- `src/contextgraph/sqlite.rs:2696-2710` `apply_decision`
+- `src/contextgraph/sqlite.rs:4391-4398` `apply_batch_ref_caller`
 - `src/dash.rs:9906-9913` `apply_call`
 - `tests/calls_down_execution_path_periphery.rs:80-87` `apply_call`
 - `tests/graph_fold_dedup_live_only_scoping.rs:38-45` `apply_decision`
@@ -4146,8 +4146,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/sqlite.rs:2646-2659` `subgraph_finds_the_governing_decision`
-- `src/contextgraph/sqlite.rs:7645-7665` `recording_proof_never_wipes_the_entitys_own_name_kind_and_line_attrs`
+- `src/contextgraph/sqlite.rs:2785-2798` `subgraph_finds_the_governing_decision`
+- `src/contextgraph/sqlite.rs:7807-7827` `recording_proof_never_wipes_the_entitys_own_name_kind_and_line_attrs`
 
 #### `dup-0114` (near, 3 sites)
 
@@ -4155,7 +4155,7 @@ Proposed home: `a new shared module (sites span 3 files: src/contextgraph/sqlite
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/sqlite.rs:2790-2798` `apply_governs_at`
+- `src/contextgraph/sqlite.rs:2929-2937` `apply_governs_at`
 - `tests/graph_fold_dedup_live_edge.rs:38-46` `apply_governs`
 - `tests/graph_rebuild_collapses_dupes.rs:40-48` `apply_governs`
 
@@ -4165,10 +4165,10 @@ Proposed home: `a new shared module (sites span 6 files: src/contextgraph/sqlite
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/sqlite.rs:3081-3099` `apply_code_entity`
-- `src/contextgraph/sqlite.rs:3132-3151` `apply_community`
-- `src/contextgraph/sqlite.rs:4203-4214` `apply_batch_def`
-- `src/contextgraph/sqlite.rs:4497-4517` `apply_batch_def_at`
+- `src/contextgraph/sqlite.rs:3220-3238` `apply_code_entity`
+- `src/contextgraph/sqlite.rs:3294-3313` `apply_community`
+- `src/contextgraph/sqlite.rs:4365-4376` `apply_batch_def`
+- `src/contextgraph/sqlite.rs:4659-4679` `apply_batch_def_at`
 - `src/dash.rs:9894-9905` `apply_def`
 - `tests/calls_down_execution_path_periphery.rs:63-74` `apply_def`
 - `tests/dash_calls_route_periphery.rs:741-751` `apply_def`
@@ -4181,14 +4181,14 @@ Proposed home: `a new shared module (sites span 2 files: src/contextgraph/sqlite
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/sqlite.rs:3101-3106` `apply_edge_inferred`
-- `src/contextgraph/sqlite.rs:3112-3117` `apply_edge_inferred_evidence`
-- `src/contextgraph/sqlite.rs:3122-3128` `apply_ref_caller`
-- `src/contextgraph/sqlite.rs:3881-3889` `apply_doc_concept`
-- `src/contextgraph/sqlite.rs:3992-4000` `apply_doc_link`
-- `src/contextgraph/sqlite.rs:4218-4224` `apply_batch_ref`
-- `src/contextgraph/sqlite.rs:5832-5840` `apply_unit_integrated`
-- `src/contextgraph/sqlite.rs:7094-7104` `apply_def`
+- `src/contextgraph/sqlite.rs:3240-3245` `apply_edge_inferred`
+- `src/contextgraph/sqlite.rs:3251-3256` `apply_edge_inferred_evidence`
+- `src/contextgraph/sqlite.rs:3284-3290` `apply_ref_caller`
+- `src/contextgraph/sqlite.rs:4043-4051` `apply_doc_concept`
+- `src/contextgraph/sqlite.rs:4154-4162` `apply_doc_link`
+- `src/contextgraph/sqlite.rs:4380-4386` `apply_batch_ref`
+- `src/contextgraph/sqlite.rs:5994-6002` `apply_unit_integrated`
+- `src/contextgraph/sqlite.rs:7256-7266` `apply_def`
 - `tests/dash_calls_route_periphery.rs:755-761` `apply_call`
 
 #### `dup-0117` (near, 2 sites)
@@ -4197,8 +4197,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/sqlite.rs:4242-4256` `edges_from`
-- `src/contextgraph/sqlite.rs:6551-6569` `edges_touching`
+- `src/contextgraph/sqlite.rs:4404-4418` `edges_from`
+- `src/contextgraph/sqlite.rs:6713-6731` `edges_touching`
 
 #### `dup-0118` (near, 2 sites)
 
@@ -4206,8 +4206,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/sqlite.rs:4920-5060` `calls_down_walks_the_execution_path_as_a_layered_deduped_dag_with_a_back_edge`
-- `src/contextgraph/sqlite.rs:5258-5448` `calls_up_walks_the_call_sites_as_a_layered_deduped_dag_and_lists_referenced_but_not_called`
+- `src/contextgraph/sqlite.rs:5082-5222` `calls_down_walks_the_execution_path_as_a_layered_deduped_dag_with_a_back_edge`
+- `src/contextgraph/sqlite.rs:5420-5610` `calls_up_walks_the_call_sites_as_a_layered_deduped_dag_and_lists_referenced_but_not_called`
 
 #### `dup-0119` (near, 2 sites)
 
@@ -4215,8 +4215,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/sqlite.rs:5565-5598` `decision_fold_projects_no_agent_node_or_decided_edge`
-- `src/contextgraph/sqlite.rs:5652-5680` `review_finding_projects_no_raised_edge_even_with_an_event_actor`
+- `src/contextgraph/sqlite.rs:5727-5760` `decision_fold_projects_no_agent_node_or_decided_edge`
+- `src/contextgraph/sqlite.rs:5814-5842` `review_finding_projects_no_raised_edge_even_with_an_event_actor`
 
 #### `dup-0120` (near, 2 sites)
 
@@ -4224,8 +4224,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/sqlite.rs:6366-6375` `edge_projects`
-- `src/contextgraph/sqlite.rs:7453-7465` `index_names`
+- `src/contextgraph/sqlite.rs:6528-6537` `edge_projects`
+- `src/contextgraph/sqlite.rs:7615-7627` `index_names`
 
 #### `dup-0121` (near, 2 sites)
 
@@ -4233,8 +4233,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/sqlite.rs:6378-6460` `every_node_and_edge_carries_the_projects_scope_on_fold`
-- `src/contextgraph/sqlite.rs:6572-6663` `prune_is_project_scoped_leaving_another_projects_same_id_node_intact`
+- `src/contextgraph/sqlite.rs:6540-6622` `every_node_and_edge_carries_the_projects_scope_on_fold`
+- `src/contextgraph/sqlite.rs:6734-6825` `prune_is_project_scoped_leaving_another_projects_same_id_node_intact`
 
 #### `dup-0122` (exact, 2 sites)
 
@@ -4242,7 +4242,7 @@ Proposed home: `a new shared module (sites span 2 files: src/contextgraph/sqlite
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/sqlite.rs:7107-7112` `apply_ref`
+- `src/contextgraph/sqlite.rs:7269-7274` `apply_ref`
 - `tests/calls_down_execution_path_periphery.rs:94-99` `apply_ref`
 
 #### `dup-0123` (near, 3 sites)
@@ -4251,8 +4251,8 @@ Proposed home: `a new shared module (sites span 2 files: src/contextgraph/sqlite
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/sqlite.rs:7192-7233` `the_cross_file_inferred_tier_is_order_independent`
-- `src/contextgraph/sqlite.rs:7236-7251` `the_definition_upgrade_never_demotes_a_same_file_extracted_reference`
+- `src/contextgraph/sqlite.rs:7354-7395` `the_cross_file_inferred_tier_is_order_independent`
+- `src/contextgraph/sqlite.rs:7398-7413` `the_definition_upgrade_never_demotes_a_same_file_extracted_reference`
 - `tests/code_ingest_events.rs:1013-1045` `a_definition_upgrades_only_the_exact_name_cross_file_reference_never_a_substring`
 
 #### `dup-0124` (near, 2 sites)
@@ -4261,7 +4261,7 @@ Proposed home: `a new shared module (sites span 2 files: src/contextgraph/sqlite
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/sqlite.rs:7362-7364` `edge_desc`
+- `src/contextgraph/sqlite.rs:7524-7526` `edge_desc`
 - `src/main.rs:7925-7931` `runs_menu_line`
 
 #### `dup-0125` (near, 2 sites)
@@ -4270,8 +4270,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/sqlite.rs:7563-7582` `a_same_file_test_reference_increments_proven_by_and_records_its_evidence`
-- `src/contextgraph/sqlite.rs:7585-7608` `two_test_references_accumulate_proven_by_to_2_with_both_evidence_entries`
+- `src/contextgraph/sqlite.rs:7725-7744` `a_same_file_test_reference_increments_proven_by_and_records_its_evidence`
+- `src/contextgraph/sqlite.rs:7747-7770` `two_test_references_accumulate_proven_by_to_2_with_both_evidence_entries`
 
 #### `dup-0126` (semantic, 59 sites)
 
@@ -5003,8 +5003,8 @@ Proposed home: `a new shared module (sites span 2 files: src/eventstore/sqlite.r
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/eventstore/sqlite.rs:1780-1785` `direction_sql`
-- `src/grounder/symbols/events.rs:531-542` `kind_str`
-- `src/grounder/symbols/events.rs:546-555` `lang_str`
+- `src/grounder/symbols/events.rs:550-561` `kind_str`
+- `src/grounder/symbols/events.rs:565-574` `lang_str`
 
 #### `dup-0179` (exact, 3 sites)
 
@@ -10200,38 +10200,38 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded random index (seed `85072026`, `sample_indices` over all 5941 functions scanned in `src/` and `tests/`, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth from ever reshuffling this already-verified draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded random index (seed `85072026`, `sample_indices` over all 5945 functions scanned in `src/` and `tests/`, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth from ever reshuffling this already-verified draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
-- `src/community.rs:87-89` `simple_name` - no duplicate found by reading
-- `src/conductor.rs:2456-2464` `emit_meta` - no duplicate found by reading
-- `src/conductor.rs:3040-3042` `parked` - caught: `dup-0034`
-- `src/conductor.rs:12652-12664` `shape` - caught: `dup-0049`
-- `src/config.rs:1366-1386` `is_result_channel_occurrence` - no duplicate found by reading
-- `src/config.rs:3226-3251` `validate_rejects_a_named_wrapper_with_a_preexisting_unwritable_cache_dir` - no duplicate found by reading
-- `src/dash.rs:174-178` `dash_serving_on` - no duplicate found by reading
-- `src/dash.rs:10868-10877` `node` - caught: `dup-0141`
-- `src/grounder/symbols/store.rs:162-190` `write_atomic` - no duplicate found by reading
-- `src/ledger.rs:824-839` `spec_stem_extracts_and_sanitizes_the_file_stem` - caught: `dup-0219`
-- `src/main.rs:7079-7155` `cmd_emit` - no duplicate found by reading
-- `src/main.rs:13058-13102` `wait_for_dash_bind_or_diagnose_never_self_attributes_its_own_still_starting_spawn` - no duplicate found by reading
-- `src/metrics.rs:1332-1334` `snapshot_only` - no duplicate found by reading
-- `src/metrics.rs:1400-1402` `ev` - caught: `dup-0002`
-- `src/parallel.rs:29-68` `map_ordered` - no duplicate found by reading
-- `src/playbooks.rs:36-45` `fnv1a_64` - caught: `dup-0149`
-- `src/worktree.rs:873-885` `reclaim_cache_sibling` - no duplicate found by reading
-- `src/worktree.rs:2228-2253` `sweep_terminal_reclaims_a_merged_branch_once_its_latest_spawn_has_a_real_result` - caught: `dup-0333`
-- `tests/calls_down_execution_path_periphery.rs:424-470` `a_missing_seed_and_a_seed_with_no_calls_each_degrade_to_an_empty_view_never_an_error` - no duplicate found by reading
-- `tests/canary_model_drift_periphery.rs:50-65` `run_rigger` - caught: `dup-0366`
-- `tests/cli.rs:5666-5903` `run_speculation_restores_a_gate_deleted_worktree_across_concurrent_lenses_and_stamps_a_real_winner_sha` - no duplicate found by reading
-- `tests/cli.rs:16662-16667` `http_get` - no duplicate found by reading
-- `tests/dash_whole_projection_reach.rs:177-221` `whole_reaches_nodes_the_run_seeded_subgraph_cannot_and_is_a_superset_of_it` - no duplicate found by reading
-- `tests/no_os_kill_audit.rs:343-376` `scan_tree` - no duplicate found by reading
-- `tests/readable_graph_adaptive_labels.rs:46-55` `page_script` - caught: `dup-0339`
-- `tests/readable_graph_adaptive_labels.rs:257-295` `adaptive_labels_declutter_by_importance_and_reveal_on_zoom` - caught: `dup-0499`
-- `tests/replan_episode_identity.rs:753-838` `a_same_id_refine_survives_its_own_episodes_new_sibling_through_the_real_write_path` - caught: `dup-0601`
-- `tests/reset_derived_compaction.rs:193-197` `keyed` - caught: `dup-0606`
-- `tests/spawn_target_dir_periphery.rs:55-71` `init_repo_with_head` - caught: `dup-0533`
-- `tests/turbovec_retired_cargo_boundary.rs:92-119` `cargo_rejects_the_retired_turbovec_feature_and_accepts_a_surviving_one` - no duplicate found by reading
+- `src/conductor.rs:7533-7535` `build_system_prompt` - caught: `dup-0026`
+- `src/conductor.rs:12434-12589` `a_resume_catch_up_over_two_episode_supersession_and_a_split_matches_a_live_incremental_fold` - no duplicate found by reading
+- `src/conductor.rs:32857-32971` `a_recorded_failing_deferred_verdict_re_surfaces_its_failure_on_replay` - no duplicate found by reading
+- `src/conductor.rs:33576-33688` `speculation_sdet_author_periphery_lands_in_the_committed_tree_the_gates_judge` - no duplicate found by reading
+- `src/config.rs:994-1065` `validate` - no duplicate found by reading
+- `src/config.rs:3091-3100` `validate_accepts_auto_and_off_wrapper_regardless_of_path` - caught: `dup-0103`
+- `src/dash.rs:6482-6492` `events_endpoint_is_since_exclusive` - no duplicate found by reading
+- `src/gate.rs:1583-1622` `exec_runner_applies_the_build_env_it_is_given` - caught: `dup-0193`
+- `src/ingest.rs:336-339` `derived_key_parts` - caught: `dup-0180`
+- `src/main.rs:935-946` `project_identity_at` - no duplicate found by reading
+- `src/main.rs:13794-13808` `compose_precommit_prepends_before_a_terminal_exit_existing_hook` - no duplicate found by reading
+- `src/main.rs:14329-14347` `version_line_carries_the_derived_version_and_a_non_empty_build_provenance` - no duplicate found by reading
+- `src/main.rs:15109-15157` `workflow_drift_advisory_names_which_side_is_stale_and_never_says_they_differ` - no duplicate found by reading
+- `src/spawn.rs:663-665` `to_event` - caught: `dup-0295`
+- `src/worktree.rs:675-686` `ref_resolves` - caught: `dup-0326`
+- `tests/canary_item_sharding_jobs_cap_periphery.rs:56-63` `panel` - caught: `dup-0015`
+- `tests/canary_lens_fanout_periphery.rs:122-129` `panel` - caught: `dup-0015`
+- `tests/cli.rs:11688-11701` `files_under` - no duplicate found by reading
+- `tests/cli.rs:12305-12334` `validate_fails_at_run_start_when_a_named_wrappers_cache_dir_is_preexisting_but_unwritable` - caught: `dup-0421`
+- `tests/cli.rs:15813-15835` `canary_if_model_changed_runs_when_a_tier_resolved_model_repointed` - caught: `dup-0391`
+- `tests/cli.rs:25621-25630` `workflow_with_no_spec_path_never_mentions_the_spec_lint` - no duplicate found by reading
+- `tests/community_resolution_knob.rs:228-244` `grain_snapshot` - no duplicate found by reading
+- `tests/no_os_kill_audit.rs:495-503` `arg_dashdash_separator_is_caught_outside_the_sanctioned_files` - caught: `dup-0583`
+- `tests/parallel_ordered_emit.rs:186-264` `project_batches_paced_is_width_invariant_and_matches_the_facade` - no duplicate found by reading
+- `tests/projections_stay_local.rs:101-119` `the_graph_and_progress_projections_open_via_the_local_sqlite_constructors` - no duplicate found by reading
+- `tests/reap_before_removal_periphery.rs:328-382` `sweep_terminal_reaps_a_process_rooted_in_a_terminal_worktree_through_the_real_api` - no duplicate found by reading
+- `tests/reset_build_cache_periphery.rs:498-612` `a_gate_command_degraded_by_a_forced_unusable_guard_never_writes_into_the_shared_cache_dir_and_reset_reclaims_it_freely` - no duplicate found by reading
+- `tests/reset_derived_compaction_periphery.rs:1095-1155` `the_usage_registry_advertises_the_derived_prune_and_every_mode_it_advertises_is_real` - no duplicate found by reading
+- `tests/reset_derived_compaction_periphery.rs:3447-3543` `reset_runs_alone_migrates_a_legacy_store_and_its_report_says_what_that_wrote` - no duplicate found by reading
+- `tests/subject_view_memory_rail_contract.rs:48-58` `edge` - caught: `dup-0020`
 
 Two real recall gaps surfaced this way and were closed by widening the mechanical sweep with a new generalizable detector each - not a one-off citation - so the fix catches every present and future instance of its class, each pinned by a real-tree regression test: `find_proc_stat_or_status_readers` (decision `u85c2-proc-stat-worked-example`) groups every function reading a `/proc/<pid>/stat` or `/proc/<pid>/status` literal, closing the spec's own named worked example - `src/dash.rs:499-507` `process_state` next to `src/reap.rs:190-197` `pid_starttime`, the same job on the same file with a different field/shape, upheld at spec 62's capstone; `find_parallel_constructor_clusters` (decision `u85c2-parallel-constructor-sweep`) groups 2+ non-test functions per `(file, Self type)` that build a `Self { .. }` / `TypeName { .. }` literal, closing `src/spawn.rs`'s `SpawnResult::liveness_fault` reading MISSING from its own `ok`/`failed` cluster even though all three are parallel constructors for one struct. A third worked example, `exploration_graph` (independently defined test-fixture builders in `tests/dash_exploration_route_client_contract.rs` and `tests/dash_kg_graph_route.rs`), was already caught correctly by the plain Jaccard pass with no sweep needed - confirming the mechanical pass itself has real recall, not only the two widened sweeps. Two further real defects, found on review rather than in this draw, were closed the same way: a RECALL gap the architecture lens routed to this criterion by name across two prior review rounds - this file's own bespoke source-text lexer (`scan_file`/`tokenize`) duplicating the codebase's ONE canonical tree-sitter extractor, `src/grounder/symbols/extract.rs::extract` (its own module doc's claim, architecture 5.5.3) - closed by `find_bespoke_lexer_vs_canonical_extractor` (decision `u85c2-bespoke-lexer-sweep`), a fourth generalizable sweep; and a PRECISION defect the adversary found by reading every `same-named helper` cluster against `ScannedFn::enclosing_impl` - `find_same_named_helper_functions` was misclassifying REQUIRED trait-impl methods as coincidental duplication (`subscribe_all`/`subscribe_stream` across the `EventStore` trait's three backend adapters plus a test double, `blast_radius` across the `Grounder` trait's own default method, its override, and a test double) - closed by excluding members whose extracted Self type differs across the group when at least one comes from an actual `" for "` trait impl (decision `u85c2-same-named-helper-trait-impl-precision-fix`), mirroring `find_parallel_constructor_clusters`'s own `(file, Self type)` keying one function away. Round 7 (decision `u85c4-r7-exclude-periphery-file-from-adversarial-population`) excluded this criterion's own citation-guard periphery file from the draw's population (see this subsection's opening paragraph) and redrew the sample; every one of the 19 functions above marked "no duplicate found by reading" was re-read by hand against its host file's surrounding context, exactly as this THOROUGHNESS check requires whenever the draw changes. 18 of the 19 are genuinely not duplicates; `apply` at `src/conductor.rs:29832-29834` is one shape worth naming so it is not mistaken for a miss - a `Projection` test double's own required trait-impl body, the same port-default/adapter-override/test-double shape `find_same_named_helper_functions`'s trait-impl-precision fix (decision `u85c2-same-named-helper-trait-impl-precision-fix`) already excludes from clustering by design, confirmed to still hold for this draw's own instance of it. The 19th is a genuine small duplicate this catalog's `fn`-only scanner (module doc, THE SCANNER) structurally cannot represent as a cluster: `gate_verdict_event` (`src/conductor.rs:29191-29200`) and the `verdict` closure inside `integrating_a_unit_stales_the_intersecting_downstream_units_cached_verdict_not_the_rest` (`src/conductor.rs:30596-30605`) do the identical job - find the recorded `GateVerdict` for a `"<unit>/gate:g#<attempt>"` replay key, panicking with the same message when none exists - differing only in whether the unit segment is the literal `"s"` or a parameter. A `let`-bound closure is not a `fn` item, so no change to this scanner short of teaching it to see closures could catalog this pair as a cluster; named here, prominently, rather than silently, so a later refactor - or a scanner that learns to see closures - does not miss it.
 

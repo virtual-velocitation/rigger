@@ -209,9 +209,21 @@ pub fn extract_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
 /// (`contextgraph::sqlite`'s `TYPE_EDGE_INFERRED` arm) reads that marker and folds the evidence
 /// onto the referenced entity's `proven_by` attrs directly, never a `file` node, never a
 /// `REFERENCES`/`CALLS` edge - so criterion 1's "never a node and never an edge on the canvas"
-/// promise holds for evidence exactly as it holds for the exclusion itself. `caller` and `fresh`
-/// are left at their defaults: evidence carries no caller-attribution semantics of its own, and
-/// re-extraction supersession is criterion 3's mechanism, not this criterion's.
+/// promise holds for evidence exactly as it holds for the exclusion itself. `caller` is left at
+/// its default: evidence carries no caller-attribution semantics of its own.
+///
+/// `fresh` (round 2,
+/// adv-u86c2-r-test-file-re-extraction-double-counts-its-own-unchanged-references): the FIRST
+/// event THIS function returns is stamped via the SAME [`set_fresh`] `extract_events` uses,
+/// marking the boundary of THIS file's own evidence batch. Re-extraction supersession is
+/// criterion 2's OWN mechanism for evidence (`contextgraph::sqlite::supersede_file_proof`),
+/// distinct from `extract_events`'s structural boundary on the SAME event list (`index_events`/
+/// `project_batches_paced` concatenate both, so a file can carry two independent boundaries - one
+/// per concern) - without it, editing a test file (adding an unrelated test, fixing a comment)
+/// re-extracts the whole file and re-records every unchanged is_test reference as brand-new
+/// evidence, permanently inflating `proven_by`. A file whose evidence set is EMPTY (no is_test
+/// references at all, the overwhelming common case for an ordinary product file) returns an empty
+/// `Vec` and thus stamps no boundary - nothing to supersede.
 ///
 /// Sorted by name then line (mirroring `extract_events`'s own ref ordering), so identical source
 /// yields byte-identical evidence events regardless of parse order.
@@ -233,12 +245,15 @@ pub fn proof_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
         .filter(|r| whole_file_test || r.is_test)
         .collect();
     refs.sort_by(|a, b| a.name.cmp(&b.name).then(a.line.cmp(&b.line)));
-    refs.into_iter()
+    let mut events: Vec<Event> = refs
+        .into_iter()
         .map(|r| {
             let payload = EdgeInferred {
                 file: file.to_string(),
                 name: r.name.clone(),
                 lang: lang.to_string(),
+                // The first event of THIS function's own return value marks ITS OWN batch
+                // boundary; set below via the SAME `set_fresh` helper `extract_events` uses.
                 fresh: false,
                 caller: None,
                 line: r.line,
@@ -249,7 +264,11 @@ pub fn proof_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
                 serde_json::to_vec(&payload).expect("evidence payload serializes"),
             )
         })
-        .collect()
+        .collect();
+    if let Some(first) = events.first_mut() {
+        set_fresh(first);
+    }
+    events
 }
 
 /// Re-serialize a code event's payload with `fresh = true`, marking it the extraction-batch
