@@ -10,13 +10,19 @@ use crate::contextgraph::{
 };
 use crate::eventstore::Event;
 use crate::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef, SymbolIndex};
+use std::collections::BTreeSet;
 
 /// Emit the whole index as events: for each file (in the index's sorted path order) its
 /// definitions and references, lowered through [`extract_events`]. Deterministic by construction -
-/// the index iterates a `BTreeMap`, so identical source yields byte-identical events.
+/// the index iterates a `BTreeMap`, so identical source yields byte-identical events. Round 6: a
+/// file [`out_of_line_test_module_files`] resolves as the target of a `#[cfg(test)] mod name;`
+/// declaration elsewhere in `idx` is skipped entirely - the same "no batch at all" treatment
+/// [`is_under_tests_dir`] already gives a file directly under `tests/`.
 pub fn index_events(idx: &SymbolIndex) -> Vec<Event> {
+    let excluded = out_of_line_test_module_files(idx);
     idx.files()
         .iter()
+        .filter(|(path, _)| !excluded.contains(path.as_str()))
         .flat_map(|(path, fs)| extract_events(path, fs))
         .collect()
 }
@@ -47,7 +53,12 @@ pub fn project_batches(root: &str) -> Vec<(String, Vec<Event>)> {
 pub fn project_batches_paced(root: &str, workers: usize) -> (Vec<(String, Vec<Event>)>, usize) {
     let idx = crate::grounder::symbols::store::load(root)
         .unwrap_or_else(|| crate::grounder::symbols::build_index(root, None));
-    let files: Vec<(&String, &FileSymbols)> = idx.files().iter().collect();
+    let excluded = out_of_line_test_module_files(&idx);
+    let files: Vec<(&String, &FileSymbols)> = idx
+        .files()
+        .iter()
+        .filter(|(path, _)| !excluded.contains(path.as_str()))
+        .collect();
     // Parse/lower per file in parallel; `map_ordered` returns the per-file results in the input
     // (sorted-path) order, so the emit sequence is independent of which worker finished first.
     let (per_file, workers_engaged) =
@@ -72,11 +83,34 @@ pub fn project_batches_paced(root: &str, workers: usize) -> (Vec<(String, Vec<Ev
 /// historical query still reaches them). Which event is first is deterministic (the first
 /// definition when the file defines anything, else the first reference), so a refs-only file still
 /// supersedes; a file that extracts to nothing emits no events and thus no boundary.
+///
+/// Spec 86 criterion 1 (TESTS ARE NOT NODES): this is "the code-entity pass" the criterion names,
+/// so the exclusion rule lives here, at the ONE place both what a file's definitions/references
+/// ARE (`fs`) and where the file LIVES (`file`) are in hand together. Two exclusions, applied in
+/// this order:
+///
+/// 1. **Whole file under a `tests/` directory** ([`is_under_tests_dir`]): emits NOTHING at all -
+///    no `CodeEntityExtracted`, no `EdgeInferred`, for any item the file defines or references,
+///    product-shaped or not. `fs` is left untouched (still PARSED, for grounding); this file
+///    simply contributes no batch, exactly like a file that extracts to nothing.
+/// 2. **A `#[test]`/`#[cfg(test)]` region inside an otherwise-included file**
+///    ([`crate::grounder::symbols::model::Def::is_test`] /
+///    [`crate::grounder::symbols::model::SymRef::is_test`], computed once at extraction time):
+///    that ONE definition or reference is skipped, so a product file's own entities and edges
+///    still emit normally around it.
+///
+/// Either way, excluded code creates no NODE and no structural edge "on the canvas" - the graph
+/// holds the product's own structure, never the tests that prove it. (The EVIDENCE those excluded
+/// references carry - `proven_by` counts and their `file:line`s - is a separate concern this
+/// criterion does not own.)
 pub fn extract_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
+    if is_under_tests_dir(file) {
+        return Vec::new();
+    }
     let lang = lang_str(fs.lang);
     let mut events = Vec::with_capacity(fs.defs.len() + fs.refs.len());
 
-    let mut defs: Vec<&Def> = fs.defs.iter().collect();
+    let mut defs: Vec<&Def> = fs.defs.iter().filter(|d| !d.is_test).collect();
     defs.sort_by(|a, b| {
         a.name
             .cmp(&b.name)
@@ -99,7 +133,7 @@ pub fn extract_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
         ));
     }
 
-    let mut refs: Vec<&SymRef> = fs.refs.iter().collect();
+    let mut refs: Vec<&SymRef> = fs.refs.iter().filter(|r| !r.is_test).collect();
     refs.sort_by(|a, b| a.name.cmp(&b.name).then(a.line.cmp(&b.line)));
     for r in refs {
         let payload = EdgeInferred {
@@ -153,6 +187,258 @@ fn set_fresh(e: &mut Event) {
         }
         other => unreachable!("extract_events emits only code events, got {other}"),
     }
+}
+
+/// Spec 86 criterion 1: whether `file` (a '/'-separated, project-relative path, matching what
+/// [`extract_events`]'s `file` parameter and every batch key already carry) is UNDER a `tests/`
+/// directory - the Rust (and this repo's own) convention for out-of-tree integration test
+/// sources, distinct from an in-file `#[cfg(test)]` module. Matched on DIRECTORY components only
+/// (every segment except the file's own name), so `tests/foo.rs` and `crate/tests/bar.rs` are
+/// excluded while `src/testsuite.rs` (a product file that merely reads close to "tests") is not -
+/// the file's own component is never compared against the exact segment `"tests"`.
+///
+/// `pub(crate)`, not `fn`: the CONSTRAINTS WALK amendment to spec 86 assigns a second consumer to
+/// this SAME rule - a design doc's inline-code mention of a `tests/`-rooted path is excluded from
+/// the design-intent link pass too, "by the SAME exclusion rule... it needs no criterion of its
+/// own because criterion 1's fixture-proven exclusion is the one rule both extraction passes
+/// obey." [`crate::grounder::design::extract::doc_links`] reuses this exact function rather than
+/// re-deriving the directory-component check a second time.
+pub(crate) fn is_under_tests_dir(file: &str) -> bool {
+    let mut segments: Vec<&str> = file.split('/').collect();
+    segments.pop(); // the file's own name is never a directory component
+    segments.contains(&"tests")
+}
+
+/// The directory component of a project-relative `path` (every segment except the file's own
+/// name) - the ONE place this repo splits a path this way, shared by [`module_dir`] and
+/// [`resolve_out_of_line_target`]'s `#[path]`-override branch, so the split-off-the-last-`/`
+/// idiom exists exactly once rather than twice with the identical shape.
+fn dir_of(path: &str) -> &str {
+    path.rfind('/').map(|i| &path[..i]).unwrap_or("")
+}
+
+/// Resolves `.` and `..` components, at ANY position, in a `/`-separated LOGICAL path string - the
+/// ONE place [`resolve_out_of_line_target`]'s `#[path]`-override branch normalizes a raw attribute
+/// value joined onto a directory before matching it against [`SymbolIndex::files`]'s keys. Those
+/// keys are always the project's own already-clean relative paths (never containing a literal `.`
+/// or `..` segment), so `std::fs::canonicalize` does not apply here - there is no real filesystem
+/// to resolve against at every intermediate step, only a string key to compute, matching rustc's
+/// own purely lexical handling of a `#[path]` value. A `.` segment is dropped; a `..` segment pops
+/// the most recently pushed real segment off the stack.
+///
+/// Round 9 (ADJUDICATION `adj-u86c1-r8-verdict-reject`, upheld finding
+/// `adv-u86c1-r8-overcount-dotdot-silently-excludes-an-unrelated-real-file`): a `..` reached once
+/// the stack is already EMPTY - an override whose `..` count exceeds the declaring directory's own
+/// depth - is an IRRECOVERABLE overflow, not a harmless one to keep walking past. `Vec::pop` on an
+/// empty stack is Rust's own silent no-op with no signal to the caller; continuing the walk after
+/// one and joining whatever segments remain computes a string that is syntactically a valid
+/// relative path but semantically WRONG (it claims to walk back further than the declaring file's
+/// own tree allows) - and nothing stops that wrong-but-plausible string from coincidentally
+/// matching a real, UNRELATED file's key, at which point the caller's `contains_key` check finds a
+/// match and silently drops that unrelated file's whole entity set from the graph. So this now
+/// returns `None` the instant a `..` has nothing real left to pop, letting the caller short-circuit
+/// to "unresolvable" immediately rather than running a lookup against a value that only LOOKS like
+/// a real path.
+fn normalize_logical_path(path: &str) -> Option<String> {
+    let mut stack: Vec<&str> = Vec::new();
+    for segment in path.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                stack.pop()?;
+            }
+            real => stack.push(real),
+        }
+    }
+    Some(stack.join("/"))
+}
+
+/// Round 9 (`op-u86-c1-path-attribute-contract-is-rustc-s-and-unresolvable-never-excludes`,
+/// NORMALIZATION rule): whether a raw `#[path]` override value `p` is a shape
+/// [`normalize_logical_path`] must never be asked to join onto any base directory at all - an
+/// OS-absolute path, a URI scheme, or a Windows drive letter, none of which a real project's
+/// `idx.files()` (always `/`-separated, repo-relative, drive-and-scheme-free keys) could ever
+/// hold. Verified against real rustc before this was written: `#[path = "/etc/hostname"]` reads
+/// `/etc/hostname` directly, an OS-absolute path used AS-IS rather than joined onto anything.
+/// Checked on the RAW override, before joining onto the base directory: joining first and only
+/// then normalizing would let a leading `/` on `p` silently vanish via the SAME
+/// `"" | "." => {}` rule that drops an ordinary `.` segment (an empty split segment either way),
+/// reproducing the identical wrong-but-plausible-collapsed-string failure
+/// [`normalize_logical_path`]'s own `..`-overflow guard closes, through a different front door -
+/// most sharply for a ROOT-level declaring file, whose empty base directory lets the join
+/// degenerate to `p` completely unchanged.
+fn path_override_names_an_unresolvable_shape(p: &str) -> bool {
+    if p.starts_with('/') {
+        return true;
+    }
+    if p.contains("://") {
+        return true;
+    }
+    let bytes = p.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+}
+
+/// Round 7 (`op-u86c1-r7-out-of-line-module-resolution-follows-rust`): the MODULE DIRECTORY a
+/// declaring file `path`'s own out-of-line children resolve under, per Rust's real file-per-module
+/// convention - never simply `path`'s own directory (the round-6 bug,
+/// `sdet-u86c1-r6-out-of-line-mod-resolution-uses-declaring-files-directory-not-rusts-own-module-
+/// nesting-path`). A directory-style file (`mod.rs`, `lib.rs`, `main.rs` - a crate root or a
+/// directory module's own body-carrying file) owns its OWN directory: its `mod name;` children are
+/// same-directory siblings. Every OTHER file is itself a leaf submodule and, per Rust's convention,
+/// puts ITS OWN children in a NEW subdirectory named after its own stem (`foo.rs` -> `foo/`) -
+/// never a same-directory sibling.
+fn module_dir(path: &str) -> String {
+    let dir = dir_of(path);
+    let base = path.rsplit('/').next().unwrap_or(path);
+    if base == "mod.rs" || base == "lib.rs" || base == "main.rs" {
+        dir.to_string()
+    } else {
+        let stem = base.strip_suffix(".rs").unwrap_or(base);
+        if dir.is_empty() {
+            stem.to_string()
+        } else {
+            format!("{dir}/{stem}")
+        }
+    }
+}
+
+/// Round 7: the single file `d.name` names from `declaring_path`, resolved EXACTLY as rustc
+/// resolves it, matched against paths `idx` ACTUALLY holds (never assumed) at every step. Round 9
+/// (`op-u86-c1-path-attribute-contract-is-rustc-s-and-unresolvable-never-excludes`) closes the
+/// whole `#[path]`-override contract as one enumerated list:
+/// 1. A `#[path = ".."]` override on the declaration ([`Def::path_override`], captured
+///    structurally at extraction time) takes precedence over the convention entirely. BASE
+///    DIRECTORY: when the declaration sits at the declaring file's own top level (the
+///    overwhelmingly common case), the base is the declaring file's own DIRECTORY
+///    ([`dir_of`]) - never [`module_dir`], since `#[path]` is rustc's own escape hatch FROM the
+///    file-per-module convention and is, at the file's top level, unconditionally
+///    directory-of-file-relative regardless of whether the declaring file is itself a
+///    directory-style module. When the declaration is instead nested inside one or more INLINE
+///    `mod outer { .. }` blocks ([`Def::enclosing_inline_module_path`]), the base is the
+///    declaring file's own MODULE directory ([`module_dir`]) with the enclosing inline chain
+///    appended - one directory component per inline module, outermost first - verified against
+///    real rustc (`Def::enclosing_inline_module_path`'s doc). ABSOLUTE / SCHEME REJECTION: an
+///    override that is itself an OS-absolute path, a URI scheme, or a Windows drive letter
+///    ([`path_override_names_an_unresolvable_shape`]) is UNRESOLVABLE outright, joined onto
+///    nothing - rustc uses an absolute `#[path]` as-is, never relative to any Rust-side
+///    directory, so it can never name a key this project-relative index holds; left unguarded, a
+///    root-level declaring file's EMPTY base directory would let the join degenerate to the raw
+///    override unchanged, and its leading `/` would then silently drop during normalization
+///    (the SAME rule that drops an ordinary `.` segment), coincidentally colliding with an
+///    unrelated real file exactly like the `..`-overflow defect below. NORMALIZATION: the joined
+///    `<base>/<override>` string is then [`normalize_logical_path`]'d (round 8,
+///    `sdet-u86c1-r7-path-override-dotdot-unresolved` /
+///    `adv-u86c1-r7-dot-slash-override-also-unresolved-not-just-dotdot`): a raw `#[path]` value
+///    may itself contain `.` or `..` segments at any position (rustc resolves those purely
+///    lexically too), and `idx.files()`'s keys are always already-clean, so an unnormalized join
+///    would silently fail every `contains_key` lookup for such a value and leave its target
+///    unexcluded. Round 9 (`adv-u86c1-r8-overcount-dotdot-silently-excludes-an-unrelated-real-file`):
+///    normalization can itself fail - a `..` count exceeding the declaring directory's own depth -
+///    and that failure short-circuits this whole branch to `None` via `?` rather than running a
+///    `contains_key` lookup on a collapsed-but-wrong string that might coincidentally name a real,
+///    unrelated file. LOOKUP: the normalized key must equal a file `idx` actually holds; no match
+///    is UNRESOLVABLE. Every UNRESOLVABLE outcome above returns `None` - the declaration is
+///    ignored for exclusion purposes and nothing collapses onto another file; never a silent
+///    match on a wrong-but-plausible string.
+/// 2. Otherwise, the flat sibling `<module_dir>/<name>.rs`.
+/// 3. Otherwise, the nested directory-module form `<module_dir>/<name>/mod.rs`.
+/// 4. Otherwise `None` - a stale or unresolvable declaration excludes nothing.
+fn resolve_out_of_line_target(idx: &SymbolIndex, declaring_path: &str, d: &Def) -> Option<String> {
+    if let Some(p) = &d.path_override {
+        if path_override_names_an_unresolvable_shape(p) {
+            return None;
+        }
+        let base = match &d.enclosing_inline_module_path {
+            Some(chain) => {
+                let module_dir = module_dir(declaring_path);
+                if module_dir.is_empty() {
+                    chain.clone()
+                } else {
+                    format!("{module_dir}/{chain}")
+                }
+            }
+            None => dir_of(declaring_path).to_string(),
+        };
+        let joined = if base.is_empty() {
+            p.clone()
+        } else {
+            format!("{base}/{p}")
+        };
+        let resolved = normalize_logical_path(&joined)?;
+        return idx.files().contains_key(&resolved).then_some(resolved);
+    }
+    let dir = module_dir(declaring_path);
+    let flat = if dir.is_empty() {
+        format!("{}.rs", d.name)
+    } else {
+        format!("{dir}/{}.rs", d.name)
+    };
+    if idx.files().contains_key(&flat) {
+        return Some(flat);
+    }
+    let nested = if dir.is_empty() {
+        format!("{}/mod.rs", d.name)
+    } else {
+        format!("{dir}/{}/mod.rs", d.name)
+    };
+    idx.files().contains_key(&nested).then_some(nested)
+}
+
+/// Round 6 (`op-u86c1-r5-close-every-remaining-test-shape` item 2), resolution fixed in round 7
+/// (`op-u86c1-r7-out-of-line-module-resolution-follows-rust`): the set of file paths in `idx` that
+/// are declared, OUT OF LINE, by a `#[cfg(test)] mod name;` item somewhere in another file - Rust's
+/// out-of-tree module form, distinct from an INLINE `#[cfg(test)] mod name { .. }` (which already
+/// excludes its own contents by containment, `Def::is_test`/`extract::test_regions`, needing no
+/// cross-file lookup at all). A per-file extraction pass can structurally never see this on the
+/// DECLARED file's own side - the attribute governing it lives in the DECLARING file's tree
+/// entirely (`Def::is_out_of_line_module`'s doc) - so this resolves it here, at the events/index
+/// layer, the ONE place every file's path in the project is already known together.
+///
+/// Two passes over [`resolve_out_of_line_target`]:
+/// 1. SEED: every `Module`-kind definition that is itself out-of-line AND directly test-attributed
+///    (`is_test`, set by the SAME attribute stack `extract::test_regions` reads - a `#[cfg(test)]`
+///    sibling of the `mod name;` item) contributes its resolved target.
+/// 2. CLOSURE: "Everything under a resolved test module file (its own nested out-of-line children,
+///    resolved recursively by the same rule) is test code." A file pulled in by step 1 is now
+///    wholly test code, so EVERY out-of-line module IT declares is excluded too, REGARDLESS of
+///    whether that declaration line carries its own `#[cfg(test)]` - there is nothing left for it
+///    to gate, since the whole file it lives in is already test-only. A worklist walks newly
+///    excluded files to a fixed point; `excluded.insert` returning `false` for an already-seen
+///    target both terminates the closure and guards against a cycle looping forever.
+fn out_of_line_test_module_files(idx: &SymbolIndex) -> BTreeSet<String> {
+    let mut excluded = BTreeSet::new();
+    let mut worklist: Vec<String> = Vec::new();
+
+    for (path, fs) in idx.files() {
+        for d in &fs.defs {
+            if d.kind != Kind::Module || !d.is_out_of_line_module || !d.is_test {
+                continue;
+            }
+            if let Some(target) = resolve_out_of_line_target(idx, path, d) {
+                if excluded.insert(target.clone()) {
+                    worklist.push(target);
+                }
+            }
+        }
+    }
+
+    while let Some(path) = worklist.pop() {
+        let Some(fs) = idx.files().get(&path) else {
+            continue;
+        };
+        for d in &fs.defs {
+            if d.kind != Kind::Module || !d.is_out_of_line_module {
+                continue;
+            }
+            if let Some(target) = resolve_out_of_line_target(idx, &path, d) {
+                if excluded.insert(target.clone()) {
+                    worklist.push(target);
+                }
+            }
+        }
+    }
+
+    excluded
 }
 
 /// The lowercase, stable string for a rigger definition `Kind`, carried on the emitted event and
@@ -294,17 +580,26 @@ mod tests {
                     kind: Kind::Function,
                     name: "beta".to_string(),
                     line: 9,
+                    is_test: false,
+                    is_out_of_line_module: false,
+                    path_override: None,
+                    enclosing_inline_module_path: None,
                 },
                 Def {
                     kind: Kind::Function,
                     name: "alpha".to_string(),
                     line: 3,
+                    is_test: false,
+                    is_out_of_line_module: false,
+                    path_override: None,
+                    enclosing_inline_module_path: None,
                 },
             ],
             refs: vec![SymRef {
                 name: "helper".to_string(),
                 line: 5,
                 enclosing: None,
+                is_test: false,
             }],
         };
         let events = extract_events("src/a.rs", &fs);
@@ -350,11 +645,13 @@ mod tests {
                     name: "clamp".to_string(),
                     line: 2,
                     enclosing: None,
+                    is_test: false,
                 },
                 SymRef {
                     name: "apply".to_string(),
                     line: 4,
                     enclosing: None,
+                    is_test: false,
                 },
             ],
         };
@@ -392,6 +689,10 @@ mod tests {
                 kind: Kind::Function,
                 name: "F".to_string(),
                 line: 1,
+                is_test: false,
+                is_out_of_line_module: false,
+                path_override: None,
+                enclosing_inline_module_path: None,
             }],
             refs: vec![
                 // A call to `G` from inside the body of `F`: attributed to its enclosing caller.
@@ -399,12 +700,14 @@ mod tests {
                     name: "G".to_string(),
                     line: 2,
                     enclosing: Some("F".to_string()),
+                    is_test: false,
                 },
                 // A top-level `use` outside every definition: no caller.
                 SymRef {
                     name: "std_thing".to_string(),
                     line: 5,
                     enclosing: None,
+                    is_test: false,
                 },
             ],
         };
@@ -463,6 +766,255 @@ mod tests {
         assert!(
             events.is_empty(),
             "a file that extracts to nothing emits no events; got {events:?}"
+        );
+    }
+
+    /// A `FileSymbols` carrying a product-shaped (non-test) definition and reference alongside a
+    /// non-empty index - reused across the spec-86 tests below so each fixture is built the same
+    /// way and only ITS `file` path or `is_test` marking varies.
+    fn product_fs() -> FileSymbols {
+        FileSymbols {
+            lang: Lang::Rust,
+            defs: vec![Def {
+                kind: Kind::Function,
+                name: "product_fn".into(),
+                line: 1,
+                is_test: false,
+                is_out_of_line_module: false,
+                path_override: None,
+                enclosing_inline_module_path: None,
+            }],
+            refs: vec![SymRef {
+                name: "product_fn".into(),
+                line: 2,
+                enclosing: None,
+                is_test: false,
+            }],
+        }
+    }
+
+    #[test]
+    fn extract_events_excludes_a_file_under_a_tests_directory_entirely() {
+        // Spec 86 criterion 1: EVERY file under a `tests/` directory is excluded from the
+        // code-entity pass, wholesale - no CodeEntityExtracted, no EdgeInferred - regardless of
+        // what it defines or references (product-shaped content included, so the rule is a path
+        // rule, not a content sniff). A SIBLING file at the same content but a `src/` path still
+        // emits normally, proving the exclusion keys on the DIRECTORY, not the content.
+        let fs = product_fs();
+        assert!(
+            extract_events("tests/foo.rs", &fs).is_empty(),
+            "a top-level tests/ file emits nothing"
+        );
+        assert!(
+            extract_events("crate/tests/bar.rs", &fs).is_empty(),
+            "a NESTED tests/ directory (not just a top-level one) is excluded too"
+        );
+        assert!(
+            !extract_events("src/foo.rs", &fs).is_empty(),
+            "the exclusion is a DIRECTORY rule: a product path with the identical content still \
+             emits"
+        );
+        assert!(
+            !extract_events("src/testsuite.rs", &fs).is_empty(),
+            "a file that merely reads close to \"tests\" in its OWN name (not a directory \
+             component) is never excluded"
+        );
+    }
+
+    #[test]
+    fn extract_events_skips_is_test_items_and_the_fresh_boundary_lands_on_the_first_survivor() {
+        // Spec 86 criterion 1, the in-file case: a definition/reference the extraction pass
+        // marked `is_test` (a `#[cfg(test)]`/`#[test]` region) emits no event, while a product
+        // sibling in the SAME file emits normally. `aaa_test_item` sorts BEFORE `product_fn`, so
+        // this also proves the `fresh` batch-boundary marker lands on the first SURVIVING event,
+        // not on a test item that would have sorted first had it not been filtered out.
+        let fs = FileSymbols {
+            lang: Lang::Rust,
+            defs: vec![
+                Def {
+                    kind: Kind::Function,
+                    name: "aaa_test_item".into(),
+                    line: 5,
+                    is_test: true,
+                    is_out_of_line_module: false,
+                    path_override: None,
+                    enclosing_inline_module_path: None,
+                },
+                Def {
+                    kind: Kind::Function,
+                    name: "product_fn".into(),
+                    line: 1,
+                    is_test: false,
+                    is_out_of_line_module: false,
+                    path_override: None,
+                    enclosing_inline_module_path: None,
+                },
+            ],
+            refs: vec![
+                SymRef {
+                    name: "test_only_callee".into(),
+                    line: 6,
+                    enclosing: Some("aaa_test_item".into()),
+                    is_test: true,
+                },
+                SymRef {
+                    name: "product_fn".into(),
+                    line: 2,
+                    enclosing: None,
+                    is_test: false,
+                },
+            ],
+        };
+        let events = extract_events("src/mixed.rs", &fs);
+
+        let names: Vec<String> = events
+            .iter()
+            .map(|e| {
+                serde_json::from_slice::<serde_json::Value>(&e.data)
+                    .unwrap()
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec!["product_fn".to_string(), "product_fn".to_string()],
+            "only the product definition and the product reference emit; the two is_test items \
+             emit nothing; got {names:?}"
+        );
+        assert_eq!(
+            events[0].type_, TYPE_CODE_ENTITY_EXTRACTED,
+            "the surviving definition emits before the surviving reference"
+        );
+        let fresh_of = |e: &Event| -> bool {
+            serde_json::from_slice::<serde_json::Value>(&e.data)
+                .unwrap()
+                .get("fresh")
+                .and_then(|f| f.as_bool())
+                .unwrap_or(false)
+        };
+        assert!(
+            fresh_of(&events[0]),
+            "the batch boundary lands on the first SURVIVING event (product_fn), not on the \
+             filtered-out aaa_test_item that would have sorted first"
+        );
+        assert!(
+            !fresh_of(&events[1]),
+            "only the first surviving event carries the boundary"
+        );
+    }
+
+    #[test]
+    fn ingesting_a_fixture_with_product_and_test_code_graphs_only_the_product_and_lists_no_test_file(
+    ) {
+        // Spec 86 criterion 1's own Done-when, end to end: a fixture with product code, a
+        // `tests/` file, a `#[cfg(test)]` module, and `#[test]` functions - ingested through the
+        // REAL extraction + emit + fold pipeline (`build_index` -> `index_events` -> `Projector`).
+        // The graph must hold a code-entity node for the product item and NONE for any test item;
+        // the test file must carry no KIND_FILE container node at all (the concrete mechanism
+        // behind "the files lens lists no test file as a subject" - the files lens folds each
+        // code entity by its own file, so a file with no code-entity node can never be one of its
+        // subjects).
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("product.rs"),
+            "\
+fn product_fn() {
+    helper();
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn it_works() {
+        product_fn();
+    }
+}
+",
+        )
+        .unwrap();
+        std::fs::create_dir(dir.path().join("tests")).unwrap();
+        std::fs::write(
+            dir.path().join("tests").join("integration.rs"),
+            "\
+#[test]
+fn an_integration_test() {
+    also_calls_product();
+}
+",
+        )
+        .unwrap();
+
+        let idx = build_index(dir.path().to_str().unwrap(), None);
+        let events = index_events(&idx);
+
+        let p = Projector::open(":memory:", "test").unwrap();
+        for (i, mut e) in events.into_iter().enumerate() {
+            e.position = (i + 1) as u64;
+            p.apply(&e).unwrap();
+        }
+
+        let g = p
+            .subgraph(
+                &["product.rs".to_string(), "tests/integration.rs".to_string()],
+                3,
+            )
+            .unwrap();
+
+        // The product item has a code-entity node...
+        assert!(
+            g.nodes
+                .iter()
+                .any(|n| n.kind == KIND_CODE_ENTITY && n.id == "product.rs::product_fn"),
+            "the product definition folds into a code-entity node; got {:?}",
+            g.nodes
+        );
+        // ...and its own file has a container node (it has product content to hold).
+        assert!(
+            g.nodes
+                .iter()
+                .any(|n| n.kind == KIND_FILE && n.id == "product.rs"),
+            "the product file carries its own KIND_FILE container node; got {:?}",
+            g.nodes
+        );
+        assert!(
+            g.edges
+                .iter()
+                .any(|e| e.rel == REL_CONTAINS && e.to == "product.rs::product_fn"),
+            "a CONTAINS edge ties the product file to its product definition; got {:?}",
+            g.edges
+        );
+
+        // NONE of the test items - the #[cfg(test)] module, its #[test] fn, or the whole
+        // tests/integration.rs file's #[test] fn - ever became a code-entity node.
+        for excluded in [
+            "product.rs::tests",
+            "product.rs::it_works",
+            "tests/integration.rs::an_integration_test",
+        ] {
+            assert!(
+                !g.nodes.iter().any(|n| n.id == excluded),
+                "{excluded:?} is test code and must NEVER become a graph node; got {:?}",
+                g.nodes
+            );
+        }
+        // The tests/ file carries NO KIND_FILE node at all - it contributed no batch (whole-file
+        // exclusion), so there is nothing for the files lens to ever list as a subject.
+        assert!(
+            !g.nodes
+                .iter()
+                .any(|n| n.kind == KIND_FILE && n.id == "tests/integration.rs"),
+            "an all-test file must not even carry a file container node; got {:?}",
+            g.nodes
+        );
+        // No REFERENCES edge from the test file's call into `also_calls_product` ever landed
+        // "on the canvas" either - the whole file emitted nothing.
+        assert!(
+            !g.edges.iter().any(|e| e.from == "tests/integration.rs"),
+            "an excluded file's references never become structural edges; got {:?}",
+            g.edges
         );
     }
 }
