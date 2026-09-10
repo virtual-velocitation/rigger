@@ -10,28 +10,64 @@ use crate::contextgraph::{
 };
 use crate::eventstore::Event;
 use crate::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef, SymbolIndex};
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 
 /// Emit the whole index as events: for each file (in the index's sorted path order) its
 /// definitions and references, lowered through [`extract_events`]. Deterministic by construction -
-/// the index iterates a `BTreeMap`, so identical source yields byte-identical events. Round 6: a
-/// file [`out_of_line_test_module_files`] resolves as the target of a `#[cfg(test)] mod name;`
-/// declaration elsewhere in `idx` is skipped entirely - the same "no batch at all" treatment
-/// [`is_under_tests_dir`] already gives a file directly under `tests/`.
+/// the index iterates a `BTreeMap`, so identical source yields byte-identical events. A file
+/// [`out_of_line_test_module_files`] resolves as the target of a `#[cfg(test)] mod name;`
+/// declaration elsewhere in `idx` still contributes a batch (round 5,
+/// adj-u86c3-r4-out-of-line-exclusion-still-unmigrated): its symbols are hollowed via
+/// [`for_extraction`] before the SAME [`extract_events`] every other file goes through runs on it,
+/// so that function's own already-existing empty-survivor boundary (spec 86 criterion 3) retires
+/// its prior structural edges too - never a second, caller-level sentinel path that drops the file
+/// before `extract_events` ever sees it, which is exactly the defect that let a legacy test-entity
+/// node reached only through an out-of-line declaration survive every re-ingest forever. Evidence
+/// (`proof_events`) is a separate concern with its own disclosed, non-blocking gap for this same
+/// shape - see that function's own doc - so it is skipped for an excluded file here, unchanged.
 pub fn index_events(idx: &SymbolIndex) -> Vec<Event> {
     let excluded = out_of_line_test_module_files(idx);
     idx.files()
         .iter()
-        .filter(|(path, _)| !excluded.contains(path.as_str()))
         .flat_map(|(path, fs)| {
-            let mut events = extract_events(path, fs);
+            let is_excluded = excluded.contains(path.as_str());
+            let mut events = extract_events(path, &for_extraction(fs, is_excluded));
             // Spec 86 criterion 2: alongside (never inside) the structural pass, emit this file's
-            // TEST-ORIGIN evidence too. See [`proof_events`]'s own doc for why this rides a
-            // separate function rather than folding into `extract_events` itself.
-            events.extend(proof_events(path, fs));
+            // TEST-ORIGIN evidence too - except for an out-of-line-excluded file, which never
+            // reaches this call (see this function's own doc and [`proof_events`]'s disclosed
+            // gap). See [`proof_events`]'s own doc for why this rides a separate function rather
+            // than folding into `extract_events` itself.
+            if !is_excluded {
+                events.extend(proof_events(path, fs));
+            }
             events
         })
         .collect()
+}
+
+/// Round 5 (adj-u86c3-r4-out-of-line-exclusion-still-unmigrated): the symbols [`extract_events`]
+/// actually sees for one file - `fs` unchanged, UNLESS `excluded` (this file is the resolved
+/// target of an out-of-line `#[cfg(test)] mod name;` declaration elsewhere,
+/// [`out_of_line_test_module_files`]), in which case its defs/refs are hollowed to empty. An
+/// out-of-line target's OWN items are never marked `is_test` themselves - that flag is set by a
+/// LOCAL `#[cfg(test)]` attribute stack inside the SAME file, and being the resolved target of an
+/// EXTERNAL declaration elsewhere is invisible to a per-file parse - so hollowing here, at the ONE
+/// place both callers already compute the excluded set, is what lets `extract_events`'s own
+/// existing "nothing survived" branch return the empty-boundary sentinel for it, exactly as it
+/// already does for a whole `tests/`-dir file or an in-file `#[cfg(test)]` re-wrap - never a
+/// second, bespoke sentinel-construction path for a third shape. `Cow` so the overwhelmingly
+/// common (non-excluded) path borrows `fs` unchanged rather than cloning it.
+fn for_extraction(fs: &FileSymbols, excluded: bool) -> Cow<'_, FileSymbols> {
+    if excluded {
+        Cow::Owned(FileSymbols {
+            lang: fs.lang,
+            defs: Vec::new(),
+            refs: Vec::new(),
+        })
+    } else {
+        Cow::Borrowed(fs)
+    }
 }
 
 /// Extract the WHOLE project tree at `root` into per-file event batches (spec 29c criterion 5):
@@ -42,13 +78,13 @@ pub fn index_events(idx: &SymbolIndex) -> Vec<Event> {
 /// falls back to a fresh [`build_index`](crate::grounder::symbols::build_index) otherwise. Each
 /// file is lowered through the shared [`extract_events`] authority - the SAME per-file emit the
 /// fold tests and the incremental path use, so the whole-project ingest can never drift from a
-/// single file's. Returns `(file, events)` per file in the index's sorted path order; every
-/// non-out-of-line-excluded file contributes a batch, and that batch is NEVER empty (spec 86
-/// criterion 2 round 3 and criterion 3: neither [`proof_events`] nor [`extract_events`] itself
-/// ever returns empty - each stamps its own boundary-only sentinel when it has nothing real to
-/// say, so a file whose evidence set, structural set, or both are empty still contributes at
-/// least one boundary event). The caller keys each batch on its content, so an unchanged file is
-/// not re-ingested and a changed one re-extracts.
+/// single file's. Returns `(file, events)` per file in the index's sorted path order; EVERY file -
+/// an out-of-line test-module target ([`for_extraction`]-hollowed) included, round 5 - contributes
+/// a batch, and that batch is NEVER empty ([`extract_events`] itself never returns empty, spec 86
+/// criterion 3: it stamps its own boundary-only sentinel when nothing real survives, so a file
+/// whose structural set is empty still contributes at least one boundary event). The caller keys
+/// each batch on its content, so an unchanged file is not re-ingested and a changed one
+/// re-extracts.
 pub fn project_batches(root: &str) -> Vec<(String, Vec<Event>)> {
     project_batches_paced(root, crate::parallel::default_workers()).0
 }
@@ -57,27 +93,30 @@ pub fn project_batches(root: &str) -> Vec<(String, Vec<Event>)> {
 /// per-file lowering fans across up to `workers` threads via [`crate::parallel::map_ordered`], but
 /// the batches come back in the index's SORTED path order (index-preserving), so the emit is
 /// byte-identical to a serial walk's however the pool interleaved. `workers <= 1` runs the lowering
-/// inline - the serial walk a wider walk is compared against. Each file is lowered through the ONE
-/// [`extract_events`] authority (never a second parallel copy) alongside [`proof_events`] - NEITHER
-/// of which ever returns empty (see each function's own doc) - so a (non-out-of-line-excluded)
-/// file's own batch is never empty either. Returns `(batches, workers_engaged)`.
+/// inline - the serial walk a wider walk is compared against. EVERY file - an out-of-line
+/// test-module target ([`for_extraction`]-hollowed, round 5,
+/// adj-u86c3-r4-out-of-line-exclusion-still-unmigrated) included - is lowered through the ONE
+/// [`extract_events`] authority (never a second parallel copy), which never returns empty (spec 86
+/// criterion 3), so every file's own batch is never empty. [`proof_events`] runs alongside it for a
+/// non-excluded file only, mirroring [`index_events`]'s identical composition - see that function's
+/// own doc and [`proof_events`]'s disclosed gap. Returns `(batches, workers_engaged)`.
 pub fn project_batches_paced(root: &str, workers: usize) -> (Vec<(String, Vec<Event>)>, usize) {
     let idx = crate::grounder::symbols::store::load(root)
         .unwrap_or_else(|| crate::grounder::symbols::build_index(root, None));
     let excluded = out_of_line_test_module_files(&idx);
-    let files: Vec<(&String, &FileSymbols)> = idx
-        .files()
-        .iter()
-        .filter(|(path, _)| !excluded.contains(path.as_str()))
-        .collect();
+    let files: Vec<(&String, &FileSymbols)> = idx.files().iter().collect();
     // Parse/lower per file in parallel; `map_ordered` returns the per-file results in the input
     // (sorted-path) order, so the emit sequence is independent of which worker finished first.
     crate::parallel::map_ordered(&files, workers, |&(path, fs)| {
-        let mut events = extract_events(path, fs);
+        let is_excluded = excluded.contains(path.as_str());
+        let mut events = extract_events(path, &for_extraction(fs, is_excluded));
         // Spec 86 criterion 2: this file's test-origin evidence, alongside its structural
         // events - see [`index_events`]'s identical composition and [`proof_events`]'s doc. Never
-        // empty (round 3), so - unlike before this criterion - this file's batch is never dropped.
-        events.extend(proof_events(path, fs));
+        // empty (round 3) when run, so a non-excluded file's batch is never dropped; skipped for
+        // an out-of-line-excluded file (see this module's [`for_extraction`] doc).
+        if !is_excluded {
+            events.extend(proof_events(path, fs));
+        }
         (path.clone(), events)
     })
 }
@@ -312,12 +351,14 @@ fn empty_structural_boundary_event(file: &str, lang: &str) -> Event {
 ///
 /// Disclosed, non-blocking scope limit (mirrors criterion 1's own disclosed Go-language gap): a
 /// file pulled in only by an OUT-OF-LINE `#[cfg(test)] mod name;` declaration elsewhere
-/// ([`out_of_line_test_module_files`]) is filtered out of both `index_events`'s and
-/// `project_batches_paced`'s iteration BEFORE this function ever sees it (its own references carry
-/// no `is_test` marking of their own - the attribute lives on the DECLARING file's side, invisible
-/// to this per-file view, per [`out_of_line_test_module_files`]'s own doc), so a test-only file
-/// reached only that way contributes no evidence. Not named by spec 86's Design/Done-when text,
-/// which is written in terms of a `tests/` directory and `#[cfg(test)]`/`#[test]` regions.
+/// ([`out_of_line_test_module_files`]) still contributes a STRUCTURAL batch since round 5
+/// (`extract_events` runs on it hollowed, via `index_events`/`project_batches_paced`'s own
+/// [`for_extraction`] - see either function's doc), but this function is deliberately never called
+/// for it (its own references carry no `is_test` marking of their own - the attribute lives on the
+/// DECLARING file's side, invisible to this per-file view, per [`out_of_line_test_module_files`]'s
+/// own doc), so a test-only file reached only that way contributes no evidence. Not named by spec
+/// 86's Design/Done-when text, which is written in terms of a `tests/` directory and
+/// `#[cfg(test)]`/`#[test]` regions.
 ///
 /// Disclosed, non-blocking, SHARED limitation (not this criterion's alone to close): like
 /// criterion 3's identical structural sentinel, [`empty_evidence_boundary_event`]'s payload is a

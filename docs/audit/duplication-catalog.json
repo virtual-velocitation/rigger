@@ -1221,14 +1221,14 @@
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
-        "start_line": 303,
-        "end_line": 303,
+        "start_line": 409,
+        "end_line": 409,
         "name": "Command::new"
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
-        "start_line": 317,
-        "end_line": 317,
+        "start_line": 423,
+        "end_line": 423,
         "name": "Command::new"
       },
       {
@@ -6167,38 +6167,38 @@
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
-        "start_line": 307,
-        "end_line": 307,
+        "start_line": 413,
+        "end_line": 413,
         "name": "\".rigger\""
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
-        "start_line": 307,
-        "end_line": 307,
+        "start_line": 413,
+        "end_line": 413,
         "name": "\"create .rigger\""
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
-        "start_line": 327,
-        "end_line": 327,
+        "start_line": 433,
+        "end_line": 433,
         "name": "\".rigger\""
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
-        "start_line": 371,
-        "end_line": 371,
+        "start_line": 477,
+        "end_line": 477,
         "name": "\".rigger\""
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
-        "start_line": 402,
-        "end_line": 402,
+        "start_line": 508,
+        "end_line": 508,
         "name": "\".rigger\""
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
-        "start_line": 469,
-        "end_line": 469,
+        "start_line": 575,
+        "end_line": 575,
         "name": "\".rigger\""
       },
       {
@@ -10893,14 +10893,14 @@
       },
       {
         "file": "src/grounder/symbols/events.rs",
-        "start_line": 672,
-        "end_line": 683,
+        "start_line": 713,
+        "end_line": 724,
         "name": "kind_str"
       },
       {
         "file": "src/grounder/symbols/events.rs",
-        "start_line": 687,
-        "end_line": 696,
+        "start_line": 728,
+        "end_line": 737,
         "name": "lang_str"
       }
     ],
@@ -11455,8 +11455,8 @@
       },
       {
         "file": "src/grounder/symbols/events.rs",
-        "start_line": 52,
-        "end_line": 54,
+        "start_line": 88,
+        "end_line": 90,
         "name": "project_batches"
       }
     ],
@@ -11645,14 +11645,14 @@
     "sites": [
       {
         "file": "src/grounder/symbols/events.rs",
-        "start_line": 237,
-        "end_line": 251,
+        "start_line": 276,
+        "end_line": 290,
         "name": "empty_structural_boundary_event"
       },
       {
         "file": "src/grounder/symbols/events.rs",
-        "start_line": 380,
-        "end_line": 394,
+        "start_line": 421,
+        "end_line": 435,
         "name": "empty_evidence_boundary_event"
       }
     ],
@@ -16015,8 +16015,8 @@
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
-        "start_line": 301,
-        "end_line": 309,
+        "start_line": 407,
+        "end_line": 415,
         "name": "temp_project"
       },
       {
@@ -16113,8 +16113,8 @@
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
-        "start_line": 344,
-        "end_line": 356,
+        "start_line": 450,
+        "end_line": 462,
         "name": "run_rigger"
       },
       {
@@ -16289,8 +16289,8 @@
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
-        "start_line": 316,
-        "end_line": 338,
+        "start_line": 422,
+        "end_line": 444,
         "name": "project_identity_of"
       },
       {
@@ -18033,8 +18033,8 @@
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
-        "start_line": 419,
-        "end_line": 444,
+        "start_line": 525,
+        "end_line": 550,
         "name": "validate_warns_of_retired_code_entities_with_the_measured_count_and_never_fails"
       },
       {
@@ -18837,122 +18837,122 @@
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 1633,
-        "end_line": 1696,
+        "start_line": 1653,
+        "end_line": 1716,
         "name": "a_non_test_out_of_line_mod_and_an_inline_test_mod_never_exclude_a_coincidentally_named_sibling_file"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 1833,
-        "end_line": 1887,
+        "start_line": 1853,
+        "end_line": 1907,
         "name": "a_cfg_test_impl_block_excludes_its_methods_through_the_public_api"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 1921,
-        "end_line": 1956,
+        "start_line": 1941,
+        "end_line": 1976,
         "name": "a_cfg_test_impl_block_using_the_inner_attribute_form_excludes_its_methods_through_the_public_api"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 2006,
-        "end_line": 2051,
+        "start_line": 2026,
+        "end_line": 2071,
         "name": "cfg_test_on_every_other_item_kind_excludes_or_stays_scoped_through_the_public_api"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 2071,
-        "end_line": 2141,
+        "start_line": 2091,
+        "end_line": 2161,
         "name": "an_out_of_line_test_mod_declared_inside_a_non_directory_style_file_resolves_correctly"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 2152,
-        "end_line": 2217,
+        "start_line": 2172,
+        "end_line": 2237,
         "name": "an_out_of_line_test_mod_declaration_falls_back_to_a_nested_mod_rs_when_no_flat_sibling_exists"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 2229,
-        "end_line": 2300,
+        "start_line": 2249,
+        "end_line": 2320,
         "name": "a_path_attribute_override_redirects_out_of_line_resolution_through_the_public_api"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 2313,
-        "end_line": 2389,
+        "start_line": 2333,
+        "end_line": 2409,
         "name": "an_out_of_line_test_module_files_own_out_of_line_declarations_are_excluded_recursively_through_the_public_api"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 2457,
-        "end_line": 2526,
+        "start_line": 2477,
+        "end_line": 2546,
         "name": "an_out_of_line_test_mod_declaration_falls_back_to_a_root_level_nested_mod_rs_when_module_dir_is_empty"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 2539,
-        "end_line": 2609,
+        "start_line": 2559,
+        "end_line": 2629,
         "name": "a_path_attribute_override_resolves_relative_to_a_declaring_files_own_subdirectory"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 2637,
-        "end_line": 2691,
+        "start_line": 2657,
+        "end_line": 2711,
         "name": "a_path_attribute_override_that_walks_upward_with_dotdot_still_excludes_its_target"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 2706,
-        "end_line": 2755,
+        "start_line": 2726,
+        "end_line": 2775,
         "name": "a_path_attribute_override_with_an_explicit_dot_slash_prefix_still_resolves_to_the_same_directory_target"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 2774,
-        "end_line": 2826,
+        "start_line": 2794,
+        "end_line": 2846,
         "name": "a_path_attribute_override_with_chained_dotdot_walks_up_every_popped_level"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 2851,
-        "end_line": 2899,
+        "start_line": 2871,
+        "end_line": 2919,
         "name": "a_path_attribute_override_whose_dotdot_count_overflows_the_declaring_directorys_depth_does_not_silently_collide_with_an_unrelated_real_file"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 2925,
-        "end_line": 3003,
+        "start_line": 2945,
+        "end_line": 3023,
         "name": "a_path_attribute_override_nested_inside_an_inline_module_resolves_under_the_declaring_files_own_module_directory_plus_the_inline_chain"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 3024,
-        "end_line": 3123,
+        "start_line": 3044,
+        "end_line": 3143,
         "name": "a_path_attribute_override_nested_inside_chained_inline_modules_resolves_under_every_enclosing_modules_directory_in_outermost_first_order"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 3141,
-        "end_line": 3188,
+        "start_line": 3161,
+        "end_line": 3208,
         "name": "a_path_attribute_override_that_is_an_absolute_path_does_not_silently_collide_with_an_unrelated_real_file"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 3211,
-        "end_line": 3262,
+        "start_line": 3231,
+        "end_line": 3282,
         "name": "a_path_attribute_override_naming_a_uri_scheme_does_not_silently_collide_with_an_unrelated_real_file"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 3280,
-        "end_line": 3328,
+        "start_line": 3300,
+        "end_line": 3348,
         "name": "a_path_attribute_override_naming_a_windows_drive_letter_does_not_silently_collide_with_an_unrelated_real_file"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "start_line": 3363,
-        "end_line": 3422,
+        "start_line": 3383,
+        "end_line": 3442,
         "name": "a_path_attribute_override_on_a_mod_declared_inside_a_function_body_is_not_treated_as_nested_in_a_module"
       }
     ],
@@ -21777,8 +21777,8 @@
     "sites": [
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
-        "start_line": 301,
-        "end_line": 309,
+        "start_line": 407,
+        "end_line": 415,
         "name": "temp_project"
       },
       {
@@ -21833,14 +21833,14 @@
     "sites": [
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
-        "start_line": 365,
-        "end_line": 392,
+        "start_line": 471,
+        "end_line": 498,
         "name": "seed_a_retired_entity"
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
-        "start_line": 396,
-        "end_line": 416,
+        "start_line": 502,
+        "end_line": 522,
         "name": "seed_a_live_entity"
       }
     ],

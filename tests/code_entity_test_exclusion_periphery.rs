@@ -1570,11 +1570,31 @@ fn project_batches_also_excludes_an_out_of_line_test_module_declarations_target_
         files.contains("lib.rs"),
         "the declaring file still contributes its own batch; files: {files:?}"
     );
-    assert!(
-        !files.contains("contract.rs"),
-        "project_batches (the entry point a live run actually drives, spec 29c) must exclude \
-         the out-of-line test module's declared file's batch entirely too, not merely \
-         index_events's own copy of the same filter; files: {files:?}"
+    // Spec 86 criterion 3 (round 5, adj-u86c3-r4-out-of-line-exclusion-still-unmigrated)
+    // deliberately supersedes this test's own former "the file's batch is dropped entirely"
+    // pin: an out-of-line-excluded file's batch is no longer dropped before extract_events runs
+    // (that let a legacy entity a prior extraction created outlive every re-ingest forever) - it
+    // now contributes exactly ONE boundary-sentinel event, hollowed via events.rs's own
+    // `for_extraction`, so a re-ingest still supersedes whatever this file held before. The
+    // criterion-1 promise this test exists to pin is unchanged below: no REAL entity or edge for
+    // anything the excluded file defines ever reaches the graph.
+    let contract_batch = batches
+        .iter()
+        .find(|(f, _)| f == "contract.rs")
+        .map(|(_, evs)| evs)
+        .unwrap_or_else(|| {
+            panic!(
+                "project_batches (the entry point a live run actually drives, spec 29c) must \
+                     still contribute the out-of-line-excluded file's own boundary-sentinel \
+                     batch, not merely index_events's own copy of the same routing; files: \
+                     {files:?}"
+            )
+        });
+    assert_eq!(
+        contract_batch.len(),
+        1,
+        "the out-of-line-excluded file's batch is boundary-only - no real CodeEntityExtracted \
+         and no named EdgeInferred; got {contract_batch:?}"
     );
 
     let p = Projector::open(":memory:", "test").unwrap();
