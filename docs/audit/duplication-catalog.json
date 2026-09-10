@@ -20242,6 +20242,12 @@
         "name": "try_fetch_whole_served"
       },
       {
+        "file": "tests/proof_lands_on_the_card_periphery.rs",
+        "start_line": 238,
+        "end_line": 296,
+        "name": "try_fetch_served"
+      },
+      {
         "file": "tests/rationale_overlay_data.rs",
         "start_line": 103,
         "end_line": 154,
@@ -20254,7 +20260,7 @@
         "name": "try_fetch_served"
       }
     ],
-    "proposed_home": "a new shared module (sites span 5 files: tests/dash_decisions_progressive_disclosure.rs, tests/dash_kg_graph_route.rs, tests/dash_whole_projection_reach.rs, tests/rationale_overlay_data.rs, tests/rationale_overlay_seam.rs)",
+    "proposed_home": "a new shared module (sites span 6 files: tests/dash_decisions_progressive_disclosure.rs, tests/dash_kg_graph_route.rs, tests/dash_whole_projection_reach.rs, tests/proof_lands_on_the_card_periphery.rs, tests/rationale_overlay_data.rs, tests/rationale_overlay_seam.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -20348,6 +20354,12 @@
         "name": "try_fetch_served"
       },
       {
+        "file": "tests/proof_lands_on_the_card_periphery.rs",
+        "start_line": 238,
+        "end_line": 296,
+        "name": "try_fetch_served"
+      },
+      {
         "file": "tests/rationale_overlay_data.rs",
         "start_line": 103,
         "end_line": 154,
@@ -20361,7 +20373,7 @@
       }
     ],
     "proposed_home": "one shared `try_fetch_served` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
-    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 4 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0517",
@@ -20400,6 +20412,12 @@
         "name": "fetch_served"
       },
       {
+        "file": "tests/proof_lands_on_the_card_periphery.rs",
+        "start_line": 300,
+        "end_line": 309,
+        "name": "fetch_served"
+      },
+      {
         "file": "tests/rationale_overlay_data.rs",
         "start_line": 158,
         "end_line": 167,
@@ -20413,7 +20431,7 @@
       }
     ],
     "proposed_home": "one shared `fetch_served` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
-    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 4 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0519",
@@ -20432,6 +20450,12 @@
         "name": "body_of"
       },
       {
+        "file": "tests/proof_lands_on_the_card_periphery.rs",
+        "start_line": 313,
+        "end_line": 317,
+        "name": "body_of"
+      },
+      {
         "file": "tests/rationale_overlay_data.rs",
         "start_line": 170,
         "end_line": 174,
@@ -20444,7 +20468,7 @@
         "name": "body_of"
       }
     ],
-    "proposed_home": "a new shared module (sites span 4 files: tests/dash_kg_graph_route.rs, tests/dash_whole_projection_reach.rs, tests/rationale_overlay_data.rs, tests/rationale_overlay_seam.rs)",
+    "proposed_home": "a new shared module (sites span 5 files: tests/dash_kg_graph_route.rs, tests/dash_whole_projection_reach.rs, tests/proof_lands_on_the_card_periphery.rs, tests/rationale_overlay_data.rs, tests/rationale_overlay_seam.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
