@@ -21,7 +21,7 @@
   },
   "strict_build": {
     "mechanism": "cargo rustc --lib|--bin rigger [--no-default-features] -- -D dead_code -D unused_imports -D unused_variables -D unreachable_pub",
-    "mechanism_note": "cargo rustc's trailing flags apply ONLY to the named target's own rustc invocation, never to its dependencies and never to build.rs (a separate compilation unit for an unrelated concern, spec 74). A plain RUSTFLAGS env var was tried first and rejected: it also strict-lints build.rs, which fails on build/gitsemver.rs's pub items even though they are correctly pub for their OTHER two #[path] inclusion sites (src/main.rs, tests/gitsemver_derivation.rs) - an artifact of the blunt global instrument, not a real production defect in build.rs.",
+    "mechanism_note": "cargo rustc's trailing flags apply ONLY to the named target's own rustc invocation, never to its dependencies and never to build.rs (a separate compilation unit for an unrelated concern, spec 74). A plain RUSTFLAGS env var was tried first and rejected: it also strict-lints build.rs, which fails on build/gitsemver.rs's pub items even though they are correctly pub for their OTHER three #[path] inclusion sites (src/main.rs, tests/gitsemver_derivation.rs, tests/gitsemver_worktree_periphery.rs) - an artifact of the blunt global instrument, not a real production defect in build.rs.",
     "targets_checked": ["lib", "bin rigger"],
     "feature_lanes_checked": ["default", "--no-default-features"],
     "result": "clean on all 4 (target x lane) combinations, after the 2 visibility fixes below",
@@ -33,7 +33,7 @@
         "from": "pub",
         "to": "pub(crate)",
         "lint": "unreachable_pub",
-        "reason": "compiler-proven: nothing outside this item's own defining crate ever reaches it at any of its 3 #[path] inclusion sites (build.rs's own crate, src/main.rs's bin crate, tests/gitsemver_derivation.rs's own test crate) - each inclusion recompiles the same source text as part of a different crate, and pub(crate) is satisfied independently in all three since every consumer lives in the same crate that includes it. This is the compiler's own suggested fix (rustc: 'consider restricting its visibility: `pub(crate)`')."
+        "reason": "compiler-proven: nothing outside this item's own defining crate ever reaches it at any of its 4 #[path] inclusion sites (build.rs's own crate, src/main.rs's bin crate, tests/gitsemver_derivation.rs's own test crate, tests/gitsemver_worktree_periphery.rs's own test crate) - each inclusion recompiles the same source text as part of a different crate, and pub(crate) is satisfied independently in all four since every consumer lives in the same crate that includes it. This is the compiler's own suggested fix (rustc: 'consider restricting its visibility: `pub(crate)`')."
       },
       {
         "file": "build/gitsemver.rs",
@@ -42,7 +42,7 @@
         "from": "pub",
         "to": "pub(crate)",
         "lint": "unreachable_pub",
-        "reason": "same as UNVERSIONED_SUFFIX above - called from crate-root-level code at each of the 3 inclusion sites, never from outside the including crate."
+        "reason": "same as UNVERSIONED_SUFFIX above - called from crate-root-level code at each of the 4 inclusion sites, never from outside the including crate."
       }
     ]
   },
