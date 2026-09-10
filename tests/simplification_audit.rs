@@ -3237,6 +3237,64 @@ fn render_section_3() -> String {
 fn render_section_4() -> String {
     let mut out = String::new();
     out.push_str("## 4. Dead and Vestigial Code\n\n");
+    out.push_str("### 4.0 Stage 1 (spec 87 criterion 1): the compiler-proven pass\n\n");
+    out.push_str(
+        "Spec 87 redoes this whole section in two stages: STAGE 1, here, is compiler-driven \
+        and lands first; STAGE 2 (criterion 2) and STAGE 3 (criterion 3) are a separate \
+        reference sweep over the tree this stage leaves behind, and rewrite everything below \
+        this subsection in full. This subsection is this stage's own record, additive to and \
+        preserved by that later rewrite.\n\n\
+        INSTRUMENT ONE (`cargo minify`, tweedegolf's tool): run over the whole crate on the \
+        default (`symbols`) feature lane, checking every FUNCTION, CONST, STATIC, STRUCT, \
+        ENUM, UNION, TYPE_ALIAS, ASSOCIATED_FUNCTION and MACRO_DEFINITION for zero references. \
+        Result: \"no unused code that can be minified\" - zero items removed. `cargo minify` \
+        has no `--no-default-features` flag (verified: `cargo minify --no-default-features` -> \
+        `error: unrecognized option`), so the light lane's own picture comes from instrument \
+        two below instead.\n\n\
+        INSTRUMENT TWO (the promoted-lint build): `cargo rustc --lib` and `cargo rustc --bin \
+        rigger`, each on both the default and `--no-default-features` lanes, with `-D \
+        dead_code -D unused_imports -D unused_variables -D unreachable_pub` passed as trailing \
+        (target-only) flags - four builds total, all clean. `cargo rustc`'s trailing flags \
+        were chosen deliberately over a whole-crate `RUSTFLAGS` env var (tried first): \
+        `RUSTFLAGS` also strict-lints `build.rs`'s own compilation, which then fails on two \
+        items in `build/gitsemver.rs` that are correctly `pub` for their other two `#[path]` \
+        inclusion sites (`src/main.rs`, `tests/gitsemver_derivation.rs`) but register as \
+        `unreachable_pub` from `build.rs`'s own isolated crate view - a false positive from \
+        the blunt instrument, not a real defect in `build.rs`. `cargo rustc`'s trailing flags \
+        apply only to the one named target's own rustc invocation, never to a dependency and \
+        never to `build.rs`, so it proves exactly the claim this criterion's Done-when makes \
+        (a build of the library and the binary) without that false positive.\n\n\
+        FOUND, in `src/`: zero items either instrument could prove unreachable - \
+        `delete_compiler` in the companion record (`docs/audit/stage1-compiler-pass.json`) is \
+        the empty list. This is the exact known blind spot this spec's own Design section \
+        predicts, not an unexplored gap: `rustc`'s `dead_code` lint never fires on a `pub` \
+        item in a crate that is both a library and a binary (this report's own prior finding, \
+        instrument three below, already established the codebase's src/ is clean under a \
+        plain rebuild), and `unreachable_pub` only catches a `pub` item that is provably \
+        reachable from NOWHERE outside its own crate - not one that is correctly exported but \
+        simply has zero real callers. That second, larger class needs the reference-counting \
+        instrument stage 2 builds, not a compiler diagnostic; this stage's near-empty yield is \
+        exactly why stage 2 exists.\n\n\
+        FOUND, outside `src/` (`build/gitsemver.rs`, spec 74's compile-time \
+        version-derivation seam, shared via `#[path]` into three separate compilations - \
+        `build.rs`, `src/main.rs`, and `tests/gitsemver_derivation.rs`): two items, \
+        `UNVERSIONED_SUFFIX` (line 45) and `derive_version` (line 129), were `pub` when \
+        nothing outside their own defining crate ever reaches them at any of those three \
+        inclusion sites - `pub(crate)` satisfies every site independently, since each \
+        `#[path]` inclusion recompiles the same source text fresh as part of whichever crate \
+        includes it. Applied as the compiler's own suggested fix (`rustc`: \"consider \
+        restricting its visibility: `pub(crate)`\"); both a fast regression test \
+        (`tests/compiler_pass_stage1_audit.rs`) and this record hold the exact file:line so a \
+        future widening back to `pub` is caught. Not counted in `delete_compiler` above - a \
+        visibility narrowing is not a deletion, and `build/` is not `src/` - but disclosed \
+        here in full rather than silently folded into either count, mirroring this section's \
+        own \"disclosed as an instrument limitation rather than silently worked around\" \
+        discipline below.\n\n\
+        VERIFIED STILL GREEN on the tree as this stage leaves it: `tests/no_os_kill_audit.rs` \
+        and `tests/reap_before_removal_audit.rs`, both process-lifecycle audits this \
+        criterion's Done-when names by name - unaffected, since this stage's only change \
+        touches a compile-time version string, never process lifecycle.\n\n",
+    );
     out.push_str(
         "FUNCTIONS WITH ZERO CALLERS. Instrument one (name-reference sweep): scoped \
         to the 596 production (`is_test: false`) entries of the committed \
@@ -3960,7 +4018,7 @@ fn render_section_6() -> String {
         duplication catalog.\n\n",
     );
     out.push_str(
-        "#### 11. Consolidate the 267 `Command::new` call sites (`dup-0006`) behind one \
+        "#### 11. Consolidate the 269 `Command::new` call sites (`dup-0006`) behind one \
         injected process-spawn port\n\n",
     );
     out.push_str(
