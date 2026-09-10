@@ -23,7 +23,14 @@ pub fn index_events(idx: &SymbolIndex) -> Vec<Event> {
     idx.files()
         .iter()
         .filter(|(path, _)| !excluded.contains(path.as_str()))
-        .flat_map(|(path, fs)| extract_events(path, fs))
+        .flat_map(|(path, fs)| {
+            let mut events = extract_events(path, fs);
+            // Spec 86 criterion 2: alongside (never inside) the structural pass, emit this file's
+            // TEST-ORIGIN evidence too. See [`proof_events`]'s own doc for why this rides a
+            // separate function rather than folding into `extract_events` itself.
+            events.extend(proof_events(path, fs));
+            events
+        })
         .collect()
 }
 
@@ -63,7 +70,10 @@ pub fn project_batches_paced(root: &str, workers: usize) -> (Vec<(String, Vec<Ev
     // (sorted-path) order, so the emit sequence is independent of which worker finished first.
     let (per_file, workers_engaged) =
         crate::parallel::map_ordered(&files, workers, |&(path, fs)| {
-            let events = extract_events(path, fs);
+            let mut events = extract_events(path, fs);
+            // Spec 86 criterion 2: this file's test-origin evidence, alongside its structural
+            // events - see [`index_events`]'s identical composition and [`proof_events`]'s doc.
+            events.extend(proof_events(path, fs));
             (!events.is_empty()).then(|| (path.clone(), events))
         });
     // Drop the files that extracted to nothing, preserving the sorted order of the rest.
@@ -148,6 +158,13 @@ pub fn extract_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
             // `None` (a top-level reference) is omitted on the wire, keeping the event
             // byte-identical to the pre-37 form.
             caller: r.enclosing.clone(),
+            // A STRUCTURAL reference's edge carries no line (spec 86 criterion 2 introduces `line`
+            // for evidence only); leaving it 0 keeps this event's wire form byte-identical to
+            // before the field existed.
+            line: 0,
+            // This is a structural reference, never evidence - `proof_events` (below) is the one
+            // emitter of `is_test: true` events.
+            is_test: false,
         };
         events.push(Event::new(
             TYPE_EDGE_INFERRED,
@@ -165,6 +182,74 @@ pub fn extract_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
     }
 
     events
+}
+
+/// Spec 86 criterion 2 (PROOF LANDS ON THE CARD): the TEST-EVIDENCE emission pass, run ALONGSIDE
+/// (never inside) [`extract_events`] at every one of its callers. It is a SEPARATE function,
+/// deliberately, rather than a change to `extract_events` itself: criterion 1's own frozen tests
+/// pin an EXACT emitted-event count/order for a fixture mixing product and test content (e.g.
+/// [`tests::extract_events_skips_is_test_items_and_the_fresh_boundary_lands_on_the_first_survivor`]
+/// asserts the two `is_test` items "emit nothing" - a literal count over `extract_events`'s own
+/// return value), so criterion 1's exclusion contract is that a dropped test item never grows that
+/// function's event list. This function reads the SAME already-parsed `fs.refs` (never a second
+/// parse) and independently emits the evidence `extract_events` deliberately does not, so the two
+/// contracts - "extract_events emits nothing for excluded content" and "no evidence is ever lost" -
+/// both hold, in two disjoint functions rather than one straining to prove both at once.
+///
+/// A reference counts as evidence when EITHER: the whole file is under a `tests/` directory
+/// ([`is_under_tests_dir`] - every reference in an out-of-tree test file is test-origin, whatever
+/// its own `is_test` marking, since the file itself is nothing but test code), OR the reference
+/// itself is `is_test` (a `#[cfg(test)]`/`#[test]` region inside an otherwise-included product
+/// file - the common in-file `mod tests` idiom). A DEFINITION is never evidence (only a reference,
+/// a USE of a product entity, proves it); a product (non-test) reference in an included file is
+/// skipped here (it already emits normally through `extract_events`).
+///
+/// Each emitted event is an ordinary [`EdgeInferred`] with [`EdgeInferred::is_test`] set and
+/// [`EdgeInferred::line`] carrying the reference's own source line - the fold
+/// (`contextgraph::sqlite`'s `TYPE_EDGE_INFERRED` arm) reads that marker and folds the evidence
+/// onto the referenced entity's `proven_by` attrs directly, never a `file` node, never a
+/// `REFERENCES`/`CALLS` edge - so criterion 1's "never a node and never an edge on the canvas"
+/// promise holds for evidence exactly as it holds for the exclusion itself. `caller` and `fresh`
+/// are left at their defaults: evidence carries no caller-attribution semantics of its own, and
+/// re-extraction supersession is criterion 3's mechanism, not this criterion's.
+///
+/// Sorted by name then line (mirroring `extract_events`'s own ref ordering), so identical source
+/// yields byte-identical evidence events regardless of parse order.
+///
+/// Disclosed, non-blocking scope limit (mirrors criterion 1's own disclosed Go-language gap): a
+/// file pulled in only by an OUT-OF-LINE `#[cfg(test)] mod name;` declaration elsewhere
+/// ([`out_of_line_test_module_files`]) is filtered out of both `index_events`'s and
+/// `project_batches_paced`'s iteration BEFORE this function ever sees it (its own references carry
+/// no `is_test` marking of their own - the attribute lives on the DECLARING file's side, invisible
+/// to this per-file view, per [`out_of_line_test_module_files`]'s own doc), so a test-only file
+/// reached only that way contributes no evidence. Not named by spec 86's Design/Done-when text,
+/// which is written in terms of a `tests/` directory and `#[cfg(test)]`/`#[test]` regions.
+pub fn proof_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
+    let whole_file_test = is_under_tests_dir(file);
+    let lang = lang_str(fs.lang);
+    let mut refs: Vec<&SymRef> = fs
+        .refs
+        .iter()
+        .filter(|r| whole_file_test || r.is_test)
+        .collect();
+    refs.sort_by(|a, b| a.name.cmp(&b.name).then(a.line.cmp(&b.line)));
+    refs.into_iter()
+        .map(|r| {
+            let payload = EdgeInferred {
+                file: file.to_string(),
+                name: r.name.clone(),
+                lang: lang.to_string(),
+                fresh: false,
+                caller: None,
+                line: r.line,
+                is_test: true,
+            };
+            Event::new(
+                TYPE_EDGE_INFERRED,
+                serde_json::to_vec(&payload).expect("evidence payload serializes"),
+            )
+        })
+        .collect()
 }
 
 /// Re-serialize a code event's payload with `fresh = true`, marking it the extraction-batch
@@ -1015,6 +1100,110 @@ fn an_integration_test() {
             !g.edges.iter().any(|e| e.from == "tests/integration.rs"),
             "an excluded file's references never become structural edges; got {:?}",
             g.edges
+        );
+    }
+
+    /// Spec 86 criterion 2's own Done-when, end to end: a product entity referenced by TWO test
+    /// functions - one in-file (`#[cfg(test)] mod tests`), one in a whole `tests/`-dir file -
+    /// carries `proven_by: 2` with both `file:line`s in the graph payload and renders on its card,
+    /// while an unreferenced entity in the SAME file renders the explicit no-test state. Runs the
+    /// REAL pipeline (`build_index` -> `index_events` -> `Projector` -> `dash::card`), never a
+    /// hand-built fixture, so it proves the whole chain - extraction, the `proof_events` emission
+    /// pass, the fold, and the card - agree.
+    #[test]
+    fn a_product_entity_referenced_by_two_tests_carries_proven_by_2_and_renders_on_its_card() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("product.rs"),
+            "\
+fn product_fn() {
+    helper();
+}
+
+fn unused_fn() {}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn it_works() {
+        product_fn();
+    }
+}
+",
+        )
+        .unwrap();
+        std::fs::create_dir(dir.path().join("tests")).unwrap();
+        std::fs::write(
+            dir.path().join("tests").join("integration.rs"),
+            "\
+#[test]
+fn an_integration_test() {
+    product_fn();
+}
+",
+        )
+        .unwrap();
+
+        let idx = build_index(dir.path().to_str().unwrap(), None);
+        let events = index_events(&idx);
+
+        let p = Projector::open(":memory:", "test").unwrap();
+        for (i, mut e) in events.into_iter().enumerate() {
+            e.position = (i + 1) as u64;
+            p.apply(&e).unwrap();
+        }
+
+        let g = p
+            .subgraph(
+                &["product.rs".to_string(), "tests/integration.rs".to_string()],
+                3,
+            )
+            .unwrap();
+
+        // PROVEN: product_fn is referenced by the in-file test (line 11) and the tests/-dir
+        // integration test (line 3) - proven_by: 2, both file:lines, in fold order (product.rs
+        // sorts before tests/integration.rs, so its own evidence lands first).
+        let card = crate::dash::card(&g, "product.rs::product_fn")
+            .expect("product.rs::product_fn is a graph node");
+        assert_eq!(
+            card.proven_by, 2,
+            "two test-origin references prove product_fn twice; card: {card:?}"
+        );
+        assert_eq!(
+            card.proof_evidence,
+            vec![
+                "product.rs:11".to_string(),
+                "tests/integration.rs:3".to_string()
+            ],
+            "both evidence file:lines land on the card, in fold order; card: {card:?}"
+        );
+
+        // UNREFERENCED: unused_fn, defined in the SAME file, is never called by any test - the
+        // explicit no-test state (proven_by: 0, no evidence), never a made-up value.
+        let unused = crate::dash::card(&g, "product.rs::unused_fn")
+            .expect("product.rs::unused_fn is a graph node");
+        assert_eq!(
+            unused.proven_by, 0,
+            "an unreferenced entity renders the explicit no-test state; card: {unused:?}"
+        );
+        assert!(unused.proof_evidence.is_empty());
+
+        // Criterion 1's own promise still holds alongside the new evidence: neither test item
+        // ever became a node, and the tests/-dir file still carries no KIND_FILE container.
+        for excluded in ["product.rs::tests", "product.rs::it_works"] {
+            assert!(
+                !g.nodes.iter().any(|n| n.id == excluded),
+                "{excluded:?} is test code and must never become a graph node; got {:?}",
+                g.nodes
+            );
+        }
+        assert!(
+            !g.nodes
+                .iter()
+                .any(|n| n.kind == KIND_FILE && n.id == "tests/integration.rs"),
+            "an all-test file still carries no file container node even though it contributes \
+             evidence; got {:?}",
+            g.nodes
         );
     }
 }

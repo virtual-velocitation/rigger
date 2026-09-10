@@ -361,6 +361,11 @@
     padding: 1px 8px; margin: 0 4px 4px 0; font-size: 11px; cursor: pointer; background: none;
     color: inherit; text-decoration: none; }
   .kgcard-chip:hover { border-color: var(--accent); }
+  /* The PROOF row's explicit "no test reaches this entity" state (spec 86 criterion 2): absence
+     of proof is itself information, so it gets the SAME amber the codebase already reserves for
+     a documented empty state (.kgempty-cell) rather than reading as silent/missing. */
+  .kgcard-proof-empty { color: var(--warn); }
+  .kgcard-proof-list { margin: 4px 0 0; padding-left: 16px; font-size: 11px; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -855,6 +860,21 @@ function renderCard(card) {
     + (lens ? ' data-handoff="' + esc(lens) + '"' : "") + '>' + esc(label) + '</a>';
   const memberChip = e => chip(e.id, e.label, chipLensForKind(e.kind));
   const row = (title, chips) => chips ? '<div class="kgcard-row"><h4>' + esc(title) + '</h4>' + chips + '</div>' : "";
+  // The PROOF row (spec 86 criterion 2): "proven by N tests" with the evidence file:lines on
+  // expand, or the explicit amber "no test reaches this entity" state - absence of proof is
+  // itself information the audit (spec 85) and reviewers want, so this is NEVER omitted like an
+  // empty chip row above (`row`'s own `chips ? ... : ""` would silently hide a zero-proof entity
+  // exactly like an entity with no decisions/findings, which is the wrong default here).
+  const proofRow = c => {
+    const n = c.proven_by || 0;
+    if (n === 0) {
+      return '<div class="kgcard-row kgcard-proof-empty"><h4>PROOF</h4>no test reaches this entity</div>';
+    }
+    const label = "proven by " + n + (n === 1 ? " test" : " tests");
+    const items = (c.proof_evidence || []).map(ev => "<li>" + esc(ev) + "</li>").join("");
+    return '<div class="kgcard-row"><h4>PROOF</h4><details><summary>' + esc(label) + '</summary>'
+      + '<ul class="kgcard-proof-list">' + items + "</ul></details></div>";
+  };
   const prov = [
     card.file ? esc(card.file) + (card.line ? ":" + esc(card.line) : "") : "",
     "degree " + card.degree,
@@ -867,6 +887,7 @@ function renderCard(card) {
     const mem = (card.decisions ? chip(card.id, card.decisions + (card.decisions === 1 ? " decision" : " decisions")) : "")
       + (card.findings ? chip(card.id, card.findings + (card.findings === 1 ? " finding" : " findings")) : "");
     rows += row("MEMORY", mem);
+    rows += proofRow(card);
   } else if (card.kind === "file") {
     rows += row("TOP ENTITIES", (card.top_entities || []).map(memberChip).join(""));
   } else if (card.kind === "concept") {

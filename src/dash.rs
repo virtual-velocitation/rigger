@@ -3191,6 +3191,23 @@ pub struct Card {
     pub top_entities: Vec<CardRef>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub top_evidence: Vec<CardRef>,
+    /// Spec 86 criterion 2 (PROOF LANDS ON THE CARD): the count of TEST-ORIGIN references the
+    /// graph fold recorded onto this code entity (`0` for a code entity no test reaches, and for
+    /// every non-code-entity subject, which carries no proof of its own). Read off the node's
+    /// `proven_by` attr - a decimal-digit STRING (never a bare JSON number; see
+    /// [`crate::contextgraph::sqlite`]'s `record_proof` for why) - defaulting to `0` on absence or
+    /// a malformed value, never a panic. Always serialized (matching `decisions`/`findings`'s own
+    /// always-present style), so the client can render the explicit "no test reaches this entity"
+    /// state from a present `0` rather than an absent field.
+    pub proven_by: usize,
+    /// The `proven_by` evidence itself: each test-origin reference's own `file:line`, in fold
+    /// order. Read off the node's `proof_evidence` attr - a STRING holding JSON-array-shaped text
+    /// (double-encoded, for the SAME `BTreeMap<String, String>` reason `proven_by` is a digit
+    /// string) - defaulting to empty on absence or a malformed value. Omitted from the wire when
+    /// empty (mirroring `top_entities`/`top_evidence`), since the card's "no test reaches this
+    /// entity" state is driven by `proven_by == 0`, not by this list's presence.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub proof_evidence: Vec<String>,
 }
 
 /// The `/api/graph?card=<id>` response body (spec 63 c2): the requested subject's [`Card`], or
@@ -3283,6 +3300,23 @@ pub fn card(graph: &Graph, id: &str) -> Option<Card> {
     } else {
         (None, None)
     };
+    // PROOF (spec 86 criterion 2): a code entity's own `proven_by`/`proof_evidence` attrs, gated
+    // to KIND_CODE_ENTITY like `file`/`line` above - a file/concept/decision/... subject carries
+    // no proof of its own, so it reports `0`/empty rather than reading a stray same-named attr.
+    let (proven_by, proof_evidence) = if node.kind == KIND_CODE_ENTITY {
+        (
+            node.attrs
+                .get("proven_by")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0),
+            node.attrs
+                .get("proof_evidence")
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default(),
+        )
+    } else {
+        (0, Vec::new())
+    };
     Some(Card {
         id: id.to_string(),
         kind: node.kind.clone(),
@@ -3296,6 +3330,8 @@ pub fn card(graph: &Graph, id: &str) -> Option<Card> {
         findings: rail.findings.len(),
         top_entities,
         top_evidence,
+        proven_by,
+        proof_evidence,
     })
 }
 
@@ -10952,6 +10988,90 @@ mod metadata_card_c2 {
         assert_eq!(card.line, None);
         assert_eq!(card.file.as_deref(), Some("other.rs"));
         assert_eq!(card.degree, 0);
+    }
+
+    /// Spec 86 criterion 2 (PROOF LANDS ON THE CARD): a code entity the fold recorded evidence for
+    /// carries `proven_by`/`proof_evidence` straight off its `proven_by`/`proof_evidence` attrs
+    /// (decimal-string and JSON-array-shaped-string respectively - see
+    /// `contextgraph::sqlite::record_proof`'s own doc for why those are strings, never a bare
+    /// number/array).
+    #[test]
+    fn card_of_a_proven_code_entity_carries_proven_by_and_proof_evidence() {
+        let mut g = card_graph();
+        g.nodes.push(node(
+            "combat.rs::proven",
+            KIND_CODE_ENTITY,
+            &[
+                ("name", "proven"),
+                ("proven_by", "2"),
+                (
+                    "proof_evidence",
+                    r#"["tests/combat_test.rs:9","combat.rs:41"]"#,
+                ),
+            ],
+        ));
+        let card = card(&g, "combat.rs::proven").expect("combat.rs::proven is a graph node");
+        assert_eq!(
+            card.proven_by, 2,
+            "proven_by parses off the decimal-string attr"
+        );
+        assert_eq!(
+            card.proof_evidence,
+            vec![
+                "tests/combat_test.rs:9".to_string(),
+                "combat.rs:41".to_string()
+            ],
+            "proof_evidence parses off the JSON-array-shaped-string attr, in fold order"
+        );
+    }
+
+    /// The explicit "no test reaches this entity" state (spec 86, WHERE PROOF RENDERS): a code
+    /// entity carrying no `proven_by`/`proof_evidence` attrs at all (the fixture's own `fire`,
+    /// untouched by this criterion) reports `proven_by: 0` and empty evidence, never a panic or a
+    /// made-up value - the SAME graceful-absence discipline `card_of_a_membership_less_entity...`
+    /// already proves for `community`/`line`.
+    #[test]
+    fn card_of_an_unproven_code_entity_has_proven_by_zero_and_no_evidence() {
+        let g = card_graph();
+        let card = card(&g, "combat.rs::fire").expect("combat.rs::fire is a graph node");
+        assert_eq!(card.proven_by, 0);
+        assert!(card.proof_evidence.is_empty());
+    }
+
+    /// A non-code-entity subject (a file, here) carries no proof of its own - `proven_by`/
+    /// `proof_evidence` never read a same-named attr off a differently-kinded node, mirroring the
+    /// `file`/`line` gating just above `card`'s own proof-reading branch.
+    #[test]
+    fn card_of_a_file_reports_no_proof_of_its_own() {
+        let mut g = card_graph();
+        g.nodes.push(node(
+            "combat.rs",
+            KIND_FILE,
+            &[("proven_by", "9"), ("proof_evidence", r#"["x.rs:1"]"#)],
+        ));
+        let card = card(&g, "combat.rs").expect("combat.rs is a graph node");
+        assert_eq!(
+            card.proven_by, 0,
+            "a file subject never reports proof - that is a code-entity-only fact"
+        );
+        assert!(card.proof_evidence.is_empty());
+    }
+
+    /// A malformed `proof_evidence` attr (never produced by the real fold, but a defensive
+    /// contract every attr-reading surface in this codebase honors) degrades to an empty list
+    /// rather than panicking - matching `unwrap_or_default()`'s own graceful-degradation idiom
+    /// used throughout `card`.
+    #[test]
+    fn card_tolerates_a_malformed_proof_evidence_attr() {
+        let mut g = card_graph();
+        g.nodes.push(node(
+            "combat.rs::odd",
+            KIND_CODE_ENTITY,
+            &[("name", "odd"), ("proof_evidence", "not json")],
+        ));
+        let card = card(&g, "combat.rs::odd").expect("combat.rs::odd is a graph node");
+        assert_eq!(card.proven_by, 0);
+        assert!(card.proof_evidence.is_empty());
     }
 
     /// A file subject's card lists the entities it CONTAINS as `top_entities` (reusing
