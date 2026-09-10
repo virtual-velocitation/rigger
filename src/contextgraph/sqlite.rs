@@ -7727,5 +7727,57 @@ mod tests {
             assert_eq!(proven_by(&g, "product.rs::product_fn"), 0);
             assert!(proof_evidence(&g, "product.rs::product_fn").is_empty());
         }
+
+        #[test]
+        fn re_extracting_an_edited_file_does_not_silently_drop_an_unrelated_files_accumulated_proof(
+        ) {
+            // sdet-u86c2-r-review: cross-file proof evidence must survive a LATER, UNRELATED
+            // re-extraction of the DEFINING file. The real pipeline (project_batches_paced /
+            // index_events) keys each file's batch on its own content hash, so an unchanged file
+            // (here, the test file that proved this entity) is never re-walked and its
+            // `proof_events` never re-emit merely because a SIBLING file changed - see
+            // grounder::symbols::events::project_batches's own doc: "an unchanged file is not
+            // re-ingested". `ensure_node`'s conflict clause is `attrs = COALESCE(excluded.attrs,
+            // nodes.attrs)` - a plain whole-blob REPLACE whenever the incoming attrs are non-empty,
+            // and the TYPE_CODE_ENTITY_EXTRACTED fold's own `ensure_node` call for the entity
+            // carries only its structural attrs (name/kind/line/lang), never proven_by/
+            // proof_evidence. So a `fresh` re-fold of the SAME entity (product.rs is edited
+            // elsewhere and re-extracts, unrelated to product_fn's own body) replaces product_fn's
+            // attrs wholesale - and nothing re-derives the CROSS-FILE evidence a different,
+            // untouched test file contributed, because that file's batch never re-runs. Editing any
+            // line of product.rs should never make an unrelated test's proof vanish from the card.
+            let p = Projector::open(":memory:", "test").unwrap();
+            // Initial extraction (fresh = the file's first-ever batch).
+            apply_batch_def(&p, 1, "product.rs", "product_fn", 10, true);
+            // A DIFFERENT, unchanged file proves it.
+            apply_edge_inferred_evidence(&p, 2, "tests/integration.rs", "product_fn", 4);
+            let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
+            assert_eq!(
+                proven_by(&g, "product.rs::product_fn"),
+                1,
+                "sanity: the cross-file evidence landed before the re-extraction"
+            );
+            // product.rs is edited (something unrelated to product_fn) and re-extracts: the SAME
+            // entity re-folds with `fresh = true`, exactly as project_batches_paced's real batch
+            // composition would emit for a changed file. tests/integration.rs is NOT touched, so
+            // (matching the real pipeline) its proof_events never re-emit here.
+            apply_batch_def(&p, 3, "product.rs", "product_fn", 10, true);
+            let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
+            assert_eq!(
+                proven_by(&g, "product.rs::product_fn"),
+                1,
+                "re-extracting product.rs must not silently discard the proof an unrelated, \
+                 unchanged file already established; got attrs {:?}",
+                g.nodes
+                    .iter()
+                    .find(|n| n.id == "product.rs::product_fn")
+                    .map(|n| &n.attrs)
+            );
+            assert_eq!(
+                proof_evidence(&g, "product.rs::product_fn"),
+                vec!["tests/integration.rs:4".to_string()],
+                "the evidence entry itself must survive the re-extraction too"
+            );
+        }
     }
 }
