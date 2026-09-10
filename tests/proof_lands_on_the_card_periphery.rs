@@ -32,6 +32,26 @@
 //!    into a genuine JSON ARRAY (not a double-encoded string) have never been exercised at the true
 //!    HTTP boundary until this file. Runs in BOTH lanes (`dash`/`contextgraph` are not feature-gated,
 //!    mirroring `dash_kg_graph_route.rs`'s own scope note).
+//!  - Round 2's supersession-on-re-extract boundary (three findings from the round-1 review:
+//!    `sdet-u86c2-r-fresh-refold-wipes-cross-file-proof`,
+//!    `adv-u86c2-r-test-file-re-extraction-double-counts-its-own-unchanged-references`,
+//!    `adv-u86c2-r-cross-file-name-match-misattributes-proof-to-the-wrong-entity`). The
+//!    implementer's own regression tests for all three
+//!    (`sqlite.rs::proof_evidence_c2::re_extracting_an_edited_file_does_not_silently_drop_an_
+//!    unrelated_files_accumulated_proof`,
+//!    `::re_extracting_a_test_file_supersedes_rather_than_accretes_or_strands_its_own_evidence`,
+//!    `::an_ambiguous_same_named_pair_never_gets_confident_credit_through_either_resolution_path`)
+//!    call the fold directly with hand-built events (`apply_batch_def`/
+//!    `apply_edge_inferred_evidence_fresh`/`apply_code_entity`), which proves the SQL
+//!    (`ensure_node`'s `json_patch` merge, `supersede_file_proof`, `resolve_proof_target`'s and
+//!    `reconcile_pending_proof`'s uniqueness guards) is correct FOR A SEQUENCE those helpers
+//!    assume - never that the real `symbols` extraction pass, re-walking a genuine second-
+//!    generation edit on disk, actually PRODUCES that sequence (the same class of gap the first
+//!    bullet above closes for round 1). The three tests below drive `build_index` /
+//!    `extract_events` / `proof_events` twice each over a real file edit, re-applying only the
+//!    ONE file that changed - mirroring what the real replay-key content-hash suppression
+//!    (`crate::ingest::key_batch`, driven by `RunCtx::ingest_project_batches` in production) does,
+//!    per [`events_for_file`]'s own doc below.
 
 // ---- the Done-when, end to end via the public API (symbols lane only) ----------------------
 
@@ -223,6 +243,368 @@ fn forward_referenced_evidence_through_the_public_pipeline_is_reconciled_once_it
     assert_eq!(
         finisher.proof_evidence,
         vec!["tests/aaa_check.rs:3".to_string()]
+    );
+}
+
+// ---- round 2: proof survives a REAL re-extraction, through the SAME public pipeline --------
+
+/// Write `contents` to `root/rel`, creating any parent directory (`tests/`, mainly) first, and
+/// overwriting a prior generation the same way a real edit does. The small filesystem-fixture
+/// helper every round-2 test below shares.
+#[cfg(feature = "symbols")]
+fn root_write(root: &tempfile::TempDir, rel: &str, contents: &str) {
+    let path = root.path().join(rel);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::write(path, contents).unwrap();
+}
+
+/// One file's own event batch at a given `SymbolIndex` snapshot - the SAME composition
+/// `index_events`/`project_batches_paced` use for every file (structural events, then this
+/// file's own test-origin evidence via `proof_events`), but scoped to ONE named file so a
+/// round-2 re-extraction can be simulated by feeding only the file that actually changed. That
+/// is exactly what the real replay-key content-hash suppression accomplishes in production
+/// (`crate::ingest::key_batch` keys a file's WHOLE batch on its content hash; `RunCtx::
+/// ingest_project_batches`'s sink appends a batch only when its key set is new, so an unchanged
+/// file's batch is never handed to the fold again on a later run while a changed file's whole
+/// batch re-applies) - this helper reproduces that SELECTION at the test level without needing a
+/// live `RunCtx`/eventstore, while `extract_events`/`proof_events` themselves stay the real,
+/// public, tree-sitter-backed extraction the production walk uses, never a hand-built event.
+#[cfg(feature = "symbols")]
+fn events_for_file(
+    idx: &rigger::grounder::symbols::model::SymbolIndex,
+    path: &str,
+) -> Vec<rigger::eventstore::Event> {
+    use rigger::grounder::symbols::events::{extract_events, proof_events};
+    let fs = idx
+        .files()
+        .get(path)
+        .unwrap_or_else(|| panic!("fixture precondition: {path:?} is in the index"));
+    let mut events = extract_events(path, fs);
+    events.extend(proof_events(path, fs));
+    events
+}
+
+/// Apply `events` to `p`, continuing the position sequence from `*next_position` (advancing it
+/// past every event applied), so several real per-file batches - an initial ingest, then a later
+/// re-extraction of just the file that changed - compose onto ONE `Projector` exactly as a real
+/// multi-generation run would append them, never restarting the position sequence a fresh `Vec`
+/// per round would otherwise imply.
+#[cfg(feature = "symbols")]
+fn apply_events(
+    p: &rigger::contextgraph::sqlite::Projector,
+    events: &mut [rigger::eventstore::Event],
+    next_position: &mut u64,
+) {
+    use rigger::contextgraph::Projection;
+    for event in events.iter_mut() {
+        event.position = *next_position;
+        *next_position += 1;
+        p.apply(event).unwrap();
+    }
+}
+
+/// Re-read `root`'s CURRENT on-disk state (a real, freshly built `SymbolIndex` - so a caller
+/// that just edited `path` on disk gets that edit's own real extraction, never a stale one),
+/// then apply ONLY `path`'s own batch to `p` - the single "one file (re-)extracts through the
+/// real pipeline and folds" step every round-2 test below performs one or more times, over
+/// [`events_for_file`] and [`apply_events`] together.
+#[cfg(feature = "symbols")]
+fn reextract_file(
+    root: &tempfile::TempDir,
+    p: &rigger::contextgraph::sqlite::Projector,
+    path: &str,
+    next_position: &mut u64,
+) {
+    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
+    apply_events(p, &mut events_for_file(&idx, path), next_position);
+}
+
+/// Fixture for [`cross_file_proof_survives_a_real_reextraction_of_the_defining_file`]: `watch`
+/// (proven by a cross-file test) and `idle` (never referenced) - independent of both the
+/// implementer's own `product.rs`/`product_fn` fixture and this file's own `combat.rs`/`strike`
+/// fixture above.
+#[cfg(feature = "symbols")]
+const SENTINEL_V1_SRC: &str = "fn watch() {}\n\nfn idle() {}\n";
+
+/// `sentinel.rs` after an edit UNRELATED to `watch` (round 2,
+/// `sdet-u86c2-r-fresh-refold-wipes-cross-file-proof`): a new function is appended, changing the
+/// file's content/hash so it genuinely re-extracts fresh, while `watch`'s own line (1) is
+/// untouched - the exact "editing ANY line of product.rs" shape the finding names, reproduced
+/// with a real edit on disk rather than a synthetic `fresh: true` flag on a hand-built event.
+#[cfg(feature = "symbols")]
+const SENTINEL_V2_SRC: &str = "fn watch() {}\n\nfn idle() {}\n\nfn alert() {}\n";
+
+#[cfg(feature = "symbols")]
+const SENTINEL_TEST_SRC: &str = "\
+#[test]
+fn checks_watch() {
+    watch();
+}
+";
+
+/// Closes `sdet-u86c2-r-fresh-refold-wipes-cross-file-proof` at the periphery: drives the real
+/// pipeline twice over a genuine file edit. A cross-file test first proves `watch`; `sentinel.rs`
+/// is then edited (unrelated to `watch`) and re-extracted ALONE - the untouched test file's batch
+/// is never re-applied, mirroring what real content-hash suppression would do in production (see
+/// [`events_for_file`]'s doc) - and `watch`'s proof must survive the re-fold.
+#[cfg(feature = "symbols")]
+#[test]
+fn cross_file_proof_survives_a_real_reextraction_of_the_defining_file() {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::Projection;
+    use rigger::dash::card;
+
+    let root = tempfile::tempdir().unwrap();
+    root_write(&root, "sentinel.rs", SENTINEL_V1_SRC);
+    root_write(&root, "tests/sentinel_periphery.rs", SENTINEL_TEST_SRC);
+
+    let p = Projector::open(":memory:", "test").unwrap();
+    let mut next_position = 1u64;
+    reextract_file(&root, &p, "sentinel.rs", &mut next_position);
+    reextract_file(&root, &p, "tests/sentinel_periphery.rs", &mut next_position);
+
+    let baseline = p.subgraph(&["sentinel.rs".to_string()], 2).unwrap();
+    let watch = card(&baseline, "sentinel.rs::watch").expect("sentinel.rs::watch is a graph node");
+    assert_eq!(
+        watch.proven_by, 1,
+        "sanity: the cross-file test proves watch before any re-extraction; card: {watch:?}"
+    );
+    assert_eq!(
+        watch.proof_evidence,
+        vec!["tests/sentinel_periphery.rs:3".to_string()]
+    );
+
+    // sentinel.rs is edited (unrelated to watch) and re-extracts ALONE; the test file is
+    // untouched and its batch is never re-applied here.
+    root_write(&root, "sentinel.rs", SENTINEL_V2_SRC);
+    reextract_file(&root, &p, "sentinel.rs", &mut next_position);
+
+    let after = p.subgraph(&["sentinel.rs".to_string()], 2).unwrap();
+    let watch_after =
+        card(&after, "sentinel.rs::watch").expect("sentinel.rs::watch survives the re-extraction");
+    assert_eq!(
+        watch_after.proven_by, 1,
+        "re-extracting sentinel.rs must not silently drop the proof a DIFFERENT, untouched file \
+         already established; card: {watch_after:?}"
+    );
+    assert_eq!(
+        watch_after.proof_evidence,
+        vec!["tests/sentinel_periphery.rs:3".to_string()],
+        "the evidence entry itself must survive too; card: {watch_after:?}"
+    );
+    let idle_after = card(&after, "sentinel.rs::idle").expect("sentinel.rs::idle is a graph node");
+    assert_eq!(
+        idle_after.proven_by, 0,
+        "idle is never referenced by any test"
+    );
+    let alert_after = card(&after, "sentinel.rs::alert")
+        .expect("the newly added alert folded structurally alongside watch/idle");
+    assert_eq!(alert_after.proven_by, 0);
+}
+
+#[cfg(feature = "symbols")]
+const DUO_SRC: &str = "fn left() {}\n\nfn right() {}\n";
+
+#[cfg(feature = "symbols")]
+const DUO_TEST_V1_SRC: &str = "\
+#[test]
+fn checks_left() {
+    left();
+}
+";
+
+/// An unrelated line is added ABOVE the test (shifts the reference's own line from 3 to 4) while
+/// still referencing `left` - this step proves a re-extraction NETS TO THE SAME evidence (one
+/// entry, at the NEW line), never a second, stale entry lingering at the old one.
+#[cfg(feature = "symbols")]
+const DUO_TEST_V2_SRC: &str = "\
+// housekeeping
+#[test]
+fn checks_left() {
+    left();
+}
+";
+
+/// The test is edited to reference `right` instead of `left` entirely - proof must move WHOLE,
+/// never accrete on `right` while stranding a stale entry on `left`.
+#[cfg(feature = "symbols")]
+const DUO_TEST_V3_SRC: &str = "\
+#[test]
+fn checks_right() {
+    right();
+}
+";
+
+/// Closes `adv-u86c2-r-test-file-re-extraction-double-counts-its-own-unchanged-references` at
+/// the periphery. Three real edits to the SAME test file, re-extracted through the real pipeline
+/// each time: an edit that only shifts the reference's own line (must net to ONE entry, not
+/// two), then an edit that swaps which product entity it reaches entirely (proof must move
+/// whole, never strand a stale entry on the old target).
+#[cfg(feature = "symbols")]
+#[test]
+fn a_real_reextraction_of_a_test_file_supersedes_rather_than_accretes_or_strands_its_own_evidence()
+{
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::Projection;
+    use rigger::dash::card;
+
+    // One step of the walk below: `tests/duo_periphery.rs` is (re-)written to `src` and
+    // re-extracted fresh, and `left`/`right` must land at exactly `want_left`/`want_right`
+    // (with `left_evidence` naming the single surviving entry, when any) afterward.
+    struct Step {
+        src: &'static str,
+        want_left: usize,
+        want_right: usize,
+        left_evidence: Option<&'static str>,
+    }
+    let walk = [
+        Step {
+            src: DUO_TEST_V1_SRC,
+            want_left: 1,
+            want_right: 0,
+            left_evidence: Some("tests/duo_periphery.rs:3"),
+        },
+        // The reference's own line shifts (an unrelated line added above it); same target -
+        // must net to ONE entry at the NEW line, never a second, stale one at the old line.
+        Step {
+            src: DUO_TEST_V2_SRC,
+            want_left: 1,
+            want_right: 0,
+            left_evidence: Some("tests/duo_periphery.rs:4"),
+        },
+        // The test is edited to reference `right` instead - proof must move WHOLE.
+        Step {
+            src: DUO_TEST_V3_SRC,
+            want_left: 0,
+            want_right: 1,
+            left_evidence: None,
+        },
+    ];
+
+    let root = tempfile::tempdir().unwrap();
+    root_write(&root, "duo.rs", DUO_SRC);
+    let p = Projector::open(":memory:", "test").unwrap();
+    let mut next_position = 1u64;
+    reextract_file(&root, &p, "duo.rs", &mut next_position);
+
+    for (step_idx, step) in walk.iter().enumerate() {
+        root_write(&root, "tests/duo_periphery.rs", step.src);
+        reextract_file(&root, &p, "tests/duo_periphery.rs", &mut next_position);
+
+        let g = p.subgraph(&["duo.rs".to_string()], 2).unwrap();
+        let left = card(&g, "duo.rs::left").expect("duo.rs::left is a graph node");
+        assert_eq!(
+            left.proven_by, step.want_left,
+            "step {step_idx}: duo.rs::left; card: {left:?}"
+        );
+        assert_eq!(
+            card(&g, "duo.rs::right")
+                .expect("duo.rs::right is a graph node")
+                .proven_by,
+            step.want_right,
+            "step {step_idx}: duo.rs::right"
+        );
+        if let Some(evidence) = step.left_evidence {
+            assert_eq!(
+                left.proof_evidence,
+                vec![evidence.to_string()],
+                "step {step_idx}: duo.rs::left's evidence must be exactly this one entry, \
+                 never accreted or left stale; card: {left:?}"
+            );
+        }
+    }
+}
+
+#[cfg(feature = "symbols")]
+const ALPHA_V1_SRC: &str = "fn shared() {}\n";
+
+/// `alpha.rs` after an edit UNRELATED to `shared` - adds a second function so the file
+/// genuinely re-extracts fresh, refiring `TYPE_CODE_ENTITY_EXTRACTED` for `shared` and, with it,
+/// `reconcile_pending_proof`'s own ambiguity guard.
+#[cfg(feature = "symbols")]
+const ALPHA_V2_SRC: &str = "fn shared() {}\n\nfn alpha_only() {}\n";
+
+#[cfg(feature = "symbols")]
+const BETA_SRC: &str = "fn shared() {}\n";
+
+#[cfg(feature = "symbols")]
+const AMBIGUOUS_TEST_SRC: &str = "\
+#[test]
+fn checks_shared() {
+    shared();
+}
+";
+
+/// Closes `adv-u86c2-r-cross-file-name-match-misattributes-proof-to-the-wrong-entity` at the
+/// periphery, over BOTH resolution paths the finding names. `alpha.rs`/`beta.rs` both define
+/// `shared`; a third file references it with no local definition of its own. First proves the
+/// RESOLVED path (the reference folds after both real definitions already exist, through the
+/// real sorted-path pipeline - alphabetical file order is exactly what makes a `LIMIT 1`-style
+/// pick deterministic-but-wrong in a REAL tree, not merely a contrived one); then edits
+/// `alpha.rs` elsewhere and re-extracts it ALONE, re-firing `reconcile_pending_proof` on the
+/// still-pending, still-ambiguous evidence - the SECOND path the finding names.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_real_ambiguous_same_named_pair_never_gets_confident_credit_through_either_resolution_path() {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::Projection;
+    use rigger::dash::card;
+    use rigger::grounder::symbols::build_index;
+    use rigger::grounder::symbols::events::index_events;
+
+    let root = tempfile::tempdir().unwrap();
+    root_write(&root, "alpha.rs", ALPHA_V1_SRC);
+    root_write(&root, "beta.rs", BETA_SRC);
+    root_write(&root, "tests/ambiguous_periphery.rs", AMBIGUOUS_TEST_SRC);
+
+    let idx1 = build_index(root.path().to_str().unwrap(), None);
+    assert_eq!(
+        idx1.files().keys().map(String::as_str).collect::<Vec<_>>(),
+        vec!["alpha.rs", "beta.rs", "tests/ambiguous_periphery.rs"],
+        "fixture precondition: sorted order must fold both definitions before the reference, so \
+         this test genuinely exercises the RESOLVED cross-file path, not the pending/forward one"
+    );
+
+    let p = Projector::open(":memory:", "test").unwrap();
+    let mut next_position = 1u64;
+    apply_events(&p, &mut index_events(&idx1), &mut next_position);
+
+    let seeds = ["alpha.rs".to_string(), "beta.rs".to_string()];
+    let before = p.subgraph(&seeds, 2).unwrap();
+    assert_eq!(
+        card(&before, "alpha.rs::shared")
+            .expect("alpha.rs::shared is a graph node")
+            .proven_by,
+        0,
+        "an ambiguous name must not confidently credit alpha.rs's definition"
+    );
+    assert_eq!(
+        card(&before, "beta.rs::shared")
+            .expect("beta.rs::shared is a graph node")
+            .proven_by,
+        0,
+        "an ambiguous name must not confidently credit beta.rs's definition either"
+    );
+
+    // The SECOND path: alpha.rs is edited elsewhere (unrelated to shared) and re-extracts ALONE.
+    root_write(&root, "alpha.rs", ALPHA_V2_SRC);
+    reextract_file(&root, &p, "alpha.rs", &mut next_position);
+    let after = p.subgraph(&seeds, 2).unwrap();
+    assert_eq!(
+        card(&after, "alpha.rs::shared")
+            .expect("alpha.rs::shared is a graph node")
+            .proven_by,
+        0,
+        "a re-fold must not retroactively claim the still-ambiguous pending evidence via \
+         reconcile_pending_proof merely because it is the one refolding right now"
+    );
+    assert_eq!(
+        card(&after, "beta.rs::shared")
+            .expect("beta.rs::shared is a graph node")
+            .proven_by,
+        0
     );
 }
 
