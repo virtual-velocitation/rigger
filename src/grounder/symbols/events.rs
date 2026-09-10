@@ -42,9 +42,11 @@ pub fn index_events(idx: &SymbolIndex) -> Vec<Event> {
 /// falls back to a fresh [`build_index`](crate::grounder::symbols::build_index) otherwise. Each
 /// file is lowered through the shared [`extract_events`] authority - the SAME per-file emit the
 /// fold tests and the incremental path use, so the whole-project ingest can never drift from a
-/// single file's. Returns `(file, events)` per file in the index's sorted path order, skipping a
-/// file that extracts to nothing (no events, so no batch and no boundary to supersede). The caller
-/// keys each batch on its content, so an unchanged file is not re-ingested and a changed one
+/// single file's. Returns `(file, events)` per file in the index's sorted path order; every
+/// non-out-of-line-excluded file contributes a batch (spec 86 criterion 2 round 3 -
+/// [`proof_events`] never returns empty, so a file whose evidence set is empty still contributes
+/// its one boundary event, alongside whatever [`extract_events`] itself emits). The caller keys
+/// each batch on its content, so an unchanged file is not re-ingested and a changed one
 /// re-extracts.
 pub fn project_batches(root: &str) -> Vec<(String, Vec<Event>)> {
     project_batches_paced(root, crate::parallel::default_workers()).0
@@ -55,8 +57,9 @@ pub fn project_batches(root: &str) -> Vec<(String, Vec<Event>)> {
 /// the batches come back in the index's SORTED path order (index-preserving), so the emit is
 /// byte-identical to a serial walk's however the pool interleaved. `workers <= 1` runs the lowering
 /// inline - the serial walk a wider walk is compared against. Each file is lowered through the ONE
-/// [`extract_events`] authority (never a second parallel copy), and a file that extracts to nothing
-/// contributes no batch. Returns `(batches, workers_engaged)`.
+/// [`extract_events`] authority (never a second parallel copy) alongside [`proof_events`], which
+/// together never leave a (non-out-of-line-excluded) file's own batch empty. Returns `(batches,
+/// workers_engaged)`.
 pub fn project_batches_paced(root: &str, workers: usize) -> (Vec<(String, Vec<Event>)>, usize) {
     let idx = crate::grounder::symbols::store::load(root)
         .unwrap_or_else(|| crate::grounder::symbols::build_index(root, None));
@@ -68,16 +71,14 @@ pub fn project_batches_paced(root: &str, workers: usize) -> (Vec<(String, Vec<Ev
         .collect();
     // Parse/lower per file in parallel; `map_ordered` returns the per-file results in the input
     // (sorted-path) order, so the emit sequence is independent of which worker finished first.
-    let (per_file, workers_engaged) =
-        crate::parallel::map_ordered(&files, workers, |&(path, fs)| {
-            let mut events = extract_events(path, fs);
-            // Spec 86 criterion 2: this file's test-origin evidence, alongside its structural
-            // events - see [`index_events`]'s identical composition and [`proof_events`]'s doc.
-            events.extend(proof_events(path, fs));
-            (!events.is_empty()).then(|| (path.clone(), events))
-        });
-    // Drop the files that extracted to nothing, preserving the sorted order of the rest.
-    (per_file.into_iter().flatten().collect(), workers_engaged)
+    crate::parallel::map_ordered(&files, workers, |&(path, fs)| {
+        let mut events = extract_events(path, fs);
+        // Spec 86 criterion 2: this file's test-origin evidence, alongside its structural
+        // events - see [`index_events`]'s identical composition and [`proof_events`]'s doc. Never
+        // empty (round 3), so - unlike before this criterion - this file's batch is never dropped.
+        events.extend(proof_events(path, fs));
+        (path.clone(), events)
+    })
 }
 
 /// Emit one file's extracted symbols as events: one `CodeEntityExtracted` per definition, then
@@ -221,9 +222,25 @@ pub fn extract_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
 /// `project_batches_paced` concatenate both, so a file can carry two independent boundaries - one
 /// per concern) - without it, editing a test file (adding an unrelated test, fixing a comment)
 /// re-extracts the whole file and re-records every unchanged is_test reference as brand-new
-/// evidence, permanently inflating `proven_by`. A file whose evidence set is EMPTY (no is_test
-/// references at all, the overwhelming common case for an ordinary product file) returns an empty
-/// `Vec` and thus stamps no boundary - nothing to supersede.
+/// evidence, permanently inflating `proven_by`.
+///
+/// Round 3 (adv-u86c2-r2-deleted-test-reference-strands-proof-forever): a file whose evidence set
+/// is EMPTY - the overwhelming common case for an ordinary product file with no is_test content at
+/// all, but ALSO the ordinary case of deleting or rewriting the one test that proved something -
+/// used to return an empty `Vec` here, so this function stamped no boundary. That was fine for a
+/// file that NEVER had evidence, but silently wrong for one TRANSITIONING from evidence to none: a
+/// file's WHOLE batch (`extract_events` alongside this function, concatenated by `index_events`/
+/// `project_batches_paced`) can itself be empty - a `tests/`-dir file's structural side is ALWAYS
+/// empty - so the file's batch was dropped entirely and `fold_test_evidence`/`supersede_file_proof`
+/// never even ran, stranding this file's own prior `proof_evidence` contribution on whichever
+/// entities it named, forever. Mirroring criterion 3's own already-established empty-after-
+/// exclusion pattern for `extract_events`'s structural boundary (a file that extracts to nothing
+/// still stamps ONE boundary event rather than being skipped), this function now NEVER returns an
+/// empty `Vec`: an empty evidence set returns [`empty_evidence_boundary_event`] as the file's WHOLE
+/// batch instead - an ordinary `is_test` `EdgeInferred`, always `fresh`, but with an EMPTY `name`
+/// (never a real reference's name) marking it boundary-only. The fold's `is_test` branch
+/// (`fold_test_evidence`) still runs on it - so the supersede-on-re-extract retraction above still
+/// fires - but its own empty-name guard resolves/records nothing for it.
 ///
 /// Sorted by name then line (mirroring `extract_events`'s own ref ordering), so identical source
 /// yields byte-identical evidence events regardless of parse order.
@@ -236,6 +253,16 @@ pub fn extract_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
 /// to this per-file view, per [`out_of_line_test_module_files`]'s own doc), so a test-only file
 /// reached only that way contributes no evidence. Not named by spec 86's Design/Done-when text,
 /// which is written in terms of a `tests/` directory and `#[cfg(test)]`/`#[test]` regions.
+///
+/// Disclosed, non-blocking, SHARED limitation (not this criterion's alone to close): like
+/// criterion 3's identical structural sentinel, [`empty_evidence_boundary_event`]'s payload is a
+/// CONSTANT per `(file, lang)` with no generation-distinguishing field, so within one long-lived
+/// process the ingest replay-key dedup (`crate::ingest::key_batch`, content-hashing a file's WHOLE
+/// batch) can treat a LATER occurrence of an all-empty batch as a replay of an EARLIER one and
+/// silently drop it. This is the same collision class already tracked against criterion 3's own
+/// sentinel (a peer finding on that unit); fixing it belongs to `key_batch`/`emit_keyed_batch`
+/// (shared ingest infrastructure both sentinels ride), not to a bespoke, duplicated workaround in
+/// either criterion's own emit function.
 pub fn proof_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
     let whole_file_test = is_under_tests_dir(file);
     let lang = lang_str(fs.lang);
@@ -245,6 +272,9 @@ pub fn proof_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
         .filter(|r| whole_file_test || r.is_test)
         .collect();
     refs.sort_by(|a, b| a.name.cmp(&b.name).then(a.line.cmp(&b.line)));
+    if refs.is_empty() {
+        return vec![empty_evidence_boundary_event(file, lang)];
+    }
     let mut events: Vec<Event> = refs
         .into_iter()
         .map(|r| {
@@ -269,6 +299,33 @@ pub fn proof_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
         set_fresh(first);
     }
     events
+}
+
+/// Spec 86 criterion 2, round 3 (adv-u86c2-r2-deleted-test-reference-strands-proof-forever): the
+/// batch-boundary sentinel for a file whose TEST-EVIDENCE set is empty - riding the existing
+/// `EdgeInferred` shape with `is_test: true` (so the fold's existing `is_test` branch routes it to
+/// `fold_test_evidence`, never a new event type or a new fold arm) and an EMPTY `name` (never a
+/// real reference's name) marking it boundary-only. Always `fresh`: used only as a file's WHOLE
+/// evidence batch (never alongside a real reference the ordinary stamping in [`proof_events`]
+/// would mark instead), so it is always that batch's first and only event. The fold
+/// (`contextgraph::sqlite::fold_test_evidence`) recognizes the empty name and runs ONLY the
+/// supersede-on-re-extract retraction (`supersede_file_proof`), resolving/recording nothing for
+/// it - mirroring the identical "recognize the empty discriminator, do nothing but supersede"
+/// contract criterion 3's own structural boundary sentinel uses.
+fn empty_evidence_boundary_event(file: &str, lang: &str) -> Event {
+    let payload = EdgeInferred {
+        file: file.to_string(),
+        name: String::new(),
+        lang: lang.to_string(),
+        fresh: true,
+        caller: None,
+        line: 0,
+        is_test: true,
+    };
+    Event::new(
+        TYPE_EDGE_INFERRED,
+        serde_json::to_vec(&payload).expect("evidence payload serializes"),
+    )
 }
 
 /// Re-serialize a code event's payload with `fresh = true`, marking it the extraction-batch
@@ -1224,5 +1281,84 @@ fn an_integration_test() {
              evidence; got {:?}",
             g.nodes
         );
+    }
+
+    use crate::grounder::symbols::events::proof_events;
+
+    #[test]
+    fn proof_events_on_a_file_with_no_test_evidence_returns_a_boundary_only_sentinel_never_an_empty_vec(
+    ) {
+        // Spec 86 criterion 2, round 3 (adv-u86c2-r2-deleted-test-reference-strands-proof-
+        // forever): `proof_events` used to return an EMPTY `Vec` whenever a file's evidence set
+        // was empty - the overwhelming common case (an ordinary product file with no
+        // `#[cfg(test)]`/`#[test]` content at all, product_fs() below). Combined with
+        // `extract_events` ALSO returning empty for a whole-file-test path, a file's WHOLE batch
+        // (`index_events`/`project_batches_paced`) could be empty and get DROPPED entirely, so
+        // `fold_test_evidence`/`supersede_file_proof` never even ran on a LATER re-extraction that
+        // emptied a file's evidence - stranding stale proof forever. Mirroring criterion 3's own
+        // already-established empty-after-exclusion pattern (a file that extracts to nothing still
+        // stamps ONE boundary event rather than being skipped), `proof_events` now returns exactly
+        // one sentinel event instead of nothing: an ordinary `is_test` EdgeInferred, `fresh: true`
+        // (it is the file's WHOLE evidence batch), but an EMPTY `name` - never a real reference's
+        // name - marking it boundary-only. The fold's own guard (`fold_test_evidence`) recognizes
+        // the empty name and runs ONLY the supersede-on-re-extract retraction, resolving/recording
+        // nothing for it.
+        let events = proof_events("src/product.rs", &product_fs());
+        assert_eq!(
+            events.len(),
+            1,
+            "a file with no test evidence still stamps exactly one boundary event, never an \
+             empty Vec; got {events:?}"
+        );
+        assert_eq!(
+            events[0].type_, TYPE_EDGE_INFERRED,
+            "the boundary rides the existing EdgeInferred shape - no new event type"
+        );
+        let v: serde_json::Value = serde_json::from_slice(&events[0].data).unwrap();
+        assert_eq!(
+            v.get("name").and_then(|n| n.as_str()),
+            Some(""),
+            "an empty name marks this record as boundary-only - no real reference, never a \
+             genuine one"
+        );
+        assert_eq!(
+            v.get("file").and_then(|n| n.as_str()),
+            Some("src/product.rs"),
+            "the boundary still carries the file so the fold supersedes the right file's \
+             evidence"
+        );
+        assert!(
+            v.get("is_test").and_then(|b| b.as_bool()).unwrap_or(false),
+            "the sentinel is an is_test event, so the fold's existing is_test branch routes it \
+             to fold_test_evidence - never a new fold arm"
+        );
+        assert!(
+            fresh_of(&events[0]),
+            "the lone boundary event IS the file's whole evidence batch, so it carries fresh"
+        );
+    }
+
+    #[test]
+    fn proof_events_on_a_whole_file_test_directory_with_zero_references_also_returns_the_sentinel()
+    {
+        // The degenerate whole-file-test case: a `tests/`-dir file that defines/references
+        // NOTHING at all (every reference would count as evidence here, but there are none to
+        // begin with) must ALSO stamp the boundary sentinel, not return empty - the same
+        // "empty-after-exclusion is a first-class boundary" rule applies regardless of WHY the
+        // evidence set is empty.
+        let fs = FileSymbols {
+            lang: Lang::Rust,
+            defs: vec![],
+            refs: vec![],
+        };
+        let events = proof_events("tests/empty_integration.rs", &fs);
+        assert_eq!(
+            events.len(),
+            1,
+            "a tests/-dir file with zero references still stamps the boundary sentinel; got \
+             {events:?}"
+        );
+        let v: serde_json::Value = serde_json::from_slice(&events[0].data).unwrap();
+        assert_eq!(v.get("name").and_then(|n| n.as_str()), Some(""));
     }
 }

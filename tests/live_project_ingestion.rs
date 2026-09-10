@@ -11,9 +11,16 @@
 //! the PUBLIC extraction contract these two functions carry. The happy-path integration suites feed
 //! only files that DO extract, so they never exercise:
 //!
-//! - the documented SKIP-EMPTY contract (a file that extracts to nothing yields NO batch) and the
-//!   barren-root no-op (a source-less tree yields NO batches, never a panic) - the very property that
-//!   lets the conductor's ingest stay a byte-for-byte no-op on a tree with nothing to extract;
+//! - the CODE half's barren-root no-op (a source-less tree yields NO batches, never a panic) - the
+//!   very property that lets the conductor's ingest stay a byte-for-byte no-op on a tree with
+//!   nothing to extract - and, since spec 86 criterion 2 round 3, that a symbol-less product file is
+//!   NO LONGER skipped: `project_batches`'s own `proof_events` half never returns empty (a
+//!   first-class empty-evidence boundary, mirroring criterion 3's identical structural pattern), so
+//!   every file the walk actually visits contributes a batch now, even one with no symbols of its
+//!   own;
+//! - the DESIGN half's own, still-current SKIP-EMPTY contract (a file that carries no design intent
+//!   at all yields NO batch) and its own barren-root no-op - `grounder::design::events::
+//!   project_batches` is a separate function this criterion does not touch;
 //! - the design walk's UNREADABLE / binary-file robustness. A live run ingests the WHOLE project
 //!   tree, and a real tree carries binary files (images, databases) the design walk `read_to_string`s;
 //!   a file that is not valid UTF-8 must be skipped, never crash the walk that populates the graph.
@@ -25,21 +32,26 @@
 //! integration suites - these tests are symbols-gated and compile to nothing in the light lane,
 //! keeping BOTH feature lanes green.
 
-/// The CODE half's public production entry SKIPS a file that extracts to no symbols, and yields an
-/// empty batch set on a barren root. The 29a/29c happy-path integration tests feed only files that DO
-/// extract, so nothing there pins the skip: deleting the `(!events.is_empty())` filter would leave
-/// their assertions (the real files present) green while silently emitting an empty batch for every
-/// symbol-less file a real tree carries. This pins the contract at the crate boundary.
+/// The CODE half's public production entry stamps a batch for EVERY file the walk visits - since
+/// spec 86 criterion 2 round 3, even a symbol-less one (`proof_events` never returns empty, a
+/// first-class empty-evidence boundary mirroring criterion 3's identical structural pattern for
+/// `extract_events`) - while a BARREN root (no files at all) still yields no batches, never a panic.
+/// Before round 3 a symbol-less file contributed no batch at all; the 29a/29c happy-path integration
+/// tests feed only files that DO extract, so nothing there pins either half of this contract: a
+/// regression that dropped `blank.rs`'s own sentinel batch, or one that panicked on an empty file
+/// list, would leave those suites green. This pins both at the crate boundary.
 #[cfg(feature = "symbols")]
 #[test]
-fn code_project_batches_skips_a_symbol_less_file_and_yields_nothing_on_a_barren_root() {
+fn code_project_batches_stamps_a_boundary_for_a_symbol_less_file_too_and_a_barren_root_still_yields_nothing(
+) {
     use rigger::grounder::symbols::events::project_batches;
 
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("src")).unwrap();
-    // A file with a real definition (yields a batch) beside a parseable file with NO symbols. The
-    // symbol-less file IS indexed - a recovered parse inserts an empty entry - but extracts to no
-    // events, so it must carry no batch.
+    // A file with a real definition beside a parseable file with NO symbols at all. The symbol-less
+    // file IS indexed - a recovered parse inserts an empty entry - and extracts to no STRUCTURAL
+    // events, but round 3 still stamps it one boundary event (its own empty-evidence sentinel), so
+    // both files now contribute a batch.
     std::fs::write(dir.path().join("src/real.rs"), "pub fn real_symbol() {}\n").unwrap();
     std::fs::write(
         dir.path().join("src/blank.rs"),
@@ -47,19 +59,29 @@ fn code_project_batches_skips_a_symbol_less_file_and_yields_nothing_on_a_barren_
     )
     .unwrap();
 
-    let files: Vec<String> = project_batches(dir.path().to_str().unwrap())
-        .into_iter()
-        .map(|(f, _)| f)
-        .collect();
+    let batches = project_batches(dir.path().to_str().unwrap());
+    let files: Vec<String> = batches.iter().map(|(f, _)| f.clone()).collect();
     assert_eq!(
         files,
-        vec!["src/real.rs"],
-        "a parseable file that extracts to no symbols yields no batch; only the file with real \
-         definitions is lowered. got {files:?}"
+        vec!["src/blank.rs", "src/real.rs"],
+        "both files contribute a batch now - the symbol-less one via its own empty-evidence \
+         boundary sentinel, never dropped; got {files:?}"
+    );
+    let blank_events = &batches
+        .iter()
+        .find(|(f, _)| f == "src/blank.rs")
+        .expect("src/blank.rs has a batch")
+        .1;
+    assert_eq!(
+        blank_events.len(),
+        1,
+        "a symbol-less file's WHOLE batch is exactly its one boundary sentinel; got \
+         {blank_events:?}"
     );
 
-    // Barren root: a directory with no extractable source yields an EMPTY batch set (never a panic) -
-    // the contract that lets the conductor's ingest stay a byte-for-byte no-op on a source-less tree.
+    // Barren root: a directory with NO FILES AT ALL yields an EMPTY batch set (never a panic) - the
+    // contract that lets the conductor's ingest stay a byte-for-byte no-op on a source-less tree.
+    // Unaffected by round 3: there is no file for the walk to visit, so no boundary is ever stamped.
     let barren = tempfile::tempdir().unwrap();
     assert!(
         project_batches(barren.path().to_str().unwrap()).is_empty(),

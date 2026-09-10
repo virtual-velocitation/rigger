@@ -608,6 +608,82 @@ fn a_real_ambiguous_same_named_pair_never_gets_confident_credit_through_either_r
     );
 }
 
+#[cfg(feature = "symbols")]
+const GONE_PRODUCT_SRC: &str = "fn vanish() {}\n";
+
+#[cfg(feature = "symbols")]
+const GONE_TEST_V1_SRC: &str = "\
+#[test]
+fn checks_vanish() {
+    vanish();
+}
+";
+
+/// The test file after its ONLY reference is deleted - replaced with a plain comment, ZERO
+/// references left in the file (round 3, adv-u86c2-r2-deleted-test-reference-strands-proof-
+/// forever): deleting or rewriting the one test that proved something is a routine, ordinary
+/// test-suite operation, not an edge case.
+#[cfg(feature = "symbols")]
+const GONE_TEST_V2_SRC: &str = "// the test that proved vanish() was deleted\n";
+
+/// Closes `adv-u86c2-r2-deleted-test-reference-strands-proof-forever` at the periphery: a product
+/// function proven by exactly one test, then that test's ONLY reference deleted (not replaced with
+/// a DIFFERENT reference - the file's own evidence set drops to ZERO, never merely changes), and
+/// the test file re-extracted ALONE through the real pipeline. Before round 3, `proof_events`
+/// returned an empty `Vec` whenever a file's evidence set was empty; combined with `extract_events`
+/// ALSO being empty for this `tests/`-dir file, `events_for_file`'s own combined batch was itself
+/// empty, so nothing was ever applied for this step and `fold_test_evidence`/`supersede_file_proof`
+/// never ran - the stale proof stood forever. Round 3 makes an empty evidence set a first-class
+/// boundary (mirroring criterion 3's own empty-after-exclusion pattern for the structural side): the
+/// file still emits exactly one sentinel event, so the fold still retracts its own stale
+/// contribution.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_deleted_test_reference_retracts_its_stale_proof_through_the_real_pipeline() {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::Projection;
+    use rigger::dash::card;
+
+    let root = tempfile::tempdir().unwrap();
+    root_write(&root, "gone.rs", GONE_PRODUCT_SRC);
+    root_write(&root, "tests/gone_periphery.rs", GONE_TEST_V1_SRC);
+
+    let p = Projector::open(":memory:", "test").unwrap();
+    let mut next_position = 1u64;
+    reextract_file(&root, &p, "gone.rs", &mut next_position);
+    reextract_file(&root, &p, "tests/gone_periphery.rs", &mut next_position);
+
+    let baseline = p.subgraph(&["gone.rs".to_string()], 2).unwrap();
+    let vanish = card(&baseline, "gone.rs::vanish").expect("gone.rs::vanish is a graph node");
+    assert_eq!(
+        vanish.proven_by, 1,
+        "sanity: the test proves vanish before its reference is deleted; card: {vanish:?}"
+    );
+    assert_eq!(
+        vanish.proof_evidence,
+        vec!["tests/gone_periphery.rs:3".to_string()]
+    );
+
+    // The test's ONLY reference is deleted (replaced with a plain comment); the test file
+    // re-extracts ALONE, its evidence set now EMPTY.
+    root_write(&root, "tests/gone_periphery.rs", GONE_TEST_V2_SRC);
+    reextract_file(&root, &p, "tests/gone_periphery.rs", &mut next_position);
+
+    let after = p.subgraph(&["gone.rs".to_string()], 2).unwrap();
+    let vanish_after =
+        card(&after, "gone.rs::vanish").expect("gone.rs::vanish still exists as a graph node");
+    assert_eq!(
+        vanish_after.proven_by, 0,
+        "a deleted test reference must retract its own stale proof, not strand it forever; card: \
+         {vanish_after:?}"
+    );
+    assert!(
+        vanish_after.proof_evidence.is_empty(),
+        "the stale file:line entry must be retracted, not merely left uncounted; card: \
+         {vanish_after:?}"
+    );
+}
+
 // ---- the SERVED /api/graph?card= wire contract (both lanes) --------------------------------
 
 /// Start `serve` on a fresh ephemeral loopback port, fetch `GET <path>` once against a fixture-graph
