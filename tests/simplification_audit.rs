@@ -3457,10 +3457,10 @@ pub(crate) fn render_section_5() -> String {
     );
     out.push_str(
         "- `temp_project` - a scratch-project-directory fixture - independently \
-        redefined in 18 files (`dup-0368`, semantic; e.g. \
+        redefined in 19 files (`dup-0368`, semantic; e.g. \
         `tests/canary_model_drift_periphery.rs:39-46`, \
         `tests/cause_wire_periphery.rs:54-61`, `tests/cli.rs:19-29`), plus a \
-        near-identical 12-site variant (`dup-0367`) and a 12-site `run_rigger` \
+        near-identical 12-site variant (`dup-0367`) and a 13-site `run_rigger` \
         companion helper that drives it (`dup-0369`).\n",
     );
     out.push_str(
@@ -3530,7 +3530,7 @@ pub(crate) fn render_section_5() -> String {
         candidate class. Beyond the four in 5.2, the widest are: `dup-0346` \
         (`architecture_text` / `eventstore_source` / `main_rs_source` - \
         source-text-loading helpers for doc/architecture-integrity checks, 12 files, \
-        15 sites); `dup-0373` (a companion, 15-file/15-site variant of 5.2's \
+        15 sites); `dup-0373` (a companion, 16-file/16-site variant of 5.2's \
         `run_stream_identity` fixture, alongside `dup-0374`'s 18-file version); \
         `dup-0402` (`write_two_stage_workflow` / \
         `write_budget_one_two_stage_workflow` / `write_standalone_review_workflow` - \
@@ -3540,7 +3540,7 @@ pub(crate) fn render_section_5() -> String {
         files); `dup-0466` (`apply_def_json` / `apply_ref_fresh`-shaped \
         fold-application helpers, 5 files); `dup-0471` (`community` / `concept` / \
         `def`-named single-field constructor helpers, 6 files); `dup-0670` \
-        (`code_lens` / `concepts_lens` two-line accessor helpers, 4 files). Every \
+        (`code_lens` / `concepts_lens` two-line accessor helpers, 3 files). Every \
         one of these 181 clusters, with its full site list and the catalog's own \
         `proposed_home`, is already machine-readable in the committed \
         `docs/audit/duplication-catalog.json` for a follow-up consolidation spec to \
@@ -3551,7 +3551,7 @@ pub(crate) fn render_section_5() -> String {
     out.push_str(
         "159 test-only clusters have every site as a `#[test]` function - a \
         literal-differs-only-in-input family, spec 85's own named table-driven-test \
-        candidate class. The single largest anywhere in the suite: `dup-0648` (near, \
+        candidate class. The single largest anywhere in the suite: `dup-0649` (near, \
         42 sites, all in `tests/spec_lint.rs`, e.g. \
         `validate_spec_reports_every_c3_defect_with_its_criterion_and_field_guide_class:54-102`, \
         `validate_spec_attributes_a_prose_level_defect_to_no_criterion:120-163`, \
@@ -3561,14 +3561,14 @@ pub(crate) fn render_section_5() -> String {
         validate_spec_field_guide_defects() { for (fixture, expected) in CASES { ... \
         } }` retiring all 42 named tests into one parametrized loop over a `(&str, \
         &str)` (or richer struct) case table. Other large families: \
-        `dup-0595`/`dup-0597` (15+7 sites, `tests/reap_before_removal_audit.rs`, \
+        `dup-0597`/`dup-0599` (15+7 sites, `tests/reap_before_removal_audit.rs`, \
         \"one fixture function body, one exemption-coverage shape, assert \
         covered/not-covered\" - retires into one table keyed by exemption shape); \
-        `dup-0629` (11 sites, `tests/simplification_audit.rs` - this \
+        `dup-0630` (11 sites, `tests/simplification_audit.rs` - this \
         very unit's own scanner tests, a `(source, expected_tokens_or_clusters)` \
-        table candidate); `dup-0584`/`dup-0585` (11+4 sites, \
+        table candidate); `dup-0586`/`dup-0587` (11+4 sites, \
         `tests/no_os_kill_audit.rs`, one process-termination-pattern-string per test \
-        - a `(pattern, is_caught)` table); `dup-0587` (4 sites, \
+        - a `(pattern, is_caught)` table); `dup-0589` (4 sites, \
         `tests/no_os_kill_test_helper_periphery.rs`, \
         `terminate_pid_refuses_pid_zero` / `_pid_one` x `stop_pid_refuses_pid_zero` \
         / `_pid_one` - a 2x2 `(helper, pid)` table). As with 5.4, the full \
@@ -3938,12 +3938,12 @@ fn render_section_6() -> String {
         mechanically regardless of the Jaccard pass, per spec 85's own Design.\n\n",
     );
     out.push_str(
-        "#### 10. Consolidate the 649 `.rigger`-path string-literal sites (`dup-0052`) - the \
+        "#### 10. Consolidate the 655 `.rigger`-path string-literal sites (`dup-0052`) - the \
         single largest cluster in the entire catalog by site count\n\n",
     );
     out.push_str(
         "- Scope: one `.rigger`-relative path-composition helper (the cluster's own \
-        `proposed_home`) every one of the 649 sites routes through instead of building its \
+        `proposed_home`) every one of the 655 sites routes through instead of building its \
         own literal.\n\
         - Files: spans dozens of files including `src/conductor.rs`, `src/config.rs`, \
         `src/dash.rs`, `src/docs.rs`, `src/gate.rs`, `src/grounder/mod.rs`, \
@@ -3951,16 +3951,16 @@ fn render_section_6() -> String {
         `src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list \
         is in the committed `docs/audit/duplication-catalog.json` under `dup-0052` for the \
         follow-up spec to consume directly, not re-enumerated here.\n\
-        - Expected line delta: negative - 649 literal compositions collapse toward one \
+        - Expected line delta: negative - 655 literal compositions collapse toward one \
         helper's call sites; the helper itself is small.\n\
         - Risk: medium - the largest surface-area sweep in this plan by site count, even \
         though each individual site is trivial; needs a mechanical rewrite pass plus a \
-        full-suite green run, not hand-editing 649 sites.\n\
+        full-suite green run, not hand-editing 655 sites.\n\
         - Unblocks: the biggest single site-count reduction available anywhere in the \
         duplication catalog.\n\n",
     );
     out.push_str(
-        "#### 11. Consolidate the 265 `Command::new` call sites (`dup-0006`) behind one \
+        "#### 11. Consolidate the 267 `Command::new` call sites (`dup-0006`) behind one \
         injected process-spawn port\n\n",
     );
     out.push_str(
@@ -3973,14 +3973,14 @@ fn render_section_6() -> String {
         - Expected line delta: negative, though smaller per-site than `dup-0052` since each \
         `Command::new` call already carries real configuration (args, env, cwd) that must \
         move with it, not just a literal.\n\
-        - Risk: medium-high - several of these 265 sites sit inside `src/budget.rs`'s and \
+        - Risk: medium-high - several of these 267 sites sit inside `src/budget.rs`'s and \
         `src/conductor.rs`'s already-hardened process-lifecycle code (spec 78's no-os-kill \
         discipline); the follow-up spec must preserve every existing handle-bound-kill \
         invariant at each site it touches, and the no-os-kill gate is the acceptance bar, \
         not merely `cargo test`.\n\
-        - Unblocks: one seam instead of 265 independent constructions - the next \
+        - Unblocks: one seam instead of 267 independent constructions - the next \
         process-spawning concern added anywhere in the crate reuses it instead of adding \
-        site 266.\n\n",
+        site 268.\n\n",
     );
     out.push_str(
         "#### 12. Consolidate the 46 sqlite `Connection::open` call sites (`dup-0106`)\n\n",
@@ -4027,7 +4027,7 @@ fn render_section_6() -> String {
     out.push_str(
         "- Scope: `page_script` (`dup-0342`, 19 files), `node_available` (`dup-0240`, 23 \
         files - merged with two related availability-check helpers), `temp_project` \
-        (`dup-0368`, 18 files) and `run_stream_identity` (`dup-0374`, 18 files) - roughly 72 \
+        (`dup-0368`, 19 files) and `run_stream_identity` (`dup-0374`, 18 files) - roughly 72 \
         duplicate definitions collapsing into four shared ones, the \
         single largest mechanical simplification section 5 identifies anywhere in the test \
         suite.\n\
@@ -4062,10 +4062,10 @@ fn render_section_6() -> String {
         tables (section 5.5)\n\n",
     );
     out.push_str(
-        "- Scope, largest first: `dup-0648` (42 sites, `tests/spec_lint.rs`), \
-        `dup-0595`/`dup-0597` (15+7 sites, `tests/reap_before_removal_audit.rs`), \
-        `dup-0584`/`dup-0585` (11+4 sites, `tests/no_os_kill_audit.rs`), \
-        `dup-0629` (11 sites, `tests/simplification_audit.rs` - this very \
+        "- Scope, largest first: `dup-0649` (42 sites, `tests/spec_lint.rs`), \
+        `dup-0597`/`dup-0599` (15+7 sites, `tests/reap_before_removal_audit.rs`), \
+        `dup-0586`/`dup-0587` (11+4 sites, `tests/no_os_kill_audit.rs`), \
+        `dup-0630` (11 sites, `tests/simplification_audit.rs` - this very \
         generator's own scanner tests) - 90 sites across 6 clusters.\n\
         - Files: the four files named above.\n\
         - Expected line delta: negative - each family's near-identical test bodies collapse \
@@ -6134,7 +6134,7 @@ mod tests {
         // Cites section 5's own headline test-suite consolidation items.
         assert!(rendered.contains("tests/common"));
         assert!(rendered.contains("tests/cli.rs"));
-        assert!(rendered.contains("dup-0648"));
+        assert!(rendered.contains("dup-0649"));
         // Section 4 (dead and vestigial code) is explicitly dispositioned as needing no
         // follow-up spec, per spec 85's own "states so with the search that established
         // it, never omitted" rule for an empty category.
