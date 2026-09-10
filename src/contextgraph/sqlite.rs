@@ -466,6 +466,49 @@ impl Projector {
         })
     }
 
+    /// Spec 86 criterion 3 (THE MIGRATION IS DELIBERATE, VALIDATE ADVISORY): the count of
+    /// `code-entity` nodes this project's graph currently holds that are RETIRED - reachable by NO
+    /// live edge at all, in either direction, though each DID at some point carry a live `CONTAINS`
+    /// edge from its own file (proving it was once a genuine, reachable graph member, never a
+    /// dangling placeholder [`ensure_node`] creates for an unresolved cross-file reference that
+    /// simply has not resolved yet - such a placeholder never had a `CONTAINS` edge to lose, live
+    /// or historical, so it is never counted here).
+    ///
+    /// This is exactly the shape the migration's supersession leaves behind (spec 86 Design): a
+    /// re-ingest of a store that predates criterion 1's exclusion rule retires a legacy
+    /// test-entity's own structural edges via `supersede_file_edges` - on either the
+    /// empty-after-exclusion structural sentinel (a whole `tests/`-dir file, the central case) or
+    /// the ordinary re-extraction boundary (an in-file `#[cfg(test)] mod tests` item, retired the
+    /// SAME way the moment its own file next re-extracts) - and adds nothing back for the excluded
+    /// entity, so it falls out of every live traversal though its node row and every historical
+    /// edge persist (never a store wipe - node rows are never deleted here, spec 29a section 6.4).
+    /// `rigger validate` reads this once per run to report the migration's shrink to the operator
+    /// (`main::retired_entities_advisory_for`).
+    ///
+    /// Read-only; never mutates. Project-scoped like every other read here.
+    pub fn retired_code_entity_count(&self) -> Result<usize, Error> {
+        let conn = self.conn.lock().unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM nodes n
+                  WHERE n.kind = ?1 AND n.project = ?2
+                    AND NOT EXISTS (
+                      SELECT 1 FROM edges e
+                       WHERE e.valid_to IS NULL AND e.project = ?2
+                         AND (e.from_id = n.id OR e.to_id = n.id)
+                    )
+                    AND EXISTS (
+                      SELECT 1 FROM edges e
+                       WHERE e.valid_to IS NOT NULL AND e.project = ?2
+                         AND e.to_id = n.id AND e.rel = ?3
+                    )",
+                params![KIND_CODE_ENTITY, self.project, REL_CONTAINS],
+                |r| r.get(0),
+            )
+            .map_err(be)?;
+        Ok(n as usize)
+    }
+
     /// The DOWN direction of [`Projection::calls`] (spec 52 criterion 1): the execution path out of
     /// the seed. A breadth-first walk by LAYER over the live, caller-attributed `CALLS` edges
     /// (spec 37), following callees transitively. It answers "what does this call" as a directed,
@@ -1353,11 +1396,30 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
                 return fold_test_evidence(tx, &r, project);
             }
             let file = resolve_in_tx(tx, &r.file);
-            // Supersede-on-re-extract (criterion 3): a refs-only file (no definitions) carries the
-            // batch boundary on its first reference; retire the file's prior structural edges before
-            // folding this one, so the two fold arms share one supersede authority.
+            // Supersede-on-re-extract (spec 29a criterion 3): a refs-only file (no definitions)
+            // carries the batch boundary on its first reference; retire the file's prior
+            // structural edges before folding this one, so the two fold arms share one supersede
+            // authority.
             if r.fresh {
                 supersede_file_edges(tx, &file, at, project)?;
+            }
+            // Spec 86 criterion 3 (THE MIGRATION IS DELIBERATE): an EMPTY `r.name` marks
+            // `grounder::symbols::events::extract_events`'s own empty-after-exclusion structural
+            // sentinel ([`crate::grounder::symbols::events`]'s `empty_structural_boundary_event`) -
+            // the file's WHOLE structural batch when its surviving definition/reference set drops
+            // to zero (a whole `tests/`-dir file, the central migration case, or any file an edit
+            // left with nothing to extract). The supersede call above (which ran unconditionally on
+            // `r.fresh`, independent of what else this event carries) IS this sentinel's entire
+            // job: it retires every LIVE structural edge this file's PRIOR extraction left - a
+            // legacy test-entity node's own CONTAINS/REFERENCES/CALLS edge included - so a re-ingest
+            // of a store that predates criterion 1's exclusion rule genuinely shrinks, never by a
+            // store wipe (node rows are never deleted; only their reachability is retired). There is
+            // no real reference here and no file content to contain - `""` is never a genuine
+            // reference name - so this returns immediately rather than falling through to
+            // `ensure_node` a `KIND_FILE` container for an excluded file: criterion 1's "never a
+            // node and never an edge on the canvas" promise holds through the migration too.
+            if r.name.is_empty() {
+                return Ok(());
             }
             ensure_node(tx, &file, KIND_FILE, &[("lang", &r.lang)], project)?;
             let target = code_entity_id(&file, &r.name);
@@ -8209,6 +8271,143 @@ mod tests {
                 0,
                 "the sentinel never staged pending evidence under its empty name; got {:?}",
                 g.nodes
+            );
+        }
+    }
+
+    /// Spec 86 criterion 3 (THE MIGRATION IS DELIBERATE). Proven directly against the fold (raw
+    /// `TYPE_EDGE_INFERRED` payloads), never through the extraction pass - the emit half's own
+    /// contract (`extract_events`'s empty-after-exclusion boundary) is proven separately in
+    /// `grounder::symbols::events`.
+    mod migration_c3 {
+        use super::*;
+
+        #[test]
+        fn the_empty_structural_boundary_sentinel_creates_no_node_and_no_edge_of_its_own() {
+            // The structural twin of proof_evidence_c2's own
+            // `the_empty_boundary_sentinel_never_resolves_records_or_stages_anything`: a LONE
+            // empty-name structural sentinel (a file's very first extraction, nothing yet to
+            // supersede) must fold into nothing at all - no KIND_FILE container, no code-entity
+            // node, no edge. This is what keeps criterion 1's "never a node and never an edge on
+            // the canvas" promise true for an excluded file even through the boundary event this
+            // criterion adds.
+            let p = Projector::open(":memory:", "test").unwrap();
+            let payload = serde_json::json!({
+                "file": "tests/only_sentinel.rs", "name": "", "lang": "rust", "fresh": true,
+            });
+            let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&payload).unwrap());
+            e.position = 1;
+            p.apply(&e).unwrap();
+
+            let g = p
+                .subgraph(&["tests/only_sentinel.rs".to_string()], 1)
+                .unwrap();
+            assert!(
+                g.nodes.is_empty() && g.edges.is_empty(),
+                "a lone empty structural sentinel creates nothing at all; got {:?} / {:?}",
+                g.nodes,
+                g.edges
+            );
+        }
+
+        #[test]
+        fn re_ingesting_a_store_that_already_holds_test_entity_nodes_retires_them_through_supersession_and_leaves_product_entities_unchanged(
+        ) {
+            // Spec 86 criterion 3's own Done-when, end to end at the fold: simulate a store that
+            // predates the criterion-1 exclusion rule - a whole `tests/`-dir file already folded a
+            // real code-entity node, CONTAINed by its own file, exactly as a pre-spec-86 ingest
+            // would have, alongside an unrelated product entity. A re-ingest through the REAL
+            // current pipeline's own empty-after-exclusion structural sentinel (proven at the emit
+            // layer separately; applied here directly to isolate the fold) must retire the legacy
+            // node's structural edges via supersession - NEVER a store wipe - while the fold
+            // "yields the same product entities before and after".
+            let p = Projector::open(":memory:", "test").unwrap();
+
+            // "Before": the legacy, pre-criterion-1 state.
+            apply_batch_def(
+                &p,
+                1,
+                "tests/integration.rs",
+                "an_integration_test",
+                2,
+                true,
+            );
+            apply_batch_def(&p, 2, "product.rs", "product_fn", 1, true);
+            assert_eq!(
+                p.retired_code_entity_count().unwrap(),
+                0,
+                "precondition: nothing is retired yet - both entities are live"
+            );
+
+            // "After": tests/integration.rs re-extracts to nothing (criterion 1 now excludes it
+            // wholesale) and stamps the empty structural boundary instead of emitting nothing.
+            // product.rs is NOT touched by this re-ingest.
+            let boundary = serde_json::json!({
+                "file": "tests/integration.rs", "name": "", "lang": "rust", "fresh": true,
+            });
+            let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&boundary).unwrap());
+            e.position = 10;
+            p.apply(&e).unwrap();
+
+            // The legacy test entity is retired: `rigger validate`'s own counting authority now
+            // reports it, and no live edge reaches it - though its row and the superseded CONTAINS
+            // edge both remain in the store (never a wipe, never a delete).
+            assert_eq!(
+                p.retired_code_entity_count().unwrap(),
+                1,
+                "the migration retires exactly the one legacy test entity - this is what `rigger \
+                 validate` reports"
+            );
+            {
+                let conn = p.conn.lock().unwrap();
+                assert_eq!(
+                    one_hop_degree(&conn, "tests/integration.rs::an_integration_test", "test")
+                        .unwrap(),
+                    0,
+                    "the retired entity has no live edge left"
+                );
+            }
+            let raw = edges_from(&p, "tests/integration.rs");
+            assert!(
+                raw.iter().any(|(to, rel, valid_to)| {
+                    to == "tests/integration.rs::an_integration_test"
+                        && rel == REL_CONTAINS
+                        && valid_to.is_some()
+                }),
+                "the old CONTAINS edge is retained with valid_to stamped, never deleted; got {raw:?}"
+            );
+
+            // "the fold yields the same product entities before and after": product.rs::product_fn,
+            // untouched by this re-ingest, is still fully live and reachable, and the migration
+            // never touches criterion 1's own promise that the excluded file gains no KIND_FILE
+            // container from the boundary sentinel itself.
+            let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
+            assert!(
+                g.nodes.iter().any(|n| n.id == "product.rs::product_fn"),
+                "an unrelated product entity in the same store survives the migration untouched; \
+                 got {:?}",
+                g.nodes
+            );
+        }
+
+        #[test]
+        fn retired_code_entity_count_never_counts_a_placeholder_whose_only_reference_was_dropped() {
+            // A bare cross-file placeholder (its OWN file never CONTAINs it - `ensure_node` created
+            // it with an empty attr set purely to anchor a REFERENCES edge) that later loses even
+            // that reference (the referencing file re-extracts without it) ends up with NO live
+            // edge either - but it must never be counted as "retired": it never carried a live
+            // CONTAINS edge to lose, so it was never a genuine graph member, only ever a dangling
+            // guess that time proved wrong.
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_batch_ref(&p, 1, "src/a.rs", "undefined_symbol", true);
+            // src/a.rs re-extracts without the reference: its REFERENCES edge is retired via the
+            // ordinary supersede boundary, with nothing added back for `undefined_symbol`.
+            apply_batch_def(&p, 2, "src/a.rs", "something_else", 1, true);
+            assert_eq!(
+                p.retired_code_entity_count().unwrap(),
+                0,
+                "a placeholder that never had its own CONTAINS edge is never counted, even once \
+                 its only reference is gone"
             );
         }
     }

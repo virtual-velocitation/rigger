@@ -13,11 +13,11 @@
 //!
 //! - the CODE half's barren-root no-op (a source-less tree yields NO batches, never a panic) - the
 //!   very property that lets the conductor's ingest stay a byte-for-byte no-op on a tree with
-//!   nothing to extract - and, since spec 86 criterion 2 round 3, that a symbol-less product file is
-//!   NO LONGER skipped: `project_batches`'s own `proof_events` half never returns empty (a
-//!   first-class empty-evidence boundary, mirroring criterion 3's identical structural pattern), so
-//!   every file the walk actually visits contributes a batch now, even one with no symbols of its
-//!   own;
+//!   nothing to extract - and, since spec 86 criteria 2 and 3, that a symbol-less product file is
+//!   NO LONGER skipped: neither `project_batches`'s `extract_events` half (criterion 3's own
+//!   empty-STRUCTURAL boundary) nor its `proof_events` half (criterion 2's empty-EVIDENCE
+//!   boundary) ever returns empty, so every file the walk actually visits contributes a batch of
+//!   (at least) its two independent boundary sentinels now, even one with no symbols of its own;
 //! - the DESIGN half's own, still-current SKIP-EMPTY contract (a file that carries no design intent
 //!   at all yields NO batch) and its own barren-root no-op - `grounder::design::events::
 //!   project_batches` is a separate function this criterion does not touch;
@@ -33,13 +33,14 @@
 //! keeping BOTH feature lanes green.
 
 /// The CODE half's public production entry stamps a batch for EVERY file the walk visits - since
-/// spec 86 criterion 2 round 3, even a symbol-less one (`proof_events` never returns empty, a
-/// first-class empty-evidence boundary mirroring criterion 3's identical structural pattern for
-/// `extract_events`) - while a BARREN root (no files at all) still yields no batches, never a panic.
-/// Before round 3 a symbol-less file contributed no batch at all; the 29a/29c happy-path integration
-/// tests feed only files that DO extract, so nothing there pins either half of this contract: a
-/// regression that dropped `blank.rs`'s own sentinel batch, or one that panicked on an empty file
-/// list, would leave those suites green. This pins both at the crate boundary.
+/// spec 86 criteria 2 and 3, even a symbol-less one (NEITHER `extract_events`'s own
+/// empty-structural boundary, criterion 3, NOR `proof_events`'s empty-evidence boundary,
+/// criterion 2 round 3, ever returns empty) - while a BARREN root (no files at all) still yields
+/// no batches, never a panic. Before these criteria a symbol-less file contributed no batch at
+/// all; the 29a/29c happy-path integration tests feed only files that DO extract, so nothing there
+/// pins either half of this contract: a regression that dropped `blank.rs`'s own sentinel batch, or
+/// one that panicked on an empty file list, would leave those suites green. This pins both at the
+/// crate boundary.
 #[cfg(feature = "symbols")]
 #[test]
 fn code_project_batches_stamps_a_boundary_for_a_symbol_less_file_too_and_a_barren_root_still_yields_nothing(
@@ -49,9 +50,9 @@ fn code_project_batches_stamps_a_boundary_for_a_symbol_less_file_too_and_a_barre
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("src")).unwrap();
     // A file with a real definition beside a parseable file with NO symbols at all. The symbol-less
-    // file IS indexed - a recovered parse inserts an empty entry - and extracts to no STRUCTURAL
-    // events, but round 3 still stamps it one boundary event (its own empty-evidence sentinel), so
-    // both files now contribute a batch.
+    // file IS indexed - a recovered parse inserts an empty entry - and extracts to no real
+    // structural event and no real evidence event, but both extraction halves still stamp their
+    // own boundary sentinel, so both files now contribute a batch.
     std::fs::write(dir.path().join("src/real.rs"), "pub fn real_symbol() {}\n").unwrap();
     std::fs::write(
         dir.path().join("src/blank.rs"),
@@ -64,8 +65,8 @@ fn code_project_batches_stamps_a_boundary_for_a_symbol_less_file_too_and_a_barre
     assert_eq!(
         files,
         vec!["src/blank.rs", "src/real.rs"],
-        "both files contribute a batch now - the symbol-less one via its own empty-evidence \
-         boundary sentinel, never dropped; got {files:?}"
+        "both files contribute a batch now - the symbol-less one via its own boundary sentinels, \
+         never dropped; got {files:?}"
     );
     let blank_events = &batches
         .iter()
@@ -74,9 +75,28 @@ fn code_project_batches_stamps_a_boundary_for_a_symbol_less_file_too_and_a_barre
         .1;
     assert_eq!(
         blank_events.len(),
-        1,
-        "a symbol-less file's WHOLE batch is exactly its one boundary sentinel; got \
-         {blank_events:?}"
+        2,
+        "a symbol-less file's WHOLE batch is exactly its two independent boundary sentinels - \
+         extract_events's own structural one (criterion 3), then proof_events's evidence one \
+         (criterion 2); got {blank_events:?}"
+    );
+    let names_of = |es: &[rigger::eventstore::Event]| -> Vec<bool> {
+        es.iter()
+            .map(|e| {
+                serde_json::from_slice::<serde_json::Value>(&e.data)
+                    .unwrap()
+                    .get("is_test")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+            })
+            .collect()
+    };
+    assert_eq!(
+        names_of(blank_events),
+        vec![false, true],
+        "the STRUCTURAL sentinel (is_test: false, extract_events) comes first, then the \
+         EVIDENCE sentinel (is_test: true, proof_events) - the same composition order \
+         `index_events`/`project_batches_paced` always use; got {blank_events:?}"
     );
 
     // Barren root: a directory with NO FILES AT ALL yields an EMPTY batch set (never a panic) - the

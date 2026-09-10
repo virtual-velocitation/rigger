@@ -1414,13 +1414,15 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     //   content hash does not change because a new run started, so scoping those keys to the run
     //   made every new run re-append the WHOLE index. They are seeded from the WHOLE stream
     //   instead, via the one predicate that owns the content-key format
-    //   ([`crate::ingest::project_scoped_replay_keys`]) - latest-generation-per-file, never
+    //   ([`crate::ingest::project_scoped_latest_generations`]) - latest-generation-per-file, never
     //   ever-recorded, so a file reverted to earlier content still re-emits.
     //
     // This is the SEED only. Both arms feed ONE set that the emit sinks then EXTEND with every key
-    // they append and never shrink, so "latest generation per file" describes the set at run start,
-    // not for the rest of the process - see [`replayed_keys`](RunCtx::replayed_keys) for the
-    // two-phase reading and why the seed is the phase that governs.
+    // they append; the project-scoped half can also SHRINK in place, one identity's stale
+    // generation at a time, once the sink's own in-process tracking
+    // ([`replayed_generations`](RunCtx::replayed_generations), seeded below from the SAME map)
+    // sees a fresh generation for that identity - see [`replayed_keys`](RunCtx::replayed_keys) for
+    // the two-phase reading and why the seed is the phase that governs.
     //
     // The type test comes first in BOTH arms, so the partition is a property of the code rather
     // than of the key's spelling: a derived event is excluded here even if its key looks like a
@@ -1432,7 +1434,20 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         .filter(|e| !crate::ingest::is_derived_index_type(&e.type_))
         .filter_map(|e| e.meta.get(META_REPLAY_KEY).cloned())
         .collect();
-    replayed_keys.extend(crate::ingest::project_scoped_replay_keys(&all_prior));
+    // ONE whole-stream walk feeds BOTH `replayed_keys`' project-scoped extension and
+    // `replayed_generations`' seed (spec 86 criterion 3) - never two independent aggregations
+    // that could drift apart.
+    let latest_generations = crate::ingest::project_scoped_latest_generations(&all_prior);
+    replayed_keys.extend(
+        latest_generations
+            .values()
+            .flat_map(|(_, keys)| keys.iter().cloned()),
+    );
+    #[cfg(feature = "symbols")]
+    let replayed_generations: HashMap<String, (String, HashSet<String>)> = latest_generations
+        .into_iter()
+        .map(|(identity, (hash, keys))| (identity, (hash, keys.into_iter().collect())))
+        .collect();
     // Cross-step spawn budget (spec 04, criterion 5 / finding adv-budget-per-step-resets):
     // the authoritative spawn count is DERIVED from the log, not an in-memory counter that
     // resets every step process. Fold the DISTINCT spawn requests already recorded (keyed
@@ -1574,6 +1589,8 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         prior_status,
         prior_attempts,
         replayed_keys: Mutex::new(replayed_keys),
+        #[cfg(feature = "symbols")]
+        replayed_generations: Mutex::new(replayed_generations),
         gate_verdicts: Mutex::new(gate_verdicts),
         green_digests: Mutex::new(green_digests),
         stale_units: Mutex::new(stale_units),
@@ -2211,8 +2228,10 @@ struct RunCtx<'a> {
     prior_attempts: HashMap<String, u32>,
     /// The set of REPLAY KEYS an emit may be suppressed against. Its SEED is a PARTITION over two
     /// scopes decided BY EVENT TYPE (spec 60), not one seed with one meaning - so read the half a
-    /// key was seeded into before reading membership. Both halves then share ONE lifetime: every
-    /// key this process emits is inserted, and no key is ever removed.
+    /// key was seeded into before reading membership. The run-scoped half's keys, once inserted,
+    /// are NEVER removed. The project-scoped half now can be: see
+    /// [`replayed_generations`](RunCtx::replayed_generations) (spec 86 criterion 3) for when
+    /// [`emit_keyed_batch`](RunCtx::emit_keyed_batch) retires one of its keys in place.
     ///
     /// The RUN-SCOPED half is every NON-derived key (spec 04, criterion 4): seeded at run start
     /// from THIS run's slice of the prior log's [`META_REPLAY_KEY`] metadata and extended as this
@@ -2231,9 +2250,14 @@ struct RunCtx<'a> {
     ///    project by ANY run", so it names keys this run has not itself emitted - the opposite of
     ///    the run-scoped half's meaning, and the phase every suppression decision is made in.
     /// 2. EXTENDED by its sole consumer [`emit_keyed_batch`](RunCtx::emit_keyed_batch), which
-    ///    inserts EVERY key it appends and retires no superseded generation. From the first batch
-    ///    onward the half is therefore "latest generation as of run start, PLUS everything this
-    ///    process emitted", which is neither latest-generation-per-file nor a this-run-only fact.
+    ///    inserts EVERY key it appends and, since spec 86 criterion 3, ALSO retires a batch
+    ///    identity's own STALE generation's keys the moment a fresh generation for that SAME
+    ///    identity is seen - see [`replayed_generations`](RunCtx::replayed_generations). From
+    ///    the first batch onward the half is therefore "latest generation as of run start, PLUS
+    ///    everything this process has emitted for a generation it currently tracks as live",
+    ///    which is neither latest-generation-per-file nor a this-run-only fact, but no longer
+    ///    grows without bound either: an identity re-emitted with a changed generation drops its
+    ///    prior one's keys in the same step it adds the new one's.
     ///
     /// Which phase a read lands in is what matters. On the RUN path the seed governs: the walk is
     /// bounded to once per process by
@@ -2241,11 +2265,38 @@ struct RunCtx<'a> {
     /// returns, and that one walk hands the sink each batch identity (`gc`/`gd` per file) exactly
     /// once - so no suppression decision a run takes is ever weighed against a key phase 2 added.
     /// The walk-and-emit half [`ingest_project_batches`](RunCtx::ingest_project_batches) carries NO
-    /// such guard, so a direct second call in the same process (what the unit tests drive) IS
-    /// weighed against the extended set, which is not the set a later step would seed from the log.
-    /// Nothing may read this half as a this-run fact, and nothing may read it once the ingest sink
-    /// has run as a latest-generation fact.
+    /// such guard, so a direct second (or third, or fourth) call in the same process (what the unit
+    /// tests drive, and what a long-lived conductor process crosses many times over a run's many
+    /// review/rework rounds) IS weighed against the extended-and-retired set, which is not the set
+    /// a later step would seed from the log. Nothing may read this half as a this-run fact, and
+    /// nothing may read it once the ingest sink has run as a latest-generation-as-of-run-start
+    /// fact - but within one process it IS latest-generation-as-tracked-by-`replayed_generations`,
+    /// which is what closes the identical-key-across-two-exclusions collision
+    /// (`adv-u86c3-boundary-sentinel-key-collides-across-an-in-process-exclude-cycle`) without
+    /// requiring a fresh process between rounds.
     replayed_keys: Mutex<HashSet<String>>,
+    /// PER-IDENTITY tracking of the CURRENT in-process generation `replayed_keys`' project-scoped
+    /// half holds keys for: `identity -> (that identity's current generation hash, the keys THAT
+    /// generation itself contributed to `replayed_keys`)`. Spec 86 criterion 3's own fix for
+    /// `adv-u86c3-boundary-sentinel-key-collides-across-an-in-process-exclude-cycle`:
+    /// `empty_structural_boundary_event`'s payload is CONSTANT per `(file, lang)`, so re-excluding
+    /// the SAME file within one process hashes to the IDENTICAL replay key as its first exclusion,
+    /// and more generally ANY in-process content revert to a generation already recorded collides
+    /// the same way. [`emit_keyed_batch`](RunCtx::emit_keyed_batch), this map's SOLE
+    /// reader and writer, consults it before the ordinary per-key dedup: when a batch's identity
+    /// already names a DIFFERENT generation here, that stale generation's own keys are removed
+    /// from `replayed_keys` first, so the fresh generation's boundary (or ordinary) event can
+    /// never be shadowed by an earlier generation's still-resident key merely because the two
+    /// happen to hash identically. Seeded ONCE at run start from the SAME whole-stream walk
+    /// [`replayed_keys`](RunCtx::replayed_keys)'s own project-scoped seed is flattened from
+    /// ([`crate::ingest::project_scoped_latest_generations`], not a second aggregation), and never
+    /// read or written anywhere else - only the four derived index types key a per-file generation
+    /// at all, so a run-scoped (lifecycle/gate/breaker) key never enters this map.
+    ///
+    /// Symbols-gated like its sole reader/writer [`emit_keyed_batch`](RunCtx::emit_keyed_batch):
+    /// the light lane compiles no extraction pass, so no derived-index generation is ever tracked.
+    #[cfg(feature = "symbols")]
+    replayed_generations: Mutex<HashMap<String, (String, HashSet<String>)>>,
     /// The recorded gate verdicts keyed by their replay key -> `(pass, evidence)`, seeded
     /// ONCE at run start from the prior log's `GateVerdict` events and extended as this
     /// process records new verdicts. [`recorded_gate_verdict`](RunCtx::recorded_gate_verdict)
@@ -2356,6 +2407,8 @@ impl<'a> RunCtx<'a> {
             prior_status: HashMap::new(),
             prior_attempts: HashMap::new(),
             replayed_keys: Mutex::new(HashSet::new()),
+            #[cfg(feature = "symbols")]
+            replayed_generations: Mutex::new(HashMap::new()),
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: Mutex::new(HashMap::new()),
             stale_units: Mutex::new(HashSet::new()),
@@ -2516,22 +2569,55 @@ impl RunCtx<'_> {
 
     /// The batched analogue of [`emit_keyed`](RunCtx::emit_keyed): given a file's WHOLE keyed batch,
     /// drop the events whose key is already in [`replayed_keys`](RunCtx::replayed_keys) (the replay
-    /// dedup, UNCHANGED - an already-seen key appends nothing) and INSERT every key it keeps, so
-    /// this sink both reads and grows that set and retires no superseded generation from it; then
-    /// append the SURVIVORS in ONE transaction and fold them in ONE graph
-    /// transaction via [`append_and_fold_batch`](RunCtx::append_and_fold_batch) (spec 49's per-file
-    /// cadence). Each survivor is rebuilt exactly as `emit_keyed` builds it - a fresh event carrying
-    /// the replay key, its payload round-tripped through the same serialize path - and an event whose
-    /// data is not JSON is skipped exactly as the per-event `from_slice` guard skips it (BEFORE its
-    /// key is recorded), so batching changes transaction CADENCE only, never event content, order, or
-    /// the dedup contract. The dedup lock is held only around the set (released before the append),
-    /// so concurrent units in a wave still append their own keyed events in parallel.
+    /// dedup - an already-seen key appends nothing) and INSERT every key it keeps; then append the
+    /// SURVIVORS in ONE transaction and fold them in ONE graph transaction via
+    /// [`append_and_fold_batch`](RunCtx::append_and_fold_batch) (spec 49's per-file cadence). Each
+    /// survivor is rebuilt exactly as `emit_keyed` builds it - a fresh event carrying the replay key,
+    /// its payload round-tripped through the same serialize path - and an event whose data is not
+    /// JSON is skipped exactly as the per-event `from_slice` guard skips it (BEFORE its key is
+    /// recorded), so batching changes transaction CADENCE only, never event content, order, or the
+    /// dedup contract.
+    ///
+    /// Spec 86 criterion 3: BEFORE that ordinary per-key dedup runs, this is also the SOLE
+    /// reader and writer of [`replayed_generations`](RunCtx::replayed_generations) - every key in
+    /// `keyed` shares one batch identity and one content generation (`key_batch` stamps a whole
+    /// file's batch under one `<prefix>/<file>@<hash>#<i>` hash), read once from the batch's first
+    /// key via [`crate::ingest::derived_key_parts`]. When that identity already names a DIFFERENT
+    /// generation in `replayed_generations`, this retires the STALE generation's own keys from
+    /// `replayed_keys` before tracking the fresh one, so a fresh generation's keys can never be
+    /// shadowed by an earlier generation's still-resident keys merely because the two generations
+    /// happen to hash identically (the empty structural/evidence boundary sentinels are constant
+    /// per file, so any two exclusions of the same file do) or because in-process content reverted
+    /// to a generation already recorded. An unparseable key (`keyed` is empty, or its first key is
+    /// not the `key_batch` shape) fails safe to the plain dedup above, tracking no generation - the
+    /// same fail-safe direction [`crate::ingest::project_scoped_replay_keys`] itself takes on an
+    /// unparseable key. `replayed_generations` is locked OUTER and `replayed_keys` NESTED inside
+    /// it, and this is the ONLY site that ever acquires both, so that order is never reversed and no
+    /// deadlock is reachable.
+    ///
+    /// The two locks are held only around the two sets (released before the append), so concurrent
+    /// units in a wave still append their own keyed events in parallel.
     ///
     /// Symbols-gated: its only caller is the code-ingest sink, which the light lane compiles out.
     #[cfg(feature = "symbols")]
     fn emit_keyed_batch(&self, keyed: &[(String, &Event)]) -> Result<(), Error> {
+        let identity_generation = keyed
+            .first()
+            .and_then(|(k, _)| crate::ingest::derived_key_parts(k));
         let survivors: Vec<Event> = {
+            let mut gens = self.replayed_generations.lock().unwrap();
             let mut keys = self.replayed_keys.lock().unwrap();
+            if let Some((identity, generation)) = identity_generation {
+                let slot = gens
+                    .entry(identity.to_string())
+                    .or_insert_with(|| (generation.to_string(), HashSet::new()));
+                if slot.0 != generation {
+                    for stale_key in slot.1.drain() {
+                        keys.remove(&stale_key);
+                    }
+                    slot.0 = generation.to_string();
+                }
+            }
             keyed
                 .iter()
                 .filter_map(|(key, ev)| {
@@ -2541,6 +2627,11 @@ impl RunCtx<'_> {
                     let payload: Value = serde_json::from_slice(&ev.data).ok()?;
                     if !keys.insert(key.clone()) {
                         return None;
+                    }
+                    if let Some((identity, _)) = identity_generation {
+                        if let Some(slot) = gens.get_mut(identity) {
+                            slot.1.insert(key.clone());
+                        }
                     }
                     let data = serde_json::to_vec(&payload).ok()?;
                     Some(Event::new(&ev.type_, data).with_meta(META_REPLAY_KEY, key.as_str()))
@@ -15049,6 +15140,107 @@ mod tests {
         );
     }
 
+    /// Spec 86 criterion 3 (THE MIGRATION IS DELIBERATE): `empty_structural_boundary_event`'s
+    /// payload is CONSTANT per `(file, lang)` - it carries no content-derived field at all - so
+    /// re-excluding the SAME file within one long-lived process hashes to the IDENTICAL replay
+    /// key as its first exclusion. Unless `emit_keyed_batch` retires a stale generation's own
+    /// keys before the ordinary per-key dedup runs, the second exclusion's boundary event is
+    /// silently dropped as an already-seen key, stranding whatever entity the file's MIDDLE
+    /// (real) generation defined live in the graph forever - falsifying criterion 3's own
+    /// Done-when on a re-exclusion within one process, exactly the review/rework-round shape
+    /// this very run puts every unit through.
+    ///
+    /// Four generations on ONE `RunCtx`: real (defines `target_symbol`), excluded (an in-file
+    /// `#[cfg(test)]` module wraps it - the structural sentinel, boundary-only), real again with
+    /// a DIFFERENT symbol name (`target_symbol_v2` - not a byte-identical revert to generation
+    /// 1, so this is not the already-known content-revert collision), excluded again (the SAME
+    /// constant sentinel bytes, and so the SAME replay key, as generation 2). The fix must retire
+    /// `target_symbol_v2`'s structural edges on this fourth ingest even though its own boundary
+    /// event's key collides with generation 2's.
+    #[cfg(feature = "symbols")]
+    #[test]
+    fn re_excluding_the_same_file_twice_in_one_process_retires_its_middle_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let target = root.join("src/target.rs");
+        let root_str = root.to_str().unwrap().to_string();
+
+        let st_store = Store::open(":memory:").unwrap();
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let driver = Stub::new();
+        let grounder = StubGrounder {
+            by_query: HashMap::new(),
+        };
+        let deps = Deps {
+            store: &st_store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: root_str.clone(),
+            grounder: Some(&grounder),
+            graph: Some(&graph),
+            criteria: Vec::new(),
+        };
+        let cfg = Config::default();
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        let is_live = |name: &str| -> bool {
+            graph
+                .subgraph(&["src/target.rs".to_string()], 2)
+                .unwrap()
+                .nodes
+                .iter()
+                .any(|n| {
+                    n.kind == contextgraph::KIND_CODE_ENTITY
+                        && n.attrs.get("name").map(String::as_str) == Some(name)
+                })
+        };
+
+        // Generation 1: real, defines target_symbol.
+        std::fs::write(&target, "pub fn target_symbol() {}\n").unwrap();
+        ctx.ingest_project_batches();
+        assert!(is_live("target_symbol"), "gen 1 must fold live");
+
+        // Generation 2: excluded (in-file #[cfg(test)]) - the constant structural sentinel.
+        std::fs::write(
+            &target,
+            "#[cfg(test)]\nmod hidden {\n    pub fn target_symbol() {}\n}\n",
+        )
+        .unwrap();
+        ctx.ingest_project_batches();
+        assert!(
+            !is_live("target_symbol"),
+            "gen 2's exclusion must retire gen 1's entity"
+        );
+
+        // Generation 3: real again, a DIFFERENT symbol - not a byte-identical revert to gen 1.
+        std::fs::write(&target, "pub fn target_symbol_v2() {}\n").unwrap();
+        ctx.ingest_project_batches();
+        assert!(is_live("target_symbol_v2"), "gen 3 must fold live");
+
+        // Generation 4: excluded again - the SAME constant sentinel bytes (and so the SAME
+        // replay key) as generation 2. Without the fix this key collides with generation 2's,
+        // silently drops, and gen 3's entity stays live forever.
+        std::fs::write(
+            &target,
+            "#[cfg(test)]\nmod hidden {\n    pub fn target_symbol_v2() {}\n}\n",
+        )
+        .unwrap();
+        ctx.ingest_project_batches();
+        assert!(
+            !is_live("target_symbol_v2"),
+            "gen 4's exclusion must retire gen 3's entity even though its own boundary event's \
+             replay key collides with generation 2's - this is exactly the defect \
+             adv-u86c3-boundary-sentinel-key-collides-across-an-in-process-exclude-cycle names"
+        );
+        assert_eq!(
+            graph.retired_code_entity_count().unwrap(),
+            2,
+            "both target_symbol (gen 1) and target_symbol_v2 (gen 3) end up retired - neither \
+             is silently stranded live"
+        );
+    }
+
     /// Spec 60 criterion 1 (UNCHANGED-TREE RUNS APPEND NOTHING): the derived index is a PROJECT
     /// fact, not a run fact - a file's content hash does not change because a new run started. So a
     /// SECOND run, under its own fresh `RunStarted` (whose current-run slice carries none of the
@@ -18864,6 +19056,8 @@ mod tests {
             prior_status: HashMap::new(),
             prior_attempts: HashMap::new(),
             replayed_keys: Mutex::new(HashSet::new()),
+            #[cfg(feature = "symbols")]
+            replayed_generations: Mutex::new(HashMap::new()),
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: Mutex::new(HashMap::new()),
             stale_units: Mutex::new(HashSet::new()),
@@ -24864,6 +25058,8 @@ mod tests {
             prior_status: HashMap::new(),
             prior_attempts: HashMap::new(),
             replayed_keys: Mutex::new(HashSet::new()),
+            #[cfg(feature = "symbols")]
+            replayed_generations: Mutex::new(HashMap::new()),
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: Mutex::new(HashMap::new()),
             stale_units: Mutex::new(HashSet::new()),
