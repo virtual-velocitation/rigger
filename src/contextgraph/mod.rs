@@ -436,6 +436,30 @@ pub(crate) struct EdgeInferred {
     /// additive to the code layer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caller: Option<String>,
+    /// The reference's 1-based source line (spec 86 criterion 2). Unused by a STRUCTURAL reference
+    /// (the REFERENCES/CALLS edges it folds carry no line today) so the production emit for an
+    /// ordinary reference leaves this `0`; [`crate::grounder::symbols::events::proof_events`] is the
+    /// one emitter that populates it for real, since a `proven_by` evidence entry needs the exact
+    /// call site. Serde-defaulted and omitted when `0` (never a real 1-based line), so an ordinary
+    /// reference's wire form stays byte-identical to before this criterion.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub line: u32,
+    /// Spec 86 criterion 2: marks this event as TEST-ORIGIN EVIDENCE rather than a structural fact -
+    /// emitted only by [`crate::grounder::symbols::events::proof_events`], never by the ordinary
+    /// `extract_events` structural pass. The fold reads it FIRST in the `TYPE_EDGE_INFERRED` arm and,
+    /// when set, never creates a `file` node or a `REFERENCES`/`CALLS` edge (criterion 1's "never a
+    /// node and never an edge on the canvas" promise extends to evidence too) - it instead folds the
+    /// reference onto the referenced entity's `proven_by` count / evidence list. Serde-defaulted and
+    /// omitted when `false`, so an ordinary reference's wire form is unaffected.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_test: bool,
+}
+
+/// Serde `skip_serializing_if` predicate: an `EdgeInferred::line` of `0` is never a real 1-based
+/// source line, so an ordinary (non-evidence) reference - which leaves `line` at its default -
+/// serializes byte-identically to before this field existed.
+fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
 }
 
 /// Serde `skip_serializing_if` predicate: keep the `fresh` boundary marker off the wire for the
@@ -677,6 +701,8 @@ mod caller_wire_contract {
             lang: "rust".to_string(),
             fresh: false,
             caller: Some("F".to_string()),
+            line: 0,
+            is_test: false,
         };
         let wire = serde_json::to_vec(&edge).unwrap();
         let back: EdgeInferred = serde_json::from_slice(&wire).unwrap();
@@ -700,11 +726,15 @@ mod caller_wire_contract {
             lang: "rust".to_string(),
             fresh: false,
             caller: None,
+            line: 0,
+            is_test: false,
         };
         let wire = String::from_utf8(serde_json::to_vec(&edge).unwrap()).unwrap();
         assert_eq!(
             wire, r#"{"file":"src/combat.rs","name":"std_thing","lang":"rust"}"#,
-            "a caller-less reference serializes byte-identically to the pre-37 EdgeInferred form (no caller key)"
+            "a caller-less reference at line 0 (unused by an ordinary structural reference) and \
+             is_test false serializes byte-identically to the pre-37/pre-86 EdgeInferred form (no \
+             caller/line/is_test key)"
         );
     }
 
@@ -723,5 +753,9 @@ mod caller_wire_contract {
         // The pre-existing fields still deserialize unchanged (the new optional field is additive).
         assert_eq!(edge.name, "G");
         assert!(!edge.fresh);
+        // Spec 86 criterion 2's two new fields are ALSO additive: a pre-86 log (no `line`/`is_test`
+        // key either) folds as a non-evidence reference at line 0, never erroring or panicking.
+        assert_eq!(edge.line, 0);
+        assert!(!edge.is_test);
     }
 }

@@ -11648,8 +11648,8 @@
   {
     "file": "src/dash.rs",
     "name": "whole_graph_degree",
-    "start_line": 3209,
-    "end_line": 3215,
+    "start_line": 3226,
+    "end_line": 3232,
     "is_test": false,
     "proposed_module": "dash::render",
     "reason": "name contains \"graph\" (HTML rendering); grouped under `dash::render`."
@@ -11657,8 +11657,8 @@
   {
     "file": "src/dash.rs",
     "name": "community_label",
-    "start_line": 3222,
-    "end_line": 3240,
+    "start_line": 3239,
+    "end_line": 3257,
     "is_test": false,
     "proposed_module": "dash::reproject",
     "reason": "name contains \"community\" (graph reprojection); grouped under `dash::reproject`."
@@ -11666,8 +11666,8 @@
   {
     "file": "src/dash.rs",
     "name": "card_ref",
-    "start_line": 3247,
-    "end_line": 3253,
+    "start_line": 3264,
+    "end_line": 3270,
     "is_test": false,
     "proposed_module": "dash::render",
     "reason": "name contains \"card\" (HTML rendering); grouped under `dash::render`."
@@ -11675,8 +11675,8 @@
   {
     "file": "src/dash.rs",
     "name": "card",
-    "start_line": 3260,
-    "end_line": 3300,
+    "start_line": 3277,
+    "end_line": 3336,
     "is_test": false,
     "proposed_module": "dash::render",
     "reason": "name contains \"card\" (HTML rendering); grouped under `dash::render`."
@@ -11684,8 +11684,8 @@
   {
     "file": "src/dash.rs",
     "name": "path",
-    "start_line": 3309,
-    "end_line": 3350,
+    "start_line": 3345,
+    "end_line": 3386,
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec."
@@ -11693,8 +11693,8 @@
   {
     "file": "src/dash.rs",
     "name": "graph_json",
-    "start_line": 3357,
-    "end_line": 3389,
+    "start_line": 3393,
+    "end_line": 3425,
     "is_test": false,
     "proposed_module": "dash::render",
     "reason": "name contains \"graph\" (HTML rendering); grouped under `dash::render`."
@@ -11702,8 +11702,8 @@
   {
     "file": "src/dash.rs",
     "name": "parse_call_dir",
-    "start_line": 3413,
-    "end_line": 3419,
+    "start_line": 3449,
+    "end_line": 3455,
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec."
@@ -11711,8 +11711,8 @@
   {
     "file": "src/dash.rs",
     "name": "call_node_view",
-    "start_line": 3427,
-    "end_line": 3439,
+    "start_line": 3463,
+    "end_line": 3475,
     "is_test": false,
     "proposed_module": "dash::render",
     "reason": "name contains \"node\" (HTML rendering); grouped under `dash::render`."
@@ -11720,8 +11720,8 @@
   {
     "file": "src/dash.rs",
     "name": "call_edge_view",
-    "start_line": 3443,
-    "end_line": 3451,
+    "start_line": 3479,
+    "end_line": 3487,
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec."
@@ -11729,8 +11729,8 @@
   {
     "file": "src/dash.rs",
     "name": "ref_node_view",
-    "start_line": 3456,
-    "end_line": 3468,
+    "start_line": 3492,
+    "end_line": 3504,
     "is_test": false,
     "proposed_module": "dash::render",
     "reason": "name contains \"node\" (HTML rendering); grouped under `dash::render`."
@@ -11738,8 +11738,8 @@
   {
     "file": "src/dash.rs",
     "name": "calls_view",
-    "start_line": 3483,
-    "end_line": 3569,
+    "start_line": 3519,
+    "end_line": 3605,
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec."
@@ -11747,8 +11747,8 @@
   {
     "file": "src/dash.rs",
     "name": "calls_route",
-    "start_line": 3584,
-    "end_line": 3621,
+    "start_line": 3620,
+    "end_line": 3657,
     "is_test": false,
     "proposed_module": "dash::server",
     "reason": "name contains \"route\" (HTTP serving); grouped under `dash::server`."
@@ -11756,8 +11756,8 @@
   {
     "file": "src/dash.rs",
     "name": "build_run_tree",
-    "start_line": 3643,
-    "end_line": 3754,
+    "start_line": 3679,
+    "end_line": 3790,
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec."
@@ -11765,8 +11765,8 @@
   {
     "file": "src/dash.rs",
     "name": "unit_node",
-    "start_line": 3759,
-    "end_line": 3840,
+    "start_line": 3795,
+    "end_line": 3876,
     "is_test": false,
     "proposed_module": "dash::render",
     "reason": "name contains \"node\" (HTML rendering); grouped under `dash::render`."
@@ -11774,8 +11774,8 @@
   {
     "file": "src/dash.rs",
     "name": "role_stage",
-    "start_line": 3844,
-    "end_line": 3903,
+    "start_line": 3880,
+    "end_line": 3939,
     "is_test": false,
     "proposed_module": "dash::render",
     "reason": "name contains \"role\" (HTML rendering); grouped under `dash::render`."
@@ -11783,8 +11783,8 @@
   {
     "file": "src/dash.rs",
     "name": "driver_stage",
-    "start_line": 3908,
-    "end_line": 3927,
+    "start_line": 3944,
+    "end_line": 3963,
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec."
@@ -11792,8 +11792,8 @@
   {
     "file": "src/dash.rs",
     "name": "rollup",
-    "start_line": 3931,
-    "end_line": 3939,
+    "start_line": 3967,
+    "end_line": 3975,
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec."
@@ -11801,8 +11801,8 @@
   {
     "file": "src/dash.rs",
     "name": "stage_of_role",
-    "start_line": 3951,
-    "end_line": 3962,
+    "start_line": 3987,
+    "end_line": 3998,
     "is_test": false,
     "proposed_module": "dash::render",
     "reason": "name contains \"role\" (HTML rendering); grouped under `dash::render`."
@@ -11810,8 +11810,8 @@
   {
     "file": "src/dash.rs",
     "name": "role_and_agent",
-    "start_line": 3970,
-    "end_line": 3991,
+    "start_line": 4006,
+    "end_line": 4027,
     "is_test": false,
     "proposed_module": "dash::render",
     "reason": "name contains \"role\" (HTML rendering); grouped under `dash::render`."
@@ -11819,8 +11819,8 @@
   {
     "file": "src/dash.rs",
     "name": "gates_status",
-    "start_line": 4012,
-    "end_line": 4019,
+    "start_line": 4048,
+    "end_line": 4055,
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec."
@@ -11828,8 +11828,8 @@
   {
     "file": "src/dash.rs",
     "name": "advanced_past_gates",
-    "start_line": 4030,
-    "end_line": 4033,
+    "start_line": 4066,
+    "end_line": 4069,
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec."
@@ -11837,8 +11837,8 @@
   {
     "file": "src/dash.rs",
     "name": "unit_live_status",
-    "start_line": 4038,
-    "end_line": 4047,
+    "start_line": 4074,
+    "end_line": 4083,
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec."
@@ -11846,8 +11846,8 @@
   {
     "file": "src/dash.rs",
     "name": "spec_of",
-    "start_line": 4052,
-    "end_line": 4060,
+    "start_line": 4088,
+    "end_line": 4096,
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec."
@@ -11855,8 +11855,8 @@
   {
     "file": "src/dash.rs",
     "name": "graph_seeds",
-    "start_line": 4072,
-    "end_line": 4080,
+    "start_line": 4108,
+    "end_line": 4116,
     "is_test": false,
     "proposed_module": "dash::render",
     "reason": "name contains \"graph\" (HTML rendering); grouped under `dash::render`."
@@ -11864,8 +11864,8 @@
   {
     "file": "src/dash.rs",
     "name": "event_seed_ids",
-    "start_line": 4087,
-    "end_line": 4110,
+    "start_line": 4123,
+    "end_line": 4146,
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec."
@@ -11873,8 +11873,8 @@
   {
     "file": "src/dash.rs",
     "name": "unit_seeds",
-    "start_line": 4122,
-    "end_line": 4145,
+    "start_line": 4158,
+    "end_line": 4181,
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec."
@@ -11882,8 +11882,8 @@
   {
     "file": "src/dash.rs",
     "name": "repoint_seed",
-    "start_line": 4160,
-    "end_line": 4173,
+    "start_line": 4196,
+    "end_line": 4209,
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec."
@@ -11891,8 +11891,8 @@
   {
     "file": "src/dash.rs",
     "name": "event_view",
-    "start_line": 4177,
-    "end_line": 4188,
+    "start_line": 4213,
+    "end_line": 4224,
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec."
@@ -11900,8 +11900,8 @@
   {
     "file": "src/dash.rs",
     "name": "field_str",
-    "start_line": 4191,
-    "end_line": 4197,
+    "start_line": 4227,
+    "end_line": 4233,
     "is_test": false,
     "proposed_module": "dash::render",
     "reason": "name contains \"field\" (HTML rendering); grouped under `dash::render`."
@@ -11909,8 +11909,8 @@
   {
     "file": "src/dash.rs",
     "name": "field_str_array",
-    "start_line": 4201,
-    "end_line": 4212,
+    "start_line": 4237,
+    "end_line": 4248,
     "is_test": false,
     "proposed_module": "dash::render",
     "reason": "name contains \"field\" (HTML rendering); grouped under `dash::render`."
@@ -11918,8 +11918,8 @@
   {
     "file": "src/dash.rs",
     "name": "now_unix",
-    "start_line": 4214,
-    "end_line": 4219,
+    "start_line": 4250,
+    "end_line": 4255,
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec."
@@ -11927,8 +11927,8 @@
   {
     "file": "src/dash.rs",
     "name": "state_json",
-    "start_line": 4228,
-    "end_line": 4247,
+    "start_line": 4264,
+    "end_line": 4283,
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec."
@@ -11936,8 +11936,8 @@
   {
     "file": "src/dash.rs",
     "name": "events_json",
-    "start_line": 4253,
-    "end_line": 4261,
+    "start_line": 4289,
+    "end_line": 4297,
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec."
@@ -11945,8 +11945,8 @@
   {
     "file": "src/dash.rs",
     "name": "live_page",
-    "start_line": 4265,
-    "end_line": 4267,
+    "start_line": 4301,
+    "end_line": 4303,
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec."
@@ -11954,8 +11954,8 @@
   {
     "file": "src/dash.rs",
     "name": "render_export",
-    "start_line": 4274,
-    "end_line": 4294,
+    "start_line": 4310,
+    "end_line": 4330,
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec."
@@ -11963,8 +11963,8 @@
   {
     "file": "src/dash.rs",
     "name": "escape_for_script",
-    "start_line": 4307,
-    "end_line": 4320,
+    "start_line": 4343,
+    "end_line": 4356,
     "is_test": false,
     "proposed_module": "dash::render",
     "reason": "name contains \"escape\" (HTML rendering); grouped under `dash::render`."
@@ -11972,8 +11972,8 @@
   {
     "file": "src/dash.rs",
     "name": "html",
-    "start_line": 4335,
-    "end_line": 4341,
+    "start_line": 4371,
+    "end_line": 4377,
     "is_test": false,
     "proposed_module": "dash::response",
     "reason": "method inside `impl Response`; grouped with its other `Response` methods."
@@ -11981,8 +11981,8 @@
   {
     "file": "src/dash.rs",
     "name": "json",
-    "start_line": 4342,
-    "end_line": 4348,
+    "start_line": 4378,
+    "end_line": 4384,
     "is_test": false,
     "proposed_module": "dash::response",
     "reason": "method inside `impl Response`; grouped with its other `Response` methods."
@@ -11990,8 +11990,8 @@
   {
     "file": "src/dash.rs",
     "name": "text",
-    "start_line": 4349,
-    "end_line": 4355,
+    "start_line": 4385,
+    "end_line": 4391,
     "is_test": false,
     "proposed_module": "dash::response",
     "reason": "method inside `impl Response`; grouped with its other `Response` methods."
@@ -11999,8 +11999,8 @@
   {
     "file": "src/dash.rs",
     "name": "reason",
-    "start_line": 4357,
-    "end_line": 4366,
+    "start_line": 4393,
+    "end_line": 4402,
     "is_test": false,
     "proposed_module": "dash::response",
     "reason": "method inside `impl Response`; grouped with its other `Response` methods."
@@ -12008,8 +12008,8 @@
   {
     "file": "src/dash.rs",
     "name": "write_to",
-    "start_line": 4376,
-    "end_line": 4392,
+    "start_line": 4412,
+    "end_line": 4428,
     "is_test": false,
     "proposed_module": "dash::response",
     "reason": "method inside `impl Response`; grouped with its other `Response` methods."
@@ -12017,8 +12017,8 @@
   {
     "file": "src/dash.rs",
     "name": "route",
-    "start_line": 4401,
-    "end_line": 4559,
+    "start_line": 4437,
+    "end_line": 4595,
     "is_test": false,
     "proposed_module": "dash::server",
     "reason": "name contains \"route\" (HTTP serving); grouped under `dash::server`."
@@ -12026,8 +12026,8 @@
   {
     "file": "src/dash.rs",
     "name": "percent_decode",
-    "start_line": 4568,
-    "end_line": 4586,
+    "start_line": 4604,
+    "end_line": 4622,
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec."
@@ -12035,8 +12035,8 @@
   {
     "file": "src/dash.rs",
     "name": "query_param",
-    "start_line": 4589,
-    "end_line": 4595,
+    "start_line": 4625,
+    "end_line": 4631,
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec."
@@ -12044,8 +12044,8 @@
   {
     "file": "src/dash.rs",
     "name": "parse_request_line",
-    "start_line": 4599,
-    "end_line": 4604,
+    "start_line": 4635,
+    "end_line": 4640,
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec."
@@ -12053,8 +12053,8 @@
   {
     "file": "src/dash.rs",
     "name": "serve",
-    "start_line": 4629,
-    "end_line": 4656,
+    "start_line": 4665,
+    "end_line": 4692,
     "is_test": false,
     "proposed_module": "dash::server",
     "reason": "name contains \"serve\" (HTTP serving); grouped under `dash::server`."
@@ -12062,8 +12062,8 @@
   {
     "file": "src/dash.rs",
     "name": "serve_on",
-    "start_line": 4673,
-    "end_line": 4711,
+    "start_line": 4709,
+    "end_line": 4747,
     "is_test": false,
     "proposed_module": "dash::server",
     "reason": "name contains \"serve\" (HTTP serving); grouped under `dash::server`."
@@ -12071,8 +12071,8 @@
   {
     "file": "src/dash.rs",
     "name": "handle_conn",
-    "start_line": 4727,
-    "end_line": 4846,
+    "start_line": 4763,
+    "end_line": 4882,
     "is_test": false,
     "proposed_module": "dash::server",
     "reason": "name contains \"handle\" (HTTP serving); grouped under `dash::server`."
@@ -12080,8 +12080,8 @@
   {
     "file": "src/dash.rs",
     "name": "new",
-    "start_line": 4881,
-    "end_line": 4883,
+    "start_line": 4917,
+    "end_line": 4919,
     "is_test": false,
     "proposed_module": "dash::reaped_child",
     "reason": "method inside `impl ReapedChild`; grouped with its other `ReapedChild` methods."
@@ -12089,8 +12089,8 @@
   {
     "file": "src/dash.rs",
     "name": "id",
-    "start_line": 4887,
-    "end_line": 4889,
+    "start_line": 4923,
+    "end_line": 4925,
     "is_test": false,
     "proposed_module": "dash::reaped_child",
     "reason": "method inside `impl ReapedChild`; grouped with its other `ReapedChild` methods."
@@ -12098,8 +12098,8 @@
   {
     "file": "src/dash.rs",
     "name": "drop",
-    "start_line": 4893,
-    "end_line": 4904,
+    "start_line": 4929,
+    "end_line": 4940,
     "is_test": false,
     "proposed_module": "dash::reaped_child",
     "reason": "method inside `impl Drop for ReapedChild`; grouped with its other `ReapedChild` methods."
@@ -12107,8 +12107,8 @@
   {
     "file": "src/dash.rs",
     "name": "spawn_blocking_child",
-    "start_line": 4923,
-    "end_line": 4932,
+    "start_line": 4959,
+    "end_line": 4968,
     "is_test": true,
     "proposed_module": "dash::tests::supervised_lifecycle",
     "reason": "defined inside `supervised_lifecycle`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -12116,8 +12116,8 @@
   {
     "file": "src/dash.rs",
     "name": "watch_for_exit",
-    "start_line": 4937,
-    "end_line": 4946,
+    "start_line": 4973,
+    "end_line": 4982,
     "is_test": true,
     "proposed_module": "dash::tests::supervised_lifecycle",
     "reason": "defined inside `supervised_lifecycle`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -12125,8 +12125,8 @@
   {
     "file": "src/dash.rs",
     "name": "reaped_child_reaps_even_when_the_driver_panics",
-    "start_line": 4949,
-    "end_line": 4965,
+    "start_line": 4985,
+    "end_line": 5001,
     "is_test": true,
     "proposed_module": "dash::tests::supervised_lifecycle",
     "reason": "defined inside `supervised_lifecycle`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -12134,8 +12134,8 @@
   {
     "file": "src/dash.rs",
     "name": "dropping_the_peers_sidecar_reaps_its_collector_thread",
-    "start_line": 4968,
-    "end_line": 4992,
+    "start_line": 5004,
+    "end_line": 5028,
     "is_test": true,
     "proposed_module": "dash::tests::supervised_lifecycle",
     "reason": "defined inside `supervised_lifecycle`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -12143,8 +12143,8 @@
   {
     "file": "src/dash.rs",
     "name": "ev",
-    "start_line": 5005,
-    "end_line": 5007,
+    "start_line": 5041,
+    "end_line": 5043,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12152,8 +12152,8 @@
   {
     "file": "src/dash.rs",
     "name": "positioned",
-    "start_line": 5011,
-    "end_line": 5016,
+    "start_line": 5047,
+    "end_line": 5052,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12161,8 +12161,8 @@
   {
     "file": "src/dash.rs",
     "name": "seeded_run",
-    "start_line": 5018,
-    "end_line": 5030,
+    "start_line": 5054,
+    "end_line": 5066,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12170,8 +12170,8 @@
   {
     "file": "src/dash.rs",
     "name": "local_instance",
-    "start_line": 5032,
-    "end_line": 5041,
+    "start_line": 5068,
+    "end_line": 5077,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12179,8 +12179,8 @@
   {
     "file": "src/dash.rs",
     "name": "instance_views_project_a_sorted_credential_free_landing",
-    "start_line": 5049,
-    "end_line": 5099,
+    "start_line": 5085,
+    "end_line": 5135,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12188,8 +12188,8 @@
   {
     "file": "src/dash.rs",
     "name": "instance_view_age_floors_at_zero_for_a_future_heartbeat",
-    "start_line": 5106,
-    "end_line": 5114,
+    "start_line": 5142,
+    "end_line": 5150,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12197,8 +12197,8 @@
   {
     "file": "src/dash.rs",
     "name": "api_instances_route_renders_the_landing_list",
-    "start_line": 5121,
-    "end_line": 5153,
+    "start_line": 5157,
+    "end_line": 5189,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12206,8 +12206,8 @@
   {
     "file": "src/dash.rs",
     "name": "root_serves_the_embedded_page_with_the_placeholder_resolved",
-    "start_line": 5156,
-    "end_line": 5181,
+    "start_line": 5192,
+    "end_line": 5217,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12215,8 +12215,8 @@
   {
     "file": "src/dash.rs",
     "name": "gates_status_never_fabricates_passed_for_an_off_linear_unverdicted_unit",
-    "start_line": 5192,
-    "end_line": 5242,
+    "start_line": 5228,
+    "end_line": 5278,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12224,8 +12224,8 @@
   {
     "file": "src/dash.rs",
     "name": "free_port_from_returns_the_start_port_when_free_and_the_next_free_one_when_it_is_taken",
-    "start_line": 5249,
-    "end_line": 5285,
+    "start_line": 5285,
+    "end_line": 5321,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12233,8 +12233,8 @@
   {
     "file": "src/dash.rs",
     "name": "bind_singleton_binds_the_exact_port_and_never_searches",
-    "start_line": 5292,
-    "end_line": 5341,
+    "start_line": 5328,
+    "end_line": 5377,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12242,8 +12242,8 @@
   {
     "file": "src/dash.rs",
     "name": "bind_singleton_short_circuits_on_an_already_serving_rigger_dash",
-    "start_line": 5352,
-    "end_line": 5425,
+    "start_line": 5388,
+    "end_line": 5461,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12251,8 +12251,8 @@
   {
     "file": "src/dash.rs",
     "name": "dash_serving_on_is_false_for_a_non_dash_listener",
-    "start_line": 5432,
-    "end_line": 5448,
+    "start_line": 5468,
+    "end_line": 5484,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12260,8 +12260,8 @@
   {
     "file": "src/dash.rs",
     "name": "dash_serving_on_is_bounded_against_a_byte_dribbling_holder",
-    "start_line": 5459,
-    "end_line": 5504,
+    "start_line": 5495,
+    "end_line": 5540,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12269,8 +12269,8 @@
   {
     "file": "src/dash.rs",
     "name": "dash_serving_on_recognizes_the_header_fast_even_if_the_holder_never_finishes_the_block",
-    "start_line": 5527,
-    "end_line": 5578,
+    "start_line": 5563,
+    "end_line": 5614,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12278,8 +12278,8 @@
   {
     "file": "src/dash.rs",
     "name": "dash_serving_pid_on_reports_the_pid_a_real_dash_response_names",
-    "start_line": 5589,
-    "end_line": 5609,
+    "start_line": 5625,
+    "end_line": 5645,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12287,8 +12287,8 @@
   {
     "file": "src/dash.rs",
     "name": "dash_serving_pid_on_assembles_a_head_that_spans_many_read_calls",
-    "start_line": 5631,
-    "end_line": 5654,
+    "start_line": 5667,
+    "end_line": 5690,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12296,8 +12296,8 @@
   {
     "file": "src/dash.rs",
     "name": "dash_serving_pid_on_is_none_for_a_non_dash_listener",
-    "start_line": 5661,
-    "end_line": 5676,
+    "start_line": 5697,
+    "end_line": 5712,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12305,8 +12305,8 @@
   {
     "file": "src/dash.rs",
     "name": "dash_serving_pid_on_is_none_when_nothing_answers",
-    "start_line": 5681,
-    "end_line": 5684,
+    "start_line": 5717,
+    "end_line": 5720,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12314,8 +12314,8 @@
   {
     "file": "src/dash.rs",
     "name": "dash_serving_pid_on_is_none_when_the_pid_header_value_is_not_a_number",
-    "start_line": 5704,
-    "end_line": 5724,
+    "start_line": 5740,
+    "end_line": 5760,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12323,8 +12323,8 @@
   {
     "file": "src/dash.rs",
     "name": "bind_singleton_cold_race_loser_resolves_across_the_accept_window",
-    "start_line": 5732,
-    "end_line": 5761,
+    "start_line": 5768,
+    "end_line": 5797,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12332,8 +12332,8 @@
   {
     "file": "src/dash.rs",
     "name": "the_page_layout_cannot_scroll_the_body_horizontally",
-    "start_line": 5772,
-    "end_line": 5807,
+    "start_line": 5808,
+    "end_line": 5843,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12341,8 +12341,8 @@
   {
     "file": "src/dash.rs",
     "name": "the_landing_view_lists_instances_and_threads_the_attach_selector",
-    "start_line": 5818,
-    "end_line": 5855,
+    "start_line": 5854,
+    "end_line": 5891,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12350,8 +12350,8 @@
   {
     "file": "src/dash.rs",
     "name": "css_rule",
-    "start_line": 5860,
-    "end_line": 5869,
+    "start_line": 5896,
+    "end_line": 5905,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12359,8 +12359,8 @@
   {
     "file": "src/dash.rs",
     "name": "the_dashboard_fits_one_screen_with_internal_scroll",
-    "start_line": 5880,
-    "end_line": 5925,
+    "start_line": 5916,
+    "end_line": 5961,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12368,8 +12368,8 @@
   {
     "file": "src/dash.rs",
     "name": "cells_fit_or_wrap_and_wide_cells_scroll_in_their_own_container",
-    "start_line": 5939,
-    "end_line": 5973,
+    "start_line": 5975,
+    "end_line": 6009,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12377,8 +12377,8 @@
   {
     "file": "src/dash.rs",
     "name": "the_decision_history_renders_each_decision_as_a_native_details_with_preview_and_full_body",
-    "start_line": 5988,
-    "end_line": 6052,
+    "start_line": 6024,
+    "end_line": 6088,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12386,8 +12386,8 @@
   {
     "file": "src/dash.rs",
     "name": "state_endpoint_projects_the_seeded_run",
-    "start_line": 6055,
-    "end_line": 6083,
+    "start_line": 6091,
+    "end_line": 6119,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12395,8 +12395,8 @@
   {
     "file": "src/dash.rs",
     "name": "state_carries_the_live_agent_activity",
-    "start_line": 6086,
-    "end_line": 6148,
+    "start_line": 6122,
+    "end_line": 6184,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12404,8 +12404,8 @@
   {
     "file": "src/dash.rs",
     "name": "state_counts_grep_fallbacks_and_carries_them_in_the_review_outcomes_data",
-    "start_line": 6151,
-    "end_line": 6218,
+    "start_line": 6187,
+    "end_line": 6254,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12413,8 +12413,8 @@
   {
     "file": "src/dash.rs",
     "name": "done",
-    "start_line": 6233,
-    "end_line": 6238,
+    "start_line": 6269,
+    "end_line": 6274,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12422,8 +12422,8 @@
   {
     "file": "src/dash.rs",
     "name": "run_tree_projects_the_spine_with_collapse_expand_and_driver_lines",
-    "start_line": 6227,
-    "end_line": 6409,
+    "start_line": 6263,
+    "end_line": 6445,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12431,8 +12431,8 @@
   {
     "file": "src/dash.rs",
     "name": "review_verdicts_come_straight_from_the_metrics_classification",
-    "start_line": 6414,
-    "end_line": 6443,
+    "start_line": 6450,
+    "end_line": 6479,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12440,8 +12440,8 @@
   {
     "file": "src/dash.rs",
     "name": "events_endpoint_is_since_exclusive",
-    "start_line": 6446,
-    "end_line": 6456,
+    "start_line": 6482,
+    "end_line": 6492,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12449,8 +12449,8 @@
   {
     "file": "src/dash.rs",
     "name": "no_mutating_endpoint_exists",
-    "start_line": 6462,
-    "end_line": 6491,
+    "start_line": 6498,
+    "end_line": 6527,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12458,8 +12458,8 @@
   {
     "file": "src/dash.rs",
     "name": "unknown_get_path_is_404",
-    "start_line": 6494,
-    "end_line": 6508,
+    "start_line": 6530,
+    "end_line": 6544,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12467,8 +12467,8 @@
   {
     "file": "src/dash.rs",
     "name": "export_inlines_the_snapshot_as_a_static_page",
-    "start_line": 6511,
-    "end_line": 6540,
+    "start_line": 6547,
+    "end_line": 6576,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12476,8 +12476,8 @@
   {
     "file": "src/dash.rs",
     "name": "export_neutralizes_a_script_breakout_in_the_inlined_state",
-    "start_line": 6548,
-    "end_line": 6595,
+    "start_line": 6584,
+    "end_line": 6631,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12485,8 +12485,8 @@
   {
     "file": "src/dash.rs",
     "name": "decision_view_strikes_through_superseded_entries",
-    "start_line": 6598,
-    "end_line": 6624,
+    "start_line": 6634,
+    "end_line": 6660,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12494,8 +12494,8 @@
   {
     "file": "src/dash.rs",
     "name": "cluster_key_folds_paths_by_directory_and_dev_loop_nodes_by_kind",
-    "start_line": 6633,
-    "end_line": 6696,
+    "start_line": 6669,
+    "end_line": 6732,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12503,8 +12503,8 @@
   {
     "file": "src/dash.rs",
     "name": "clustered_overview_under_files_lens_admits_only_code_entities_keyed_by_their_own_file",
-    "start_line": 6708,
-    "end_line": 6801,
+    "start_line": 6744,
+    "end_line": 6837,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12512,8 +12512,8 @@
   {
     "file": "src/dash.rs",
     "name": "cluster_detail_drills_a_cluster_to_its_members_and_caps_a_big_one_by_degree",
-    "start_line": 6820,
-    "end_line": 7035,
+    "start_line": 6856,
+    "end_line": 7071,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12521,8 +12521,8 @@
   {
     "file": "src/dash.rs",
     "name": "cluster_detail_under_files_lens_is_unconditionally_empty",
-    "start_line": 7044,
-    "end_line": 7089,
+    "start_line": 7080,
+    "end_line": 7125,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12530,8 +12530,8 @@
   {
     "file": "src/dash.rs",
     "name": "code_lens_buckets_code_entities_by_community_excludes_other_kinds_and_reports_underived_grain",
-    "start_line": 7106,
-    "end_line": 7303,
+    "start_line": 7142,
+    "end_line": 7339,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12539,8 +12539,8 @@
   {
     "file": "src/dash.rs",
     "name": "concepts_lens_buckets_members_by_concept_excludes_membershipless_nodes_and_reports_underived_grain",
-    "start_line": 7317,
-    "end_line": 7556,
+    "start_line": 7353,
+    "end_line": 7592,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12548,8 +12548,8 @@
   {
     "file": "src/dash.rs",
     "name": "tiered_chain_graph",
-    "start_line": 7562,
-    "end_line": 7596,
+    "start_line": 7598,
+    "end_line": 7632,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12557,8 +12557,8 @@
   {
     "file": "src/dash.rs",
     "name": "the_graph_route_returns_a_tier_tagged_seeded_neighborhood_as_json",
-    "start_line": 7599,
-    "end_line": 7663,
+    "start_line": 7635,
+    "end_line": 7699,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12566,8 +12566,8 @@
   {
     "file": "src/dash.rs",
     "name": "the_graph_route_percent_decodes_the_seed_so_select_to_seed_reaches_ids_with_special_chars",
-    "start_line": 7666,
-    "end_line": 7717,
+    "start_line": 7702,
+    "end_line": 7753,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12575,8 +12575,8 @@
   {
     "file": "src/dash.rs",
     "name": "the_graph_route_degrades_gracefully_for_an_unknown_seed_and_an_empty_graph",
-    "start_line": 7720,
-    "end_line": 7751,
+    "start_line": 7756,
+    "end_line": 7787,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12584,8 +12584,8 @@
   {
     "file": "src/dash.rs",
     "name": "the_graph_route_is_read_only_a_non_get_is_405",
-    "start_line": 7754,
-    "end_line": 7774,
+    "start_line": 7790,
+    "end_line": 7810,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12593,8 +12593,8 @@
   {
     "file": "src/dash.rs",
     "name": "dispatch_graph",
-    "start_line": 7780,
-    "end_line": 7814,
+    "start_line": 7816,
+    "end_line": 7850,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12602,8 +12602,8 @@
   {
     "file": "src/dash.rs",
     "name": "the_graph_route_dispatches_cluster_overview_and_seed_by_parameter",
-    "start_line": 7823,
-    "end_line": 7921,
+    "start_line": 7859,
+    "end_line": 7957,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12611,8 +12611,8 @@
   {
     "file": "src/dash.rs",
     "name": "the_overview_route_degrades_gracefully_on_an_empty_graph",
-    "start_line": 7935,
-    "end_line": 7989,
+    "start_line": 7971,
+    "end_line": 8025,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12620,8 +12620,8 @@
   {
     "file": "src/dash.rs",
     "name": "neighborhood_bounds_by_depth_follows_both_directions_and_skips_invalidated_edges",
-    "start_line": 7992,
-    "end_line": 8046,
+    "start_line": 8028,
+    "end_line": 8082,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12629,16 +12629,7 @@
   {
     "file": "src/dash.rs",
     "name": "star_graph",
-    "start_line": 8052,
-    "end_line": 8077,
-    "is_test": true,
-    "proposed_module": "dash::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "neighborhood_flags_god_nodes_by_degree_within_the_returned_neighborhood",
-    "start_line": 8080,
+    "start_line": 8088,
     "end_line": 8113,
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12646,9 +12637,18 @@
   },
   {
     "file": "src/dash.rs",
-    "name": "path_is_the_shortest_route_between_two_selected_nodes_over_currently_valid_edges",
+    "name": "neighborhood_flags_god_nodes_by_degree_within_the_returned_neighborhood",
     "start_line": 8116,
-    "end_line": 8188,
+    "end_line": 8149,
+    "is_test": true,
+    "proposed_module": "dash::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "path_is_the_shortest_route_between_two_selected_nodes_over_currently_valid_edges",
+    "start_line": 8152,
+    "end_line": 8224,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12656,8 +12656,8 @@
   {
     "file": "src/dash.rs",
     "name": "the_graph_route_flags_god_nodes_and_returns_the_query_path_between_two_selected_nodes",
-    "start_line": 8191,
-    "end_line": 8258,
+    "start_line": 8227,
+    "end_line": 8294,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12665,8 +12665,8 @@
   {
     "file": "src/dash.rs",
     "name": "chain_graph_local",
-    "start_line": 8261,
-    "end_line": 8281,
+    "start_line": 8297,
+    "end_line": 8317,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12674,8 +12674,8 @@
   {
     "file": "src/dash.rs",
     "name": "provenance_graph",
-    "start_line": 8288,
-    "end_line": 8325,
+    "start_line": 8324,
+    "end_line": 8361,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12683,8 +12683,8 @@
   {
     "file": "src/dash.rs",
     "name": "explain_returns_a_nodes_incident_edges_as_source_and_tier_tagged_provenance",
-    "start_line": 8328,
-    "end_line": 8375,
+    "start_line": 8364,
+    "end_line": 8411,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12692,8 +12692,8 @@
   {
     "file": "src/dash.rs",
     "name": "the_graph_route_carries_the_seed_nodes_explain_provenance",
-    "start_line": 8378,
-    "end_line": 8443,
+    "start_line": 8414,
+    "end_line": 8479,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12701,8 +12701,8 @@
   {
     "file": "src/dash.rs",
     "name": "graph_seeds_enumerate_decisions_findings_and_their_files_never_units",
-    "start_line": 8446,
-    "end_line": 8477,
+    "start_line": 8482,
+    "end_line": 8513,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12710,8 +12710,8 @@
   {
     "file": "src/dash.rs",
     "name": "a_units_seed_lands_on_the_neighborhood_of_its_decisions_and_files",
-    "start_line": 8480,
-    "end_line": 8524,
+    "start_line": 8516,
+    "end_line": 8560,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12719,8 +12719,8 @@
   {
     "file": "src/dash.rs",
     "name": "the_run_tree_click_to_seed_route_lands_a_unit_on_a_real_neighborhood",
-    "start_line": 8527,
-    "end_line": 8633,
+    "start_line": 8563,
+    "end_line": 8669,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12728,8 +12728,8 @@
   {
     "file": "src/dash.rs",
     "name": "unit_seeds_scope_content_to_the_owning_unit",
-    "start_line": 8636,
-    "end_line": 8689,
+    "start_line": 8672,
+    "end_line": 8725,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12737,8 +12737,8 @@
   {
     "file": "src/dash.rs",
     "name": "repoint_seed_passes_a_known_node_and_re_points_a_unit_id",
-    "start_line": 8692,
-    "end_line": 8728,
+    "start_line": 8728,
+    "end_line": 8764,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12746,8 +12746,8 @@
   {
     "file": "src/dash.rs",
     "name": "build_state_on_an_empty_run_is_empty_not_a_panic",
-    "start_line": 8731,
-    "end_line": 8750,
+    "start_line": 8767,
+    "end_line": 8786,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12755,8 +12755,8 @@
   {
     "file": "src/dash.rs",
     "name": "release_ready_is_surfaced_on_the_dash_only_for_a_done_run",
-    "start_line": 8761,
-    "end_line": 8850,
+    "start_line": 8797,
+    "end_line": 8886,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12764,8 +12764,8 @@
   {
     "file": "src/dash.rs",
     "name": "release_ready_pr_command_newline_renders_as_a_real_line_break_not_a_collapsed_run_on",
-    "start_line": 8868,
-    "end_line": 8923,
+    "start_line": 8904,
+    "end_line": 8959,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12773,8 +12773,8 @@
   {
     "file": "src/dash.rs",
     "name": "request_line_parsing_extracts_method_and_target",
-    "start_line": 8926,
-    "end_line": 8933,
+    "start_line": 8962,
+    "end_line": 8969,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12782,8 +12782,8 @@
   {
     "file": "src/dash.rs",
     "name": "query_param_reads_since",
-    "start_line": 8936,
-    "end_line": 8943,
+    "start_line": 8972,
+    "end_line": 8979,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12791,8 +12791,8 @@
   {
     "file": "src/dash.rs",
     "name": "endpoints_serve_over_a_real_socket_against_a_seeded_store",
-    "start_line": 8951,
-    "end_line": 9028,
+    "start_line": 8987,
+    "end_line": 9064,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12800,8 +12800,8 @@
   {
     "file": "src/dash.rs",
     "name": "a_post_over_a_real_socket_is_refused_without_touching_the_store",
-    "start_line": 9034,
-    "end_line": 9084,
+    "start_line": 9070,
+    "end_line": 9120,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12809,8 +12809,8 @@
   {
     "file": "src/dash.rs",
     "name": "the_graph_provider_is_consulted_only_on_graph_requests_not_the_state_poll",
-    "start_line": 9095,
-    "end_line": 9207,
+    "start_line": 9131,
+    "end_line": 9243,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12818,8 +12818,8 @@
   {
     "file": "src/dash.rs",
     "name": "dash_marker_round_trips_through_its_on_disk_record",
-    "start_line": 9212,
-    "end_line": 9222,
+    "start_line": 9248,
+    "end_line": 9258,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12827,8 +12827,8 @@
   {
     "file": "src/dash.rs",
     "name": "dash_marker_parse_rejects_a_malformed_record",
-    "start_line": 9225,
-    "end_line": 9244,
+    "start_line": 9261,
+    "end_line": 9280,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12836,8 +12836,8 @@
   {
     "file": "src/dash.rs",
     "name": "dash_marker_reads_none_for_an_absent_file",
-    "start_line": 9247,
-    "end_line": 9265,
+    "start_line": 9283,
+    "end_line": 9301,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12845,8 +12845,8 @@
   {
     "file": "src/dash.rs",
     "name": "pid_is_alive_reports_self_and_rejects_an_impossible_pid",
-    "start_line": 9268,
-    "end_line": 9281,
+    "start_line": 9304,
+    "end_line": 9317,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12854,8 +12854,8 @@
   {
     "file": "src/dash.rs",
     "name": "format_held_port_always_names_the_address_even_with_no_holder",
-    "start_line": 9286,
-    "end_line": 9298,
+    "start_line": 9322,
+    "end_line": 9334,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12863,8 +12863,8 @@
   {
     "file": "src/dash.rs",
     "name": "format_held_port_names_the_pid_and_state_for_a_running_holder",
-    "start_line": 9301,
-    "end_line": 9318,
+    "start_line": 9337,
+    "end_line": 9354,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12872,8 +12872,8 @@
   {
     "file": "src/dash.rs",
     "name": "format_held_port_names_the_pid_alone_when_its_state_is_not_discoverable",
-    "start_line": 9321,
-    "end_line": 9329,
+    "start_line": 9357,
+    "end_line": 9365,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12881,8 +12881,8 @@
   {
     "file": "src/dash.rs",
     "name": "format_held_port_gives_the_stopped_listener_diagnosis_naming_resume_or_kill",
-    "start_line": 9332,
-    "end_line": 9347,
+    "start_line": 9368,
+    "end_line": 9383,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12890,8 +12890,8 @@
   {
     "file": "src/dash.rs",
     "name": "pid_holding_port_finds_the_pid_of_a_listener_bound_in_this_process",
-    "start_line": 9350,
-    "end_line": 9362,
+    "start_line": 9386,
+    "end_line": 9398,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12899,8 +12899,8 @@
   {
     "file": "src/dash.rs",
     "name": "pid_holding_port_is_none_for_a_port_nothing_is_listening_on",
-    "start_line": 9365,
-    "end_line": 9381,
+    "start_line": 9401,
+    "end_line": 9417,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12908,8 +12908,8 @@
   {
     "file": "src/dash.rs",
     "name": "describe_held_port_names_this_process_when_it_holds_the_port_itself",
-    "start_line": 9384,
-    "end_line": 9402,
+    "start_line": 9420,
+    "end_line": 9438,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12917,8 +12917,8 @@
   {
     "file": "src/dash.rs",
     "name": "describe_held_port_if_confirmed_names_the_holder_when_independently_confirmed",
-    "start_line": 9417,
-    "end_line": 9433,
+    "start_line": 9453,
+    "end_line": 9469,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12926,8 +12926,8 @@
   {
     "file": "src/dash.rs",
     "name": "describe_held_port_if_confirmed_is_none_when_nothing_holds_the_port",
-    "start_line": 9440,
-    "end_line": 9456,
+    "start_line": 9476,
+    "end_line": 9492,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12935,8 +12935,8 @@
   {
     "file": "src/dash.rs",
     "name": "dash_start_needed_is_true_when_none_serving_and_false_when_one_serves",
-    "start_line": 9459,
-    "end_line": 9476,
+    "start_line": 9495,
+    "end_line": 9512,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12944,8 +12944,8 @@
   {
     "file": "src/dash.rs",
     "name": "dash_status_trusts_a_url_with_no_marker_and_catches_a_marker_that_lies",
-    "start_line": 9479,
-    "end_line": 9527,
+    "start_line": 9515,
+    "end_line": 9563,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12953,8 +12953,8 @@
   {
     "file": "src/dash.rs",
     "name": "dash_status_never_names_the_unattributed_pid_sentinel_as_a_dead_process",
-    "start_line": 9539,
-    "end_line": 9555,
+    "start_line": 9575,
+    "end_line": 9591,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12962,8 +12962,8 @@
   {
     "file": "src/dash.rs",
     "name": "url_port_parses_the_recorded_shape_and_rejects_anything_else",
-    "start_line": 9558,
-    "end_line": 9579,
+    "start_line": 9594,
+    "end_line": 9615,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12971,8 +12971,8 @@
   {
     "file": "src/dash.rs",
     "name": "dash_status_probes_the_urls_own_port_when_the_marker_names_a_different_dash",
-    "start_line": 9595,
-    "end_line": 9635,
+    "start_line": 9631,
+    "end_line": 9671,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12980,16 +12980,7 @@
   {
     "file": "src/dash.rs",
     "name": "should_reap_singleton_reaps_only_when_no_registered_instance_is_live",
-    "start_line": 9638,
-    "end_line": 9676,
-    "is_test": true,
-    "proposed_module": "dash::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "should_reap_singleton_never_reaps_while_a_fresh_agent_liveness_signal_is_present",
-    "start_line": 9679,
+    "start_line": 9674,
     "end_line": 9712,
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12997,9 +12988,18 @@
   },
   {
     "file": "src/dash.rs",
+    "name": "should_reap_singleton_never_reaps_while_a_fresh_agent_liveness_signal_is_present",
+    "start_line": 9715,
+    "end_line": 9748,
+    "is_test": true,
+    "proposed_module": "dash::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
+  },
+  {
+    "file": "src/dash.rs",
     "name": "the_page_carries_the_directed_call_layered_render",
-    "start_line": 9724,
-    "end_line": 9795,
+    "start_line": 9760,
+    "end_line": 9831,
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -13007,8 +13007,8 @@
   {
     "file": "src/dash.rs",
     "name": "cnode",
-    "start_line": 9813,
-    "end_line": 9823,
+    "start_line": 9849,
+    "end_line": 9859,
     "is_test": true,
     "proposed_module": "dash::tests::calls_route_c4",
     "reason": "defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13016,8 +13016,8 @@
   {
     "file": "src/dash.rs",
     "name": "cedge",
-    "start_line": 9826,
-    "end_line": 9839,
+    "start_line": 9862,
+    "end_line": 9875,
     "is_test": true,
     "proposed_module": "dash::tests::calls_route_c4",
     "reason": "defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13025,8 +13025,8 @@
   {
     "file": "src/dash.rs",
     "name": "file_node",
-    "start_line": 9841,
-    "end_line": 9847,
+    "start_line": 9877,
+    "end_line": 9883,
     "is_test": true,
     "proposed_module": "dash::tests::calls_route_c4",
     "reason": "defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13034,8 +13034,8 @@
   {
     "file": "src/dash.rs",
     "name": "layer_of",
-    "start_line": 9849,
-    "end_line": 9851,
+    "start_line": 9885,
+    "end_line": 9887,
     "is_test": true,
     "proposed_module": "dash::tests::calls_route_c4",
     "reason": "defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13043,8 +13043,8 @@
   {
     "file": "src/dash.rs",
     "name": "ids",
-    "start_line": 9852,
-    "end_line": 9854,
+    "start_line": 9888,
+    "end_line": 9890,
     "is_test": true,
     "proposed_module": "dash::tests::calls_route_c4",
     "reason": "defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13052,8 +13052,8 @@
   {
     "file": "src/dash.rs",
     "name": "apply_def",
-    "start_line": 9858,
-    "end_line": 9869,
+    "start_line": 9894,
+    "end_line": 9905,
     "is_test": true,
     "proposed_module": "dash::tests::calls_route_c4",
     "reason": "defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13061,8 +13061,8 @@
   {
     "file": "src/dash.rs",
     "name": "apply_call",
-    "start_line": 9870,
-    "end_line": 9877,
+    "start_line": 9906,
+    "end_line": 9913,
     "is_test": true,
     "proposed_module": "dash::tests::calls_route_c4",
     "reason": "defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13070,8 +13070,8 @@
   {
     "file": "src/dash.rs",
     "name": "calls_view_down_signs_callees_positive_and_carries_frontier_and_back",
-    "start_line": 9883,
-    "end_line": 9938,
+    "start_line": 9919,
+    "end_line": 9974,
     "is_test": true,
     "proposed_module": "dash::tests::calls_route_c4",
     "reason": "defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13079,8 +13079,8 @@
   {
     "file": "src/dash.rs",
     "name": "calls_view_up_negates_callers_and_carries_the_referenced_sidecar",
-    "start_line": 9943,
-    "end_line": 9982,
+    "start_line": 9979,
+    "end_line": 10018,
     "is_test": true,
     "proposed_module": "dash::tests::calls_route_c4",
     "reason": "defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13088,8 +13088,8 @@
   {
     "file": "src/dash.rs",
     "name": "calls_view_both_centers_the_seed_with_callees_right_and_callers_left",
-    "start_line": 9988,
-    "end_line": 10036,
+    "start_line": 10024,
+    "end_line": 10072,
     "is_test": true,
     "proposed_module": "dash::tests::calls_route_c4",
     "reason": "defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13097,8 +13097,8 @@
   {
     "file": "src/dash.rs",
     "name": "a_plain_neighborhood_omits_every_additive_call_field",
-    "start_line": 10042,
-    "end_line": 10079,
+    "start_line": 10078,
+    "end_line": 10115,
     "is_test": true,
     "proposed_module": "dash::tests::calls_route_c4",
     "reason": "defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13106,8 +13106,8 @@
   {
     "file": "src/dash.rs",
     "name": "calls_route_runs_the_traversal_for_view_calls_and_declines_otherwise",
-    "start_line": 10086,
-    "end_line": 10140,
+    "start_line": 10122,
+    "end_line": 10176,
     "is_test": true,
     "proposed_module": "dash::tests::calls_route_c4",
     "reason": "defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13115,8 +13115,8 @@
   {
     "file": "src/dash.rs",
     "name": "calls_route_clamps_depth_and_defaults_the_tier_floor",
-    "start_line": 10146,
-    "end_line": 10174,
+    "start_line": 10182,
+    "end_line": 10210,
     "is_test": true,
     "proposed_module": "dash::tests::calls_route_c4",
     "reason": "defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13124,8 +13124,8 @@
   {
     "file": "src/dash.rs",
     "name": "calls_route_walks_both_directions_for_dir_both",
-    "start_line": 10179,
-    "end_line": 10197,
+    "start_line": 10215,
+    "end_line": 10233,
     "is_test": true,
     "proposed_module": "dash::tests::calls_route_c4",
     "reason": "defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13133,8 +13133,8 @@
   {
     "file": "src/dash.rs",
     "name": "node",
-    "start_line": 10214,
-    "end_line": 10224,
+    "start_line": 10250,
+    "end_line": 10260,
     "is_test": true,
     "proposed_module": "dash::tests::rationale_overlay_c3",
     "reason": "defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13142,8 +13142,8 @@
   {
     "file": "src/dash.rs",
     "name": "finding_node",
-    "start_line": 10229,
-    "end_line": 10239,
+    "start_line": 10265,
+    "end_line": 10275,
     "is_test": true,
     "proposed_module": "dash::tests::rationale_overlay_c3",
     "reason": "defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13151,8 +13151,8 @@
   {
     "file": "src/dash.rs",
     "name": "edge",
-    "start_line": 10241,
-    "end_line": 10251,
+    "start_line": 10277,
+    "end_line": 10287,
     "is_test": true,
     "proposed_module": "dash::tests::rationale_overlay_c3",
     "reason": "defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13160,8 +13160,8 @@
   {
     "file": "src/dash.rs",
     "name": "rationale_graph",
-    "start_line": 10267,
-    "end_line": 10300,
+    "start_line": 10303,
+    "end_line": 10336,
     "is_test": true,
     "proposed_module": "dash::tests::rationale_overlay_c3",
     "reason": "defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13169,8 +13169,8 @@
   {
     "file": "src/dash.rs",
     "name": "ids",
-    "start_line": 10302,
-    "end_line": 10304,
+    "start_line": 10338,
+    "end_line": 10340,
     "is_test": true,
     "proposed_module": "dash::tests::rationale_overlay_c3",
     "reason": "defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13178,8 +13178,8 @@
   {
     "file": "src/dash.rs",
     "name": "kinds",
-    "start_line": 10305,
-    "end_line": 10307,
+    "start_line": 10341,
+    "end_line": 10343,
     "is_test": true,
     "proposed_module": "dash::tests::rationale_overlay_c3",
     "reason": "defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13187,8 +13187,8 @@
   {
     "file": "src/dash.rs",
     "name": "node_rationale_returns_attached_leaves_ordered_by_kind_then_id",
-    "start_line": 10313,
-    "end_line": 10327,
+    "start_line": 10349,
+    "end_line": 10363,
     "is_test": true,
     "proposed_module": "dash::tests::rationale_overlay_c3",
     "reason": "defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13196,8 +13196,8 @@
   {
     "file": "src/dash.rs",
     "name": "a_finding_leaf_carries_content_only_never_the_by_or_unit_machinery",
-    "start_line": 10333,
-    "end_line": 10356,
+    "start_line": 10369,
+    "end_line": 10392,
     "is_test": true,
     "proposed_module": "dash::tests::rationale_overlay_c3",
     "reason": "defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13205,8 +13205,8 @@
   {
     "file": "src/dash.rs",
     "name": "a_handbook_rule_and_a_supersedes_edge_are_not_rationale",
-    "start_line": 10362,
-    "end_line": 10375,
+    "start_line": 10398,
+    "end_line": 10411,
     "is_test": true,
     "proposed_module": "dash::tests::rationale_overlay_c3",
     "reason": "defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13214,8 +13214,8 @@
   {
     "file": "src/dash.rs",
     "name": "an_invalidated_edge_is_not_live_rationale",
-    "start_line": 10380,
-    "end_line": 10388,
+    "start_line": 10416,
+    "end_line": 10424,
     "is_test": true,
     "proposed_module": "dash::tests::rationale_overlay_c3",
     "reason": "defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13223,8 +13223,8 @@
   {
     "file": "src/dash.rs",
     "name": "a_node_without_rationale_returns_none",
-    "start_line": 10393,
-    "end_line": 10403,
+    "start_line": 10429,
+    "end_line": 10439,
     "is_test": true,
     "proposed_module": "dash::tests::rationale_overlay_c3",
     "reason": "defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13232,8 +13232,8 @@
   {
     "file": "src/dash.rs",
     "name": "the_batch_covers_the_visible_set_and_keeps_only_nodes_with_rationale",
-    "start_line": 10409,
-    "end_line": 10434,
+    "start_line": 10445,
+    "end_line": 10470,
     "is_test": true,
     "proposed_module": "dash::tests::rationale_overlay_c3",
     "reason": "defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13241,8 +13241,8 @@
   {
     "file": "src/dash.rs",
     "name": "the_batch_is_deterministic_across_request_order_and_dedups",
-    "start_line": 10439,
-    "end_line": 10456,
+    "start_line": 10475,
+    "end_line": 10492,
     "is_test": true,
     "proposed_module": "dash::tests::rationale_overlay_c3",
     "reason": "defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13250,8 +13250,8 @@
   {
     "file": "src/dash.rs",
     "name": "the_explain_route_returns_the_batch_in_one_request",
-    "start_line": 10462,
-    "end_line": 10501,
+    "start_line": 10498,
+    "end_line": 10537,
     "is_test": true,
     "proposed_module": "dash::tests::rationale_overlay_c3",
     "reason": "defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13259,8 +13259,8 @@
   {
     "file": "src/dash.rs",
     "name": "an_absent_explain_leaves_the_graph_route_unchanged",
-    "start_line": 10507,
-    "end_line": 10531,
+    "start_line": 10543,
+    "end_line": 10567,
     "is_test": true,
     "proposed_module": "dash::tests::rationale_overlay_c3",
     "reason": "defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13268,8 +13268,8 @@
   {
     "file": "src/dash.rs",
     "name": "node",
-    "start_line": 10545,
-    "end_line": 10554,
+    "start_line": 10581,
+    "end_line": 10590,
     "is_test": true,
     "proposed_module": "dash::tests::subject_view_c5",
     "reason": "defined inside `subject_view_c5`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13277,8 +13277,8 @@
   {
     "file": "src/dash.rs",
     "name": "edge",
-    "start_line": 10556,
-    "end_line": 10566,
+    "start_line": 10592,
+    "end_line": 10602,
     "is_test": true,
     "proposed_module": "dash::tests::subject_view_c5",
     "reason": "defined inside `subject_view_c5`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13286,8 +13286,8 @@
   {
     "file": "src/dash.rs",
     "name": "subject_graph",
-    "start_line": 10573,
-    "end_line": 10598,
+    "start_line": 10609,
+    "end_line": 10634,
     "is_test": true,
     "proposed_module": "dash::tests::subject_view_c5",
     "reason": "defined inside `subject_view_c5`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13295,8 +13295,8 @@
   {
     "file": "src/dash.rs",
     "name": "memory_rail_lists_decisions_findings_and_concepts_excluding_lessons",
-    "start_line": 10604,
-    "end_line": 10647,
+    "start_line": 10640,
+    "end_line": 10683,
     "is_test": true,
     "proposed_module": "dash::tests::subject_view_c5",
     "reason": "defined inside `subject_view_c5`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13304,8 +13304,8 @@
   {
     "file": "src/dash.rs",
     "name": "memory_rail_is_empty_for_a_node_with_no_governing_memory",
-    "start_line": 10652,
-    "end_line": 10659,
+    "start_line": 10688,
+    "end_line": 10695,
     "is_test": true,
     "proposed_module": "dash::tests::subject_view_c5",
     "reason": "defined inside `subject_view_c5`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13313,8 +13313,8 @@
   {
     "file": "src/dash.rs",
     "name": "memory_rail_concepts_are_live_from_node_realizes_edges_to_a_concept_target_deduped_by_id",
-    "start_line": 10680,
-    "end_line": 10732,
+    "start_line": 10716,
+    "end_line": 10768,
     "is_test": true,
     "proposed_module": "dash::tests::subject_view_c5",
     "reason": "defined inside `subject_view_c5`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13322,8 +13322,8 @@
   {
     "file": "src/dash.rs",
     "name": "the_seeded_route_carries_memory_without_adding_a_single_node_to_the_neighborhood",
-    "start_line": 10740,
-    "end_line": 10790,
+    "start_line": 10776,
+    "end_line": 10826,
     "is_test": true,
     "proposed_module": "dash::tests::subject_view_c5",
     "reason": "defined inside `subject_view_c5`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13331,8 +13331,8 @@
   {
     "file": "src/dash.rs",
     "name": "a_cluster_drill_carries_no_memory_field",
-    "start_line": 10796,
-    "end_line": 10816,
+    "start_line": 10832,
+    "end_line": 10852,
     "is_test": true,
     "proposed_module": "dash::tests::subject_view_c5",
     "reason": "defined inside `subject_view_c5`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13340,8 +13340,8 @@
   {
     "file": "src/dash.rs",
     "name": "node",
-    "start_line": 10832,
-    "end_line": 10841,
+    "start_line": 10868,
+    "end_line": 10877,
     "is_test": true,
     "proposed_module": "dash::tests::metadata_card_c2",
     "reason": "defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13349,8 +13349,8 @@
   {
     "file": "src/dash.rs",
     "name": "edge",
-    "start_line": 10843,
-    "end_line": 10853,
+    "start_line": 10879,
+    "end_line": 10889,
     "is_test": true,
     "proposed_module": "dash::tests::metadata_card_c2",
     "reason": "defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13358,8 +13358,8 @@
   {
     "file": "src/dash.rs",
     "name": "card_graph",
-    "start_line": 10860,
-    "end_line": 10895,
+    "start_line": 10896,
+    "end_line": 10931,
     "is_test": true,
     "proposed_module": "dash::tests::metadata_card_c2",
     "reason": "defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13367,8 +13367,8 @@
   {
     "file": "src/dash.rs",
     "name": "card_of_a_code_entity_carries_file_line_degree_community_concepts_and_memory_counts",
-    "start_line": 10898,
-    "end_line": 10941,
+    "start_line": 10934,
+    "end_line": 10977,
     "is_test": true,
     "proposed_module": "dash::tests::metadata_card_c2",
     "reason": "defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13376,16 +13376,7 @@
   {
     "file": "src/dash.rs",
     "name": "card_of_a_membership_less_entity_has_no_community_and_no_line",
-    "start_line": 10947,
-    "end_line": 10955,
-    "is_test": true,
-    "proposed_module": "dash::tests::metadata_card_c2",
-    "reason": "defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "card_of_a_file_lists_its_contained_entities_as_top_entities",
-    "start_line": 10962,
+    "start_line": 10983,
     "end_line": 10991,
     "is_test": true,
     "proposed_module": "dash::tests::metadata_card_c2",
@@ -13393,9 +13384,54 @@
   },
   {
     "file": "src/dash.rs",
+    "name": "card_of_a_proven_code_entity_carries_proven_by_and_proof_evidence",
+    "start_line": 10999,
+    "end_line": 11026,
+    "is_test": true,
+    "proposed_module": "dash::tests::metadata_card_c2",
+    "reason": "defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "card_of_an_unproven_code_entity_has_proven_by_zero_and_no_evidence",
+    "start_line": 11034,
+    "end_line": 11039,
+    "is_test": true,
+    "proposed_module": "dash::tests::metadata_card_c2",
+    "reason": "defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "card_of_a_file_reports_no_proof_of_its_own",
+    "start_line": 11045,
+    "end_line": 11058,
+    "is_test": true,
+    "proposed_module": "dash::tests::metadata_card_c2",
+    "reason": "defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "card_tolerates_a_malformed_proof_evidence_attr",
+    "start_line": 11065,
+    "end_line": 11075,
+    "is_test": true,
+    "proposed_module": "dash::tests::metadata_card_c2",
+    "reason": "defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "card_of_a_file_lists_its_contained_entities_as_top_entities",
+    "start_line": 11082,
+    "end_line": 11111,
+    "is_test": true,
+    "proposed_module": "dash::tests::metadata_card_c2",
+    "reason": "defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
+  },
+  {
+    "file": "src/dash.rs",
     "name": "card_of_a_concept_lists_its_realizing_members_as_top_evidence",
-    "start_line": 10996,
-    "end_line": 11016,
+    "start_line": 11116,
+    "end_line": 11136,
     "is_test": true,
     "proposed_module": "dash::tests::metadata_card_c2",
     "reason": "defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13403,8 +13439,8 @@
   {
     "file": "src/dash.rs",
     "name": "card_of_a_concept_carries_each_top_evidence_members_own_kind",
-    "start_line": 11025,
-    "end_line": 11046,
+    "start_line": 11145,
+    "end_line": 11166,
     "is_test": true,
     "proposed_module": "dash::tests::metadata_card_c2",
     "reason": "defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13412,8 +13448,8 @@
   {
     "file": "src/dash.rs",
     "name": "card_of_a_file_carries_each_top_entity_members_own_kind",
-    "start_line": 11053,
-    "end_line": 11063,
+    "start_line": 11173,
+    "end_line": 11183,
     "is_test": true,
     "proposed_module": "dash::tests::metadata_card_c2",
     "reason": "defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13421,8 +13457,8 @@
   {
     "file": "src/dash.rs",
     "name": "card_of_an_unknown_id_is_none",
-    "start_line": 11068,
-    "end_line": 11071,
+    "start_line": 11188,
+    "end_line": 11191,
     "is_test": true,
     "proposed_module": "dash::tests::metadata_card_c2",
     "reason": "defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."
@@ -13430,8 +13466,8 @@
   {
     "file": "src/dash.rs",
     "name": "the_card_route_serves_a_known_subjects_card_and_null_for_an_unknown_one",
-    "start_line": 11077,
-    "end_line": 11119,
+    "start_line": 11197,
+    "end_line": 11239,
     "is_test": true,
     "proposed_module": "dash::tests::metadata_card_c2",
     "reason": "defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5)."

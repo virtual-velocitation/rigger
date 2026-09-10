@@ -42,6 +42,13 @@ CREATE INDEX IF NOT EXISTS idx_edges_from ON edges(from_id);
 CREATE INDEX IF NOT EXISTS idx_edges_to ON edges(to_id);
 CREATE TABLE IF NOT EXISTS aliases (alias TEXT PRIMARY KEY, canonical_id TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS applied (position INTEGER PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS pending_proof (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project TEXT NOT NULL DEFAULT '',
+  name TEXT NOT NULL,
+  evidence TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pending_proof_name ON pending_proof(project, name);
 ";
 
 /// Projector is the SQLite-backed Projection.
@@ -1297,6 +1304,12 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
                 ],
             )
             .map_err(be)?;
+            // Spec 86 criterion 2's convergent half: any TEST-ORIGIN evidence staged before this
+            // definition existed (a forward reference to a file the sorted ingest had not yet
+            // reached) names it now - transfer it onto `entity` and clear the stage. Same
+            // convergence point as the tier upgrade just above (this definition folding is what
+            // makes both resolvable), never a second timing authority.
+            reconcile_pending_proof(tx, &entity, &c.name, project)?;
         }
         TYPE_EDGE_INFERRED => {
             // Spec 29a criterion 1: one reference the extraction pass emitted. Fold it into a
@@ -1310,6 +1323,15 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
             // alias-resolved like the artifact-producing arms, so the referencing file node is the
             // SAME one-graph node (see the definition arm above).
             let r: super::EdgeInferred = serde_json::from_slice(&e.data).map_err(be)?;
+            // Spec 86 criterion 2 (PROOF LANDS ON THE CARD): a TEST-ORIGIN reference is EVIDENCE,
+            // not a structural fact - checked FIRST, before any of the structural folding below,
+            // so it takes NEITHER the `file` KIND_FILE node NOR the REFERENCES/CALLS edge:
+            // criterion 1's "never a node and never an edge on the canvas" promise extends to
+            // evidence exactly as it holds for the exclusion itself. See `fold_test_evidence`'s own
+            // doc for the target-resolution and merge-not-replace mechanics.
+            if r.is_test {
+                return fold_test_evidence(tx, &r, project);
+            }
             let file = resolve_in_tx(tx, &r.file);
             // Supersede-on-re-extract (criterion 3): a refs-only file (no definitions) carries the
             // batch boundary on its first reference; retire the file's prior structural edges before
@@ -2234,6 +2256,189 @@ fn reference_tier(
     }
 }
 
+/// Spec 86 criterion 2 (PROOF LANDS ON THE CARD): fold one TEST-ORIGIN reference (`r.is_test`)
+/// entirely as evidence, never as a structural fact. Resolves the PRODUCT entity `r` is evidence
+/// FOR via [`resolve_proof_target`] (same-file first, then the first cross-file name match -
+/// mirroring [`reference_tier`]'s own resolution, never a second, stricter authority) and, when
+/// found, folds the evidence onto it via [`record_proof`]; when not yet resolvable (a forward
+/// reference to a file the sorted ingest has not reached), stages it in `pending_proof` via
+/// [`stage_pending_proof`] for the `TYPE_CODE_ENTITY_EXTRACTED` arm's
+/// [`reconcile_pending_proof`] to pick up the moment a matching definition folds. Deliberately
+/// creates NO `file` node and NO edge of any kind - unlike the ordinary `TYPE_EDGE_INFERRED` arm,
+/// this reference's own referencing file is never even alias-resolved into a graph node, because
+/// criterion 1's "never a node and never an edge on the canvas" promise for excluded/test-origin
+/// content extends to its evidence too.
+fn fold_test_evidence(
+    tx: &Transaction,
+    r: &super::EdgeInferred,
+    project: &str,
+) -> Result<(), Error> {
+    let file = resolve_in_tx(tx, &r.file);
+    let evidence = format!("{file}:{}", r.line);
+    let same_file = code_entity_id(&file, &r.name);
+    match resolve_proof_target(tx, &same_file, &r.name, project)? {
+        Some(id) => record_proof(tx, &id, &evidence, project),
+        None => stage_pending_proof(tx, &r.name, &evidence, project),
+    }
+}
+
+/// Spec 86 criterion 2: resolve the entity a test-origin reference named `name` (from `same_file`,
+/// the referencing file's own would-be `<file>::<name>` id) is evidence FOR. Same-file first - the
+/// overwhelmingly common `#[cfg(test)] mod tests` idiom, where `same_file` already carries a
+/// `name` attr because a product file's own definitions fold before its own test module's
+/// references (defs emit before refs, spec 29a) - else the first OTHER code-entity anywhere in
+/// `project` that defines this exact name, mirroring [`reference_tier`]'s own cross-file lookup
+/// verbatim (same non-unique-by-design `LIMIT 1`, never a stricter cross-file authority invented
+/// here). `None` when no definition is known YET (a forward reference to a file the sorted ingest
+/// has not reached, or a name genuinely undefined anywhere) - honest by construction, never
+/// confidently wrong: this never manufactures a placeholder entity merely to carry evidence about
+/// something that may not exist.
+fn resolve_proof_target(
+    tx: &Transaction,
+    same_file: &str,
+    name: &str,
+    project: &str,
+) -> Result<Option<String>, Error> {
+    let same_file_def = tx
+        .query_row(
+            "SELECT 1 FROM nodes
+              WHERE id = ?1 AND project = ?2 AND json_extract(attrs, '$.name') IS NOT NULL",
+            params![same_file, project],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(be)?
+        .is_some();
+    if same_file_def {
+        return Ok(Some(same_file.to_string()));
+    }
+    tx.query_row(
+        "SELECT id FROM nodes
+          WHERE kind = ?1 AND project = ?2 AND json_extract(attrs, '$.name') = ?3
+          LIMIT 1",
+        params![KIND_CODE_ENTITY, project, name],
+        |r| r.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(be)
+}
+
+/// Spec 86 criterion 2: fold one test-origin reference's evidence onto entity `id`'s attrs -
+/// INCREMENT `proven_by` and APPEND `evidence` (a `file:line` string) to its `proof_evidence` list -
+/// by reading the current values, computing the new ones IN RUST, then writing them back via
+/// `json_set` MERGED over the node's EXISTING attrs, never `ensure_node`'s whole-attrs
+/// COALESCE-REPLACE (which would silently wipe the entity's `name`/`kind`/`line` the moment a
+/// SECOND test proved it, since `ensure_node` replaces the whole attrs blob rather than merging one
+/// key). Mirrors the SAME merge-not-replace idiom the `ReviewFinding` upheld-disposition mark
+/// already uses (`json_set(COALESCE(attrs, '{}'), ...)`).
+///
+/// Both `proven_by` and `proof_evidence` are written as JSON STRINGS (a decimal-digit string, and a
+/// JSON-array-shaped string respectively) - NEVER a bare JSON number or array - because
+/// `Node::attrs` is `BTreeMap<String, String>` (spec 29a) and [`row_to_node`] deserializes the
+/// WHOLE attrs blob through that map in ONE `serde_json::from_str` call: a single non-string value
+/// anywhere in the object fails that deserialize and `.ok()` silently degrades to an EMPTY map,
+/// erasing every OTHER attr the entity carries (`name`, `kind`, `line`, ...), not just this new one.
+///
+/// The read-then-write (rather than one `json_set(attrs, '$.k', json_insert(...))` statement) is
+/// deliberate, not merely simpler: SQLite's json1 functions tag their OWN return value with an
+/// internal JSON subtype, and `json_set` embeds a subtype-tagged VALUE argument AS JSON
+/// (unquoted) rather than treating it as a plain scalar to quote - so nesting `json_insert(...)`
+/// directly as `json_set`'s value silently stores a BARE JSON ARRAY, not the JSON-STRING this
+/// function's own contract requires. A plain Rust-computed `String` bound as an ordinary parameter
+/// carries no such subtype tag, so `json_set` correctly quotes it - which is what makes the
+/// round-trip through [`Card`](crate::dash::Card)'s own `usize`/`Vec<String>` parse (`str::parse`,
+/// `serde_json::from_str`) symmetric with how it is written here.
+fn record_proof(tx: &Transaction, id: &str, evidence: &str, project: &str) -> Result<(), Error> {
+    let existing: Option<(Option<i64>, Option<String>)> = tx
+        .query_row(
+            "SELECT CAST(json_extract(attrs, '$.proven_by') AS INTEGER),
+                    json_extract(attrs, '$.proof_evidence')
+             FROM nodes WHERE id = ?1 AND project = ?2",
+            params![id, project],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(be)?;
+    let (count, evidence_json) = existing.unwrap_or((None, None));
+    let new_count = (count.unwrap_or(0) + 1).to_string();
+    let mut list: Vec<String> = evidence_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default();
+    list.push(evidence.to_string());
+    let list_json = serde_json::to_string(&list).map_err(be)?;
+    tx.execute(
+        "UPDATE nodes SET attrs = json_set(
+             COALESCE(attrs, '{}'),
+             '$.proven_by', ?2,
+             '$.proof_evidence', ?3
+         )
+         WHERE id = ?1 AND project = ?4",
+        params![id, new_count, list_json, project],
+    )
+    .map_err(be)?;
+    Ok(())
+}
+
+/// Spec 86 criterion 2: stage a test-origin reference's evidence whose target definition has not
+/// folded yet - the SAME eventual-consistency shape [`reference_tier`]'s `AMBIGUOUS` tier already
+/// accepts for structural edges (spec 29a criterion 2's convergent upgrade), so proof completeness
+/// is never bound to fold order. Reconciled by [`reconcile_pending_proof`] the moment a matching
+/// definition folds. A plain append-only row, never a node - `pending_proof` is fold-internal
+/// bookkeeping, never returned by `subgraph`/`resolve` and never itself "on the canvas".
+fn stage_pending_proof(
+    tx: &Transaction,
+    name: &str,
+    evidence: &str,
+    project: &str,
+) -> Result<(), Error> {
+    tx.execute(
+        "INSERT INTO pending_proof (project, name, evidence) VALUES (?1, ?2, ?3)",
+        params![project, name, evidence],
+    )
+    .map_err(be)?;
+    Ok(())
+}
+
+/// Spec 86 criterion 2: the convergent half of [`stage_pending_proof`] - called from the
+/// `TYPE_CODE_ENTITY_EXTRACTED` arm the moment `entity` (whose defined name is `name`) folds,
+/// right beside that arm's OWN `AMBIGUOUS`->`INFERRED` tier convergence (spec 29a criterion 2), so
+/// a forward-referenced test's evidence is never silently lost to fold order. Every staged row for
+/// this name transfers onto `entity` (via [`record_proof`], preserving the merge-not-replace
+/// discipline) and is removed from the stage - first definition to fold claims it, the SAME
+/// non-unique-by-design resolution [`resolve_proof_target`]'s cross-file lookup already accepts. A
+/// no-op (nothing queried, nothing deleted) when no evidence is pending for `name`, the overwhelming
+/// common case.
+fn reconcile_pending_proof(
+    tx: &Transaction,
+    entity: &str,
+    name: &str,
+    project: &str,
+) -> Result<(), Error> {
+    let evidences: Vec<String> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT evidence FROM pending_proof WHERE project = ?1 AND name = ?2 ORDER BY id",
+            )
+            .map_err(be)?;
+        let rows = stmt
+            .query_map(params![project, name], |r| r.get::<_, String>(0))
+            .map_err(be)?;
+        rows.collect::<Result<_, _>>().map_err(be)?
+    };
+    for evidence in &evidences {
+        record_proof(tx, entity, evidence, project)?;
+    }
+    if !evidences.is_empty() {
+        tx.execute(
+            "DELETE FROM pending_proof WHERE project = ?1 AND name = ?2",
+            params![project, name],
+        )
+        .map_err(be)?;
+    }
+    Ok(())
+}
+
 fn ensure_node(
     tx: &Transaction,
     id: &str,
@@ -2895,6 +3100,17 @@ mod tests {
 
     fn apply_edge_inferred(p: &Projector, pos: u64, file: &str, name: &str, lang: &str) {
         let payload = serde_json::json!({ "file": file, "name": name, "lang": lang });
+        let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&payload).unwrap());
+        e.position = pos;
+        p.apply(&e).unwrap();
+    }
+
+    /// Spec 86 criterion 2: one TEST-ORIGIN reference evidence event, built by hand (no
+    /// `proof_events` dependency) so the fold is proven in isolation. Constructed as raw JSON
+    /// (mirroring [`apply_edge_inferred`]'s own style), never through the [`super::EdgeInferred`]
+    /// struct, so this exercises the exact wire shape a real emitter produces.
+    fn apply_edge_inferred_evidence(p: &Projector, pos: u64, file: &str, name: &str, line: u32) {
+        let payload = serde_json::json!({ "file": file, "name": name, "lang": "rust", "line": line, "is_test": true });
         let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&payload).unwrap());
         e.position = pos;
         p.apply(&e).unwrap();
@@ -7316,5 +7532,200 @@ mod tests {
             plan.iter().any(|d| d.contains("idx_edges_live_rel_from")),
             "the relationship-scoped forward scan uses the partial idx_edges_live_rel_from; plan was {plan:?}"
         );
+    }
+
+    /// Spec 86 criterion 2 (PROOF LANDS ON THE CARD): the `TYPE_EDGE_INFERRED` fold's `is_test`
+    /// branch. Proven directly against the fold (via [`apply_edge_inferred_evidence`]/
+    /// [`apply_code_entity`]), never through the extraction pass - the emit half's own contract
+    /// (`proof_events`) is proven separately in `grounder::symbols::events`.
+    mod proof_evidence_c2 {
+        use super::*;
+
+        fn proven_by(g: &Graph, id: &str) -> usize {
+            g.nodes
+                .iter()
+                .find(|n| n.id == id)
+                .and_then(|n| n.attrs.get("proven_by"))
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0)
+        }
+
+        fn proof_evidence(g: &Graph, id: &str) -> Vec<String> {
+            g.nodes
+                .iter()
+                .find(|n| n.id == id)
+                .and_then(|n| n.attrs.get("proof_evidence"))
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default()
+        }
+
+        #[test]
+        fn a_same_file_test_reference_increments_proven_by_and_records_its_evidence() {
+            // The overwhelmingly common `#[cfg(test)] mod tests` idiom: `product.rs::product_fn` is
+            // defined, then a test in the SAME file references it. proven_by lands on the
+            // definition's OWN id directly - no bare placeholder, no second node.
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_code_entity(&p, 1, "product.rs", "product_fn", "function", 1, "rust");
+            apply_edge_inferred_evidence(&p, 2, "product.rs", "product_fn", 7);
+            let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
+            assert_eq!(
+                proven_by(&g, "product.rs::product_fn"),
+                1,
+                "one test-origin reference proves the entity once; got {:?}",
+                g.nodes
+            );
+            assert_eq!(
+                proof_evidence(&g, "product.rs::product_fn"),
+                vec!["product.rs:7".to_string()],
+                "the evidence list names the reference's own file:line"
+            );
+        }
+
+        #[test]
+        fn two_test_references_accumulate_proven_by_to_2_with_both_evidence_entries() {
+            // Spec 86 criterion 2's own literal Done-when example: "a product entity referenced by
+            // two test functions carries proven_by: 2 with both file:line's". One same-file, one
+            // cross-file (a `tests/` integration test), proving accumulation is not same-file-only.
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_code_entity(&p, 1, "product.rs", "product_fn", "function", 1, "rust");
+            apply_edge_inferred_evidence(&p, 2, "product.rs", "product_fn", 7);
+            apply_edge_inferred_evidence(&p, 3, "tests/integration.rs", "product_fn", 4);
+            let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
+            assert_eq!(
+                proven_by(&g, "product.rs::product_fn"),
+                2,
+                "two test-origin references accumulate to proven_by: 2; got {:?}",
+                g.nodes
+            );
+            assert_eq!(
+                proof_evidence(&g, "product.rs::product_fn"),
+                vec![
+                    "product.rs:7".to_string(),
+                    "tests/integration.rs:4".to_string()
+                ],
+                "both file:line evidence entries are recorded, in fold order"
+            );
+        }
+
+        #[test]
+        fn an_is_test_edge_creates_no_file_node_and_no_edge_of_any_kind() {
+            // Criterion 1's "never a node and never an edge on the canvas" promise extends to
+            // evidence: the referencing file (a tests/ integration file here) gets no KIND_FILE
+            // node, and NOTHING folds a REFERENCES/CALLS edge from it - only the target entity's
+            // attrs change.
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_code_entity(&p, 1, "product.rs", "product_fn", "function", 1, "rust");
+            apply_edge_inferred_evidence(&p, 2, "tests/integration.rs", "product_fn", 4);
+            let g = p
+                .subgraph(
+                    &["product.rs".to_string(), "tests/integration.rs".to_string()],
+                    2,
+                )
+                .unwrap();
+            assert!(
+                !g.nodes
+                    .iter()
+                    .any(|n| n.kind == KIND_FILE && n.id == "tests/integration.rs"),
+                "a test-origin reference's own file never becomes a KIND_FILE node; got {:?}",
+                g.nodes
+            );
+            assert!(
+                !g.edges.iter().any(|e| e.from == "tests/integration.rs"),
+                "a test-origin reference never folds an edge of any kind; got {:?}",
+                g.edges
+            );
+            assert_eq!(
+                proven_by(&g, "product.rs::product_fn"),
+                1,
+                "the evidence still landed on the product entity"
+            );
+        }
+
+        #[test]
+        fn recording_proof_never_wipes_the_entitys_own_name_kind_and_line_attrs() {
+            // record_proof MERGES via json_set/json_insert, never ensure_node's whole-attrs
+            // COALESCE-REPLACE - guards against a regression that would silently erase name/kind/
+            // line the moment a test proves the entity (see record_proof's own doc for why this
+            // matters: Node::attrs is BTreeMap<String,String>, and row_to_node's single
+            // serde_json::from_str over the whole blob fails SILENTLY to an empty map on any
+            // non-string value).
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_code_entity(&p, 1, "product.rs", "product_fn", "function", 1, "rust");
+            apply_edge_inferred_evidence(&p, 2, "product.rs", "product_fn", 7);
+            let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
+            let n = g
+                .nodes
+                .iter()
+                .find(|n| n.id == "product.rs::product_fn")
+                .expect("the entity still exists");
+            assert_eq!(n.attrs.get("name").map(String::as_str), Some("product_fn"));
+            assert_eq!(n.attrs.get("kind").map(String::as_str), Some("function"));
+            assert_eq!(n.attrs.get("line").map(String::as_str), Some("1"));
+            assert_eq!(n.attrs.get("lang").map(String::as_str), Some("rust"));
+        }
+
+        #[test]
+        fn a_cross_file_test_reference_resolves_by_name_when_the_definition_already_exists() {
+            // No same-file definition exists under the evidence's OWN referencing-file id
+            // ("other_tests.rs::product_fn" carries no name attr); resolution falls through to the
+            // first code-entity anywhere in the project carrying this exact name - mirroring
+            // reference_tier's own cross-file lookup.
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_code_entity(&p, 1, "product.rs", "product_fn", "function", 1, "rust");
+            apply_edge_inferred_evidence(&p, 2, "other_tests.rs", "product_fn", 9);
+            let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
+            assert_eq!(proven_by(&g, "product.rs::product_fn"), 1);
+            assert!(
+                !g.nodes.iter().any(|n| n.id == "other_tests.rs::product_fn"),
+                "no placeholder entity is ever manufactured under the referencing file's own \
+                 namespace; got {:?}",
+                g.nodes
+            );
+        }
+
+        #[test]
+        fn an_unresolvable_test_reference_is_staged_and_reconciled_once_its_definition_later_folds()
+        {
+            // A FORWARD reference: the evidence event folds BEFORE any matching definition exists
+            // anywhere (a test file that sorts before the file it tests, e.g. "aaa_tests.rs" before
+            // "zzz_product.rs"). It must not be lost - the SAME eventual-consistency shape
+            // reference_tier's AMBIGUOUS tier already accepts for structural edges.
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_edge_inferred_evidence(&p, 1, "aaa_tests.rs", "product_fn", 3);
+            // Before the definition exists, nothing is manufactured to carry the evidence.
+            let g = p.subgraph(&["aaa_tests.rs".to_string()], 1).unwrap();
+            assert!(
+                g.nodes.is_empty() && g.edges.is_empty(),
+                "an unresolvable test reference creates nothing while pending; got {:?} / {:?}",
+                g.nodes,
+                g.edges
+            );
+            // The definition folds later; reconciliation (from the TYPE_CODE_ENTITY_EXTRACTED arm)
+            // transfers the staged evidence onto it.
+            apply_code_entity(&p, 2, "zzz_product.rs", "product_fn", "function", 1, "rust");
+            let g = p.subgraph(&["zzz_product.rs".to_string()], 1).unwrap();
+            assert_eq!(
+                proven_by(&g, "zzz_product.rs::product_fn"),
+                1,
+                "the forward-referenced evidence is reconciled onto the definition once it folds; \
+                 got {:?}",
+                g.nodes
+            );
+            assert_eq!(
+                proof_evidence(&g, "zzz_product.rs::product_fn"),
+                vec!["aaa_tests.rs:3".to_string()]
+            );
+        }
+
+        #[test]
+        fn reconciliation_is_a_no_op_when_nothing_is_pending_for_a_newly_defined_entity() {
+            // The overwhelming common case (no forward reference at all): defining an entity with
+            // nothing staged for its name must not error or fabricate evidence.
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_code_entity(&p, 1, "product.rs", "product_fn", "function", 1, "rust");
+            let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
+            assert_eq!(proven_by(&g, "product.rs::product_fn"), 0);
+            assert!(proof_evidence(&g, "product.rs::product_fn").is_empty());
+        }
     }
 }
