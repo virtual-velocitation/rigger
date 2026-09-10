@@ -2257,23 +2257,31 @@ fn reference_tier(
 }
 
 /// Spec 86 criterion 2 (PROOF LANDS ON THE CARD): fold one TEST-ORIGIN reference (`r.is_test`)
-/// entirely as evidence, never as a structural fact. Resolves the PRODUCT entity `r` is evidence
-/// FOR via [`resolve_proof_target`] (same-file first, then the first cross-file name match -
-/// mirroring [`reference_tier`]'s own resolution, never a second, stricter authority) and, when
-/// found, folds the evidence onto it via [`record_proof`]; when not yet resolvable (a forward
-/// reference to a file the sorted ingest has not reached), stages it in `pending_proof` via
-/// [`stage_pending_proof`] for the `TYPE_CODE_ENTITY_EXTRACTED` arm's
-/// [`reconcile_pending_proof`] to pick up the moment a matching definition folds. Deliberately
-/// creates NO `file` node and NO edge of any kind - unlike the ordinary `TYPE_EDGE_INFERRED` arm,
-/// this reference's own referencing file is never even alias-resolved into a graph node, because
-/// criterion 1's "never a node and never an edge on the canvas" promise for excluded/test-origin
-/// content extends to its evidence too.
+/// entirely as evidence, never as a structural fact. When `r.fresh` marks this as the FIRST
+/// is_test reference of the referencing file's own batch, first retract that file's own PRIOR
+/// evidence contribution via [`supersede_file_proof`] (round 2,
+/// adv-u86c2-r-test-file-re-extraction-double-counts-its-own-unchanged-references) - this
+/// criterion's OWN supersession boundary for evidence, mirroring `supersede_file_edges`'s boundary
+/// for structural edges, never criterion 3's mechanism. Then resolves the PRODUCT entity `r` is
+/// evidence FOR via [`resolve_proof_target`] (same-file first, else the UNIQUE cross-file name
+/// match) and, when found, folds the evidence onto it via [`record_proof`]; when not yet
+/// resolvable (a forward reference to a file the sorted ingest has not reached, or an ambiguous
+/// name), stages it in `pending_proof` via [`stage_pending_proof`] for the
+/// `TYPE_CODE_ENTITY_EXTRACTED` arm's [`reconcile_pending_proof`] to pick up the moment a matching,
+/// UNAMBIGUOUS definition folds. Deliberately creates NO `file` node and NO edge of any kind -
+/// unlike the ordinary `TYPE_EDGE_INFERRED` arm, this reference's own referencing file is never
+/// even alias-resolved into a graph node beyond what supersession needs, because criterion 1's
+/// "never a node and never an edge on the canvas" promise for excluded/test-origin content extends
+/// to its evidence too.
 fn fold_test_evidence(
     tx: &Transaction,
     r: &super::EdgeInferred,
     project: &str,
 ) -> Result<(), Error> {
     let file = resolve_in_tx(tx, &r.file);
+    if r.fresh {
+        supersede_file_proof(tx, &file, project)?;
+    }
     let evidence = format!("{file}:{}", r.line);
     let same_file = code_entity_id(&file, &r.name);
     match resolve_proof_target(tx, &same_file, &r.name, project)? {
@@ -2282,17 +2290,96 @@ fn fold_test_evidence(
     }
 }
 
+/// Spec 86 criterion 2, round 2 (adv-u86c2-r-test-file-re-extraction-double-counts-its-own-
+/// unchanged-references): supersede-on-re-extract for EVIDENCE, mirroring
+/// [`supersede_file_edges`]'s per-file boundary discipline but over node ATTRS - evidence has no
+/// edge of its own to invalidate (criterion 1's "never a node and never an edge" promise holds for
+/// it too). Runs on the FIRST test-origin reference of a re-extracted file's own batch
+/// (`EdgeInferred::fresh`, stamped by [`crate::grounder::symbols::events::proof_events`]), BEFORE
+/// any evidence from the new batch folds: retracts every `<file>:<line>` entry THIS file
+/// previously contributed to any entity's `proof_evidence` - recomputing `proven_by` from the
+/// remaining list's length (never a naive decrement, so a count that ever drifted from the list
+/// can't drift further) - and drops any of this file's still-`pending_proof` rows the same way.
+/// The read-then-write per entity mirrors [`record_proof`]'s own documented reason for avoiding a
+/// nested `json_set`/`json_insert` write (a subtype-tagged json1 return value would store a bare
+/// array where a JSON-STRING is required).
+///
+/// A re-extraction of an UNCHANGED reference set therefore nets to the SAME `proven_by`/
+/// `proof_evidence` it started with (retract, then re-add via the fold below), and a reference an
+/// edit REMOVED simply stops being counted - never accretes, never lingers. A no-op on a file's
+/// very first extraction (nothing to retract yet).
+fn supersede_file_proof(tx: &Transaction, file: &str, project: &str) -> Result<(), Error> {
+    let prefix = format!("{file}:");
+    let rows: Vec<(String, String)> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT id, json_extract(attrs, '$.proof_evidence')
+                   FROM nodes
+                  WHERE kind = ?1 AND project = ?2
+                    AND json_extract(attrs, '$.proof_evidence') IS NOT NULL",
+            )
+            .map_err(be)?;
+        let out = stmt
+            .query_map(params![KIND_CODE_ENTITY, project], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .map_err(be)?;
+        out.collect::<Result<_, _>>().map_err(be)?
+    };
+    for (id, evidence_json) in rows {
+        let list: Vec<String> = serde_json::from_str(&evidence_json).unwrap_or_default();
+        let had = list.len();
+        let keep: Vec<String> = list
+            .into_iter()
+            .filter(|e| !e.starts_with(&prefix))
+            .collect();
+        if keep.len() != had {
+            let count = keep.len().to_string();
+            let list_json = serde_json::to_string(&keep).map_err(be)?;
+            tx.execute(
+                "UPDATE nodes SET attrs = json_set(
+                     attrs, '$.proven_by', ?2, '$.proof_evidence', ?3
+                 ) WHERE id = ?1 AND project = ?4",
+                params![id, count, list_json, project],
+            )
+            .map_err(be)?;
+        }
+    }
+    // This file's own still-unresolved forward-staged evidence (substr-prefix match, mirroring
+    // the community/concept grain-scoped supersession idiom elsewhere in this file - never a
+    // LIKE/GLOB whose wildcards a path could carry).
+    tx.execute(
+        "DELETE FROM pending_proof
+          WHERE project = ?1 AND substr(evidence, 1, length(?2)) = ?2",
+        params![project, prefix],
+    )
+    .map_err(be)?;
+    Ok(())
+}
+
 /// Spec 86 criterion 2: resolve the entity a test-origin reference named `name` (from `same_file`,
 /// the referencing file's own would-be `<file>::<name>` id) is evidence FOR. Same-file first - the
 /// overwhelmingly common `#[cfg(test)] mod tests` idiom, where `same_file` already carries a
 /// `name` attr because a product file's own definitions fold before its own test module's
-/// references (defs emit before refs, spec 29a) - else the first OTHER code-entity anywhere in
-/// `project` that defines this exact name, mirroring [`reference_tier`]'s own cross-file lookup
-/// verbatim (same non-unique-by-design `LIMIT 1`, never a stricter cross-file authority invented
-/// here). `None` when no definition is known YET (a forward reference to a file the sorted ingest
-/// has not reached, or a name genuinely undefined anywhere) - honest by construction, never
-/// confidently wrong: this never manufactures a placeholder entity merely to carry evidence about
-/// something that may not exist.
+/// references (defs emit before refs, spec 29a) - else the UNIQUE OTHER code-entity anywhere in
+/// `project` that defines this exact name. `None` when no definition is known YET (a forward
+/// reference to a file the sorted ingest has not reached, or a name genuinely undefined anywhere)
+/// OR when the name is AMBIGUOUS (2+ candidates) - honest by construction, never confidently
+/// wrong: this never manufactures a placeholder entity merely to carry evidence about something
+/// that may not exist, and never picks an arbitrary winner among several.
+///
+/// Round 2 (adv-u86c2-r-cross-file-name-match-misattributes-proof-to-the-wrong-entity): the
+/// original cross-file fallback mirrored [`reference_tier`]'s own `LIMIT 1` lookup verbatim, but
+/// the consequences differ in kind, not just degree. `reference_tier` only ever nudges a per-edge
+/// CONFIDENCE TIER - each reference keeps its own identity, and an under-confident tier is merely
+/// a weaker signal, never a wrong one. This fold AGGREGATES a count and an evidence list onto ONE
+/// shared node identity: two same-named entities in unrelated files could make the LIMIT-1 pick
+/// hand real credit to an unreferenced entity while the entity a test genuinely reaches renders
+/// the spec's own "no test reaches this entity" state - a confidently WRONG answer criterion 2's
+/// Done-when forbids. So this fold does NOT reuse `reference_tier`'s pattern: it requires the name
+/// to be UNIQUE among all project code-entities before resolving cross-file, staying unresolved
+/// (via `stage_pending_proof`, [`reconcile_pending_proof`]'s own ambiguity guard) rather than ever
+/// guessing.
 fn resolve_proof_target(
     tx: &Transaction,
     same_file: &str,
@@ -2312,15 +2399,24 @@ fn resolve_proof_target(
     if same_file_def {
         return Ok(Some(same_file.to_string()));
     }
-    tx.query_row(
-        "SELECT id FROM nodes
-          WHERE kind = ?1 AND project = ?2 AND json_extract(attrs, '$.name') = ?3
-          LIMIT 1",
-        params![KIND_CODE_ENTITY, project, name],
-        |r| r.get::<_, String>(0),
-    )
-    .optional()
-    .map_err(be)
+    let mut stmt = tx
+        .prepare(
+            "SELECT id FROM nodes
+              WHERE kind = ?1 AND project = ?2 AND json_extract(attrs, '$.name') = ?3",
+        )
+        .map_err(be)?;
+    let mut candidates = stmt
+        .query_map(params![KIND_CODE_ENTITY, project, name], |r| {
+            r.get::<_, String>(0)
+        })
+        .map_err(be)?
+        .collect::<Result<Vec<String>, _>>()
+        .map_err(be)?;
+    Ok(if candidates.len() == 1 {
+        candidates.pop()
+    } else {
+        None
+    })
 }
 
 /// Spec 86 criterion 2: fold one test-origin reference's evidence onto entity `id`'s attrs -
@@ -2405,16 +2501,37 @@ fn stage_pending_proof(
 /// right beside that arm's OWN `AMBIGUOUS`->`INFERRED` tier convergence (spec 29a criterion 2), so
 /// a forward-referenced test's evidence is never silently lost to fold order. Every staged row for
 /// this name transfers onto `entity` (via [`record_proof`], preserving the merge-not-replace
-/// discipline) and is removed from the stage - first definition to fold claims it, the SAME
-/// non-unique-by-design resolution [`resolve_proof_target`]'s cross-file lookup already accepts. A
-/// no-op (nothing queried, nothing deleted) when no evidence is pending for `name`, the overwhelming
-/// common case.
+/// discipline) and is removed from the stage - UNLESS `name` is currently AMBIGUOUS (round 2,
+/// adv-u86c2-r-cross-file-name-match-misattributes-proof-to-the-wrong-entity): this fires on
+/// EVERY fold of a matching definition, including a LATER re-extraction of one that already
+/// exists, so without this guard it would blindly hand a still-pending, genuinely ambiguous
+/// evidence entry to whichever same-named definition happens to (re-)fold next - reopening the
+/// exact misattribution [`resolve_proof_target`]'s OWN ambiguity guard refuses on the resolved
+/// path. Applies the SAME uniqueness rule: claim only when `entity` is the ONE code-entity of this
+/// name in `project` right now (checked by querying for any OTHER `id`), leaving the stage
+/// untouched otherwise. A no-op (nothing queried, nothing deleted) when no evidence is pending for
+/// `name`, the overwhelming common case.
 fn reconcile_pending_proof(
     tx: &Transaction,
     entity: &str,
     name: &str,
     project: &str,
 ) -> Result<(), Error> {
+    let ambiguous: bool = tx
+        .query_row(
+            "SELECT 1 FROM nodes
+              WHERE kind = ?1 AND project = ?2 AND id != ?3
+                AND json_extract(attrs, '$.name') = ?4
+              LIMIT 1",
+            params![KIND_CODE_ENTITY, project, entity, name],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(be)?
+        .is_some();
+    if ambiguous {
+        return Ok(());
+    }
     let evidences: Vec<String> = {
         let mut stmt = tx
             .prepare(
@@ -2471,10 +2588,32 @@ fn ensure_node(
     // space, and every other kind keeps first-writer-wins (their ids are distinct slug spaces -
     // decision / unit / agent / gate ids - that never collide with a path). This is the single
     // node-mutation authority, so the reconciliation lives here rather than in a second UPDATE path.
+    //
+    // MERGE, never whole-blob replace (spec 86 criterion 2 round 2:
+    // sdet-u86c2-r-fresh-refold-wipes-cross-file-proof). Before this fix, incoming non-empty attrs
+    // fully REPLACED the stored blob (`COALESCE(excluded.attrs, nodes.attrs)`), which silently
+    // erased whatever `record_proof`/`supersede_file_proof` had written directly onto a
+    // code-entity's attrs (`proven_by`/`proof_evidence`) the moment that SAME entity's own
+    // structural fields (`name`/`kind`/`line`/`lang`) re-asserted on a later, unrelated
+    // re-extraction of its file - the TYPE_CODE_ENTITY_EXTRACTED arm's `ensure_node` call carries
+    // only those four keys, never the evidence ones. `json_patch` (RFC 7396 merge) keeps every
+    // existing key the incoming attrs do not mention and overwrites only the ones they do, so a
+    // structural re-fold still updates `line` when a definition moves while leaving a DIFFERENT
+    // file's accumulated proof untouched - the two mutation paths (this one and
+    // `record_proof`/`supersede_file_proof`'s own merge-via-`json_set`) now compose instead of
+    // racing. Every OTHER caller of `ensure_node` passes attrs whose keys are either all-or-nothing
+    // stable across refolds (a decision's `summary`, a finding's `summary`/`by`/`unit`, a
+    // design-intent concept's `title`/`doc`) or empty, so none of them relied on the old
+    // whole-blob-replace semantics to drop a stale key - this is a pure widening, not a behavior
+    // change for any other fold arm. When the incoming attrs are empty (`excluded.attrs IS NULL`,
+    // a bare/defensive `ensure_node`), the existing attrs are left untouched exactly as before.
     tx.execute(
         "INSERT INTO nodes (id, kind, attrs, project) VALUES (?1, ?2, ?3, ?4)
          ON CONFLICT(id, project) DO UPDATE SET
-             attrs = COALESCE(excluded.attrs, nodes.attrs),
+             attrs = CASE
+                 WHEN excluded.attrs IS NULL THEN nodes.attrs
+                 ELSE json_patch(COALESCE(nodes.attrs, '{}'), excluded.attrs)
+             END,
              kind = CASE
                  WHEN nodes.kind = ?5 AND excluded.kind IN (?6, ?7, ?8, ?9, ?10)
                      THEN excluded.kind
@@ -3111,6 +3250,29 @@ mod tests {
     /// struct, so this exercises the exact wire shape a real emitter produces.
     fn apply_edge_inferred_evidence(p: &Projector, pos: u64, file: &str, name: &str, line: u32) {
         let payload = serde_json::json!({ "file": file, "name": name, "lang": "rust", "line": line, "is_test": true });
+        let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&payload).unwrap());
+        e.position = pos;
+        p.apply(&e).unwrap();
+    }
+
+    /// A test-origin evidence event carrying an explicit `fresh` (round 2, spec 86 criterion 2):
+    /// marks this event as the FIRST is_test reference of the referencing file's own batch,
+    /// mirroring [`apply_batch_ref`]'s structural `fresh` for evidence's own supersession
+    /// boundary (`supersede_file_proof`). Written independently of
+    /// [`apply_edge_inferred_evidence`] (never delegating to/from it) so each keeps its own
+    /// distinct shape.
+    fn apply_edge_inferred_evidence_fresh(
+        p: &Projector,
+        pos: u64,
+        file: &str,
+        name: &str,
+        line: u32,
+        fresh: bool,
+    ) {
+        let payload = serde_json::json!({
+            "file": file, "name": name, "lang": "rust", "line": line, "is_test": true,
+            "fresh": fresh,
+        });
         let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&payload).unwrap());
         e.position = pos;
         p.apply(&e).unwrap();
@@ -7778,6 +7940,135 @@ mod tests {
                 vec!["tests/integration.rs:4".to_string()],
                 "the evidence entry itself must survive the re-extraction too"
             );
+        }
+
+        #[test]
+        fn an_ambiguous_same_named_pair_never_gets_confident_credit_through_either_resolution_path()
+        {
+            // adv-u86c2-r-cross-file-name-match-misattributes-proof-to-the-wrong-entity (round
+            // 2): two UNRELATED files defining the identical name, then a cross-file is_test
+            // reference to that name from a third file with no local definition of its own - the
+            // shape that made `resolve_proof_target`'s old LIMIT-1 cross-file lookup pick an
+            // arbitrary winner, handing false credit to whichever entity the index happened to
+            // return first while the genuinely referenced one rendered the spec's own "no test
+            // reaches this entity" state. Ambiguous by name alone is honest by construction:
+            // neither candidate is ever confidently credited.
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_code_entity(&p, 1, "product.rs", "helper", "function", 1, "rust");
+            apply_code_entity(&p, 2, "other.rs", "helper", "function", 1, "rust");
+            apply_edge_inferred_evidence(&p, 3, "tests/it.rs", "helper", 9);
+            let seeds = ["product.rs".to_string(), "other.rs".to_string()];
+            let before = p.subgraph(&seeds, 1).unwrap();
+            assert_eq!(
+                proven_by(&before, "product.rs::helper"),
+                0,
+                "an ambiguous name must not confidently credit either candidate via \
+                 resolve_proof_target; got {:?}",
+                before.nodes
+            );
+            assert_eq!(proven_by(&before, "other.rs::helper"), 0);
+
+            // Then the OTHER resolution path: product.rs is edited elsewhere and re-extracts
+            // (fresh), re-firing TYPE_CODE_ENTITY_EXTRACTED for "helper". Its own
+            // `reconcile_pending_proof` call must apply the SAME uniqueness discipline - it must
+            // NOT claim the still-pending, still-ambiguous evidence merely because it is the one
+            // refolding right now, reopening the misattribution the resolved path above just
+            // refused.
+            apply_batch_def(&p, 4, "product.rs", "helper", 1, true);
+            let after = p.subgraph(&seeds, 1).unwrap();
+            assert_eq!(
+                proven_by(&after, "product.rs::helper"),
+                0,
+                "a re-fold must not retroactively claim an ambiguous name's pending evidence via \
+                 reconcile_pending_proof; got {:?}",
+                after.nodes
+            );
+            assert_eq!(proven_by(&after, "other.rs::helper"), 0);
+        }
+
+        /// One step of [`re_extracting_a_test_file_supersedes_rather_than_accretes_or_strands_its_own_evidence`]'s
+        /// walk: `tests/integration.rs` re-extracts fresh, this time referencing `name` at `line`,
+        /// and the two named product entities must land at exactly `want_product`/`want_other`
+        /// afterward. Table-driven (rather than three near-identical inline blocks) so the walk
+        /// reads as ONE progression - first proof, an unchanged re-fold, an edit that swaps which
+        /// entity the file reaches - over a single shared `Projector`.
+        struct SupersessionStep {
+            name: &'static str,
+            line: u32,
+            want_product: usize,
+            want_other: usize,
+        }
+
+        #[test]
+        fn re_extracting_a_test_file_supersedes_rather_than_accretes_or_strands_its_own_evidence() {
+            // adv-u86c2-r-test-file-re-extraction-double-counts-its-own-unchanged-references
+            // (round 2): editing a TEST file (adding an unrelated test, fixing a comment)
+            // changes its content hash and re-extracts the whole file, re-emitting every is_test
+            // reference it still contains. Without a per-file supersession boundary for evidence,
+            // each re-fold would append a NEW evidence entry for a still-present reference,
+            // permanently inflating `proven_by`; `supersede_file_proof` retracts this file's own
+            // prior evidence before the new batch folds - so the walk below nets to the SAME
+            // count across an unchanged step, and to ZERO once a later step's edit removes the
+            // reference entirely.
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_code_entity(&p, 1, "product.rs", "product_fn", "function", 1, "rust");
+            apply_code_entity(&p, 2, "product.rs", "other_fn", "function", 5, "rust");
+
+            let walk = [
+                SupersessionStep {
+                    name: "product_fn",
+                    line: 4,
+                    want_product: 1,
+                    want_other: 0,
+                },
+                SupersessionStep {
+                    name: "product_fn",
+                    line: 4,
+                    want_product: 1,
+                    want_other: 0,
+                },
+                SupersessionStep {
+                    name: "other_fn",
+                    line: 9,
+                    want_product: 0,
+                    want_other: 1,
+                },
+            ];
+            for (step_idx, step) in walk.iter().enumerate() {
+                let pos = 3 + step_idx as u64;
+                apply_edge_inferred_evidence_fresh(
+                    &p,
+                    pos,
+                    "tests/integration.rs",
+                    step.name,
+                    step.line,
+                    true,
+                );
+                let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
+                assert_eq!(
+                    proven_by(&g, "product.rs::product_fn"),
+                    step.want_product,
+                    "step {step_idx} (re-extracting with {:?}): product_fn; got {:?}",
+                    step.name,
+                    g.nodes
+                        .iter()
+                        .find(|n| n.id == "product.rs::product_fn")
+                        .map(|n| &n.attrs)
+                );
+                assert_eq!(
+                    proven_by(&g, "product.rs::other_fn"),
+                    step.want_other,
+                    "step {step_idx} (re-extracting with {:?}): other_fn",
+                    step.name
+                );
+                if step_idx == 1 {
+                    assert_eq!(
+                        proof_evidence(&g, "product.rs::product_fn"),
+                        vec!["tests/integration.rs:4".to_string()],
+                        "exactly one evidence entry survives the unchanged re-extraction, not two"
+                    );
+                }
+            }
         }
     }
 }
