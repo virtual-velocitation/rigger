@@ -43,11 +43,12 @@ pub fn index_events(idx: &SymbolIndex) -> Vec<Event> {
 /// file is lowered through the shared [`extract_events`] authority - the SAME per-file emit the
 /// fold tests and the incremental path use, so the whole-project ingest can never drift from a
 /// single file's. Returns `(file, events)` per file in the index's sorted path order; every
-/// non-out-of-line-excluded file contributes a batch (spec 86 criterion 2 round 3 -
-/// [`proof_events`] never returns empty, so a file whose evidence set is empty still contributes
-/// its one boundary event, alongside whatever [`extract_events`] itself emits). The caller keys
-/// each batch on its content, so an unchanged file is not re-ingested and a changed one
-/// re-extracts.
+/// non-out-of-line-excluded file contributes a batch, and that batch is NEVER empty (spec 86
+/// criterion 2 round 3 and criterion 3: neither [`proof_events`] nor [`extract_events`] itself
+/// ever returns empty - each stamps its own boundary-only sentinel when it has nothing real to
+/// say, so a file whose evidence set, structural set, or both are empty still contributes at
+/// least one boundary event). The caller keys each batch on its content, so an unchanged file is
+/// not re-ingested and a changed one re-extracts.
 pub fn project_batches(root: &str) -> Vec<(String, Vec<Event>)> {
     project_batches_paced(root, crate::parallel::default_workers()).0
 }
@@ -57,9 +58,9 @@ pub fn project_batches(root: &str) -> Vec<(String, Vec<Event>)> {
 /// the batches come back in the index's SORTED path order (index-preserving), so the emit is
 /// byte-identical to a serial walk's however the pool interleaved. `workers <= 1` runs the lowering
 /// inline - the serial walk a wider walk is compared against. Each file is lowered through the ONE
-/// [`extract_events`] authority (never a second parallel copy) alongside [`proof_events`], which
-/// together never leave a (non-out-of-line-excluded) file's own batch empty. Returns `(batches,
-/// workers_engaged)`.
+/// [`extract_events`] authority (never a second parallel copy) alongside [`proof_events`] - NEITHER
+/// of which ever returns empty (see each function's own doc) - so a (non-out-of-line-excluded)
+/// file's own batch is never empty either. Returns `(batches, workers_engaged)`.
 pub fn project_batches_paced(root: &str, workers: usize) -> (Vec<(String, Vec<Event>)>, usize) {
     let idx = crate::grounder::symbols::store::load(root)
         .unwrap_or_else(|| crate::grounder::symbols::build_index(root, None));
@@ -92,18 +93,25 @@ pub fn project_batches_paced(root: &str, workers: usize) -> (Vec<(String, Vec<Ev
 /// folding this batch. Re-extracting a changed file therefore REPLACES its structural edges rather
 /// than accreting duplicates, while the old edges stay in the graph with `valid_to` stamped (a
 /// historical query still reaches them). Which event is first is deterministic (the first
-/// definition when the file defines anything, else the first reference), so a refs-only file still
-/// supersedes; a file that extracts to nothing emits no events and thus no boundary.
+/// definition when the file defines anything, else the first reference) - EXCEPT when the file's
+/// surviving definition/reference set is itself empty (spec 86 criterion 3, THE MIGRATION IS
+/// DELIBERATE): rather than emit no events and thus no boundary, this now returns exactly
+/// [`empty_structural_boundary_event`] as the file's WHOLE batch, so re-extracting a file down to
+/// nothing STILL supersedes its prior structural edges - see that function's own doc for why this
+/// changed and what it fixes. `extract_events` therefore never returns an empty `Vec`, mirroring
+/// [`proof_events`]'s own identical round-3 rule for evidence.
 ///
 /// Spec 86 criterion 1 (TESTS ARE NOT NODES): this is "the code-entity pass" the criterion names,
 /// so the exclusion rule lives here, at the ONE place both what a file's definitions/references
 /// ARE (`fs`) and where the file LIVES (`file`) are in hand together. Two exclusions, applied in
 /// this order:
 ///
-/// 1. **Whole file under a `tests/` directory** ([`is_under_tests_dir`]): emits NOTHING at all -
-///    no `CodeEntityExtracted`, no `EdgeInferred`, for any item the file defines or references,
-///    product-shaped or not. `fs` is left untouched (still PARSED, for grounding); this file
-///    simply contributes no batch, exactly like a file that extracts to nothing.
+/// 1. **Whole file under a `tests/` directory** ([`is_under_tests_dir`]): no `CodeEntityExtracted`
+///    and no `EdgeInferred` for any item the file defines or references, product-shaped or not.
+///    `fs` is left untouched (still PARSED, for grounding); this file contributes no REAL
+///    entity or edge, exactly like a file that extracts to nothing - it still stamps
+///    [`empty_structural_boundary_event`] as its whole batch (spec 86 criterion 3), never a
+///    genuine `CodeEntityExtracted`/named `EdgeInferred`.
 /// 2. **A `#[test]`/`#[cfg(test)]` region inside an otherwise-included file**
 ///    ([`crate::grounder::symbols::model::Def::is_test`] /
 ///    [`crate::grounder::symbols::model::SymRef::is_test`], computed once at extraction time):
@@ -115,10 +123,10 @@ pub fn project_batches_paced(root: &str, workers: usize) -> (Vec<(String, Vec<Ev
 /// references carry - `proven_by` counts and their `file:line`s - is a separate concern this
 /// criterion does not own.)
 pub fn extract_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
-    if is_under_tests_dir(file) {
-        return Vec::new();
-    }
     let lang = lang_str(fs.lang);
+    if is_under_tests_dir(file) {
+        return vec![empty_structural_boundary_event(file, lang)];
+    }
     let mut events = Vec::with_capacity(fs.defs.len() + fs.refs.len());
 
     let mut defs: Vec<&Def> = fs.defs.iter().filter(|d| !d.is_test).collect();
@@ -176,13 +184,70 @@ pub fn extract_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
     // Stamp the batch boundary onto the FIRST event (a definition if the file defines anything,
     // else the first reference), by re-serializing that one payload with `fresh = true`. Doing it
     // here - after the sorted defs-then-refs order is fixed - keeps the "which event is first"
-    // rule in one place and independent of whether the file has definitions. A file that emits no
-    // events (extracts to nothing) has no boundary, which is correct: it has no edges to supersede.
+    // rule in one place and independent of whether the file has definitions.
+    //
+    // Spec 86 criterion 3 (THE MIGRATION IS DELIBERATE): a file whose SURVIVING set is empty (an
+    // edit removed its last definition and reference, or every item it held was `is_test` and got
+    // filtered above) used to emit NOTHING here - correct on a file's very first extraction (there
+    // is genuinely nothing to supersede yet), but silently WRONG for a file re-extracting DOWN to
+    // empty: its whole batch (this function's own former `Vec::new()`) was dropped before ever
+    // reaching a sink, so the fold's `supersede_file_edges` never ran and the file's PRIOR live
+    // structural edges - a legacy test-entity node's own `CONTAINS`/`REFERENCES`/`CALLS` edge
+    // included, the exact shape a store that predates criterion 1's exclusion rule holds - stayed
+    // live forever. Mirroring [`proof_events`]'s own identical round-3 fix for evidence, this now
+    // stamps [`empty_structural_boundary_event`] as the file's WHOLE batch instead of nothing: an
+    // ordinary `is_test: false` `EdgeInferred` with an EMPTY `name` (never a real reference's
+    // name), always `fresh`. The fold's `TYPE_EDGE_INFERRED` arm still runs `supersede_file_edges`
+    // on ANY `fresh` event before looking at what else it carries, so this sentinel's supersede
+    // call retires the file's prior structural edges exactly as a genuine re-extraction would -
+    // while its own empty-name guard recognizes the sentinel and creates no node, no `KIND_FILE`
+    // container, and no edge of its own (see the fold arm's own doc). A no-op on the file's very
+    // first extraction (nothing yet to supersede), so the degenerate "genuinely empty product
+    // file" case costs one harmless no-op event, never a behavior change an operator would notice.
     if let Some(first) = events.first_mut() {
         set_fresh(first);
+    } else {
+        events.push(empty_structural_boundary_event(file, lang));
     }
 
     events
+}
+
+/// Spec 86 criterion 3 (THE MIGRATION IS DELIBERATE): the STRUCTURAL batch-boundary sentinel for a
+/// file whose surviving (non-`is_test`, non-`tests/`-dir) definition and reference set is EMPTY -
+/// riding the existing `EdgeInferred` shape with an EMPTY `name` (never a real reference's name)
+/// and `is_test: false` (never [`proof_events`]'s own EVIDENCE sentinel,
+/// [`empty_evidence_boundary_event`], which sets `is_test: true` and is this function's evidence-
+/// side twin) marking it boundary-only. Always `fresh`: this is ALWAYS a file's WHOLE structural
+/// batch (never returned alongside a real definition or reference - [`extract_events`]'s own
+/// end-of-function stamping marks a genuine survivor `fresh` instead), so it is unconditionally
+/// the batch's first and only event.
+///
+/// This is what makes "a file that now extracts to NOTHING... still stamps one [boundary]" (spec
+/// 86 Design, MIGRATION) true: the fold's `TYPE_EDGE_INFERRED` arm runs `supersede_file_edges` on
+/// ANY `fresh` event, so this sentinel's supersede call retires every LIVE structural edge this
+/// file's PRIOR extraction left - while its own empty-name guard recognizes the sentinel and
+/// creates no node, no `KIND_FILE` container, and no edge (the fold's "never a node and never an
+/// edge on the canvas" promise for excluded content, spec 86 criterion 1, holds through the
+/// migration too). Two callers reach this: a WHOLE `tests/`-dir file ([`is_under_tests_dir`], the
+/// central migration case named in the Design - every entity it ever held was test code) and the
+/// general "extracted to nothing" case at the end of [`extract_events`] (whatever survived
+/// filtering, if anything, amounted to zero definitions and zero references). Both are ONE rule,
+/// never two: [`extract_events`] never returns an empty `Vec`.
+fn empty_structural_boundary_event(file: &str, lang: &str) -> Event {
+    let payload = EdgeInferred {
+        file: file.to_string(),
+        name: String::new(),
+        lang: lang.to_string(),
+        fresh: true,
+        caller: None,
+        line: 0,
+        is_test: false,
+    };
+    Event::new(
+        TYPE_EDGE_INFERRED,
+        serde_json::to_vec(&payload).expect("edge payload serializes"),
+    )
 }
 
 /// Spec 86 criterion 2 (PROOF LANDS ON THE CARD): the TEST-EVIDENCE emission pass, run ALONGSIDE
@@ -914,19 +979,42 @@ mod tests {
     }
 
     #[test]
-    fn a_file_that_extracts_to_nothing_emits_no_boundary() {
-        // A file with no definitions and no references emits no events, so there is no boundary -
-        // correct, because it has no structural edges to supersede. This pins that the boundary is
-        // absent (not a spurious empty-payload event) in the degenerate case.
+    fn a_file_that_extracts_to_nothing_still_stamps_an_empty_structural_boundary() {
+        // Spec 86 criterion 3 (THE MIGRATION IS DELIBERATE): a file with no surviving definitions
+        // and no surviving references no longer emits NOTHING - it stamps exactly ONE boundary
+        // sentinel event instead, so a re-extraction still supersedes whatever structural edges
+        // this file held before (a legacy entity a prior extraction created, now gone). Mirrors
+        // `proof_events`'s own identical round-3 rule for evidence.
         let fs = FileSymbols {
             lang: Lang::Rust,
             defs: vec![],
             refs: vec![],
         };
         let events = extract_events("src/empty.rs", &fs);
+        assert_eq!(
+            events.len(),
+            1,
+            "a file that extracts to nothing still stamps exactly one boundary event, never an \
+             empty Vec; got {events:?}"
+        );
+        assert_eq!(
+            events[0].type_, TYPE_EDGE_INFERRED,
+            "the structural boundary rides the existing EdgeInferred shape - no new event type"
+        );
+        let v: serde_json::Value = serde_json::from_slice(&events[0].data).unwrap();
+        assert_eq!(
+            v.get("name").and_then(|n| n.as_str()),
+            Some(""),
+            "an empty name marks this record as boundary-only - no real definition or reference"
+        );
         assert!(
-            events.is_empty(),
-            "a file that extracts to nothing emits no events; got {events:?}"
+            !v.get("is_test").and_then(|b| b.as_bool()).unwrap_or(false),
+            "the STRUCTURAL sentinel is never an is_test event - that shape is proof_events's own \
+             evidence sentinel"
+        );
+        assert!(
+            fresh_of(&events[0]),
+            "the lone boundary event IS the file's whole structural batch, so it carries fresh"
         );
     }
 
@@ -954,29 +1042,47 @@ mod tests {
         }
     }
 
+    /// True when `events` carries only [`empty_structural_boundary_event`]'s own shape - one
+    /// `EdgeInferred` with an empty `name` - i.e. no REAL `CodeEntityExtracted` or named
+    /// `EdgeInferred` at all. The helper both spec 86 criteria 1 and 3 share for asserting "this
+    /// file contributed nothing real, only the boundary sentinel".
+    fn is_boundary_only(events: &[Event]) -> bool {
+        events.len() == 1
+            && events[0].type_ == TYPE_EDGE_INFERRED
+            && serde_json::from_slice::<serde_json::Value>(&events[0].data)
+                .unwrap()
+                .get("name")
+                .and_then(|n| n.as_str())
+                == Some("")
+    }
+
     #[test]
     fn extract_events_excludes_a_file_under_a_tests_directory_entirely() {
         // Spec 86 criterion 1: EVERY file under a `tests/` directory is excluded from the
-        // code-entity pass, wholesale - no CodeEntityExtracted, no EdgeInferred - regardless of
-        // what it defines or references (product-shaped content included, so the rule is a path
-        // rule, not a content sniff). A SIBLING file at the same content but a `src/` path still
-        // emits normally, proving the exclusion keys on the DIRECTORY, not the content.
+        // code-entity pass, wholesale - no CodeEntityExtracted, no named EdgeInferred - regardless
+        // of what it defines or references (product-shaped content included, so the rule is a path
+        // rule, not a content sniff); criterion 3 then requires it to still stamp the boundary-only
+        // sentinel rather than emit nothing (see `is_boundary_only`). A SIBLING file at the same
+        // content but a `src/` path still emits normally, proving the exclusion keys on the
+        // DIRECTORY, not the content.
         let fs = product_fs();
         assert!(
-            extract_events("tests/foo.rs", &fs).is_empty(),
-            "a top-level tests/ file emits nothing"
+            is_boundary_only(&extract_events("tests/foo.rs", &fs)),
+            "a top-level tests/ file emits nothing real, only the boundary sentinel; got {:?}",
+            extract_events("tests/foo.rs", &fs)
         );
         assert!(
-            extract_events("crate/tests/bar.rs", &fs).is_empty(),
-            "a NESTED tests/ directory (not just a top-level one) is excluded too"
+            is_boundary_only(&extract_events("crate/tests/bar.rs", &fs)),
+            "a NESTED tests/ directory (not just a top-level one) is excluded too; got {:?}",
+            extract_events("crate/tests/bar.rs", &fs)
         );
         assert!(
-            !extract_events("src/foo.rs", &fs).is_empty(),
+            !is_boundary_only(&extract_events("src/foo.rs", &fs)),
             "the exclusion is a DIRECTORY rule: a product path with the identical content still \
-             emits"
+             emits real events"
         );
         assert!(
-            !extract_events("src/testsuite.rs", &fs).is_empty(),
+            !is_boundary_only(&extract_events("src/testsuite.rs", &fs)),
             "a file that merely reads close to \"tests\" in its OWN name (not a directory \
              component) is never excluded"
         );
