@@ -684,6 +684,83 @@ fn a_deleted_test_reference_retracts_its_stale_proof_through_the_real_pipeline()
     );
 }
 
+/// A `tests/`-dir file that defines something but calls nothing - a real, tree-sitter-parsed file
+/// whose reference set is EMPTY from its very first extraction (never had evidence to lose, unlike
+/// [`a_deleted_test_reference_retracts_its_stale_proof_through_the_real_pipeline`]'s transitioning
+/// file above). A definition is never evidence, only a reference is, so `noop_helper`'s own
+/// definition here contributes nothing to `proof_events` either way.
+#[cfg(feature = "symbols")]
+const BLANK_TESTS_DIR_SRC: &str = "fn noop_helper() {}\n";
+
+#[cfg(feature = "symbols")]
+const QUIET_PRODUCT_SRC: &str = "fn quiet() {}\n\nfn heard() {}\n";
+
+#[cfg(feature = "symbols")]
+const QUIET_TEST_SRC: &str = "\
+#[test]
+fn checks_heard() {
+    heard();
+}
+";
+
+/// The OTHER half of round 3's boundary (`empty_evidence_boundary_event`'s "a lone sentinel creates
+/// nothing" contract, `sqlite.rs::proof_evidence_c2::
+/// the_empty_boundary_sentinel_never_resolves_records_or_stages_anything_for_its_empty_name`'s own
+/// in-crate proof of the SAME contract via a hand-built event) through the REAL pipeline: a
+/// `tests/`-dir file with a genuinely empty reference set, extracted FIRST (nothing to retract, the
+/// sentinel's OWN very first appearance), must fold to no node and no edge at all - never a stray
+/// `""`-named entity - and must leave no residue that corrupts an unrelated pair's ordinary proof
+/// extracted afterward in the SAME store.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_reference_free_tests_dir_files_first_extraction_creates_nothing_and_leaves_no_residue() {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::Projection;
+    use rigger::dash::card;
+
+    let root = tempfile::tempdir().unwrap();
+    root_write(&root, "tests/blank_helper.rs", BLANK_TESTS_DIR_SRC);
+
+    let p = Projector::open(":memory:", "test").unwrap();
+    let mut next_position = 1u64;
+    reextract_file(&root, &p, "tests/blank_helper.rs", &mut next_position);
+
+    let blank_only = p
+        .subgraph(&["tests/blank_helper.rs".to_string()], 2)
+        .unwrap();
+    assert!(
+        blank_only.nodes.is_empty() && blank_only.edges.is_empty(),
+        "a reference-free tests/-dir file's first extraction is a lone empty-boundary sentinel - \
+         nothing to supersede, so it must create nothing at all; nodes: {:?}, edges: {:?}",
+        blank_only.nodes,
+        blank_only.edges
+    );
+
+    // An unrelated product/test pair extracted afterward, in the SAME store, must prove normally -
+    // the earlier no-op sentinel left no pending_proof residue or empty-named entity for anything
+    // to (mis)inherit.
+    root_write(&root, "quiet.rs", QUIET_PRODUCT_SRC);
+    root_write(&root, "tests/quiet_check.rs", QUIET_TEST_SRC);
+    reextract_file(&root, &p, "quiet.rs", &mut next_position);
+    reextract_file(&root, &p, "tests/quiet_check.rs", &mut next_position);
+
+    let g = p.subgraph(&["quiet.rs".to_string()], 2).unwrap();
+    let heard = card(&g, "quiet.rs::heard").expect("quiet.rs::heard is a graph node");
+    assert_eq!(
+        heard.proven_by, 1,
+        "an unrelated pair extracted after the empty sentinel proves normally; card: {heard:?}"
+    );
+    assert_eq!(
+        heard.proof_evidence,
+        vec!["tests/quiet_check.rs:3".to_string()]
+    );
+    let quiet = card(&g, "quiet.rs::quiet").expect("quiet.rs::quiet is a graph node");
+    assert_eq!(
+        quiet.proven_by, 0,
+        "quiet is never referenced by a test; card: {quiet:?}"
+    );
+}
+
 // ---- the SERVED /api/graph?card= wire contract (both lanes) --------------------------------
 
 /// Start `serve` on a fresh ephemeral loopback port, fetch `GET <path>` once against a fixture-graph

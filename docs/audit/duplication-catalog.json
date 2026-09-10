@@ -20263,8 +20263,8 @@
       },
       {
         "file": "tests/proof_lands_on_the_card_periphery.rs",
-        "start_line": 696,
-        "end_line": 754,
+        "start_line": 773,
+        "end_line": 831,
         "name": "try_fetch_served"
       },
       {
@@ -20375,8 +20375,8 @@
       },
       {
         "file": "tests/proof_lands_on_the_card_periphery.rs",
-        "start_line": 696,
-        "end_line": 754,
+        "start_line": 773,
+        "end_line": 831,
         "name": "try_fetch_served"
       },
       {
@@ -20433,8 +20433,8 @@
       },
       {
         "file": "tests/proof_lands_on_the_card_periphery.rs",
-        "start_line": 758,
-        "end_line": 767,
+        "start_line": 835,
+        "end_line": 844,
         "name": "fetch_served"
       },
       {
@@ -20471,8 +20471,8 @@
       },
       {
         "file": "tests/proof_lands_on_the_card_periphery.rs",
-        "start_line": 771,
-        "end_line": 775,
+        "start_line": 848,
+        "end_line": 852,
         "name": "body_of"
       },
       {
@@ -22238,9 +22238,15 @@
         "start_line": 642,
         "end_line": 685,
         "name": "a_deleted_test_reference_retracts_its_stale_proof_through_the_real_pipeline"
+      },
+      {
+        "file": "tests/proof_lands_on_the_card_periphery.rs",
+        "start_line": 716,
+        "end_line": 762,
+        "name": "a_reference_free_tests_dir_files_first_extraction_creates_nothing_and_leaves_no_residue"
       }
     ],
-    "proposed_home": "proof_lands_on_the_card_periphery::support (consolidate these 2 sites into one function in this file)",
+    "proposed_home": "proof_lands_on_the_card_periphery::support (consolidate these 3 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
