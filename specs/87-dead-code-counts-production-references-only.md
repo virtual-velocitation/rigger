@@ -33,7 +33,10 @@ in this stage, with the removed items listed in the report (name, file:line) as
 `delete (compiler)`. Stage 1's known blind spot is the reason stage 2 exists: in a crate that
 is both a library and a binary, the `dead_code` lint never fires on a `pub` item, so every
 `pub fn` with zero real callers survives stage 1 looking clean. STAGE 2 is the reference sweep
-below, run on the tree stage 1 leaves behind.
+below, run on the tree stage 1 leaves behind. ORDER IS DECLARED, not coincidental: the plan
+chains the units with explicit `needs` edges - criterion 2's unit needs criterion 1's, criterion
+3's needs criterion 2's - so the sweep never runs before the compiler pass has integrated and
+the dispositions never run before the JSON exists.
 
 INSTRUMENT (stage 2), decided: extend `tests/simplification_audit.rs`'s scanner (which already classifies
 every fn frame as `is_test` via enclosing `#[cfg(test)]` mods and `#[test]` attributes) to
@@ -82,15 +85,18 @@ named by a `#[...]` attribute that registers it, listed explicitly in the report
 
 ## Notes (non-criteria)
 
-This spec changes no production code; deletions happen in the wave as section 6's new item 0.
-It lands after spec 86 only if 86 is already integrated when it runs; otherwise the graph
-cross-check follows the "before 86" rule above.
+Stage 1 is the only production change in this spec, and it is deletion only; the reference
+sweep's deletions happen in the wave as section 6's new item 0. Spec 86 is integrated, so the
+graph cross-check uses product-only degrees.
 
 ## Global constraints
 
 - Hyphens, never em dashes. Both feature lanes green (fmt, clippy -D warnings, test, default
   and --no-default-features); no-os-kill and reap audits green.
-- No production code changes; no new dependency; no new event type.
+- Production code changes ONLY in stage 1 and ONLY as deletions the compiler proves (what
+  `cargo minify` removes and what the promoted lints name); stages 2 and 3 change no production
+  code - the reference sweep's deletions happen in the wave as section 6 item 0. No new
+  dependency; no new event type.
 - The operator's installed rigger binary is never replaced or modified by any unit.
 
 ## Done when
