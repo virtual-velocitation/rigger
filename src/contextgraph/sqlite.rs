@@ -1144,11 +1144,31 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
             // so those findings are now resolved. The adjudicator's earlier SpawnResult marked
             // each upheld finding-of-this-unit (disposition=upheld, unit=<this unit>); expire
             // them now through the same shared authority the discard trigger uses. A finding
-            // upheld for a DIFFERENT unit, or upheld here but re-raised under a later run (a
-            // re-raise re-runs ensure_node, which COALESCE-overwrites the whole attrs and so
-            // clears the marker), carries no matching mark and is untouched - keeping the
-            // invalidation run-scoped by construction. Collect the marked ids deterministically
-            // (ORDER BY id) before mutating so the fold order never varies.
+            // upheld for a DIFFERENT unit, or upheld here but re-raised under a later run, carries
+            // no matching mark and is untouched - keeping the invalidation run-scoped by
+            // construction. Collect the marked ids deterministically (ORDER BY id) before
+            // mutating so the fold order never varies.
+            //
+            // Corrected (spec 86 criterion 2 round 3, arch-u86c2-r2-ensure-node-merge-silently-
+            // narrows-spec25-disposition-mark-erasure): a re-raise no longer clears the mark via a
+            // whole-blob COALESCE-replace - `ensure_node`'s `ON CONFLICT` now `json_patch`-MERGES
+            // (spec 86 criterion 2 round 2, so evidence attrs survive an unrelated structural
+            // re-fold). The run-scoping guarantee above ("upheld here but re-raised under a later
+            // run... carries no matching mark") still holds, but for a DIFFERENT, more fragile
+            // reason: `TYPE_REVIEW_FINDING`'s own `ensure_node` call (below) unconditionally
+            // re-supplies `unit` (production's `ReviewFinding.unit` defaults to an empty string) on
+            // EVERY fold including a re-raise, and json_patch OVERWRITES a key the incoming attrs
+            // DO mention - so the re-raise still knocks this SELECT's `unit = ?2` out of matching.
+            // `disposition` itself, which that same call never mentions, is NOT cleared any more
+            // (json_patch preserves a key the incoming attrs leave unmentioned) and persists on the
+            // node forever after a single upheld mark - harmless today only because nothing else
+            // ever reads `$.disposition` (grepped), so a re-raised finding that later integrates
+            // still correctly stays LIVE (the `unit` mismatch alone already prevents this SELECT
+            // from matching it). If a future change ever narrows `TYPE_REVIEW_FINDING`'s own
+            // `ensure_node` attrs to drop the near-always-empty `unit` key, this protection
+            // disappears silently with every gate still green - see
+            // `an_upheld_mark_never_expires_the_same_finding_re_raised_before_its_unit_integrates`'s
+            // own updated doc below for the regression this guards.
             let marked: Vec<String> = {
                 let mut stmt = tx
                     .prepare(
@@ -2273,6 +2293,17 @@ fn reference_tier(
 /// even alias-resolved into a graph node beyond what supersession needs, because criterion 1's
 /// "never a node and never an edge on the canvas" promise for excluded/test-origin content extends
 /// to its evidence too.
+///
+/// Round 3 (adv-u86c2-r2-deleted-test-reference-strands-proof-forever): an EMPTY `r.name` marks
+/// [`crate::grounder::symbols::events::proof_events`]'s own empty-boundary sentinel - the file's
+/// WHOLE evidence batch when its is_test reference set drops to zero. The supersede above (which
+/// runs on `r.fresh`, unconditionally of `r.name`) IS that sentinel's entire job: it retracts this
+/// file's own stale `proof_evidence` contribution, exactly as it does on an ordinary re-extraction.
+/// There is no real reference here to resolve or stage - `""` is never a genuine symbol name - so
+/// this returns immediately after the supersede rather than falling through to
+/// `resolve_proof_target`/`stage_pending_proof`, which would otherwise stage a bogus pending row
+/// under the empty name for `reconcile_pending_proof` to later hand to whichever entity happens to
+/// (mis)fold with an empty name of its own.
 fn fold_test_evidence(
     tx: &Transaction,
     r: &super::EdgeInferred,
@@ -2281,6 +2312,9 @@ fn fold_test_evidence(
     let file = resolve_in_tx(tx, &r.file);
     if r.fresh {
         supersede_file_proof(tx, &file, project)?;
+    }
+    if r.name.is_empty() {
+        return Ok(());
     }
     let evidence = format!("{file}:{}", r.line);
     let same_file = code_entity_id(&file, &r.name);
@@ -2601,12 +2635,26 @@ fn ensure_node(
     // structural re-fold still updates `line` when a definition moves while leaving a DIFFERENT
     // file's accumulated proof untouched - the two mutation paths (this one and
     // `record_proof`/`supersede_file_proof`'s own merge-via-`json_set`) now compose instead of
-    // racing. Every OTHER caller of `ensure_node` passes attrs whose keys are either all-or-nothing
-    // stable across refolds (a decision's `summary`, a finding's `summary`/`by`/`unit`, a
-    // design-intent concept's `title`/`doc`) or empty, so none of them relied on the old
-    // whole-blob-replace semantics to drop a stale key - this is a pure widening, not a behavior
-    // change for any other fold arm. When the incoming attrs are empty (`excluded.attrs IS NULL`,
-    // a bare/defensive `ensure_node`), the existing attrs are left untouched exactly as before.
+    // racing. Every OTHER caller of `ensure_node` passes attrs whose OWN keys are either
+    // all-or-nothing stable across refolds (a decision's `summary`, a finding's
+    // `summary`/`by`/`unit`, a design-intent concept's `title`/`doc`) or empty, so none of THEM
+    // relied on the old whole-blob-replace semantics to drop one of THEIR OWN stale keys - this is
+    // a pure widening for `ensure_node`'s own callers, not a behavior change for any other fold
+    // arm's OWN attrs.
+    //
+    // Narrower than it first reads, corrected (spec 86 criterion 2 round 3, arch-u86c2-r2-
+    // ensure-node-merge-silently-narrows-spec25-disposition-mark-erasure): that claim covers only
+    // keys `ensure_node`'s OWN callers write. A DIFFERENT writer - the spec-25 disposition-expiry
+    // mark (`$.disposition`/`$.unit`, set by a raw `json_set` UPDATE outside `ensure_node`
+    // entirely, on the SAME `KIND_FINDING` node `TYPE_REVIEW_FINDING`'s `ensure_node` call also
+    // writes) - DID rely on the old whole-blob-replace to get cleared on a re-raise. Under this
+    // merge it is not silently WRONG (the `TYPE_UNIT_INTEGRATED` fold arm's own doc above works
+    // out why the run-scoping guarantee it protects still holds, for a narrower and more fragile
+    // reason), but the widening is not the "no other fold arm relies on the old semantics" pure
+    // case this paragraph's own claim implies - a second writer sharing a node with an
+    // `ensure_node` caller is exactly the composability seam to check before widening this
+    // function again. When the incoming attrs are empty (`excluded.attrs IS NULL`, a
+    // bare/defensive `ensure_node`), the existing attrs are left untouched exactly as before.
     tx.execute(
         "INSERT INTO nodes (id, kind, attrs, project) VALUES (?1, ?2, ?3, ?4)
          ON CONFLICT(id, project) DO UPDATE SET
@@ -6146,14 +6194,22 @@ mod tests {
         // Spec 25, criterion 3 (disposition-expiry, RUN-SCOPING - the UPHELD-AND-ADDRESSED
         // trigger): a finding UPHELD for unit u1 under run A is MARKED (disposition=upheld,
         // unit=u1) and expires only when u1 INTEGRATES. If a LATER run B re-raises the SAME
-        // finding between the mark and the integrate, that re-raise re-runs ensure_node, whose
-        // ON CONFLICT COALESCE(excluded.attrs, nodes.attrs) overwrites the whole attrs and so
-        // CLEARS the stale mark, and appends fresh valid_to-NULL edges. So when u1 integrates,
-        // the run-B re-raised finding no longer matches the marked-for-u1 SELECT and stays LIVE,
-        // while a sibling still-marked finding (never re-raised) is correctly expired. This
-        // proves run A's upheld disposition never over-invalidates a run B re-raise (the
-        // cross-run over-invalidation guard). This criterion OWNS that run-scoping guarantee; it
-        // does NOT own the upheld-and-addressed trigger (criterion 2 does).
+        // finding between the mark and the integrate, that re-raise re-runs ensure_node (the
+        // TYPE_REVIEW_FINDING arm's own call, which unconditionally re-supplies `unit` -
+        // production's `ReviewFinding.unit` defaults to an empty string). Corrected (spec 86
+        // criterion 2 round 3, arch-u86c2-r2-ensure-node-merge-silently-narrows-spec25-
+        // disposition-mark-erasure): `ensure_node`'s `ON CONFLICT` no longer whole-blob-replaces
+        // via COALESCE - it `json_patch`-MERGES (spec 86 criterion 2 round 2) - so this re-raise
+        // does NOT clear the mark wholesale; it overwrites only the ONE key it re-supplies
+        // (`unit`, back to empty), which is enough on its own to knock the marked-for-u1 SELECT's
+        // `unit = ?2` out of matching (`disposition` survives untouched, unread anywhere else).
+        // Either way the finding no longer matches when u1 integrates and stays LIVE, while a
+        // sibling still-marked finding (never re-raised) is correctly expired. This proves run
+        // A's upheld disposition never over-invalidates a run B re-raise (the cross-run
+        // over-invalidation guard) - true under BOTH the old and the new `ensure_node` mechanism,
+        // for two different reasons; see the `TYPE_UNIT_INTEGRATED` fold arm's own updated doc
+        // for the fragility the NEW reason carries. This criterion OWNS that run-scoping
+        // guarantee; it does NOT own the upheld-and-addressed trigger (criterion 2 does).
         let p = Projector::open(":memory:", "test").unwrap();
 
         // Run A raises two findings about a.rs, both upheld for u1: f-reraised (which run B will
@@ -6174,8 +6230,9 @@ mod tests {
             r#"{"verdict":"approve","upheld":["f-control","f-reraised"]}"#,
         );
 
-        // A LATER run B re-raises ONLY f-reraised. The re-raise COALESCE-overwrites its attrs,
-        // clearing the disposition=upheld mark, and appends fresh live edges.
+        // A LATER run B re-raises ONLY f-reraised. The re-raise's ensure_node call json_patch-
+        // merges its attrs, overwriting `unit` (back to empty) while leaving `disposition`
+        // untouched, and appends fresh live edges.
         apply_review_finding(
             &p,
             4,
@@ -6194,8 +6251,8 @@ mod tests {
         assert!(
             after.nodes.iter().any(|n| n.id == "f-reraised"),
             "the finding re-raised under a later run B stays LIVE when u1 integrates - the \
-             re-raise cleared the stale upheld mark, so run A's disposition never over-invalidates \
-             a B re-raise"
+             re-raise's own ensure_node call overwrote the mark's unit token, so run A's \
+             disposition never over-invalidates a B re-raise"
         );
         assert!(
             after
@@ -8069,6 +8126,90 @@ mod tests {
                     );
                 }
             }
+        }
+
+        #[test]
+        fn a_files_evidence_dropping_to_zero_retracts_its_own_stale_contribution_via_the_empty_boundary_sentinel(
+        ) {
+            // Round 3 (adv-u86c2-r2-deleted-test-reference-strands-proof-forever): a file whose
+            // evidence set drops to zero (the ordinary case of deleting or rewriting the one test
+            // that proved something) must still retract its own stale contribution, not strand it
+            // forever. `proof_events` now emits an empty-name `is_test` sentinel as the file's
+            // WHOLE evidence batch in that case (see its own doc and
+            // `grounder::symbols::events::tests::
+            // proof_events_on_a_file_with_no_test_evidence_returns_a_boundary_only_sentinel_never_an_empty_vec`
+            // for proof `proof_events` itself emits it). This test drives `fold_test_evidence`
+            // DIRECTLY with that exact sentinel shape (`apply_edge_inferred_evidence_fresh` with an
+            // empty name), bypassing `proof_events` itself, to pin the FOLD's own contract: the
+            // supersede runs, and the empty name resolves/records nothing.
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_code_entity(&p, 1, "product.rs", "product_fn", "function", 1, "rust");
+            apply_edge_inferred_evidence_fresh(
+                &p,
+                2,
+                "tests/integration.rs",
+                "product_fn",
+                4,
+                true,
+            );
+            let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
+            assert_eq!(
+                proven_by(&g, "product.rs::product_fn"),
+                1,
+                "sanity: the test proves product_fn before its reference is retracted"
+            );
+
+            // The empty-name sentinel: the SAME shape proof_events now emits when
+            // tests/integration.rs's evidence set drops to zero.
+            apply_edge_inferred_evidence_fresh(&p, 3, "tests/integration.rs", "", 0, true);
+
+            let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
+            assert_eq!(
+                proven_by(&g, "product.rs::product_fn"),
+                0,
+                "the empty-boundary sentinel retracts this file's own stale contribution, not \
+                 merely leaves it uncounted; got {:?}",
+                g.nodes
+            );
+            assert!(
+                proof_evidence(&g, "product.rs::product_fn").is_empty(),
+                "the stale evidence entry is retracted from proof_evidence too; got {:?}",
+                g.nodes
+            );
+        }
+
+        #[test]
+        fn the_empty_boundary_sentinel_never_resolves_records_or_stages_anything_for_its_empty_name(
+        ) {
+            // A companion to the retraction test above, isolating the OTHER half of the fold's
+            // contract: an empty-name sentinel must never itself create a `pending_proof` row or
+            // credit any entity - it is boundary-only. A same-named entity ("" is never a real
+            // symbol name, but this guards the guard) must see no effect, and nothing lingers in
+            // `pending_proof` for reconciliation to later misattribute.
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_edge_inferred_evidence_fresh(&p, 1, "tests/only_sentinel.rs", "", 0, true);
+            let g = p
+                .subgraph(&["tests/only_sentinel.rs".to_string()], 1)
+                .unwrap();
+            assert!(
+                g.nodes.is_empty() && g.edges.is_empty(),
+                "a lone empty-boundary sentinel (a file's very first extraction, nothing to \
+                 supersede) creates nothing at all; got {:?} / {:?}",
+                g.nodes,
+                g.edges
+            );
+            // If the sentinel had wrongly staged evidence under the empty name, a LATER
+            // definition that happens to be named "" would wrongly inherit it. No production
+            // extraction ever names anything "" (see events.rs's own doc), but pinning this proves
+            // the fold guard, not merely the absence of a coincidental match.
+            apply_code_entity(&p, 2, "weird.rs", "", "function", 1, "rust");
+            let g = p.subgraph(&["weird.rs".to_string()], 1).unwrap();
+            assert_eq!(
+                proven_by(&g, "weird.rs::"),
+                0,
+                "the sentinel never staged pending evidence under its empty name; got {:?}",
+                g.nodes
+            );
         }
     }
 }
