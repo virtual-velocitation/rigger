@@ -40,6 +40,75 @@ pub struct Def {
     pub kind: Kind,
     pub name: String,
     pub line: u32,
+    /// Spec 86 criterion 1: whether this definition is TEST code - directly annotated
+    /// `#[test]`/`#[cfg(test)]` (or any `cfg(...)` predicate naming the `test` token, e.g.
+    /// `#[cfg(all(test, feature = "x"))]`), or nested inside such a definition (a plain helper
+    /// `fn` inside a `#[cfg(test)] mod tests { .. }` with no attribute of its own). Computed ONCE
+    /// during extraction ([`crate::grounder::symbols::extract::extract`]) from the source text
+    /// and byte ranges, which are NOT available downstream (a reused persisted index never
+    /// re-reads the source), so it must be carried on the definition itself rather than
+    /// re-derived later. The code-entity EMIT pass reads it to exclude test code from graph NODE
+    /// creation; the parser-free model here still records it - "still PARSED" - so grounding and
+    /// the reference-degree/hub primitives stay UNCHANGED (this field adds information, it drops
+    /// nothing). `#[serde(default)]` so a pre-86 persisted index loads with every definition
+    /// `is_test: false` (the safe default - never manufacturing a false exclusion of old data),
+    /// and the false (overwhelmingly common) case serializes with no key at all, byte-identical
+    /// to the pre-86 wire form.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_test: bool,
+    /// Round 6 (`op-u86c1-r5-close-every-remaining-test-shape` item 2): whether this `Module`-kind
+    /// definition is an OUT-OF-LINE declaration - Rust's `mod name;` form, which has no body of its
+    /// own and instead names a SEPARATE file the compiler resolves by its own file-per-module
+    /// convention. `mod name { .. }` (an INLINE module WITH a body) is never this - any
+    /// `#[cfg(test)]` on it already governs its own nested definitions directly, by containment
+    /// (`is_test`/`extract::test_regions`), with no cross-file resolution needed. Always `false` for
+    /// every non-`Module` kind, which never declares a file this way. Computed structurally in
+    /// [`crate::grounder::symbols::extract::extract`] (the node's own `body` field is absent iff the
+    /// declaration is out-of-line - a fact only the parsed tree, not the tags pass, can see), and
+    /// consumed at the events/index layer ([`crate::grounder::symbols::events::extract_events`]'s
+    /// module), the ONE place a `mod name;` declaration's OWN file and every OTHER file's path are
+    /// both already known, to resolve which file `name` names and exclude it wholesale when the
+    /// declaration is also `is_test` - the per-file extractor can never see that attribute itself,
+    /// since it lives in a DIFFERENT file's tree entirely. `#[serde(default)]` for the same
+    /// pre-86-index-compatibility reason as `is_test`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_out_of_line_module: bool,
+    /// Round 7 (`op-u86c1-r7-out-of-line-module-resolution-follows-rust`): the string value of a
+    /// `#[path = ".."]` attribute directly governing this `Module`-kind out-of-line declaration,
+    /// when one is present - rustc's own escape hatch from the file-per-module convention, taking
+    /// precedence over it entirely. `None` when no `#[path]` attribute governs this declaration
+    /// (the overwhelmingly common case) or the definition is not an out-of-line module at all.
+    /// Captured structurally in [`crate::grounder::symbols::extract::extract`] alongside
+    /// `is_out_of_line_module`, for the SAME reason: only the declaring file's own parsed tree
+    /// carries the attribute, so it must be carried on the definition since a reused persisted
+    /// index never re-reads the source. Consumed at the events/index layer
+    /// ([`crate::grounder::symbols::events`]'s `out_of_line_test_module_files`), which resolves it
+    /// relative to the declaring file's own directory. `#[serde(default)]` for the same
+    /// pre-86-index-compatibility reason as `is_test`/`is_out_of_line_module`; omitted from the
+    /// wire form when `None` so the overwhelmingly common case stays byte-identical to before this
+    /// field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_override: Option<String>,
+    /// Round 9 (`op-u86-c1-path-attribute-contract-is-rustc-s-and-unresolvable-never-excludes`):
+    /// the `/`-joined chain of enclosing INLINE `mod name { .. }` names (outermost first) this
+    /// out-of-line declaration sits nested inside, when any - the EXTRA directory-component chain
+    /// a `#[path]` override on it resolves under, one level per enclosing inline module, on top of
+    /// the declaring file's own module directory. `None` when the declaration sits directly at the
+    /// file's own top level (the overwhelmingly common case), in which case the override stays
+    /// directory-of-file-relative exactly as before this field existed. Verified against real
+    /// rustc (throwaway probe crates, not part of this tree): `mod outer { #[path = "foo.rs"] mod
+    /// inner; }` in `src/lib.rs` resolves `foo.rs` against `src/outer/foo.rs`, and the identical
+    /// nesting inside a LEAF file `src/parent.rs` resolves against `src/parent/outer/foo.rs` - the
+    /// file's own MODULE directory (what a plain, non-overridden out-of-line sibling of `parent.rs`
+    /// would already use) with `outer/` appended, never the file's bare directory. Captured
+    /// structurally in [`crate::grounder::symbols::extract::extract`] alongside
+    /// `is_out_of_line_module`/`path_override`, for the same reason: only the declaring file's own
+    /// parsed tree can see its ancestor `mod_item` nodes. Consumed at the events/index layer
+    /// ([`crate::grounder::symbols::events::resolve_out_of_line_target`]'s `#[path]`-override
+    /// branch). `#[serde(default)]` for the same pre-round-9-index-compatibility reason as the
+    /// other out-of-line fields; omitted from the wire form when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enclosing_inline_module_path: Option<String>,
 }
 
 /// A reference site: the referenced name, its 1-based line, and the ENCLOSING definition the
@@ -54,6 +123,14 @@ pub struct SymRef {
     pub line: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enclosing: Option<String>,
+    /// Spec 86 criterion 1, the reference-side twin of [`Def::is_test`]: whether this reference
+    /// occurs INSIDE a test region (a `#[test]` function, a `#[cfg(test)]` module, or anything
+    /// nested inside either). Computed the same way, at the same time, over the same byte ranges.
+    /// The code-entity emit pass reads it to exclude a test-scoped reference from becoming a
+    /// structural edge "on the canvas"; serde-defaulted and omitted when false for the same
+    /// byte-identical-wire-form reason as `Def::is_test`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_test: bool,
 }
 
 /// One file's extracted symbols, tagged with the language it was parsed as (the scope key for
@@ -228,11 +305,16 @@ mod tests {
                     kind: Kind::Function,
                     name: "parse".into(),
                     line: 3,
+                    is_test: false,
+                    is_out_of_line_module: false,
+                    path_override: None,
+                    enclosing_inline_module_path: None,
                 }],
                 refs: vec![SymRef {
                     name: "parse".into(),
                     line: 9,
                     enclosing: None,
+                    is_test: false,
                 }],
             },
         );
@@ -244,6 +326,10 @@ mod tests {
                     kind: Kind::Function,
                     name: "parse".into(),
                     line: 1,
+                    is_test: false,
+                    is_out_of_line_module: false,
+                    path_override: None,
+                    enclosing_inline_module_path: None,
                 }],
                 refs: vec![],
             },
@@ -271,6 +357,7 @@ mod tests {
                         name: "new".into(),
                         line: 1,
                         enclosing: None,
+                        is_test: false,
                     }],
                 },
             );
@@ -283,11 +370,16 @@ mod tests {
                     kind: Kind::Function,
                     name: "apply_damage".into(),
                     line: 1,
+                    is_test: false,
+                    is_out_of_line_module: false,
+                    path_override: None,
+                    enclosing_inline_module_path: None,
                 }],
                 refs: vec![SymRef {
                     name: "apply_damage".into(),
                     line: 2,
                     enclosing: None,
+                    is_test: false,
                 }],
             },
         );
@@ -320,6 +412,7 @@ mod tests {
                 name: format!("hapax_{i}"),
                 line: 1,
                 enclosing: None,
+                is_test: false,
             });
         }
         // Two genuine high-degree outliers (degree 15 each) - the real hubs.
@@ -328,11 +421,13 @@ mod tests {
                 name: "hub_a".into(),
                 line: 1,
                 enclosing: None,
+                is_test: false,
             });
             refs.push(SymRef {
                 name: "hub_b".into(),
                 line: 1,
                 enclosing: None,
+                is_test: false,
             });
         }
         idx.insert_file(
@@ -384,6 +479,7 @@ mod tests {
                     name: name.into(),
                     line: 1,
                     enclosing: None,
+                    is_test: false,
                 });
             }
         }
@@ -420,6 +516,7 @@ mod tests {
                         name: "parse".into(),
                         line: 1,
                         enclosing: None,
+                        is_test: false,
                     }],
                 },
             );
@@ -434,6 +531,7 @@ mod tests {
                     name: "parse".into(),
                     line: 3,
                     enclosing: None,
+                    is_test: false,
                 }],
             },
         );
@@ -447,6 +545,7 @@ mod tests {
                         name: "new".into(),
                         line: 1,
                         enclosing: None,
+                        is_test: false,
                     }],
                 },
             );
@@ -487,11 +586,16 @@ mod tests {
                     kind: Kind::Method,
                     name: "apply_damage".into(),
                     line: 7,
+                    is_test: false,
+                    is_out_of_line_module: false,
+                    path_override: None,
+                    enclosing_inline_module_path: None,
                 }],
                 refs: vec![SymRef {
                     name: "clamp".into(),
                     line: 9,
                     enclosing: None,
+                    is_test: false,
                 }],
             },
         );
