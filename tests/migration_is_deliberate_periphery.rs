@@ -4,20 +4,29 @@
 //!
 //! Two boundaries this file closes:
 //!
-//!  - The emit+fold seam through the crate's PUBLIC API, over fixtures of its own, for BOTH of
-//!    `extract_events`'s boundary-sentinel return sites (see that function's own doc in
-//!    `grounder/symbols/events.rs`): the whole-`tests/`-dir exclusion (`is_under_tests_dir`, the
-//!    CENTRAL migration case the Design names) and the end-of-function "survived filtering down
-//!    to nothing" case (an in-file `#[cfg(test)]` re-wrap of a product item). The implementer's
-//!    own coverage of this seam is either in-crate with a HAND-BUILT event payload
+//!  - The emit+fold seam through the crate's PUBLIC API, over fixtures of its own, for ALL THREE
+//!    exclusion shapes criterion 1 established and this criterion's retirement mechanism must
+//!    reach: `extract_events`'s own two boundary-sentinel return sites (see that function's own
+//!    doc in `grounder/symbols/events.rs`) - the whole-`tests/`-dir exclusion (`is_under_tests_dir`,
+//!    the CENTRAL migration case the Design names) and the end-of-function "survived filtering
+//!    down to nothing" case (an in-file `#[cfg(test)]` re-wrap of a product item) - PLUS the
+//!    OUT-OF-LINE `#[cfg(test)] mod name;` shape (round 5,
+//!    adj-u86c3-r4-out-of-line-exclusion-still-unmigrated), which is a distinct, CALLER-level
+//!    routing fix (`index_events`/`project_batches_paced`'s own `for_extraction` hollowing) rather
+//!    than a third branch inside `extract_events` itself - that exclusion set can only be computed
+//!    where every file's path in the project is known together, never from one file's own parse.
+//!    The implementer's own coverage of the first two shapes is either in-crate with a HAND-BUILT
+//!    event payload
 //!    (`sqlite.rs::migration_c3::re_ingesting_a_store_that_already_holds_test_entity_nodes_...`,
 //!    which never calls `extract_events` at all) or `conductor.rs`'s own
 //!    `re_excluding_the_same_file_twice_in_one_process_retires_its_middle_generation`, which does
 //!    drive the real filesystem and the real `extract_events`, but only through the PRIVATE
 //!    `RunCtx` machinery - so neither proves the crate's PUBLIC `extract_events` ->
 //!    `Projector::apply` composition an external caller (or a future refactor of either side
-//!    alone) actually holds. Mirrors `proof_lands_on_the_card_periphery.rs`'s own stated
-//!    precedent for criterion 2's identical class of gap.
+//!    alone) actually holds; the third (out-of-line) shape had NO coverage anywhere reaching the
+//!    real fold before this file's own addition below. Mirrors
+//!    `proof_lands_on_the_card_periphery.rs`'s own stated precedent for criterion 2's identical
+//!    class of gap.
 //!  - `rigger validate`'s RETIRED CODE-ENTITY advisory, driven end to end through the COMPILED
 //!    binary (stdout/stderr/exit code, exactly as an operator sees it) - never exercised at the
 //!    CLI boundary before this file: the implementer's own coverage
@@ -288,6 +297,103 @@ fn a_product_file_rewrapped_entirely_into_cfg_test_retires_its_prior_entity_thro
     assert!(
         !after.nodes.iter().any(|n| n.id == "wrapped.rs::folded"),
         "the re-wrapped entity is no longer live-reachable; nodes: {:?}",
+        after.nodes
+    );
+}
+
+/// The THIRD exclusion shape criterion 1 established, and the one this criterion's mechanism
+/// missed on the first attempt (round 5, adj-u86c3-r4-out-of-line-exclusion-still-unmigrated): an
+/// OUT-OF-LINE `#[cfg(test)] mod name;` declaration. Unlike the two siblings above, this exclusion
+/// is computed by `index_events`/`project_batches_paced`, one layer above `extract_events` itself
+/// (only there is every file's path in the project known together, so only there can the
+/// DECLARING file's attribute be resolved against its TARGET file) - so this test drives the
+/// PUBLIC `index_events`, not `extract_events` directly, reproducing the exact probe the
+/// adjudicator's own rejection ran by hand (`tests/_adjudicator_probe_out_of_line.rs`, reverted)
+/// through this crate's permanent test suite instead.
+#[cfg(feature = "symbols")]
+#[test]
+fn an_out_of_line_cfg_test_mod_declarations_target_retires_through_the_real_index_events_and_fold_seam(
+) {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::Projection;
+    use rigger::grounder::symbols::build_index;
+    use rigger::grounder::symbols::events::index_events;
+
+    let root = tempfile::tempdir().unwrap();
+    let lib_path = root.path().join("lib.rs");
+    // Generation 1: `lib.rs` and `contract.rs` are both ordinary product files - `contract.rs` is
+    // not yet named by any `mod` declaration at all, so it indexes and extracts as plain product
+    // code, exactly like any other file.
+    std::fs::write(&lib_path, "pub fn keep_me() {}\n").unwrap();
+    std::fs::write(
+        root.path().join("contract.rs"),
+        "pub fn assert_contract() {}\n",
+    )
+    .unwrap();
+
+    let p = Projector::open(":memory:", "test").unwrap();
+    let mut pos = 1u64;
+    let idx1 = build_index(root.path().to_str().unwrap(), None);
+    for mut ev in index_events(&idx1) {
+        ev.position = pos;
+        pos += 1;
+        p.apply(&ev).unwrap();
+    }
+    let before = p
+        .subgraph(&["lib.rs".to_string(), "contract.rs".to_string()], 2)
+        .unwrap();
+    assert!(
+        before
+            .nodes
+            .iter()
+            .any(|n| n.id == "contract.rs::assert_contract"),
+        "precondition: contract.rs::assert_contract is ordinary, live product code before any \
+         out-of-line declaration names it; nodes: {:?}",
+        before.nodes
+    );
+    assert_eq!(p.retired_code_entity_count().unwrap(), 0);
+
+    // Generation 2: `lib.rs` grows an out-of-line `#[cfg(test)] mod contract;` - `contract.rs`
+    // itself is untouched (Rust's own module system, not an attribute on the file itself, is what
+    // gates this), so a per-file view of `contract.rs` alone could never see the exclusion; only
+    // `index_events`'s own cross-file `out_of_line_test_module_files` resolution can.
+    std::fs::write(
+        &lib_path,
+        "pub fn keep_me() {}\n\n#[cfg(test)]\nmod contract;\n",
+    )
+    .unwrap();
+    let idx2 = build_index(root.path().to_str().unwrap(), None);
+    let mut events = index_events(&idx2);
+    // Deterministic re-ingest through the real PUBLIC pipeline, never a hand-built payload.
+    for ev in events.iter_mut() {
+        ev.position = pos;
+        pos += 1;
+        p.apply(ev).unwrap();
+    }
+
+    assert_eq!(
+        p.retired_code_entity_count().unwrap(),
+        1,
+        "the out-of-line-excluded file's own hollowed re-extraction (for_extraction) retires its \
+         prior structural entity through the SAME boundary-sentinel fold arm the other two \
+         shapes already use - the exact defect adj-u86c3-r4-out-of-line-exclusion-still-unmigrated \
+         found (retired_code_entity_count stayed 0 forever) is closed"
+    );
+    let after = p
+        .subgraph(&["lib.rs".to_string(), "contract.rs".to_string()], 2)
+        .unwrap();
+    assert!(
+        !after
+            .nodes
+            .iter()
+            .any(|n| n.id == "contract.rs::assert_contract"),
+        "the out-of-line-excluded entity is no longer live-reachable; nodes: {:?}",
+        after.nodes
+    );
+    assert!(
+        after.nodes.iter().any(|n| n.id == "lib.rs::keep_me"),
+        "an unrelated, untouched product entity in the DECLARING file survives the migration \
+         unchanged; nodes: {:?}",
         after.nodes
     );
 }
