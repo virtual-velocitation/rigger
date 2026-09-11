@@ -38,11 +38,20 @@ THE RECLAIM GUARD COMPARES PATHS, decided: `reap.rs` normalizes the joined path 
 and treats a target that no longer exists as already reclaimed (silent), so the refusal message
 appears only for a path that is genuinely outside the root.
 
-STEP RESOLVES THE MAIN WORKTREE, decided: `rigger step`, `rigger run` and `rigger workflow` derive
-the repository from `git rev-parse --git-common-dir` and operate on the MAIN worktree; invoked
-from inside a linked worktree they refuse with a message naming the main tree and the linked one
-(never a git error about a branch being "already used"), and the driver's courier command
-carries the main tree as an absolute path.
+STEP RESOLVES THE MAIN WORKTREE, AND EXACTLY ONE ROOT, decided: `rigger step`, `rigger run` and
+`rigger workflow` derive the repository from `git rev-parse --git-common-dir` and operate on the
+MAIN worktree; invoked from inside a linked worktree they refuse with a message naming the main
+tree and the linked one (never a git error about a branch being "already used"), and the
+driver's courier command carries the main tree as an absolute path. The step then requires ONE
+root: the store it opens must live at `<repo>/.rigger` for that same repo, and the scratch root
+it sweeps must be that repo's; when the git toplevel, the store's parent and the scratch root's
+parent are not the same directory the step refuses before any sweep or add, naming all three.
+Evidence (2026-09-11, u87c3): a spawn's full-suite `cargo test` ran a fixture nested under
+`.rigger/tmp/agent-scratch`; the fixture had its own store but no `.git`, so the step it drove
+resolved the REAL repo and REAL scratch root with the FIXTURE's unit-less events, and
+`sweep_terminal` removed every live unit worktree of the running spec-87 run. The runner-level
+`TMPDIR` relocation (spec 90 pattern, landed as operator config the same day) makes such nesting
+impossible for test processes; this rule makes the sweep safe even when it happens.
 
 PER-UNIT PIPELINING, decided: the driver treats each wave item as its own pipeline stage: when
 any worker records its result, the driver couriers a step immediately (steps stay serialized by
@@ -80,9 +89,12 @@ in-flight set; when its result lands the next step parks its successor.
 - [ ] a test proves THE RECLAIM GUARD COMPARES PATHS: a target under the root is reclaimed
   whether or not it still exists, with no refusal logged, and a target outside the root is still
   refused by name. This criterion OWNS `reap.rs`'s containment check only.
-- [ ] a test proves STEP RESOLVES THE MAIN WORKTREE: `rigger step` invoked from a linked worktree
-  operates on the main tree or refuses naming both trees, and the driver's courier command is
-  absolute. This criterion OWNS repository resolution in the three commands.
+- [ ] a test proves STEP RESOLVES THE MAIN WORKTREE AND ONE ROOT: `rigger step` invoked from a
+  linked worktree operates on the main tree or refuses naming both trees, the driver's courier
+  command is absolute, and a step whose git toplevel, store parent and scratch-root parent
+  differ refuses before any sweep with all three named - a fixture store nested inside a real
+  repository can no longer sweep that repository's worktrees. This criterion OWNS repository
+  and root resolution in the three commands.
 - [ ] a test proves PER-UNIT PIPELINING: with two units in one wave, the unit whose result lands
   first is reviewed while the other still builds, no running item is spawned twice, and the
   run reaches the same fixpoint. This criterion OWNS the driver loop; the conductor's parking is

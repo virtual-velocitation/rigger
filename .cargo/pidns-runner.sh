@@ -23,6 +23,19 @@
 #                         unprivileged user namespaces); never on an operator's workstation.
 # RIGGER_PIDNS_TRACE=1    print one line per invocation to stderr (proof that the runner ran).
 set -u
+# Scratch placement (2026-09-11): every test binary gets a TMPDIR OUTSIDE the repository.
+# A test fixture created under a TMPDIR nested inside the repo (agents pinned TMPDIR to
+# .rigger/tmp/agent-scratch) sits inside the real git tree: a fixture with its own .rigger
+# store but no .git resolves the REAL repo and the REAL scratch root while reading the
+# fixture's unit-less events, and the step it drives sweeps every live unit worktree as
+# terminal (u87c3, 2026-09-11 - all rigger-wt-* worktrees of a running spec vanished
+# mid-round). Twelve store-walk unit tests fail the same way for the same nesting. The
+# default lives on the large mount under the user cache, never under /tmp (the root
+# partition) and never under any .rigger; RIGGER_TEST_TMPDIR overrides it explicitly.
+# Applies to the RIGGER_PIDNS=off path too (CI), so the placement rule has one home.
+TMPDIR="${RIGGER_TEST_TMPDIR:-${XDG_CACHE_HOME:-$HOME/.cache}/rigger/test-tmp}"
+export TMPDIR
+mkdir -p "$TMPDIR" 2>/dev/null || true
 if [ "${RIGGER_PIDNS:-on}" = "off" ]; then
   exec "$@"
 fi
