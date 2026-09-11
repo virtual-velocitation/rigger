@@ -1564,7 +1564,7 @@ Every function in `src/conductor.rs`, `src/main.rs` and `src/dash.rs` (1504 func
 
 ## 2. Duplication Catalog
 
-696 clusters (3286 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
+696 clusters (3291 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
 
 ### Mandatory sweeps
 
@@ -8634,7 +8634,61 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/dash_run_tree_spine.rs:820-850` `a_pre_gate_unit_whose_implementer_finished_does_not_render_gates_failed`
 - `tests/dash_run_tree_spine.rs:861-898` `a_gates_cleared_unit_with_no_recorded_verdict_still_renders_gates_passed`
 
-#### `dup-0528` (near, 2 sites)
+#### `dup-0528` (exact, 7 sites)
+
+Proposed home: `a new shared module (sites span 7 files: tests/dead_code_json_contract_periphery.rs, tests/duplication_catalog_contract_periphery.rs, tests/gitsemver_path_inclusion_accounting_periphery.rs, tests/handbook_grounder_accuracy.rs, tests/prioritized_plan_citation_periphery.rs, tests/responsibility_map_contract_periphery.rs, tests/simplification_audit.rs)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `tests/dead_code_json_contract_periphery.rs:71-73` `repo_root`
+- `tests/duplication_catalog_contract_periphery.rs:76-78` `repo_root`
+- `tests/gitsemver_path_inclusion_accounting_periphery.rs:52-54` `repo_root`
+- `tests/handbook_grounder_accuracy.rs:33-35` `repo_root`
+- `tests/prioritized_plan_citation_periphery.rs:65-67` `repo_root`
+- `tests/responsibility_map_contract_periphery.rs:52-54` `repo_root`
+- `tests/simplification_audit.rs:1829-1831` `repo_root`
+
+#### `dup-0529` (exact, 3 sites)
+
+Proposed home: `a new shared module (sites span 3 files: tests/dead_code_json_contract_periphery.rs, tests/duplication_catalog_contract_periphery.rs, tests/responsibility_map_contract_periphery.rs)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `tests/dead_code_json_contract_periphery.rs:75-79` `read_committed_dead_code_raw`
+- `tests/duplication_catalog_contract_periphery.rs:80-84` `read_committed_catalog_raw`
+- `tests/responsibility_map_contract_periphery.rs:56-60` `read_committed_map_raw`
+
+#### `dup-0530` (exact, 3 sites)
+
+Proposed home: `a new shared module (sites span 3 files: tests/dead_code_json_contract_periphery.rs, tests/duplication_catalog_contract_periphery.rs, tests/responsibility_map_contract_periphery.rs)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `tests/dead_code_json_contract_periphery.rs:81-90` `deserialize_committed_dead_code`
+- `tests/duplication_catalog_contract_periphery.rs:86-95` `deserialize_committed_catalog`
+- `tests/responsibility_map_contract_periphery.rs:62-70` `deserialize_committed_map`
+
+#### `dup-0531` (exact, 3 sites)
+
+Proposed home: `a new shared module (sites span 3 files: tests/dead_code_json_contract_periphery.rs, tests/duplication_catalog_contract_periphery.rs, tests/responsibility_map_contract_periphery.rs)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `tests/dead_code_json_contract_periphery.rs:97-104` `the_committed_dead_code_json_deserializes_as_a_downstream_consumer_would`
+- `tests/duplication_catalog_contract_periphery.rs:102-110` `the_committed_duplication_catalog_deserializes_as_a_downstream_consumer_would`
+- `tests/responsibility_map_contract_periphery.rs:77-84` `the_committed_responsibility_map_deserializes_as_a_downstream_consumer_would`
+
+#### `dup-0532` (exact, 3 sites)
+
+Proposed home: `a new shared module (sites span 3 files: tests/dead_code_json_contract_periphery.rs, tests/duplication_catalog_contract_periphery.rs, tests/responsibility_map_contract_periphery.rs)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `tests/dead_code_json_contract_periphery.rs:202-215` `deserializing_then_reserializing_the_committed_dead_code_json_reproduces_the_committed_bytes_exactly`
+- `tests/duplication_catalog_contract_periphery.rs:299-311` `deserializing_then_reserializing_the_committed_catalog_reproduces_the_committed_bytes_exactly`
+- `tests/responsibility_map_contract_periphery.rs:225-237` `deserializing_then_reserializing_reproduces_the_committed_bytes_exactly`
+
+#### `dup-0533` (near, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/dedup_seeding_periphery.rs, tests/published_content_key_split_periphery.rs)`
 
@@ -8643,7 +8697,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/dedup_seeding_periphery.rs:390-398` `minted`
 - `tests/published_content_key_split_periphery.rs:400-408` `minted`
 
-#### `dup-0529` (near, 2 sites)
+#### `dup-0534` (near, 2 sites)
 
 Proposed home: `design_intent_events::support (consolidate these 2 sites into one function in this file)`
 
@@ -8652,7 +8706,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/design_intent_events.rs:209-255` `the_public_emit_lowers_every_concept_kind_onto_the_fold_arm_that_matches_it`
 - `tests/design_intent_events.rs:413-456` `the_public_link_emit_lowers_every_link_rel_onto_the_fold_arm_that_matches_it`
 
-#### `dup-0530` (near, 2 sites)
+#### `dup-0535` (near, 2 sites)
 
 Proposed home: `design_intent_events::support (consolidate these 2 sites into one function in this file)`
 
@@ -8660,55 +8714,6 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `tests/design_intent_events.rs:796-859` `every_recognized_end_user_usage_shape_is_dropped_before_the_fold`
 - `tests/design_intent_events.rs:965-1054` `a_design_word_in_a_non_handbook_usage_doc_does_not_leak_the_handbook_content_keep`
-
-#### `dup-0531` (exact, 6 sites)
-
-Proposed home: `a new shared module (sites span 6 files: tests/duplication_catalog_contract_periphery.rs, tests/gitsemver_path_inclusion_accounting_periphery.rs, tests/handbook_grounder_accuracy.rs, tests/prioritized_plan_citation_periphery.rs, tests/responsibility_map_contract_periphery.rs, tests/simplification_audit.rs)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `tests/duplication_catalog_contract_periphery.rs:76-78` `repo_root`
-- `tests/gitsemver_path_inclusion_accounting_periphery.rs:52-54` `repo_root`
-- `tests/handbook_grounder_accuracy.rs:33-35` `repo_root`
-- `tests/prioritized_plan_citation_periphery.rs:65-67` `repo_root`
-- `tests/responsibility_map_contract_periphery.rs:52-54` `repo_root`
-- `tests/simplification_audit.rs:1829-1831` `repo_root`
-
-#### `dup-0532` (exact, 2 sites)
-
-Proposed home: `a new shared module (sites span 2 files: tests/duplication_catalog_contract_periphery.rs, tests/responsibility_map_contract_periphery.rs)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `tests/duplication_catalog_contract_periphery.rs:80-84` `read_committed_catalog_raw`
-- `tests/responsibility_map_contract_periphery.rs:56-60` `read_committed_map_raw`
-
-#### `dup-0533` (exact, 2 sites)
-
-Proposed home: `a new shared module (sites span 2 files: tests/duplication_catalog_contract_periphery.rs, tests/responsibility_map_contract_periphery.rs)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `tests/duplication_catalog_contract_periphery.rs:86-95` `deserialize_committed_catalog`
-- `tests/responsibility_map_contract_periphery.rs:62-70` `deserialize_committed_map`
-
-#### `dup-0534` (exact, 2 sites)
-
-Proposed home: `a new shared module (sites span 2 files: tests/duplication_catalog_contract_periphery.rs, tests/responsibility_map_contract_periphery.rs)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `tests/duplication_catalog_contract_periphery.rs:102-110` `the_committed_duplication_catalog_deserializes_as_a_downstream_consumer_would`
-- `tests/responsibility_map_contract_periphery.rs:77-84` `the_committed_responsibility_map_deserializes_as_a_downstream_consumer_would`
-
-#### `dup-0535` (exact, 2 sites)
-
-Proposed home: `a new shared module (sites span 2 files: tests/duplication_catalog_contract_periphery.rs, tests/responsibility_map_contract_periphery.rs)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `tests/duplication_catalog_contract_periphery.rs:299-311` `deserializing_then_reserializing_the_committed_catalog_reproduces_the_committed_bytes_exactly`
-- `tests/responsibility_map_contract_periphery.rs:225-237` `deserializing_then_reserializing_reproduces_the_committed_bytes_exactly`
 
 #### `dup-0536` (exact, 2 sites)
 
@@ -10357,38 +10362,38 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded random index (seed `85072026`, `sample_indices` over all 6063 functions scanned in `src/` and `tests/`, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth from ever reshuffling this already-verified draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded random index (seed `85072026`, `sample_indices` over all 6071 functions scanned in `src/` and `tests/`, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth from ever reshuffling this already-verified draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
-- `src/conductor.rs:25412-25456` `spawn_env_adds_the_per_unit_cargo_target_dir_only_for_a_real_unit_worktree` - no duplicate found by reading
-- `src/conductor.rs:30241-30315` `partition_wave_own_batches_an_empty_radius_never_co_scheduling_it` - no duplicate found by reading
-- `src/config.rs:1463-1466` `brace_is_payload_bound` - no duplicate found by reading
-- `src/contextgraph/sqlite.rs:6335-6356` `unit_started_folds_to_no_node_or_edge` - no duplicate found by reading
-- `src/driver/replay.rs:996-1016` `parks_an_unrecorded_spawn_and_signals_the_frontier` - no duplicate found by reading
-- `src/driver/replay.rs:1596-1603` `reviewer` - caught: `dup-0160`
-- `src/gate.rs:384-386` `is_executable_file` - no duplicate found by reading
-- `src/gate.rs:1510-1518` `gate_cmd` - no duplicate found by reading
-- `src/grounder/design/extract.rs:748-761` `a_rationale_explains_the_file_it_annotates` - caught: `dup-0208`
-- `src/grounder/symbols/extract.rs:13-24` `kind_of` - no duplicate found by reading
-- `src/liveness.rs:189-197` `is_stale` - no duplicate found by reading
-- `src/main.rs:11786-11795` `shim_is_current` - no duplicate found by reading
-- `src/main.rs:13103-13147` `wait_for_dash_bind_or_diagnose_never_self_attributes_its_own_still_starting_spawn` - no duplicate found by reading
-- `src/main.rs:13272-13296` `ensure_run_dashboard_at_never_claims_a_phantom_holder_for_an_unheld_port` - no duplicate found by reading
-- `src/main.rs:15326-15336` `behind_the_tree_message_is_silent_when_either_side_is_unversioned` - caught: `dup-0239`
+- `src/conductor.rs:16176-16179` `apply` - no duplicate found by reading
+- `src/config.rs:1706-1739` `verdict_line_lint_never_false_positives_a_compliant_but_non_whitelisted_persona` - no duplicate found by reading
+- `src/contextgraph/sqlite.rs:1900-1910` `resolve_in_tx` - no duplicate found by reading
+- `src/contextgraph/sqlite.rs:6191-6252` `a_discard_under_run_a_never_suppresses_the_same_finding_re_raised_under_a_later_run_b` - no duplicate found by reading
+- `src/contextgraph/sqlite.rs:8286-8311` `the_empty_structural_boundary_sentinel_creates_no_node_and_no_edge_of_its_own` - no duplicate found by reading
+- `src/gate.rs:610-612` `resolve_mutation_layer` - no duplicate found by reading
+- `src/gate.rs:1124-1158` `exec_runner_exports_cargo_target_dir_only_when_given` - caught: `dup-0191`
+- `src/grounder/symbols/extract.rs:1273-1319` `extent_spans_a_destructuring_or_default_brace_signature_to_the_full_body` - caught: `dup-0214`
+- `src/ledger.rs:697-716` `a_failed_unit_is_not_terminal` - no duplicate found by reading
+- `src/main.rs:953-955` `legacy_identity_at` - no duplicate found by reading
+- `src/main.rs:5663-5678` `spawn_run_dashboard` - no duplicate found by reading
+- `src/main.rs:9731-9736` `is_empty` - caught: `dup-0094`
+- `src/main.rs:11325-11330` `skill_install_path` - no duplicate found by reading
+- `src/main.rs:16555-16609` `footprint_report_keys_agent_scratch_liveness_by_run_id_and_leaf_not_leaf_name_alone` - no duplicate found by reading
+- `src/main.rs:17129-17166` `find_store_dir_from_never_escapes_the_repo_into_a_parent_store` - no duplicate found by reading
 - `src/main.rs:20358-20380` `import_agents_rejects_an_id_colliding_with_an_existing_agent` - caught: `dup-0253`
-- `src/main.rs:23580-23592` `refusal_names_every_in_flight_spawn_id_and_the_count` - no duplicate found by reading
-- `src/mcpserver.rs:38-43` `invalid_params` - caught: `dup-0265`
-- `src/metrics.rs:1986-1996` `courier_finding` - caught: `dup-0277`
-- `src/spawn.rs:90-92` `spawn_id` - caught: `dup-0025`
-- `tests/architecture_current_surface.rs:49-54` `architecture_text` - caught: `dup-0346`
-- `tests/canary_findings_volume_periphery.rs:133-147` `item` - caught: `dup-0363`
-- `tests/cli.rs:14769-14870` `stats_canary_reports_the_per_tier_scorecard_from_the_canary_stream` - no duplicate found by reading
-- `tests/code_lens_view_periphery.rs:71-79` `community` - caught: `dup-0473`
-- `tests/gate_store_fence_periphery.rs:204-230` `build_topology` - no duplicate found by reading
-- `tests/simplification_audit.rs:7399-7413` `a_fn_passed_by_value_as_a_bare_call_argument_counts_as_a_reference` - caught: `dup-0652`
-- `tests/store_precedence.rs:315-355` `a_committed_kurrentdb_backend_with_no_credential_names_all_three_sources` - caught: `dup-0671`
-- `tests/store_secrets_periphery.rs:194-209` `redact_conn_scrubs_a_userinfo_that_carries_an_unencoded_reserved_char` - no duplicate found by reading
-- `tests/unified_traversal_grounding.rs:1515-1559` `the_spawn_prompt_design_intent_section_renders_the_newest_binding_and_elides_the_oldest` - caught: `dup-0690`
-- `tests/validate_advisories.rs:57-79` `run_stream_identity` - caught: `dup-0373`
+- `src/main.rs:22738-22759` `cmd_stats_on_a_never_run_project_says_no_runs_and_creates_no_db` - no duplicate found by reading
+- `src/reap.rs:467-475` `wait_until` - caught: `dup-0193`
+- `tests/cli.rs:49-71` `run_stream_identity` - caught: `dup-0373`
+- `tests/cli.rs:189-197` `git_ok` - caught: `dup-0389`
+- `tests/cli.rs:21844-21902` `step_honors_the_config_dash_off_opt_out` - no duplicate found by reading
+- `tests/code_entity_test_exclusion_periphery.rs:1555-1621` `project_batches_also_excludes_an_out_of_line_test_module_declarations_target_file` - no duplicate found by reading
+- `tests/concepts_derivation_cli.rs:354-424` `resolution_grains_coexist_and_a_rerun_supersedes_only_its_own_grain` - caught: `dup-0490`
+- `tests/dash_run_tree_spine.rs:398-427` `a_crashed_implementer_renders_no_gates_node` - no duplicate found by reading
+- `tests/heartbeat_write_read_agree_periphery.rs:269-276` `write_real_marker` - no duplicate found by reading
+- `tests/migration_is_deliberate_periphery.rs:463-485` `project_identity_of` - caught: `dup-0373`
+- `tests/reset_derived_compaction_periphery.rs:1095-1155` `the_usage_registry_advertises_the_derived_prune_and_every_mode_it_advertises_is_real` - no duplicate found by reading
+- `tests/reset_derived_live_writer_guard_periphery.rs:158-168` `reset_derived_prunes_when_no_run_has_ever_started` - caught: `dup-0614`
+- `tests/responsibility_map_contract_periphery.rs:56-60` `read_committed_map_raw` - caught: `dup-0529`
+- `tests/simplification_audit.rs:4591-4605` `normalize_rel_path` - no duplicate found by reading
 
 Two real recall gaps surfaced this way and were closed by widening the mechanical sweep with a new generalizable detector each - not a one-off citation - so the fix catches every present and future instance of its class, each pinned by a real-tree regression test: `find_proc_stat_or_status_readers` (decision `u85c2-proc-stat-worked-example`) groups every function reading a `/proc/<pid>/stat` or `/proc/<pid>/status` literal, closing the spec's own named worked example - `src/dash.rs:499-507` `process_state` next to `src/reap.rs:190-197` `pid_starttime`, the same job on the same file with a different field/shape, upheld at spec 62's capstone; `find_parallel_constructor_clusters` (decision `u85c2-parallel-constructor-sweep`) groups 2+ non-test functions per `(file, Self type)` that build a `Self { .. }` / `TypeName { .. }` literal, closing `src/spawn.rs`'s `SpawnResult::liveness_fault` reading MISSING from its own `ok`/`failed` cluster even though all three are parallel constructors for one struct. A third worked example, `exploration_graph` (independently defined test-fixture builders in `tests/dash_exploration_route_client_contract.rs` and `tests/dash_kg_graph_route.rs`), was already caught correctly by the plain Jaccard pass with no sweep needed - confirming the mechanical pass itself has real recall, not only the two widened sweeps. Two further real defects, found on review rather than in this draw, were closed the same way: a RECALL gap the architecture lens routed to this criterion by name across two prior review rounds - this file's own bespoke source-text lexer (`scan_file`/`tokenize`) duplicating the codebase's ONE canonical tree-sitter extractor, `src/grounder/symbols/extract.rs::extract` (its own module doc's claim, architecture 5.5.3) - closed by `find_bespoke_lexer_vs_canonical_extractor` (decision `u85c2-bespoke-lexer-sweep`), a fourth generalizable sweep; and a PRECISION defect the adversary found by reading every `same-named helper` cluster against `ScannedFn::enclosing_impl` - `find_same_named_helper_functions` was misclassifying REQUIRED trait-impl methods as coincidental duplication (`subscribe_all`/`subscribe_stream` across the `EventStore` trait's three backend adapters plus a test double, `blast_radius` across the `Grounder` trait's own default method, its override, and a test double) - closed by excluding members whose extracted Self type differs across the group when at least one comes from an actual `" for "` trait impl (decision `u85c2-same-named-helper-trait-impl-precision-fix`), mirroring `find_parallel_constructor_clusters`'s own `(file, Self type)` keying one function away. Round 7 (decision `u85c4-r7-exclude-periphery-file-from-adversarial-population`) excluded this criterion's own citation-guard periphery file from the draw's population (see this subsection's opening paragraph) and redrew the sample; every one of the 19 functions above marked "no duplicate found by reading" was re-read by hand against its host file's surrounding context, exactly as this THOROUGHNESS check requires whenever the draw changes. 18 of the 19 are genuinely not duplicates; `apply` at `src/conductor.rs:29832-29834` is one shape worth naming so it is not mistaken for a miss - a `Projection` test double's own required trait-impl body, the same port-default/adapter-override/test-double shape `find_same_named_helper_functions`'s trait-impl-precision fix (decision `u85c2-same-named-helper-trait-impl-precision-fix`) already excludes from clustering by design, confirmed to still hold for this draw's own instance of it. The 19th is a genuine small duplicate this catalog's `fn`-only scanner (module doc, THE SCANNER) structurally cannot represent as a cluster: `gate_verdict_event` (`src/conductor.rs:29191-29200`) and the `verdict` closure inside `integrating_a_unit_stales_the_intersecting_downstream_units_cached_verdict_not_the_rest` (`src/conductor.rs:30596-30605`) do the identical job - find the recorded `GateVerdict` for a `"<unit>/gate:g#<attempt>"` replay key, panicking with the same message when none exists - differing only in whether the unit segment is the literal `"s"` or a parameter. A `let`-bound closure is not a `fn` item, so no change to this scanner short of teaching it to see closures could catalog this pair as a cluster; named here, prominently, rather than silently, so a later refactor - or a scanner that learns to see closures - does not miss it.
 

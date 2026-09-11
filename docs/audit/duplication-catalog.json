@@ -20705,68 +20705,14 @@
   },
   {
     "id": "dup-0528",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "tests/dedup_seeding_periphery.rs",
-        "start_line": 390,
-        "end_line": 398,
-        "name": "minted"
-      },
-      {
-        "file": "tests/published_content_key_split_periphery.rs",
-        "start_line": 400,
-        "end_line": 408,
-        "name": "minted"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: tests/dedup_seeding_periphery.rs, tests/published_content_key_split_periphery.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-0529",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "tests/design_intent_events.rs",
-        "start_line": 209,
-        "end_line": 255,
-        "name": "the_public_emit_lowers_every_concept_kind_onto_the_fold_arm_that_matches_it"
-      },
-      {
-        "file": "tests/design_intent_events.rs",
-        "start_line": 413,
-        "end_line": 456,
-        "name": "the_public_link_emit_lowers_every_link_rel_onto_the_fold_arm_that_matches_it"
-      }
-    ],
-    "proposed_home": "design_intent_events::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-0530",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "tests/design_intent_events.rs",
-        "start_line": 796,
-        "end_line": 859,
-        "name": "every_recognized_end_user_usage_shape_is_dropped_before_the_fold"
-      },
-      {
-        "file": "tests/design_intent_events.rs",
-        "start_line": 965,
-        "end_line": 1054,
-        "name": "a_design_word_in_a_non_handbook_usage_doc_does_not_leak_the_handbook_content_keep"
-      }
-    ],
-    "proposed_home": "design_intent_events::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-0531",
     "classification": "exact",
     "sites": [
+      {
+        "file": "tests/dead_code_json_contract_periphery.rs",
+        "start_line": 71,
+        "end_line": 73,
+        "name": "repo_root"
+      },
       {
         "file": "tests/duplication_catalog_contract_periphery.rs",
         "start_line": 76,
@@ -20804,13 +20750,19 @@
         "name": "repo_root"
       }
     ],
-    "proposed_home": "a new shared module (sites span 6 files: tests/duplication_catalog_contract_periphery.rs, tests/gitsemver_path_inclusion_accounting_periphery.rs, tests/handbook_grounder_accuracy.rs, tests/prioritized_plan_citation_periphery.rs, tests/responsibility_map_contract_periphery.rs, tests/simplification_audit.rs)",
+    "proposed_home": "a new shared module (sites span 7 files: tests/dead_code_json_contract_periphery.rs, tests/duplication_catalog_contract_periphery.rs, tests/gitsemver_path_inclusion_accounting_periphery.rs, tests/handbook_grounder_accuracy.rs, tests/prioritized_plan_citation_periphery.rs, tests/responsibility_map_contract_periphery.rs, tests/simplification_audit.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0532",
+    "id": "dup-0529",
     "classification": "exact",
     "sites": [
+      {
+        "file": "tests/dead_code_json_contract_periphery.rs",
+        "start_line": 75,
+        "end_line": 79,
+        "name": "read_committed_dead_code_raw"
+      },
       {
         "file": "tests/duplication_catalog_contract_periphery.rs",
         "start_line": 80,
@@ -20824,13 +20776,19 @@
         "name": "read_committed_map_raw"
       }
     ],
-    "proposed_home": "a new shared module (sites span 2 files: tests/duplication_catalog_contract_periphery.rs, tests/responsibility_map_contract_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 3 files: tests/dead_code_json_contract_periphery.rs, tests/duplication_catalog_contract_periphery.rs, tests/responsibility_map_contract_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0533",
+    "id": "dup-0530",
     "classification": "exact",
     "sites": [
+      {
+        "file": "tests/dead_code_json_contract_periphery.rs",
+        "start_line": 81,
+        "end_line": 90,
+        "name": "deserialize_committed_dead_code"
+      },
       {
         "file": "tests/duplication_catalog_contract_periphery.rs",
         "start_line": 86,
@@ -20844,13 +20802,19 @@
         "name": "deserialize_committed_map"
       }
     ],
-    "proposed_home": "a new shared module (sites span 2 files: tests/duplication_catalog_contract_periphery.rs, tests/responsibility_map_contract_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 3 files: tests/dead_code_json_contract_periphery.rs, tests/duplication_catalog_contract_periphery.rs, tests/responsibility_map_contract_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0534",
+    "id": "dup-0531",
     "classification": "exact",
     "sites": [
+      {
+        "file": "tests/dead_code_json_contract_periphery.rs",
+        "start_line": 97,
+        "end_line": 104,
+        "name": "the_committed_dead_code_json_deserializes_as_a_downstream_consumer_would"
+      },
       {
         "file": "tests/duplication_catalog_contract_periphery.rs",
         "start_line": 102,
@@ -20864,13 +20828,19 @@
         "name": "the_committed_responsibility_map_deserializes_as_a_downstream_consumer_would"
       }
     ],
-    "proposed_home": "a new shared module (sites span 2 files: tests/duplication_catalog_contract_periphery.rs, tests/responsibility_map_contract_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 3 files: tests/dead_code_json_contract_periphery.rs, tests/duplication_catalog_contract_periphery.rs, tests/responsibility_map_contract_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0535",
+    "id": "dup-0532",
     "classification": "exact",
     "sites": [
+      {
+        "file": "tests/dead_code_json_contract_periphery.rs",
+        "start_line": 202,
+        "end_line": 215,
+        "name": "deserializing_then_reserializing_the_committed_dead_code_json_reproduces_the_committed_bytes_exactly"
+      },
       {
         "file": "tests/duplication_catalog_contract_periphery.rs",
         "start_line": 299,
@@ -20884,7 +20854,67 @@
         "name": "deserializing_then_reserializing_reproduces_the_committed_bytes_exactly"
       }
     ],
-    "proposed_home": "a new shared module (sites span 2 files: tests/duplication_catalog_contract_periphery.rs, tests/responsibility_map_contract_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 3 files: tests/dead_code_json_contract_periphery.rs, tests/duplication_catalog_contract_periphery.rs, tests/responsibility_map_contract_periphery.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+  },
+  {
+    "id": "dup-0533",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "tests/dedup_seeding_periphery.rs",
+        "start_line": 390,
+        "end_line": 398,
+        "name": "minted"
+      },
+      {
+        "file": "tests/published_content_key_split_periphery.rs",
+        "start_line": 400,
+        "end_line": 408,
+        "name": "minted"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: tests/dedup_seeding_periphery.rs, tests/published_content_key_split_periphery.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+  },
+  {
+    "id": "dup-0534",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "tests/design_intent_events.rs",
+        "start_line": 209,
+        "end_line": 255,
+        "name": "the_public_emit_lowers_every_concept_kind_onto_the_fold_arm_that_matches_it"
+      },
+      {
+        "file": "tests/design_intent_events.rs",
+        "start_line": 413,
+        "end_line": 456,
+        "name": "the_public_link_emit_lowers_every_link_rel_onto_the_fold_arm_that_matches_it"
+      }
+    ],
+    "proposed_home": "design_intent_events::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+  },
+  {
+    "id": "dup-0535",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "tests/design_intent_events.rs",
+        "start_line": 796,
+        "end_line": 859,
+        "name": "every_recognized_end_user_usage_shape_is_dropped_before_the_fold"
+      },
+      {
+        "file": "tests/design_intent_events.rs",
+        "start_line": 965,
+        "end_line": 1054,
+        "name": "a_design_word_in_a_non_handbook_usage_doc_does_not_leak_the_handbook_content_keep"
+      }
+    ],
+    "proposed_home": "design_intent_events::support (consolidate these 2 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
