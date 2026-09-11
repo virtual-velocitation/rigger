@@ -43,6 +43,21 @@
 //! This unit does NOT own dispositions, the knowledge-graph degree cross-check, or report
 //! section 4 (spec 87 Done-when: "criterion 3, NOT this one's"), so this file drives no binary
 //! and spawns no process - the whole surface to prove is the persisted data contract itself.
+//!
+//! ROUND 1 ACCOUNTING (decision `sdet-u87c2-r1-surface-accounting`, superseding
+//! `sdet-u87c2-surface-accounting` above): round 1's fix
+//! (`op-u87c2-round-1-closes-the-reference-classes-not-the-instances`) added a genuine NEW
+//! cross-module seam - a call from `tests/simplification_audit.rs` into the real production
+//! public API (`rigger::grounder::symbols::build_index` -> `events::index_events`) to prove the
+//! bespoke out-of-line-test-file resolver agrees with the canonical production one. The
+//! implementer's own 5 new tests already integration-test that PARITY property, on fixtures and
+//! on the real tree. What none of them pin is the COMMITTED ARTIFACT itself: a future edit to the
+//! generator's call site, or a stale regeneration, could reintroduce spec 87's own Goal-named
+//! misclassification (`src/eventstore/contract.rs`, `src/blast_radius_eval.rs` counted as
+//! production) even while the two resolvers still agree with each other in isolation. The four
+//! tests after the byte-for-byte round-trip proof below close that gap and pin round 0's three
+//! concrete fixed regressions (`adj-u87c2-r0-verdict-reject`) against the real committed file,
+//! not just the implementer's synthetic fixtures or a reviewer's throwaway manual grep.
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -254,5 +269,116 @@ fn deserializing_then_reserializing_the_committed_dead_code_json_reproduces_the_
         "{DEAD_CODE_PATH} does not round-trip byte-for-byte through the documented \
          DeadCodeCandidate shape - a downstream consumer decoding and re-encoding this file \
          would silently diverge from the committed artifact"
+    );
+}
+
+// -----------------------------------------------------------------------------------------
+// ROUND 1: pinning the reference-class fixes against the REAL committed file, from outside.
+// See the module doc comment's "ROUND 1 ACCOUNTING" section for why these four exist as a
+// periphery layer distinct from the implementer's own fixture-driven unit tests.
+// -----------------------------------------------------------------------------------------
+
+/// The real tree's own out-of-line test files, named explicitly rather than re-derived through
+/// the production pipeline's public API: spec 87's own Goal text names exactly these two
+/// (`src/eventstore/contract.rs`, `src/blast_radius_eval.rs`) as the worked misclassification
+/// example, and a fresh grep of the real tree today (`grep -rn 'cfg(test)' -A1 src/ | grep 'mod
+/// [a-z_0-9]*;'`) finds no third: `src/eventstore/mod.rs` declares `#[cfg(test)] pub mod
+/// contract;`, `src/lib.rs` declares `#[cfg(test)] mod blast_radius_eval;`. A hard-coded list
+/// deliberately does NOT re-derive the production resolver's effect here (that would duplicate
+/// `production_out_of_line_exclusion_set` in `tests/simplification_audit.rs`, which is already
+/// exercised, on fixtures and the real tree, by the implementer's own `resolvers_agree_on_*`
+/// tests) - this test's whole point is independence from that derivation: even if a future edit
+/// broke the resolver-agreement property in a way neither resolver's own self-comparison could
+/// see, a candidate from either of these two named files landing in the committed artifact would
+/// still be caught here.
+const KNOWN_OUT_OF_LINE_TEST_FILES: [&str; 2] =
+    ["src/eventstore/contract.rs", "src/blast_radius_eval.rs"];
+
+/// Round 1 class 3 (`op-u87c2-round-1-closes-the-reference-classes-not-the-instances`): the
+/// exact misclassification spec 87's own Goal names by name must never reappear in the committed
+/// artifact - checked here against the PERSISTED file, independent of whether the two resolvers
+/// happen to still agree with each other on some future fixture.
+#[test]
+fn no_committed_candidate_comes_from_a_known_out_of_line_test_file() {
+    let candidates = deserialize_committed_dead_code();
+    for c in &candidates {
+        assert!(
+            !KNOWN_OUT_OF_LINE_TEST_FILES.contains(&c.file.as_str()),
+            "{} ({}:{}) is listed as a production dead-code candidate, but {} is an out-of-line \
+             test file (declared behind #[cfg(test)] elsewhere) - the exact misclassification \
+             spec 87's own Goal names",
+            c.name,
+            c.file,
+            c.line,
+            c.file
+        );
+    }
+}
+
+/// Round 1 class 1 (mod-span test regions): `index_events` is spec 87's own Goal-cited worked
+/// example (a fn referenced only from a `use` sitting at a `#[cfg(test)] mod tests { .. }` top
+/// level, outside every fn body) - round 0 shipped a committed file where it was silently
+/// absent (`sdet-u87c2-mod-body-level-test-statements-leak-as-production-refs`). Checked by name
+/// and file only (not line): the fix this test guards is about mod-span test-region tracking,
+/// not about `index_events`'s own definition site, so asserting its line would make this test
+/// fail on any unrelated future edit that merely moves the function within its file.
+#[test]
+fn index_events_the_spec_goals_own_worked_example_is_present() {
+    let candidates = deserialize_committed_dead_code();
+    assert!(
+        candidates
+            .iter()
+            .any(|c| c.name == "index_events" && c.file == "src/grounder/symbols/events.rs"),
+        "index_events (src/grounder/symbols/events.rs) is absent from {DEAD_CODE_PATH} - a \
+         regression of the mod-span test-region fix, spec 87's own Goal-cited worked example"
+    );
+}
+
+/// Round 1 class 2 (attribute token trees are references): `default_build_config` is genuinely
+/// live via `#[serde(default = "default_build_config")]` in `src/config.rs` - round 0 shipped a
+/// false positive (`sdet-u87c2-serde-default-attr-string-ref-is-a-false-positive`) that would
+/// have scheduled a real, live function for deletion in the wave.
+#[test]
+fn default_build_config_referenced_only_via_a_serde_default_attribute_is_absent() {
+    let candidates = deserialize_committed_dead_code();
+    assert!(
+        !candidates.iter().any(|c| c.name == "default_build_config"),
+        "default_build_config appears in {DEAD_CODE_PATH} - a regression of the \
+         attribute-token-tree-reference fix: it is genuinely live via \
+         #[serde(default = \"default_build_config\")] in src/config.rs"
+    );
+}
+
+/// Round 1 class 4 (ambiguity is one class for every fn kind, adversary-found): two production
+/// free fns named `rebuild` (`src/distiller.rs` and `src/playbooks.rs`) shared one bare-name
+/// bucket; only `distiller::rebuild` has zero attributable references and must surface as
+/// `ambiguous: true` naming its live namesake, rather than silently vanishing from the JSON
+/// (`adv-u87c2-r0-free-fn-bare-name-collision-hides-a-genuinely-dead-fn`) - checked by the
+/// `ambiguous_with` citation's FILE component only (not its line), so an unrelated future edit
+/// that merely moves `rebuild` within `src/playbooks.rs` does not spuriously fail this test.
+#[test]
+fn distiller_rebuild_is_flagged_ambiguous_and_names_its_live_namesake_in_playbooks() {
+    let candidates = deserialize_committed_dead_code();
+    let rebuild = candidates
+        .iter()
+        .find(|c| c.name == "rebuild" && c.file == "src/distiller.rs")
+        .unwrap_or_else(|| {
+            panic!("rebuild (src/distiller.rs) is absent from {DEAD_CODE_PATH} entirely")
+        });
+    assert!(
+        rebuild.ambiguous,
+        "rebuild (src/distiller.rs:{}) is not flagged ambiguous, but a same-named live free fn \
+         exists at src/playbooks.rs - a regression of the free-fn ambiguity fix",
+        rebuild.line
+    );
+    assert!(
+        rebuild.ambiguous_with.iter().any(|c| c
+            .rsplit_once(':')
+            .is_some_and(|(file, _)| file == "src/playbooks.rs")),
+        "rebuild (src/distiller.rs:{})'s ambiguous_with {:?} does not cite src/playbooks.rs - a \
+         consumer reading this entry cannot find the live namesake that keeps it ambiguous \
+         rather than a confirmed deletion",
+        rebuild.line,
+        rebuild.ambiguous_with
     );
 }
