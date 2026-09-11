@@ -14,15 +14,20 @@ drifts them, and the conflict cost u86-c3 a remediation attempt and its lineage.
 ## Design
 
 THE TEST RUNNER MAKES GIT HERMETIC, decided: ONE place, not 43 - `.cargo/pidns-runner.sh`, which
-already wraps every test binary, exports `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`,
-`GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`/`GIT_COMMITTER_NAME`/`GIT_COMMITTER_EMAIL` fixed to
-`rigger-test <rigger-test@localhost>`, and `GIT_TERMINAL_PROMPT=0`; CI (runner opted out) sets
-the same block at workflow level in `.github/workflows/rust.yml`. Tests that set their own
-identity today keep working (env is a default, `-c` still wins); tests that ASSERTED on a signed
-commit, if any, are corrected to assert on the commit's content. Production code paths are
-untouched: a real `rigger` run still commits with the operator's own config, signing included.
-An audit test proves no test file or `#[cfg(test)]` body sets `commit.gpgsign` or
-`GIT_CONFIG_GLOBAL` itself - the runner is the single authority.
+already wraps every test binary. The signing half LANDED as operator config on 2026-09-11: the
+runner exports `GIT_CONFIG_COUNT=2` with `commit.gpgsign=false` and `tag.gpgsign=false`
+through git's environment-config channel, which overrides only those two keys and leaves the
+rest of the operator's config (`init.defaultBranch`, aliases) untouched - deliberately NOT
+`GIT_CONFIG_GLOBAL=/dev/null`, which would silently change fixture default-branch names. This
+spec completes the block: the runner also exports `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`/
+`GIT_COMMITTER_NAME`/`GIT_COMMITTER_EMAIL` fixed to `rigger-test <rigger-test@localhost>` and
+`GIT_TERMINAL_PROMPT=0`; CI (runner opted out) sets the identical block at workflow level in
+`.github/workflows/rust.yml`. Tests that set their own identity today keep working (env is a
+default, `-c` still wins); tests that ASSERTED on a signed commit, if any, are corrected to
+assert on the commit's content. Production code paths are untouched: a real `rigger` run is not
+under the runner and still commits with the operator's own config, signing included. An audit
+test proves no test file or `#[cfg(test)]` body sets `commit.gpgsign`, `GIT_CONFIG_GLOBAL` or
+`GIT_CONFIG_COUNT` itself - the runner is the single authority.
 
 THE DRIFT GUARD IS LINE-FREE, decided: the byte-guarded artifact is the catalog in a canonical
 line-free form - each site is `{file, fn, content_hash}` (the normalized-token hash spec 85
