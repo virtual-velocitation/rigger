@@ -272,6 +272,30 @@ impl Worktree {
         Ok(())
     }
 
+    /// Create a NEW branch ref `new_branch` pointing at `at_branch`'s CURRENT tip (spec
+    /// 88, ADOPTION KEYS ON THE CRITERION): a plain `git branch <new_branch> <at_branch>`,
+    /// so `at_branch` itself is left completely untouched - a new ref, never a rename, so
+    /// the prior unit's own branch name stays resolvable. This is how the conductor seeds
+    /// a FRESH unit's durable branch from a prior (differently-named) run's still
+    /// un-integrated unit that served the same criterion: once this ref exists,
+    /// [`Self::create`]'s ordinary adopt-by-path-lookup machinery reuses it exactly as it
+    /// reuses this unit's own prior work on any other resume.
+    ///
+    /// Returns the new branch's tip sha (== `at_branch`'s tip at the moment of creation)
+    /// so the caller can record it as adoption provenance. The caller is responsible for
+    /// confirming `new_branch` does not already exist ([`branch_exists`]) - `git branch`
+    /// refuses to clobber an existing ref, so a caller that races this against an
+    /// already-started unit fails loudly rather than silently re-pointing a durable
+    /// checkpoint.
+    pub fn create_branch_at(
+        repo: &str,
+        new_branch: &str,
+        at_branch: &str,
+    ) -> Result<String, Error> {
+        git(repo, &["branch", new_branch, at_branch])?;
+        Ok(git(repo, &["rev-parse", new_branch])?.trim().to_string())
+    }
+
     /// REVERT `commit` on the run branch checked out in `repo` (spec 12, unit 4): apply the
     /// inverse of the commit's diff and record it as a NEW commit carrying `message` (the
     /// compensation provenance) - never a history rewrite, so the reverse gear is evented and
@@ -651,8 +675,11 @@ fn parse_status_z(out: &str) -> Vec<String> {
 
 /// Whether a local branch ref exists in the repo. Used by [`Worktree::create`] to
 /// decide between creating the unit's deterministic branch and checking out the
-/// existing one (reusing a prior window's committed work).
-fn branch_exists(repo: &str, branch: &str) -> bool {
+/// existing one (reusing a prior window's committed work). Public so the conductor's
+/// ADOPTION KEYS ON THE CRITERION check (spec 88) can guard
+/// [`Worktree::create_branch_at`] against re-pointing a unit's branch that already
+/// exists, and confirm a prior unit's branch is still around before adopting it.
+pub fn branch_exists(repo: &str, branch: &str) -> bool {
     run_git(
         repo,
         &[
@@ -3091,6 +3118,76 @@ mod tests {
             "the adopted deterministic worktree carries the committed work"
         );
         wt2.remove().unwrap();
+    }
+
+    #[test]
+    fn create_branch_at_points_a_new_ref_at_a_prior_branchs_tip_without_touching_it() {
+        // Spec 88, ADOPTION KEYS ON THE CRITERION: the conductor seeds a FRESH unit's own
+        // branch as a NEW ref at a prior (differently-named) unit's tip - never a rename -
+        // so the prior branch name stays resolvable, and `Worktree::create`'s existing
+        // adopt-by-path-lookup machinery then reuses the new ref exactly like any other
+        // unit branch that already carries committed work.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let prior_branch = "rigger/u/prior-unit";
+        let dir = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let prior_wt =
+            Worktree::create(&repo_path, dir.to_str().unwrap(), prior_branch, "").unwrap();
+        std::fs::write(dir.join("checkpoint.txt"), "prior work\n").unwrap();
+        prior_wt.commit("rigger: prior unit checkpoint").unwrap();
+        let prior_tip = run_git(&repo_path, &["rev-parse", prior_branch])
+            .unwrap()
+            .trim()
+            .to_string();
+        prior_wt.remove().unwrap();
+
+        let new_branch = "rigger/u/new-unit";
+        assert!(
+            !branch_exists(&repo_path, new_branch),
+            "precondition: the new unit's branch does not exist yet"
+        );
+
+        let tip = Worktree::create_branch_at(&repo_path, new_branch, prior_branch).unwrap();
+        assert_eq!(
+            tip, prior_tip,
+            "the new ref's tip is the prior branch's tip at the moment of creation"
+        );
+        assert!(
+            branch_exists(&repo_path, new_branch),
+            "the new branch ref now exists"
+        );
+        assert!(
+            branch_exists(&repo_path, prior_branch),
+            "the prior branch name stays resolvable - a new ref, never a rename"
+        );
+
+        // `Worktree::create` then adopts the new ref exactly as any branch with prior work.
+        let dir2 = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let adopted = Worktree::create(&repo_path, dir2.to_str().unwrap(), new_branch, "").unwrap();
+        assert!(
+            dir2.join("checkpoint.txt").exists(),
+            "the adopted worktree checks out the prior unit's committed work"
+        );
+        adopted.remove().unwrap();
+    }
+
+    #[test]
+    fn create_branch_at_refuses_to_clobber_an_already_existing_branch() {
+        // The caller (the conductor's adoption check) is responsible for guarding this
+        // with `branch_exists` first - this test pins that `create_branch_at` itself never
+        // silently re-points an existing ref (which would discard whatever that branch
+        // already carries as a durable checkpoint).
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        run_git(&repo_path, &["branch", "rigger/u/prior"]).unwrap();
+        run_git(&repo_path, &["branch", "rigger/u/existing"]).unwrap();
+
+        let err = Worktree::create_branch_at(&repo_path, "rigger/u/existing", "rigger/u/prior")
+            .expect_err("create_branch_at must fail rather than clobber an existing branch");
+        assert!(
+            !err.to_string().is_empty(),
+            "the failure surfaces git's own refusal"
+        );
     }
 
     #[test]
