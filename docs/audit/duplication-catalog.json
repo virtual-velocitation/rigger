@@ -615,14 +615,14 @@
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 79,
-        "end_line": 79,
+        "start_line": 93,
+        "end_line": 93,
         "name": "Command::new"
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 91,
-        "end_line": 91,
+        "start_line": 105,
+        "end_line": 105,
         "name": "Command::new"
       },
       {
@@ -3053,8 +3053,8 @@
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 187,
-        "end_line": 217,
+        "start_line": 206,
+        "end_line": 236,
         "name": "baseline_only_cfg"
       },
       {
@@ -15371,8 +15371,8 @@
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 72,
-        "end_line": 87,
+        "start_line": 86,
+        "end_line": 101,
         "name": "init_repo"
       },
       {
@@ -15403,8 +15403,8 @@
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 90,
-        "end_line": 99,
+        "start_line": 104,
+        "end_line": 113,
         "name": "git_out"
       },
       {
