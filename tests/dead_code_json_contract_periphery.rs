@@ -58,6 +58,26 @@
 //! tests after the byte-for-byte round-trip proof below close that gap and pin round 0's three
 //! concrete fixed regressions (`adj-u87c2-r0-verdict-reject`) against the real committed file,
 //! not just the implementer's synthetic fixtures or a reviewer's throwaway manual grep.
+//!
+//! ROUND 2 ACCOUNTING (decision `sdet-u87c2-r2-surface-accounting`, superseding
+//! `sdet-u87c2-r1-surface-accounting` above): round 1's own remedy was itself rejected
+//! (`adj-u87c2-r1-verdict-reject`, upholding `sdet-u87c2-r1-impl-assoc-qualifier-drops-leading-
+//! impl-generics-reintroduces-false-positives`) for reintroducing 4 real false positives -
+//! `impl_assoc_qualifier`'s naive `split('<' | whitespace)` returned an EMPTY qualifier for any
+//! impl header carrying its OWN leading generic/lifetime parameters. Round 2
+//! (`u87c2-round-2-reuse-impl-self-type`) fixes this by delegating to the existing, separately
+//! tested `impl_self_type` helper instead of reproving the same grammar; probes 1-4 all stay
+//! empty (no new `pub` API, trait impl, CLI surface, or serialized-form field - the fix and its
+//! one disclosed extension, a leading `dyn`/`impl` keyword strip, are both purely-internal
+//! private-helper changes with no new cross-module seam). The one periphery-visible surface item:
+//! the fix removes 4 named false-positive candidates from the committed artifact -
+//! `Namespaced::new` (`src/eventstore/namespace.rs`), `ReplayDriver::new`
+//! (`src/driver/replay.rs`), `Buckets::new` (`src/dash.rs`), `Server::new` (`src/mcpserver.rs`) -
+//! a regression class round 1's periphery layer could not yet pin since it postdates round 1. The
+//! ROUND 2 test after the round-1 tests below closes that gap. EXEMPT: the `dyn`/`impl`-keyword
+//! strip itself has no committed-artifact fact to assert against (zero `impl dyn` blocks exist in
+//! `src/` today, confirmed inert per `adv-u87c2-r1-cheaper-fix-exists-reuse-impl-self-type`); it
+//! is correctly exercised only by the implementer's own unit test against synthetic input.
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -381,4 +401,45 @@ fn distiller_rebuild_is_flagged_ambiguous_and_names_its_live_namesake_in_playboo
         rebuild.line,
         rebuild.ambiguous_with
     );
+}
+
+// -----------------------------------------------------------------------------------------
+// ROUND 2: pinning the round-2 fix against the REAL committed file, from outside. See the
+// module doc comment's "ROUND 2 ACCOUNTING" section for the boundary-probe rerun this test
+// closes.
+// -----------------------------------------------------------------------------------------
+
+/// Round 2 (`u87c2-round-2-reuse-impl-self-type`, closing round 1's upheld defect
+/// `sdet-u87c2-r1-impl-assoc-qualifier-drops-leading-impl-generics-reintroduces-false-positives`,
+/// `adj-u87c2-r1-verdict-reject`): four live, widely-used constructors, each declared inside an
+/// `impl` block that carries ITS OWN leading generic/lifetime parameters
+/// (`impl<'a> Namespaced<'a>`, `impl<'a> ReplayDriver<'a>`, `impl<'g> Buckets<'g>`,
+/// `impl<'a> Server<'a>`), were false-flagged as zero-production-reference dead-code candidates
+/// in round 1's committed artifact: `impl_assoc_qualifier`'s naive
+/// `header.split(|c| c == '<' || c.is_whitespace()).next()` returned an EMPTY qualifier for a
+/// header that starts with `<` itself (the `impl` keyword is never stored in `enclosing_impl`),
+/// so it could never match the real `Type::name(`-shaped call sites that keep these constructors
+/// genuinely alive - the exact false-positive-feeds-a-possible-deletion direction spec 87's
+/// design says must never happen. Checked here by name+file only (not line): the fix is about
+/// qualifier RESOLUTION, not about any of these four functions' own definition sites, so an
+/// unrelated future edit that merely moves one within its file must not spuriously fail this
+/// test.
+#[test]
+fn generic_impl_header_constructors_previously_false_flagged_are_absent_from_the_committed_file() {
+    let candidates = deserialize_committed_dead_code();
+    for (name, file) in [
+        ("new", "src/eventstore/namespace.rs"), // Namespaced::new
+        ("new", "src/driver/replay.rs"),        // ReplayDriver::new
+        ("new", "src/dash.rs"),                 // Buckets::new
+        ("new", "src/mcpserver.rs"),            // Server::new
+    ] {
+        assert!(
+            !candidates.iter().any(|c| c.name == name && c.file == file),
+            "{name} ({file}) appears in {DEAD_CODE_PATH} - a regression of the round-2 \
+             impl_assoc_qualifier-reuses-impl_self_type fix: this constructor's enclosing impl \
+             block declares its own leading generic/lifetime parameters, and the pre-fix naive \
+             qualifier split returned empty for that header shape, silently dropping its real \
+             qualified call sites and false-flagging it dead"
+        );
+    }
 }
