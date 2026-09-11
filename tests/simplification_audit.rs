@@ -216,11 +216,29 @@ struct OutOfLineMod {
     path_override: Option<String>,
 }
 
-/// [`scan_file`]'s full result: every function found, plus every out-of-line `mod name;`
-/// declaration (spec 87 criterion 2's addition - see [`OutOfLineMod`]).
+/// One `mod name { .. }` (INLINE, WITH a body) block's own span - `start_line` the line of its
+/// opening `{`, `end_line` the line of its matching `}` (the SAME two-endpoint convention
+/// [`ScannedFn::start_line`]/[`end_line`] uses for a fn body). Spec 87 round-1 fix for
+/// `sdet-u87c2-mod-body-level-test-statements-leak-as-production-refs`
+/// (`op-u87c2-round-1-closes-the-reference-classes-not-the-instances` class 1, "TEST REGIONS ARE
+/// MOD SPANS"): a `use`/`const`/`static`/`type` item sitting directly inside a `#[cfg(test)] mod
+/// tests { .. }` block, ABOVE OR BETWEEN its `fn`s (never itself a [`ScannedFn`]), must still read
+/// as test code - `all_ident_ref_sites`'s `in_test_range` now checks this span too, not fn spans
+/// alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ModSpan {
+    start_line: usize,
+    end_line: usize,
+    is_test: bool,
+}
+
+/// [`scan_file`]'s full result: every function found, every out-of-line `mod name;` declaration
+/// (spec 87 criterion 2's addition - see [`OutOfLineMod`]), and every inline `mod name { .. }`
+/// block's own span (round 1's addition - see [`ModSpan`]).
 struct FileScanCore {
     fns: Vec<ScannedFn>,
     out_of_line_mods: Vec<OutOfLineMod>,
+    mod_spans: Vec<ModSpan>,
 }
 
 /// The real scanner behind [`scan_file`] (spec 85 criterion 1's original doc comment above still
@@ -254,12 +272,16 @@ fn scan_file_core(file: &str, content: &str) -> FileScanCore {
     let mut impl_stack: Vec<String> = Vec::new();
     let mut out: Vec<ScannedFn> = Vec::new();
     let mut out_of_line_mods: Vec<OutOfLineMod> = Vec::new();
+    let mut mod_spans: Vec<ModSpan> = Vec::new();
     let mut pending_cfg_test = false;
     let mut pending_visibility: Option<String> = None;
     let mut pending_path_override: Option<String> = None;
     // (start_line, is_test, name, visibility, body_start_line) for the fn currently open, one
     // per Fn frame depth.
     let mut open_fns: Vec<(usize, bool, String, String, usize)> = Vec::new();
+    // (start_line, is_test) for the inline `mod { .. }` currently open, one per Mod frame depth -
+    // mirrors `open_fns` (round 1's `ModSpan` addition).
+    let mut open_mods: Vec<(usize, bool)> = Vec::new();
 
     while i < n {
         let c = chars[i];
@@ -438,6 +460,10 @@ fn scan_file_core(file: &str, content: &str) -> FileScanCore {
                     pending_visibility = None;
                     pending_path_override = None;
                     mods_stack.push(name);
+                    // `line` sits on the opening `{` itself here (nothing since the last `\n`
+                    // has advanced it) - the same "line now sits on the opening brace" property
+                    // `body_start_line` relies on for a fn.
+                    open_mods.push((line, is_test));
                     stack.push(Frame {
                         kind: FrameKind::Mod { is_test },
                     });
@@ -565,6 +591,13 @@ fn scan_file_core(file: &str, content: &str) -> FileScanCore {
                     }
                     FrameKind::Mod { .. } => {
                         mods_stack.pop();
+                        if let Some((sl, is_test)) = open_mods.pop() {
+                            mod_spans.push(ModSpan {
+                                start_line: sl,
+                                end_line: line,
+                                is_test,
+                            });
+                        }
                     }
                     FrameKind::Impl { .. } => {
                         impl_stack.pop();
@@ -596,6 +629,7 @@ fn scan_file_core(file: &str, content: &str) -> FileScanCore {
     FileScanCore {
         fns: out,
         out_of_line_mods,
+        mod_spans,
     }
 }
 
@@ -2210,6 +2244,11 @@ struct FileScan {
     rel: String,
     fns: Vec<ScannedFn>,
     tokens: Vec<RawTok>,
+    /// Spec 87 round-1 addition (see [`ModSpan`]) - every inline `mod { .. }` block's own span,
+    /// used by [`all_ident_ref_sites`] to widen `in_test_range` beyond fn spans alone. Populated
+    /// via [`scan_file_core`] directly (this criterion's own extra field, per that function's own
+    /// doc comment), never through the [`scan_file`] wrapper which discards it.
+    mod_spans: Vec<ModSpan>,
 }
 
 /// Scan every `.rs` file under [`SCAN_ROOTS`], deterministically ordered ([`collect_rs_files`]
@@ -2231,8 +2270,13 @@ fn scan_tree(root: &Path) -> Vec<FileScan> {
                 .unwrap_or_else(|e| panic!("simplification_audit: cannot read {rel}: {e}"));
             let chars: Vec<char> = content.chars().collect();
             let tokens = tokenize(&chars);
-            let fns = scan_file(&rel, &content);
-            FileScan { rel, fns, tokens }
+            let core = scan_file_core(&rel, &content);
+            FileScan {
+                rel,
+                fns: core.fns,
+                tokens,
+                mod_spans: core.mod_spans,
+            }
         })
         .collect()
 }
@@ -3760,7 +3804,7 @@ pub(crate) fn render_section_5() -> String {
     out.push_str(
         "159 test-only clusters have every site as a `#[test]` function - a \
         literal-differs-only-in-input family, spec 85's own named table-driven-test \
-        candidate class. The single largest anywhere in the suite: `dup-0657` (near, \
+        candidate class. The single largest anywhere in the suite: `dup-0658` (near, \
         42 sites, all in `tests/spec_lint.rs`, e.g. \
         `validate_spec_reports_every_c3_defect_with_its_criterion_and_field_guide_class:54-102`, \
         `validate_spec_attributes_a_prose_level_defect_to_no_criterion:120-163`, \
@@ -4271,7 +4315,7 @@ fn render_section_6() -> String {
         tables (section 5.5)\n\n",
     );
     out.push_str(
-        "- Scope, largest first: `dup-0657` (42 sites, `tests/spec_lint.rs`), \
+        "- Scope, largest first: `dup-0658` (42 sites, `tests/spec_lint.rs`), \
         `dup-0599`/`dup-0601` (15+7 sites, `tests/reap_before_removal_audit.rs`), \
         `dup-0588`/`dup-0589` (11+4 sites, `tests/no_os_kill_audit.rs`), \
         `dup-0632` (11 sites, `tests/simplification_audit.rs` - this very \
@@ -4444,14 +4488,16 @@ fn sample_indices(n: usize, k: usize, seed: u64) -> Vec<usize> {
 // ENTRY POINTS (Constraints Walk: "the scanner exempts `fn main` and any fn named by a
 // `#[...]` attribute that registers it"): `fn main` (top-level, no enclosing mod/impl) is
 // exempted unconditionally in [`build_dead_code_candidates`]. The `#[...]`-attribute-registers-
-// it class (e.g. a `#[no_mangle]` export, a `value_parser = my_fn` style clap attribute) is
-// NOT given a distinct mechanism: verified via `grep -rn "no_mangle" src/` (zero hits) and a
-// search for `value_parser =`/serde `with =`/`deserialize_with =`/`serialize_with =` attributes
-// (zero hits) that this tree has no live instance of that shape today. Disclosed rather than
-// silently assumed away (decision `u87c2-entry-point-attribute-exemption-verified-dormant`): a
-// bare identifier inside an attribute with no trailing call-shaped delimiter (`#[value_parser =
-// my_fn]` with nothing after `my_fn`) would be undercounted by this pass if such a shape were
-// ever added, since [`tokenize`] does not track attribute boundaries as a distinct span.
+// it class (e.g. a `#[no_mangle]` export, a `value_parser = my_fn` style clap attribute, a
+// serde `default =`/`with =`/`deserialize_with =`/`serialize_with =` attribute) is now given a
+// GENERAL mechanism rather than a per-shape one: round 1
+// (`op-u87c2-round-1-closes-the-reference-classes-not-the-instances` class 2) added
+// [`mark_attribute_tokens`], so `all_ident_ref_sites` counts every identifier AND every
+// identifier-shaped string-literal segment inside ANY `#[...]` attribute's token tree as a
+// reference unconditionally, superseding the earlier per-shape-name verification this comment
+// used to disclose (decision `u87c2-entry-point-attribute-exemption-verified-dormant`, now
+// stale) - the real motivating instance, `src/config.rs`'s
+// `#[serde(default = "default_build_config")]`, is exactly this shape and is covered by it.
 
 /// One occurrence of a bare identifier, classified for spec 87 criterion 2's reference sweep -
 /// receiver-agnostic per the Constraints Walk (trait objects: "counts trait method NAMES at
@@ -4479,6 +4525,22 @@ struct RefSite {
     /// (file-aware `is_test`) - i.e. it is eligible to count as a PRODUCTION reference. A
     /// `tests/` file occurrence is never production, regardless of shape.
     production: bool,
+    /// The module/type name segment immediately in front of a `qualifier::name(`-shaped call
+    /// site (spec 87 round-1 addendum `op-u87c2-round-1-ambiguity-covers-free-fns-too`) - `None`
+    /// for every other shape (a bare `name(`, `.name(`, an argument-slot mention, ...). Used ONLY
+    /// to attribute a reference to ONE specific definition when its bare name is shared by more
+    /// than one production `Free`/`ImplAssoc` fn; a unique name never consults this field at all.
+    qualifier: Option<String>,
+    /// `true` for a reference synthesized from a `#[...]` attribute's token tree or string
+    /// literal (spec 87 round-1 fix for `sdet-u87c2-serde-default-attr-string-ref-is-a-false-
+    /// positive`, class 2 of `op-u87c2-round-1-closes-the-reference-classes-not-the-instances`) -
+    /// e.g. `#[serde(default = "default_build_config")]`. Deliberately EXEMPT from the ambiguity
+    /// attribution above (always credits every same-named sharer): an attribute mention cannot be
+    /// qualifier-resolved at all (it is not call-shaped code), and the design's own conservative
+    /// direction - "an attribute mention keeps a fn alive; a false negative is cheaper than
+    /// deleting live code" - means it must never be silently dropped just because the name it
+    /// names happens to collide with an unrelated fn elsewhere.
+    via_attribute: bool,
 }
 
 fn ref_punct(tok: Option<&RawTok>, text: &str) -> bool {
@@ -4511,6 +4573,100 @@ fn ref_shapes(toks: &[RawTok], i: usize) -> (bool, bool) {
         || followed_by_lt
         || in_argument_slot;
     (method_shaped, free_shaped)
+}
+
+/// The identifier immediately in front of a `qualifier::name`-shaped occurrence at `toks[i]`,
+/// or `None` when `toks[i]` is not `::`-preceded at all. Spec 87 round-1 addendum
+/// (`op-u87c2-round-1-ambiguity-covers-free-fns-too`): "the tokenizer's existing
+/// `preceded_by_coloncolon` signal" carried one step further, to name WHICH qualifier a
+/// `::`-qualified reference names, so a bare-name collision between two `Free`/`ImplAssoc` fns
+/// can attribute a qualified call site to the one it actually means.
+fn qualifier_before(toks: &[RawTok], i: usize) -> Option<String> {
+    if i < 3 {
+        return None;
+    }
+    if ref_punct(toks.get(i - 1), ":") && ref_punct(toks.get(i - 2), ":") {
+        let q = toks.get(i - 3)?;
+        if q.kind == RawKind::Ident || q.kind == RawKind::Keyword {
+            return Some(q.text.clone());
+        }
+    }
+    None
+}
+
+/// Index ranges into `tokens` (half-open `[start, end)`) occupied by the CONTENT of a `#[...]`
+/// attribute - every token strictly between the `#`/`[` that opens it and its own matching `]`,
+/// the `#` and both brackets themselves excluded. Spec 87 round-1 fix, class 2 of
+/// `op-u87c2-round-1-closes-the-reference-classes-not-the-instances` ("ATTRIBUTE TOKEN TREES ARE
+/// REFERENCES"). Depth is tracked on `[`/`]` only - an attribute's own inner `(...)`/`{...}`
+/// (e.g. `#[cfg_attr(test, serde(default = ".."))]`) never closes it early.
+fn attribute_token_ranges(tokens: &[RawTok]) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut i = 0usize;
+    while i < tokens.len() {
+        let is_hash = tokens[i].kind == RawKind::Punct && tokens[i].text == "#";
+        let opens = is_hash
+            && tokens
+                .get(i + 1)
+                .map(|t| t.kind == RawKind::Punct && t.text == "[")
+                .unwrap_or(false);
+        if !opens {
+            i += 1;
+            continue;
+        }
+        let start = i + 2;
+        let mut depth = 1i32;
+        let mut j = start;
+        while j < tokens.len() {
+            if tokens[j].kind == RawKind::Punct && tokens[j].text == "[" {
+                depth += 1;
+            } else if tokens[j].kind == RawKind::Punct && tokens[j].text == "]" {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            j += 1;
+        }
+        ranges.push((start, j.min(tokens.len())));
+        i = j + 1;
+    }
+    ranges
+}
+
+/// A per-token `true`/`false` flag, one entry per `tokens[i]`, `true` exactly when `i` falls
+/// inside some [`attribute_token_ranges`] span - the O(1)-lookup form [`all_ident_ref_sites`]
+/// scans against on its one pass over the file's tokens.
+fn mark_attribute_tokens(tokens: &[RawTok]) -> Vec<bool> {
+    let mut flags = vec![false; tokens.len()];
+    for (s, e) in attribute_token_ranges(tokens) {
+        for f in flags.iter_mut().take(e).skip(s) {
+            *f = true;
+        }
+    }
+    flags
+}
+
+/// Identifier-shaped names inside an attribute string literal's content (spec 87 round-1: the
+/// motivating case is `#[serde(default = "default_build_config")]`, but a qualified
+/// `#[path = "module::name"]`-style value is split the same way, one candidate name per `::`
+/// segment) - a literal that is not a name/path at all (free English text in e.g. a
+/// `#[doc = ".."]`) yields nothing, since no segment survives the identifier-shape filter.
+fn ident_like_segments(inner: &str) -> Vec<String> {
+    inner
+        .split("::")
+        .map(str::trim)
+        .filter(|seg| {
+            !seg.is_empty()
+                && seg
+                    .chars()
+                    .next()
+                    .map(|c| c.is_alphabetic() || c == '_')
+                    .unwrap_or(false)
+                && seg.chars().all(is_ident_char)
+        })
+        .map(str::to_string)
+        .collect()
 }
 
 /// Every `src/` file's out-of-line `mod name;` declarations, keyed by declaring file - the seed
@@ -4556,8 +4712,43 @@ fn resolve_out_of_line_test_files(files: &[(String, String)]) -> BTreeSet<String
     test_files
 }
 
-/// Resolve one [`OutOfLineMod`]'s target file, relative to `declaring_file`'s own directory:
-/// a `#[path = ".."]` override first, else `name.rs`, else `name/mod.rs` (spec 87 Design's
+/// The declaring file's OWN "file-per-module" directory - mirrors `src/grounder/symbols/
+/// events.rs`'s production `module_dir` exactly (spec 87 round-1 fix,
+/// `resolvers_agree_on_a_transitive_second_hop`): for `mod.rs`/`lib.rs`/`main.rs`, its own
+/// PARENT directory (these three names never introduce a new directory level of their own); for
+/// any other file `name.rs`, `<parent>/name` - real rustc convention: a plain file's own
+/// children live under a directory NAMED after it (`src/outer.rs`'s `mod inner;` resolves to
+/// `src/outer/inner.rs`, never a `src/inner.rs` sibling). An earlier version of this function
+/// used the plain PARENT directory unconditionally - correct for a top-level or `mod.rs`
+/// declaring file (where the two coincide) but wrong the moment a transitive second hop's
+/// declaring file is an ordinary nested file, exactly what the resolver-agreement test with the
+/// canonical production resolver caught.
+fn declaring_file_module_dir(declaring_file: &str) -> String {
+    let dir = Path::new(declaring_file)
+        .parent()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_default();
+    let base = Path::new(declaring_file)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(declaring_file);
+    if base == "mod.rs" || base == "lib.rs" || base == "main.rs" {
+        dir
+    } else {
+        let stem = base.strip_suffix(".rs").unwrap_or(base);
+        if dir.is_empty() {
+            stem.to_string()
+        } else {
+            format!("{dir}/{stem}")
+        }
+    }
+}
+
+/// Resolve one [`OutOfLineMod`]'s target file: a `#[path = ".."]` override first - resolved
+/// relative to `declaring_file`'s own PARENT directory, rustc's own escape hatch from the
+/// file-per-module convention (unconditionally directory-of-file-relative, matching the
+/// production resolver's identical `#[path]` rule) - else `name.rs`, else `name/mod.rs`,
+/// resolved relative to `declaring_file`'s own [`declaring_file_module_dir`] (spec 87 Design's
 /// exact three forms) - `None` if nothing at that path exists in `exists` (a mod pointing
 /// outside the given file set, e.g. into `build/`, resolves to nothing and is ignored, matching
 /// this criterion's `src/`-only scope).
@@ -4566,12 +4757,14 @@ fn resolve_mod_target(
     m: &OutOfLineMod,
     exists: &impl Fn(&str) -> bool,
 ) -> Option<String> {
-    let dir = Path::new(declaring_file)
-        .parent()
-        .unwrap_or_else(|| Path::new(""));
     let candidate = if let Some(ov) = &m.path_override {
+        let dir = Path::new(declaring_file)
+            .parent()
+            .unwrap_or_else(|| Path::new(""));
         normalize_rel_path(dir, ov)
     } else {
+        let module_dir = declaring_file_module_dir(declaring_file);
+        let dir = Path::new(&module_dir);
         let as_file = normalize_rel_path(dir, &format!("{}.rs", m.name));
         if exists(&as_file) {
             as_file
@@ -4637,15 +4830,68 @@ fn all_ident_ref_sites(
     for f in files {
         let is_src = f.rel.starts_with("src/");
         let file_wholly_test = whole_file_test.contains(&f.rel);
+        // Round 1 (`op-u87c2-round-1-closes-the-reference-classes-not-the-instances` class 1):
+        // test regions are FN spans (`is_test`) AND MOD spans (`ModSpan::is_test`) - never fn
+        // spans alone, so a `use`/`const`/`static`/`type` item sitting at `#[cfg(test)] mod
+        // tests { .. }`'s own top level (outside every fn body) is still test code. A
+        // wholly-test FILE (`file_wholly_test`) is handled separately below, directly on
+        // `production`, rather than by synthesizing a whole-file span here.
         let test_ranges: Vec<(usize, usize)> = f
             .fns
             .iter()
-            .filter(|sf| sf.is_test || file_wholly_test)
+            .filter(|sf| sf.is_test)
             .map(|sf| (sf.start_line, sf.end_line))
+            .chain(
+                f.mod_spans
+                    .iter()
+                    .filter(|m| m.is_test)
+                    .map(|m| (m.start_line, m.end_line)),
+            )
             .collect();
         let in_test_range = |line: usize| test_ranges.iter().any(|&(s, e)| line >= s && line <= e);
+        let is_production_line = |line: usize| is_src && !file_wholly_test && !in_test_range(line);
+
+        // Round 1 (class 2, "ATTRIBUTE TOKEN TREES ARE REFERENCES"): any identifier or
+        // identifier-shaped string-literal segment inside a `#[...]` attribute's token tree is a
+        // reference to a same-named fn, unconditionally (not shape-gated the way ordinary code
+        // is) - `#[serde(default = "default_build_config")]`, `#[path = ".."]`, clap
+        // `value_parser`/`default_value_t`, `cfg_attr` payloads, and any future attribute alike.
+        let attr_tok = mark_attribute_tokens(&f.tokens);
 
         for (i, t) in f.tokens.iter().enumerate() {
+            if attr_tok[i] {
+                let production = is_production_line(t.line);
+                match t.kind {
+                    RawKind::Ident => {
+                        idx.entry(t.text.clone()).or_default().push(RefSite {
+                            file: f.rel.clone(),
+                            line: t.line,
+                            method_shaped: true,
+                            free_shaped: true,
+                            production,
+                            qualifier: None,
+                            via_attribute: true,
+                        });
+                    }
+                    RawKind::Lit => {
+                        if let Some(inner) = extract_quoted(&t.text) {
+                            for name in ident_like_segments(&inner) {
+                                idx.entry(name).or_default().push(RefSite {
+                                    file: f.rel.clone(),
+                                    line: t.line,
+                                    method_shaped: true,
+                                    free_shaped: true,
+                                    production,
+                                    qualifier: None,
+                                    via_attribute: true,
+                                });
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                continue;
+            }
             if t.kind != RawKind::Ident {
                 continue;
             }
@@ -4665,13 +4911,16 @@ fn all_ident_ref_sites(
             if !method_shaped && !free_shaped {
                 continue;
             }
-            let production = is_src && !in_test_range(t.line);
+            let production = is_production_line(t.line);
+            let qualifier = qualifier_before(&f.tokens, i);
             idx.entry(t.text.clone()).or_default().push(RefSite {
                 file: f.rel.clone(),
                 line: t.line,
                 method_shaped,
                 free_shaped,
                 production,
+                qualifier,
+                via_attribute: false,
             });
         }
     }
@@ -4695,9 +4944,20 @@ struct DeadCodeCandidate {
     line: usize,
     visibility: String,
     /// Spec 87 Constraints Walk: "a name shared by several fns is reported as ambiguous rather
-    /// than counted as alive" - `true` only for a METHOD whose bare name is shared by >= 2
-    /// production fns (receiver-agnostic dispatch cannot tell them apart).
+    /// than counted as alive" - round 1 (`op-u87c2-round-1-ambiguity-covers-free-fns-too`): ONE
+    /// class for every fn kind (`Method`, `ImplAssoc`, `Free`), `true` exactly when this fn's
+    /// bare name is shared by >= 2 production fns of the SAME [`DispatchCategory`] AND no
+    /// reference could be ATTRIBUTED to this one specifically (see `ambiguous_with`).
     ambiguous: bool,
+    /// Populated exactly when `ambiguous` is `true`: `file:line` of every OTHER production fn
+    /// this bare name is shared with (round 1 addendum: "a definition with zero attributable
+    /// references is listed with ambiguous:true and the sharers named") - named explicitly here
+    /// rather than left implicit, since a sharer that WAS successfully attributed a reference is
+    /// alive and so never appears anywhere else in this JSON to be found by name alone. Empty
+    /// (and omitted from the wire form) for every non-ambiguous entry, keeping this field's
+    /// addition byte-identical for the overwhelmingly common case.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    ambiguous_with: Vec<String>,
     test_only_references: Vec<TestOnlyRef>,
 }
 
@@ -4757,13 +5017,15 @@ fn signature_declares_self(sig_toks: &[RawTok]) -> bool {
 }
 
 /// A candidate's dispatch category (this criterion's own concept, not spec 87 vocabulary
-/// directly): which [`RefSite`] shape resolves it, and whether a shared bare name makes it
-/// ambiguous. `Free` (top-level, no enclosing impl) is deliberately NEVER ambiguous per this
-/// unit's own decision `u87c2-ambiguous-method-rule` (spec 87 Constraints Walk scopes the
-/// ambiguity callout to methods; a free-function bare-name collision stays an accepted,
-/// disclosed scanner approximation) - `ImplAssoc` extends the SAME treatment `Method` gets to
-/// inherent associated functions (`Type::new()`) since they suffer the identical bare-name-only
-/// dispatch imprecision (found empirically: this tree's own many `new()`s).
+/// directly): which [`RefSite`] shape resolves it, and how a shared bare name is disambiguated.
+/// `ImplAssoc` gets the SAME ambiguity treatment `Method` always has (inherent associated
+/// functions, `Type::new()`, suffer the identical bare-name-only dispatch imprecision - found
+/// empirically: this tree's own many `new()`s). Round 1
+/// (`op-u87c2-round-1-ambiguity-covers-free-fns-too`) extends ambiguity to `Free` too - the
+/// ADVERSARY's `src/distiller.rs` `rebuild` finding (a genuinely dead free fn silently counted
+/// alive through an unrelated same-named `src/playbooks.rs` `rebuild`'s real caller) is exactly
+/// the failure a bare-name-only free-fn resolution invites - superseding the prior
+/// `u87c2-ambiguous-method-rule` decision's Free exemption.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum DispatchCategory {
     Method,
@@ -4784,6 +5046,102 @@ fn dispatch_category(f: &ScannedFn, file_tokens: &HashMap<&str, &[RawTok]>) -> D
     } else {
         DispatchCategory::ImplAssoc
     }
+}
+
+/// The file's own "file-per-module" name (the SAME convention [`resolve_mod_target`] resolves a
+/// `mod name;` declaration by): `<name>.rs` -> `name`; `<name>/mod.rs` -> `name` (the directory's
+/// own name, since `mod.rs` itself names nothing).
+fn file_module_name(file: &str) -> String {
+    let path = Path::new(file);
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
+    if stem == "mod" {
+        path.parent()
+            .and_then(|p| p.file_name())
+            .and_then(|s| s.to_str())
+            .unwrap_or_default()
+            .to_string()
+    } else {
+        stem.to_string()
+    }
+}
+
+/// A `Free` fn's OWN qualifying module-path segment - spec 87 round-1 addendum
+/// (`op-u87c2-round-1-ambiguity-covers-free-fns-too`): the innermost enclosing INLINE `mod` it
+/// sits in (`enclosing_mods.last()`), or - at file scope - the file's own [`file_module_name`].
+/// Matched against a reference site's [`RefSite::qualifier`] (the token immediately before a
+/// `qualifier::name(`) to attribute a `::`-qualified call to ONE specific same-named `Free` fn
+/// (the real case: `src/distiller.rs`'s `rebuild`, qualifier `"distiller"`, versus
+/// `src/playbooks.rs`'s unrelated `rebuild`, qualifier `"playbooks"` - `main.rs`'s
+/// `playbooks::rebuild(..)` matches only the latter).
+fn free_fn_qualifier(f: &ScannedFn) -> String {
+    f.enclosing_mods
+        .last()
+        .cloned()
+        .unwrap_or_else(|| file_module_name(&f.file))
+}
+
+/// An `ImplAssoc` fn's OWN qualifying type name - the first identifier-shaped run of its
+/// `enclosing_impl` header text, stopping at the first generic-parameter `<` or whitespace (e.g.
+/// `"Foo"` for `impl Foo`, `"Foo"` for `impl Foo<T>` too) - matched the same way
+/// [`free_fn_qualifier`] is, against a `Type::name(`-shaped call site's [`RefSite::qualifier`].
+fn impl_assoc_qualifier(f: &ScannedFn) -> String {
+    f.enclosing_impl
+        .as_deref()
+        .unwrap_or_default()
+        .split(|c: char| c == '<' || c.is_whitespace())
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// Per-file map: an imported bare name -> its qualifying module segment, for a SIMPLE
+/// `use path::to::name;` import (spec 87 round-1 addendum: "a `use module::name;` ... resolving
+/// to it") - the last two `::`-separated path segments become `(name, qualifier)`. Deliberately
+/// narrow: a group import (`use a::{b, c};`), a glob (`use a::*;`), or a renamed import
+/// (`use a::b as c;`) is NOT resolved, an accepted, disclosed textual-scanner limitation (this is
+/// used only to ATTRIBUTE a bare call site during ambiguity resolution - missing one of these
+/// shapes costs a missed disambiguation, never a wrong one, since an unattributed reference is
+/// simply credited to no definition, never a false one).
+fn use_import_qualifiers(tokens: &[RawTok]) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    let mut i = 0usize;
+    while i < tokens.len() {
+        if tokens[i].kind != RawKind::Keyword || tokens[i].text != "use" {
+            i += 1;
+            continue;
+        }
+        let mut j = i + 1;
+        let mut segments: Vec<String> = Vec::new();
+        let mut simple = true;
+        while j < tokens.len() {
+            match (&tokens[j].kind, tokens[j].text.as_str()) {
+                (RawKind::Punct, ";") => {
+                    j += 1;
+                    break;
+                }
+                (RawKind::Ident, _) => segments.push(tokens[j].text.clone()),
+                (RawKind::Keyword, "self" | "crate" | "super") => {
+                    segments.push(tokens[j].text.clone())
+                }
+                (RawKind::Punct, ":") => {}
+                (RawKind::Keyword, "as") | (RawKind::Punct, "{" | "}" | "*" | ",") => {
+                    simple = false;
+                }
+                _ => {}
+            }
+            j += 1;
+        }
+        if simple && segments.len() >= 2 {
+            let name = segments[segments.len() - 1].clone();
+            let qualifier = segments[segments.len() - 2].clone();
+            out.insert(name, qualifier);
+        }
+        i = j;
+    }
+    out
 }
 
 /// SPEC 87 CRITERION 2's whole computation: every production fn under `src/` (file-aware
@@ -4810,6 +5168,10 @@ fn build_dead_code_candidates(
     candidates.sort_by(|a, b| (&a.file, a.start_line).cmp(&(&b.file, b.start_line)));
 
     let idx = all_ident_ref_sites(files, whole_file_test);
+    let use_imports: HashMap<&str, HashMap<String, String>> = files
+        .iter()
+        .map(|fsc| (fsc.rel.as_str(), use_import_qualifiers(&fsc.tokens)))
+        .collect();
 
     let categories: HashMap<(&str, usize), DispatchCategory> = candidates
         .iter()
@@ -4821,23 +5183,29 @@ fn build_dead_code_candidates(
         })
         .collect();
 
+    // Round 1 (`op-u87c2-round-1-ambiguity-covers-free-fns-too`): ambiguity is ONE class for
+    // every [`DispatchCategory`] - `Free` is no longer exempt (the prior `Free != cat` guard is
+    // gone). `group_members` names every OTHER sharer's `file:line` for `ambiguous_with`.
     let mut name_counts: HashMap<(DispatchCategory, &str), usize> = HashMap::new();
+    let mut group_members: HashMap<(DispatchCategory, &str), Vec<String>> = HashMap::new();
     for f in &candidates {
         let cat = categories[&(f.file.as_str(), f.start_line)];
-        if cat != DispatchCategory::Free {
-            *name_counts.entry((cat, f.name.as_str())).or_insert(0) += 1;
-        }
+        *name_counts.entry((cat, f.name.as_str())).or_insert(0) += 1;
+        group_members
+            .entry((cat, f.name.as_str()))
+            .or_default()
+            .push(format!("{}:{}", f.file, f.start_line));
     }
 
     let mut out = Vec::new();
     for f in &candidates {
         let cat = categories[&(f.file.as_str(), f.start_line)];
-        let ambiguous = cat != DispatchCategory::Free
-            && name_counts
-                .get(&(cat, f.name.as_str()))
-                .copied()
-                .unwrap_or(0)
-                > 1;
+        let my_citation = format!("{}:{}", f.file, f.start_line);
+        let group_size = name_counts
+            .get(&(cat, f.name.as_str()))
+            .copied()
+            .unwrap_or(0);
+        let ambiguous_group = group_size > 1;
         let empty: Vec<RefSite> = Vec::new();
         let sites = idx.get(&f.name).unwrap_or(&empty);
         let relevant = sites.iter().filter(|s| {
@@ -4848,9 +5216,49 @@ fn build_dead_code_candidates(
             shaped && !(s.file == f.file && s.line >= f.start_line && s.line <= f.body_start_line)
         });
 
+        // Round 1 addendum: for `Method`, ambiguity keeps its ORIGINAL aggregate rule
+        // unchanged - receiver-agnostic dispatch genuinely cannot attribute a `.name(` call to
+        // one specific sharer, so every reference counts for every sharer alike. `Free`/
+        // `ImplAssoc` get real per-definition ATTRIBUTION when the name is shared, tried in
+        // order: (1) a `::`-qualified call site whose qualifier textually matches this
+        // definition's own (a type name for `ImplAssoc`, a module name for `Free`); (2) a bare
+        // call resolved through the REFERENCING file's own `use module::name;` import; (3) for
+        // `Free` only, a bare call sitting in the SAME FILE as this definition - Rust's own
+        // lexical scoping resolves an unqualified sibling call with no `use` needed at all (the
+        // extremely common case: two files each defining and bare-calling their own same-named
+        // helper). An attribute-derived reference (`via_attribute`) always counts for every
+        // sharer regardless (never delete live code over an attribute mention no qualifier can
+        // resolve). Anything left over - a bare, unqualified, un-`use`d, different-file mention
+        // of a shared name (or an `ImplAssoc` call written `Self::name(` from inside a SIBLING
+        // impl, which this textual scanner does not resolve back to a type - a disclosed, narrow
+        // scanner limitation) - is credited to NO sharer, per the addendum's literal text.
+        let needs_attribution = ambiguous_group && cat != DispatchCategory::Method;
+        let my_qualifier = match cat {
+            DispatchCategory::Free => Some(free_fn_qualifier(f)),
+            DispatchCategory::ImplAssoc => Some(impl_assoc_qualifier(f)),
+            DispatchCategory::Method => None,
+        };
+
         let mut production_hit = false;
         let mut test_only: Vec<TestOnlyRef> = Vec::new();
         for s in relevant {
+            let counts_for_me = if !needs_attribution || s.via_attribute {
+                true
+            } else {
+                let resolved = s
+                    .qualifier
+                    .clone()
+                    .or_else(|| use_imports.get(s.file.as_str())?.get(&f.name).cloned())
+                    .or_else(|| {
+                        (cat == DispatchCategory::Free && s.file == f.file)
+                            .then(|| my_qualifier.clone())
+                            .flatten()
+                    });
+                resolved == my_qualifier
+            };
+            if !counts_for_me {
+                continue;
+            }
             if s.production {
                 production_hit = true;
             } else {
@@ -4863,6 +5271,16 @@ fn build_dead_code_candidates(
         if production_hit {
             continue;
         }
+        let ambiguous = ambiguous_group;
+        let ambiguous_with = if ambiguous {
+            group_members[&(cat, f.name.as_str())]
+                .iter()
+                .filter(|c| **c != my_citation)
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
         test_only.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
         test_only.dedup();
         out.push(DeadCodeCandidate {
@@ -4871,6 +5289,7 @@ fn build_dead_code_candidates(
             line: f.start_line,
             visibility: f.visibility.clone(),
             ambiguous,
+            ambiguous_with,
             test_only_references: test_only,
         });
     }
@@ -6975,7 +7394,7 @@ mod tests {
         // Cites section 5's own headline test-suite consolidation items.
         assert!(rendered.contains("tests/common"));
         assert!(rendered.contains("tests/cli.rs"));
-        assert!(rendered.contains("dup-0657"));
+        assert!(rendered.contains("dup-0658"));
         // Section 4 (dead and vestigial code) is explicitly dispositioned as needing no
         // follow-up spec, per spec 85's own "states so with the search that established
         // it, never omitted" rule for an empty category.
@@ -7112,18 +7531,24 @@ mod tests {
     fn transitive_closure_pulls_in_a_second_hop_regardless_of_its_own_local_attribute() {
         // outer.rs is test (declared #[cfg(test)] from lib.rs); outer.rs's OWN `mod inner;` has
         // no local #[cfg(test)] at all, but the whole file is already test, so inner.rs must be
-        // pulled in too.
+        // pulled in too. `outer.rs`'s own children resolve under `src/outer/` (rustc's real
+        // file-per-module convention for a non-`mod.rs` declaring file), never a `src/inner.rs`
+        // sibling - `declaring_file_module_dir`'s own doc names the earlier version of this
+        // resolver that got this wrong.
         let files = vec![
             (
                 "src/lib.rs".to_string(),
                 "#[cfg(test)]\nmod outer;\n".to_string(),
             ),
             ("src/outer.rs".to_string(), "mod inner;\n".to_string()),
-            ("src/inner.rs".to_string(), "fn helper() {}\n".to_string()),
+            (
+                "src/outer/inner.rs".to_string(),
+                "fn helper() {}\n".to_string(),
+            ),
         ];
         let test_files = resolve_out_of_line_test_files(&files);
         assert!(test_files.contains("src/outer.rs"));
-        assert!(test_files.contains("src/inner.rs"), "{test_files:?}");
+        assert!(test_files.contains("src/outer/inner.rs"), "{test_files:?}");
     }
 
     #[test]
@@ -7144,6 +7569,141 @@ mod tests {
         ];
         let test_files = resolve_out_of_line_test_files(&files);
         assert!(test_files.is_empty(), "{test_files:?}");
+    }
+
+    // -------------------------------------------------------------------------------------
+    // Round 1 class 3 (`op-u87c2-round-1-closes-the-reference-classes-not-the-instances`):
+    // THE TWO RESOLVERS AGREE, PROVEN - `resolve_out_of_line_test_files` (this file's bespoke
+    // text scan) against `out_of_line_test_module_files` (`src/grounder/symbols/events.rs`, spec
+    // 86's canonical production resolver - PRIVATE, so this stage-2/3-changes-no-production-code
+    // unit cannot call it directly). Compared through its OWN OBSERVABLE EFFECT via the public
+    // API (`build_index` -> `index_events`) instead: a file the production resolver excludes is
+    // HOLLOWED (`events::for_extraction`) before extraction, so it contributes ZERO
+    // `CodeEntityExtracted` events for any of its definitions - a file with at least one
+    // non-test definition that still emits none is therefore excluded. Every fixture below (and
+    // the real tree's own product code) gives each candidate file at least one always-live
+    // top-level item, so "did this file's own item reach the graph" is an unambiguous signal,
+    // never confused with a file that is merely, coincidentally, empty of product code. Reads
+    // `Event::type_`/`Event::data` generically (both `pub`) rather than the private
+    // `CodeEntityExtracted` type itself - `data` is its `serde_json::to_vec` wire form, so a
+    // plain `serde_json::Value` walk needs no knowledge of the private struct at all, mirroring
+    // how any other real consumer of this event log (a UI, another service) would read it.
+    // -------------------------------------------------------------------------------------
+
+    /// The production pipeline's own effective out-of-line-test-file exclusion set, scoped to
+    /// `src/` (matching [`resolve_out_of_line_test_files`]'s own scope) - see this section's own
+    /// banner comment for the derivation.
+    #[cfg(feature = "symbols")]
+    fn production_out_of_line_exclusion_set(root: &Path) -> BTreeSet<String> {
+        let idx = rigger::grounder::symbols::build_index(root.to_str().unwrap(), None);
+        let events = rigger::grounder::symbols::events::index_events(&idx);
+        let mut graphed: BTreeSet<String> = BTreeSet::new();
+        for e in &events {
+            if e.type_ != rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED {
+                continue;
+            }
+            let payload: serde_json::Value =
+                serde_json::from_slice(&e.data).expect("CodeEntityExtracted payload is valid JSON");
+            if let Some(file) = payload.get("file").and_then(|v| v.as_str()) {
+                graphed.insert(file.to_string());
+            }
+        }
+        idx.files()
+            .iter()
+            .filter(|(path, _)| path.starts_with("src/"))
+            .filter(|(path, fs)| {
+                fs.defs.iter().any(|d| !d.is_test) && !graphed.contains(path.as_str())
+            })
+            .map(|(path, _)| path.clone())
+            .collect()
+    }
+
+    #[cfg(feature = "symbols")]
+    fn assert_resolvers_agree(files: &[(String, String)]) {
+        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
+        for (rel, content) in files {
+            write_fixture(dir.path(), rel, content);
+        }
+        let bespoke = resolve_out_of_line_test_files(files);
+        let production = production_out_of_line_exclusion_set(dir.path());
+        assert_eq!(
+            bespoke, production,
+            "the bespoke resolver and the production one disagree on this fixture"
+        );
+    }
+
+    #[cfg(feature = "symbols")]
+    #[test]
+    fn resolvers_agree_on_a_same_name_dot_rs_target() {
+        assert_resolvers_agree(&[
+            (
+                "src/lib.rs".to_string(),
+                "#[cfg(test)]\nmod probe;\n".to_string(),
+            ),
+            (
+                "src/probe.rs".to_string(),
+                "pub fn helper() {}\n".to_string(),
+            ),
+        ]);
+    }
+
+    #[cfg(feature = "symbols")]
+    #[test]
+    fn resolvers_agree_on_a_path_override_target() {
+        assert_resolvers_agree(&[
+            (
+                "src/lib.rs".to_string(),
+                "#[cfg(test)]\n#[path = \"generated/probe.rs\"]\nmod probe;\n".to_string(),
+            ),
+            (
+                "src/generated/probe.rs".to_string(),
+                "pub fn helper() {}\n".to_string(),
+            ),
+        ]);
+    }
+
+    #[cfg(feature = "symbols")]
+    #[test]
+    fn resolvers_agree_on_a_transitive_second_hop() {
+        // `outer.rs`'s own children resolve under `src/outer/` (rustc's real file-per-module
+        // convention for a non-`mod.rs` declaring file) - this fixture caught a real bug in
+        // `resolve_mod_target`'s prior (sibling-directory) resolution, fixed alongside adding
+        // this test; see `declaring_file_module_dir`'s own doc.
+        assert_resolvers_agree(&[
+            (
+                "src/lib.rs".to_string(),
+                "#[cfg(test)]\nmod outer;\n".to_string(),
+            ),
+            ("src/outer.rs".to_string(), "mod inner;\n".to_string()),
+            (
+                "src/outer/inner.rs".to_string(),
+                "pub fn helper() {}\n".to_string(),
+            ),
+        ]);
+    }
+
+    #[cfg(feature = "symbols")]
+    #[test]
+    fn resolvers_agree_on_a_non_test_out_of_line_mod() {
+        assert_resolvers_agree(&[
+            ("src/lib.rs".to_string(), "mod normal;\n".to_string()),
+            (
+                "src/normal.rs".to_string(),
+                "pub fn helper() {}\n".to_string(),
+            ),
+        ]);
+    }
+
+    #[cfg(feature = "symbols")]
+    #[test]
+    fn resolvers_agree_on_the_real_tree() {
+        let root = repo_root();
+        let bespoke = resolve_out_of_line_test_files(&collect_src_files_with_content(&root));
+        let production = production_out_of_line_exclusion_set(&root);
+        assert_eq!(
+            bespoke, production,
+            "the bespoke resolver and the production one disagree on the real tree"
+        );
     }
 
     // -------------------------------------------------------------------------------------
@@ -7273,6 +7833,190 @@ mod tests {
         );
     }
 
+    // -------------------------------------------------------------------------------------
+    // Round 1 (`op-u87c2-round-1-closes-the-reference-classes-not-the-instances`): the three
+    // classes the round-0 REJECT named, each pinned by its own fixture on the real motivating
+    // shape.
+    // -------------------------------------------------------------------------------------
+
+    #[test]
+    fn a_named_use_import_at_mod_test_top_level_does_not_leak_as_a_production_reference() {
+        // Class 1 ("TEST REGIONS ARE MOD SPANS"): the real `src/grounder/symbols/events.rs`
+        // shape (`sdet-u87c2-mod-body-level-test-statements-leak-as-production-refs`) - a named
+        // `use` import sits directly inside `#[cfg(test)] mod tests { .. }`, ABOVE its `#[test]`
+        // fn (never itself a `ScannedFn`), naming `orphan`. Before round 1, `in_test_range` was
+        // built from fn spans alone, so this line misclassified `orphan` as production-
+        // referenced and it never appeared in the JSON at all - the exact false negative that
+        // defeated criterion 2's own Done-when on spec 87's own Goal-cited worked example.
+        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
+        write_fixture(
+            dir.path(),
+            "src/orphan.rs",
+            "pub fn orphan() {}\n\n#[cfg(test)]\nmod tests {\n    use crate::orphan::orphan;\n\n    #[test]\n    fn calls_orphan() {\n        orphan();\n    }\n}\n",
+        );
+        let candidates = candidates_for(dir.path());
+        let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"orphan"), "{names:?}");
+        let orphan = candidates.iter().find(|c| c.name == "orphan").unwrap();
+        assert_eq!(orphan.test_only_references.len(), 2, "{orphan:?}");
+    }
+
+    #[test]
+    fn a_serde_default_attribute_string_names_a_real_production_reference() {
+        // Class 2 ("ATTRIBUTE TOKEN TREES ARE REFERENCES"): the real `src/config.rs` shape
+        // (`sdet-u87c2-serde-default-attr-string-ref-is-a-false-positive`) -
+        // `default_build_config` is referenced ONLY through `#[serde(default = "..")]`'s string
+        // literal, a shape no call-site rule (`followed by (`, `::`, `.`, `<`) ever matches.
+        // Before round 1 this was a false positive: a genuinely live fn sat in the JSON as dead.
+        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
+        write_fixture(
+            dir.path(),
+            "src/cfg.rs",
+            "#[derive(serde::Deserialize)]\nstruct Cfg {\n    #[serde(default = \"default_build_config\")]\n    build: String,\n}\n\nfn default_build_config() -> String {\n    String::new()\n}\n",
+        );
+        let candidates = candidates_for(dir.path());
+        let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
+        assert!(!names.contains(&"default_build_config"), "{names:?}");
+    }
+
+    #[test]
+    fn an_attribute_reference_to_an_ambiguous_shared_name_credits_every_sharer() {
+        // The `via_attribute` exemption from ambiguity attribution: an attribute mention cannot
+        // be qualifier-resolved (it names no `Type::`/`module::` prefix at all), and the design's
+        // conservative direction says it must still keep BOTH same-named sharers alive rather
+        // than resolve one of them dead just because the attribute could not name which it meant.
+        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
+        write_fixture(
+            dir.path(),
+            "src/attr_amb.rs",
+            "mod a {\n    pub fn make_default() -> u32 {\n        0\n    }\n}\nmod b {\n    pub fn make_default() -> u32 {\n        1\n    }\n}\n#[derive(serde::Deserialize)]\nstruct Cfg {\n    #[serde(default = \"make_default\")]\n    n: u32,\n}\n",
+        );
+        let candidates = candidates_for(dir.path());
+        assert!(
+            candidates.iter().all(|c| c.name != "make_default"),
+            "{candidates:?}"
+        );
+    }
+
+    #[test]
+    fn a_free_fn_bare_name_collision_where_only_one_sharer_has_a_real_caller_flags_the_other() {
+        // Class 4, the adversary's `distiller::rebuild`/`playbooks::rebuild` finding
+        // (`adv-u87c2-r0-free-fn-bare-name-collision-hides-a-genuinely-dead-fn`): two UNRELATED
+        // top-level free fns share the bare name `rebuild`; only one has a real, `::`-qualified
+        // caller. Before round 1, bare-name-only resolution silently counted BOTH alive because
+        // is the aggregate `rebuild(` reference set was non-empty; round 1's per-definition
+        // qualifier attribution now correctly excludes the called one and flags the other.
+        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
+        write_fixture(
+            dir.path(),
+            "src/distiller.rs",
+            "pub fn rebuild() -> u32 {\n    1\n}\n",
+        );
+        write_fixture(
+            dir.path(),
+            "src/playbooks.rs",
+            "pub fn rebuild() -> u32 {\n    2\n}\n",
+        );
+        write_fixture(
+            dir.path(),
+            "src/main.rs",
+            "fn main() {\n    let _ = playbooks::rebuild();\n}\n",
+        );
+        let candidates = candidates_for(dir.path());
+        let rebuilds: Vec<&DeadCodeCandidate> =
+            candidates.iter().filter(|c| c.name == "rebuild").collect();
+        assert_eq!(rebuilds.len(), 1, "{candidates:?}");
+        assert_eq!(rebuilds[0].file, "src/distiller.rs", "{rebuilds:?}");
+        assert!(rebuilds[0].ambiguous, "{rebuilds:?}");
+        assert_eq!(
+            rebuilds[0].ambiguous_with,
+            vec!["src/playbooks.rs:1".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_bare_call_in_the_same_file_as_its_definition_attributes_locally_with_no_import_needed() {
+        // Attribution path 3: Rust's own lexical scoping resolves an unqualified sibling call
+        // with no `use` needed at all when the call sits in the SAME file as the definition -
+        // `two.rs`'s own bare `rebuild()` call attributes to `two.rs`'s own `rebuild`, leaving
+        // the unrelated `one.rs` sharer (zero callers of its own) correctly flagged ambiguous.
+        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
+        write_fixture(
+            dir.path(),
+            "src/one.rs",
+            "pub fn rebuild() -> u32 {\n    1\n}\n",
+        );
+        write_fixture(
+            dir.path(),
+            "src/two.rs",
+            "pub fn rebuild() -> u32 {\n    2\n}\nfn use_it() -> u32 {\n    rebuild()\n}\n",
+        );
+        let candidates = candidates_for(dir.path());
+        let rebuilds: Vec<&DeadCodeCandidate> =
+            candidates.iter().filter(|c| c.name == "rebuild").collect();
+        assert_eq!(rebuilds.len(), 1, "{candidates:?}");
+        assert_eq!(rebuilds[0].file, "src/one.rs", "{rebuilds:?}");
+        assert!(rebuilds[0].ambiguous, "{rebuilds:?}");
+    }
+
+    #[test]
+    fn a_bare_unqualified_call_from_a_third_unrelated_file_credits_neither_sharer() {
+        // The addendum's literal "credited to NO definition" case: a BARE `rebuild()` call from
+        // a THIRD file (neither sharer's own, and no `use` import resolving it) cannot be
+        // attributed to either, so BOTH remain zero-attributed and BOTH are flagged ambiguous -
+        // never a false "somebody calls it somewhere" pass for either one.
+        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
+        write_fixture(
+            dir.path(),
+            "src/one.rs",
+            "pub fn rebuild() -> u32 {\n    1\n}\n",
+        );
+        write_fixture(
+            dir.path(),
+            "src/two.rs",
+            "pub fn rebuild() -> u32 {\n    2\n}\n",
+        );
+        write_fixture(
+            dir.path(),
+            "src/three.rs",
+            "fn use_it() -> u32 {\n    rebuild()\n}\n",
+        );
+        let candidates = candidates_for(dir.path());
+        let rebuilds: Vec<&DeadCodeCandidate> =
+            candidates.iter().filter(|c| c.name == "rebuild").collect();
+        assert_eq!(rebuilds.len(), 2, "{candidates:?}");
+        assert!(rebuilds.iter().all(|c| c.ambiguous), "{rebuilds:?}");
+    }
+
+    #[test]
+    fn a_bare_call_resolved_through_a_use_import_attributes_to_the_imported_definition() {
+        // The addendum's other attribution path: "a `use module::name;` in the referencing file
+        // resolving to it" - a BARE `rebuild()` call in a file that imports it by qualified path
+        // attributes to that specific definition, same as a `module::rebuild()` call site would.
+        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
+        write_fixture(
+            dir.path(),
+            "src/distiller.rs",
+            "pub fn rebuild() -> u32 {\n    1\n}\n",
+        );
+        write_fixture(
+            dir.path(),
+            "src/playbooks.rs",
+            "pub fn rebuild() -> u32 {\n    2\n}\n",
+        );
+        write_fixture(
+            dir.path(),
+            "src/main.rs",
+            "use crate::playbooks::rebuild;\nfn main() {\n    let _ = rebuild();\n}\n",
+        );
+        let candidates = candidates_for(dir.path());
+        let rebuilds: Vec<&DeadCodeCandidate> =
+            candidates.iter().filter(|c| c.name == "rebuild").collect();
+        assert_eq!(rebuilds.len(), 1, "{candidates:?}");
+        assert_eq!(rebuilds[0].file, "src/distiller.rs", "{rebuilds:?}");
+        assert!(rebuilds[0].ambiguous, "{rebuilds:?}");
+    }
+
     #[test]
     fn a_method_name_shared_by_two_impls_with_zero_calls_is_flagged_ambiguous() {
         let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
@@ -7384,7 +8128,13 @@ mod tests {
     }
 
     #[test]
-    fn an_inherent_associated_fn_name_shared_with_a_call_site_excludes_both() {
+    fn a_qualified_call_site_attributes_only_to_the_sharer_it_names() {
+        // Round 1 (`op-u87c2-round-1-ambiguity-covers-free-fns-too`): a `Type::new()`-qualified
+        // call site is now ATTRIBUTED to the ONE sharer it names, not credited to every sharer
+        // the way an unattributable bare mention would be - `A::new()` proves `A::new` alive
+        // (excluded) while `B::new`, with zero calls of its own, is correctly flagged ambiguous
+        // rather than silently hidden behind `A::new`'s real caller (the same failure shape the
+        // adversary's `distiller::rebuild`/`playbooks::rebuild` finding named for free fns).
         let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
         write_fixture(
             dir.path(),
@@ -7392,7 +8142,12 @@ mod tests {
             "struct A;\nstruct B;\nimpl A {\n    fn new() -> Self {\n        A\n    }\n}\nimpl B {\n    fn new() -> Self {\n        B\n    }\n}\nfn make() -> A {\n    A::new()\n}\n",
         );
         let candidates = candidates_for(dir.path());
-        assert!(candidates.iter().all(|c| c.name != "new"), "{candidates:?}");
+        let news: Vec<&DeadCodeCandidate> = candidates.iter().filter(|c| c.name == "new").collect();
+        assert_eq!(news.len(), 1, "{candidates:?}");
+        assert_eq!(news[0].file, "src/ctors2.rs");
+        assert_eq!(news[0].line, 9, "expected B::new specifically; {news:?}");
+        assert!(news[0].ambiguous, "{news:?}");
+        assert_eq!(news[0].ambiguous_with, vec!["src/ctors2.rs:4".to_string()]);
     }
 
     #[test]

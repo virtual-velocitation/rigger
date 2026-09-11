@@ -30,11 +30,15 @@
 //! consumer is in exactly this position. Field order below matches the producer's declaration
 //! order (`tests/simplification_audit.rs`'s `TestOnlyRef`/`DeadCodeCandidate` structs) exactly,
 //! which is also why the round-trip test below can assert byte-identical re-encoding; that same
-//! byte-identical round-trip is also the mechanical proof that no field beyond the six named here
-//! (in particular no `disposition`, which decision `u87c2-json-schema-excludes-disposition`
+//! byte-identical round-trip is also the mechanical proof that no field beyond the seven named
+//! here (in particular no `disposition`, which decision `u87c2-json-schema-excludes-disposition`
 //! scopes to criterion 3, NOT this one) is present in the real committed file today - an extra
 //! field would deserialize-drop and then fail the re-encode comparison below, so a dedicated
-//! "no disposition field" test would only duplicate that coverage.
+//! "no disposition field" test would only duplicate that coverage. `ambiguous_with` (round 1,
+//! `op-u87c2-round-1-ambiguity-covers-free-fns-too`) carries the SAME
+//! `#[serde(default, skip_serializing_if = "Vec::is_empty")]` shape the producer declares it
+//! with, so a non-ambiguous entry (the overwhelming majority) round-trips with no key for it at
+//! all - proven by the same byte-identical comparison, not asserted separately.
 //!
 //! This unit does NOT own dispositions, the knowledge-graph degree cross-check, or report
 //! section 4 (spec 87 Done-when: "criterion 3, NOT this one's"), so this file drives no binary
@@ -61,6 +65,11 @@ struct ConsumedDeadCodeCandidate {
     line: usize,
     visibility: String,
     ambiguous: bool,
+    /// Round 1 addition (`op-u87c2-round-1-ambiguity-covers-free-fns-too`): `file:line` of every
+    /// OTHER production fn this bare name is shared with, populated exactly when `ambiguous` is
+    /// `true`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    ambiguous_with: Vec<String>,
     test_only_references: Vec<ConsumedTestOnlyRef>,
 }
 
@@ -83,8 +92,8 @@ fn deserialize_committed_dead_code() -> Vec<ConsumedDeadCodeCandidate> {
     serde_json::from_str(&raw).unwrap_or_else(|e| {
         panic!(
             "{DEAD_CODE_PATH} does not deserialize as the documented DeadCodeCandidate contract \
-             (name/file/line/visibility/ambiguous/test_only_references, test_only_references as \
-             file/line): {e}"
+             (name/file/line/visibility/ambiguous/ambiguous_with/test_only_references, \
+             test_only_references as file/line): {e}"
         )
     })
 }
@@ -126,6 +135,40 @@ fn every_deserialized_candidate_has_a_non_empty_name_a_src_file_a_valid_line_and
             "{c:?} has an unrecognized visibility {:?}",
             c.visibility
         );
+    }
+}
+
+/// Round 1: `ambiguous_with` is populated EXACTLY when `ambiguous` is `true` (never the reverse,
+/// never both empty-and-true or non-empty-and-false), and every citation it carries is a
+/// non-blank `file:line`-shaped string a consumer can act on (e.g. to render "ambiguous with
+/// `src/playbooks.rs:1`" in section 4).
+#[test]
+fn ambiguous_with_is_populated_iff_ambiguous_and_every_citation_is_file_colon_line_shaped() {
+    let candidates = deserialize_committed_dead_code();
+    for c in &candidates {
+        assert_eq!(
+            c.ambiguous,
+            !c.ambiguous_with.is_empty(),
+            "{c:?} has ambiguous/ambiguous_with out of sync"
+        );
+        for citation in &c.ambiguous_with {
+            let Some((file, line)) = citation.rsplit_once(':') else {
+                panic!(
+                    "{} has a non-file:line ambiguous_with citation {citation:?}",
+                    c.name
+                );
+            };
+            assert!(
+                !file.is_empty(),
+                "{} has an ambiguous_with citation with an empty file: {citation:?}",
+                c.name
+            );
+            assert!(
+                line.parse::<usize>().is_ok_and(|n| n >= 1),
+                "{} has an ambiguous_with citation with a non-positive line: {citation:?}",
+                c.name
+            );
+        }
     }
 }
 
