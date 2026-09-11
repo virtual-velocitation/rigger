@@ -4195,7 +4195,7 @@ fn render_section_6() -> String {
         - Expected line delta: negative, at least -284 production lines (the 23 function \
         definitions measured directly - signature, doc comment, and body, walking upward over \
         contiguous `///`/`#[...]`/blank lines the same way this audit's own scanner excludes a \
-        definition's own signature span - `src/spawn.rs` alone accounts for 129 of the 284 \
+        definition's own signature span - `src/spawn.rs` alone accounts for 74 of the 284 \
         across its 9-function builder family), MORE negative once each entry's orphaned tests \
         are removed too - deliberately NOT measured here: a test whose ONLY purpose is exercising \
         a deleted fn is removed outright, but several of the 156 test files touch a candidate as \
