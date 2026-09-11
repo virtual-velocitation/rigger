@@ -73,6 +73,22 @@ pub struct Gate {
     pub inputs: Vec<String>,
 }
 
+/// One registered REGENERABLE artifact rule (spec 88, criterion 1): `paths` names the glob
+/// patterns (the same authority `Gate::inputs` uses) a merge conflict is checked against, and
+/// `run` is the shell command that regenerates them fresh from the tree. A merge conflict
+/// CONFINED entirely to paths some rule matches is resolved by the conductor itself - running
+/// `run` in the unit's worktree and committing - with no implementer spawn at all; a conflict
+/// that also touches a non-matching (source) path still re-parks the implementer for that part,
+/// and the matching paths are regenerated in a follow-up commit after the implementer's own
+/// commit lands (the design's "in that order").
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct RegenerateRule {
+    #[serde(default)]
+    pub paths: Vec<String>,
+    #[serde(default)]
+    pub run: String,
+}
+
 /// One declarative failure rule (spec 10, unit 2), authored under
 /// `defaults.failure_rules`. It matches a failure signal (a process's exit status,
 /// terminating signal, and/or captured output) and classifies it, with a per-rule rerun
@@ -732,6 +748,13 @@ pub struct Workflow {
     pub gates: BTreeMap<String, Gate>,
     #[serde(default)]
     pub stages: BTreeMap<String, Stage>,
+    /// Registered regenerable artifacts (spec 88, criterion 1): an integration merge
+    /// conflict confined entirely to paths one of these rules matches is resolved by the
+    /// conductor itself (regenerate + commit, no spawn); absent (the common case, and
+    /// every workflow.yml committed before this key existed) means no path is registered,
+    /// so every conflict re-parks the implementer exactly as it would otherwise.
+    #[serde(default)]
+    pub regenerate: Vec<RegenerateRule>,
 }
 
 impl Workflow {

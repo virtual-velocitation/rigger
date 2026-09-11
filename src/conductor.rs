@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::budget::{self, BuildBudget};
-use crate::config::{AgentDef, Config, Stage};
+use crate::config::{AgentDef, Config, RegenerateRule, Stage};
 use crate::contextgraph::{self, Graph, Projection};
 use crate::eventstore::{Appended, Direction, Event, EventStore};
 use crate::failure::{self, Signal};
@@ -723,6 +723,45 @@ struct Integration {
     /// caller falls to remediation exactly like a pre-merge gate failure. `None` on a clean
     /// integration (or a read-only / no-change unit).
     blocked: Option<Vec<String>>,
+}
+
+/// Bound on implementer respawns [`RunCtx::resolve_integrate_conflict`] makes to resolve
+/// ONE integration merge conflict (spec 88, criterion 1) before treating it as a genuine
+/// remediation failure rather than a free re-park: mirrors [`REVIEWER_RESPAWN_BOUND`]'s
+/// identical role for a degenerate reviewer result - bounded so a conflict a real agent
+/// truly cannot resolve still converges through ordinary remediation instead of spinning.
+const CONFLICT_RESOLVE_BOUND: u32 = 3;
+
+/// The outcome of [`RunCtx::resolve_integrate_conflict`].
+enum ConflictResolution {
+    /// The worktree carries no more unmerged paths; the caller retries the merge.
+    Resolved,
+    /// [`CONFLICT_RESOLVE_BOUND`] implementer respawns were exhausted with paths still
+    /// unmerged: the evidence for an ordinary (attempt-charging) `Integration::blocked`.
+    Exhausted(Vec<String>),
+}
+
+/// The remediation prompt for a merge-conflict re-park (spec 88, criterion 1): lists ONLY
+/// the conflicting SOURCE paths a real edit must resolve - never a full re-implementation
+/// prompt, and never a registered regenerable path also in conflict (the conductor
+/// regenerates those itself, in a follow-up commit, after this one lands).
+fn conflict_resolution_prompt(unit: &str, conflicting: &[String]) -> String {
+    format!(
+        "Your unit {unit:?}'s change was approved and gated green, but integrating it hit a \
+         real merge conflict against work another unit landed on the run branch meanwhile - \
+         this is not a defect in your implementation, and no remediation attempt is charged for \
+         it. The run branch has already been merged into your worktree (`git merge \
+         --no-commit`) and conflict markers are left in place in exactly these path(s):\n{}\n\n\
+         Resolve the conflicts in these paths only, preserving both sides' intent, `git add` \
+         each resolved path, and `git commit` to complete the merge on your CURRENT branch. Do \
+         not revert, discard, or re-implement any of your PRIOR commits - they stay exactly as \
+         they are; you are only completing this one merge.",
+        conflicting
+            .iter()
+            .map(|p| format!("- {p}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
 }
 
 /// The ratchet effect of a single gate run, resolved by the failure taxonomy's three-way
@@ -7529,27 +7568,60 @@ impl RunCtx<'_> {
         // sequence runs UNDER the integrate lock, so no concurrent integration mutates the run
         // branch between the merge and the re-gate that judges it.
         let pre_merge = worktree::head_sha_of(&self.deps.repo);
+        // The unit's OWN branch tip BEFORE this call's merge attempt (spec 88, criterion 1):
+        // `wt.integrate` now merges the run branch INTO the worktree FIRST, so a merge this
+        // call does not ultimately land (the post-merge re-gate below goes RED, or the
+        // "should never happen" defensive block just below) must roll the unit's branch back
+        // to exactly this point too - not just the repo - or its NEXT attempt would fast-
+        // forward the repo from a branch still carrying the abandoned merge commit, silently
+        // erasing whatever the repo held (a batch-mate's already-integrated work included).
+        let unit_head_before_merge = worktree::head_sha_of(&wt.dir);
         let commit = match wt.integrate(&format!("rigger: integrate {}", st.name))? {
             worktree::IntegrateOutcome::Merged(c) => c,
-            worktree::IntegrateOutcome::Conflict(detail) => {
-                // A merge CONFLICT: an unpredicted overlap the partitioner did not serialize
-                // (two batch-mates the grounder placed together that edit the same region).
-                // `wt.integrate` already ABORTED the merge, so the run branch is untouched -
-                // NOTHING landed. RESET this unit's branch to the run-branch tip (`pre_merge`,
-                // unchanged by the aborted merge) so its NEXT remediation attempt re-implements
-                // off the INTEGRATED tree (with the batch-mate's change) and rebases cleanly,
-                // then re-enter remediation fed the conflict - EXACTLY like a RED post-merge
-                // re-gate below - instead of wedging the run on a broken branch.
-                wt.reset_branch_to(&pre_merge)?;
-                return Ok(Integration {
-                    blocked: Some(vec![format!(
-                        "integrate merge conflict (unpredicted overlap; the partitioner did \
-                         not serialize this unit against a batch-mate editing the same region) \
-                         - re-implement off the current run-branch tree so your change merges \
-                         cleanly:\n{detail}"
-                    )]),
-                    ..Default::default()
-                });
+            worktree::IntegrateOutcome::Conflict(conflicting) => {
+                // Spec 88, criterion 1 (INTEGRATE-CONFLICT MERGES): an unpredicted overlap the
+                // partitioner did not serialize (two batch-mates the grounder placed together
+                // that edit the same region) is NOT a defect of this unit. `wt.integrate` already
+                // merged the run branch INTO this worktree, leaving conflict markers there and
+                // the unit's branch (every prior commit) untouched - so resolve it in place
+                // rather than discarding the unit's work: a conflict confined to registered
+                // regenerable paths is resolved by the conductor itself (no spawn); otherwise the
+                // implementer is re-parked, charged NO remediation attempt, to resolve and commit
+                // on the SAME branch. Once resolved, retry the now-guaranteed-clean merge.
+                match self.resolve_integrate_conflict(st, wt, attempt, &conflicting)? {
+                    ConflictResolution::Resolved => {
+                        match wt.integrate(&format!("rigger: integrate {}", st.name))? {
+                            worktree::IntegrateOutcome::Merged(c) => c,
+                            worktree::IntegrateOutcome::Conflict(still) => {
+                                // Should not happen (resolution guarantees a conflict-free
+                                // worktree); treat defensively as an ordinary block so the unit
+                                // remediates normally rather than looping forever. Discard the
+                                // abandoned merge attempt from the unit's OWN branch too.
+                                wt.reset_branch_to(&unit_head_before_merge)?;
+                                return Ok(Integration {
+                                    blocked: Some(vec![format!(
+                                        "integrate conflict resolution left {} path(s) still \
+                                         unmerged: {}",
+                                        still.len(),
+                                        still.join(", ")
+                                    )]),
+                                    ..Default::default()
+                                });
+                            }
+                        }
+                    }
+                    ConflictResolution::Exhausted(evidence) => {
+                        // The bound was reached with a real conflict still unresolved: abort
+                        // the in-progress merge by rolling the unit's branch back to where it
+                        // stood before this call, so the unit's NEXT (attempt-charging)
+                        // remediation round starts from a clean, uncommitted-merge-free tree.
+                        wt.reset_branch_to(&unit_head_before_merge)?;
+                        return Ok(Integration {
+                            blocked: Some(evidence),
+                            ..Default::default()
+                        });
+                    }
+                }
             }
         };
         // spec 12, unit 5: re-run the FULL gate suite against the MERGED run-branch tree
@@ -7559,13 +7631,22 @@ impl RunCtx<'_> {
         // re-gate is content-addressed (unit 1): a merge that changed nothing a gate reads (a
         // clean fast-forward) replays the pre-merge green as a cache-hit - near-free - while a
         // merge that combined divergent trees misses the cache and the gate RUNS on the merged
-        // tree. A RED here BLOCKS integration: the merge is rolled back so NOTHING lands (no
-        // UnitIntegrated over a broken tree) and the caller re-enters remediation fed the
-        // merge-break evidence, exactly like a pre-merge gate failure.
+        // tree. A RED here BLOCKS integration: the merge is rolled back - on the repo AND (spec
+        // 88 criterion 1: `wt.integrate` may have advanced it) on the unit's own branch - so
+        // NOTHING lands (no UnitIntegrated over a broken tree) and the caller re-enters
+        // remediation fed the merge-break evidence, exactly like a pre-merge gate failure.
         if !commit.is_empty() {
             let merged = self.run_gates(st, &self.deps.repo, attempt, GateSelection::PostMerge)?;
             if !merged.pass {
                 Worktree::reset_to(&self.deps.repo, &pre_merge)?;
+                // Defense in depth (spec 64 criterion 3), same as every other post-gate touch
+                // of `wt` in this function: the post-merge gate just above is real wall-clock
+                // time IN THE BASE REPO, not `wt.dir` - a window in which an out-of-band actor
+                // (or, as spec 88 criterion 1's own fixture drives, the gate command's own side
+                // effect) can delete the unit's worktree dir before this reset consumes it. A
+                // no-op fast path when nothing disturbed the tree.
+                wt.ensure_present()?;
+                wt.reset_branch_to(&unit_head_before_merge)?;
                 return Ok(Integration {
                     blocked: Some(merged.evidence),
                     ..Default::default()
@@ -7612,6 +7693,178 @@ impl RunCtx<'_> {
             staled,
             blocked: None,
         })
+    }
+
+    /// The registered regenerate rule matching `path` (spec 88, criterion 1), via the SAME
+    /// glob authority [`Gate::inputs`](crate::config::Gate::inputs) matches against - or
+    /// `None` when no rule's `paths` matches, i.e. `path` must be resolved by a real edit.
+    fn regenerate_rule_for(&self, path: &str) -> Option<&RegenerateRule> {
+        self.cfg
+            .workflow
+            .regenerate
+            .iter()
+            .find(|r| r.paths.iter().any(|p| glob_matches(p, path)))
+    }
+
+    /// Run a registered regeneration command inside a unit's worktree, with the SAME
+    /// per-unit `CARGO_TARGET_DIR` isolation ([`Self::spawn_env`]) every other cargo
+    /// invocation in this unit's lifecycle gets (spec 65's one build-environment
+    /// authority) - never a bare, unisolated shell-out that could race a concurrent
+    /// unit's build cache.
+    fn run_regenerate_command(&self, dir: &str, run: &str) -> Result<(), Error> {
+        let build_env = self.build_env()?;
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg(run).current_dir(dir);
+        for (k, v) in Self::spawn_env(&build_env, dir) {
+            cmd.env(k, v);
+        }
+        let out = cmd
+            .output()
+            .map_err(|e| Error(format!("regenerate command {run:?}: {e}")))?;
+        if !out.status.success() {
+            return Err(Error(format!(
+                "regenerate command {run:?} failed:\n{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            )));
+        }
+        Ok(())
+    }
+
+    /// Resolve conflicting paths CONFINED to registered regenerable rules (spec 88,
+    /// criterion 1): run each DISTINCT matching command once in the worktree - a rule's
+    /// command may cover several of the conflicting paths - then commit the regenerated,
+    /// now-conflict-free tree, completing the merge with NO implementer spawn at all.
+    /// `paths` must already be verified (by the caller) to be entirely regenerable.
+    fn regenerate_conflicted_paths(
+        &self,
+        wt: &Worktree,
+        unit: &str,
+        paths: &[String],
+    ) -> Result<(), Error> {
+        let mut commands: Vec<&str> = Vec::new();
+        for p in paths {
+            if let Some(rule) = self.regenerate_rule_for(p) {
+                if !commands.contains(&rule.run.as_str()) {
+                    commands.push(&rule.run);
+                }
+            }
+        }
+        for cmd in commands {
+            self.run_regenerate_command(&wt.dir, cmd)?;
+        }
+        wt.commit(&format!(
+            "rigger: regenerate conflicting artifacts for {unit}"
+        ))?;
+        Ok(())
+    }
+
+    /// Resolve ONE integration merge conflict (spec 88, criterion 1): loops (bounded by
+    /// [`CONFLICT_RESOLVE_BOUND`]) between the registered-regenerable resolution above and
+    /// re-parking the implementer for whatever conflicting paths remain unresolvable by the
+    /// conductor alone, until the worktree carries no more unmerged paths. Charges NO
+    /// remediation attempt: every spawn this loop makes reuses the SAME `attempt` a
+    /// [`spawn_retry_id`] `~retry{n}` suffix, never [`safety::remediate`]'s bump - mirroring
+    /// [`Self::run_reviewer`]'s identical free-respawn pattern for a degenerate reviewer
+    /// result (spec 07), the established precedent for "infrastructure, not a defect" in
+    /// this loop. Returns [`ConflictResolution::Resolved`] once the tree is conflict-free
+    /// (the caller re-attempts the now-guaranteed-clean merge), or
+    /// [`ConflictResolution::Exhausted`] if the bound is reached with paths still unmerged -
+    /// the ONE fallback that DOES charge an attempt, so a genuinely stuck conflict still
+    /// converges through ordinary remediation rather than spinning forever.
+    fn resolve_integrate_conflict(
+        &self,
+        st: &Stage,
+        wt: &Worktree,
+        attempt: u32,
+        conflicting: &[String],
+    ) -> Result<ConflictResolution, Error> {
+        let mut conflicting = conflicting.to_vec();
+        for retry in 1..=CONFLICT_RESOLVE_BOUND {
+            let (regenerable, source): (Vec<String>, Vec<String>) = conflicting
+                .iter()
+                .cloned()
+                .partition(|p| self.regenerate_rule_for(p).is_some());
+            if source.is_empty() {
+                // Confined to registered regenerable paths: the conductor resolves it
+                // itself. No spawn at all.
+                self.regenerate_conflicted_paths(wt, &st.name, &regenerable)?;
+                return Ok(ConflictResolution::Resolved);
+            }
+            // A mixed conflict: pre-resolve the regenerable side with a deterministic
+            // placeholder (it is regenerated for REAL, in a follow-up commit, only AFTER
+            // the implementer's own commit lands - the design's "in that order") purely to
+            // unblock `git commit`, which refuses while ANY path is unmerged - then
+            // re-park the implementer with ONLY the source paths.
+            for p in &regenerable {
+                wt.accept_incoming(p)?;
+            }
+            let id = spawn_retry_id(&st.name, ROLE_IMPLEMENTER, attempt, retry);
+            if !self.reserve_spawn(&id) {
+                return Err(budget_refused(&st.name, "implementer", &st.agent));
+            }
+            let agent_def = self.cfg.agents.get(&st.agent).ok_or_else(|| {
+                Error(format!(
+                    "stage {:?} references unknown agent {:?}",
+                    st.name, st.agent
+                ))
+            })?;
+            if self.agent_isolated(&st.agent) {
+                self.assert_isolated_cwd("implementer", &st.agent, &wt.dir)?;
+            }
+            let build_env = self.build_env()?;
+            let prompt = conflict_resolution_prompt(&st.name, &source);
+            let emit = |t: &str, v: Value| {
+                self.emit_meta(
+                    t,
+                    v,
+                    &[
+                        (contextgraph::META_ACTOR, st.agent.as_str()),
+                        (META_SPAWN, id.as_str()),
+                    ],
+                )
+            };
+            self.deps.driver.spawn(
+                agent_def,
+                &prompt,
+                &SpawnOpts {
+                    system_prompt: self.build_system_prompt(agent_def),
+                    dir: wt.dir.clone(),
+                    isolation: true,
+                    parallel: false,
+                    blast_radius: source.clone(),
+                    id: id.clone(),
+                    unit: st.name.clone(),
+                    stage: st.name.clone(),
+                    title: format!("resolve integrate conflict: {}", st.name),
+                    attempt,
+                    run_id: self.run_id.clone(),
+                    env: Self::spawn_env(&build_env, &wt.dir),
+                    reviews: Vec::new(),
+                },
+                &emit,
+            )?;
+            // Defense in depth (spec 64 criterion 3): the spawn just above is real
+            // wall-clock time, the window in which an out-of-band actor could delete the
+            // worktree before the read below consumes it.
+            wt.ensure_present()?;
+            conflicting = wt.conflicting_paths()?;
+            if conflicting.is_empty() {
+                if !regenerable.is_empty() {
+                    // The design's "in that order": the implementer's commit resolving
+                    // the source conflict has now landed (its placeholder regenerable
+                    // content included); regenerate those paths for REAL, in a
+                    // follow-up commit, only now.
+                    self.regenerate_conflicted_paths(wt, &st.name, &regenerable)?;
+                }
+                return Ok(ConflictResolution::Resolved);
+            }
+        }
+        Ok(ConflictResolution::Exhausted(vec![format!(
+            "integrate conflict unresolved after {CONFLICT_RESOLVE_BOUND} implementer \
+             attempt(s); still unmerged: {}",
+            conflicting.join(", ")
+        )]))
     }
 
     /// Build the SYSTEM prompt the conductor threads into every spawn: the agent's
@@ -32226,6 +32479,410 @@ mod tests {
             loser_remediated,
             "the blocked unit re-enters remediation (UnitFailed at an advanced attempt) fed the merge-break"
         );
+    }
+
+    /// A driver for the spec 88, criterion 1 (INTEGRATE-CONFLICT MERGES) fixture: `unit-a` and
+    /// `unit-b` are two batch-mates with NO dependency, both editing the SAME LINE of `c.rs` off
+    /// the same base - a genuine textual conflict (unlike [`MergeBreakDriver`]'s non-overlapping
+    /// prepend/append, which auto-merges cleanly). The barrier makes both worktrees branch from
+    /// the same base before either writes, guaranteeing the overlap. The unit that loses the
+    /// integrate-lock race conflicts; its OWN implementer is re-parked under a `~retry{n}` id
+    /// (never a fresh `attempts` bump) to resolve it, which this driver simulates by overwriting
+    /// the conflicted file with fixed, recognizable content and committing on the SAME branch.
+    struct ConflictDriver {
+        repo: String,
+        /// Every spawn id this driver was called with, in order - lets a test prove
+        /// WHETHER (and how many times) an implementer was re-parked, independent of
+        /// event-log stamping details.
+        calls: Mutex<Vec<String>>,
+        /// Whether a `~retry` re-park actually resolves the conflict (the ordinary case,
+        /// every existing test). `false` simulates a real implementer that keeps failing to
+        /// resolve it, so [`RunCtx::resolve_integrate_conflict`]'s bound (`CONFLICT_RESOLVE_BOUND`)
+        /// is exhausted for real - the one path that DOES charge a remediation attempt.
+        resolve_on_retry: bool,
+    }
+    impl AgentDriver for ConflictDriver {
+        fn spawn(
+            &self,
+            _a: &AgentDef,
+            _prompt: &str,
+            opts: &SpawnOpts,
+            _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            self.calls.lock().unwrap().push(opts.id.clone());
+            let unit = opts.id.split('/').next().unwrap_or_default();
+            if opts.id.contains("/implementer#") {
+                if opts.id.contains("~retry") {
+                    assert!(
+                        !opts.dir.is_empty(),
+                        "a conflict re-park must still run in the unit's own worktree"
+                    );
+                    if !self.resolve_on_retry {
+                        // Simulates a real implementer that fails to resolve it: leave the
+                        // conflict markers exactly as they are, commit nothing. Every
+                        // `~retry{n}` call gets this same non-resolution.
+                        return Ok(AgentResult::default());
+                    }
+                    // The conflict-resolution re-park: resolve the conflict for real and
+                    // commit on the CURRENT branch, exactly as spec 88 criterion 1's design
+                    // instructs a real implementer to.
+                    std::fs::write(Path::new(&opts.dir).join("c.rs"), "RESOLVED\n").unwrap();
+                    for args in [&["add", "-A"][..], &["commit", "-q", "-m", "resolve"][..]] {
+                        std::process::Command::new("git")
+                            .arg("-C")
+                            .arg(&opts.dir)
+                            .args(args)
+                            .output()
+                            .unwrap();
+                    }
+                    return Ok(AgentResult::default());
+                }
+                if !opts.dir.is_empty() {
+                    // Barrier: both branches must exist (neither has integrated yet) before
+                    // either writes, so both cut their worktree from the SAME base - the
+                    // unpredicted-overlap precondition.
+                    for _ in 0..400 {
+                        let n = std::process::Command::new("git")
+                            .arg("-C")
+                            .arg(&self.repo)
+                            .args(["branch", "--list", "rigger/u/*"])
+                            .output()
+                            .map(|o| String::from_utf8_lossy(&o.stdout).lines().count())
+                            .unwrap_or(0);
+                        if n >= 2 {
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(25));
+                    }
+                    let content = if unit == "unit-a" { "A\n" } else { "B\n" };
+                    std::fs::write(Path::new(&opts.dir).join("c.rs"), content).unwrap();
+                }
+                return Ok(AgentResult::default());
+            }
+            if opts.id.contains("/adjudicator#") {
+                return Ok(AgentResult {
+                    output: r#"{"verdict":"approve"}"#.into(),
+                    resolved_model: String::new(),
+                });
+            }
+            Ok(AgentResult {
+                output: "reviewed the diff".into(),
+                resolved_model: String::new(),
+            })
+        }
+    }
+
+    /// Builds the two-batch-mate conflict fixture ([`ConflictDriver`]) shared by all three of
+    /// spec 88 criterion 1's conductor-level tests below; `regenerate` seeds
+    /// `cfg.workflow.regenerate` (empty for the general re-park and exhausted-bound cases, a
+    /// `c.rs`-matching rule for the confined-regenerable case). `resolve_on_retry` selects
+    /// whether the driver's `~retry` re-park actually resolves the conflict (`true`, every
+    /// ordinary case) or keeps failing to (`false`, the exhausted-bound case).
+    fn conflict_fixture(
+        regenerate: Vec<crate::config::RegenerateRule>,
+        resolve_on_retry: bool,
+    ) -> (tempfile::TempDir, String, Store, ConflictDriver) {
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        std::fs::write(Path::new(&repo_path).join("c.rs"), "LINE\n").unwrap();
+        for args in [
+            &["add", "c.rs"][..],
+            &["commit", "-q", "-m", "base c.rs"][..],
+        ] {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo_path)
+                .args(args)
+                .output()
+                .unwrap();
+        }
+        let store = Store::open(":memory:").unwrap();
+        let driver = ConflictDriver {
+            repo: repo_path.clone(),
+            calls: Mutex::new(Vec::new()),
+            resolve_on_retry,
+        };
+        let _ = regenerate;
+        (repo, repo_path, store, driver)
+    }
+
+    #[test]
+    fn integrate_conflict_re_parks_the_implementer_with_no_attempt_charged_and_both_units_land() {
+        // Spec 88, criterion 1, Done-when: "a unit whose integration conflicts is re-parked with
+        // the run branch merged into its worktree, its branch keeps every prior commit, no
+        // attempt is charged". Two batch-mates edit the SAME line off the same base: the first
+        // to win the integrate lock merges cleanly; the second's merge CONFLICTS, is re-parked
+        // (never reset, never charged an attempt), resolves, and lands too - BOTH units
+        // integrate, unlike the semantic post-merge-break case where the loser escalates.
+        let (repo, repo_path, store, driver) = conflict_fixture(Vec::new(), true);
+
+        let mut cfg = Config::default();
+        cfg.workflow.defaults.max_retries = 3;
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
+        let panel = crate::config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adjudicator: "judge".into(),
+            ..Default::default()
+        };
+        let mk = |name: &str| Stage {
+            name: name.into(),
+            agent: "worker".into(),
+            gates: vec!["g".into()],
+            on_pass: "merge".into(),
+            needs: vec![],
+            review: panel.clone(),
+            ..Default::default()
+        };
+        cfg.workflow.stages.insert("unit-a".into(), mk("unit-a"));
+        cfg.workflow.stages.insert("unit-b".into(), mk("unit-b"));
+
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // BOTH units integrate - the loser's textual conflict is resolved, never escalated.
+        assert_eq!(
+            rs.units["unit-a"].status,
+            ledger::Status::Integrated,
+            "unit-a must integrate"
+        );
+        assert_eq!(
+            rs.units["unit-b"].status,
+            ledger::Status::Integrated,
+            "unit-b must integrate (its conflict is resolved, not a dead end)"
+        );
+        // No attempt is charged for the conflict round: neither unit's folded `attempts`
+        // (from the latest UnitFailed) ever advanced past 0, because no UnitFailed is ever
+        // recorded for a conflict - it resolves within the SAME integration call.
+        assert_eq!(
+            rs.units["unit-a"].attempts, 0,
+            "no remediation attempt is charged to unit-a"
+        );
+        assert_eq!(
+            rs.units["unit-b"].attempts, 0,
+            "no remediation attempt is charged to unit-b (a conflict is not a defect)"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
+            "a conflict that resolves within the same call never records a UnitFailed"
+        );
+        // The re-parked implementer ran under a `~retry` id (spec 07's established free-
+        // respawn shape), never a fresh `attempts` bump.
+        let calls = driver.calls.lock().unwrap();
+        assert!(
+            calls.iter().any(|id| id.contains("/implementer#0~retry1")),
+            "the conflicting unit's implementer must be re-parked under a ~retry id; got {calls:?}"
+        );
+        // The run branch carries the RESOLVED content - the re-parked implementer's own
+        // commit, proving the merge landed via ITS resolution, not a discarded rebuild.
+        let merged = std::fs::read_to_string(Path::new(&repo_path).join("c.rs")).unwrap();
+        assert_eq!(
+            merged, "RESOLVED\n",
+            "the run branch carries the conflict-resolving commit's content"
+        );
+        drop(repo);
+    }
+
+    #[test]
+    fn integrate_conflict_confined_to_a_regenerable_path_resolves_with_no_spawn() {
+        // Spec 88, criterion 1, Done-when: "a conflict confined to a registered regenerable
+        // path is resolved by regeneration with no spawn." Same two-batch-mate textual
+        // conflict as above, but `c.rs` is registered regenerable: the conductor must resolve
+        // it ITSELF (running the registered command and committing) - the loser's implementer
+        // is never re-parked a second time at all.
+        let (repo, repo_path, store, driver) = conflict_fixture(
+            vec![crate::config::RegenerateRule {
+                paths: vec!["c.rs".into()],
+                run: "printf 'REGENERATED\\n' > c.rs".into(),
+            }],
+            true,
+        );
+
+        let mut cfg = Config::default();
+        cfg.workflow.defaults.max_retries = 3;
+        cfg.workflow.regenerate = vec![crate::config::RegenerateRule {
+            paths: vec!["c.rs".into()],
+            run: "printf 'REGENERATED\\n' > c.rs".into(),
+        }];
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
+        let panel = crate::config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adjudicator: "judge".into(),
+            ..Default::default()
+        };
+        let mk = |name: &str| Stage {
+            name: name.into(),
+            agent: "worker".into(),
+            gates: vec!["g".into()],
+            on_pass: "merge".into(),
+            needs: vec![],
+            review: panel.clone(),
+            ..Default::default()
+        };
+        cfg.workflow.stages.insert("unit-a".into(), mk("unit-a"));
+        cfg.workflow.stages.insert("unit-b".into(), mk("unit-b"));
+
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_eq!(rs.units["unit-a"].status, ledger::Status::Integrated);
+        assert_eq!(
+            rs.units["unit-b"].status,
+            ledger::Status::Integrated,
+            "the regenerable-confined conflict still lands"
+        );
+        assert_eq!(rs.units["unit-a"].attempts, 0);
+        assert_eq!(rs.units["unit-b"].attempts, 0);
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
+            "a regenerable-confined conflict never records a UnitFailed either"
+        );
+        // NO SPAWN AT ALL for the conflict: no `~retry` implementer id anywhere the driver
+        // was ever called with.
+        let calls = driver.calls.lock().unwrap();
+        assert!(
+            !calls.iter().any(|id| id.contains("~retry")),
+            "a conflict confined to a registered regenerable path resolves with NO spawn; got {calls:?}"
+        );
+        // The conductor's OWN regeneration command produced and committed the content.
+        let merged = std::fs::read_to_string(Path::new(&repo_path).join("c.rs")).unwrap();
+        assert_eq!(
+            merged, "REGENERATED\n",
+            "the conductor's registered regeneration command resolved the conflict"
+        );
+        drop(repo);
+    }
+
+    #[test]
+    fn integrate_conflict_exhausted_after_the_bound_charges_a_real_attempt_with_the_unresolved_evidence(
+    ) {
+        // Spec 88, criterion 1's ONE attempt-charging fallback: `CONFLICT_RESOLVE_BOUND`
+        // implementer re-parks that never resolve the conflict must still converge through
+        // ORDINARY remediation (a real, evidence-bearing block) rather than spin forever. Same
+        // two-batch-mate textual conflict as the other two tests, but the driver's `~retry`
+        // re-park never fixes it - proves the `Integration { blocked: Some(evidence), .. }`
+        // arm actually carries the exhaustion evidence (not silently dropped to the `None`
+        // default) and that a real remediation attempt IS charged this time, unlike the
+        // resolves-cleanly and confined-to-regenerable cases above.
+        let (repo, repo_path, store, driver) = conflict_fixture(Vec::new(), false);
+
+        let mut cfg = Config::default();
+        cfg.workflow.defaults.max_retries = 1;
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
+        let panel = crate::config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adjudicator: "judge".into(),
+            ..Default::default()
+        };
+        let mk = |name: &str| Stage {
+            name: name.into(),
+            agent: "worker".into(),
+            gates: vec!["g".into()],
+            on_pass: "merge".into(),
+            needs: vec![],
+            review: panel.clone(),
+            ..Default::default()
+        };
+        cfg.workflow.stages.insert("unit-a".into(), mk("unit-a"));
+        cfg.workflow.stages.insert("unit-b".into(), mk("unit-b"));
+
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // Exactly one of the two batch-mates loses the integrate-lock race and hits the
+        // never-resolving conflict; the other (never conflicting) integrates normally.
+        let statuses: Vec<_> = ["unit-a", "unit-b"]
+            .iter()
+            .map(|u| (*u, rs.units[*u].status))
+            .collect();
+        let integrated = statuses
+            .iter()
+            .filter(|(_, s)| *s == ledger::Status::Integrated)
+            .count();
+        assert_eq!(
+            integrated, 1,
+            "exactly one batch-mate integrates cleanly; got {statuses:?}"
+        );
+        let (loser, _) = statuses
+            .iter()
+            .find(|(_, s)| *s != ledger::Status::Integrated)
+            .expect("one batch-mate must fail to integrate");
+
+        // A REAL remediation attempt is charged - unlike the other two conflict tests, where
+        // `attempts` stays 0. (If `Integration.blocked` were silently dropped to `None`, this
+        // unit would instead have been wrongly folded into the `integrated == 1` count above,
+        // and no UnitFailed would exist at all - so this and the assertion above are the two
+        // halves that pin `blocked: Some(evidence)` actually surviving the return.)
+        assert!(
+            rs.units[*loser].attempts >= 1,
+            "the exhausted conflict charges a real remediation attempt to {loser}"
+        );
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let failed_causes: Vec<String> = events
+            .iter()
+            .filter(|e| e.type_ == ledger::TYPE_UNIT_FAILED)
+            .filter_map(|e| {
+                let v: Value = serde_json::from_slice(&e.data).ok()?;
+                if v.get("id")?.as_str()? != *loser {
+                    return None;
+                }
+                Some(v.get("cause")?.as_str()?.to_string())
+            })
+            .collect();
+        assert!(
+            !failed_causes.is_empty() && failed_causes.iter().all(|c| c == "integrate-conflict"),
+            "every recorded UnitFailed for {loser} must carry cause \"integrate-conflict\" \
+             (set only on the `Some(evidence)` arm the exhausted-bound return feeds); got \
+             {failed_causes:?}"
+        );
+        // Exactly CONFLICT_RESOLVE_BOUND (3) re-park attempts were made for the loser, all
+        // under `~retry` ids (never a fresh `attempts` bump) - retry1, retry2, retry3.
+        let calls = driver.calls.lock().unwrap();
+        for n in 1..=3 {
+            assert!(
+                calls
+                    .iter()
+                    .any(|id| id.contains(&format!("{loser}/implementer#0~retry{n}"))),
+                "expected a ~retry{n} re-park for {loser}; got {calls:?}"
+            );
+        }
+        drop(repo);
     }
 
     #[test]
