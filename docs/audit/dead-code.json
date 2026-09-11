@@ -1,0 +1,1363 @@
+[
+  {
+    "name": "cataloged_classes",
+    "file": "src/canary.rs",
+    "line": 180,
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/canary.rs",
+        "line": 1426
+      },
+      {
+        "file": "src/canary.rs",
+        "line": 1440
+      }
+    ]
+  },
+  {
+    "name": "to_rule",
+    "file": "src/config.rs",
+    "line": 136,
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": []
+  },
+  {
+    "name": "sdet_author_enabled",
+    "file": "src/config.rs",
+    "line": 436,
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/config.rs",
+        "line": 2287
+      },
+      {
+        "file": "src/config.rs",
+        "line": 2292
+      },
+      {
+        "file": "src/config.rs",
+        "line": 2297
+      },
+      {
+        "file": "src/config.rs",
+        "line": 2302
+      },
+      {
+        "file": "src/config.rs",
+        "line": 2308
+      }
+    ]
+  },
+  {
+    "name": "default_build_config",
+    "file": "src/config.rs",
+    "line": 682,
+    "visibility": "private",
+    "ambiguous": false,
+    "test_only_references": []
+  },
+  {
+    "name": "is_zero_u32",
+    "file": "src/contextgraph/mod.rs",
+    "line": 468,
+    "visibility": "private",
+    "ambiguous": false,
+    "test_only_references": []
+  },
+  {
+    "name": "is_false",
+    "file": "src/contextgraph/mod.rs",
+    "line": 475,
+    "visibility": "private",
+    "ambiguous": false,
+    "test_only_references": []
+  },
+  {
+    "name": "pid_is_alive",
+    "file": "src/dash.rs",
+    "line": 425,
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/dash.rs",
+        "line": 9310
+      },
+      {
+        "file": "src/dash.rs",
+        "line": 9314
+      },
+      {
+        "file": "src/main.rs",
+        "line": 12820
+      },
+      {
+        "file": "src/main.rs",
+        "line": 12841
+      },
+      {
+        "file": "src/main.rs",
+        "line": 13356
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 22021
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 22036
+      }
+    ]
+  },
+  {
+    "name": "is_not_back",
+    "file": "src/dash.rs",
+    "line": 1151,
+    "visibility": "private",
+    "ambiguous": false,
+    "test_only_references": []
+  },
+  {
+    "name": "is_not_shared",
+    "file": "src/dash.rs",
+    "line": 1158,
+    "visibility": "private",
+    "ambiguous": false,
+    "test_only_references": []
+  },
+  {
+    "name": "neighborhood",
+    "file": "src/dash.rs",
+    "line": 2815,
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/dash.rs",
+        "line": 8033
+      },
+      {
+        "file": "src/dash.rs",
+        "line": 8044
+      },
+      {
+        "file": "src/dash.rs",
+        "line": 8063
+      },
+      {
+        "file": "src/dash.rs",
+        "line": 8121
+      },
+      {
+        "file": "src/dash.rs",
+        "line": 8142
+      },
+      {
+        "file": "tests/dash_cluster_detail_drill.rs",
+        "line": 46
+      },
+      {
+        "file": "tests/dash_cluster_detail_drill.rs",
+        "line": 332
+      },
+      {
+        "file": "tests/files_lens_view_periphery.rs",
+        "line": 46
+      },
+      {
+        "file": "tests/files_lens_view_periphery.rs",
+        "line": 526
+      },
+      {
+        "file": "tests/subject_lens_reprojection_periphery.rs",
+        "line": 303
+      },
+      {
+        "file": "tests/subject_lens_reprojection_periphery.rs",
+        "line": 307
+      }
+    ]
+  },
+  {
+    "name": "serve",
+    "file": "src/dash.rs",
+    "line": 4665,
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/mcpserver.rs",
+        "line": 749
+      },
+      {
+        "file": "src/mcpserver.rs",
+        "line": 790
+      }
+    ]
+  },
+  {
+    "name": "render_using_rigger_skill",
+    "file": "src/docs.rs",
+    "line": 89,
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/docs.rs",
+        "line": 1319
+      },
+      {
+        "file": "src/docs.rs",
+        "line": 1361
+      },
+      {
+        "file": "src/docs.rs",
+        "line": 1367
+      },
+      {
+        "file": "src/docs.rs",
+        "line": 1383
+      },
+      {
+        "file": "src/docs.rs",
+        "line": 1384
+      },
+      {
+        "file": "src/docs.rs",
+        "line": 1404
+      },
+      {
+        "file": "src/docs.rs",
+        "line": 1461
+      },
+      {
+        "file": "src/docs.rs",
+        "line": 1557
+      },
+      {
+        "file": "src/docs.rs",
+        "line": 1589
+      },
+      {
+        "file": "src/main.rs",
+        "line": 14449
+      },
+      {
+        "file": "src/main.rs",
+        "line": 19578
+      }
+    ]
+  },
+  {
+    "name": "render_planning_a_spec_skill",
+    "file": "src/docs.rs",
+    "line": 430,
+    "visibility": "private",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/docs.rs",
+        "line": 1656
+      }
+    ]
+  },
+  {
+    "name": "render_reset_store_skill",
+    "file": "src/docs.rs",
+    "line": 608,
+    "visibility": "private",
+    "ambiguous": false,
+    "test_only_references": []
+  },
+  {
+    "name": "render_build_graph_skill",
+    "file": "src/docs.rs",
+    "line": 692,
+    "visibility": "private",
+    "ambiguous": false,
+    "test_only_references": []
+  },
+  {
+    "name": "render_reindex_skill",
+    "file": "src/docs.rs",
+    "line": 742,
+    "visibility": "private",
+    "ambiguous": false,
+    "test_only_references": []
+  },
+  {
+    "name": "render_resume_a_run_skill",
+    "file": "src/docs.rs",
+    "line": 791,
+    "visibility": "private",
+    "ambiguous": false,
+    "test_only_references": []
+  },
+  {
+    "name": "render_handle_an_escalation_skill",
+    "file": "src/docs.rs",
+    "line": 852,
+    "visibility": "private",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/docs.rs",
+        "line": 1768
+      },
+      {
+        "file": "src/docs.rs",
+        "line": 1889
+      }
+    ]
+  },
+  {
+    "name": "render_watch_a_run_skill",
+    "file": "src/docs.rs",
+    "line": 917,
+    "visibility": "private",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/docs.rs",
+        "line": 1908
+      },
+      {
+        "file": "src/docs.rs",
+        "line": 1953
+      },
+      {
+        "file": "src/docs.rs",
+        "line": 2086
+      }
+    ]
+  },
+  {
+    "name": "render_restore_the_dash_skill",
+    "file": "src/docs.rs",
+    "line": 1007,
+    "visibility": "private",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/docs.rs",
+        "line": 1988
+      },
+      {
+        "file": "src/docs.rs",
+        "line": 2091
+      }
+    ]
+  },
+  {
+    "name": "render_diagnose_churn_skill",
+    "file": "src/docs.rs",
+    "line": 1089,
+    "visibility": "private",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/docs.rs",
+        "line": 1974
+      },
+      {
+        "file": "src/docs.rs",
+        "line": 2013
+      },
+      {
+        "file": "src/docs.rs",
+        "line": 2043
+      },
+      {
+        "file": "src/docs.rs",
+        "line": 2096
+      }
+    ]
+  },
+  {
+    "name": "placements",
+    "file": "src/eventstore/mod.rs",
+    "line": 172,
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 1900
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2002
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2197
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2209
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2254
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2295
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2923
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2925
+      },
+      {
+        "file": "tests/reset_derived_compaction_periphery.rs",
+        "line": 2188
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 341
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 353
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 526
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 759
+      }
+    ]
+  },
+  {
+    "name": "written",
+    "file": "src/eventstore/mod.rs",
+    "line": 185,
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/eventstore/contract.rs",
+        "line": 157
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 1889
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 1922
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 1934
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 1945
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 1953
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 1968
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 1997
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2049
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2080
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2098
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2124
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2133
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2154
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2161
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2170
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2378
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2404
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2504
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2513
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2520
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2609
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2616
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2644
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2672
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2833
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2918
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 3026
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 3499
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 336
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 388
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 468
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 523
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 535
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 545
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 556
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 562
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 670
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 678
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 687
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 695
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 708
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 722
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 763
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 799
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 808
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 816
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 965
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 1308
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 1554
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 1571
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 1578
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 1674
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 1691
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 1713
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 1724
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 1738
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 1837
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 1869
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 1967
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 1971
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 2025
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 2039
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 2063
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 2158
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 2166
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 2194
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 2203
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 2243
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 2314
+      }
+    ]
+  },
+  {
+    "name": "with_content_identity",
+    "file": "src/eventstore/sqlite.rs",
+    "line": 192,
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/conductor.rs",
+        "line": 15419
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 1883
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 1985
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2041
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2046
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2075
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2112
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2147
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2191
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2230
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2270
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2326
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2362
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2429
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2491
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2540
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2601
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2632
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2661
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2731
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2745
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2800
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2806
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2851
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2861
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2904
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2947
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 3005
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 3475
+      },
+      {
+        "file": "tests/published_content_key_split_periphery.rs",
+        "line": 517
+      },
+      {
+        "file": "tests/reset_derived_compaction_periphery.rs",
+        "line": 2175
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 271
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 657
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 929
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 960
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 1547
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 1565
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 1686
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 1829
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 1853
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 1961
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 2007
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 2149
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 2188
+      }
+    ]
+  },
+  {
+    "name": "rules",
+    "file": "src/failure.rs",
+    "line": 230,
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/config.rs",
+        "line": 2888
+      }
+    ]
+  },
+  {
+    "name": "resolve_wrapper_name",
+    "file": "src/gate.rs",
+    "line": 434,
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "tests/build_env_authority_periphery.rs",
+        "line": 1126
+      },
+      {
+        "file": "tests/build_env_authority_periphery.rs",
+        "line": 1135
+      },
+      {
+        "file": "tests/build_env_authority_periphery.rs",
+        "line": 1142
+      }
+    ]
+  },
+  {
+    "name": "definitions_named",
+    "file": "src/grounder/symbols/model.rs",
+    "line": 201,
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/grounder/symbols/mod.rs",
+        "line": 459
+      },
+      {
+        "file": "src/grounder/symbols/mod.rs",
+        "line": 460
+      },
+      {
+        "file": "src/grounder/symbols/mod.rs",
+        "line": 461
+      },
+      {
+        "file": "src/grounder/symbols/mod.rs",
+        "line": 471
+      },
+      {
+        "file": "src/grounder/symbols/mod.rs",
+        "line": 480
+      },
+      {
+        "file": "src/grounder/symbols/mod.rs",
+        "line": 482
+      },
+      {
+        "file": "src/grounder/symbols/mod.rs",
+        "line": 530
+      },
+      {
+        "file": "src/grounder/symbols/model.rs",
+        "line": 338
+      }
+    ]
+  },
+  {
+    "name": "references_named",
+    "file": "src/grounder/symbols/model.rs",
+    "line": 211,
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/grounder/symbols/model.rs",
+        "line": 340
+      },
+      {
+        "file": "src/grounder/symbols/model.rs",
+        "line": 343
+      }
+    ]
+  },
+  {
+    "name": "ingest_project",
+    "file": "src/ingest.rs",
+    "line": 124,
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "tests/batched_fold_cadence.rs",
+        "line": 411
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 2674
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 2771
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 2838
+      },
+      {
+        "file": "tests/parallel_ordered_emit.rs",
+        "line": 73
+      }
+    ]
+  },
+  {
+    "name": "ingest_project",
+    "file": "src/ingest.rs",
+    "line": 468,
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "tests/batched_fold_cadence.rs",
+        "line": 411
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 2674
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 2771
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 2838
+      },
+      {
+        "file": "tests/parallel_ordered_emit.rs",
+        "line": 73
+      }
+    ]
+  },
+  {
+    "name": "fully_done",
+    "file": "src/ledger.rs",
+    "line": 500,
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/conductor.rs",
+        "line": 32303
+      },
+      {
+        "file": "src/conductor.rs",
+        "line": 32370
+      },
+      {
+        "file": "src/conductor.rs",
+        "line": 33144
+      },
+      {
+        "file": "src/ledger.rs",
+        "line": 766
+      },
+      {
+        "file": "src/ledger.rs",
+        "line": 774
+      },
+      {
+        "file": "src/ledger.rs",
+        "line": 784
+      },
+      {
+        "file": "src/ledger.rs",
+        "line": 804
+      },
+      {
+        "file": "src/ledger.rs",
+        "line": 808
+      }
+    ]
+  },
+  {
+    "name": "is_integrated",
+    "file": "src/ledger.rs",
+    "line": 577,
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/ledger.rs",
+        "line": 672
+      },
+      {
+        "file": "src/ledger.rs",
+        "line": 715
+      }
+    ]
+  },
+  {
+    "name": "is_snapshot_drift",
+    "file": "src/metrics.rs",
+    "line": 1287,
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/metrics.rs",
+        "line": 3094
+      },
+      {
+        "file": "src/metrics.rs",
+        "line": 3102
+      },
+      {
+        "file": "src/metrics.rs",
+        "line": 3106
+      },
+      {
+        "file": "src/metrics.rs",
+        "line": 3117
+      }
+    ]
+  },
+  {
+    "name": "is_grep_fallback",
+    "file": "src/progress.rs",
+    "line": 61,
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "tests/grep_fallback_metric_periphery.rs",
+        "line": 97
+      },
+      {
+        "file": "tests/grep_fallback_metric_periphery.rs",
+        "line": 106
+      },
+      {
+        "file": "tests/grep_fallback_metric_periphery.rs",
+        "line": 115
+      },
+      {
+        "file": "tests/grep_fallback_metric_periphery.rs",
+        "line": 124
+      }
+    ]
+  },
+  {
+    "name": "with_system_prompt",
+    "file": "src/spawn.rs",
+    "line": 338,
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/spawn.rs",
+        "line": 1151
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1167
+      }
+    ]
+  },
+  {
+    "name": "with_model",
+    "file": "src/spawn.rs",
+    "line": 344,
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/spawn.rs",
+        "line": 1152
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1168
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1206
+      }
+    ]
+  },
+  {
+    "name": "with_tools",
+    "file": "src/spawn.rs",
+    "line": 350,
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/spawn.rs",
+        "line": 1153
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1169
+      }
+    ]
+  },
+  {
+    "name": "with_dir",
+    "file": "src/spawn.rs",
+    "line": 356,
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/spawn.rs",
+        "line": 1154
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1170
+      }
+    ]
+  },
+  {
+    "name": "with_blast_radius",
+    "file": "src/spawn.rs",
+    "line": 362,
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/spawn.rs",
+        "line": 1155
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1171
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1207
+      }
+    ]
+  },
+  {
+    "name": "with_title",
+    "file": "src/spawn.rs",
+    "line": 368,
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/spawn.rs",
+        "line": 1803
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1833
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1868
+      }
+    ]
+  },
+  {
+    "name": "with_reviews",
+    "file": "src/spawn.rs",
+    "line": 374,
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/spawn.rs",
+        "line": 1927
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1970
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 2009
+      }
+    ]
+  },
+  {
+    "name": "expect_merged",
+    "file": "src/worktree.rs",
+    "line": 82,
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/worktree.rs",
+        "line": 1437
+      },
+      {
+        "file": "src/worktree.rs",
+        "line": 1464
+      },
+      {
+        "file": "src/worktree.rs",
+        "line": 1517
+      },
+      {
+        "file": "src/worktree.rs",
+        "line": 1571
+      },
+      {
+        "file": "src/worktree.rs",
+        "line": 1624
+      },
+      {
+        "file": "src/worktree.rs",
+        "line": 1744
+      }
+    ]
+  },
+  {
+    "name": "is_dirty",
+    "file": "src/worktree.rs",
+    "line": 496,
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/worktree.rs",
+        "line": 1666
+      },
+      {
+        "file": "src/worktree.rs",
+        "line": 1676
+      },
+      {
+        "file": "src/worktree.rs",
+        "line": 1742
+      }
+    ]
+  }
+]
