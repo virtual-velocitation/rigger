@@ -51,6 +51,20 @@
 //! a pre-upgrade binary's leftover history) is appended into the SAME log the fresh run's
 //! whole-stream fold walks, proving the mixed-log real-upgrade shape - not just that the
 //! isolated decode doesn't error - never derails the correct verdict.
+//!
+//! Test 3 covers the "cross-module seam / fold arm" probe on `prior_criterion_unit`'s round-2
+//! fix (adv-u88c2-integrated-set-keyed-by-id-not-criterion-masks-unrelated-prior): the
+//! integrated-exclusion is keyed on `(id, criterion_id)`, never bare id, because a planner
+//! slug carries no cross-run uniqueness guarantee (`harvest_proposed`'s `stages.contains_key`
+//! check is scoped to the CURRENT run's own DAG only). The fix's own `mod tests` entry
+//! (`prior_criterion_unit_integration_of_one_criterion_never_masks_an_abandoned_sibling_
+//! criterion_sharing_the_same_id`, src/conductor.rs) proves the fold arm correct against
+//! hand-built events, exactly the class of test tests 1 and 2's header above explains is
+//! structurally blind to a drift between the two independent `criterion_stable_id` call
+//! sites. Test 3 drives the identical scenario through THREE real `conductor::run` calls
+//! sharing one store and one real git repo - a literal id reused across two runs for two
+//! different real criterion texts - so the fix is proven at the boundary the bug actually
+//! threatens, not only inside the private function's own unit test.
 
 use std::path::Path;
 use std::process::Command;
@@ -129,13 +143,17 @@ impl AgentDriver for WritesFileDriver {
 /// A three-role driver for the FRESH run: `planner` proposes ONE unit under `proposed_id`
 /// citing `criterion` (the PLAN_PROTOCOL `criterion` key - `UnitProposed::coverage`'s alias,
 /// resolved against `deps.criteria` by `resolve_served_criterion`'s real production code,
-/// never a hand-set `criterion_id`); `judge` (the plan-critique adjudicator) approves the
-/// DAG immediately; the proposed unit's own implementer (`worker`) optionally writes
-/// `worker_write` into its worktree.
+/// never a hand-set `criterion_id`) and `gates` (`UnitProposed::gates` - a planner-proposed
+/// unit's own gate list is read from THIS field, never inherited from the fan-out
+/// template's `Stage.gates`, so a test that needs a real gate verdict must echo it here
+/// exactly as a real planner echoes the workflow's gate names); `judge` (the plan-critique
+/// adjudicator) approves the DAG immediately; the proposed unit's own implementer
+/// (`worker`) optionally writes `worker_write` into its worktree.
 struct ProposesSlugDriver {
     proposed_id: String,
     criterion: String,
     worker_write: Option<(String, String)>,
+    gates: Vec<String>,
 }
 
 impl AgentDriver for ProposesSlugDriver {
@@ -153,6 +171,7 @@ impl AgentDriver for ProposesSlugDriver {
                     "id": self.proposed_id,
                     "agent": "worker",
                     "criterion": self.criterion,
+                    "gates": self.gates,
                 }),
             )?;
             return Ok(AgentResult {
@@ -371,6 +390,7 @@ fn a_fresh_runs_differently_named_planner_proposal_adopts_a_prior_runs_escalated
         proposed_id: fresh_slug.to_string(),
         criterion: criterion.to_string(),
         worker_write: None,
+        gates: Vec::new(),
     };
     let deps2 = Deps {
         store: &store,
@@ -494,6 +514,7 @@ fn a_fresh_runs_differently_named_planner_proposal_never_adopts_a_criterion_whos
         proposed_id: fresh_slug.to_string(),
         criterion: criterion.to_string(),
         worker_write: Some(("second-work.txt".into(), "genuinely fresh\n".into())),
+        gates: Vec::new(),
     };
     let deps2 = Deps {
         store: &store,
@@ -533,5 +554,193 @@ fn a_fresh_runs_differently_named_planner_proposal_never_adopts_a_criterion_whos
         Some(false),
         "the fresh unit still gets a real, resolved criterion_id of its own even when nothing \
          is adopted: {fresh_started}"
+    );
+}
+
+/// The LAST `UnitStarted` event body recorded for `id` - mirrors [`find_unit_started`],
+/// which returns the FIRST. `shared_slug` below is deliberately reused across two runs and
+/// so carries TWO `UnitStarted` events; this reads the one that matters for the property
+/// under test (the id's CURRENT, still-live incarnation), never the stale first one.
+fn find_last_unit_started(events: &[Event], id: &str) -> Value {
+    let mut found: Option<Value> = None;
+    for e in events {
+        if e.type_ != ledger::TYPE_UNIT_STARTED {
+            continue;
+        }
+        let Ok(body) = serde_json::from_slice::<Value>(&e.data) else {
+            continue;
+        };
+        if body.get("id").and_then(Value::as_str) == Some(id) {
+            found = Some(body);
+        }
+    }
+    found.unwrap_or_else(|| panic!("no UnitStarted recorded for unit {id:?}"))
+}
+
+/// Regression test for the round-2 fix (adv-u88c2-integrated-set-keyed-by-id-not-criterion-
+/// masks-unrelated-prior): a unit id reused across two SEPARATE runs for two DIFFERENT
+/// criteria must have its EARLIER integration for one criterion never mask its LATER,
+/// still-abandoned attempt at a DIFFERENT criterion sharing that id.
+///
+/// RUN 1: a planner proposes unit `shared_slug` for criterion B; its gate always passes, so
+/// it integrates for real - and [`Self::gc_integrated_branches`] (src/conductor.rs:7041)
+/// reclaims its now-merged durable branch in the SAME call, exactly as it reclaims every
+/// integrated unit's branch. Asserted explicitly below: this is why RUN 2 reusing the same
+/// id starts from a genuinely CLEAN branch, not a confound to route around.
+///
+/// RUN 2: a fresh run's planner reuses the SAME literal id `shared_slug` - deliberately,
+/// mirroring a planner LLM's slug collision across independent runs, since nothing in
+/// `harvest_proposed` enforces cross-run uniqueness - but for a DIFFERENT criterion A; its
+/// gate always fails, so it escalates, abandoned, with real committed work on a FRESH
+/// `rigger/u/shared-slug...` branch (the old ref is gone, so git creates a new one off
+/// HEAD, same as a genuinely-fresh unit).
+///
+/// RUN 3: a THIRD, independently-named unit re-serves criterion A - the SAME text run 2
+/// served, never integrated. Under the pre-fix bare-id keying, `shared_slug` having reached
+/// `UnitIntegrated` in run 1 (for the unrelated criterion B) would wrongly exclude it from
+/// candidacy, masking run 2's still-abandoned criterion-A work. Fixed: run 3 must still
+/// adopt it, via real `criterion_stable_id` matching between run 2's and run 3's
+/// independent production call sites - never a hand-typed id.
+#[test]
+fn a_units_integration_for_one_criterion_never_masks_a_later_runs_still_abandoned_attempt_at_a_different_criterion_sharing_the_same_id(
+) {
+    let repo = tempfile::tempdir().unwrap();
+    init_repo(repo.path());
+    let store = Store::open(":memory:").unwrap();
+    let criterion_a = "criterion A: the widget survives a restart";
+    let criterion_b = "criterion B: the gadget reports its own health";
+    let shared_slug = "shared-slug-reused-across-runs";
+    let shared_branch = format!("rigger/u/{shared_slug}");
+
+    // RUN 1: `shared_slug` serves criterion B; its gate always passes, so it integrates.
+    let driver1 = ProposesSlugDriver {
+        proposed_id: shared_slug.to_string(),
+        criterion: criterion_b.to_string(),
+        worker_write: Some(("run1-criterion-b-work.txt".into(), "run1 work\n".into())),
+        gates: vec!["gate".to_string()],
+    };
+    let deps1 = Deps {
+        store: &store,
+        driver: &driver1,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion_b.to_string()],
+    };
+    let rs1 = run(&fresh_run_cfg("true"), &deps1).unwrap();
+    assert_eq!(
+        rs1.units[shared_slug].status,
+        ledger::Status::Integrated,
+        "shared_slug's first, criterion-B attempt must integrate normally"
+    );
+    assert!(repo.path().join("run1-criterion-b-work.txt").exists());
+    // Asserted explicitly (see doc comment above): integration reclaims the branch in the
+    // SAME call, so nothing survives here for run 2 to confound with.
+    assert!(
+        git_out(repo.path(), &["rev-parse", &shared_branch]).is_none(),
+        "an integrated unit's durable branch is reclaimed by gc_integrated_branches - \
+         shared_slug's run-1 branch must be gone before run 2 ever starts"
+    );
+
+    // RUN 2: a fresh run boundary, the SAME literal id reused for a DIFFERENT criterion;
+    // its gate always fails, one remediation attempt (max_retries: 1) then escalate, so it
+    // never integrates - a genuinely fresh branch (the old ref is gone) carries real work.
+    start_fresh(&store, &[criterion_a.to_string()], "", "", "").unwrap();
+    let driver2 = ProposesSlugDriver {
+        proposed_id: shared_slug.to_string(),
+        criterion: criterion_a.to_string(),
+        worker_write: Some(("run2-criterion-a-work.txt".into(), "run2 work\n".into())),
+        gates: vec!["gate".to_string()],
+    };
+    let deps2 = Deps {
+        store: &store,
+        driver: &driver2,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion_a.to_string()],
+    };
+    let mut cfg2 = fresh_run_cfg("false");
+    cfg2.workflow.defaults.max_retries = 1;
+    let rs2 = run(&cfg2, &deps2).unwrap();
+    assert_eq!(
+        rs2.units[shared_slug].status,
+        ledger::Status::Escalated,
+        "an always-failing gate must exhaust remediation and escalate, never integrate"
+    );
+    let shared_tip_after_run2 = git_out(repo.path(), &["rev-parse", &shared_branch])
+        .expect("the escalated unit's (fresh) durable branch must exist with a resolvable tip");
+    assert_eq!(shared_tip_after_run2.len(), 40, "a real git commit sha");
+    assert!(
+        !repo.path().join("run2-criterion-a-work.txt").exists(),
+        "the escalated unit never integrated, so its file must NOT be on the base yet"
+    );
+
+    // RUN 3: a THIRD, independently-named unit re-serves criterion A.
+    start_fresh(&store, &[criterion_a.to_string()], "", "", "").unwrap();
+    let fresh_slug = "run3-independently-named-unit";
+    let driver3 = ProposesSlugDriver {
+        proposed_id: fresh_slug.to_string(),
+        criterion: criterion_a.to_string(),
+        worker_write: None,
+        gates: vec!["gate".to_string()],
+    };
+    let deps3 = Deps {
+        store: &store,
+        driver: &driver3,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion_a.to_string()],
+    };
+    let rs3 = run(&fresh_run_cfg("true"), &deps3).unwrap();
+    assert_eq!(
+        rs3.units[fresh_slug].status,
+        ledger::Status::Integrated,
+        "run 3's own unit still runs its ordinary lifecycle through to integration; units: {:?}",
+        rs3.units.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        repo.path().join("run2-criterion-a-work.txt").exists(),
+        "run 2's abandoned work must ride the adoption all the way into the base"
+    );
+
+    let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    let run2_started = find_last_unit_started(&events, shared_slug);
+    let run3_started = find_unit_started(&events, fresh_slug);
+
+    // Two independent production call sites - run 2's and run 3's planner-proposal
+    // resolution, run-apart - computed the SAME criterion_stable_id for the same
+    // criterion-A text. Neither value is hand-typed by this test.
+    let cid_a_from_run2 = run2_started["criterion_id"]
+        .as_str()
+        .expect("run 2's UnitStarted carries its criterion_id");
+    let cid_a_from_run3 = run3_started["criterion_id"]
+        .as_str()
+        .expect("run 3's UnitStarted carries its criterion_id");
+    assert_eq!(
+        cid_a_from_run3, cid_a_from_run2,
+        "two independent production call sites must compute the identical criterion_stable_id \
+         for the same criterion-A text"
+    );
+
+    // The core proof: shared_slug's EARLIER, UNRELATED criterion-B integration (run 1) must
+    // never mask its LATER, still-abandoned criterion-A attempt (run 2) from run 3's
+    // adoption.
+    assert_eq!(
+        run3_started["adopted_from"]["unit"], shared_slug,
+        "shared_slug's abandoned criterion-A attempt must still be adoptable by run 3 - its \
+         earlier, unrelated criterion-B integration in run 1 must never mask it: {run3_started}"
+    );
+    let adopted_tip = run3_started["adopted_from"]["tip"]
+        .as_str()
+        .expect("adopted_from.tip must be a string");
+    assert_eq!(
+        adopted_tip, shared_tip_after_run2,
+        "adopted_from.tip must be shared_slug's ACTUAL run-2 tip sha, read back off real git \
+         (never re-derived by this test): {run3_started}"
     );
 }
