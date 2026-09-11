@@ -55,6 +55,25 @@
 //! logic never resolved. The candidate count drops from 27 to 26 as a result; a regression test
 //! below pins its continued absence.
 //!
+//! CRITERION 3, SDET-LENS ACCOUNTING (decision `sdet-u87c3-surface-accounting`): boundary probes
+//! against base `84739b4` found the two new fields plus the disposition split test above (all
+//! pre-existing, folded into the implementer's own commit) but one gap: spec 87 DISPOSITIONS is
+//! stronger than "non-empty reason" - `keep-pending` "must cite the spec that will call it" and
+//! `keep-public-surface` "must cite the consumer... a consumer that does not exist is not a
+//! reason" - and none of the three pre-existing tests mechanically check citation SPECIFICITY
+//! against the persisted file, only non-emptiness. The property held today (each of the 3 real
+//! `keep-pending` entries already literally cites `spec 27`/`spec 32`/`spec 60`) but was unpinned.
+//! `every_keep_pending_reason_cites_a_real_spec_number` below closes this at the `keep-pending`
+//! side (a plain byte scan for `"spec "` immediately followed by an ASCII digit, the same
+//! no-new-dependency style as every helper in this file). `keep-public-surface` has 0 real
+//! entries today - vacuously satisfied, already pinned by the disposition-split test - so there
+//! is no committed fact yet to assert its citation requirement against; a future entry needs its
+//! own test when one lands. RED/GREEN discipline: backed up `docs/audit/dead-code.json`, stripped
+//! every `"spec 27"` occurrence from the `distiller::rebuild` `keep-pending` reason in the
+//! working copy, confirmed the new test fails naming that exact candidate and quoting the
+//! corrupted reason, restored the original committed bytes (sha256-verified byte-identical), and
+//! confirmed all 18 tests in this file green again.
+//!
 //! ROUND 1 ACCOUNTING (decision `sdet-u87c2-r1-surface-accounting`, superseding
 //! `sdet-u87c2-surface-accounting` above): round 1's fix
 //! (`op-u87c2-round-1-closes-the-reference-classes-not-the-instances`) added a genuine NEW
@@ -685,4 +704,54 @@ fn the_committed_dead_code_json_disposition_split_is_23_delete_3_keep_pending_0_
         (26, 23, 0, 3),
         "the committed disposition split has changed since this criterion's research"
     );
+}
+
+/// Plain byte scan for a `"spec <digits>"` citation - no new dependency, matching this file's
+/// own no-regex-crate style. Deliberately stricter than a bare substring search for `"spec"`:
+/// the word alone (as in "inspect" or ordinary English prose) does not satisfy spec 87
+/// DISPOSITIONS' citation requirement, only `"spec"` immediately followed by a space and at
+/// least one ASCII digit does.
+fn cites_a_spec_number(reason: &str) -> bool {
+    let mut rest = reason;
+    while let Some(idx) = rest.find("spec ") {
+        rest = &rest[idx + "spec ".len()..];
+        if rest.as_bytes().first().is_some_and(u8::is_ascii_digit) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Spec 87 DISPOSITIONS is stronger than "non-empty reason" (already pinned above by
+/// `every_committed_candidate_has_exactly_one_of_the_three_dispositions_with_a_non_empty_reason`):
+/// `keep-pending` "must cite the spec that will call it". Checked against the PERSISTED file's
+/// actual `keep-pending` reasons - a reason that merely uses the ENGLISH WORD "spec" without a
+/// number, or omits it entirely, is a defect this test catches that the non-emptiness check
+/// cannot. (`keep-public-surface`'s parallel "must cite the consumer... a consumer that does not
+/// exist is not a reason" clause has no committed candidate to check today - 0 real entries,
+/// already pinned vacuously by the disposition-split test above - so there is nothing yet to
+/// mechanically assert there.)
+#[test]
+fn every_keep_pending_reason_cites_a_real_spec_number() {
+    let candidates = deserialize_committed_dead_code();
+    let keep_pending: Vec<_> = candidates
+        .iter()
+        .filter(|c| c.disposition == "keep-pending")
+        .collect();
+    assert!(
+        !keep_pending.is_empty(),
+        "expected at least one keep-pending candidate in {DEAD_CODE_PATH}"
+    );
+    for c in &keep_pending {
+        assert!(
+            cites_a_spec_number(&c.reason),
+            "{} ({}:{}) has disposition keep-pending but its reason does not cite a \"spec N\" \
+             number - spec 87 DISPOSITIONS requires keep-pending to \"cite the spec that will \
+             call it\": {:?}",
+            c.name,
+            c.file,
+            c.line,
+            c.reason
+        );
+    }
 }

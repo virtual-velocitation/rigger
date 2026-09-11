@@ -20745,8 +20745,8 @@
     "sites": [
       {
         "file": "tests/dead_code_json_contract_periphery.rs",
-        "start_line": 175,
-        "end_line": 177,
+        "start_line": 194,
+        "end_line": 196,
         "name": "repo_root"
       },
       {
@@ -20795,8 +20795,8 @@
     "sites": [
       {
         "file": "tests/dead_code_json_contract_periphery.rs",
-        "start_line": 179,
-        "end_line": 183,
+        "start_line": 198,
+        "end_line": 202,
         "name": "read_committed_dead_code_raw"
       },
       {
@@ -20821,8 +20821,8 @@
     "sites": [
       {
         "file": "tests/dead_code_json_contract_periphery.rs",
-        "start_line": 185,
-        "end_line": 194,
+        "start_line": 204,
+        "end_line": 213,
         "name": "deserialize_committed_dead_code"
       },
       {
@@ -20847,8 +20847,8 @@
     "sites": [
       {
         "file": "tests/dead_code_json_contract_periphery.rs",
-        "start_line": 201,
-        "end_line": 208,
+        "start_line": 220,
+        "end_line": 227,
         "name": "the_committed_dead_code_json_deserializes_as_a_downstream_consumer_would"
       },
       {
@@ -20873,8 +20873,8 @@
     "sites": [
       {
         "file": "tests/dead_code_json_contract_periphery.rs",
-        "start_line": 339,
-        "end_line": 352,
+        "start_line": 358,
+        "end_line": 371,
         "name": "deserializing_then_reserializing_the_committed_dead_code_json_reproduces_the_committed_bytes_exactly"
       },
       {
@@ -20899,26 +20899,26 @@
     "sites": [
       {
         "file": "tests/dead_code_json_contract_periphery.rs",
-        "start_line": 487,
-        "end_line": 504,
+        "start_line": 506,
+        "end_line": 523,
         "name": "generic_impl_header_constructors_previously_false_flagged_are_absent_from_the_committed_file"
       },
       {
         "file": "tests/dead_code_json_contract_periphery.rs",
-        "start_line": 523,
-        "end_line": 551,
+        "start_line": 542,
+        "end_line": 570,
         "name": "value_position_and_ufcs_reference_shapes_previously_invisible_are_absent_from_the_committed_file"
       },
       {
         "file": "tests/dead_code_json_contract_periphery.rs",
-        "start_line": 564,
-        "end_line": 577,
+        "start_line": 583,
+        "end_line": 596,
         "name": "the_general_ufcs_method_value_fix_also_closes_previously_unreported_same_class_instances"
       },
       {
         "file": "tests/dead_code_json_contract_periphery.rs",
-        "start_line": 593,
-        "end_line": 609,
+        "start_line": 612,
+        "end_line": 628,
         "name": "getter_methods_kept_alive_only_by_a_same_named_production_field_or_local_are_also_absent"
       }
     ],
@@ -20931,8 +20931,8 @@
     "sites": [
       {
         "file": "tests/dead_code_json_contract_periphery.rs",
-        "start_line": 668,
-        "end_line": 688,
+        "start_line": 687,
+        "end_line": 707,
         "name": "the_committed_dead_code_json_disposition_split_is_23_delete_3_keep_pending_0_keep_public_surface"
       },
       {
