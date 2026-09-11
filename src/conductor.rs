@@ -9798,9 +9798,18 @@ struct StartedCriterionProbe {
 /// [`crate::run::current_run`] - a prior run's `UnitStarted` lives BEFORE the current
 /// run's boundary by construction, and that is exactly the history this looks for):
 /// every `UnitStarted` whose OWN `criterion_id` matches becomes the new leading
-/// candidate, so the LAST one walked (the most recent) is what survives; every
-/// `UnitIntegrated` id seen along the way is recorded. The final candidate is returned
-/// only when it is NOT in that integrated set.
+/// candidate, so the LAST one walked (the most recent) is what survives. The
+/// integrated-exclusion set is keyed on `(id, criterion_id)`, never bare id: a planner
+/// id carries no cross-run uniqueness guarantee (nothing enforces one - a slug can be
+/// reused across two runs for two different criteria), so a later integration of the
+/// SAME id for a DIFFERENT criterion must never mask an EARLIER, still-abandoned
+/// attempt at THIS criterion sharing that id. `UnitIntegrated` itself carries only
+/// `id` (no `criterion_id`), so the criterion an integration actually satisfied is
+/// looked up off the most recent `UnitStarted` walked for that id so far - a unit
+/// cannot integrate before it starts, so its `UnitStarted` always precedes its
+/// `UnitIntegrated` earlier in this same log, regardless of how many resumed
+/// processes wrote the two events. The final candidate is returned only when
+/// `(candidate, criterion_id)` is NOT in that set.
 ///
 /// This deliberately does NOT re-search for an OLDER non-integrated unit when the most
 /// recent one for this criterion already integrated: a criterion whose latest attempt
@@ -9816,23 +9825,32 @@ fn prior_criterion_unit(events: &[Event], criterion_id: &str, this_unit: &str) -
         return None;
     }
     let mut candidate: Option<String> = None;
-    let mut integrated: HashSet<String> = HashSet::new();
+    // The criterion each id's most recently walked `UnitStarted` served - consulted
+    // when that id later reaches `UnitIntegrated`, which carries no criterion of its
+    // own to key the exclusion set on directly.
+    let mut started_criterion: HashMap<String, String> = HashMap::new();
+    let mut integrated: HashSet<(String, String)> = HashSet::new();
     for e in events {
         if e.type_ == ledger::TYPE_UNIT_STARTED {
             if let Ok(u) = serde_json::from_slice::<StartedCriterionProbe>(&e.data) {
-                if !u.id.is_empty() && u.id != this_unit && u.criterion_id == criterion_id {
-                    candidate = Some(u.id);
+                if !u.id.is_empty() {
+                    if u.id != this_unit && u.criterion_id == criterion_id {
+                        candidate = Some(u.id.clone());
+                    }
+                    started_criterion.insert(u.id, u.criterion_id);
                 }
             }
         } else if e.type_ == ledger::TYPE_UNIT_INTEGRATED {
             if let Ok(u) = serde_json::from_slice::<StartedCriterionProbe>(&e.data) {
                 if !u.id.is_empty() {
-                    integrated.insert(u.id);
+                    if let Some(served) = started_criterion.get(&u.id) {
+                        integrated.insert((u.id, served.clone()));
+                    }
                 }
             }
         }
     }
-    candidate.filter(|c| !integrated.contains(c))
+    candidate.filter(|c| !integrated.contains(&(c.clone(), criterion_id.to_string())))
 }
 
 /// The DETERMINISTIC dir for a STANDALONE review stage's throwaway worktree (spec 06):
@@ -10640,6 +10658,33 @@ mod tests {
             prior_criterion_unit(&events, "c2-bbb", "new-slug"),
             None,
             "must not fall back to the older non-integrated attempt-1 once attempt-2 (the latest) integrated"
+        );
+    }
+
+    #[test]
+    fn prior_criterion_unit_integration_of_one_criterion_never_masks_an_abandoned_sibling_criterion_sharing_the_same_id(
+    ) {
+        // A planner slug has no cross-run uniqueness guarantee (nothing in
+        // harvest_proposed enforces one) - the SAME id ("cleanup") can genuinely serve
+        // TWO different criteria across two different runs. The second run's
+        // integration of its own (c2-bbb) attempt must never mask the FIRST run's
+        // still-abandoned attempt at a DIFFERENT criterion (c1-aaa) sharing that id -
+        // the integrated-exclusion is keyed on (id, criterion_id), not bare id.
+        let events = vec![
+            started_with_criterion("cleanup", "c1-aaa"),
+            started_with_criterion("cleanup", "c2-bbb"),
+            integrated("cleanup"),
+        ];
+        assert_eq!(
+            prior_criterion_unit(&events, "c1-aaa", "other-unit"),
+            Some("cleanup".to_string()),
+            "cleanup's abandoned c1-aaa attempt must still be adoptable - only its \
+             c2-bbb attempt integrated"
+        );
+        assert_eq!(
+            prior_criterion_unit(&events, "c2-bbb", "other-unit"),
+            None,
+            "cleanup's c2-bbb attempt is the one that actually integrated"
         );
     }
 
