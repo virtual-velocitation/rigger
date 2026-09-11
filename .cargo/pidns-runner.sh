@@ -49,8 +49,10 @@ GIT_CONFIG_VALUE_0=false
 GIT_CONFIG_KEY_1=tag.gpgsign
 GIT_CONFIG_VALUE_1=false
 export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_KEY_1 GIT_CONFIG_VALUE_1
+# Low CPU priority for every test binary too (2026-09-11): a run's review fan-out runs many
+# full suites at once; tests yield to the operator's interactive work like compiles do.
 if [ "${RIGGER_PIDNS:-on}" = "off" ]; then
-  exec "$@"
+  exec nice -n 10 "$@"
 fi
 if [ -n "${RIGGER_PIDNS_TRACE:-}" ]; then
   echo "pidns-runner: $1" >&2
@@ -65,4 +67,4 @@ fi
 # 2026-09-02 02:18; the kernel OOM killer took the test, and systemd then stopped the
 # whole terminal scope as oom-kill collateral, ending the operator's session. With the
 # cap, a runaway mutant fails its allocation and the test - the box never feels it.
-exec unshare --user --map-current-user --pid --fork --mount-proc --kill-child -- prlimit --as="${RIGGER_TEST_AS_BYTES:-25769803776}" -- "$@"
+exec nice -n 10 unshare --user --map-current-user --pid --fork --mount-proc --kill-child -- prlimit --as="${RIGGER_TEST_AS_BYTES:-25769803776}" -- "$@"
