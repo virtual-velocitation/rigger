@@ -5077,9 +5077,18 @@
   },
   {
     "file": "src/conductor.rs",
-    "name": "pending_compensations_from_log_re_derives_only_undrained_marks",
+    "name": "commits_to_compensate_dedupes_a_repeated_sha_and_skips_an_already_compensated_one",
     "start_line": 32289,
-    "end_line": 32349,
+    "end_line": 32348,
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "pending_compensations_from_log_re_derives_only_undrained_marks",
+    "start_line": 32351,
+    "end_line": 32411,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5087,8 +5096,8 @@
   {
     "file": "src/conductor.rs",
     "name": "a_durable_compensation_queued_mark_is_fold_neutral_on_the_target",
-    "start_line": 32352,
-    "end_line": 32383,
+    "start_line": 32414,
+    "end_line": 32445,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5096,8 +5105,8 @@
   {
     "file": "src/conductor.rs",
     "name": "spawn",
-    "start_line": 32391,
-    "end_line": 32428,
+    "start_line": 32453,
+    "end_line": 32490,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5105,8 +5114,8 @@
   {
     "file": "src/conductor.rs",
     "name": "a_compensated_unit_re_gates_its_re_implemented_tree_not_the_condemned_verdict",
-    "start_line": 32432,
-    "end_line": 32515,
+    "start_line": 32494,
+    "end_line": 32577,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5114,8 +5123,8 @@
   {
     "file": "src/conductor.rs",
     "name": "spawn",
-    "start_line": 32526,
-    "end_line": 32571,
+    "start_line": 32588,
+    "end_line": 32633,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5123,8 +5132,8 @@
   {
     "file": "src/conductor.rs",
     "name": "a_compensated_unit_that_remediated_before_integrating_re_gates_at_a_fresh_key",
-    "start_line": 32575,
-    "end_line": 32673,
+    "start_line": 32637,
+    "end_line": 32735,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5132,8 +5141,8 @@
   {
     "file": "src/conductor.rs",
     "name": "spawn",
-    "start_line": 32683,
-    "end_line": 32707,
+    "start_line": 32745,
+    "end_line": 32769,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5141,8 +5150,8 @@
   {
     "file": "src/conductor.rs",
     "name": "a_resume_re_drives_a_durably_queued_but_undrained_compensation",
-    "start_line": 32711,
-    "end_line": 32846,
+    "start_line": 32773,
+    "end_line": 32908,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5150,8 +5159,8 @@
   {
     "file": "src/conductor.rs",
     "name": "spawn",
-    "start_line": 32866,
-    "end_line": 32914,
+    "start_line": 32928,
+    "end_line": 32976,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5159,8 +5168,8 @@
   {
     "file": "src/conductor.rs",
     "name": "integrate_re_gates_the_merged_tree_and_a_merge_break_blocks_the_second_unit",
-    "start_line": 32918,
-    "end_line": 33100,
+    "start_line": 32980,
+    "end_line": 33162,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5168,8 +5177,8 @@
   {
     "file": "src/conductor.rs",
     "name": "a_deferred_gate_runs_once_at_the_phase_boundary_not_inline",
-    "start_line": 33103,
-    "end_line": 33177,
+    "start_line": 33165,
+    "end_line": 33239,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5177,8 +5186,8 @@
   {
     "file": "src/conductor.rs",
     "name": "a_failing_deferred_gate_is_surfaced_and_the_run_is_not_done",
-    "start_line": 33180,
-    "end_line": 33248,
+    "start_line": 33242,
+    "end_line": 33310,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5186,8 +5195,8 @@
   {
     "file": "src/conductor.rs",
     "name": "run",
-    "start_line": 33259,
-    "end_line": 33281,
+    "start_line": 33321,
+    "end_line": 33343,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5195,8 +5204,8 @@
   {
     "file": "src/conductor.rs",
     "name": "a_default_infra_fault_at_a_deferred_gate_does_not_demote",
-    "start_line": 33285,
-    "end_line": 33356,
+    "start_line": 33347,
+    "end_line": 33418,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5204,8 +5213,8 @@
   {
     "file": "src/conductor.rs",
     "name": "a_replayed_step_re_runs_no_recorded_gate_and_appends_no_duplicate_events",
-    "start_line": 33359,
-    "end_line": 33463,
+    "start_line": 33421,
+    "end_line": 33525,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5213,8 +5222,8 @@
   {
     "file": "src/conductor.rs",
     "name": "a_re_step_replays_a_recorded_deferred_gate_without_re_running_it",
-    "start_line": 33466,
-    "end_line": 33551,
+    "start_line": 33528,
+    "end_line": 33613,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5222,8 +5231,8 @@
   {
     "file": "src/conductor.rs",
     "name": "a_parked_step_never_records_a_partial_tree_deferred_verdict",
-    "start_line": 33554,
-    "end_line": 33698,
+    "start_line": 33616,
+    "end_line": 33760,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5231,8 +5240,8 @@
   {
     "file": "src/conductor.rs",
     "name": "a_manual_review_paused_unit_defers_the_whole_tree_gate",
-    "start_line": 33701,
-    "end_line": 33785,
+    "start_line": 33763,
+    "end_line": 33847,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5240,8 +5249,8 @@
   {
     "file": "src/conductor.rs",
     "name": "an_escalated_dep_still_runs_the_whole_tree_deferred_gate",
-    "start_line": 33788,
-    "end_line": 33921,
+    "start_line": 33850,
+    "end_line": 33983,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5249,8 +5258,8 @@
   {
     "file": "src/conductor.rs",
     "name": "a_recorded_failing_deferred_verdict_re_surfaces_its_failure_on_replay",
-    "start_line": 33924,
-    "end_line": 34038,
+    "start_line": 33986,
+    "end_line": 34100,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5258,8 +5267,8 @@
   {
     "file": "src/conductor.rs",
     "name": "a_replayed_fan_out_review_reject_appends_no_duplicate_unitfailed",
-    "start_line": 34041,
-    "end_line": 34127,
+    "start_line": 34103,
+    "end_line": 34189,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5267,8 +5276,8 @@
   {
     "file": "src/conductor.rs",
     "name": "a_fan_out_review_stage_whose_gates_fail_after_approval_records_a_gate_cause",
-    "start_line": 34130,
-    "end_line": 34178,
+    "start_line": 34192,
+    "end_line": 34240,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5276,8 +5285,8 @@
   {
     "file": "src/conductor.rs",
     "name": "run_git",
-    "start_line": 34184,
-    "end_line": 34198,
+    "start_line": 34246,
+    "end_line": 34260,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5285,8 +5294,8 @@
   {
     "file": "src/conductor.rs",
     "name": "git_head",
-    "start_line": 34202,
-    "end_line": 34210,
+    "start_line": 34264,
+    "end_line": 34272,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5294,8 +5303,8 @@
   {
     "file": "src/conductor.rs",
     "name": "init_repo",
-    "start_line": 34212,
-    "end_line": 34229,
+    "start_line": 34274,
+    "end_line": 34291,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5303,8 +5312,8 @@
   {
     "file": "src/conductor.rs",
     "name": "run",
-    "start_line": 34240,
-    "end_line": 34270,
+    "start_line": 34302,
+    "end_line": 34332,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5312,8 +5321,8 @@
   {
     "file": "src/conductor.rs",
     "name": "gate_measures_the_committed_artifact_not_the_dirty_worktree",
-    "start_line": 34274,
-    "end_line": 34333,
+    "start_line": 34336,
+    "end_line": 34395,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5321,8 +5330,8 @@
   {
     "file": "src/conductor.rs",
     "name": "conductor_spawns_the_sdet_author_at_the_build_seam_so_its_tests_land_in_the_committed_tree",
-    "start_line": 34336,
-    "end_line": 34462,
+    "start_line": 34398,
+    "end_line": 34524,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5330,8 +5339,8 @@
   {
     "file": "src/conductor.rs",
     "name": "the_sdet_author_spawn_respects_the_budget_breaker_at_its_own_spawn_site",
-    "start_line": 34465,
-    "end_line": 34555,
+    "start_line": 34527,
+    "end_line": 34617,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5339,8 +5348,8 @@
   {
     "file": "src/conductor.rs",
     "name": "a_parked_sdet_author_spawn_holds_the_unit_instead_of_integrating_without_its_periphery_tests",
-    "start_line": 34558,
-    "end_line": 34660,
+    "start_line": 34620,
+    "end_line": 34722,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5348,8 +5357,8 @@
   {
     "file": "src/conductor.rs",
     "name": "speculation_sdet_author_periphery_lands_in_the_committed_tree_the_gates_judge",
-    "start_line": 34663,
-    "end_line": 34775,
+    "start_line": 34725,
+    "end_line": 34837,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5357,8 +5366,8 @@
   {
     "file": "src/conductor.rs",
     "name": "a_parked_sdet_author_in_a_speculation_candidate_holds_the_unit",
-    "start_line": 34778,
-    "end_line": 34875,
+    "start_line": 34840,
+    "end_line": 34937,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5366,8 +5375,8 @@
   {
     "file": "src/conductor.rs",
     "name": "an_empty_accounting_sdet_author_result_advances_the_build_to_commit_gates_and_integrate",
-    "start_line": 34878,
-    "end_line": 34953,
+    "start_line": 34940,
+    "end_line": 35015,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5375,8 +5384,8 @@
   {
     "file": "src/conductor.rs",
     "name": "an_absent_sdet_author_is_a_clean_no_op_and_the_build_still_integrates",
-    "start_line": 34956,
-    "end_line": 35020,
+    "start_line": 35018,
+    "end_line": 35082,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5384,8 +5393,8 @@
   {
     "file": "src/conductor.rs",
     "name": "a_crashed_sdet_author_spawn_does_not_block_the_build_the_lifecycle_proceeds",
-    "start_line": 35023,
-    "end_line": 35098,
+    "start_line": 35085,
+    "end_line": 35160,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5393,8 +5402,8 @@
   {
     "file": "src/conductor.rs",
     "name": "an_escalated_unit_does_not_integrate_its_code",
-    "start_line": 35101,
-    "end_line": 35201,
+    "start_line": 35163,
+    "end_line": 35263,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5402,8 +5411,8 @@
   {
     "file": "src/conductor.rs",
     "name": "critique_cfg",
-    "start_line": 35209,
-    "end_line": 35248,
+    "start_line": 35271,
+    "end_line": 35310,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5411,8 +5420,8 @@
   {
     "file": "src/conductor.rs",
     "name": "new",
-    "start_line": 35277,
-    "end_line": 35288,
+    "start_line": 35339,
+    "end_line": 35350,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5420,8 +5429,8 @@
   {
     "file": "src/conductor.rs",
     "name": "rejecting",
-    "start_line": 35291,
-    "end_line": 35296,
+    "start_line": 35353,
+    "end_line": 35358,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5429,8 +5438,8 @@
   {
     "file": "src/conductor.rs",
     "name": "always_rejecting",
-    "start_line": 35299,
-    "end_line": 35304,
+    "start_line": 35361,
+    "end_line": 35366,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5438,8 +5447,8 @@
   {
     "file": "src/conductor.rs",
     "name": "count",
-    "start_line": 35305,
-    "end_line": 35312,
+    "start_line": 35367,
+    "end_line": 35374,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5447,8 +5456,8 @@
   {
     "file": "src/conductor.rs",
     "name": "spawn",
-    "start_line": 35315,
-    "end_line": 35365,
+    "start_line": 35377,
+    "end_line": 35427,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5456,8 +5465,8 @@
   {
     "file": "src/conductor.rs",
     "name": "a_blast_radius_overlap_alone_does_not_reject",
-    "start_line": 35369,
-    "end_line": 35438,
+    "start_line": 35431,
+    "end_line": 35500,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5465,8 +5474,8 @@
   {
     "file": "src/conductor.rs",
     "name": "the_plan_critique_gates_adversary_and_adjudicator_spawns_are_stamped_correctly",
-    "start_line": 35451,
-    "end_line": 35495,
+    "start_line": 35513,
+    "end_line": 35557,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5474,8 +5483,8 @@
   {
     "file": "src/conductor.rs",
     "name": "a_rule_7_or_8_defect_rejects_then_releases_on_the_revision",
-    "start_line": 35498,
-    "end_line": 35535,
+    "start_line": 35560,
+    "end_line": 35597,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5483,8 +5492,8 @@
   {
     "file": "src/conductor.rs",
     "name": "a_clean_decomposition_approves_and_releases_the_fan_out",
-    "start_line": 35538,
-    "end_line": 35589,
+    "start_line": 35600,
+    "end_line": 35651,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5492,8 +5501,8 @@
   {
     "file": "src/conductor.rs",
     "name": "the_gate_critiques_only_not_yet_run_units_and_approves",
-    "start_line": 35592,
-    "end_line": 35667,
+    "start_line": 35654,
+    "end_line": 35729,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5501,8 +5510,8 @@
   {
     "file": "src/conductor.rs",
     "name": "the_plan_critique_prompt_names_the_cross_unit_rules",
-    "start_line": 35670,
-    "end_line": 35707,
+    "start_line": 35732,
+    "end_line": 35769,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5510,8 +5519,8 @@
   {
     "file": "src/conductor.rs",
     "name": "the_critique_gate_never_enters_a_wave_even_when_ready",
-    "start_line": 35710,
-    "end_line": 35734,
+    "start_line": 35772,
+    "end_line": 35796,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5519,8 +5528,8 @@
   {
     "file": "src/conductor.rs",
     "name": "a_resolved_plan_critique_gate_does_not_re_run_on_resume",
-    "start_line": 35737,
-    "end_line": 35811,
+    "start_line": 35799,
+    "end_line": 35873,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5528,8 +5537,8 @@
   {
     "file": "src/conductor.rs",
     "name": "a_resumed_step_holds_the_fan_out_while_the_plan_critique_gate_is_escalated",
-    "start_line": 35814,
-    "end_line": 35912,
+    "start_line": 35876,
+    "end_line": 35974,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5537,8 +5546,8 @@
   {
     "file": "src/conductor.rs",
     "name": "an_approved_gate_releases_planner_proposed_units_not_only_baselines",
-    "start_line": 35915,
-    "end_line": 35971,
+    "start_line": 35977,
+    "end_line": 36033,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5546,8 +5555,8 @@
   {
     "file": "src/conductor.rs",
     "name": "the_re_plan_directive_instructs_reusing_the_existing_unit_id",
-    "start_line": 35974,
-    "end_line": 36041,
+    "start_line": 36036,
+    "end_line": 36103,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5555,8 +5564,8 @@
   {
     "file": "src/conductor.rs",
     "name": "new",
-    "start_line": 36054,
-    "end_line": 36059,
+    "start_line": 36116,
+    "end_line": 36121,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5564,8 +5573,8 @@
   {
     "file": "src/conductor.rs",
     "name": "count",
-    "start_line": 36060,
-    "end_line": 36067,
+    "start_line": 36122,
+    "end_line": 36129,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5573,8 +5582,8 @@
   {
     "file": "src/conductor.rs",
     "name": "spawn",
-    "start_line": 36070,
-    "end_line": 36090,
+    "start_line": 36132,
+    "end_line": 36152,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5582,8 +5591,8 @@
   {
     "file": "src/conductor.rs",
     "name": "a_resumed_step_holds_the_fan_out_while_the_plan_critique_gate_is_mid_review",
-    "start_line": 36094,
-    "end_line": 36165,
+    "start_line": 36156,
+    "end_line": 36227,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5591,8 +5600,8 @@
   {
     "file": "src/conductor.rs",
     "name": "a_parked_plan_critique_gate_keeps_its_review_worktree",
-    "start_line": 36168,
-    "end_line": 36222,
+    "start_line": 36230,
+    "end_line": 36284,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5600,8 +5609,8 @@
   {
     "file": "src/conductor.rs",
     "name": "a_budget_refused_plan_critique_gate_keeps_its_review_worktree",
-    "start_line": 36225,
-    "end_line": 36275,
+    "start_line": 36287,
+    "end_line": 36337,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -5609,8 +5618,8 @@
   {
     "file": "src/conductor.rs",
     "name": "the_conductors_one_event_authority_reports_a_write_the_store_lost",
-    "start_line": 36288,
-    "end_line": 36315,
+    "start_line": 36350,
+    "end_line": 36377,
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."

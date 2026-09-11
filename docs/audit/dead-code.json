@@ -820,15 +820,15 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 33174
+        "line": 33236
       },
       {
         "file": "src/conductor.rs",
-        "line": 33241
+        "line": 33303
       },
       {
         "file": "src/conductor.rs",
-        "line": 34015
+        "line": 34077
       },
       {
         "file": "src/ledger.rs",
@@ -1185,43 +1185,43 @@
       },
       {
         "file": "src/worktree.rs",
-        "line": 2370
+        "line": 2411
       },
       {
         "file": "src/worktree.rs",
-        "line": 2393
+        "line": 2434
       },
       {
         "file": "src/worktree.rs",
-        "line": 2429
+        "line": 2470
       },
       {
         "file": "src/worktree.rs",
-        "line": 2461
+        "line": 2502
       },
       {
         "file": "src/worktree.rs",
-        "line": 2496
+        "line": 2537
       },
       {
         "file": "src/worktree.rs",
-        "line": 2512
+        "line": 2553
       },
       {
         "file": "src/worktree.rs",
-        "line": 2539
+        "line": 2580
       },
       {
         "file": "src/worktree.rs",
-        "line": 2569
+        "line": 2610
       },
       {
         "file": "src/worktree.rs",
-        "line": 2576
+        "line": 2617
       },
       {
         "file": "src/worktree.rs",
-        "line": 2584
+        "line": 2625
       },
       {
         "file": "tests/cli.rs",
@@ -1696,19 +1696,19 @@
       },
       {
         "file": "src/worktree.rs",
-        "line": 1914
+        "line": 1955
       },
       {
         "file": "src/worktree.rs",
-        "line": 1968
+        "line": 2009
       },
       {
         "file": "src/worktree.rs",
-        "line": 2021
+        "line": 2062
       },
       {
         "file": "src/worktree.rs",
-        "line": 2141
+        "line": 2182
       }
     ],
     "disposition": "delete",
@@ -1723,15 +1723,15 @@
     "test_only_references": [
       {
         "file": "src/worktree.rs",
-        "line": 2063
+        "line": 2104
       },
       {
         "file": "src/worktree.rs",
-        "line": 2073
+        "line": 2114
       },
       {
         "file": "src/worktree.rs",
-        "line": 2139
+        "line": 2180
       }
     ],
     "disposition": "delete",
