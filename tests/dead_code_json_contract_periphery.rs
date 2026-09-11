@@ -78,6 +78,52 @@
 //! strip itself has no committed-artifact fact to assert against (zero `impl dyn` blocks exist in
 //! `src/` today, confirmed inert per `adv-u87c2-r1-cheaper-fix-exists-reuse-impl-self-type`); it
 //! is correctly exercised only by the implementer's own unit test against synthetic input.
+//!
+//! ROUND 3 ACCOUNTING (decision `sdet-u87c2-r3-surface-accounting`, superseding
+//! `sdet-u87c2-r2-surface-accounting` above): round 2's own remedy was itself rejected
+//! (`adj-u87c2-r2-verdict-reject`, upholding two NEW false-positive classes -
+//! `sdet-u87c2-r2-fnptr-struct-field-value-is-an-invisible-reference-shape` and
+//! `sdet-u87c2-r2-method-category-relevant-filter-discards-ufcs-qualified-call-sites`). Round 3
+//! (`op-u87c2-round-3-a-reference-is-any-token-not-a-shape`) removes the notion of reference
+//! SHAPE entirely - `ref_shapes()` and `RefSite`'s `method_shaped`/`free_shaped` fields are
+//! DELETED, not extended, and every non-definition `Ident` token equal to a candidate's name is
+//! unconditionally a reference. Probes 1-4 all stay empty (`git diff 08fb056..b7826a8 -- '*.rs'`
+//! adds no `pub` item, no trait impl, touches no `src/main.rs`, and adds no `derive`/`TYPE_` -
+//! the diff *removes* two struct fields, it adds none); probe 5 (cross-module seam) is also
+//! empty, read by hand - the whole diff is an internal rewrite of this one generator file, no new
+//! call into `src/`, no new process spawn. The one periphery-visible surface item, larger than
+//! either prior round's: THE RULE removes 16 named candidates (0 added) from the committed
+//! artifact, in two distinct mechanisms.
+//!
+//! Mechanism A - a struct-literal field VALUE or a UFCS path used as a value on a
+//! `DispatchCategory::Method` fn, exactly the two round-2 upheld classes, now genuinely fixed for
+//! their reported instances AND for further real instances neither round 2 nor the operator's
+//! ruling named: the 10 `src/docs.rs` `skill_registry()` `render_*` fns (struct-literal field
+//! value, e.g. `render_body: render_planning_a_spec_skill,` at `src/docs.rs:1211`) and
+//! `src/config.rs`'s `to_rule` (UFCS value, `.map(FailureRuleDef::to_rule)` at
+//! `src/config.rs:766`) are the 11 the operator's ruling explicitly named. `is_grep_fallback`
+//! (`src/progress.rs`, UFCS value `.filter(crate::progress::AgentProgress::is_grep_fallback)` at
+//! `src/metrics.rs:1066`) and `is_snapshot_drift` (`src/metrics.rs`, UFCS value
+//! `.all(ModelChange::is_snapshot_drift)` at `src/metrics.rs:1333`) are two MORE real,
+//! previously-unreported instances of the identical Method-category UFCS-value class - genuine
+//! evidence the round-3 fix closes the CLASS, not merely the two reported occurrences.
+//!
+//! Mechanism B - the explicit, accepted precision trade THE RULE's own text states ("a local
+//! variable or struct field sharing a fn's bare name now keeps that fn looking alive too - a
+//! false negative, never a false positive"): `placements` (`src/eventstore/mod.rs`, kept alive by
+//! its own struct's same-named field, e.g. `self.placements` at `src/eventstore/mod.rs:173`),
+//! `written` (`src/watch.rs`, kept alive by the `written` binding in the `matches!` pattern at
+//! `src/watch.rs:528`), and `rules` (`src/failure.rs`, kept alive by `Taxonomy`'s own `rules`
+//! field, e.g. `self.rules.iter()` at `src/failure.rs:238`) each verified by hand to have NO
+//! genuine call-shaped production reference of their own - each is provably dead by spec 87's own
+//! definition, kept off this round's dead-code list only by the accepted trade.
+//!
+//! TESTED: three new periphery tests below the ROUND 2 test, each pinning one distinct claim
+//! against the REAL committed file (never the generator's in-memory state, same independence
+//! discipline as every round before it) - the 11 operator-ruling-named entries; the 2 further
+//! real Method-category-UFCS instances (mechanism A's generality); the 3 field/local-collision
+//! instances (mechanism B's precision trade, made visible in the persisted artifact rather than
+//! resting on the fix's own prose).
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -440,6 +486,111 @@ fn generic_impl_header_constructors_previously_false_flagged_are_absent_from_the
              block declares its own leading generic/lifetime parameters, and the pre-fix naive \
              qualifier split returned empty for that header shape, silently dropping its real \
              qualified call sites and false-flagging it dead"
+        );
+    }
+}
+
+// -----------------------------------------------------------------------------------------
+// ROUND 3: pinning the round-3 "any token, not a shape" fix against the REAL committed file,
+// from outside. See the module doc comment's "ROUND 3 ACCOUNTING" section for the boundary-probe
+// rerun and the two mechanisms these three tests each close.
+// -----------------------------------------------------------------------------------------
+
+/// Round 3 (`op-u87c2-round-3-a-reference-is-any-token-not-a-shape`), the 11 entries the
+/// operator's ruling explicitly named after `adj-u87c2-r2-verdict-reject` upheld
+/// `sdet-u87c2-r2-fnptr-struct-field-value-is-an-invisible-reference-shape` (a struct-literal
+/// field VALUE has no reference shape at all) and
+/// `sdet-u87c2-r2-method-category-relevant-filter-discards-ufcs-qualified-call-sites` (a UFCS
+/// value on a `Method`-category fn was discarded by `relevant()`'s shape gate even though
+/// `ref_shapes()` already saw it). Checked by name+file only (not line): the fix is about
+/// reference RECOGNITION, not about any of these functions' own definition sites, so an
+/// unrelated future edit that merely moves one within its file must not spuriously fail this
+/// test.
+#[test]
+fn value_position_and_ufcs_reference_shapes_previously_invisible_are_absent_from_the_committed_file(
+) {
+    let candidates = deserialize_committed_dead_code();
+    for (name, file) in [
+        // src/docs.rs skill_registry()'s 10 render_body: render_*_skill struct-literal field
+        // values (src/docs.rs:1207-1243) - the fnptr-struct-field-value class.
+        ("render_using_rigger_skill", "src/docs.rs"),
+        ("render_planning_a_spec_skill", "src/docs.rs"),
+        ("render_reset_store_skill", "src/docs.rs"),
+        ("render_build_graph_skill", "src/docs.rs"),
+        ("render_reindex_skill", "src/docs.rs"),
+        ("render_resume_a_run_skill", "src/docs.rs"),
+        ("render_handle_an_escalation_skill", "src/docs.rs"),
+        ("render_watch_a_run_skill", "src/docs.rs"),
+        ("render_restore_the_dash_skill", "src/docs.rs"),
+        ("render_diagnose_churn_skill", "src/docs.rs"),
+        // src/config.rs's .map(FailureRuleDef::to_rule) at src/config.rs:766 - the
+        // Method-category-UFCS-value class.
+        ("to_rule", "src/config.rs"),
+    ] {
+        assert!(
+            !candidates.iter().any(|c| c.name == name && c.file == file),
+            "{name} ({file}) appears in {DEAD_CODE_PATH} - a regression of the round-3 \
+             any-token-not-a-shape fix: this fn is genuinely referenced as a value (a \
+             struct-literal field value or a UFCS path), a shape no prior round's scanner \
+             recognized as a reference at all"
+        );
+    }
+}
+
+/// Round 3, mechanism A's GENERALITY: `is_grep_fallback` and `is_snapshot_drift` are two MORE
+/// real, previously-UNREPORTED instances of the exact same `DispatchCategory::Method`
+/// UFCS-value-to-a-combinator class `to_rule` was the one reported instance of
+/// (`sdet-u87c2-r2-method-category-relevant-filter-discards-ufcs-qualified-call-sites`) -
+/// `src/metrics.rs:1066`'s `.filter(crate::progress::AgentProgress::is_grep_fallback)` and
+/// `src/metrics.rs:1333`'s `.all(ModelChange::is_snapshot_drift)`, verified by hand against the
+/// real tree, neither cited in the operator's round-3 ruling or the round-2 upheld findings.
+/// Their absence here is independent proof the round-3 fix closes the CLASS ("no code decides
+/// whether an occurrence looks like a call" - `op-u87c2-round-3-a-reference-is-any-token-not-a-
+/// shape`), not just the one instance every prior round's periphery layer could name.
+#[test]
+fn the_general_ufcs_method_value_fix_also_closes_previously_unreported_same_class_instances() {
+    let candidates = deserialize_committed_dead_code();
+    for (name, file) in [
+        ("is_grep_fallback", "src/progress.rs"),
+        ("is_snapshot_drift", "src/metrics.rs"),
+    ] {
+        assert!(
+            !candidates.iter().any(|c| c.name == name && c.file == file),
+            "{name} ({file}) appears in {DEAD_CODE_PATH} - this is a real, previously-unreported \
+             instance of the same Method-category UFCS-value class the round-3 fix was supposed \
+             to close generally, not merely the one reported instance (to_rule)"
+        );
+    }
+}
+
+/// Round 3, mechanism B - THE RULE's own explicitly accepted precision trade ("a local variable
+/// or struct field sharing a fn's bare name now keeps that fn looking alive too - a false
+/// negative, never a false positive"): `placements` (kept alive by `Appended`'s own
+/// `self.placements` field access, e.g. `src/eventstore/mod.rs:173`), `written` (kept alive by
+/// the `written` binding in a `matches!` pattern at `src/watch.rs:528`), and `rules` (kept alive
+/// by `Taxonomy`'s own `self.rules` field access, e.g. `src/failure.rs:238`) each have NO
+/// call-shaped production reference of their own - verified by hand, each is provably dead by
+/// spec 87's own definition, kept off the committed list only by the accepted trade. This test
+/// exists so the trade stays VISIBLE in the persisted artifact rather than resting only on the
+/// fix's own prose: a future edit that renamed the colliding field/local without genuinely
+/// reviving the method would silently reintroduce these as real dead-code candidates, and this
+/// test would start failing exactly then - a signal, not a bug, but one worth naming rather than
+/// leaving mute.
+#[test]
+fn getter_methods_kept_alive_only_by_a_same_named_production_field_or_local_are_also_absent() {
+    let candidates = deserialize_committed_dead_code();
+    for (name, file) in [
+        ("placements", "src/eventstore/mod.rs"),
+        ("written", "src/watch.rs"),
+        ("rules", "src/failure.rs"),
+    ] {
+        assert!(
+            !candidates.iter().any(|c| c.name == name && c.file == file),
+            "{name} ({file}) appears in {DEAD_CODE_PATH} - the accepted same-named-field/local \
+             false-negative trade (op-u87c2-round-3-a-reference-is-any-token-not-a-shape) no \
+             longer holds for this entry; either the colliding token was removed (in which case \
+             this fn may now be genuinely dead and belongs on the list with a real disposition) \
+             or the rule regressed"
         );
     }
 }
