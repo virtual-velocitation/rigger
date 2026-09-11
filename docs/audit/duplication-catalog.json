@@ -20715,8 +20715,8 @@
     "sites": [
       {
         "file": "tests/dead_code_json_contract_periphery.rs",
-        "start_line": 95,
-        "end_line": 97,
+        "start_line": 115,
+        "end_line": 117,
         "name": "repo_root"
       },
       {
@@ -20765,8 +20765,8 @@
     "sites": [
       {
         "file": "tests/dead_code_json_contract_periphery.rs",
-        "start_line": 99,
-        "end_line": 103,
+        "start_line": 119,
+        "end_line": 123,
         "name": "read_committed_dead_code_raw"
       },
       {
@@ -20791,8 +20791,8 @@
     "sites": [
       {
         "file": "tests/dead_code_json_contract_periphery.rs",
-        "start_line": 105,
-        "end_line": 114,
+        "start_line": 125,
+        "end_line": 134,
         "name": "deserialize_committed_dead_code"
       },
       {
@@ -20817,8 +20817,8 @@
     "sites": [
       {
         "file": "tests/dead_code_json_contract_periphery.rs",
-        "start_line": 121,
-        "end_line": 128,
+        "start_line": 141,
+        "end_line": 148,
         "name": "the_committed_dead_code_json_deserializes_as_a_downstream_consumer_would"
       },
       {
@@ -20843,8 +20843,8 @@
     "sites": [
       {
         "file": "tests/dead_code_json_contract_periphery.rs",
-        "start_line": 260,
-        "end_line": 273,
+        "start_line": 280,
+        "end_line": 293,
         "name": "deserializing_then_reserializing_the_committed_dead_code_json_reproduces_the_committed_bytes_exactly"
       },
       {
