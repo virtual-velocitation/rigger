@@ -1642,6 +1642,118 @@ mod tests {
     }
 
     #[test]
+    fn integrate_propagates_a_genuine_commit_failure_finalizing_a_resolved_merge_instead_of_treating_it_as_a_no_op(
+    ) {
+        // worktree.rs:635 treats ONLY a "nothing to commit" failure from the finalizing
+        // `git commit --no-edit` as a benign no-op (an already-empty resolution, tolerated
+        // for crash-resume idempotency). Any OTHER failure - a hook rejecting the commit,
+        // a signing failure, disk full - must propagate as a genuine `Err`, never be
+        // silently swallowed as if the merge had finished; swallowing it would let
+        // `integrate` fall through to `git merge --no-edit` on the run branch believing a
+        // merge commit exists that was never actually made.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wa = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wb = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let a = Worktree::create(&repo_path, wa.to_str().unwrap(), "rigger/u/a", "").unwrap();
+        let b = Worktree::create(&repo_path, wb.to_str().unwrap(), "rigger/u/b", "").unwrap();
+        std::fs::write(wa.join("shared.txt"), "A version\n").unwrap();
+        a.integrate("rigger: integrate a").unwrap().expect_merged();
+        std::fs::write(wb.join("shared.txt"), "B version\n").unwrap();
+        b.commit("rigger: b's own work").unwrap();
+        match b.integrate("rigger: integrate b").unwrap() {
+            IntegrateOutcome::Conflict(_) => {}
+            IntegrateOutcome::Merged(_) => panic!("a divergent add/add merge must conflict"),
+        }
+        assert!(b.merge_in_progress());
+
+        // Resolve the conflict for real, to content that differs from both sides so the
+        // finalizing commit is never itself a no-op.
+        std::fs::write(wb.join("shared.txt"), "RESOLVED\n").unwrap();
+        run_git(wb.to_str().unwrap(), &["add", "--", "shared.txt"]).unwrap();
+
+        // A worktree's hooks are the MAIN repo's (git worktree add shares one hooks dir) -
+        // install a pre-commit hook there that always rejects with a message that does NOT
+        // contain "nothing to commit": a genuine, unrelated failure.
+        let hooks_dir = repo.path().join(".git").join("hooks");
+        std::fs::create_dir_all(&hooks_dir).unwrap();
+        let hook_path = hooks_dir.join("pre-commit");
+        std::fs::write(
+            &hook_path,
+            "#!/bin/sh\necho 'boom: forced hook failure' >&2\nexit 1\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&hook_path).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&hook_path, perms).unwrap();
+        }
+
+        let err = match b.integrate("rigger: integrate b (finalize)") {
+            Err(e) => e,
+            Ok(_) => panic!("a genuine commit failure must surface as an Err, not a silent no-op"),
+        };
+        assert!(
+            err.0.contains("boom: forced hook failure"),
+            "the real failure must propagate verbatim: {}",
+            err.0
+        );
+        assert!(
+            b.merge_in_progress(),
+            "a failed finalize must leave the merge in progress, not silently drop it"
+        );
+    }
+
+    #[test]
+    fn integrate_finalizes_a_divergent_merge_that_nets_to_an_empty_commit_when_both_sides_converge_on_identical_content(
+    ) {
+        // The MIRROR of the genuine-failure test above: worktree.rs:635's "nothing to
+        // commit" guard exists for a real, reachable case - two worktrees branch off the
+        // SAME base and independently add the SAME file with IDENTICAL content (an honest
+        // duplicate fix, not a conflict). Git's 3-way merge resolves "both sides added the
+        // same content" cleanly (no markers), but because the histories diverged, `--no-ff`
+        // still requires a merge commit for lineage - and because the resulting tree is
+        // byte-identical to the unit's own current HEAD, `git commit --no-edit` reports
+        // "nothing to commit, working tree clean" even though a real merge (MERGE_HEAD) is
+        // in progress. That must be tolerated as a benign no-op and still finalize as a
+        // successful [`IntegrateOutcome::Merged`] - never surfaced as a conflict, and never
+        // silently dropped without ever finalizing the merge commit either.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wa = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wb = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let a = Worktree::create(&repo_path, wa.to_str().unwrap(), "rigger/u/a", "").unwrap();
+        let b = Worktree::create(&repo_path, wb.to_str().unwrap(), "rigger/u/b", "").unwrap();
+
+        std::fs::write(wa.join("shared.txt"), "identical\n").unwrap();
+        std::fs::write(wb.join("shared.txt"), "identical\n").unwrap();
+        a.integrate("rigger: integrate a").unwrap().expect_merged();
+        b.commit("rigger: b's own work").unwrap();
+
+        let commit = match b.integrate("rigger: integrate b").unwrap() {
+            IntegrateOutcome::Merged(c) => c,
+            IntegrateOutcome::Conflict(paths) => panic!(
+                "both sides adding IDENTICAL content must merge cleanly, not conflict: {paths:?}"
+            ),
+        };
+        assert!(
+            !commit.is_empty(),
+            "a real merge commit hash is still returned, even though its content is empty"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("shared.txt")).unwrap(),
+            "identical\n",
+            "the run branch carries the converged content either way"
+        );
+        assert!(
+            !b.merge_in_progress(),
+            "the merge must be finalized (MERGE_HEAD cleared), not left dangling"
+        );
+    }
+
+    #[test]
     fn revert_on_base_rolls_back_an_integrated_commit_with_a_provenance_message() {
         // spec 12, unit 4: revert_on_base reverses an integrated commit's diff on the run
         // branch as a NEW, message-carrying commit (an evented rollback, not a rewrite), so a
