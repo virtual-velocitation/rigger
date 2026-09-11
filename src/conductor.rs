@@ -32286,6 +32286,68 @@ mod tests {
     }
 
     #[test]
+    fn commits_to_compensate_dedupes_a_repeated_sha_and_skips_an_already_compensated_one() {
+        // The fold over `UnitIntegrated` events reads the RAW event log (untyped
+        // `Value`), whose own duplication is a real, acknowledged class of issue in
+        // this store (`rigger reset --derived`'s own doc comment: "the duplication a
+        // log accreted before the ingest dedup") - independent of whether the CURRENT
+        // writer can itself produce a repeat. Two guards defend the fold against that:
+        // a commit already reverted by an earlier compensation cycle
+        // (`self.compensated_commits`, seeded from `META_COMPENSATED` on a resume) must
+        // never be queued again, and a commit appearing more than once across the raw
+        // events for the same unit must be queued exactly once. Neither guard is
+        // exercised by `commits_to_compensate_reverts_every_sha_a_multi_commit_landing_
+        // recorded` above (its three shas are pairwise distinct and nothing is
+        // pre-compensated), so both conditions in the skip's `||` chain can flip to
+        // `&&` there with no observable effect.
+        let store = Store::open(":memory:").unwrap();
+        let seed = |data: Value| {
+            store
+                .append(
+                    STREAM,
+                    ExpectedRevision::Any,
+                    std::slice::from_ref(&Event::new(
+                        ledger::TYPE_UNIT_INTEGRATED,
+                        serde_json::to_vec(&data).unwrap(),
+                    )),
+                )
+                .unwrap();
+        };
+        // c1 landed, then the SAME landing's event reappears in the raw log (a
+        // pre-ingest-dedup duplicate) - the fold must still count c1 exactly once.
+        seed(json!({"id": "plan", "commit": "c1", "shas": ["c1"]}));
+        seed(json!({"id": "plan", "commit": "c1", "shas": ["c1"]}));
+        seed(json!({"id": "plan", "commit": "c2", "shas": ["c2"]}));
+
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        // c2 was already reverted by an earlier compensation cycle this process ran
+        // (the resume-seeded guard) - re-deriving must exclude it, leaving only the
+        // deduplicated c1.
+        ctx.compensated_commits
+            .lock()
+            .unwrap()
+            .insert("c2".to_string());
+
+        assert_eq!(
+            ctx.commits_to_compensate("plan"),
+            vec!["c1".to_string()],
+            "a duplicated raw event must not double-queue its commit, and an \
+             already-compensated commit must never be queued again"
+        );
+    }
+
+    #[test]
     fn pending_compensations_from_log_re_derives_only_undrained_marks() {
         // spec 12, unit 4 (crash-resume recovery): a durable compensation-queued mark
         // (META_COMPENSATE_TARGET) that has NOT been drained (no matching UnitFailed +

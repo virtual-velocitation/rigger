@@ -1898,6 +1898,47 @@ mod tests {
     }
 
     #[test]
+    fn cherry_pick_onto_run_branch_reports_the_real_git_failure_not_a_wasted_skip_retry() {
+        // The retry loop's guard (`skips_left == 0 || is_conflicted(&out) ||
+        // !out.contains("previous cherry-pick is now empty")`) must break on the
+        // FIRST error for a failure that is neither a real conflict NOR the
+        // already-applied-empty marker this loop exists to skip past - a bad
+        // (nonexistent) sha is exactly that shape (git fails with "fatal: bad
+        // object", before any sequencer state even starts). Breaking immediately
+        // means `shas`' own fatal reason reaches the caller; mis-classifying it as
+        // skippable would instead waste a `git cherry-pick --skip` call (which
+        // itself fails with the unrelated "no cherry-pick in progress", since
+        // nothing was ever in progress) and surface THAT confusing message
+        // instead of the real one.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt =
+            Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/u/plan", "").unwrap();
+
+        let bogus_sha = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef".to_string();
+        let err = match wt.cherry_pick_onto_run_branch(&[bogus_sha]) {
+            Ok(CherryPickOutcome::Picked(landed)) => {
+                panic!("a nonexistent sha must never land; got Picked({landed:?})")
+            }
+            Ok(CherryPickOutcome::Conflict(detail)) => {
+                panic!("a nonexistent sha is not a conflict; got Conflict({detail})")
+            }
+            Err(e) => e.0,
+        };
+        assert!(
+            err.contains("bad object"),
+            "the real git failure for a nonexistent sha must reach the caller; got: {err}"
+        );
+        assert!(
+            !err.contains("no cherry-pick in progress"),
+            "a fatal, non-conflict, non-empty failure must break immediately rather than \
+             waste a --skip retry that masks it with an unrelated message; got: {err}"
+        );
+        wt.remove().unwrap();
+    }
+
+    #[test]
     fn revert_on_base_rolls_back_an_integrated_commit_with_a_provenance_message() {
         // spec 12, unit 4: revert_on_base reverses an integrated commit's diff on the run
         // branch as a NEW, message-carrying commit (an evented rollback, not a rewrite), so a
