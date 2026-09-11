@@ -209,7 +209,7 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 15419
+        "line": 15821
       },
       {
         "file": "src/eventstore/sqlite.rs",
@@ -675,7 +675,7 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "line": 8230
+        "line": 8232
       }
     ],
     "disposition": "delete",
@@ -820,15 +820,15 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 32303
+        "line": 32705
       },
       {
         "file": "src/conductor.rs",
-        "line": 32370
+        "line": 32772
       },
       {
         "file": "src/conductor.rs",
-        "line": 33144
+        "line": 33546
       },
       {
         "file": "src/ledger.rs",
@@ -897,35 +897,35 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 17734
+        "line": 18136
       },
       {
         "file": "src/conductor.rs",
-        "line": 17811
+        "line": 18213
       },
       {
         "file": "src/conductor.rs",
-        "line": 17905
+        "line": 18307
       },
       {
         "file": "src/conductor.rs",
-        "line": 17992
+        "line": 18394
       },
       {
         "file": "src/conductor.rs",
-        "line": 18087
+        "line": 18489
       },
       {
         "file": "src/conductor.rs",
-        "line": 24191
+        "line": 24593
       },
       {
         "file": "src/conductor.rs",
-        "line": 24196
+        "line": 24598
       },
       {
         "file": "src/conductor.rs",
-        "line": 24259
+        "line": 24661
       },
       {
         "file": "src/dash.rs",
@@ -1185,27 +1185,23 @@
       },
       {
         "file": "src/worktree.rs",
-        "line": 1973
+        "line": 2000
       },
       {
         "file": "src/worktree.rs",
-        "line": 1996
+        "line": 2023
       },
       {
         "file": "src/worktree.rs",
-        "line": 2032
+        "line": 2059
       },
       {
         "file": "src/worktree.rs",
-        "line": 2064
+        "line": 2091
       },
       {
         "file": "src/worktree.rs",
-        "line": 2099
-      },
-      {
-        "file": "src/worktree.rs",
-        "line": 2115
+        "line": 2126
       },
       {
         "file": "src/worktree.rs",
@@ -1213,15 +1209,19 @@
       },
       {
         "file": "src/worktree.rs",
-        "line": 2172
+        "line": 2169
       },
       {
         "file": "src/worktree.rs",
-        "line": 2179
+        "line": 2199
       },
       {
         "file": "src/worktree.rs",
-        "line": 2187
+        "line": 2206
+      },
+      {
+        "file": "src/worktree.rs",
+        "line": 2214
       },
       {
         "file": "tests/cli.rs",
@@ -1557,15 +1557,15 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 24189
+        "line": 24591
       },
       {
         "file": "src/conductor.rs",
-        "line": 24194
+        "line": 24596
       },
       {
         "file": "src/conductor.rs",
-        "line": 24257
+        "line": 24659
       },
       {
         "file": "src/driver/replay.rs",
@@ -1688,27 +1688,27 @@
     "test_only_references": [
       {
         "file": "src/worktree.rs",
-        "line": 1437
-      },
-      {
-        "file": "src/worktree.rs",
         "line": 1464
       },
       {
         "file": "src/worktree.rs",
-        "line": 1517
+        "line": 1491
       },
       {
         "file": "src/worktree.rs",
-        "line": 1571
+        "line": 1544
       },
       {
         "file": "src/worktree.rs",
-        "line": 1624
+        "line": 1598
       },
       {
         "file": "src/worktree.rs",
-        "line": 1744
+        "line": 1651
+      },
+      {
+        "file": "src/worktree.rs",
+        "line": 1771
       }
     ],
     "disposition": "delete",
@@ -1717,24 +1717,24 @@
   {
     "name": "is_dirty",
     "file": "src/worktree.rs",
-    "line": 496,
+    "line": 520,
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [
       {
         "file": "src/worktree.rs",
-        "line": 1666
+        "line": 1693
       },
       {
         "file": "src/worktree.rs",
-        "line": 1676
+        "line": 1703
       },
       {
         "file": "src/worktree.rs",
-        "line": 1742
+        "line": 1769
       }
     ],
     "disposition": "delete",
-    "reason": "is_dirty has no production caller - the second of spec 87's own two Goal-cited worked examples, reconfirmed on the current tree: its 3 references are all test-only."
+    "reason": "is_dirty has no production caller - the second of spec 87's own two Goal-cited worked examples, reconfirmed on the current tree: its 3 references are all test-only. (Line shifted 496->520 by spec 88 criterion 2's new create_branch_at, inserted above it; is_dirty itself is untouched.)"
   }
 ]

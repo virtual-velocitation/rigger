@@ -183,140 +183,146 @@
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 17489,
-        "end_line": 17489,
+        "start_line": 10861,
+        "end_line": 10861,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 21308,
-        "end_line": 21308,
+        "start_line": 17891,
+        "end_line": 17891,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 21926,
-        "end_line": 21926,
+        "start_line": 21710,
+        "end_line": 21710,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 22000,
-        "end_line": 22000,
+        "start_line": 22328,
+        "end_line": 22328,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 25747,
-        "end_line": 25747,
+        "start_line": 22402,
+        "end_line": 22402,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 25845,
-        "end_line": 25845,
+        "start_line": 26149,
+        "end_line": 26149,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 25930,
-        "end_line": 25930,
+        "start_line": 26247,
+        "end_line": 26247,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 26222,
-        "end_line": 26222,
+        "start_line": 26332,
+        "end_line": 26332,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 26552,
-        "end_line": 26552,
+        "start_line": 26624,
+        "end_line": 26624,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 26582,
-        "end_line": 26582,
+        "start_line": 26954,
+        "end_line": 26954,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 27054,
-        "end_line": 27054,
+        "start_line": 26984,
+        "end_line": 26984,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 30698,
-        "end_line": 30698,
+        "start_line": 27456,
+        "end_line": 27456,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 31359,
-        "end_line": 31359,
+        "start_line": 31100,
+        "end_line": 31100,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 31857,
-        "end_line": 31857,
+        "start_line": 31761,
+        "end_line": 31761,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 31864,
-        "end_line": 31864,
+        "start_line": 32259,
+        "end_line": 32259,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 31954,
-        "end_line": 31954,
+        "start_line": 32266,
+        "end_line": 32266,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 32011,
-        "end_line": 32011,
+        "start_line": 32356,
+        "end_line": 32356,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 32067,
-        "end_line": 32067,
+        "start_line": 32413,
+        "end_line": 32413,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 33312,
-        "end_line": 33312,
+        "start_line": 32469,
+        "end_line": 32469,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 33330,
-        "end_line": 33330,
+        "start_line": 33714,
+        "end_line": 33714,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 33360,
-        "end_line": 33360,
+        "start_line": 33732,
+        "end_line": 33732,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 33551,
-        "end_line": 33551,
+        "start_line": 33762,
+        "end_line": 33762,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 33864,
-        "end_line": 33864,
+        "start_line": 33953,
+        "end_line": 33953,
+        "name": "Command::new"
+      },
+      {
+        "file": "src/conductor.rs",
+        "start_line": 34266,
+        "end_line": 34266,
         "name": "Command::new"
       },
       {
@@ -567,32 +573,32 @@
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 1369,
-        "end_line": 1369,
+        "start_line": 1396,
+        "end_line": 1396,
         "name": "Command::new"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2451,
-        "end_line": 2451,
+        "start_line": 2478,
+        "end_line": 2478,
         "name": "Command::new"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2738,
-        "end_line": 2738,
+        "start_line": 2765,
+        "end_line": 2765,
         "name": "Command::new"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 3443,
-        "end_line": 3443,
+        "start_line": 3540,
+        "end_line": 3540,
         "name": "Command::new"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 3449,
-        "end_line": 3449,
+        "start_line": 3546,
+        "end_line": 3546,
         "name": "Command::new"
       },
       {
@@ -1779,7 +1785,7 @@
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 269 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: Command::new call sites - 270 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0007",
@@ -1819,8 +1825,8 @@
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 10810,
-        "end_line": 10815,
+        "start_line": 11212,
+        "end_line": 11217,
         "name": "agent"
       },
       {
@@ -2433,14 +2439,14 @@
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 8892,
-        "end_line": 8894,
+        "start_line": 8951,
+        "end_line": 8953,
         "name": "build_system_prompt"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 8919,
-        "end_line": 8926,
+        "start_line": 8978,
+        "end_line": 8985,
         "name": "review_protocol"
       },
       {
@@ -2487,8 +2493,8 @@
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 790,
-        "end_line": 792,
+        "start_line": 817,
+        "end_line": 819,
         "name": "shared_build_cache_guard_path"
       },
       {
@@ -2697,8 +2703,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 8640,
-        "end_line": 8642,
+        "start_line": 8699,
+        "end_line": 8701,
         "name": "normalize_ws"
       },
       {
@@ -2723,8 +2729,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 8640,
-        "end_line": 8642,
+        "start_line": 8699,
+        "end_line": 8701,
         "name": "normalize_ws"
       },
       {
@@ -2743,8 +2749,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 9700,
-        "end_line": 9702,
+        "start_line": 9759,
+        "end_line": 9761,
         "name": "unit_branch"
       },
       {
@@ -2763,14 +2769,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 9728,
-        "end_line": 9733,
+        "start_line": 9846,
+        "end_line": 9851,
         "name": "review_worktree_dir"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 9740,
-        "end_line": 9742,
+        "start_line": 9858,
+        "end_line": 9860,
         "name": "review_branch"
       }
     ],
@@ -2783,26 +2789,26 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 10620,
-        "end_line": 10627,
+        "start_line": 11022,
+        "end_line": 11029,
         "name": "prompts_for"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 10630,
-        "end_line": 10637,
+        "start_line": 11032,
+        "end_line": 11039,
         "name": "dirs_for"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 10641,
-        "end_line": 10647,
+        "start_line": 11043,
+        "end_line": 11049,
         "name": "system_prompt_for"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 10651,
-        "end_line": 10653,
+        "start_line": 11053,
+        "end_line": 11055,
         "name": "title_for"
       }
     ],
@@ -2815,44 +2821,44 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 10663,
-        "end_line": 10665,
+        "start_line": 11065,
+        "end_line": 11067,
         "name": "spawn_ids"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 29191,
-        "end_line": 29193,
+        "start_line": 29593,
+        "end_line": 29595,
         "name": "calls"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 29194,
-        "end_line": 29196,
+        "start_line": 29596,
+        "end_line": 29598,
         "name": "targets"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 29200,
-        "end_line": 29202,
+        "start_line": 29602,
+        "end_line": 29604,
         "name": "store_fences"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 29203,
-        "end_line": 29205,
+        "start_line": 29605,
+        "end_line": 29607,
         "name": "build_cache_guards"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 29206,
-        "end_line": 29208,
+        "start_line": 29608,
+        "end_line": 29610,
         "name": "build_cache_dirs"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 29359,
-        "end_line": 29361,
+        "start_line": 29761,
+        "end_line": 29763,
         "name": "calls"
       },
       {
@@ -2895,20 +2901,20 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 10669,
-        "end_line": 10676,
+        "start_line": 11071,
+        "end_line": 11078,
         "name": "spawn_count"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 34414,
-        "end_line": 34421,
+        "start_line": 34816,
+        "end_line": 34823,
         "name": "count"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 35169,
-        "end_line": 35176,
+        "start_line": 35571,
+        "end_line": 35578,
         "name": "count"
       }
     ],
@@ -2921,8 +2927,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 10680,
-        "end_line": 10686,
+        "start_line": 11082,
+        "end_line": 11088,
         "name": "spawned"
       },
       {
@@ -2941,8 +2947,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 10820,
-        "end_line": 10826,
+        "start_line": 11222,
+        "end_line": 11228,
         "name": "agent_with_prompt"
       },
       {
@@ -2967,26 +2973,26 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 10877,
-        "end_line": 10901,
+        "start_line": 11279,
+        "end_line": 11303,
         "name": "coverage_gate_refuses_an_uncovered_criterion"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 24369,
-        "end_line": 24401,
+        "start_line": 24771,
+        "end_line": 24803,
         "name": "coverage_gap_flags_a_spec_defect_and_errors"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 24448,
-        "end_line": 24482,
+        "start_line": 24850,
+        "end_line": 24884,
         "name": "planner_leaving_a_gap_flags_a_spec_defect"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 24485,
-        "end_line": 24519,
+        "start_line": 24887,
+        "end_line": 24921,
         "name": "gate_only_stage_is_a_coverage_proxy_gap"
       }
     ],
@@ -2999,32 +3005,32 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 11233,
-        "end_line": 11260,
+        "start_line": 11635,
+        "end_line": 11662,
         "name": "supersede_cfg"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 18145,
-        "end_line": 18167,
+        "start_line": 18547,
+        "end_line": 18569,
         "name": "sha_stamp_cfg"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 18454,
-        "end_line": 18474,
+        "start_line": 18856,
+        "end_line": 18876,
         "name": "degenerate_reviewer_cfg"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 29261,
-        "end_line": 29283,
+        "start_line": 29663,
+        "end_line": 29685,
         "name": "content_cache_cfg"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 34318,
-        "end_line": 34357,
+        "start_line": 34720,
+        "end_line": 34759,
         "name": "critique_cfg"
       },
       {
@@ -3055,14 +3061,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 12029,
-        "end_line": 12125,
+        "start_line": 12431,
+        "end_line": 12527,
         "name": "a_later_episodes_proposal_supersedes_an_earlier_episodes_planner_unit"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 12188,
-        "end_line": 12267,
+        "start_line": 12590,
+        "end_line": 12669,
         "name": "a_planner_proposal_with_no_data_episode_field_still_supersedes_via_meta_spawn"
       }
     ],
@@ -3075,20 +3081,20 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 12270,
-        "end_line": 12397,
+        "start_line": 12672,
+        "end_line": 12799,
         "name": "a_same_id_refine_restamps_its_episode_so_its_own_episodes_sibling_does_not_reap_it"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 12400,
-        "end_line": 12522,
+        "start_line": 12802,
+        "end_line": 12924,
         "name": "a_same_id_refine_survives_its_own_episodes_sibling_add_walked_first"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 12857,
-        "end_line": 12951,
+        "start_line": 13259,
+        "end_line": 13353,
         "name": "a_legacy_proposal_never_supersedes_an_identified_episodes_owner_even_when_logged_later"
       }
     ],
@@ -3101,20 +3107,20 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 12559,
-        "end_line": 12577,
+        "start_line": 12961,
+        "end_line": 12979,
         "name": "append_one"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 12704,
-        "end_line": 12721,
+        "start_line": 13106,
+        "end_line": 13123,
         "name": "append_legacy"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 12723,
-        "end_line": 12741,
+        "start_line": 13125,
+        "end_line": 13143,
         "name": "append_identified"
       }
     ],
@@ -3127,14 +3133,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 12579,
-        "end_line": 12591,
+        "start_line": 12981,
+        "end_line": 12993,
         "name": "shape"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 12743,
-        "end_line": 12755,
+        "start_line": 13145,
+        "end_line": 13157,
         "name": "shape"
       }
     ],
@@ -3147,26 +3153,26 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 13071,
-        "end_line": 13127,
+        "start_line": 13473,
+        "end_line": 13529,
         "name": "a_verbatim_copy_still_supersedes_its_baseline"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 13130,
-        "end_line": 13204,
+        "start_line": 13532,
+        "end_line": 13606,
         "name": "a_paraphrased_proposal_matches_its_baseline_by_id_not_prose"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 13207,
-        "end_line": 13291,
+        "start_line": 13609,
+        "end_line": 13693,
         "name": "a_bracketed_id_echo_with_a_paraphrase_still_supersedes_exactly_once"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 13294,
-        "end_line": 13366,
+        "start_line": 13696,
+        "end_line": 13768,
         "name": "a_stale_non_matching_id_falls_back_to_the_verbatim_prose_match"
       }
     ],
@@ -3179,8 +3185,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 13573,
-        "end_line": 13573,
+        "start_line": 13975,
+        "end_line": 13975,
         "name": "\"the repo's own .rigger config must load\""
       },
       {
@@ -4007,38 +4013,38 @@
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 733,
-        "end_line": 733,
+        "start_line": 760,
+        "end_line": 760,
         "name": "\"{}/.rigger/tmp\""
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 1851,
-        "end_line": 1851,
+        "start_line": 1878,
+        "end_line": 1878,
         "name": "\"{repo_path}/.rigger/tmp\""
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 1868,
-        "end_line": 1868,
+        "start_line": 1895,
+        "end_line": 1895,
         "name": "\"~/.rigger-scratch-test\""
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 1869,
-        "end_line": 1869,
+        "start_line": 1896,
+        "end_line": 1896,
         "name": "\"{home}/.rigger-scratch-test\""
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 3381,
-        "end_line": 3381,
+        "start_line": 3478,
+        "end_line": 3478,
         "name": "\"{base}..rigger-run\""
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 3430,
-        "end_line": 3430,
+        "start_line": 3527,
+        "end_line": 3527,
         "name": "\".rigger\""
       },
       {
@@ -6647,14 +6653,14 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7116,
-        "end_line": 7116,
+        "start_line": 7118,
+        "end_line": 7118,
         "name": "\"fn a() {\\n    let _ = \\\".rigger/tmp\\\";\\n}\\n\""
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7119,
-        "end_line": 7119,
+        "start_line": 7121,
+        "end_line": 7121,
         "name": "\".rigger\""
       },
       {
@@ -7117,20 +7123,20 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 14285,
-        "end_line": 14305,
+        "start_line": 14687,
+        "end_line": 14707,
         "name": "render_capped_findings"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 14527,
-        "end_line": 14546,
+        "start_line": 14929,
+        "end_line": 14948,
         "name": "render_capped_lessons"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 16884,
-        "end_line": 16906,
+        "start_line": 17286,
+        "end_line": 17308,
         "name": "render_capped_lessons_scoped"
       }
     ],
@@ -7143,14 +7149,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 14308,
-        "end_line": 14375,
+        "start_line": 14710,
+        "end_line": 14777,
         "name": "findings_prompt_injection_is_capped_under_budget_with_elision_note"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 16772,
-        "end_line": 16838,
+        "start_line": 17174,
+        "end_line": 17240,
         "name": "lessons_prompt_injection_is_capped_under_budget_with_elision_note"
       }
     ],
@@ -7163,14 +7169,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 16187,
-        "end_line": 16189,
+        "start_line": 16589,
+        "end_line": 16591,
         "name": "resolve"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 30038,
-        "end_line": 30040,
+        "start_line": 30440,
+        "end_line": 30442,
         "name": "resolve"
       }
     ],
@@ -7183,14 +7189,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 16576,
-        "end_line": 16616,
+        "start_line": 16978,
+        "end_line": 17018,
         "name": "a_subgraph_with_no_design_intent_renders_no_design_intent_header"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 16739,
-        "end_line": 16769,
+        "start_line": 17141,
+        "end_line": 17171,
         "name": "a_subgraph_with_no_code_definitions_renders_no_code_neighborhood_header"
       }
     ],
@@ -7203,14 +7209,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 17072,
-        "end_line": 17089,
+        "start_line": 17474,
+        "end_line": 17491,
         "name": "commit_on_unit_branch"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 17292,
-        "end_line": 17308,
+        "start_line": 17694,
+        "end_line": 17710,
         "name": "commit_on_named_branch"
       }
     ],
@@ -7223,26 +7229,26 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 17092,
-        "end_line": 17187,
+        "start_line": 17494,
+        "end_line": 17589,
         "name": "resume_reuses_a_units_branch_instead_of_reimplementing"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 19315,
-        "end_line": 19400,
+        "start_line": 19717,
+        "end_line": 19802,
         "name": "resume_integrates_an_already_approved_unit_without_re_reviewing"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 19403,
-        "end_line": 19514,
+        "start_line": 19805,
+        "end_line": 19916,
         "name": "a_failed_unit_is_not_terminal_and_resumes"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 26341,
-        "end_line": 26444,
+        "start_line": 26743,
+        "end_line": 26846,
         "name": "a_resumed_reviewed_unit_restores_a_worktree_the_exhaustive_gate_deleted"
       }
     ],
@@ -7255,26 +7261,26 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 17190,
-        "end_line": 17284,
+        "start_line": 17592,
+        "end_line": 17686,
         "name": "branch_gc_reclaims_integrated_units_and_retains_escalated_ones_on_resume"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 17323,
-        "end_line": 17379,
+        "start_line": 17725,
+        "end_line": 17781,
         "name": "branch_gc_falls_back_to_the_derived_branch_when_unitstarted_recorded_no_branch"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 17601,
-        "end_line": 17693,
+        "start_line": 18003,
+        "end_line": 18095,
         "name": "branch_gc_reclaims_every_integrated_unit_in_one_resume_not_just_the_first"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 17696,
-        "end_line": 17777,
+        "start_line": 18098,
+        "end_line": 18179,
         "name": "branch_gc_fences_reclaim_behind_an_in_flight_straggler_spawn_and_reclaims_once_it_answers"
       }
     ],
@@ -7287,14 +7293,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 17780,
-        "end_line": 17847,
+        "start_line": 18182,
+        "end_line": 18249,
         "name": "gc_integrated_branches_logged_prints_kept_evidence_for_an_in_flight_straggler_spawn"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 17952,
-        "end_line": 18035,
+        "start_line": 18354,
+        "end_line": 18437,
         "name": "gc_integrated_branches_logged_stays_silent_for_an_already_gone_worktree_but_still_reclaims_an_orphaned_branch"
       }
     ],
@@ -7307,14 +7313,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 17850,
-        "end_line": 17949,
+        "start_line": 18252,
+        "end_line": 18351,
         "name": "gc_integrated_branches_logged_prints_removing_evidence_for_a_terminal_spawns_decision"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 18038,
-        "end_line": 18141,
+        "start_line": 18440,
+        "end_line": 18543,
         "name": "gc_integrated_branches_logged_does_not_repeat_removing_evidence_once_the_real_removal_already_happened"
       }
     ],
@@ -7327,14 +7333,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 18897,
-        "end_line": 18942,
+        "start_line": 19299,
+        "end_line": 19344,
         "name": "a_gating_spawn_that_returns_a_reject_verdict_line_is_a_normal_reject_even_if_it_emitted_approve"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 18945,
-        "end_line": 18989,
+        "start_line": 19347,
+        "end_line": 19391,
         "name": "a_gating_spawn_with_no_verdict_line_and_no_emitted_approve_is_an_ordinary_reject"
       }
     ],
@@ -7347,14 +7353,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 19839,
-        "end_line": 19881,
+        "start_line": 20241,
+        "end_line": 20283,
         "name": "scope_creep_refuses_a_criterionless_proposed_unit"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 24404,
-        "end_line": 24445,
+        "start_line": 24806,
+        "end_line": 24847,
         "name": "planner_covering_every_criterion_passes"
       }
     ],
@@ -7367,14 +7373,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 19920,
-        "end_line": 19986,
+        "start_line": 20322,
+        "end_line": 20388,
         "name": "adversary_runs_between_the_lenses_and_the_adjudicator"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 20042,
-        "end_line": 20135,
+        "start_line": 20444,
+        "end_line": 20537,
         "name": "unit_reviews_itself_within_its_own_lifecycle"
       }
     ],
@@ -7387,26 +7393,26 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 20418,
-        "end_line": 20478,
+        "start_line": 20820,
+        "end_line": 20880,
         "name": "a_low_risk_unit_skips_the_adversary_and_extra_lens"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 20481,
-        "end_line": 20551,
+        "start_line": 20883,
+        "end_line": 20953,
         "name": "a_high_risk_unit_runs_the_full_panel_and_logs_the_routing"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 20572,
-        "end_line": 20650,
+        "start_line": 20974,
+        "end_line": 21052,
         "name": "a_zero_grounding_unit_fails_safe_to_the_full_panel_and_logs_it"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 20765,
-        "end_line": 20829,
+        "start_line": 21167,
+        "end_line": 21231,
         "name": "a_stage_level_tiers_policy_routes_the_unit_by_risk"
       }
     ],
@@ -7419,14 +7425,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 22401,
-        "end_line": 22463,
+        "start_line": 22803,
+        "end_line": 22865,
         "name": "planner_proposed_unit_inherits_the_default_review_panel"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 22466,
-        "end_line": 22561,
+        "start_line": 22868,
+        "end_line": 22963,
         "name": "a_producer_stage_skips_the_three_tier_review_and_unblocks_its_dependents"
       }
     ],
@@ -7439,32 +7445,32 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 22564,
-        "end_line": 22636,
+        "start_line": 22966,
+        "end_line": 23038,
         "name": "per_unit_adjudicator_reject_blocks_integration_and_escalates"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 22963,
-        "end_line": 23036,
+        "start_line": 23365,
+        "end_line": 23438,
         "name": "approval_on_the_final_permitted_attempt_integrates_a_per_unit_stage"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 23132,
-        "end_line": 23198,
+        "start_line": 23534,
+        "end_line": 23600,
         "name": "approval_on_the_final_permitted_attempt_integrates_a_standalone_review_stage"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 25082,
-        "end_line": 25129,
+        "start_line": 25484,
+        "end_line": 25531,
         "name": "on_pass_none_runs_gates_but_does_not_integrate"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 28245,
-        "end_line": 28290,
+        "start_line": 28647,
+        "end_line": 28692,
         "name": "unparseable_adjudicator_output_blocks_integration"
       }
     ],
@@ -7477,14 +7483,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 22735,
-        "end_line": 22832,
+        "start_line": 23137,
+        "end_line": 23234,
         "name": "a_higher_max_retries_gives_more_attempts_before_escalation"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 22749,
-        "end_line": 22795,
+        "start_line": 23151,
+        "end_line": 23197,
         "name": "escalation_run"
       }
     ],
@@ -7497,14 +7503,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 23201,
-        "end_line": 23235,
+        "start_line": 23603,
+        "end_line": 23637,
         "name": "mid_spawn_crash_escalates_without_aborting_the_run"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 23238,
-        "end_line": 23289,
+        "start_line": 23640,
+        "end_line": 23691,
         "name": "a_newly_escalated_unit_stamps_an_attention_entry"
       }
     ],
@@ -7517,14 +7523,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 23292,
-        "end_line": 23342,
+        "start_line": 23694,
+        "end_line": 23744,
         "name": "a_budget_halt_stamps_an_attention_entry"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 24105,
-        "end_line": 24143,
+        "start_line": 24507,
+        "end_line": 24545,
         "name": "a_budget_halt_surfaces_its_reason_on_the_run_state"
       }
     ],
@@ -7537,20 +7543,20 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 23437,
-        "end_line": 23541,
+        "start_line": 23839,
+        "end_line": 23943,
         "name": "a_delayed_budget_halt_after_a_dependency_unlocks_still_stamps"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 23618,
-        "end_line": 23699,
+        "start_line": 24020,
+        "end_line": 24101,
         "name": "an_escalation_does_not_restamp_attention_on_a_resumed_process"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 23738,
-        "end_line": 23862,
+        "start_line": 24140,
+        "end_line": 24264,
         "name": "a_second_failure_recurs_and_a_third_also_stalls_the_frontier"
       }
     ],
@@ -7563,20 +7569,20 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 24005,
-        "end_line": 24056,
+        "start_line": 24407,
+        "end_line": 24458,
         "name": "budget_breaker_stops_the_run_after_the_first_wave"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 24059,
-        "end_line": 24102,
+        "start_line": 24461,
+        "end_line": 24504,
         "name": "budget_exhaustion_aborts_the_task"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 24522,
-        "end_line": 24581,
+        "start_line": 24924,
+        "end_line": 24983,
         "name": "manual_stage_pauses_while_an_auto_stage_integrates"
       }
     ],
@@ -7589,14 +7595,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 24181,
-        "end_line": 24249,
+        "start_line": 24583,
+        "end_line": 24651,
         "name": "the_spawn_budget_folds_from_recorded_spawn_requests_across_steps"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 24252,
-        "end_line": 24293,
+        "start_line": 24654,
+        "end_line": 24695,
         "name": "the_pre_wave_breaker_trips_only_on_a_new_over_budget_spawn"
       }
     ],
@@ -7609,20 +7615,20 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 24584,
-        "end_line": 24627,
+        "start_line": 24986,
+        "end_line": 25029,
         "name": "isolation_none_agent_gets_no_worktree_even_with_a_repo"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 24630,
-        "end_line": 24663,
+        "start_line": 25032,
+        "end_line": 25065,
         "name": "spawn_opts_isolation_is_set_for_a_worktree_agent"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 24666,
-        "end_line": 24705,
+        "start_line": 25068,
+        "end_line": 25107,
         "name": "a_spawned_implementers_title_is_the_unit_criterion"
       }
     ],
@@ -7635,26 +7641,26 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 24712,
-        "end_line": 24760,
+        "start_line": 25114,
+        "end_line": 25162,
         "name": "the_adversarys_spawn_is_stamped_with_the_units_lens_roster"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 24766,
-        "end_line": 24815,
+        "start_line": 25168,
+        "end_line": 25217,
         "name": "the_adjudicators_spawn_is_stamped_with_lenses_plus_adversary"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 24820,
-        "end_line": 24867,
+        "start_line": 25222,
+        "end_line": 25269,
         "name": "a_panel_with_no_adversary_never_fabricates_one_in_the_adjudicators_roster"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 24953,
-        "end_line": 25010,
+        "start_line": 25355,
+        "end_line": 25412,
         "name": "the_fan_out_review_loops_adversary_and_adjudicator_spawns_are_stamped_with_the_routed_roster"
       }
     ],
@@ -7667,14 +7673,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 25260,
-        "end_line": 25262,
+        "start_line": 25662,
+        "end_line": 25664,
         "name": "envs"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 29197,
-        "end_line": 29199,
+        "start_line": 29599,
+        "end_line": 29601,
         "name": "build_envs"
       }
     ],
@@ -7687,20 +7693,20 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 25663,
-        "end_line": 25769,
+        "start_line": 26065,
+        "end_line": 26171,
         "name": "a_parked_review_spawn_keeps_the_unit_worktree_registered_and_its_cache"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 25772,
-        "end_line": 25864,
+        "start_line": 26174,
+        "end_line": 26266,
         "name": "review_unit_restores_a_worktree_a_gate_deleted_out_of_band"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 25867,
-        "end_line": 25969,
+        "start_line": 26269,
+        "end_line": 26371,
         "name": "a_second_step_restores_a_still_parked_units_worktree_deleted_out_of_band"
       }
     ],
@@ -7713,14 +7719,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 26271,
-        "end_line": 26338,
+        "start_line": 26673,
+        "end_line": 26740,
         "name": "failed_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 26873,
-        "end_line": 26944,
+        "start_line": 27275,
+        "end_line": 27346,
         "name": "speculation_reject_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored"
       }
     ],
@@ -7733,14 +7739,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 27207,
-        "end_line": 27250,
+        "start_line": 27609,
+        "end_line": 27652,
         "name": "agent_stage_runs_the_per_unit_lifecycle_not_the_fan_out_path"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 27253,
-        "end_line": 27294,
+        "start_line": 27655,
+        "end_line": 27696,
         "name": "standalone_review_stage_still_takes_the_fan_out_path"
       }
     ],
@@ -7753,38 +7759,38 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 27412,
-        "end_line": 27465,
+        "start_line": 27814,
+        "end_line": 27867,
         "name": "a_parked_lens_keeps_the_standalone_review_stages_worktree"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 27468,
-        "end_line": 27564,
+        "start_line": 27870,
+        "end_line": 27966,
         "name": "a_parked_lens_keeps_the_review_worktree_even_beside_a_lower_indexed_sibling_crash"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 27567,
-        "end_line": 27660,
+        "start_line": 27969,
+        "end_line": 28062,
         "name": "a_parked_lens_keeps_the_review_worktree_beside_a_sibling_degenerate_halt"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 27663,
-        "end_line": 27748,
+        "start_line": 28065,
+        "end_line": 28150,
         "name": "the_swap_to_front_prioritizes_a_genuine_error_at_a_non_zero_chunk_index"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 27751,
-        "end_line": 27838,
+        "start_line": 28153,
+        "end_line": 28240,
         "name": "a_budget_refused_lens_beside_a_genuinely_crashing_sibling_in_one_chunk"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 27841,
-        "end_line": 27908,
+        "start_line": 28243,
+        "end_line": 28310,
         "name": "a_budget_refused_standalone_review_spawn_keeps_its_worktree"
       }
     ],
@@ -7797,14 +7803,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 28357,
-        "end_line": 28440,
+        "start_line": 28759,
+        "end_line": 28842,
         "name": "a_flaky_gate_rerun_is_a_pass_with_warning_that_never_demotes"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 28443,
-        "end_line": 28513,
+        "start_line": 28845,
+        "end_line": 28915,
         "name": "a_product_gate_failure_is_not_rerun_and_demotes_as_before"
       }
     ],
@@ -7817,14 +7823,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 29176,
-        "end_line": 29181,
+        "start_line": 29578,
+        "end_line": 29583,
         "name": "materializing"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 29185,
-        "end_line": 29190,
+        "start_line": 29587,
+        "end_line": 29592,
         "name": "deleting_worktree"
       }
     ],
@@ -7837,8 +7843,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 29287,
-        "end_line": 29293,
+        "start_line": 29689,
+        "end_line": 29695,
         "name": "attempt_of"
       },
       {
@@ -7857,14 +7863,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 29405,
-        "end_line": 29471,
+        "start_line": 29807,
+        "end_line": 29873,
         "name": "a_matching_input_digest_answers_a_gate_as_a_logged_cache_hit_citing_the_prior_green"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 29519,
-        "end_line": 29575,
+        "start_line": 29921,
+        "end_line": 29977,
         "name": "a_red_verdict_is_never_cache_answered_and_the_gate_re_runs"
       }
     ],
@@ -7877,14 +7883,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 29711,
-        "end_line": 29784,
+        "start_line": 30113,
+        "end_line": 30186,
         "name": "a_structural_grounder_records_the_audit_and_routes_full_on_a_beyond_cap_high_risk_file"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 30324,
-        "end_line": 30388,
+        "start_line": 30726,
+        "end_line": 30790,
         "name": "speculation_over_a_structural_grounder_records_the_audit_and_routes_full"
       }
     ],
@@ -7897,20 +7903,20 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 30640,
-        "end_line": 30681,
+        "start_line": 31042,
+        "end_line": 31083,
         "name": "spawn"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 31520,
-        "end_line": 31557,
+        "start_line": 31922,
+        "end_line": 31959,
         "name": "spawn"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 31655,
-        "end_line": 31700,
+        "start_line": 32057,
+        "end_line": 32102,
         "name": "spawn"
       }
     ],
@@ -7923,14 +7929,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 31561,
-        "end_line": 31644,
+        "start_line": 31963,
+        "end_line": 32046,
         "name": "a_compensated_unit_re_gates_its_re_implemented_tree_not_the_condemned_verdict"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 31704,
-        "end_line": 31802,
+        "start_line": 32106,
+        "end_line": 32204,
         "name": "a_compensated_unit_that_remediated_before_integrating_re_gates_at_a_fresh_key"
       }
     ],
@@ -7943,14 +7949,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 32309,
-        "end_line": 32377,
+        "start_line": 32711,
+        "end_line": 32779,
         "name": "a_failing_deferred_gate_is_surfaced_and_the_run_is_not_done"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 32414,
-        "end_line": 32485,
+        "start_line": 32816,
+        "end_line": 32887,
         "name": "a_default_infra_fault_at_a_deferred_gate_does_not_demote"
       }
     ],
@@ -7963,14 +7969,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 32488,
-        "end_line": 32592,
+        "start_line": 32890,
+        "end_line": 32994,
         "name": "a_replayed_step_re_runs_no_recorded_gate_and_appends_no_duplicate_events"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 32595,
-        "end_line": 32680,
+        "start_line": 32997,
+        "end_line": 33082,
         "name": "a_re_step_replays_a_recorded_deferred_gate_without_re_running_it"
       }
     ],
@@ -7983,20 +7989,20 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 33987,
-        "end_line": 34062,
+        "start_line": 34389,
+        "end_line": 34464,
         "name": "an_empty_accounting_sdet_author_result_advances_the_build_to_commit_gates_and_integrate"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 34065,
-        "end_line": 34129,
+        "start_line": 34467,
+        "end_line": 34531,
         "name": "an_absent_sdet_author_is_a_clean_no_op_and_the_build_still_integrates"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 34132,
-        "end_line": 34207,
+        "start_line": 34534,
+        "end_line": 34609,
         "name": "a_crashed_sdet_author_spawn_does_not_block_the_build_the_lifecycle_proceeds"
       }
     ],
@@ -8009,14 +8015,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 34400,
-        "end_line": 34405,
+        "start_line": 34802,
+        "end_line": 34807,
         "name": "rejecting"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 34408,
-        "end_line": 34413,
+        "start_line": 34810,
+        "end_line": 34815,
         "name": "always_rejecting"
       }
     ],
@@ -8029,14 +8035,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 34607,
-        "end_line": 34644,
+        "start_line": 35009,
+        "end_line": 35046,
         "name": "a_rule_7_or_8_defect_rejects_then_releases_on_the_revision"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 34647,
-        "end_line": 34698,
+        "start_line": 35049,
+        "end_line": 35100,
         "name": "a_clean_decomposition_approves_and_releases_the_fan_out"
       }
     ],
@@ -8049,20 +8055,20 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 34923,
-        "end_line": 35021,
+        "start_line": 35325,
+        "end_line": 35423,
         "name": "a_resumed_step_holds_the_fan_out_while_the_plan_critique_gate_is_escalated"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 35024,
-        "end_line": 35080,
+        "start_line": 35426,
+        "end_line": 35482,
         "name": "an_approved_gate_releases_planner_proposed_units_not_only_baselines"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 35203,
-        "end_line": 35274,
+        "start_line": 35605,
+        "end_line": 35676,
         "name": "a_resumed_step_holds_the_fan_out_while_the_plan_critique_gate_is_mid_review"
       }
     ],
@@ -8185,8 +8191,8 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7123,
-        "end_line": 7131,
+        "start_line": 7125,
+        "end_line": 7133,
         "name": "looks_error_shaping_matches_error_and_underscore_bounded_err_but_not_an_incidental_substring"
       }
     ],
@@ -9529,33 +9535,27 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7001,
-        "end_line": 7001,
+        "start_line": 7003,
+        "end_line": 7003,
         "name": "\"fn state_of(pid: u32) -> Option<char> {\\n    let stat = std::fs::read_to_string(format!(\\\"/proc/{pid}/stat\\\")).ok()?;\\n    stat.rsplit_once(')')?.1.split_whitespace().next()?.chars().next()\\n}\\n\""
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7006,
-        "end_line": 7006,
+        "start_line": 7008,
+        "end_line": 7008,
         "name": "\"fn starttime_of(pid: u32) -> Option<u64> {\\n    let stat = std::fs::read_to_string(format!(\\\"/proc/{pid}/stat\\\")).ok()?;\\n    stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.parse().ok()\\n}\\n\""
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7011,
-        "end_line": 7011,
+        "start_line": 7013,
+        "end_line": 7013,
         "name": "\"fn ppid_of(pid: u32) -> Option<u32> {\\n    let stat = std::fs::read_to_string(format!(\\\"/proc/{pid}/stat\\\")).ok()?;\\n    stat.rsplit_once(')')?.1.split_whitespace().nth(1)?.parse().ok()\\n}\\n\""
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7102,
-        "end_line": 7102,
+        "start_line": 7104,
+        "end_line": 7104,
         "name": "\"fn a() {\\n    let _ = std::fs::read_to_string(\\\"/proc/1/stat\\\");\\n    let _ = \\\"hello\\\";\\n}\\n\""
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 7105,
-        "end_line": 7105,
-        "name": "\"/proc\""
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -9565,8 +9565,14 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7171,
-        "end_line": 7171,
+        "start_line": 7109,
+        "end_line": 7109,
+        "name": "\"/proc\""
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 7173,
+        "end_line": 7173,
         "name": "\"fn state_of(pid: u32) -> Option<char> {\\n    let s = std::fs::read_to_string(format!(\\\"/proc/{pid}/stat\\\")).ok()?;\\n    s.chars().next()\\n}\\nfn ppid_of(pid: u32) -> Option<u32> {\\n    let s = std::fs::read_to_string(format!(\\\"/proc/{pid}/status\\\")).ok()?;\\n    s.parse().ok()\\n}\\nfn unrelated() -> u32 {\\n    1\\n}\\n\""
       }
     ],
@@ -9645,20 +9651,20 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6993,
-        "end_line": 7019,
+        "start_line": 6995,
+        "end_line": 7021,
         "name": "three_near_but_not_identical_functions_cluster_as_near_with_every_site_and_one_home"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7097,
-        "end_line": 7108,
+        "start_line": 7099,
+        "end_line": 7110,
         "name": "proc_literal_sweep_finds_a_proc_path_string_and_ignores_an_unrelated_one"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7165,
-        "end_line": 7178,
+        "start_line": 7167,
+        "end_line": 7180,
         "name": "proc_stat_or_status_reader_sweep_finds_a_stat_reader_and_a_status_reader_but_not_an_unrelated_fn"
       }
     ],
@@ -10779,32 +10785,32 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6365,
-        "end_line": 6367,
+        "start_line": 6367,
+        "end_line": 6369,
         "name": "impl_self_type_still_handles_a_generic_self_type_with_a_where_clause"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6393,
-        "end_line": 6395,
+        "start_line": 6395,
+        "end_line": 6397,
         "name": "impl_self_type_handles_a_bound_generic_self_type"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6398,
-        "end_line": 6400,
+        "start_line": 6400,
+        "end_line": 6402,
         "name": "impl_self_type_handles_a_trait_impl_on_a_lifetime_generic_self_type"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6403,
-        "end_line": 6408,
+        "start_line": 6405,
+        "end_line": 6410,
         "name": "impl_self_type_handles_a_generic_trait_impl_on_a_generic_self_type"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6411,
-        "end_line": 6416,
+        "start_line": 6413,
+        "end_line": 6418,
         "name": "impl_self_type_handles_a_const_generic_self_type"
       },
       {
@@ -11655,8 +11661,8 @@
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 1552,
-        "end_line": 1606,
+        "start_line": 1579,
+        "end_line": 1633,
         "name": "revert_on_base_aborts_and_errors_on_a_conflicting_revert"
       },
       {
@@ -11809,8 +11815,8 @@
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 470,
-        "end_line": 473,
+        "start_line": 494,
+        "end_line": 497,
         "name": "changed_files"
       }
     ],
@@ -11961,32 +11967,32 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6351,
-        "end_line": 6362,
+        "start_line": 6353,
+        "end_line": 6364,
         "name": "impl_self_type_strips_a_trailing_where_clause_on_a_non_generic_self_type"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6370,
-        "end_line": 6381,
+        "start_line": 6372,
+        "end_line": 6383,
         "name": "impl_self_type_strips_a_leading_dyn_token_on_the_self_type"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6419,
-        "end_line": 6425,
+        "start_line": 6421,
+        "end_line": 6427,
         "name": "strip_trailing_where_clause_is_a_word_boundary_match_not_a_substring_match"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6467,
-        "end_line": 6471,
+        "start_line": 6469,
+        "end_line": 6473,
         "name": "pluralize_functions_uses_singular_only_at_exactly_one"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6761,
-        "end_line": 6771,
+        "start_line": 6763,
+        "end_line": 6773,
         "name": "ident_kind_marker_classifies_by_casing"
       }
     ],
@@ -12065,8 +12071,8 @@
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 1960,
-        "end_line": 1962,
+        "start_line": 1987,
+        "end_line": 1989,
         "name": "read_stream"
       },
       {
@@ -14577,8 +14583,8 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6018,
-        "end_line": 6022,
+        "start_line": 6020,
+        "end_line": 6024,
         "name": "a_trait_method_signature_without_a_body_is_not_recorded"
       }
     ],
@@ -14751,18 +14757,18 @@
   },
   {
     "id": "dup-0329",
-    "classification": "near",
+    "classification": "exact",
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 655,
-        "end_line": 666,
+        "start_line": 682,
+        "end_line": 693,
         "name": "branch_exists"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 675,
-        "end_line": 686,
+        "start_line": 702,
+        "end_line": 713,
         "name": "ref_resolves"
       }
     ],
@@ -14775,14 +14781,14 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 742,
-        "end_line": 745,
+        "start_line": 769,
+        "end_line": 772,
         "name": "scratch_root_from_env"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 749,
-        "end_line": 752,
+        "start_line": 776,
+        "end_line": 779,
         "name": "scratch_root_path_from_env"
       }
     ],
@@ -14795,14 +14801,14 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 1333,
-        "end_line": 1340,
+        "start_line": 1360,
+        "end_line": 1367,
         "name": "head_sha_of"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 1355,
-        "end_line": 1362,
+        "start_line": 1382,
+        "end_line": 1389,
         "name": "tree_sha_of"
       }
     ],
@@ -14815,20 +14821,20 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 1424,
-        "end_line": 1444,
+        "start_line": 1451,
+        "end_line": 1471,
         "name": "integrate_lands_work_in_the_repo"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 1653,
-        "end_line": 1686,
+        "start_line": 1680,
+        "end_line": 1713,
         "name": "commit_cleans_the_tree_so_a_gate_sees_the_committed_artifact"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 1731,
-        "end_line": 1754,
+        "start_line": 1758,
+        "end_line": 1781,
         "name": "integrate_lands_a_pre_committed_artifact_unchanged"
       }
     ],
@@ -14841,14 +14847,14 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 1757,
-        "end_line": 1784,
+        "start_line": 1784,
+        "end_line": 1811,
         "name": "changed_files_reports_only_the_rename_destination"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 3406,
-        "end_line": 3418,
+        "start_line": 3503,
+        "end_line": 3515,
         "name": "changed_files_unquotes_paths_with_spaces"
       }
     ],
@@ -14861,14 +14867,14 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 1875,
-        "end_line": 1912,
+        "start_line": 1902,
+        "end_line": 1939,
         "name": "sweep_terminal_removes_merged_worktrees_and_keeps_inflight_ones"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2385,
-        "end_line": 2432,
+        "start_line": 2412,
+        "end_line": 2459,
         "name": "sweep_terminal_reclaims_a_crash_left_terminal_units_per_unit_build_cache"
       }
     ],
@@ -14881,14 +14887,14 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 2178,
-        "end_line": 2182,
+        "start_line": 2205,
+        "end_line": 2209,
         "name": "requested_and_answered"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2186,
-        "end_line": 2190,
+        "start_line": 2213,
+        "end_line": 2217,
         "name": "requested_and_hung"
       }
     ],
@@ -14901,26 +14907,26 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 2193,
-        "end_line": 2225,
+        "start_line": 2220,
+        "end_line": 2252,
         "name": "sweep_terminal_spares_a_merged_branch_whose_units_latest_spawn_is_still_in_flight"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2228,
-        "end_line": 2253,
+        "start_line": 2255,
+        "end_line": 2280,
         "name": "sweep_terminal_reclaims_a_merged_branch_once_its_latest_spawn_has_a_real_result"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2256,
-        "end_line": 2279,
+        "start_line": 2283,
+        "end_line": 2306,
         "name": "sweep_terminal_reclaims_a_merged_branch_whose_latest_spawn_is_hung"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2282,
-        "end_line": 2304,
+        "start_line": 2309,
+        "end_line": 2331,
         "name": "sweep_terminal_reclaims_a_merged_branch_with_no_spawn_recorded_at_all_unchanged"
       }
     ],
@@ -14933,14 +14939,14 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 2307,
-        "end_line": 2346,
+        "start_line": 2334,
+        "end_line": 2373,
         "name": "sweep_terminal_prints_evidence_for_a_kept_decision_but_not_for_a_removed_no_spawn_one"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2349,
-        "end_line": 2382,
+        "start_line": 2376,
+        "end_line": 2409,
         "name": "sweep_terminal_prints_evidence_for_a_removed_terminal_spawn_decision"
       }
     ],
@@ -14953,20 +14959,20 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 2504,
-        "end_line": 2545,
+        "start_line": 2531,
+        "end_line": 2572,
         "name": "worktree_remove_reclaims_the_sibling_per_unit_cache"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2548,
-        "end_line": 2583,
+        "start_line": 2575,
+        "end_line": 2610,
         "name": "worktree_remove_also_reclaims_the_store_fence_sibling"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2603,
-        "end_line": 2632,
+        "start_line": 2630,
+        "end_line": 2659,
         "name": "worktree_remove_also_reclaims_a_review_worktrees_store_fence_sibling"
       }
     ],
@@ -14979,14 +14985,14 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 2586,
-        "end_line": 2600,
+        "start_line": 2613,
+        "end_line": 2627,
         "name": "review_fence_sibling_maps_a_review_worktree_to_its_fence_sibling_and_ignores_the_rest"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2914,
-        "end_line": 2927,
+        "start_line": 2941,
+        "end_line": 2954,
         "name": "unit_cache_sibling_maps_a_unit_worktree_to_its_cache_and_ignores_the_rest"
       }
     ],
@@ -14999,14 +15005,14 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 2643,
-        "end_line": 2704,
+        "start_line": 2670,
+        "end_line": 2731,
         "name": "reclaim_worktree_on_branch_deregisters_the_lingering_worktree_reclaims_its_cache_and_frees_the_branch"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2861,
-        "end_line": 2911,
+        "start_line": 2888,
+        "end_line": 2938,
         "name": "reclaim_worktree_on_branch_prunes_a_stale_registration_whose_dir_was_deleted_and_frees_the_branch"
       }
     ],
@@ -15019,20 +15025,20 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 3507,
-        "end_line": 3583,
+        "start_line": 3604,
+        "end_line": 3680,
         "name": "create_self_heals_a_corrupt_worktree_admin_entry_and_spares_healthy_ones"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 3586,
-        "end_line": 3657,
+        "start_line": 3683,
+        "end_line": 3754,
         "name": "create_heals_a_zero_length_gitdir_marker_the_commondir_case_leaves_untested"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 3660,
-        "end_line": 3723,
+        "start_line": 3757,
+        "end_line": 3820,
         "name": "create_heals_a_fully_missing_marker_not_just_a_truncated_one"
       }
     ],
@@ -20937,8 +20943,8 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9118,
-        "end_line": 9138,
+        "start_line": 9120,
+        "end_line": 9140,
         "name": "the_real_tree_disposition_split_matches_this_criterions_research"
       }
     ],
@@ -23433,8 +23439,8 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5840,
-        "end_line": 5844,
+        "start_line": 5842,
+        "end_line": 5846,
         "name": "dead_code_to_json"
       }
     ],
@@ -23499,14 +23505,14 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5900,
-        "end_line": 5909,
+        "start_line": 5902,
+        "end_line": 5911,
         "name": "a_simple_free_function_is_found_with_its_line_span"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6140,
-        "end_line": 6146,
+        "start_line": 6142,
+        "end_line": 6148,
         "name": "production_functions_before_a_cfg_test_mod_are_not_flagged_test"
       }
     ],
@@ -23519,68 +23525,68 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5930,
-        "end_line": 5935,
+        "start_line": 5932,
+        "end_line": 5937,
         "name": "fnv1a_is_not_mistaken_for_the_fn_keyword"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5942,
-        "end_line": 5947,
+        "start_line": 5944,
+        "end_line": 5949,
         "name": "a_brace_inside_a_line_comment_is_ignored"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5950,
-        "end_line": 5955,
+        "start_line": 5952,
+        "end_line": 5957,
         "name": "a_brace_inside_a_block_comment_is_ignored"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5958,
-        "end_line": 5963,
+        "start_line": 5960,
+        "end_line": 5965,
         "name": "nested_block_comments_are_handled"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5966,
-        "end_line": 5971,
+        "start_line": 5968,
+        "end_line": 5973,
         "name": "a_brace_inside_a_string_literal_is_ignored"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5974,
-        "end_line": 5979,
+        "start_line": 5976,
+        "end_line": 5981,
         "name": "a_brace_inside_a_raw_string_with_hashes_is_ignored"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5982,
-        "end_line": 5987,
+        "start_line": 5984,
+        "end_line": 5989,
         "name": "a_brace_inside_a_byte_string_is_ignored"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5990,
-        "end_line": 5995,
+        "start_line": 5992,
+        "end_line": 5997,
         "name": "a_brace_char_literal_is_not_mistaken_for_real_braces"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5998,
-        "end_line": 6003,
+        "start_line": 6000,
+        "end_line": 6005,
         "name": "a_lifetime_is_not_mistaken_for_a_char_literal"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6006,
-        "end_line": 6011,
+        "start_line": 6008,
+        "end_line": 6013,
         "name": "an_escaped_quote_char_literal_does_not_confuse_the_scanner"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6025,
-        "end_line": 6030,
+        "start_line": 6027,
+        "end_line": 6032,
         "name": "a_trait_default_method_with_a_body_is_recorded"
       }
     ],
@@ -23593,32 +23599,32 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6054,
-        "end_line": 6060,
+        "start_line": 6056,
+        "end_line": 6062,
         "name": "a_method_inside_an_impl_block_carries_its_header"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6063,
-        "end_line": 6071,
+        "start_line": 6065,
+        "end_line": 6073,
         "name": "a_trait_impl_header_keeps_the_trait_for_type_text"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6074,
-        "end_line": 6086,
+        "start_line": 6076,
+        "end_line": 6088,
         "name": "a_method_inside_an_impl_nested_in_a_cfg_test_mod_is_flagged_test"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6089,
-        "end_line": 6098,
+        "start_line": 6091,
+        "end_line": 6100,
         "name": "a_cfg_test_attribute_directly_on_an_impl_block_is_flagged_test"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6220,
-        "end_line": 6228,
+        "start_line": 6222,
+        "end_line": 6230,
         "name": "a_cfg_test_pub_fn_is_still_flagged_test_pub_survives_between_attribute_and_keyword"
       }
     ],
@@ -23631,14 +23637,14 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6111,
-        "end_line": 6117,
+        "start_line": 6113,
+        "end_line": 6119,
         "name": "a_function_directly_in_a_cfg_test_mod_is_flagged_test"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6120,
-        "end_line": 6129,
+        "start_line": 6122,
+        "end_line": 6131,
         "name": "a_nested_named_test_submodule_is_still_flagged_test_and_named"
       }
     ],
@@ -23651,20 +23657,20 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6178,
-        "end_line": 6181,
+        "start_line": 6180,
+        "end_line": 6183,
         "name": "a_free_function_with_no_pub_keyword_is_private"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6191,
-        "end_line": 6194,
+        "start_line": 6193,
+        "end_line": 6196,
         "name": "a_pub_crate_function_keeps_the_qualifier"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6197,
-        "end_line": 6200,
+        "start_line": 6199,
+        "end_line": 6202,
         "name": "a_pub_super_function_keeps_the_qualifier"
       }
     ],
@@ -23677,14 +23683,14 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6240,
-        "end_line": 6244,
+        "start_line": 6242,
+        "end_line": 6246,
         "name": "a_cfg_test_out_of_line_mod_is_flagged_test"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6261,
-        "end_line": 6266,
+        "start_line": 6263,
+        "end_line": 6268,
         "name": "an_out_of_line_mod_inherits_test_ness_from_an_enclosing_cfg_test_mod"
       }
     ],
@@ -23697,20 +23703,20 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6330,
-        "end_line": 6336,
+        "start_line": 6332,
+        "end_line": 6338,
         "name": "a_method_is_classified_under_its_impl_self_type"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6339,
-        "end_line": 6348,
+        "start_line": 6341,
+        "end_line": 6350,
         "name": "a_method_on_a_generic_impl_block_strips_the_impls_own_leading_generics"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6428,
-        "end_line": 6433,
+        "start_line": 6430,
+        "end_line": 6435,
         "name": "a_trait_impl_method_is_classified_under_the_implementing_type_not_the_trait"
       }
     ],
@@ -23723,20 +23729,20 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6548,
-        "end_line": 6554,
+        "start_line": 6550,
+        "end_line": 6556,
         "name": "replace_section_1_only_touches_section_1_leaving_later_sections_intact"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7547,
-        "end_line": 7554,
+        "start_line": 7549,
+        "end_line": 7556,
         "name": "replace_section_2_only_touches_section_2_leaving_neighbors_intact"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7934,
-        "end_line": 7951,
+        "start_line": 7936,
+        "end_line": 7953,
         "name": "replace_section_6_only_touches_that_span_leaving_earlier_sections_intact"
       }
     ],
@@ -23749,20 +23755,20 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6598,
-        "end_line": 6620,
+        "start_line": 6600,
+        "end_line": 6622,
         "name": "responsibility_map_json_matches_the_tree_or_is_rewritten"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7690,
-        "end_line": 7712,
+        "start_line": 7692,
+        "end_line": 7714,
         "name": "duplication_catalog_json_matches_the_tree_or_is_rewritten"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9040,
-        "end_line": 9062,
+        "start_line": 9042,
+        "end_line": 9064,
         "name": "dead_code_json_matches_the_tree_or_is_rewritten"
       }
     ],
@@ -23775,14 +23781,14 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6715,
-        "end_line": 6723,
+        "start_line": 6717,
+        "end_line": 6725,
         "name": "string_and_raw_string_literals_are_one_lit_token_each"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6735,
-        "end_line": 6743,
+        "start_line": 6737,
+        "end_line": 6745,
         "name": "number_literals_including_a_fraction_are_lit_tokens"
       }
     ],
@@ -23795,14 +23801,14 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6993,
-        "end_line": 7019,
+        "start_line": 6995,
+        "end_line": 7021,
         "name": "three_near_but_not_identical_functions_cluster_as_near_with_every_site_and_one_home"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7022,
-        "end_line": 7040,
+        "start_line": 7024,
+        "end_line": 7042,
         "name": "cluster_ids_are_assigned_after_deterministic_sort_and_sites_are_sorted_within_a_cluster"
       }
     ],
@@ -23815,14 +23821,14 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7165,
-        "end_line": 7178,
+        "start_line": 7167,
+        "end_line": 7180,
         "name": "proc_stat_or_status_reader_sweep_finds_a_stat_reader_and_a_status_reader_but_not_an_unrelated_fn"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7425,
-        "end_line": 7442,
+        "start_line": 7427,
+        "end_line": 7444,
         "name": "bespoke_lexer_sweep_finds_the_named_trio_but_not_an_unrelated_fn"
       }
     ],
@@ -23835,14 +23841,14 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7185,
-        "end_line": 7198,
+        "start_line": 7187,
+        "end_line": 7200,
         "name": "the_dash_reap_proc_stat_pair_the_spec_names_lands_in_one_real_cluster"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7297,
-        "end_line": 7312,
+        "start_line": 7299,
+        "end_line": 7314,
         "name": "the_two_exploration_graph_fixture_builders_the_adversarial_sample_found_land_in_one_real_cluster"
       }
     ],
@@ -23855,14 +23861,14 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7201,
-        "end_line": 7208,
+        "start_line": 7203,
+        "end_line": 7210,
         "name": "constructs_own_type_literal_matches_self_and_the_named_type_but_not_an_unrelated_call"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7211,
-        "end_line": 7219,
+        "start_line": 7213,
+        "end_line": 7221,
         "name": "constructs_own_type_literal_matches_shorthand_field_init_too"
       }
     ],
@@ -23875,14 +23881,14 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7245,
-        "end_line": 7263,
+        "start_line": 7247,
+        "end_line": 7265,
         "name": "the_spawn_result_constructor_triple_the_adversarial_sample_found_lands_in_one_real_cluster"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7449,
-        "end_line": 7466,
+        "start_line": 7451,
+        "end_line": 7468,
         "name": "the_bespoke_lexer_and_canonical_extractor_the_lens_routed_land_in_one_real_cluster"
       }
     ],
@@ -23895,20 +23901,20 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7315,
-        "end_line": 7343,
+        "start_line": 7317,
+        "end_line": 7345,
         "name": "same_named_helper_sweep_excludes_required_trait_impl_methods_across_adapters"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7346,
-        "end_line": 7375,
+        "start_line": 7348,
+        "end_line": 7377,
         "name": "same_named_helper_sweep_excludes_a_trait_default_method_and_its_override"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7378,
-        "end_line": 7402,
+        "start_line": 7380,
+        "end_line": 7404,
         "name": "same_named_helper_sweep_still_catches_two_inherent_impls_sharing_a_method_name"
       }
     ],
@@ -23921,14 +23927,14 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7558,
-        "end_line": 7563,
+        "start_line": 7560,
+        "end_line": 7565,
         "name": "replace_section_2_panics_loudly_when_the_heading_is_entirely_absent"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7964,
-        "end_line": 7969,
+        "start_line": 7966,
+        "end_line": 7971,
         "name": "replace_section_6_panics_loudly_when_the_heading_is_entirely_absent"
       }
     ],
@@ -23941,14 +23947,14 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7570,
-        "end_line": 7574,
+        "start_line": 7572,
+        "end_line": 7576,
         "name": "sample_indices_is_deterministic_for_a_fixed_seed"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7600,
-        "end_line": 7604,
+        "start_line": 7602,
+        "end_line": 7606,
         "name": "different_seeds_produce_different_draws"
       }
     ],
@@ -23961,20 +23967,20 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7719,
-        "end_line": 7756,
+        "start_line": 7721,
+        "end_line": 7758,
         "name": "report_section_2_matches_the_tree_or_is_rewritten"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7835,
-        "end_line": 7881,
+        "start_line": 7837,
+        "end_line": 7883,
         "name": "report_sections_3_through_5_match_the_tree_or_are_rewritten"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8049,
-        "end_line": 8082,
+        "start_line": 8051,
+        "end_line": 8084,
         "name": "report_section_6_matches_the_tree_or_is_rewritten"
       }
     ],
@@ -23987,14 +23993,14 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7764,
-        "end_line": 7788,
+        "start_line": 7766,
+        "end_line": 7790,
         "name": "replace_sections_3_to_5_only_touches_that_span_leaving_neighbors_intact"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7791,
-        "end_line": 7808,
+        "start_line": 7793,
+        "end_line": 7810,
         "name": "replace_sections_3_to_5_falls_back_to_end_of_string_when_no_section_6_heading_exists"
       }
     ],
@@ -24007,32 +24013,32 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8093,
-        "end_line": 8103,
+        "start_line": 8095,
+        "end_line": 8105,
         "name": "resolves_a_same_name_dot_rs_target"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8106,
-        "end_line": 8119,
+        "start_line": 8108,
+        "end_line": 8121,
         "name": "resolves_a_name_slash_mod_rs_target_when_the_flat_file_does_not_exist"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8122,
-        "end_line": 8138,
+        "start_line": 8124,
+        "end_line": 8140,
         "name": "resolves_a_path_override_target"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8141,
-        "end_line": 8159,
+        "start_line": 8143,
+        "end_line": 8161,
         "name": "the_real_eventstore_mod_rs_shape_resolves_contract_rs_as_test"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8162,
-        "end_line": 8183,
+        "start_line": 8164,
+        "end_line": 8185,
         "name": "transitive_closure_pulls_in_a_second_hop_regardless_of_its_own_local_attribute"
       }
     ],
@@ -24045,26 +24051,26 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8268,
-        "end_line": 8279,
+        "start_line": 8270,
+        "end_line": 8281,
         "name": "resolvers_agree_on_a_same_name_dot_rs_target"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8283,
-        "end_line": 8294,
+        "start_line": 8285,
+        "end_line": 8296,
         "name": "resolvers_agree_on_a_path_override_target"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8298,
-        "end_line": 8314,
+        "start_line": 8300,
+        "end_line": 8316,
         "name": "resolvers_agree_on_a_transitive_second_hop"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8318,
-        "end_line": 8326,
+        "start_line": 8320,
+        "end_line": 8328,
         "name": "resolvers_agree_on_a_non_test_out_of_line_mod"
       }
     ],
@@ -24077,110 +24083,110 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8351,
-        "end_line": 8365,
+        "start_line": 8353,
+        "end_line": 8367,
         "name": "a_fn_referenced_only_by_its_own_test_is_listed"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8368,
-        "end_line": 8382,
+        "start_line": 8370,
+        "end_line": 8384,
         "name": "a_fn_referenced_from_a_production_caller_does_not_appear"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8431,
-        "end_line": 8443,
+        "start_line": 8433,
+        "end_line": 8445,
         "name": "a_path_qualified_reference_with_no_call_parens_still_counts"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8446,
-        "end_line": 8456,
+        "start_line": 8448,
+        "end_line": 8458,
         "name": "a_mention_inside_a_comment_does_not_count_as_a_reference"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8468,
-        "end_line": 8480,
+        "start_line": 8470,
+        "end_line": 8482,
         "name": "recursion_through_the_fns_own_body_still_counts_as_a_reference"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8483,
-        "end_line": 8500,
+        "start_line": 8485,
+        "end_line": 8502,
         "name": "a_whole_file_test_via_out_of_line_resolution_is_never_a_candidate"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8520,
-        "end_line": 8539,
+        "start_line": 8522,
+        "end_line": 8541,
         "name": "a_named_use_import_at_mod_test_top_level_does_not_leak_as_a_production_reference"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8542,
-        "end_line": 8557,
+        "start_line": 8544,
+        "end_line": 8559,
         "name": "a_serde_default_attribute_string_names_a_real_production_reference"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8744,
-        "end_line": 8757,
+        "start_line": 8746,
+        "end_line": 8759,
         "name": "a_dot_call_through_an_inherent_method_on_any_receiver_counts_receiver_agnostically"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8778,
-        "end_line": 8793,
+        "start_line": 8780,
+        "end_line": 8795,
         "name": "an_inherent_associated_function_is_matched_via_path_shape_not_dot_shape"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8868,
-        "end_line": 8882,
+        "start_line": 8870,
+        "end_line": 8884,
         "name": "a_fn_passed_by_value_as_a_bare_call_argument_counts_as_a_reference"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8899,
-        "end_line": 8912,
+        "start_line": 8901,
+        "end_line": 8914,
         "name": "a_fn_pointer_used_as_a_struct_literal_field_value_counts_as_a_reference"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8915,
-        "end_line": 8930,
+        "start_line": 8917,
+        "end_line": 8932,
         "name": "a_ufcs_qualified_value_passed_to_a_combinator_counts_as_a_reference_for_a_method"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8933,
-        "end_line": 8943,
+        "start_line": 8935,
+        "end_line": 8945,
         "name": "a_fn_named_by_a_let_initializer_counts_as_a_reference"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8946,
-        "end_line": 8957,
+        "start_line": 8948,
+        "end_line": 8959,
         "name": "a_fn_named_as_an_array_element_counts_as_a_reference"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8960,
-        "end_line": 8971,
+        "start_line": 8962,
+        "end_line": 8973,
         "name": "a_fn_named_in_a_match_arm_value_counts_as_a_reference"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8974,
-        "end_line": 8984,
+        "start_line": 8976,
+        "end_line": 8986,
         "name": "a_fn_named_in_a_return_expression_counts_as_a_reference"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8987,
-        "end_line": 9000,
+        "start_line": 8989,
+        "end_line": 9002,
         "name": "a_fn_named_as_a_generic_argument_to_another_type_counts_as_a_reference"
       }
     ],
@@ -24193,26 +24199,26 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8503,
-        "end_line": 8511,
+        "start_line": 8505,
+        "end_line": 8513,
         "name": "main_is_exempted_as_an_entry_point"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8560,
-        "end_line": 8576,
+        "start_line": 8562,
+        "end_line": 8578,
         "name": "an_attribute_reference_to_an_ambiguous_shared_name_credits_every_sharer"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8713,
-        "end_line": 8728,
+        "start_line": 8715,
+        "end_line": 8730,
         "name": "a_method_name_shared_by_two_impls_with_a_call_site_excludes_both"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8760,
-        "end_line": 8775,
+        "start_line": 8762,
+        "end_line": 8777,
         "name": "a_trait_impl_method_is_exempted_even_with_zero_textual_call_sites"
       }
     ],
@@ -24225,50 +24231,50 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8579,
-        "end_line": 8612,
+        "start_line": 8581,
+        "end_line": 8614,
         "name": "a_free_fn_bare_name_collision_where_only_one_sharer_has_a_real_caller_flags_the_other"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8615,
-        "end_line": 8637,
+        "start_line": 8617,
+        "end_line": 8639,
         "name": "a_bare_call_in_the_same_file_as_its_definition_attributes_locally_with_no_import_needed"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8640,
-        "end_line": 8666,
+        "start_line": 8642,
+        "end_line": 8668,
         "name": "a_bare_unqualified_call_from_a_third_unrelated_file_credits_neither_sharer"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8669,
-        "end_line": 8695,
+        "start_line": 8671,
+        "end_line": 8697,
         "name": "a_bare_call_resolved_through_a_use_import_attributes_to_the_imported_definition"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8698,
-        "end_line": 8710,
+        "start_line": 8700,
+        "end_line": 8712,
         "name": "a_method_name_shared_by_two_impls_with_zero_calls_is_flagged_ambiguous"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8796,
-        "end_line": 8807,
+        "start_line": 8798,
+        "end_line": 8809,
         "name": "an_inherent_associated_fn_name_shared_by_two_types_with_zero_calls_is_ambiguous"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8810,
-        "end_line": 8830,
+        "start_line": 8812,
+        "end_line": 8832,
         "name": "a_qualified_call_site_attributes_only_to_the_sharer_it_names"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8833,
-        "end_line": 8865,
+        "start_line": 8835,
+        "end_line": 8867,
         "name": "a_qualified_call_site_on_an_impls_own_generic_self_type_attributes_correctly"
       }
     ],

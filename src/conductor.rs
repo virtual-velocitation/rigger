@@ -3433,6 +3433,15 @@ impl RunCtx<'_> {
         // first recorded unit event and the alias is known at spawn time, so it names the
         // model asked for even before any result. The resolved id is not known yet - it
         // arrives on the spawn's later status events once the worker reports it.
+        //
+        // ADOPTION KEYS ON THE CRITERION (spec 88, decided): resolved BEFORE the emit
+        // below, so a genuinely fresh unit's FIRST (and only, `emit_keyed_meta` is
+        // replay-keyed) UnitStarted records the adoption in the SAME event as its own
+        // branch/agent - never a second event, and never a window where the emitted
+        // record and the actual worktree seed could disagree. Computed unconditionally
+        // on every call (a cheap full-log fold), but its git side effect only ever
+        // mutates once - see [`Self::adopt_prior_criterion_branch`]'s own doc comment.
+        let adopted_from = self.adopt_prior_criterion_branch(st)?;
         self.emit_keyed_meta(
             &format!("{name}/started"),
             ledger::TYPE_UNIT_STARTED,
@@ -3441,9 +3450,13 @@ impl RunCtx<'_> {
                 "unit": name,
                 "spec_criterion": st.coverage,
                 "criterion": st.coverage,
+                "criterion_id": st.criterion_id,
                 "agent": st.agent,
                 "needs": st.needs,
                 "branch": unit_branch(name),
+                "adopted_from": adopted_from
+                    .as_ref()
+                    .map(|(unit, tip)| json!({"unit": unit, "tip": tip})),
             }),
             // UnitStarted is a once-per-unit checkpoint, so it names the model the unit's
             // FIRST attempt asks for - rung 0 of any cascade. The per-attempt rungs a
@@ -8085,6 +8098,52 @@ impl RunCtx<'_> {
             .unwrap_or(true)
     }
 
+    /// ADOPTION KEYS ON THE CRITERION (spec 88, decided): when this unit's own durable
+    /// branch ([`unit_branch`]) does not exist yet, look across the WHOLE event log for
+    /// a prior unit ([`prior_criterion_unit`]) that served the SAME criterion
+    /// (`st.criterion_id`) and never reached `UnitIntegrated` - regardless of the
+    /// planner's slug, so a fresh run's differently-named unit still continues a prior
+    /// run's abandoned attempt instead of discarding it. Found: seed THIS unit's branch
+    /// as a NEW ref at that prior branch's CURRENT tip
+    /// ([`Worktree::create_branch_at`]) - a new ref, never a rename, so the prior
+    /// branch name stays resolvable - and [`Self::stage_worktree`]'s ordinary
+    /// `Worktree::create` call (which the caller runs right after this) then reuses it
+    /// exactly as it reuses this unit's OWN prior work on any other resume, via its
+    /// existing adopt-by-path-lookup machinery.
+    ///
+    /// Returns `Some((prior_unit_id, tip_sha))` when adoption happened THIS call, for
+    /// the caller to stamp on `UnitStarted` as `adopted_from`. Returns `None` for: a
+    /// repo-less run; a unit that serves no criterion at all (`st.criterion_id` empty -
+    /// the plan/plan-critique infrastructure stages); no prior un-integrated attempt for
+    /// this criterion; a prior candidate whose own branch is already gone (nothing to
+    /// adopt - the unit simply starts fresh, exactly as before this feature existed);
+    /// or - the common repeat case - a unit whose branch ALREADY exists (a resumed step
+    /// of THIS run, or an earlier call this same process that already adopted): the git
+    /// side effect is itself guarded on non-existence, so a later call is a safe,
+    /// idempotent no-op.
+    fn adopt_prior_criterion_branch(&self, st: &Stage) -> Result<Option<(String, String)>, Error> {
+        if self.deps.repo.is_empty() || st.criterion_id.is_empty() {
+            return Ok(None);
+        }
+        let branch = unit_branch(&st.name);
+        if worktree::branch_exists(&self.deps.repo, &branch) {
+            return Ok(None);
+        }
+        let events = self.deps.store.read_stream(STREAM, 0, Direction::Forward)?;
+        let Some(prior) = prior_criterion_unit(&events, &st.criterion_id, &st.name) else {
+            return Ok(None);
+        };
+        let prior_branch = unit_branch(&prior);
+        if !worktree::branch_exists(&self.deps.repo, &prior_branch) {
+            // The prior unit's durable branch is gone (manually pruned, or the prior
+            // process never actually committed one despite starting) - nothing to
+            // adopt; the unit starts fresh exactly as before this feature existed.
+            return Ok(None);
+        }
+        let tip = Worktree::create_branch_at(&self.deps.repo, &branch, &prior_branch)?;
+        Ok(Some((prior, tip)))
+    }
+
     /// Decide how a unit ENTERS its lifecycle on this run (resume-continuity).
     ///
     /// A unit whose deterministic branch carries committed work AND whose last
@@ -9717,6 +9776,65 @@ fn unit_worktree_dir(scratch_root: &str, unit_id: &str) -> String {
     )
 }
 
+/// A minimal, local decode shape for the ONE field [`prior_criterion_unit`] needs off a
+/// [`ledger::TYPE_UNIT_STARTED`] event - mirroring [`UnitProposed`]'s own local shape
+/// rather than depending on `ledger`'s private fold struct. `#[serde(default)]` on
+/// `criterion_id` so a `UnitStarted` predating this feature (spec 88) decodes with an
+/// empty id rather than erroring, and an empty id never matches (guarded at the call
+/// site) - a legacy unit is simply never an adoption candidate.
+#[derive(Deserialize)]
+struct StartedCriterionProbe {
+    id: String,
+    #[serde(default)]
+    criterion_id: String,
+}
+
+/// The MOST RECENT prior unit (any run, any id) that served `criterion_id` and never
+/// reached [`ledger::TYPE_UNIT_INTEGRATED`] (spec 88, ADOPTION KEYS ON THE CRITERION -
+/// decided, and its tie-break: two prior units sharing a criterion, a replanned run,
+/// resolve to the most recent tip).
+///
+/// A single forward fold over `events` in LOG order (deliberately the WHOLE stream, not
+/// [`crate::run::current_run`] - a prior run's `UnitStarted` lives BEFORE the current
+/// run's boundary by construction, and that is exactly the history this looks for):
+/// every `UnitStarted` whose OWN `criterion_id` matches becomes the new leading
+/// candidate, so the LAST one walked (the most recent) is what survives; every
+/// `UnitIntegrated` id seen along the way is recorded. The final candidate is returned
+/// only when it is NOT in that integrated set.
+///
+/// This deliberately does NOT re-search for an OLDER non-integrated unit when the most
+/// recent one for this criterion already integrated: a criterion whose latest attempt
+/// landed is satisfied on the base, and adopting an older, abandoned sibling's stale,
+/// superseded work back over it would be actively wrong, not a fallback rescue.
+///
+/// `this_unit` is excluded so a unit's own `UnitStarted` (already recorded, on a resumed
+/// step of the SAME run) is never read as a prior unit to adopt from; an empty
+/// `criterion_id` never matches anything (the plan/plan-critique infrastructure stages,
+/// and any unit whose own criterion is unset, serve no criterion and so adopt nothing).
+fn prior_criterion_unit(events: &[Event], criterion_id: &str, this_unit: &str) -> Option<String> {
+    if criterion_id.is_empty() {
+        return None;
+    }
+    let mut candidate: Option<String> = None;
+    let mut integrated: HashSet<String> = HashSet::new();
+    for e in events {
+        if e.type_ == ledger::TYPE_UNIT_STARTED {
+            if let Ok(u) = serde_json::from_slice::<StartedCriterionProbe>(&e.data) {
+                if !u.id.is_empty() && u.id != this_unit && u.criterion_id == criterion_id {
+                    candidate = Some(u.id);
+                }
+            }
+        } else if e.type_ == ledger::TYPE_UNIT_INTEGRATED {
+            if let Ok(u) = serde_json::from_slice::<StartedCriterionProbe>(&e.data) {
+                if !u.id.is_empty() {
+                    integrated.insert(u.id);
+                }
+            }
+        }
+    }
+    candidate.filter(|c| !integrated.contains(c))
+}
+
 /// The DETERMINISTIC dir for a STANDALONE review stage's throwaway worktree (spec 06):
 /// `<scratch-root>/rigger-review-<stage-slug>-<attempt>`, derived from the stage id and
 /// the review attempt, NO per-process UUID. A resumed review step recomputes the same path
@@ -10466,6 +10584,290 @@ mod tests {
             recorded_gate_outcome(&[skip, artifact], "u3"),
             None,
             "a skip and an artifact verdict are not the unit's own gate run"
+        );
+    }
+
+    /// A minimal `UnitStarted` event carrying `criterion_id` - the exact additive shape
+    /// `start_and_run_stage` now stamps (spec 88, ADOPTION KEYS ON THE CRITERION).
+    fn started_with_criterion(id: &str, criterion_id: &str) -> Event {
+        Event::new(
+            ledger::TYPE_UNIT_STARTED,
+            serde_json::to_vec(&json!({"id": id, "criterion_id": criterion_id})).unwrap(),
+        )
+    }
+
+    fn integrated(id: &str) -> Event {
+        Event::new(
+            ledger::TYPE_UNIT_INTEGRATED,
+            serde_json::to_vec(&json!({"id": id, "commit": "abc"})).unwrap(),
+        )
+    }
+
+    #[test]
+    fn prior_criterion_unit_finds_a_prior_un_integrated_units_id() {
+        // The base case: one prior unit served this criterion under a DIFFERENT id and
+        // never integrated - it is the candidate regardless of the planner's slug.
+        let events = vec![started_with_criterion("old-slug", "c1-aaa")];
+        assert_eq!(
+            prior_criterion_unit(&events, "c1-aaa", "new-slug"),
+            Some("old-slug".to_string())
+        );
+    }
+
+    #[test]
+    fn prior_criterion_unit_never_returns_an_integrated_units_id_and_never_falls_back_to_an_older_sibling(
+    ) {
+        // Prior units that reached UnitIntegrated are never adopted - their work is on
+        // the base already (spec 88 Design, decided).
+        let mut events = vec![
+            started_with_criterion("solo-attempt", "c1-aaa"),
+            integrated("solo-attempt"),
+        ];
+        assert_eq!(
+            prior_criterion_unit(&events, "c1-aaa", "new-slug"),
+            None,
+            "an integrated prior unit is never adopted"
+        );
+
+        // A second criterion's history, appended to the SAME log: two attempts share
+        // it, and the MORE RECENT one (attempt-2) is the one that integrated. Falling
+        // back to the OLDER, still non-integrated attempt-1 would be wrong, not a
+        // rescue - the criterion's latest state is satisfied on the base, full stop.
+        events.push(started_with_criterion("attempt-1", "c2-bbb"));
+        events.push(started_with_criterion("attempt-2", "c2-bbb"));
+        events.push(integrated("attempt-2"));
+        assert_eq!(
+            prior_criterion_unit(&events, "c2-bbb", "new-slug"),
+            None,
+            "must not fall back to the older non-integrated attempt-1 once attempt-2 (the latest) integrated"
+        );
+    }
+
+    #[test]
+    fn prior_criterion_unit_tie_break_prefers_the_most_recent_of_two_non_integrated_priors() {
+        // The required proof (op-p88-the-three-flagged-walks-are-required-proofs): TWO
+        // prior non-integrated units share the criterion (a replanned run) - the MOST
+        // RECENT tip (by log order) wins, never the older one.
+        let events = vec![
+            started_with_criterion("attempt-1", "c1-aaa"),
+            started_with_criterion("attempt-2", "c1-aaa"),
+        ];
+        assert_eq!(
+            prior_criterion_unit(&events, "c1-aaa", "new-slug"),
+            Some("attempt-2".to_string()),
+            "the more recent of two non-integrated prior attempts wins the tie-break"
+        );
+    }
+
+    #[test]
+    fn prior_criterion_unit_excludes_this_unit_itself() {
+        // A unit's own (already-recorded) UnitStarted must never be read as a "prior"
+        // unit to adopt from.
+        let events = vec![started_with_criterion("new-slug", "c1-aaa")];
+        assert_eq!(prior_criterion_unit(&events, "c1-aaa", "new-slug"), None);
+    }
+
+    #[test]
+    fn prior_criterion_unit_ignores_a_different_criterion_and_an_empty_one() {
+        let events = vec![
+            started_with_criterion("other-crit-unit", "c2-bbb"),
+            // A legacy UnitStarted predating this feature carries no criterion_id at
+            // all - decodes to empty via serde default, and must never match.
+            Event::new(
+                ledger::TYPE_UNIT_STARTED,
+                serde_json::to_vec(&json!({"id": "legacy-unit"})).unwrap(),
+            ),
+        ];
+        assert_eq!(prior_criterion_unit(&events, "c1-aaa", "new-slug"), None);
+        assert_eq!(prior_criterion_unit(&events, "", "new-slug"), None);
+    }
+
+    /// The UnitStarted event for `id`, keyed exactly as [`Self::start_and_run_stage`]
+    /// would find it - used to locate a freshly-run unit's own recorded event out of a
+    /// real store, rather than assuming its position.
+    fn find_unit_started(events: &[Event], id: &str) -> Value {
+        let ev = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_STARTED
+                    && serde_json::from_slice::<Value>(&e.data)
+                        .ok()
+                        .and_then(|v| v.get("id").and_then(|i| i.as_str()).map(str::to_string))
+                        == Some(id.to_string())
+            })
+            .unwrap_or_else(|| panic!("{id}'s UnitStarted is recorded"));
+        serde_json::from_slice(&ev.data).unwrap()
+    }
+
+    #[test]
+    fn a_fresh_units_own_branch_adopts_a_prior_runs_un_integrated_unit_sharing_the_criterion() {
+        // The operator-required proof (op-p88-the-three-flagged-walks-are-required-
+        // proofs): a fresh run's planner proposes a NEW slug ("new-slug") for a
+        // criterion a PRIOR run left un-integrated under a DIFFERENT id ("old-slug").
+        // The new unit must start AT THE PRIOR TIP - carrying its committed work all
+        // the way through integration - with `adopted_from` recorded on its own
+        // UnitStarted.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let store = Store::open(":memory:").unwrap();
+        let cid = "c1-deadbeefcafefeed";
+
+        // Prior run: "old-slug" served this criterion, committed real work on its
+        // durable branch, and the run ended without integrating it (escalated /
+        // abandoned) - modeled here by simply never emitting UnitIntegrated for it.
+        crate::run::start_fresh(&store, &["old campaign".to_string()], "", "", "").unwrap();
+        let prior_branch = unit_branch("old-slug");
+        let prior_dir =
+            std::env::temp_dir().join(format!("rigger-wt-prior-{}", uuid::Uuid::new_v4()));
+        let prior_wt =
+            Worktree::create(&repo_path, prior_dir.to_str().unwrap(), &prior_branch, "").unwrap();
+        std::fs::write(prior_dir.join("prior-work.txt"), "escalated attempt\n").unwrap();
+        prior_wt.commit("rigger: prior attempt checkpoint").unwrap();
+        prior_wt.remove().unwrap();
+        store
+            .append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[started_with_criterion("old-slug", cid)],
+            )
+            .unwrap();
+
+        // Fresh run: a DIFFERENT slug, "new-slug", proposed for the SAME criterion.
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "new-slug".into(),
+            Stage {
+                name: "new-slug".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                criterion_id: cid.into(),
+                ..Default::default()
+            },
+        );
+        let driver = Stub::new();
+        let runner = ExecRunner;
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_eq!(
+            rs.units["new-slug"].status,
+            ledger::Status::Integrated,
+            "the adopted unit still runs its ordinary lifecycle through to integration"
+        );
+        assert!(
+            repo.path().join("prior-work.txt").exists(),
+            "the prior run's committed work rode the adoption all the way into the base"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let body = find_unit_started(&events, "new-slug");
+        assert_eq!(
+            body["adopted_from"]["unit"], "old-slug",
+            "UnitStarted records which prior unit this one adopted: {body}"
+        );
+        assert_eq!(
+            body["adopted_from"]["tip"].as_str().map(str::len),
+            Some(40),
+            "adopted_from.tip is the prior branch's real (40-hex-char) commit sha: {body}"
+        );
+        assert_eq!(
+            body["criterion_id"], cid,
+            "UnitStarted also carries this unit's own criterion_id, the join key"
+        );
+    }
+
+    #[test]
+    fn a_fresh_unit_never_adopts_a_criterion_whose_prior_attempt_already_integrated() {
+        // The other half of the operator-required proof: a prior unit that reached
+        // UnitIntegrated is never adopted - its work is on the base already, so a new
+        // unit for the same criterion starts genuinely fresh (no adopted_from, no
+        // prior-run file in its tree at start).
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let store = Store::open(":memory:").unwrap();
+        let cid = "c1-deadbeefcafefeed";
+
+        crate::run::start_fresh(&store, &["old campaign".to_string()], "", "", "").unwrap();
+        let prior_branch = unit_branch("old-slug");
+        run_git_test(&repo_path, &["branch", &prior_branch]);
+        store
+            .append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[
+                    started_with_criterion("old-slug", cid),
+                    integrated("old-slug"),
+                ],
+            )
+            .unwrap();
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "new-slug".into(),
+            Stage {
+                name: "new-slug".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                criterion_id: cid.into(),
+                ..Default::default()
+            },
+        );
+        let driver = Stub::new();
+        let runner = ExecRunner;
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_eq!(rs.units["new-slug"].status, ledger::Status::Integrated);
+        assert!(
+            !repo.path().join("prior-work.txt").exists(),
+            "an integrated prior unit's un-related state must not leak in either way"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let body = find_unit_started(&events, "new-slug");
+        assert_eq!(
+            body["adopted_from"],
+            Value::Null,
+            "a criterion whose prior attempt already integrated adopts nothing: {body}"
+        );
+    }
+
+    /// A thin `git -C <dir> <args>` runner for a test that only needs the exit code
+    /// (setup convenience, mirroring [`crate::worktree`]'s own private `git` helper
+    /// which is not reachable from here).
+    fn run_git_test(dir: &str, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
         );
     }
 
