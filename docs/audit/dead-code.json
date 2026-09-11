@@ -126,29 +126,6 @@
     ]
   },
   {
-    "name": "new",
-    "file": "src/dash.rs",
-    "line": 1885,
-    "visibility": "private",
-    "ambiguous": true,
-    "ambiguous_with": [
-      "src/budget.rs:57",
-      "src/dash.rs:4917",
-      "src/driver/replay.rs:236",
-      "src/driver/workflow.rs:83",
-      "src/eventstore/mod.rs:99",
-      "src/eventstore/mod.rs:299",
-      "src/eventstore/mod.rs:500",
-      "src/eventstore/namespace.rs:28",
-      "src/failure.rs:218",
-      "src/ledger.rs:393",
-      "src/mcpserver.rs:94",
-      "src/spawn.rs:320",
-      "src/watch.rs:577"
-    ],
-    "test_only_references": []
-  },
-  {
     "name": "neighborhood",
     "file": "src/dash.rs",
     "line": 2815,
@@ -423,29 +400,6 @@
         "line": 2096
       }
     ]
-  },
-  {
-    "name": "new",
-    "file": "src/driver/replay.rs",
-    "line": 236,
-    "visibility": "pub",
-    "ambiguous": true,
-    "ambiguous_with": [
-      "src/budget.rs:57",
-      "src/dash.rs:1885",
-      "src/dash.rs:4917",
-      "src/driver/workflow.rs:83",
-      "src/eventstore/mod.rs:99",
-      "src/eventstore/mod.rs:299",
-      "src/eventstore/mod.rs:500",
-      "src/eventstore/namespace.rs:28",
-      "src/failure.rs:218",
-      "src/ledger.rs:393",
-      "src/mcpserver.rs:94",
-      "src/spawn.rs:320",
-      "src/watch.rs:577"
-    ],
-    "test_only_references": []
   },
   {
     "name": "placements",
@@ -796,29 +750,6 @@
         "line": 2314
       }
     ]
-  },
-  {
-    "name": "new",
-    "file": "src/eventstore/namespace.rs",
-    "line": 28,
-    "visibility": "pub",
-    "ambiguous": true,
-    "ambiguous_with": [
-      "src/budget.rs:57",
-      "src/dash.rs:1885",
-      "src/dash.rs:4917",
-      "src/driver/replay.rs:236",
-      "src/driver/workflow.rs:83",
-      "src/eventstore/mod.rs:99",
-      "src/eventstore/mod.rs:299",
-      "src/eventstore/mod.rs:500",
-      "src/failure.rs:218",
-      "src/ledger.rs:393",
-      "src/mcpserver.rs:94",
-      "src/spawn.rs:320",
-      "src/watch.rs:577"
-    ],
-    "test_only_references": []
   },
   {
     "name": "with_content_identity",
@@ -1300,7 +1231,7 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "line": 7599
+        "line": 7633
       }
     ]
   },
@@ -1483,29 +1414,6 @@
         "line": 715
       }
     ]
-  },
-  {
-    "name": "new",
-    "file": "src/mcpserver.rs",
-    "line": 94,
-    "visibility": "pub",
-    "ambiguous": true,
-    "ambiguous_with": [
-      "src/budget.rs:57",
-      "src/dash.rs:1885",
-      "src/dash.rs:4917",
-      "src/driver/replay.rs:236",
-      "src/driver/workflow.rs:83",
-      "src/eventstore/mod.rs:99",
-      "src/eventstore/mod.rs:299",
-      "src/eventstore/mod.rs:500",
-      "src/eventstore/namespace.rs:28",
-      "src/failure.rs:218",
-      "src/ledger.rs:393",
-      "src/spawn.rs:320",
-      "src/watch.rs:577"
-    ],
-    "test_only_references": []
   },
   {
     "name": "is_snapshot_drift",
