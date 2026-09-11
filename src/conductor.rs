@@ -7706,26 +7706,60 @@ impl RunCtx<'_> {
             .find(|r| r.paths.iter().any(|p| glob_matches(p, path)))
     }
 
-    /// Run a registered regeneration command inside a unit's worktree, with the SAME
-    /// per-unit `CARGO_TARGET_DIR` isolation ([`Self::spawn_env`]) every other cargo
-    /// invocation in this unit's lifecycle gets (spec 65's one build-environment
-    /// authority) - never a bare, unisolated shell-out that could race a concurrent
-    /// unit's build cache.
+    /// Run a registered regeneration command inside a unit's worktree, routed through the
+    /// SAME [`gate::Runner`] port ([`Self::deps`]`.gates`) every OTHER command execution in
+    /// this crate answers to - never a second, un-injected `std::process::Command` shell-out
+    /// (a Clean-Architecture/DI violation on its own: one mutation authority per concern,
+    /// never a parallel implementation reconciled after the fact). Fixed for
+    /// arch-u88c1-regenerate-bypasses-runner-port-and-build-budget: the raw shell-out this
+    /// superseded called neither the injected port nor [`Self::build_budget`], so a
+    /// `regenerate:` rule's command (this diff's own `.rigger/workflow.yml` registers a full
+    /// `cargo test` recompile) ran completely outside `build.max_concurrent`, the one
+    /// authority spec 65 established to bound concurrent cargo/rustc load - letting
+    /// concurrent conflict resolutions across sibling units each stack an unbudgeted build
+    /// alongside every budgeted gate build.
+    ///
+    /// [`gate::Runner::run`] acquires the machine-wide budget slot ITSELF (held for exactly
+    /// its own duration), so this needs no separate `self.build_budget()` call around it -
+    /// threading `&self.build_budget()` straight into the same call this fn already makes is
+    /// the ONE gating point, exactly like every gate-build call site
+    /// ([`Self::run_gates`], [`Self::run_deferred_gates`]). The SAME per-unit `target`/
+    /// `build_cache_dir`/`build_cache_guard`/`store_fence` signals [`Self::run_gates`]
+    /// derives for a gate running in this exact worktree `dir` (Gap 19, spec 70 criterion 3)
+    /// give this command the identical `CARGO_TARGET_DIR` isolation and store fence, so a
+    /// regenerate build never races a concurrent unit's build cache or walks into the live
+    /// event store.
     fn run_regenerate_command(&self, dir: &str, run: &str) -> Result<(), Error> {
+        let target = crate::worktree::unit_cache_sibling(dir).unwrap_or_default();
+        let (build_cache_dir, build_cache_guard) = if target.is_empty() {
+            self.shared_build_cache_paths()
+        } else {
+            (String::new(), String::new())
+        };
+        let store_fence = crate::worktree::review_fence_sibling(dir).unwrap_or_default();
         let build_env = self.build_env()?;
-        let mut cmd = std::process::Command::new("sh");
-        cmd.arg("-c").arg(run).current_dir(dir);
-        for (k, v) in Self::spawn_env(&build_env, dir) {
-            cmd.env(k, v);
-        }
-        let out = cmd
-            .output()
-            .map_err(|e| Error(format!("regenerate command {run:?}: {e}")))?;
-        if !out.status.success() {
+        let budget = self.build_budget();
+        let g = Gate {
+            id: "regenerate".to_string(),
+            run: run.to_string(),
+            kind: gate::Kind::Core,
+            autonomy: gate::Autonomy::Manual,
+            history: Vec::new(),
+        };
+        let res = self.deps.gates.run(
+            &g,
+            dir,
+            &target,
+            &build_cache_dir,
+            &build_cache_guard,
+            &store_fence,
+            &build_env,
+            &budget,
+        );
+        if !res.pass {
             return Err(Error(format!(
-                "regenerate command {run:?} failed:\n{}{}",
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
+                "regenerate command {run:?} failed:\n{}",
+                res.evidence
             )));
         }
         Ok(())
@@ -7780,6 +7814,19 @@ impl RunCtx<'_> {
         conflicting: &[String],
     ) -> Result<ConflictResolution, Error> {
         let mut conflicting = conflicting.to_vec();
+        // Accumulated OUTSIDE the retry loop, never re-derived from the shrinking
+        // `conflicting_paths()` each pass reads. Fixed for
+        // adv-u88c1-mixed-conflict-regen-skipped-on-multiretry:
+        // `Worktree::accept_incoming` stages a regenerable path's placeholder via `git add`,
+        // which removes it from every LATER `conflicting_paths()` read (it is no longer
+        // unmerged in the index) - so a MIXED conflict that needs more than one implementer
+        // retry to converge would otherwise have this loop's own `regenerable` partition come
+        // up empty on the retry that finally clears the tree, and the raw incoming
+        // placeholder content would land on the run branch PERMANENTLY, never actually
+        // regenerated. This `Vec` is the one place a path staged on an earlier retry survives
+        // to be regenerated for real once the tree is conflict-free, regardless of which
+        // retry gets there.
+        let mut staged_regenerable: Vec<String> = Vec::new();
         for retry in 1..=CONFLICT_RESOLVE_BOUND {
             let (regenerable, source): (Vec<String>, Vec<String>) = conflicting
                 .iter()
@@ -7787,8 +7834,12 @@ impl RunCtx<'_> {
                 .partition(|p| self.regenerate_rule_for(p).is_some());
             if source.is_empty() {
                 // Confined to registered regenerable paths: the conductor resolves it
-                // itself. No spawn at all.
-                self.regenerate_conflicted_paths(wt, &st.name, &regenerable)?;
+                // itself, no spawn at all - together with any regenerable path a PRIOR
+                // retry already placeholder-staged (accumulated above) but whose real
+                // regeneration was still pending because THIS retry's own partition no
+                // longer sees it as unmerged.
+                staged_regenerable.extend(regenerable);
+                self.regenerate_conflicted_paths(wt, &st.name, &staged_regenerable)?;
                 return Ok(ConflictResolution::Resolved);
             }
             // A mixed conflict: pre-resolve the regenerable side with a deterministic
@@ -7799,6 +7850,7 @@ impl RunCtx<'_> {
             for p in &regenerable {
                 wt.accept_incoming(p)?;
             }
+            staged_regenerable.extend(regenerable);
             let id = spawn_retry_id(&st.name, ROLE_IMPLEMENTER, attempt, retry);
             if !self.reserve_spawn(&id) {
                 return Err(budget_refused(&st.name, "implementer", &st.agent));
@@ -7850,12 +7902,14 @@ impl RunCtx<'_> {
             wt.ensure_present()?;
             conflicting = wt.conflicting_paths()?;
             if conflicting.is_empty() {
-                if !regenerable.is_empty() {
+                if !staged_regenerable.is_empty() {
                     // The design's "in that order": the implementer's commit resolving
                     // the source conflict has now landed (its placeholder regenerable
-                    // content included); regenerate those paths for REAL, in a
+                    // content included); regenerate EVERY regenerable path accumulated
+                    // across every retry of THIS conflict resolution - not just this
+                    // final retry's own, possibly-empty partition - for REAL, in a
                     // follow-up commit, only now.
-                    self.regenerate_conflicted_paths(wt, &st.name, &regenerable)?;
+                    self.regenerate_conflicted_paths(wt, &st.name, &staged_regenerable)?;
                 }
                 return Ok(ConflictResolution::Resolved);
             }

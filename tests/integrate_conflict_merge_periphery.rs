@@ -35,10 +35,14 @@
 //! `regenerable`/`source` partition with `regenerable` non-empty AND `source` non-empty). Every
 //! one of the implementer's three new conductor tests conflicts on exactly one file, entirely
 //! source or entirely regenerable - the MIXED branch has zero coverage anywhere in the diff.
-//! This drives it and proves the re-park's `blast_radius` names only the source path, the
+//! This drives it across TWO real retries (round 1 review, adv-u88c1-mixed-conflict-regen-
+//! skipped-on-multiretry: a single-retry drive left the multi-retry accumulation bug - the
+//! `regenerable` path staged on retry 1 losing itself out of `resolve_integrate_conflict`'s
+//! per-iteration partition by the time retry 2 finally clears the tree - entirely uncaught) and
+//! proves the re-park's `blast_radius` names only the source path on every retry, the
 //! regenerable path is placeholder-resolved just enough to unblock the commit, and the FINAL
 //! landed content is the real regenerated output (not the incoming placeholder silently
-//! standing in for it forever).
+//! standing in for it forever, which is exactly what a retry-1-then-done drive cannot observe).
 //!
 //! GAP 3, `a_post_merge_red_rollback_resets_the_units_own_branch_not_just_the_repo`. This
 //! diff's OWN new code comment states the failure mode precisely: "its NEXT attempt would
@@ -272,10 +276,16 @@ fn regenerate_config_round_trips_through_the_real_on_disk_loader_with_back_compa
 /// file) and `docs/audit/report.md` (registered regenerable) off the same base - so the loser's
 /// merge conflicts in both files at once. The barrier makes both worktrees branch from the same
 /// base before either writes. The loser's own implementer is re-parked under a `~retry` id to
-/// resolve ONLY the source conflict; this driver simulates that by overwriting `c.rs` with
-/// fixed content and committing on the SAME branch, leaving `docs/audit/report.md` exactly as
-/// the conductor's own placeholder resolution left it (never touched by the driver) so the
-/// final content proves whether real regeneration ran afterward.
+/// resolve ONLY the source conflict - across TWO real retries, not one: `~retry1` deliberately
+/// leaves `c.rs` conflicted and commits nothing (forcing `resolve_integrate_conflict` around for
+/// a SECOND pass, whose OWN `regenerable` partition of the by-then-shrunk `conflicting_paths()`
+/// comes up empty - the exact shape `adv-u88c1-mixed-conflict-regen-skipped-on-multiretry`
+/// found unaccumulated), then `~retry2` resolves it for real by overwriting `c.rs` with fixed
+/// content and committing on the SAME branch. `docs/audit/report.md` is never touched by the
+/// driver at any retry - left exactly as the conductor's own placeholder resolution (staged once,
+/// on retry 1's iteration) left it - so the final content proves whether real regeneration ran
+/// afterward, and specifically whether it still ran when the path that needed it was staged on
+/// an EARLIER retry than the one that finally cleared the tree.
 struct MixedConflictDriver {
     repo: String,
     calls: Mutex<Vec<String>>,
@@ -295,16 +305,36 @@ impl AgentDriver for MixedConflictDriver {
         self.calls.lock().unwrap().push(opts.id.clone());
         let unit = opts.id.split('/').next().unwrap_or_default();
         if opts.id.contains("/implementer#") {
-            if opts.id.contains("~retry") {
+            if opts.id.contains("~retry1") {
                 assert!(
                     !opts.dir.is_empty(),
                     "a conflict re-park must still run in the unit's own worktree"
                 );
                 *self.retry_blast_radius.lock().unwrap() = Some(opts.blast_radius.clone());
-                // Resolve ONLY the source conflict. `docs/audit/report.md` is left exactly as
-                // the conductor's own accept_incoming placeholder left it - untouched here -
-                // so the final landed content distinguishes "the conductor really regenerated
-                // it afterward" from "the placeholder silently stood in forever".
+                // Deliberately does NOT resolve the source conflict and commits nothing -
+                // `c.rs` is left with its conflict markers exactly as `resolve_integrate_
+                // conflict` found it. `docs/audit/report.md`, though, WAS already
+                // placeholder-staged (via `accept_incoming`) before this spawn ran, so it no
+                // longer shows up in `conflicting_paths()` either way. This forces the loop
+                // around for a genuine SECOND retry, whose own `regenerable` partition of the
+                // (by then audit-report-free) `conflicting` list comes up empty - the exact
+                // shape that left the placeholder permanently on the run branch before the
+                // fix: regeneration must still fire on retry 2's clean tree, from the
+                // conductor's OWN accumulated bookkeeping, not from this iteration's local
+                // partition.
+                return Ok(AgentResult::default());
+            }
+            if opts.id.contains("~retry2") {
+                assert!(
+                    !opts.dir.is_empty(),
+                    "a conflict re-park must still run in the unit's own worktree"
+                );
+                *self.retry_blast_radius.lock().unwrap() = Some(opts.blast_radius.clone());
+                // NOW resolve the source conflict for real. `docs/audit/report.md` is still
+                // left exactly as the conductor's own accept_incoming placeholder left it on
+                // retry 1 - untouched here too - so the final landed content distinguishes
+                // "the conductor really regenerated it afterward" from "the placeholder
+                // silently stood in forever".
                 std::fs::write(Path::new(&opts.dir).join("c.rs"), "RESOLVED_C\n").unwrap();
                 // Stage and commit ONLY c.rs, the source path this spawn was told about - NOT
                 // a blanket `-A`. `git commit` refuses outright while ANY path is still
@@ -414,28 +444,36 @@ fn a_mixed_source_and_regenerable_conflict_resolves_the_source_first_then_regene
         "no remediation attempt is charged for a conflict, mixed or not"
     );
 
-    // Exactly one retry re-park, and its blast_radius names ONLY the source path - the
-    // regenerable path the conductor resolves itself must never reach the implementer.
+    // TWO real retry re-parks (round 1 review fix for adv-u88c1-mixed-conflict-regen-skipped-
+    // on-multiretry): retry 1 deliberately leaves the source conflict unresolved, forcing
+    // `resolve_integrate_conflict` around for a genuine second pass before it converges. Both
+    // re-parks' blast_radius names ONLY the source path - the regenerable path the conductor
+    // resolves itself must never reach the implementer, on either retry.
     let calls = driver.calls.lock().unwrap();
     assert!(
         calls.iter().any(|id| id.contains("/implementer#0~retry1")),
-        "unit-b's implementer must be re-parked under a ~retry id; got {calls:?}"
+        "unit-b's implementer must be re-parked under a ~retry1 id; got {calls:?}"
     );
     assert!(
-        !calls.iter().any(|id| id.contains("~retry2")),
-        "a single re-park must resolve a mixed conflict whose source half is fixable in one \
-         pass; got a second retry: {calls:?}"
+        calls.iter().any(|id| id.contains("/implementer#0~retry2")),
+        "the mixed conflict must genuinely need a SECOND re-park (retry 1 deliberately leaves \
+         it unresolved) to exercise the multi-retry regenerable-path bookkeeping; got {calls:?}"
     );
     let blast = driver.retry_blast_radius.lock().unwrap().clone();
     assert_eq!(
         blast,
         Some(vec!["c.rs".to_string()]),
-        "the re-park's blast_radius must name only the source path, never the regenerable one"
+        "the re-park's blast_radius must name only the source path, never the regenerable one \
+         (checked against the LAST re-park, retry 2)"
     );
 
-    // The FINAL landed content: c.rs carries the implementer's real resolution, and
-    // docs/audit/report.md carries the conductor's REAL regenerated output - not the
-    // accept_incoming placeholder (unit-a's "A_AUDIT\n") silently standing in forever.
+    // The FINAL landed content: c.rs carries the implementer's real resolution (from retry 2),
+    // and docs/audit/report.md carries the conductor's REAL regenerated output - not the
+    // accept_incoming placeholder (unit-a's "A_AUDIT\n") silently standing in forever. This is
+    // the assertion the single-retry drive could never exercise: `docs/audit/report.md` was
+    // placeholder-staged back on retry 1's iteration, two retries before the tree actually
+    // clears on retry 2 - proving the conductor's accumulated bookkeeping (not retry 2's own,
+    // by-then-empty `regenerable` partition) is what drives the real regeneration.
     let final_c = std::fs::read_to_string(Path::new(&repo_path).join("c.rs")).unwrap();
     assert_eq!(final_c, "RESOLVED_C\n");
     let final_audit =
