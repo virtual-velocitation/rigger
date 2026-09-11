@@ -14,7 +14,9 @@
         "file": "src/canary.rs",
         "line": 1440
       }
-    ]
+    ],
+    "disposition": "delete",
+    "reason": "cataloged_classes has no production caller anywhere in src/ (checked whole-tree, recursively). Its only two references are its own inline tests (canary.rs:1419/1433); the one behavior it exists to prove - the shipped corpus catalogs >= 3 defect classes (spec 13 unit 5) - is asserted by the_shipped_corpus_loads_and_catalogs_at_least_three_defect_classes, which is the ONLY caller and would go dead with it. run_canary (the real production review-panel loop) never consults it: corpus diversity is a load-time authoring check, not a runtime one."
   },
   {
     "name": "sdet_author_enabled",
@@ -43,42 +45,9 @@
         "file": "src/config.rs",
         "line": 2308
       }
-    ]
-  },
-  {
-    "name": "parse",
-    "file": "src/dash.rs",
-    "line": 398,
-    "visibility": "pub",
-    "ambiguous": true,
-    "ambiguous_with": [
-      "src/failure.rs:53",
-      "src/gate.rs:31",
-      "src/gate.rs:69",
-      "src/ledger.rs:32"
     ],
-    "test_only_references": [
-      {
-        "file": "src/dash.rs",
-        "line": 9254
-      },
-      {
-        "file": "src/dash.rs",
-        "line": 9264
-      },
-      {
-        "file": "src/dash.rs",
-        "line": 9266
-      },
-      {
-        "file": "src/dash.rs",
-        "line": 9271
-      },
-      {
-        "file": "src/dash.rs",
-        "line": 9276
-      }
-    ]
+    "disposition": "keep-pending",
+    "reason": "sdet_author_enabled has zero production callers - a real, disclosed wiring gap, not a false positive: spawn_sdet_author (conductor.rs:3980) gates the always-on SDET periphery-test author ONLY on whether an sdet-author agent is configured (self.cfg.agents.get(ROLE_SDET_AUTHOR)) and never consults self.cfg.defaults.sdet_author_enabled() at all, so today an explicit sdet_author: false in a workflow's defaults: block does nothing - the on-by-default opt-out spec 32 documents and this very method's own doc comment claims ('the conductor's build-seam reads through here') is not actually true of the shipped code. keep-pending, citing spec 32 (the sdet-author feature this toggle governs, already landed): deleting the method would delete the documented resolution authority for an already-shipped, still-referenced config field (Defaults::sdet_author) before a follow-up wires spawn_sdet_author to call it - the correct fix is wiring the call site, out of scope here (no production code changes this criterion)."
   },
   {
     "name": "pid_is_alive",
@@ -115,7 +84,9 @@
         "file": "tests/cli.rs",
         "line": 22036
       }
-    ]
+    ],
+    "disposition": "delete",
+    "reason": "pid_is_alive has no production caller. It is the RETIRED predecessor of the real marker-serving check: dash_marker_serving (main.rs:5711, the production predicate ensure_run_dashboard_at is called with) calls dash::dash_serving_on - a REAL network probe of the port - and its own doc comment explains why by name: 'A REAL network probe of the port, never a bare pid-liveness check: a marker left by a self-reaped or pid-recycled dash must never masquerade as still serving just because its pid happens to be alive'. pid_is_alive's only references are its own unit test (dash.rs:9304) and an older fixture test (main.rs:12795-12841) that injects it as a simplified closure for readability, not a claim about production behavior."
   },
   {
     "name": "neighborhood",
@@ -176,7 +147,9 @@
         "file": "tests/subject_lens_reprojection_periphery.rs",
         "line": 307
       }
-    ]
+    ],
+    "disposition": "delete",
+    "reason": "neighborhood (the single-seed convenience wrapper) has no production caller. The route handler (dash.rs:3404) calls neighborhood_of (the multi-seed core neighborhood delegates to) DIRECTLY, per its own doc comment: 'the re-pointed run-tree click (spec 43) uses it to seed from a unit's several decision/finding content nodes at once'. neighborhood's 13 references are all its own tests exercising the single-seed case directly."
   },
   {
     "name": "serve",
@@ -193,7 +166,9 @@
         "file": "src/mcpserver.rs",
         "line": 790
       }
-    ]
+    ],
+    "disposition": "delete",
+    "reason": "serve (the blocking, self-binding accept-loop entry point) has no production caller. The real dash-serving CLI path (main.rs::cmd_dash) calls dash::serve_on (main.rs:6493) with the listener bind_singleton already bound, never dash::serve, which would bind its own listener and so cannot participate in spec 62's singleton-bind-then-serve flow. (main.rs:6574's doc comment still names '[`dash::serve`]' as the accept loop that terminates - a stale intra-doc reference worth a follow-up fixing it to name serve_on, disclosed here rather than silently left.) serve's 2 references are its own smoke tests."
   },
   {
     "name": "rebuild",
@@ -221,7 +196,9 @@
         "file": "tests/cli.rs",
         "line": 437
       }
-    ]
+    ],
+    "disposition": "keep-pending",
+    "reason": "rebuild (the digest-pool projection rebuild, spec 27) has no production caller anywhere - src/lib.rs's mod distiller; declaration is the only mention of the module outside distiller.rs itself, confirmed by a whole-tree recursive grep. Unlike a mere convenience wrapper, rebuild's own tested behavior IS spec 27's already-landed Done-when contract (clearing and re-deriving the digest pool, run-boundary scoping, determinism) - deleting it would delete the shipped mechanism those criteria proved, not an unused alternative to one. keep-pending, citing spec 27: it is modeled directly on playbooks::rebuild, which IS wired to a CLI surface (rigger playbooks --rebuild); distiller::rebuild is the equivalent primitive awaiting its own call site (a rigger distill command, or a hook into rigger reset), never spec'd as a Done-when criterion of spec 27 itself, which is why it shipped unwired."
   },
   {
     "name": "with_content_identity",
@@ -406,7 +383,9 @@
         "file": "tests/store_content_identity_periphery.rs",
         "line": 2188
       }
-    ]
+    ],
+    "disposition": "keep-pending",
+    "reason": "with_content_identity (the storage-level idempotency append-guard builder, spec 60) has no production caller: open_sqlite_store (main.rs:444), the crate's ONE sqlite event-log constructor, is a bare Store::open(path) with no guard chained, and derived_index_identity() (ingest.rs:368, the production ContentIdentity value) is only ever passed to maintenance operations (count_derived_duplicates, prune_derived_index) that take it as a query-time parameter, never to with_content_identity itself. Its 44 references are all test fixtures exercising the guard directly against a Store they construct, per spec 60 criterion 4's own Done-when text: 'it DOES prove itself by driving the STORE PORT directly'. keep-pending, citing spec 60 (already landed): this is the documented, deliberately injected-at-the-composition-root 'defense in depth so a regression upstream can never re-bloat the log' criterion 4 shipped and tested - deleting it removes a proven backstop the composition root is architecturally meant to wire in, not dead weight. Disclosed plainly: whether main.rs's real store-open path SHOULD chain it is an open question this criterion does not resolve (no production code changes here) - a follow-up spec should either wire it into open_sqlite_store or explicitly retire it, rather than let it sit silently unwired indefinitely."
   },
   {
     "name": "resolve_wrapper_name",
@@ -431,7 +410,9 @@
         "file": "tests/build_env_authority_periphery.rs",
         "line": 1142
       }
-    ]
+    ],
+    "disposition": "delete",
+    "reason": "resolve_wrapper_name has no production caller - independently confirmed (u87c2's own decision u87c2-three-precision-fixes-from-real-tree-spot-check already found this by hand: 'resolve_build_layer duplicates its ambient-PATH read inline rather than calling it'). resolve_build_layer (gate.rs:552), its own doc comment's named sole intended caller ('kept pub as the wrapper-only building block ... resolve_build_layer composes'), instead reads std::env::var_os(\"PATH\") itself (gate.rs:558-559) rather than calling resolve_wrapper_name(wrapper) - a small, confirmed duplicate-glue defect (worth folding into section 2's duplication catalog on a follow-up pass), not a sign the function is unneeded. resolve_wrapper_name's 4 references are its own tests."
   },
   {
     "name": "index_events",
@@ -694,9 +675,11 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "line": 7640
+        "line": 8230
       }
-    ]
+    ],
+    "disposition": "delete",
+    "reason": "index_events is spec 87's own Goal-worked example of the false negative this whole spec exists to fix ('a function whose only caller is its own test reads as alive: the false negative the operator predicted... e.g. src/grounder/symbols/events.rs:17 index_events, 21 test references'). Confirmed again on the current tree (now 64 test references at line 29, having grown with the test suite): no production caller anywhere."
   },
   {
     "name": "definitions_named",
@@ -737,7 +720,9 @@
         "file": "src/grounder/symbols/model.rs",
         "line": 338
       }
-    ]
+    ],
+    "disposition": "delete",
+    "reason": "definitions_named has no production caller - only its own module's assertion-style tests (symbols/mod.rs) use it to check index state after a build/update, never a production edge-resolution path."
   },
   {
     "name": "references_named",
@@ -754,7 +739,9 @@
         "file": "src/grounder/symbols/model.rs",
         "line": 343
       }
-    ]
+    ],
+    "disposition": "delete",
+    "reason": "references_named has no production caller - the same test-only accessor shape as its sibling definitions_named immediately above it."
   },
   {
     "name": "ingest_project",
@@ -786,7 +773,9 @@
         "file": "tests/parallel_ordered_emit.rs",
         "line": 73
       }
-    ]
+    ],
+    "disposition": "delete",
+    "reason": "ingest_project (the #[cfg(feature = \"symbols\")] single-event lane) has no production caller. Production calls ingest_project_batched (conductor.rs:8050/15473, main.rs:4067) exclusively - the batched entry point this fn's own doc comment already names as the thing 'existing callers discard [IngestStats] and are unaffected' by, i.e. it documents its own supersession. Ambiguous with its #[cfg(not(feature = \"symbols\"))] sibling at ingest.rs:468 (the textual scanner sees two same-named definitions where rustc, feature-gated, sees one); both carry the identical finding and disposition."
   },
   {
     "name": "ingest_project",
@@ -818,7 +807,9 @@
         "file": "tests/parallel_ordered_emit.rs",
         "line": 73
       }
-    ]
+    ],
+    "disposition": "delete",
+    "reason": "ingest_project (the #[cfg(not(feature = \"symbols\"))] light-lane no-op) has no production caller, for the identical reason as its #[cfg(feature = \"symbols\")] sibling at ingest.rs:124: production calls ingest_project_batched exclusively on both lanes."
   },
   {
     "name": "fully_done",
@@ -859,7 +850,9 @@
         "file": "src/ledger.rs",
         "line": 808
       }
-    ]
+    ],
+    "disposition": "delete",
+    "reason": "fully_done has no production caller. Its own doc comment's three-conjunct completion check is subsumed elsewhere: nothing in conductor.rs or main.rs calls it (confirmed whole-tree, recursively) - the wired run-completion checks it was apparently meant to serve use done() and the per-unit is_terminal predicate instead."
   },
   {
     "name": "is_integrated",
@@ -876,7 +869,9 @@
         "file": "src/ledger.rs",
         "line": 715
       }
-    ]
+    ],
+    "disposition": "delete",
+    "reason": "is_integrated has no production caller, though its doc comment claims one ('used by resume to skip completed work'): the real resume-skip logic uses is_terminal (Integrated OR Escalated - confirmed live at conductor.rs:1621/9829, ledger.rs:623, main.rs:9927/9932), which correctly subsumes is_integrated's narrower Integrated-only check (a resume must also skip an Escalated unit, which is_integrated alone would wrongly re-attempt). Superseded, not merely unused."
   },
   {
     "name": "new",
@@ -1400,7 +1395,9 @@
         "file": "tests/worktree_liveness_fence_periphery.rs",
         "line": 723
       }
-    ]
+    ],
+    "disposition": "delete",
+    "reason": "SpawnRequest::new and its 7 builder methods (with_system_prompt/with_model/ with_tools/with_dir/with_blast_radius/with_title/with_reviews) plus the park convenience wrapper are ALL dead together, same root cause: the real production spawn path (driver/replay.rs:251-252 fn spawn_request(...) -> SpawnRequest { SpawnRequest { ... } }) constructs the struct via a direct struct literal and calls park_in_run(store, &req, &opts.run_id) directly (driver/replay.rs:338) - it never touches the builder or the zero-run-id park() wrapper at all. Every one of these 9 fns' references is a test fixture building a SpawnRequest by hand; spec 87's own Goal text names four of the seven builders (with_title/with_reviews/with_model/ with_blast_radius) as its worked example of confirmed dead code."
   },
   {
     "name": "with_system_prompt",
@@ -1417,7 +1414,9 @@
         "file": "src/spawn.rs",
         "line": 1167
       }
-    ]
+    ],
+    "disposition": "delete",
+    "reason": "with_system_prompt - part of the SpawnRequest builder family; see the disposition on SpawnRequest::new (spawn.rs:320) for the shared root cause and citation."
   },
   {
     "name": "with_model",
@@ -1438,7 +1437,9 @@
         "file": "src/spawn.rs",
         "line": 1206
       }
-    ]
+    ],
+    "disposition": "delete",
+    "reason": "with_model - part of the SpawnRequest builder family; see the disposition on SpawnRequest::new (spawn.rs:320) for the shared root cause and citation."
   },
   {
     "name": "with_tools",
@@ -1455,7 +1456,9 @@
         "file": "src/spawn.rs",
         "line": 1169
       }
-    ]
+    ],
+    "disposition": "delete",
+    "reason": "with_tools - part of the SpawnRequest builder family; see the disposition on SpawnRequest::new (spawn.rs:320) for the shared root cause and citation."
   },
   {
     "name": "with_dir",
@@ -1472,7 +1475,9 @@
         "file": "src/spawn.rs",
         "line": 1170
       }
-    ]
+    ],
+    "disposition": "delete",
+    "reason": "with_dir - part of the SpawnRequest builder family; see the disposition on SpawnRequest::new (spawn.rs:320) for the shared root cause and citation."
   },
   {
     "name": "with_blast_radius",
@@ -1493,7 +1498,9 @@
         "file": "src/spawn.rs",
         "line": 1207
       }
-    ]
+    ],
+    "disposition": "delete",
+    "reason": "with_blast_radius - part of the SpawnRequest builder family (one of the four spec 87 Goal names by name); see the disposition on SpawnRequest::new (spawn.rs:320) for the shared root cause and citation."
   },
   {
     "name": "with_title",
@@ -1514,7 +1521,9 @@
         "file": "src/spawn.rs",
         "line": 1868
       }
-    ]
+    ],
+    "disposition": "delete",
+    "reason": "with_title - part of the SpawnRequest builder family (one of the four spec 87 Goal names by name); see the disposition on SpawnRequest::new (spawn.rs:320) for the shared root cause and citation."
   },
   {
     "name": "with_reviews",
@@ -1535,7 +1544,9 @@
         "file": "src/spawn.rs",
         "line": 2009
       }
-    ]
+    ],
+    "disposition": "delete",
+    "reason": "with_reviews - part of the SpawnRequest builder family (one of the four spec 87 Goal names by name); see the disposition on SpawnRequest::new (spawn.rs:320) for the shared root cause and citation."
   },
   {
     "name": "park",
@@ -1664,7 +1675,9 @@
         "file": "src/spawn.rs",
         "line": 2222
       }
-    ]
+    ],
+    "disposition": "delete",
+    "reason": "park (the zero-run-id convenience wrapper around park_in_run) - part of the SpawnRequest-construction dead set; see the disposition on SpawnRequest::new (spawn.rs:320) for the shared root cause and citation. park_in_run itself (spawn.rs:410, the real park authority) is correctly NOT a candidate: its own body is the one real production reference driver/replay.rs:338 needs - this scanner counts direct references, not reachability, so park_in_run reads alive even though its only OTHER caller (park) is itself dead."
   },
   {
     "name": "expect_merged",
@@ -1697,7 +1710,9 @@
         "file": "src/worktree.rs",
         "line": 1744
       }
-    ]
+    ],
+    "disposition": "delete",
+    "reason": "expect_merged has no production caller - one of spec 87's own two Goal-cited worked examples ('src/worktree.rs expect_merged and is_dirty'), reconfirmed on the current tree: its 6 references are all test-only assertion helpers."
   },
   {
     "name": "is_dirty",
@@ -1718,6 +1733,8 @@
         "file": "src/worktree.rs",
         "line": 1742
       }
-    ]
+    ],
+    "disposition": "delete",
+    "reason": "is_dirty has no production caller - the second of spec 87's own two Goal-cited worked examples, reconfirmed on the current tree: its 3 references are all test-only."
   }
 ]

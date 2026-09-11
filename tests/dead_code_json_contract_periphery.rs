@@ -29,13 +29,8 @@
 //! crate and cannot see another test file's private items anyway, but because a real downstream
 //! consumer is in exactly this position. Field order below matches the producer's declaration
 //! order (`tests/simplification_audit.rs`'s `TestOnlyRef`/`DeadCodeCandidate` structs) exactly,
-//! which is also why the round-trip test below can assert byte-identical re-encoding; that same
-//! byte-identical round-trip is also the mechanical proof that no field beyond the seven named
-//! here (in particular no `disposition`, which decision `u87c2-json-schema-excludes-disposition`
-//! scopes to criterion 3, NOT this one) is present in the real committed file today - an extra
-//! field would deserialize-drop and then fail the re-encode comparison below, so a dedicated
-//! "no disposition field" test would only duplicate that coverage. `ambiguous_with` (round 1,
-//! `op-u87c2-round-1-ambiguity-covers-free-fns-too`) carries the SAME
+//! which is also why the round-trip test below can assert byte-identical re-encoding.
+//! `ambiguous_with` (round 1, `op-u87c2-round-1-ambiguity-covers-free-fns-too`) carries the SAME
 //! `#[serde(default, skip_serializing_if = "Vec::is_empty")]` shape the producer declares it
 //! with, so a non-ambiguous entry (the overwhelming majority) round-trips with no key for it at
 //! all - proven by the same byte-identical comparison, not asserted separately.
@@ -43,6 +38,22 @@
 //! This unit does NOT own dispositions, the knowledge-graph degree cross-check, or report
 //! section 4 (spec 87 Done-when: "criterion 3, NOT this one's"), so this file drives no binary
 //! and spawns no process - the whole surface to prove is the persisted data contract itself.
+//!
+//! CRITERION 3 ACCOUNTING (u87c3, extending this file rather than starting a parallel one - the
+//! same shared-artifact/shared-contract-test authority round 0-3 of criterion 2 already
+//! established): criterion 3 adds `disposition` and `reason` to the SAME committed
+//! `docs/audit/dead-code.json` (decision `u87c2-json-schema-excludes-disposition`: "c3 extends
+//! this same struct/JSON when it lands"), so `ConsumedDeadCodeCandidate` below grows the same two
+//! fields, as plain `String` (a real downstream consumer need not replicate the producer's own
+//! `Disposition` enum type to read its wire value - the exhaustiveness check belongs to a test
+//! that reads the three literal strings, below). Criterion 3 ALSO fixed a real bug in the
+//! shared instrument while researching dispositions (decision
+//! `u87c3-self-colon-colon-qualifier-false-positive`): `src/dash.rs`'s `DashMarker::parse`,
+//! ambiguous with `gate.rs`/`ledger.rs` (x2)/`failure.rs`'s own `parse`s, was a false-positive
+//! dead candidate - referenced only via `Self::parse(...)` from its own `DashMarker::read`
+//! (a real production call path, `main.rs:5731/7313/7629`), which the qualifier-attribution
+//! logic never resolved. The candidate count drops from 27 to 26 as a result; a regression test
+//! below pins its continued absence.
 //!
 //! ROUND 1 ACCOUNTING (decision `sdet-u87c2-r1-surface-accounting`, superseding
 //! `sdet-u87c2-surface-accounting` above): round 1's fix
@@ -137,8 +148,9 @@ struct ConsumedTestOnlyRef {
     line: usize,
 }
 
-/// Mirrors `tests/simplification_audit.rs`'s private `DeadCodeCandidate` shape field-for-field.
-/// Deliberately has no `disposition` field - see the module doc comment.
+/// Mirrors `tests/simplification_audit.rs`'s private `DeadCodeCandidate` shape field-for-field,
+/// `disposition`/`reason` (criterion 3's own addition) included, as plain `String` - see the
+/// module doc comment's CRITERION 3 ACCOUNTING for why a raw string, not the producer's enum.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 struct ConsumedDeadCodeCandidate {
     name: String,
@@ -152,6 +164,8 @@ struct ConsumedDeadCodeCandidate {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     ambiguous_with: Vec<String>,
     test_only_references: Vec<ConsumedTestOnlyRef>,
+    disposition: String,
+    reason: String,
 }
 
 const DEAD_CODE_PATH: &str = "docs/audit/dead-code.json";
@@ -173,8 +187,8 @@ fn deserialize_committed_dead_code() -> Vec<ConsumedDeadCodeCandidate> {
     serde_json::from_str(&raw).unwrap_or_else(|e| {
         panic!(
             "{DEAD_CODE_PATH} does not deserialize as the documented DeadCodeCandidate contract \
-             (name/file/line/visibility/ambiguous/ambiguous_with/test_only_references, \
-             test_only_references as file/line): {e}"
+             (name/file/line/visibility/ambiguous/ambiguous_with/test_only_references/ \
+             disposition/reason, test_only_references as file/line): {e}"
         )
     })
 }
@@ -319,9 +333,8 @@ fn the_committed_dead_code_json_is_sorted_ascending_by_file_then_line() {
 /// producer's own function agrees with itself (the implementer's own drift-guard test compares
 /// the SAME producer type/function on both sides; this test decodes and re-encodes through a
 /// SEPARATELY-declared type, the position any real future consumer will be in). It is also the
-/// mechanical proof that no field beyond the six declared above - in particular no
-/// `disposition` - is present in the file today: an extra field would silently drop on decode and
-/// then fail this exact comparison.
+/// mechanical proof that no field beyond the eight declared above is present in the file today:
+/// an extra field would silently drop on decode and then fail this exact comparison.
 #[test]
 fn deserializing_then_reserializing_the_committed_dead_code_json_reproduces_the_committed_bytes_exactly(
 ) {
@@ -593,4 +606,83 @@ fn getter_methods_kept_alive_only_by_a_same_named_production_field_or_local_are_
              or the rule regressed"
         );
     }
+}
+
+// -----------------------------------------------------------------------------------------
+// CRITERION 3 (`u87c3`, THIS UNIT): dispositions land in the SAME committed artifact. See the
+// module doc comment's "CRITERION 3 ACCOUNTING" section.
+// -----------------------------------------------------------------------------------------
+
+/// Spec 87 DISPOSITIONS: "exactly three" - `delete`, `keep-public-surface`, `keep-pending` -
+/// and "Every entry gets one; an entry without a cited reason is a defect". Checked against the
+/// PERSISTED file (never the producer's in-memory value), exactly the independence this whole
+/// file exists to prove for every other field.
+#[test]
+fn every_committed_candidate_has_exactly_one_of_the_three_dispositions_with_a_non_empty_reason() {
+    let candidates = deserialize_committed_dead_code();
+    assert!(!candidates.is_empty(), "expected committed candidates");
+    for c in &candidates {
+        assert!(
+            ["delete", "keep-public-surface", "keep-pending"].contains(&c.disposition.as_str()),
+            "{} ({}:{}) has an unrecognized disposition {:?} - spec 87 names exactly three",
+            c.name,
+            c.file,
+            c.line,
+            c.disposition
+        );
+        assert!(
+            !c.reason.trim().is_empty(),
+            "{} ({}:{}) has an empty disposition reason",
+            c.name,
+            c.file,
+            c.line
+        );
+    }
+}
+
+/// Regression pin for the real bug criterion 3 found and fixed while researching dispositions
+/// (decision `u87c3-self-colon-colon-qualifier-false-positive`, see the module doc comment):
+/// `DashMarker::parse` (`src/dash.rs:398`) is referenced only via `Self::parse(...)` from its own
+/// `DashMarker::read`, itself called in real production code (`main.rs:5731/7313/7629`) - it must
+/// never again appear as a dead-code candidate, which would recommend deleting live code.
+#[test]
+fn dash_marker_parse_the_self_colon_colon_false_positive_stays_absent() {
+    let candidates = deserialize_committed_dead_code();
+    assert!(
+        !candidates
+            .iter()
+            .any(|c| c.name == "parse" && c.file == "src/dash.rs"),
+        "src/dash.rs's parse (DashMarker::parse) appears in {DEAD_CODE_PATH} - a regression of \
+         the Self:: qualifier-attribution fix (u87c3-self-colon-colon-qualifier-false-positive); \
+         it is called from real production code via Self::parse inside DashMarker::read and must \
+         never be recommended for deletion"
+    );
+}
+
+/// The exact 23/3/0 `delete`/`keep-pending`/`keep-public-surface` split this criterion's research
+/// established, pinned against the persisted file (mirrors
+/// `the_real_tree_disposition_split_matches_this_criterions_research` in
+/// `tests/simplification_audit.rs`, checked there against the in-memory producer value - this is
+/// the same fact, independently re-derived from the committed bytes).
+#[test]
+fn the_committed_dead_code_json_disposition_split_is_23_delete_3_keep_pending_0_keep_public_surface(
+) {
+    let candidates = deserialize_committed_dead_code();
+    let delete = candidates
+        .iter()
+        .filter(|c| c.disposition == "delete")
+        .count();
+    let keep_public = candidates
+        .iter()
+        .filter(|c| c.disposition == "keep-public-surface")
+        .count();
+    let keep_pending = candidates
+        .iter()
+        .filter(|c| c.disposition == "keep-pending")
+        .count();
+    assert_eq!(
+        (candidates.len(), delete, keep_public, keep_pending),
+        (26, 23, 0, 3),
+        "the committed disposition split has changed since this criterion's research"
+    );
 }
