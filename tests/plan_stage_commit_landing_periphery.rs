@@ -3,17 +3,22 @@
 //! integration point, instead of dying with the throwaway worktree the historical
 //! `REVIEW_ONLY_NO_ARTIFACT` path never lands anywhere.
 //!
-//! Diff-grounded surface this file accounts for (base 298ffb2, `src/worktree.rs` +
-//! `src/conductor.rs`; the DecisionMade `sdet-u88c4-surface-enumeration` carries the full
-//! probe output):
+//! Diff-grounded surface this file accounts for (base e387031 - this unit's own merge-base
+//! with the run branch, excluding merged-in sibling work; the DecisionMade
+//! `sdet-u88c4-surface-enumeration` carries round 1's probe output over the narrower base
+//! 298ffb2, `sdet-u88c4-surface-enumeration-r3` the re-run over the full unit diff after
+//! rounds 2 and 3 landed):
 //!   1. new public API - `Worktree::commits_since_base`, `Worktree::cherry_pick_onto_run_branch`,
-//!      `CherryPickOutcome` (all `src/worktree.rs`);
+//!      `Worktree::files_touched_by_commit` (round 2), `CherryPickOutcome` (all
+//!      `src/worktree.rs`);
 //!   2. changed event serialized form - `UnitIntegrated` gained a `shas: []` JSON field
-//!      (`src/conductor.rs:4450`), never read back anywhere in the tree (write-only audit
-//!      trail), so nothing else in the codebase proves it round-trips or stays back-compat;
+//!      (`src/conductor.rs:4450`). Round 1 left it write-only; round 2's fix for
+//!      `arch-u88c4-multicommit-landing-breaks-compensation-single-commit-contract` made
+//!      `commits_to_compensate` (`src/conductor.rs:2924`) READ it back, so a later unit's
+//!      review naming this producer as a compensation target reverts EVERY landed commit,
+//!      not just the newest - gap 6 below closes this fold arm at the periphery;
 //!   3. a new cross-module seam - `RunCtx::integrate_plan_commits` (private, `conductor.rs`)
-//!      calling the two new `Worktree` methods above, wired into `run_single_stage`'s producer
-//!      arm.
+//!      calling the `Worktree` methods above, wired into `run_single_stage`'s producer arm.
 //!
 //! WHAT THE INSIDE-OUT TESTS ARE STRUCTURALLY BLIND TO. `src/worktree.rs`'s own test module
 //! proves the new methods' git mechanics directly (one commit landed, a conflict aborts the
@@ -48,12 +53,23 @@
 //!     wire" (spec 69 criterion 3) is supposed to carry (`plan_stage_conflicting_amendment...`);
 //!   - the bare `Worktree::cherry_pick_onto_run_branch(&[])` no-op contract as a PUBLIC API
 //!     guarantee, called by an external consumer with no conductor involved at all - untested
-//!     anywhere else in the tree (`cherry_pick_onto_run_branch_public_api_no_op_on_empty_shas`).
+//!     anywhere else in the tree (`cherry_pick_onto_run_branch_public_api_no_op_on_empty_shas`);
+//!   - gap 6 (round 2/3, `sdet-u88c4-surface-enumeration-r3`): a producer that landed MULTIPLE
+//!     commits, later named as a compensation target by a downstream unit's review, has EVERY
+//!     one of its landed commits reverted from the run branch - not just the newest. The
+//!     implementer's own `commits_to_compensate_reverts_every_sha_a_multi_commit_landing_
+//!     recorded` (conductor.rs) calls the crate-private `commits_to_compensate` directly
+//!     against hand-built `shas: ["c1","c2","c3"]` fixtures - fake object ids, no real git,
+//!     and unreachable from outside the crate - so it proves the FOLD reads the right JSON
+//!     field, never that the real git revert this criterion exists to protect actually removes
+//!     every landed file from a real run branch through the public `run()` entry
+//!     (`plan_stage_compensation_reverts_every_landed_commit_not_just_the_newest`).
 
 use rigger::conductor::{
-    run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, REVIEW_ONLY_NO_ARTIFACT, STREAM,
+    run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, META_COMPENSATED,
+    META_COMPENSATE_TARGET, REVIEW_ONLY_NO_ARTIFACT, STREAM,
 };
-use rigger::config::{AgentDef, Config, Stage};
+use rigger::config::{AgentDef, Config, Gate, ReviewPanel, Stage};
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision, Filter};
 use rigger::gate::ExecRunner;
@@ -61,6 +77,7 @@ use rigger::ledger;
 use rigger::worktree::{CherryPickOutcome, Worktree};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 /// A bare git repo with one initial empty commit - the run branch every stage's worktree
@@ -142,6 +159,25 @@ struct PlanAmendDriver {
     commits: Vec<Vec<(String, String)>>,
     reads: Vec<String>,
     found: Mutex<HashMap<String, String>>,
+    /// The adjudicator agent id for a downstream review that names a compensation target
+    /// (gap 6 - PLAN AMENDMENTS LAND's multi-commit compensation fold arm). Empty (the
+    /// default) means no unit ever plays adjudicator - every existing gap-1-through-5 test
+    /// leaves this unset and is byte-for-byte unaffected.
+    judge: String,
+    /// The unit id the judge's verdict names via `compensate` (spec 12, unit 4's
+    /// pre-existing vocabulary) - always approving its OWN unit's work while naming this
+    /// target as the real defect source, exactly like `conductor.rs`'s own `CompDriver`
+    /// fixture for the single-commit case.
+    compensate_target: String,
+    /// Gates the planner's commit application to its FIRST spawn only (gap 6): once this
+    /// unit's amendment has landed and then been reverted by a compensation, this fixture's
+    /// job is done - a genuine re-implementation is a DIFFERENT concern (already proven by
+    /// `conductor.rs`'s own `a_contradiction_compensates_reverts_and_re_enters_the_
+    /// integrated_unit`), so the re-parked second attempt commits nothing and the producer
+    /// converges via the ordinary no-artifact path, leaving the revert as the run branch's
+    /// final, unambiguous word on those two files. Every existing test still calls the
+    /// planner exactly once, so this changes nothing for gaps 1-5.
+    committed: AtomicBool,
 }
 
 impl PlanAmendDriver {
@@ -167,6 +203,12 @@ impl PlanAmendDriver {
         self.reads.push(path.to_string());
         self
     }
+
+    fn judging(mut self, judge: &str, compensate_target: &str) -> Self {
+        self.judge = judge.to_string();
+        self.compensate_target = compensate_target.to_string();
+        self
+    }
 }
 
 impl AgentDriver for PlanAmendDriver {
@@ -177,7 +219,19 @@ impl AgentDriver for PlanAmendDriver {
         opts: &SpawnOpts,
         _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
     ) -> Result<AgentResult, Error> {
-        if a.id == self.planner && !opts.dir.is_empty() {
+        if !self.judge.is_empty() && a.id == self.judge {
+            return Ok(AgentResult {
+                output: format!(
+                    "{{\"verdict\":\"approve\",\"compensate\":\"{}\"}}",
+                    self.compensate_target
+                ),
+                resolved_model: String::new(),
+            });
+        }
+        if a.id == self.planner
+            && !opts.dir.is_empty()
+            && !self.committed.swap(true, Ordering::SeqCst)
+        {
             for group in &self.commits {
                 for (path, content) in group {
                     let full = std::path::Path::new(&opts.dir).join(path);
@@ -669,4 +723,179 @@ fn cherry_pick_onto_run_branch_public_api_no_op_on_empty_shas() {
         "a no-op cherry-pick must never move the run branch's HEAD"
     );
     wt.remove().unwrap();
+}
+
+/// Criterion 4, gap 6 (round 2's fix for `arch-u88c4-multicommit-landing-breaks-compensation-
+/// single-commit-contract`, `sdet-u88c4-surface-enumeration-r3`): a plan-stage producer that
+/// landed TWO commits in one attempt, later named as a compensation target by a downstream
+/// unit's review, has BOTH landed commits reverted from the run branch - not just the newest
+/// (`commit`, the single-sha projection every OTHER unit's compensation contract reads).
+///
+/// WHY THIS, DISTINCT FROM THE IMPLEMENTER'S OWN TESTS. `conductor.rs`'s own
+/// `commits_to_compensate_reverts_every_sha_a_multi_commit_landing_recorded` calls the
+/// crate-private `RunCtx::commits_to_compensate` DIRECTLY against a hand-built
+/// `{"shas": ["c1","c2","c3"]}` fixture - fake object ids that were never real git commits,
+/// unreachable from outside the crate, and never fed through an actual `git revert`. It
+/// proves the FOLD reads the right JSON array; it cannot prove the real git revert this
+/// criterion exists to protect actually removes every landed file from a real run branch.
+/// This test drives the SAME real end-to-end mechanism `conductor.rs`'s own
+/// `a_contradiction_compensates_reverts_and_re_enters_the_integrated_unit` uses for the
+/// pre-existing single-commit case (a downstream "checker" unit whose adjudicator approves
+/// its own work but names the producer via `compensate`), over a MULTI-commit producer
+/// landing, which that implementer fixture never constructs.
+#[test]
+fn plan_stage_compensation_reverts_every_landed_commit_not_just_the_newest() {
+    let repo = init_repo();
+    let repo_path = repo.path().to_str().unwrap().to_string();
+
+    let mut cfg = Config::default();
+    cfg.agents.insert("planner".into(), agent("planner"));
+    cfg.agents
+        .insert("checker_impl".into(), agent("checker_impl"));
+    cfg.agents.insert("judge".into(), agent("judge"));
+    cfg.workflow.gates.insert(
+        "g".into(),
+        Gate {
+            run: "true".into(),
+            kind: "core".into(),
+            inputs: Vec::new(),
+        },
+    );
+    cfg.workflow.stages.insert("plan".into(), plan_stage());
+    cfg.workflow.stages.insert(
+        "checker".into(),
+        Stage {
+            name: "checker".into(),
+            agent: "checker_impl".into(),
+            gates: vec!["g".into()],
+            on_pass: "merge".into(),
+            needs: vec!["plan".into()],
+            review: ReviewPanel {
+                adjudicator: "judge".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+
+    let store = Store::open(":memory:").unwrap();
+    // "checker"'s own work always approves; its verdict additionally names "plan" as the
+    // real defect source (spec 12, unit 4's pre-existing `compensate` vocabulary - untouched
+    // by this criterion). The re-parked "plan" attempt commits nothing new (`committed`
+    // already flipped true), so the revert below is the run branch's final word on both
+    // originally-landed files.
+    let driver = PlanAmendDriver::new("planner")
+        .commit(&[("specs/95-first.md", "first amendment\n")])
+        .commit(&[("specs/96-second.md", "second amendment\n")])
+        .judging("judge", "plan");
+    let deps = Deps {
+        store: &store,
+        driver: &driver,
+        gates: &ExecRunner,
+        repo: repo_path.clone(),
+        grounder: None,
+        graph: None,
+        criteria: Vec::new(),
+    };
+    let rs = run(&cfg, &deps).unwrap();
+
+    assert_eq!(
+        rs.units["checker"].status,
+        ledger::Status::Integrated,
+        "checker's own work is fine and must integrate"
+    );
+    assert_eq!(
+        rs.units["plan"].status,
+        ledger::Status::Integrated,
+        "plan re-converges via the ordinary no-artifact path after its compensation rollback \
+         (this fixture's re-parked attempt commits nothing new), mirroring conductor.rs's own \
+         single-commit compensation fixture's re-implement-and-reconverge shape"
+    );
+
+    let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    let unit_of = |e: &Event| -> Option<String> {
+        serde_json::from_slice::<Value>(&e.data)
+            .ok()
+            .and_then(|v| v.get("id").and_then(Value::as_str).map(str::to_string))
+    };
+
+    // The FIRST (pre-compensation) UnitIntegrated for "plan" carries the ground truth for
+    // what actually landed - both commits, oldest-first.
+    let first_integrated = events
+        .iter()
+        .find(|e| e.type_ == ledger::TYPE_UNIT_INTEGRATED && unit_of(e).as_deref() == Some("plan"))
+        .expect("plan's first integration must be recorded");
+    let first_v: Value = serde_json::from_slice(&first_integrated.data).unwrap();
+    let landed_shas: Vec<String> = first_v["shas"]
+        .as_array()
+        .expect("plan's first UnitIntegrated must carry the shas field")
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        landed_shas.len(),
+        2,
+        "this test's premise is a TWO-commit producer landing; got {landed_shas:?}"
+    );
+
+    // (1) COMPENSATION RECORDED, naming BOTH landed shas newest-first - not just
+    // `shas.last()`, which is all the pre-round-2 single-commit contract could see.
+    let compensated = events
+        .iter()
+        .find(|e| {
+            e.type_ == ledger::TYPE_UNIT_FAILED
+                && unit_of(e).as_deref() == Some("plan")
+                && e.meta.contains_key(META_COMPENSATED)
+        })
+        .expect("a UnitFailed carrying META_COMPENSATED must record plan's compensation");
+    let reverted: Vec<String> = compensated
+        .meta
+        .get(META_COMPENSATED)
+        .unwrap()
+        .split(',')
+        .map(str::to_string)
+        .collect();
+    let mut expected_reverted = landed_shas.clone();
+    expected_reverted.reverse();
+    assert_eq!(
+        reverted, expected_reverted,
+        "compensation must revert EVERY commit plan actually landed, newest-first - not just \
+         the newest one a single-sha contract would see"
+    );
+
+    // (2) REVERTED ON THE RUN BRANCH via an evented (not history-rewriting) rollback: one
+    // "compensate plan (revert <sha>)" commit per originally-landed sha - real git proof,
+    // independent of the folded projection above.
+    let log = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&repo_path)
+        .args(["log", "--pretty=%s"])
+        .output()
+        .unwrap();
+    let log = String::from_utf8_lossy(&log.stdout);
+    for sha in &landed_shas {
+        assert!(
+            log.lines()
+                .any(|l| l.contains("compensate plan") && l.contains(sha.as_str())),
+            "the run branch must carry an evented revert of landed commit {sha}; log:\n{log}"
+        );
+    }
+
+    // (3) Both amended files are GONE from the run branch's working tree - the re-parked
+    // attempt (this fixture) commits nothing new, so the revert is the final, unambiguous
+    // word on both, not just the one a single-sha revert would have reached.
+    assert!(!repo.path().join("specs").join("95-first.md").exists());
+    assert!(!repo.path().join("specs").join("96-second.md").exists());
+
+    // (4) The durable trigger (spec 12, unit 4's pre-existing vocabulary, reused unmodified
+    // by this criterion) named "plan" exactly once.
+    let queued: Vec<&Event> = events
+        .iter()
+        .filter(|e| e.meta.get(META_COMPENSATE_TARGET).map(String::as_str) == Some("plan"))
+        .collect();
+    assert_eq!(
+        queued.len(),
+        1,
+        "exactly one durable compensation-queued mark must name plan"
+    );
 }
