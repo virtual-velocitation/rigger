@@ -2891,9 +2891,13 @@ impl RunCtx<'_> {
     /// the REAL git commits its `UnitIntegrated` events recorded in THIS run, in REVERSE
     /// integration order (newest first, so reverting the newest never conflicts with an
     /// older commit it sits on top of), excluding empty / review-only-marker commits and any
-    /// commit already compensated (the replay-idempotency guard). A unit that integrated once
-    /// yields exactly one commit; the reverse order is the general contract for a unit that
-    /// integrated more than once across compensation cycles.
+    /// commit already compensated (the replay-idempotency guard). An ordinary unit that
+    /// integrated once yields exactly one commit; a plan-stage producer (spec 88, criterion
+    /// 4) can yield SEVERAL from that one integration (its `shas` field carries every
+    /// commit it landed, not only the newest `commit`) - every one of them is reverted, in
+    /// the same reverse order. The reverse order is the general contract for a unit that
+    /// integrated more than once across compensation cycles, or landed more than one
+    /// commit in a single integration.
     fn commits_to_compensate(&self, unit: &str) -> Vec<String> {
         let all = match self.deps.store.read_stream(STREAM, 0, Direction::Forward) {
             Ok(e) => e,
@@ -2912,17 +2916,33 @@ impl RunCtx<'_> {
             if v.get("id").and_then(Value::as_str) != Some(unit) {
                 continue;
             }
-            let Some(commit) = v.get("commit").and_then(Value::as_str) else {
-                continue;
+            // A plan-stage integrate (spec 88, criterion 4) can land MULTIPLE commits in
+            // one `UnitIntegrated` event (`shas`, the full oldest-first ordered list);
+            // `commit` alone is only the NEWEST - a single-sha PROJECTION kept so every
+            // OTHER unit's single-commit contract (this function's own historical
+            // callers) still reads a plain string. Compensate EVERY commit the event
+            // actually landed when `shas` is present, falling back to the lone `commit`
+            // for every ordinary (non-producer) integration, which never carries `shas`
+            // at all (arch-u88c4-multicommit-landing-breaks-compensation-single-commit-
+            // contract).
+            let event_commits: Vec<&str> = match v.get("shas").and_then(Value::as_array) {
+                Some(shas) => shas.iter().filter_map(Value::as_str).collect(),
+                None => v
+                    .get("commit")
+                    .and_then(Value::as_str)
+                    .into_iter()
+                    .collect(),
             };
-            if commit.is_empty()
-                || commit == REVIEW_ONLY_NO_ARTIFACT
-                || already.contains(commit)
-                || commits.iter().any(|c| c == commit)
-            {
-                continue;
+            for commit in event_commits {
+                if commit.is_empty()
+                    || commit == REVIEW_ONLY_NO_ARTIFACT
+                    || already.contains(commit)
+                    || commits.iter().any(|c| c == commit)
+                {
+                    continue;
+                }
+                commits.push(commit.to_string());
             }
-            commits.push(commit.to_string());
         }
         // Recorded ascending by integration order; reverse to revert newest-first.
         commits.reverse();
@@ -7711,15 +7731,24 @@ impl RunCtx<'_> {
         if shas.is_empty() {
             return Ok(PlanCommitOutcome::None);
         }
-        // Validate scope BEFORE landing anything: every path this worktree touched
-        // since the run branch's current HEAD - committed AND any leftover dirty edit
-        // - must live under `specs/`, so a stray non-spec edit can never ride a
-        // legitimate amendment onto the run branch.
+        // Validate scope BEFORE landing anything, at TWO granularities: the aggregate
+        // three-dot diff (`changed_since_base`) catches the common case, but nets a
+        // path to NOTHING when a LATER commit in this SAME sequence reverts an EARLIER
+        // commit's own non-specs touch to it - so also walk every commit in `shas`
+        // INDIVIDUALLY (`adv-u88c4-scope-check-nets-the-diff-not-each-commit`). A
+        // producer's git access must never let a transient non-specs write ride the
+        // run branch just because a later commit in the same batch undid it - either
+        // source flags a violation, and both feed the SAME offending-paths list so the
+        // remediation feedback names every path either check caught.
         let touched = w.changed_since_base()?;
         let mut offending: Vec<String> = touched
             .into_iter()
             .filter(|p| !p.starts_with("specs/"))
             .collect();
+        for sha in &shas {
+            let per_commit = w.files_touched_by_commit(sha)?;
+            offending.extend(per_commit.into_iter().filter(|p| !p.starts_with("specs/")));
+        }
         if !offending.is_empty() {
             offending.sort();
             offending.dedup();
@@ -7730,6 +7759,22 @@ impl RunCtx<'_> {
         // rollback): a cherry-pick mutates `self.deps.repo` exactly like those do.
         let _lock = self.integrate_mu.lock().unwrap();
         match w.cherry_pick_onto_run_branch(&shas)? {
+            // RESUME IDEMPOTENCY (spec 88 c4, sdet-u88c4-cherry-pick-resume-not-
+            // idempotent / adv-u88c4-crash-resume-halts-the-whole-run-not-just-the-
+            // stage): an EMPTY `landed` means nothing NEW reached the run branch this
+            // call - either `shas` was empty (already handled above) or every one of
+            // them was ALREADY there (a crash between a prior successful cherry-pick
+            // and the `UnitIntegrated` that would have recorded it: `commits_since_
+            // base` is identity-based, so a resumed process recomputes the SAME
+            // pre-landing shas even once their content already landed under different,
+            // cherry-pick-minted commit objects - `cherry_pick_onto_run_branch` proves
+            // this case by finding every pick empty). Either way there is no fresh
+            // artifact for THIS call to integrate: degrade to the SAME no-artifact
+            // outcome a producer with no commits at all reaches, rather than inventing
+            // a new "landed nothing" shape nothing else in the tree produces.
+            worktree::CherryPickOutcome::Picked(landed) if landed.is_empty() => {
+                Ok(PlanCommitOutcome::None)
+            }
             worktree::CherryPickOutcome::Picked(landed) => Ok(PlanCommitOutcome::Landed(landed)),
             worktree::CherryPickOutcome::Conflict(detail) => {
                 Ok(PlanCommitOutcome::Conflict(detail))
@@ -22910,6 +22955,93 @@ mod tests {
     }
 
     #[test]
+    fn plan_stage_commit_reverting_its_own_out_of_scope_touch_still_fails_the_stage() {
+        // adv-u88c4-scope-check-nets-the-diff-not-each-commit: `integrate_plan_commits`
+        // scope-checked only the AGGREGATE three-dot diff (`changed_since_base`), never
+        // each individual commit in `shas`. A LATER commit in the same producer attempt
+        // that reverts an EARLIER commit's own non-specs touch nets that path clean in
+        // the aggregate, so the violation must still be caught PER COMMIT - a
+        // producer's git access must never be allowed to touch anything outside
+        // `specs/`, however transiently, and land anyway. This scope check is the ONLY
+        // safety boundary a producer commit crosses before landing permanently on the
+        // shared run branch (`PlanCommitOutcome::Landed` is never `review_unit`'d).
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        // A path that already exists on the run branch BEFORE the producer's worktree
+        // branches off, so "revert it back" is a real, in-history no-op relative to
+        // base - not merely deleting a file base never had.
+        std::fs::create_dir_all(repo.path().join("docs")).unwrap();
+        std::fs::write(repo.path().join("docs").join("existing.md"), "seed\n").unwrap();
+        run_git(&repo_path, &["add", "-A"]);
+        run_git(&repo_path, &["commit", "-q", "-m", "seed docs/existing.md"]);
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("planner".into(), agent("planner"));
+        cfg.workflow.stages.insert(
+            "plan".into(),
+            Stage {
+                name: "plan".into(),
+                agent: "planner".into(),
+                produces: "dag".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            commits_by_agent: HashMap::from([(
+                "planner".to_string(),
+                vec![
+                    ("docs/existing.md".to_string(), "scope creep\n".to_string()),
+                    // The SECOND commit reverts the first back to base's exact
+                    // content: the aggregate base...HEAD diff for this path is empty,
+                    // but each commit individually still touched it.
+                    ("docs/existing.md".to_string(), "seed\n".to_string()),
+                ],
+            )]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_eq!(
+            rs.units["plan"].status,
+            ledger::Status::Escalated,
+            "a commit sequence that touches a non-specs path and later reverts it must \
+             still fail - the per-commit scope check, not only the aggregate diff"
+        );
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        let failed = events
+            .iter()
+            .find(|e| e.type_ == ledger::TYPE_UNIT_FAILED)
+            .expect("the reverted-but-still-touched commit must record a UnitFailed");
+        assert!(
+            String::from_utf8_lossy(&failed.data).contains("\"cause\":\"reject\""),
+            "a per-commit scope violation is stamped the same cause tag the aggregate check uses"
+        );
+        let prompts = driver.prompts_for("planner");
+        assert!(
+            prompts.iter().any(|p| p.contains("docs/existing.md")),
+            "the retry prompt must name the offending path even though it nets clean \
+             in aggregate; prompts: {prompts:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("docs").join("existing.md")).unwrap(),
+            "seed\n",
+            "the run branch's copy of the path must never be touched by the rejected sequence"
+        );
+    }
+
+    #[test]
     fn plan_stage_commit_conflicting_with_a_concurrent_specs_change_escalates() {
         // CONSTRAINTS WALK (spec 88, criterion 4): a plan amendment that conflicts with
         // a concurrent operator commit under `specs/` must escalate to a human rather
@@ -22981,6 +23113,76 @@ mod tests {
             "operator edit\n",
             "the conflicting amendment must never overwrite the concurrent operator edit"
         );
+    }
+
+    #[test]
+    fn integrate_plan_commits_is_idempotent_on_a_resumed_already_landed_worktree() {
+        // adv-u88c4-crash-resume-halts-the-whole-run-not-just-the-stage (sharpening
+        // sdet-u88c4-cherry-pick-resume-not-idempotent): a crash between a successful
+        // cherry-pick landing and the `UnitIntegrated` that would have recorded it
+        // means a resumed process calls `integrate_plan_commits` a SECOND time against
+        // the SAME worktree, recomputing the SAME `commits_since_base()` (identity-
+        // based reachability cannot see the already-landed cherry-picked equivalent).
+        // The second call must resolve to `PlanCommitOutcome::None` (nothing NEW to
+        // land), never propagate a hard `Err` through the caller's `?` - which would
+        // halt the WHOLE step/wave, not merely re-fail this one stage.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_dir = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt =
+            worktree::Worktree::create(&repo_path, wt_dir.to_str().unwrap(), "rigger/u/plan", "")
+                .unwrap();
+        std::fs::create_dir_all(wt_dir.join("specs")).unwrap();
+        std::fs::write(wt_dir.join("specs").join("90-foo.md"), "amend\n").unwrap();
+        run_git(wt_dir.to_str().unwrap(), &["add", "-A"]);
+        run_git(wt_dir.to_str().unwrap(), &["commit", "-q", "-m", "amend"]);
+
+        let store = Store::open(":memory:").unwrap();
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        // FIRST call: a real, fresh landing (the pre-crash attempt) - never itself
+        // recorded via `UnitIntegrated`, mirroring the crash-before-emit window.
+        match ctx.integrate_plan_commits(Some(&wt)).unwrap() {
+            PlanCommitOutcome::Landed(shas) => assert_eq!(shas.len(), 1),
+            PlanCommitOutcome::None => panic!("expected a fresh landing, got None"),
+            PlanCommitOutcome::OutOfScope(paths) => {
+                panic!("expected a fresh landing, got OutOfScope({paths:?})")
+            }
+            PlanCommitOutcome::Conflict(detail) => {
+                panic!("expected a fresh landing, got Conflict({detail})")
+            }
+        }
+
+        // SECOND call against the SAME worktree - the resumed-process shape.
+        let second = ctx.integrate_plan_commits(Some(&wt));
+        assert!(
+            second.is_ok(),
+            "a resumed already-landed worktree must resolve, never hard-error and halt the step"
+        );
+        match second.unwrap() {
+            PlanCommitOutcome::None => {}
+            PlanCommitOutcome::Landed(shas) => {
+                panic!("nothing NEW should land the second time; got Landed({shas:?})")
+            }
+            PlanCommitOutcome::OutOfScope(paths) => {
+                panic!("an already-landed resume must never read as OutOfScope({paths:?})")
+            }
+            PlanCommitOutcome::Conflict(detail) => {
+                panic!("an already-landed resume must never read as a Conflict({detail})")
+            }
+        }
+        wt.remove().unwrap();
     }
 
     #[test]
@@ -31834,6 +32036,60 @@ mod tests {
         assert!(
             pending_compensations_from_log(&events).is_empty(),
             "the in-run drain balances the queued mark, so a resume re-derives no pending compensation"
+        );
+    }
+
+    #[test]
+    fn commits_to_compensate_reverts_every_sha_a_multi_commit_landing_recorded() {
+        // arch-u88c4-multicommit-landing-breaks-compensation-single-commit-contract: a
+        // plan-stage `UnitIntegrated` (spec 88, criterion 4) can carry MULTIPLE landed
+        // commits in `shas` (the full ordered list) - `commit` alone is only the
+        // NEWEST, a single-sha PROJECTION kept for every OTHER unit's single-commit
+        // contract. Compensating such a unit must revert every commit it actually
+        // landed, not just the newest, or a rollback silently leaves the older ones on
+        // the run branch.
+        let store = Store::open(":memory:").unwrap();
+        let seed = |data: Value| {
+            store
+                .append(
+                    STREAM,
+                    ExpectedRevision::Any,
+                    std::slice::from_ref(&Event::new(
+                        ledger::TYPE_UNIT_INTEGRATED,
+                        serde_json::to_vec(&data).unwrap(),
+                    )),
+                )
+                .unwrap();
+        };
+        // A plan-stage unit that landed three commits in one attempt: `commit` is only
+        // the newest (c3), `shas` carries the full oldest-first list.
+        seed(json!({"id": "plan", "commit": "c3", "shas": ["c1", "c2", "c3"]}));
+        // An ordinary (non-producer) unit's single-commit UnitIntegrated - no `shas`
+        // field at all - must still work exactly as before (back-compat).
+        seed(json!({"id": "ordinary", "commit": "o1"}));
+
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        assert_eq!(
+            ctx.commits_to_compensate("plan"),
+            vec!["c3".to_string(), "c2".to_string(), "c1".to_string()],
+            "every landed commit must be queued for revert, newest first"
+        );
+        assert_eq!(
+            ctx.commits_to_compensate("ordinary"),
+            vec!["o1".to_string()],
+            "a shas-less (single-commit) UnitIntegrated still compensates its one commit"
         );
     }
 
