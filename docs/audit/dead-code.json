@@ -209,7 +209,7 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 15419
+        "line": 15605
       },
       {
         "file": "src/eventstore/sqlite.rs",
@@ -675,7 +675,7 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "line": 8230
+        "line": 8233
       }
     ],
     "disposition": "delete",
@@ -820,15 +820,15 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 32303
+        "line": 32726
       },
       {
         "file": "src/conductor.rs",
-        "line": 32370
+        "line": 32793
       },
       {
         "file": "src/conductor.rs",
-        "line": 33144
+        "line": 33567
       },
       {
         "file": "src/ledger.rs",
@@ -897,35 +897,35 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 17734
+        "line": 17920
       },
       {
         "file": "src/conductor.rs",
-        "line": 17811
+        "line": 17997
       },
       {
         "file": "src/conductor.rs",
-        "line": 17905
+        "line": 18091
       },
       {
         "file": "src/conductor.rs",
-        "line": 17992
+        "line": 18178
       },
       {
         "file": "src/conductor.rs",
-        "line": 18087
+        "line": 18273
       },
       {
         "file": "src/conductor.rs",
-        "line": 24191
+        "line": 24614
       },
       {
         "file": "src/conductor.rs",
-        "line": 24196
+        "line": 24619
       },
       {
         "file": "src/conductor.rs",
-        "line": 24259
+        "line": 24682
       },
       {
         "file": "src/dash.rs",
@@ -1185,43 +1185,43 @@
       },
       {
         "file": "src/worktree.rs",
-        "line": 1973
+        "line": 2230
       },
       {
         "file": "src/worktree.rs",
-        "line": 1996
+        "line": 2253
       },
       {
         "file": "src/worktree.rs",
-        "line": 2032
+        "line": 2289
       },
       {
         "file": "src/worktree.rs",
-        "line": 2064
+        "line": 2321
       },
       {
         "file": "src/worktree.rs",
-        "line": 2099
+        "line": 2356
       },
       {
         "file": "src/worktree.rs",
-        "line": 2115
+        "line": 2372
       },
       {
         "file": "src/worktree.rs",
-        "line": 2142
+        "line": 2399
       },
       {
         "file": "src/worktree.rs",
-        "line": 2172
+        "line": 2429
       },
       {
         "file": "src/worktree.rs",
-        "line": 2179
+        "line": 2436
       },
       {
         "file": "src/worktree.rs",
-        "line": 2187
+        "line": 2444
       },
       {
         "file": "tests/cli.rs",
@@ -1557,15 +1557,15 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 24189
+        "line": 24612
       },
       {
         "file": "src/conductor.rs",
-        "line": 24194
+        "line": 24617
       },
       {
         "file": "src/conductor.rs",
-        "line": 24257
+        "line": 24680
       },
       {
         "file": "src/driver/replay.rs",
@@ -1688,27 +1688,27 @@
     "test_only_references": [
       {
         "file": "src/worktree.rs",
-        "line": 1437
+        "line": 1543
       },
       {
         "file": "src/worktree.rs",
-        "line": 1464
+        "line": 1570
       },
       {
         "file": "src/worktree.rs",
-        "line": 1517
+        "line": 1774
       },
       {
         "file": "src/worktree.rs",
-        "line": 1571
+        "line": 1828
       },
       {
         "file": "src/worktree.rs",
-        "line": 1624
+        "line": 1881
       },
       {
         "file": "src/worktree.rs",
-        "line": 1744
+        "line": 2001
       }
     ],
     "disposition": "delete",
@@ -1717,24 +1717,24 @@
   {
     "name": "is_dirty",
     "file": "src/worktree.rs",
-    "line": 496,
+    "line": 517,
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [
       {
         "file": "src/worktree.rs",
-        "line": 1666
+        "line": 1923
       },
       {
         "file": "src/worktree.rs",
-        "line": 1676
+        "line": 1933
       },
       {
         "file": "src/worktree.rs",
-        "line": 1742
+        "line": 1999
       }
     ],
     "disposition": "delete",
-    "reason": "is_dirty has no production caller - the second of spec 87's own two Goal-cited worked examples, reconfirmed on the current tree: its 3 references are all test-only."
+    "reason": "is_dirty has no production caller - the second of spec 87's own two Goal-cited worked examples, reconfirmed on the current tree: its 3 references are all test-only. Pin moved 496->517 (spec 88 criterion 4 inserted commits_since_base before it - a plain line-shift, not a semantic change; see specs/90 criterion 2, not yet landed, for the line-free fix this pin dance works around)."
   }
 ]
