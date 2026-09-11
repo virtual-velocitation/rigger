@@ -1610,6 +1610,15 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         .filter(|u| u.attempts > 0)
         .map(|u| (u.id.clone(), u.attempts))
         .collect();
+    // Spec 88, criterion 3 (ESCALATION RESUMES): seed the per-unit remediation-bound
+    // override from the prior log's folded `UnitResumed` grants, mirroring
+    // `prior_attempts`' own seeding - both are run-start snapshots of the SAME fold.
+    let prior_resume_bound: HashMap<String, u32> = prior
+        .units
+        .values()
+        .filter(|u| u.resume_bound > 0)
+        .map(|u| (u.id.clone(), u.resume_bound))
+        .collect();
     let ctx = RunCtx {
         cfg,
         deps,
@@ -1627,6 +1636,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         ingested: std::sync::atomic::AtomicBool::new(false),
         prior_status,
         prior_attempts,
+        prior_resume_bound,
         replayed_keys: Mutex::new(replayed_keys),
         #[cfg(feature = "symbols")]
         replayed_generations: Mutex::new(replayed_generations),
@@ -2265,6 +2275,18 @@ struct RunCtx<'a> {
     /// that never failed). Integrated/escalated units are terminal and skipped before
     /// the lifecycle, so their presence here is harmless.
     prior_attempts: HashMap<String, u32>,
+    /// Each unit's folded remediation-bound OVERRIDE from the prior log's latest
+    /// `UnitResumed` (spec 88, criterion 3: ESCALATION RESUMES) - the attempt count
+    /// at the moment of that resume PLUS its granted attempts
+    /// ([`ledger::Unit::resume_bound`]). A unit absent from this map (never
+    /// operator-resumed) has no override and reads the plain
+    /// [`max_retries`](RunCtx::max_retries). [`max_retries_for`](RunCtx::max_retries_for)
+    /// is the sole reader; it is the per-unit bound `safety::remediate` uses in place
+    /// of the global one, so a granted unit gets EXACTLY the extra attempts an
+    /// operator's `rigger resume-unit` command gave it before it can re-escalate -
+    /// never zero (the bug a bare status revert without this override would produce,
+    /// since the global bound is already spent) and never unbounded.
+    prior_resume_bound: HashMap<String, u32>,
     /// The set of REPLAY KEYS an emit may be suppressed against. Its SEED is a PARTITION over two
     /// scopes decided BY EVENT TYPE (spec 60), not one seed with one meaning - so read the half a
     /// key was seeded into before reading membership. The run-scoped half's keys, once inserted,
@@ -2445,6 +2467,7 @@ impl<'a> RunCtx<'a> {
             ingested: std::sync::atomic::AtomicBool::new(false),
             prior_status: HashMap::new(),
             prior_attempts: HashMap::new(),
+            prior_resume_bound: HashMap::new(),
             replayed_keys: Mutex::new(HashSet::new()),
             #[cfg(feature = "symbols")]
             replayed_generations: Mutex::new(HashMap::new()),
@@ -3076,6 +3099,23 @@ impl RunCtx<'_> {
         } else {
             configured
         }
+    }
+
+    /// The remediation bound `safety::remediate` uses for exactly THIS unit (spec 88,
+    /// criterion 3: ESCALATION RESUMES) - the plain [`max_retries`](RunCtx::max_retries)
+    /// bound, widened to a unit's [`prior_resume_bound`](RunCtx::prior_resume_bound)
+    /// ceiling when an operator's `rigger resume-unit` grant raised it higher. The
+    /// max of the two (never the resume ceiling alone) so a pathologically small
+    /// `--attempts` grant on a unit that escalated early can never LOWER the bound
+    /// every other unit already gets; a unit absent from the map (never resumed)
+    /// reads the plain bound, byte-for-byte the historical behavior.
+    fn max_retries_for(&self, unit: &str) -> u32 {
+        let plain = self.max_retries();
+        self.prior_resume_bound
+            .get(unit)
+            .copied()
+            .unwrap_or(0)
+            .max(plain)
     }
 
     /// Whether the pre-wave spawn-budget breaker has tripped (§4.4, §8): a positive
@@ -4663,7 +4703,7 @@ impl RunCtx<'_> {
                 }
             }
 
-            let rem = safety::remediate(attempts, self.max_retries());
+            let rem = safety::remediate(attempts, self.max_retries_for(&st.name));
             attempts = rem.attempts;
             // Ensure-on-park, defense in depth (spec 64 criterion 3, round 4,
             // adv-u3c3r3-reviewed-and-failed-sha-empty-sentinel-inversion, UPHELD): the
@@ -5536,7 +5576,7 @@ impl RunCtx<'_> {
             // duplicate UnitFailed - the bound accumulates from the log, it is never
             // re-counted (finding rf-fanout-replay-dup-unitfailed).
             let failed_attempt = attempts;
-            let rem = safety::remediate(attempts, self.max_retries());
+            let rem = safety::remediate(attempts, self.max_retries_for(&st.name));
             attempts = rem.attempts;
             // spec 69, criterion 3 (the cause wire): `approved` means the gates ran and
             // failed (`gate_result` is `Some`); otherwise the adjudicator itself rejected.
@@ -6536,7 +6576,7 @@ impl RunCtx<'_> {
             // Reject: charge a remediation attempt (replay-keyed on the failing attempt so a
             // replay re-reaching it appends no duplicate) and either escalate or re-plan.
             let failed_attempt = attempts;
-            let rem = safety::remediate(attempts, self.max_retries());
+            let rem = safety::remediate(attempts, self.max_retries_for(&gate_name));
             attempts = rem.attempts;
             self.emit_keyed(
                 &format!("{gate_name}/failed#{failed_attempt}"),
@@ -19362,6 +19402,7 @@ mod tests {
             ingested: std::sync::atomic::AtomicBool::new(false),
             prior_status: HashMap::new(),
             prior_attempts: HashMap::new(),
+            prior_resume_bound: HashMap::new(),
             replayed_keys: Mutex::new(HashSet::new()),
             #[cfg(feature = "symbols")]
             replayed_generations: Mutex::new(HashMap::new()),
@@ -23205,6 +23246,156 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_resumed_unit_gets_exactly_its_granted_extra_attempts_before_re_escalating() {
+        // Spec 88, criterion 3 (ESCALATION RESUMES): `rigger resume-unit`'s
+        // `UnitResumed` widens THIS unit's remediation bound to attempts-at-resume +
+        // attempts_granted - it must neither re-escalate on the very next attempt
+        // (the bug a naive `Failed` revert without a bound override would produce,
+        // since the global `max_retries` is already spent) nor retry forever. A
+        // perpetually-rejecting adjudicator can only ever escalate, so counting
+        // worker spawns across BOTH `run()` calls pins the exact widened depth.
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("adversary".into(), agent("adversary"));
+        cfg.agents.insert("adj".into(), agent("adj"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.defaults.review = config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adversary: "adversary".into(),
+            adjudicator: "adj".into(),
+            tiers: None,
+        };
+        cfg.workflow.defaults.max_retries = 2;
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            output: r#"{"verdict":"reject","issues":[]}"#.into(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+
+        // First window: escalates after exactly the configured 2 attempts.
+        let rs1 = run(&cfg, &deps).unwrap();
+        assert_eq!(rs1.units["implement"].status, ledger::Status::Escalated);
+        assert_eq!(rs1.units["implement"].attempts, 2);
+
+        // The operator grants 2 more attempts, exactly `rigger resume-unit
+        // implement --attempts 2` would append.
+        let resumed = crate::eventstore::Event::new(
+            ledger::TYPE_UNIT_RESUMED,
+            serde_json::to_vec(
+                &json!({"unit": "implement", "attempts_granted": 2, "by": "operator"}),
+            )
+            .unwrap(),
+        );
+        st.append(
+            STREAM,
+            crate::eventstore::ExpectedRevision::Any,
+            std::slice::from_ref(&resumed),
+        )
+        .unwrap();
+
+        // Second window (a fresh `rigger step`/`rigger run` resume): the unit must
+        // re-enter remediation and get EXACTLY 2 more attempts (4 total) before it
+        // escalates a second time - not 0 (re-escalating immediately on the stale
+        // global bound) and not unbounded.
+        let rs2 = run(&cfg, &deps).unwrap();
+        let order = driver.call_order.lock().unwrap().clone();
+        let worker_spawns = order.iter().filter(|a| *a == "worker").count() as u32;
+        assert_eq!(
+            worker_spawns, 4,
+            "a resumed unit must get exactly its granted 2 extra attempts on top of \
+             the 2 it already spent, 4 total across both windows; spawns were {order:?}"
+        );
+        assert_eq!(
+            rs2.units["implement"].status,
+            ledger::Status::Escalated,
+            "a perpetually-rejecting adjudicator still escalates once the widened \
+             bound is spent - the grant loosens depth, never the review bar"
+        );
+        assert_eq!(
+            rs2.units["implement"].attempts, 4,
+            "the final folded attempt count must reach the widened bound"
+        );
+        // Exactly two UnitEscalated in the whole log - one per window - never a
+        // third, and the second window's grant banner is retired by the second
+        // escalation (spec 88: "final again until the next resume").
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        let escalations = events
+            .iter()
+            .filter(|e| e.type_ == ledger::TYPE_UNIT_ESCALATED)
+            .count();
+        assert_eq!(escalations, 2, "the unit escalates exactly once per window");
+        assert_eq!(
+            rs2.units["implement"].resumed, None,
+            "the second escalation must retire the first resume's display banner"
+        );
+    }
+
+    #[test]
+    fn max_retries_for_widens_only_the_resumed_unit_never_a_sibling() {
+        // Spec 88, criterion 3: the override is keyed by unit id - a resume grant on
+        // one unit must never leak into a sibling's bound, which stays the plain
+        // configured `max_retries`.
+        let mut cfg = Config::default();
+        cfg.workflow.defaults.max_retries = 2;
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let mut ctx = RunCtx::for_test(&cfg, &deps);
+        ctx.prior_resume_bound.insert("resumed-unit".into(), 4);
+        assert_eq!(
+            ctx.max_retries_for("resumed-unit"),
+            4,
+            "a granted bound above the configured max_retries widens this unit's bound"
+        );
+        assert_eq!(
+            ctx.max_retries_for("sibling-unit"),
+            2,
+            "a unit with no resume grant reads the plain configured max_retries, \
+             unaffected by another unit's grant"
+        );
+        // A grant that ended up BELOW the configured bound (a pathological small
+        // --attempts on a unit that escalated early) never LOWERS the bound below
+        // what every other unit already gets.
+        ctx.prior_resume_bound.insert("small-grant-unit".into(), 1);
+        assert_eq!(
+            ctx.max_retries_for("small-grant-unit"),
+            2,
+            "a resume bound must never lower the effective bound below the plain \
+             configured max_retries"
+        );
+    }
+
     /// A driver for the Gap-16 regression (spec 06 unit 3, "approval beats the retry
     /// cap"): the implementer and every lens/adversary stay SILENT (empty output, which
     /// `verdict_approves` reads as no-approve, so only the fail-closed adjudicator's
@@ -25364,6 +25555,7 @@ mod tests {
             ingested: std::sync::atomic::AtomicBool::new(false),
             prior_status: HashMap::new(),
             prior_attempts: HashMap::new(),
+            prior_resume_bound: HashMap::new(),
             replayed_keys: Mutex::new(HashSet::new()),
             #[cfg(feature = "symbols")]
             replayed_generations: Mutex::new(HashMap::new()),

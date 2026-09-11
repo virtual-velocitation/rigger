@@ -1373,6 +1373,7 @@ fn migrate_identity_at(loc: &StoreLocation) -> Res {
 const SUBCOMMANDS: &[&str] = &[
     "run",
     "step",
+    "resume-unit",
     "reported",
     "prompt",
     "scratch",
@@ -1412,6 +1413,7 @@ fn main() {
     let result = match args[1].as_str() {
         "run" => cmd_run(&args[2..]),
         "step" => cmd_step(&args[2..]),
+        "resume-unit" => cmd_resume_unit(&args[2..]),
         "reported" => cmd_reported(&args[2..]),
         "prompt" => cmd_prompt(&args[2..]),
         "scratch" => cmd_scratch(&args[2..]),
@@ -2090,6 +2092,107 @@ fn acquire_step_lock(rigger_dir: &Path) -> Result<std::fs::File, Box<dyn std::er
             .into()
         })?;
     Ok(f)
+}
+
+/// `rigger resume-unit <unit> [--attempts N]` (default `N`: 1) - spec 88, criterion 3
+/// (ESCALATION RESUMES). An escalated unit is otherwise final: this is the one operator
+/// lever that gives it another chance without replanning the whole spec. Appends
+/// [`ledger::TYPE_UNIT_RESUMED`] (`{unit, attempts_granted, by: "operator"}`) to the
+/// CURRENT run's stream; the ledger folds it back to a mid-remediation `Failed` unit
+/// with a widened per-unit bound ([`ledger::Unit::resume_bound`]), so the next `rigger
+/// step` re-parks the implementer on the unit's SAME durable branch (resume-continuity
+/// already treats `Failed` this way - no second resume path is introduced) and
+/// `rigger status` names the grant until it is spent or superseded by a fresh resume.
+///
+/// Refuses loudly, appending nothing, when: the unit is unknown to the current run; its
+/// status is not `Escalated` (only a unit that genuinely gave up may be resumed - a
+/// mid-remediation or already-landed unit has nothing to resume FROM); or its recorded
+/// durable branch no longer exists in the repo (deleted or reclaimed out of band) -
+/// named alongside a `git reflog` hint, per the spec's own constraints walk, since a
+/// resume with no branch to re-park the implementer on would strand the implementer on
+/// a fresh, empty checkout instead of the unit's actual prior work.
+fn cmd_resume_unit(args: &[String]) -> Res {
+    let mut unit_id: Option<&str> = None;
+    let mut attempts_granted: u32 = 1;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--attempts" => {
+                let raw = it.next().ok_or(
+                    "resume-unit: --attempts expects a number: \
+                     rigger resume-unit <unit> [--attempts N]",
+                )?;
+                attempts_granted =
+                    raw.parse::<u32>().ok().filter(|n| *n >= 1).ok_or_else(|| {
+                        format!("resume-unit: --attempts value {raw:?} must be a positive integer")
+                    })?;
+            }
+            other if unit_id.is_none() && !other.starts_with("--") => {
+                unit_id = Some(other);
+            }
+            other => {
+                return Err(format!(
+                    "resume-unit: unknown argument {other:?} \
+                     (usage: rigger resume-unit <unit> [--attempts N])"
+                )
+                .into());
+            }
+        }
+    }
+    let unit_id = unit_id
+        .ok_or("resume-unit: expected a unit id: rigger resume-unit <unit> [--attempts N]")?;
+
+    let (loc, selection) = require_store_dir()?;
+    let backend = resolve_store(&selection, &loc.file("events.db"))?;
+    let store = Namespaced::new(backend.as_ref(), &loc.identity());
+    let all = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    let run_events = runscope::current_run(&all);
+    let run_id = runscope::current_run_id(&all).unwrap_or_default();
+    let rs = ledger::project(run_events)?;
+
+    let unit = rs
+        .units
+        .get(unit_id)
+        .ok_or_else(|| format!("resume-unit: no unit {unit_id:?} in the current run"))?;
+    if unit.status != ledger::Status::Escalated {
+        return Err(format!(
+            "resume-unit: unit {unit_id:?} is not escalated (status: {:?}) - only a unit \
+             that has genuinely given up (\"escalated (awaiting a human)\") can be resumed",
+            unit.status.as_str()
+        )
+        .into());
+    }
+    let branch = unit.branch.clone();
+    if !branch.is_empty() && !rigger::worktree::branch_exists(&loc.repo_root(), &branch) {
+        return Err(format!(
+            "resume-unit: unit {unit_id:?}'s durable branch {branch:?} is gone (deleted or \
+             reclaimed) - refusing to resume with nothing to re-park the implementer on. \
+             Check `git reflog` for its last commit and recreate the branch at that sha \
+             before retrying."
+        )
+        .into());
+    }
+
+    let mut ev = Event::new(
+        ledger::TYPE_UNIT_RESUMED,
+        serde_json::to_vec(
+            &serde_json::json!({"unit": unit_id, "attempts_granted": attempts_granted, "by": "operator"}),
+        )?,
+    );
+    if !run_id.is_empty() {
+        ev = ev.with_meta(runscope::META_RUN_ID, &run_id);
+    }
+    store.append(
+        conductor::STREAM,
+        ExpectedRevision::Any,
+        std::slice::from_ref(&ev),
+    )?;
+
+    println!(
+        "resumed unit {unit_id:?}: {attempts_granted} attempt(s) granted (by operator) - the \
+         next `rigger step` re-parks its implementer on {branch:?}"
+    );
+    Ok(())
 }
 
 fn cmd_step(args: &[String]) -> Res {
@@ -20727,6 +20830,14 @@ mod tests {
             wedge_stop < run_complete,
             "the escalated-fixpoint `stop()` must precede the `done` completion break, or a \
              wedged terminus would resolve as a clean `run complete` before the wedge is checked"
+        );
+        // 6f. Spec 88, criterion 3 (ESCALATION RESUMES): the wedge stop names the operator's
+        // own remedy - `rigger resume-unit` - not just the bare fact of the wedge, so an
+        // unattended run's failure output tells the operator exactly what to run next.
+        assert!(
+            code.contains("rigger resume-unit"),
+            "the escalated-fixpoint stop reason must name `rigger resume-unit` as the \
+             operator's remedy for a wedged unit"
         );
 
         // 7. The workflow still parses: run `node --check` when node is on PATH (never a

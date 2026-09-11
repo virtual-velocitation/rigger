@@ -3463,8 +3463,8 @@ fn kg_degree_for(file: &str, line: usize) -> u32 {
         ("src/grounder/symbols/model.rs", 211) => 10,
         ("src/ingest.rs", 124) => 3,
         ("src/ingest.rs", 468) => 3,
-        ("src/ledger.rs", 500) => 6,
-        ("src/ledger.rs", 577) => 3,
+        ("src/ledger.rs", 568) => 6,
+        ("src/ledger.rs", 645) => 3,
         ("src/spawn.rs", 320) => 5,
         ("src/spawn.rs", 338) => 6,
         ("src/spawn.rs", 344) => 7,
@@ -5732,14 +5732,14 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              sibling at ingest.rs:124: production calls ingest_project_batched exclusively on \
              both lanes.",
         ),
-        ("src/ledger.rs", 500) => (
+        ("src/ledger.rs", 568) => (
             Delete,
             "fully_done has no production caller. Its own doc comment's three-conjunct \
              completion check is subsumed elsewhere: nothing in conductor.rs or main.rs calls it \
              (confirmed whole-tree, recursively) - the wired run-completion checks it was \
              apparently meant to serve use done() and the per-unit is_terminal predicate instead.",
         ),
-        ("src/ledger.rs", 577) => (
+        ("src/ledger.rs", 645) => (
             Delete,
             "is_integrated has no production caller, though its doc comment claims one ('used by \
              resume to skip completed work'): the real resume-skip logic uses is_terminal \

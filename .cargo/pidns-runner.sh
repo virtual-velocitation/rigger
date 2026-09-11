@@ -36,8 +36,23 @@ set -u
 TMPDIR="${RIGGER_TEST_TMPDIR:-${XDG_CACHE_HOME:-$HOME/.cache}/rigger/test-tmp}"
 export TMPDIR
 mkdir -p "$TMPDIR" 2>/dev/null || true
+# Test git never signs (2026-09-11): the operator's global git has commit.gpgsign=true and the
+# ~43 `git commit` sites in the unit tests never turn it off, so every test commit runs gpg
+# against the operator's keyring - keyring-lock contention and a one-in-ten `git worktree add`
+# race whenever several agents run the suite at once (spec 90 criterion 1). Override ONLY the
+# signing keys through git's environment-config channel (git >= 2.31), leaving the rest of
+# the operator's config (init.defaultBranch, aliases) untouched; production `rigger` runs
+# are not under this runner and still sign with the operator's own config.
+GIT_CONFIG_COUNT=2
+GIT_CONFIG_KEY_0=commit.gpgsign
+GIT_CONFIG_VALUE_0=false
+GIT_CONFIG_KEY_1=tag.gpgsign
+GIT_CONFIG_VALUE_1=false
+export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_KEY_1 GIT_CONFIG_VALUE_1
+# Low CPU priority for every test binary too (2026-09-11): a run's review fan-out runs many
+# full suites at once; tests yield to the operator's interactive work like compiles do.
 if [ "${RIGGER_PIDNS:-on}" = "off" ]; then
-  exec "$@"
+  exec nice -n 10 "$@"
 fi
 if [ -n "${RIGGER_PIDNS_TRACE:-}" ]; then
   echo "pidns-runner: $1" >&2
@@ -52,4 +67,4 @@ fi
 # 2026-09-02 02:18; the kernel OOM killer took the test, and systemd then stopped the
 # whole terminal scope as oom-kill collateral, ending the operator's session. With the
 # cap, a runaway mutant fails its allocation and the test - the box never feels it.
-exec unshare --user --map-current-user --pid --fork --mount-proc --kill-child -- prlimit --as="${RIGGER_TEST_AS_BYTES:-25769803776}" -- "$@"
+exec nice -n 10 unshare --user --map-current-user --pid --fork --mount-proc --kill-child -- prlimit --as="${RIGGER_TEST_AS_BYTES:-25769803776}" -- "$@"

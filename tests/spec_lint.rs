@@ -1076,7 +1076,7 @@ fn spec_lint_self_clean_over_the_committed_corpus() {
          a recall regression; got: {f4_hits:?}"
     );
     assert_eq!(
-        f1_total, 196,
+        f1_total, 198,
         "F1 ownership's corpus-wide total is pinned to sdet's round-5 independently \
          cross-checked count (194), minus the 3 hits removed by giving specs/66's own \
          criteria 4/5/6 an OWNS sentence (`u66c3-self-clean-ownership-gap-fix`, required by \
@@ -1101,7 +1101,10 @@ fn spec_lint_self_clean_over_the_committed_corpus() {
          same class), plus 3 hits added by specs/88-a-unit-lineage-is-durable.md, \
          specs/89-harness-housekeeping-never-costs-a-round.md and \
          specs/90-hermetic-test-git-and-merge-friendly-audit-artifacts.md (operator review \
-         2026-09-10: same closing-checkbox class, one each), reviewed \
+         2026-09-10: same closing-checkbox class, one each), plus 1 hit added by \
+         specs/91-mutation-runs-once-at-the-check-in-seam.md and 1 by \
+         specs/92-the-graph-is-the-lookup-surface-fresh-covered-ranked-and-in-hand.md \
+         (operator review 2026-09-11: same class), reviewed \
          directly against the advisory text, not a heuristic regression; a changed total means \
          either a real spec edit (update this pin after reviewing the new/removed hits) \
          or a regression in the heuristic"

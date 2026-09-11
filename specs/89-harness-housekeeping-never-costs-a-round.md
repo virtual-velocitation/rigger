@@ -25,6 +25,14 @@ commits them as `wip(<unit>): tree of halted spawn <id>` before re-parking - the
 names that commit and says "finish and report; do not start over" - so a halt never discards a
 tree. The halt still charges no attempt (it is an infrastructure fault today and stays one).
 
+THE FAN-OUT IS A DEFINITION KNOB, decided: the number of units a run builds at once is
+`defaults.max_parallel_units` in workflow.yml (default 2), replacing the conductor constant
+`MAX_CONCURRENCY = 4` (src/conductor.rs:35); a review round costs one SDET author, two lenses,
+an adversary and an adjudicator, each an independent cold build in its own target dir, so four
+parallel units put ~90 cargo/rustc processes on a 32-core workstation at once (load average
+125, 2026-09-11) and ~200G of embedded worktree targets on disk. The operator sizes the run to
+the machine in the definition, never in code.
+
 SCRATCH LIVES OUTSIDE THE STORE TREE, decided: the per-spawn scratch container, `TMPDIR`, and
 `CARGO_TARGET_DIR` defaults move to `$XDG_CACHE_HOME/rigger/<project-id>/<run>/<spawn>` (on the
 large mount, never under `/tmp`, never under any `.rigger`); the registered scratch roots and the
@@ -36,7 +44,13 @@ under a spawn's environment, with no per-test workaround.
 THE RECLAIM GUARD COMPARES PATHS, decided: `reap.rs` normalizes the joined path lexically
 (`.`/`..` segments resolved, no filesystem canonicalization) before the "strictly under" check,
 and treats a target that no longer exists as already reclaimed (silent), so the refusal message
-appears only for a path that is genuinely outside the root.
+appears only for a path that is genuinely outside the root. The same lexical rule governs the
+process side: a process whose `/proc/<pid>/cwd` resolves to a DELETED path is matched by the
+path text (the ` (deleted)` suffix stripped), so a runaway whose scratch was removed under it is
+still "rooted under" the scratch root and is reaped. Evidence: a spec-80 mutant test binary
+(u80c1, 2026-09-03) hung in a busy loop inside its pid namespace after `cargo-mutants` removed
+its tree; the cwd-rooted reaper never matched the deleted path, and it ran for eight days at
+roughly seventeen cores before the operator killed it by hand.
 
 STEP RESOLVES THE MAIN WORKTREE, AND EXACTLY ONE ROOT, decided: `rigger step`, `rigger run` and
 `rigger workflow` derive the repository from `git rev-parse --git-common-dir` and operate on the
