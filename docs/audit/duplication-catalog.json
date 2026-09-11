@@ -1305,50 +1305,56 @@
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 77,
-        "end_line": 77,
+        "start_line": 94,
+        "end_line": 94,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 96,
-        "end_line": 96,
+        "start_line": 113,
+        "end_line": 113,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 189,
-        "end_line": 189,
+        "start_line": 243,
+        "end_line": 243,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 202,
-        "end_line": 202,
+        "start_line": 256,
+        "end_line": 256,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 545,
-        "end_line": 545,
+        "start_line": 599,
+        "end_line": 599,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 552,
-        "end_line": 552,
+        "start_line": 606,
+        "end_line": 606,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 569,
-        "end_line": 569,
+        "start_line": 623,
+        "end_line": 623,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 576,
-        "end_line": 576,
+        "start_line": 630,
+        "end_line": 630,
+        "name": "Command::new"
+      },
+      {
+        "file": "tests/plan_stage_commit_landing_periphery.rs",
+        "start_line": 869,
+        "end_line": 869,
         "name": "Command::new"
       },
       {
@@ -1857,7 +1863,7 @@
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 282 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: Command::new call sites - 283 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0007",
@@ -1951,8 +1957,8 @@
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 114,
-        "end_line": 119,
+        "start_line": 131,
+        "end_line": 136,
         "name": "agent"
       }
     ],
