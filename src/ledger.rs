@@ -81,6 +81,35 @@ pub struct Unit {
     /// cause-less prior event (additive, serde-defaulted) - readers default an empty
     /// cause to `"unknown"`, never this projection.
     pub cause: String,
+    /// Spec 88, criterion 3 (ESCALATION RESUMES): the per-unit remediation ceiling an
+    /// operator's `rigger resume-unit` grant raised past a prior escalation - the
+    /// folded attempt count AT the moment of the LATEST `UnitResumed` fold, plus its
+    /// `attempts_granted`. `0` for a unit that has never been resumed. The conductor's
+    /// `max_retries_for` reads it to widen `safety::remediate`'s bound for exactly
+    /// this unit; every other unit's remediation is unaffected. Left as-is (never
+    /// cleared) once the unit re-escalates - the ceiling is already spent by then, so
+    /// a stale value is harmless; only [`Unit::resumed`] (the display fact) clears.
+    pub resume_bound: u32,
+    /// Spec 88, criterion 3: the operator identity and grant size of the LATEST
+    /// `UnitResumed`, for `rigger status` to name the grant ("resumed by operator (N
+    /// attempt(s) granted)"). `None` for a unit that has never been resumed, and
+    /// cleared back to `None` the moment the unit escalates again - "a second
+    /// escalation after the grant is final again until the next resume" - so a stale
+    /// banner never survives past the grant it described.
+    pub resumed: Option<ResumeGrant>,
+}
+
+/// The operator identity and grant size of a unit's latest `UnitResumed` (spec 88,
+/// criterion 3), so [`Unit::resumed`] carries both facts together.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResumeGrant {
+    /// Who granted it - always `"operator"` from the shipped `rigger resume-unit`
+    /// command, carried through rather than hardcoded here so a legitimate future
+    /// actor needs no fold change.
+    pub by: String,
+    /// How many extra attempts this grant gave, exactly as `rigger resume-unit
+    /// --attempts N` (default 1) recorded it.
+    pub attempts_granted: u32,
 }
 
 /// RunState is the projected run state.
@@ -301,6 +330,11 @@ pub const TYPE_UNIT_STARTED: &str = "UnitStarted";
 pub const TYPE_UNIT_STATUS: &str = "UnitStatus";
 pub const TYPE_UNIT_FAILED: &str = "UnitFailed";
 pub const TYPE_UNIT_ESCALATED: &str = "UnitEscalated";
+/// Spec 88, criterion 3 (ESCALATION RESUMES): `rigger resume-unit <unit> [--attempts
+/// N]` (default 1) appends this - the one new event type the criterion introduces -
+/// so an operator can grant an escalated unit more remediation depth without
+/// replanning the whole spec. Body: `{unit, attempts_granted, by: "operator"}`.
+pub const TYPE_UNIT_RESUMED: &str = "UnitResumed";
 pub const TYPE_UNIT_INTEGRATED: &str = "UnitIntegrated";
 /// The conductor's SpecDefect event (kept in sync with `conductor::TYPE_SPEC_DEFECT`):
 /// an uncovered criterion the run flagged rather than deviating around (§4.4).
@@ -373,6 +407,14 @@ struct UnitEscalated {
     id: String,
 }
 #[derive(Deserialize)]
+struct UnitResumed {
+    unit: String,
+    #[serde(default)]
+    attempts_granted: u32,
+    #[serde(default)]
+    by: String,
+}
+#[derive(Deserialize)]
 struct UnitIntegrated {
     id: String,
     #[serde(default)]
@@ -406,6 +448,8 @@ impl RunState {
             attempts: 0,
             commit: String::new(),
             cause: String::new(),
+            resume_bound: 0,
+            resumed: None,
         })
     }
 
@@ -450,7 +494,31 @@ impl RunState {
             }
             TYPE_UNIT_ESCALATED => {
                 let p: UnitEscalated = serde_json::from_slice(&e.data)?;
-                self.unit(&p.id).status = Status::Escalated;
+                let u = self.unit(&p.id);
+                u.status = Status::Escalated;
+                // Spec 88, criterion 3: a fresh escalation retires any earlier grant's
+                // display banner - "a second escalation after the grant is final
+                // again until the next resume". `resume_bound` is left alone: it is
+                // already spent (this escalation only fires once attempts reached
+                // it), so a stale value is harmless and a later resume overwrites it.
+                u.resumed = None;
+            }
+            TYPE_UNIT_RESUMED => {
+                let p: UnitResumed = serde_json::from_slice(&e.data)?;
+                let u = self.unit(&p.unit);
+                // Re-enter remediation exactly as a mid-remediation (non-terminal)
+                // `Failed` unit does: `is_terminal` and the conductor's
+                // `resume_phase` both already treat `Failed` as "continue from the
+                // durable branch, seeded at the recorded attempt count" - the exact
+                // "re-parks the implementer on the durable branch" behavior this
+                // criterion specifies, with no second resume-continuity path to
+                // maintain.
+                u.status = Status::Failed;
+                u.resume_bound = u.attempts + p.attempts_granted;
+                u.resumed = Some(ResumeGrant {
+                    by: p.by,
+                    attempts_granted: p.attempts_granted,
+                });
             }
             TYPE_UNIT_INTEGRATED => {
                 let p: UnitIntegrated = serde_json::from_slice(&e.data)?;
@@ -691,6 +759,62 @@ mod tests {
         assert_eq!(r.units["u"].status, Status::Escalated);
         assert!(!r.done());
         assert!(r.is_terminal("u"));
+    }
+
+    #[test]
+    fn a_resumed_escalation_reenters_remediation_not_terminal() {
+        // Spec 88, criterion 3 (ESCALATION RESUMES): `rigger resume-unit` appends
+        // `UnitResumed` on top of an escalated unit. The unit must re-enter
+        // remediation exactly as a mid-remediation `Failed` unit does - `is_terminal`
+        // false, so a fresh `rigger step` seeds it into scheduling instead of
+        // skipping it forever - and it carries the grant so `rigger status` can name
+        // it and the conductor can widen this ONE unit's remediation bound.
+        let events = vec![
+            ev(TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
+            ev(TYPE_UNIT_FAILED, r#"{"id":"u","attempts":3}"#),
+            ev(TYPE_UNIT_ESCALATED, r#"{"id":"u"}"#),
+            ev(
+                TYPE_UNIT_RESUMED,
+                r#"{"unit":"u","attempts_granted":2,"by":"operator"}"#,
+            ),
+        ];
+        let r = project(&events).unwrap();
+        assert_eq!(r.units["u"].status, Status::Failed);
+        assert!(!r.is_terminal("u"), "a resumed unit must not stay terminal");
+        // attempts is UNCHANGED by the resume - only the bound widens.
+        assert_eq!(r.units["u"].attempts, 3);
+        // The new ceiling is attempts-at-resume + attempts_granted.
+        assert_eq!(r.units["u"].resume_bound, 5);
+        assert_eq!(
+            r.units["u"].resumed,
+            Some(ResumeGrant {
+                by: "operator".to_string(),
+                attempts_granted: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn a_second_escalation_retires_the_stale_resume_banner() {
+        // "a second escalation after the grant is final again until the next
+        // resume": once a resumed unit exhausts its widened bound and escalates
+        // again, the OLD grant's banner must clear - `resumed` is `None` again,
+        // reading as a plain fresh escalation, not a stale "resumed" fact.
+        let events = vec![
+            ev(TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
+            ev(TYPE_UNIT_FAILED, r#"{"id":"u","attempts":3}"#),
+            ev(TYPE_UNIT_ESCALATED, r#"{"id":"u"}"#),
+            ev(
+                TYPE_UNIT_RESUMED,
+                r#"{"unit":"u","attempts_granted":1,"by":"operator"}"#,
+            ),
+            ev(TYPE_UNIT_FAILED, r#"{"id":"u","attempts":4}"#),
+            ev(TYPE_UNIT_ESCALATED, r#"{"id":"u"}"#),
+        ];
+        let r = project(&events).unwrap();
+        assert_eq!(r.units["u"].status, Status::Escalated);
+        assert!(r.is_terminal("u"));
+        assert_eq!(r.units["u"].resumed, None);
     }
 
     #[test]
