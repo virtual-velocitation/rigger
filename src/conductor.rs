@@ -725,6 +725,28 @@ struct Integration {
     blocked: Option<Vec<String>>,
 }
 
+/// What a producer (`plan`) stage's worktree held when it reached its DAG-terminal
+/// integration point ([`RunCtx::integrate_plan_commits`], spec 88 criterion 4 - PLAN
+/// AMENDMENTS LAND). A `produces` stage writes no code, but its agent MAY commit a spec
+/// amendment directly with its own git access - an approved fix to the very spec it is
+/// decomposing - and unlike an ordinary unit, nothing else ever merges that worktree
+/// into the run branch, so without resolving it here a committed amendment reaches no
+/// branch (Goal item 4: the b6a471c amendment).
+enum PlanCommitOutcome {
+    /// No commit exists on the worktree beyond the run branch's current HEAD: the
+    /// historical review-only path, byte-for-byte unchanged.
+    None,
+    /// Every commit touched ONLY `specs/` and landed on the run branch cleanly: the
+    /// shas AS THEY LANDED (see [`worktree::CherryPickOutcome::Picked`]), oldest-first.
+    Landed(Vec<String>),
+    /// A commit touched a path outside `specs/` - the offending paths (sorted,
+    /// deduplicated) named in the failure fed back to the planner.
+    OutOfScope(Vec<String>),
+    /// The cherry-pick conflicted with a concurrent operator commit under `specs/` and
+    /// was aborted; the run branch is untouched. Carries the conflict detail.
+    Conflict(String),
+}
+
 /// The ratchet effect of a single gate run, resolved by the failure taxonomy's three-way
 /// outcome (spec 10, unit 2). `record_gate` maps each to a promote / demote / hold.
 enum GateRatchet {
@@ -4400,228 +4422,283 @@ impl RunCtx<'_> {
                 // lifecycle (implement -> gates -> three-tier review -> integrate)
                 // below, unchanged.
                 if is_producer(st) {
-                    self.emit(
-                        ledger::TYPE_UNIT_INTEGRATED,
-                        json!({"id": st.name, "commit": REVIEW_ONLY_NO_ARTIFACT}),
-                    )?;
-                    return Ok(true);
-                }
-                // The SDET-author spawn (spec 33): author periphery tests into the
-                // implementer's OWN worktree (`dir`) at the build seam - AFTER the
-                // implementer's green status and BEFORE the pre-gate commit below - so on
-                // every unit the SDET authors its periphery tests into the same tree the
-                // existing commit sweeps in and the unscoped gates and the reviewers judge.
-                // ONE shared seam authority (`spawn_sdet_author`), so the single-lane path
-                // and the speculation path place the spawn identically. This unit OWNS the
-                // spawn placement and its role token; result-advancement, absent-agent, and
-                // crash disposition are the next unit's - so only the replay-safe parked arm
-                // acts here: `?` propagates it, holding the unit with no commit until a later
-                // step replays the sdet and its periphery tests land in the committed tree.
-                self.spawn_sdet_author(st, dir, attempts)?;
-                // Commit the implementer's worktree BEFORE running the gates (§3.2),
-                // so the gate measures EXACTLY the committed artifact that the
-                // subsequent integrate merges - never a dirty worktree. A unit could
-                // otherwise pass `cargo test` on uncommitted files (e.g. three new
-                // tests the implementer wrote but never `git add`ed) while the
-                // committed tree the adjudicator inspects is still short: a false
-                // green that loops the unit forever on a reject it can never satisfy.
-                // Committing here collapses gate-green to committed-green. The
-                // worktree-less path (no `wt`, e.g. an `isolation: none` agent or a
-                // repo-less run) has no commit step and is unchanged.
-                if let Some(w) = wt {
-                    w.commit(&format!("rigger: {} attempt {}", st.name, attempts + 1))?;
-                }
-                // Blast-radius gate selection (spec 12, unit 3): the implement/remediate
-                // INNER LOOP runs only the gates whose `inputs:` intersect the unit's grounded
-                // blast radius (its `grounded_seed`, the SAME radius the spawn/partition/
-                // staleness passes use), skipping and logging the rest. A remediation iteration
-                // then re-verifies only what its change could have touched; the exhaustive suite
-                // is asserted once at the integrate door below.
-                let gate_outcome =
-                    self.run_gates(st, dir, attempts, GateSelection::Narrowed(&blast_radius))?;
-                if gate_outcome.pass {
-                    // Ensure-on-park, defense in depth (spec 64 criterion 3): `stage_worktree`
-                    // asserted this worktree exists exactly ONCE, before this call began - the
-                    // gates that just ran above are real wall-clock time (a genuine cargo
-                    // build/test), the exact window in which an out-of-band actor could delete
-                    // it before the review tier's spawns below consume it. Re-assert now, right
-                    // before handing it out again, with the SAME deterministic adopt-or-create
-                    // machinery `stage_worktree` already uses - a no-op when nothing disturbed
-                    // it (see [`Worktree::ensure_present`]). This MUST run before the sha stamp
-                    // immediately below: a gate that deleted the worktree as its own side
-                    // effect (proven live above) would otherwise leave `head_sha_of` reading a
-                    // directory that does not exist yet, silently stamping an EMPTY sha
-                    // (`unwrap_or_default`) instead of the tree the review tier is about to
-                    // judge (adj-u3c3 round-2 reject: sdet-u3c3-verified-sha-stamped-before-
-                    // restore).
-                    if let Some(w) = wt {
-                        w.ensure_present()?;
-                    }
-                    // The verified status carries the gate evidence (item 4): each
-                    // gate that ran summarized for the ledger's per-unit evidence.
-                    // Replay-keyed on unit + attempt so a re-step past this unit's
-                    // recorded gates does not re-append it (spec 04, criterion 4). It is
-                    // still an event of the implementer spawn, so it carries the same
-                    // requested alias and resolved id as the green status (spec 05 line 52).
-                    // The worktree HEAD the tiers are about to judge (spec 11, unit 1):
-                    // the implementer's committed tree (committed above, before gating,
-                    // and just re-asserted present by `ensure_present` above), stamped so
-                    // a later reject/approve on the SAME sha reads as a flip-flop. Empty
-                    // (omitted) on a repo-less unit with no worktree.
-                    let reviewed_sha = worktree::head_sha_of(dir);
-                    self.emit_keyed_meta(
-                        &format!("{}/verified#{attempts}", st.name),
-                        ledger::TYPE_UNIT_STATUS,
-                        json!({
-                            "id": st.name,
-                            "status": "verified",
-                            "evidence": verified_evidence(&st.gates),
-                        }),
-                        &[
-                            (META_MODEL_ALIAS, &impl_alias),
-                            (META_MODEL_RESOLVED, &resolved_model),
-                            (META_WORKTREE_SHA, &reviewed_sha),
-                        ],
-                    )?;
-                    // Route the review tier over the UNCAPPED safe-superset view (spec 16 unit 3),
-                    // not the capped precise seed: high-risk membership tested over the full
-                    // structural width forces the full panel for a beyond-cap high-risk file, and a
-                    // wide structural change earns the full panel by size. On the non-symbols
-                    // default `radius.safe == radius.precise`, so routing is byte-for-byte unchanged.
-                    let review = self.review_unit(
-                        st,
-                        dir,
-                        attempts,
-                        attempts > 0,
-                        false,
-                        &radius.safe,
-                        any_parked,
-                        wt,
-                    )?;
-                    // A contradiction against a PRIOR integrated unit (spec 12, unit 4): the
-                    // adjudicator named another, already-integrated unit as the real defect
-                    // source. QUEUE the rollback for the run loop to drain after this wave
-                    // (single-threaded, so the git revert never races a concurrent merge). A
-                    // unit never compensates ITSELF (that is ordinary remediation below).
-                    if let Some(target) = &review.compensate {
-                        if target != &st.name {
-                            // DURABLY record the compensation INTENT here, the MOMENT the
-                            // review names the target - BEFORE this unit integrates and before
-                            // the post-wave drain reverts anything - so a crash between now and
-                            // the drain does not silently drop the rollback. A resume
-                            // re-derives this un-drained mark (`pending_compensations_from_log`)
-                            // and the pre-loop drain re-drives it. Rides the existing
-                            // `UnitStatus` vocabulary as a fold-neutral marker (no new event
-                            // type, spec 12 G2): `META_COMPENSATE_TARGET` names the unit to roll
-                            // back and `META_CONTRADICTION` the reason; keyed so a stepwise
-                            // resume re-appends it exactly once. The mark's `id` is the TARGET
-                            // and its status token is not a real lifecycle status, so folding it
-                            // leaves the target `Integrated` until the drain reverts it.
-                            self.emit_keyed_meta(
-                                &compensation_queued_key(&st.name, target, attempts),
-                                ledger::TYPE_UNIT_STATUS,
+                    // PLAN AMENDMENTS LAND (spec 88, criterion 4): resolve the
+                    // worktree BEFORE the historical no-artifact integration, so a
+                    // spec amendment the planner committed directly reaches the run
+                    // branch instead of dying with the worktree. See
+                    // `integrate_plan_commits`'s doc comment for the mechanism and
+                    // why this is the one place it must happen.
+                    match self.integrate_plan_commits(wt)? {
+                        PlanCommitOutcome::None => {
+                            self.emit(
+                                ledger::TYPE_UNIT_INTEGRATED,
+                                json!({"id": st.name, "commit": REVIEW_ONLY_NO_ARTIFACT}),
+                            )?;
+                            return Ok(true);
+                        }
+                        PlanCommitOutcome::Landed(shas) => {
+                            // `commit` is the newest landed sha - a single valid,
+                            // reachable, revertible run-branch ref (the same
+                            // single-sha contract `commits_to_compensate` reads for
+                            // every other unit); `shas` carries the full ordered
+                            // list for provenance.
+                            self.emit(
+                                ledger::TYPE_UNIT_INTEGRATED,
                                 json!({
-                                    "id": target,
-                                    "status": STATUS_COMPENSATION_QUEUED,
-                                    "evidence": {
-                                        "compensation-queued": review.reason.trim(),
-                                    },
+                                    "id": st.name,
+                                    "commit": shas.last().cloned().unwrap_or_default(),
+                                    "shas": shas,
                                 }),
-                                &[
-                                    (META_COMPENSATE_TARGET, target),
-                                    (META_CONTRADICTION, review.reason.trim()),
-                                ],
                             )?;
-                            self.compensations.lock().unwrap().push(Compensation {
-                                target: target.clone(),
-                                reason: review.reason.clone(),
-                            });
+                            return Ok(true);
                         }
-                    }
-                    if review.approved {
-                        // on_pass governs integration (§3.2): empty or `merge` lands
-                        // the work; any other value (e.g. `none`) runs the gates but
-                        // never integrates - the verified, reviewed work stays
-                        // un-merged.
-                        if !integrates(st) {
-                            return Ok(false);
+                        PlanCommitOutcome::OutOfScope(paths) => {
+                            // A plan-stage commit may touch ONLY `specs/`: fail the
+                            // stage loudly, naming exactly what it touched, and feed
+                            // the normal remediation loop below - CAUSE_REJECT
+                            // already covers "this unit's output was refused" (see
+                            // its doc comment); a conductor-detected scope violation
+                            // is the same kind of refusal.
+                            cause = CAUSE_REJECT.to_string();
+                            next.review_reason = format!(
+                                "a plan-stage commit touched paths outside specs/: {}",
+                                paths.join(", ")
+                            );
                         }
-                        // The integrate door's EXHAUSTIVE gate (spec 12, unit 3): "done" is
-                        // asserted against the FULL gate library, never the blast-radius-narrowed
-                        // inner-loop subset, so a unit never lands on a partial suite (R6). Cheap
-                        // via unit-1's content cache - the gates the inner loop already ran replay
-                        // from the log, so only the gates it SKIPPED actually run here. A red here
-                        // (a skipped gate the merged-to-be tree fails) BLOCKS the merge and feeds
-                        // remediation, exactly like an inner-loop gate failure. `integrate_and_emit`
-                        // itself is untouched - the exhaustive suite gates whether it is CALLED.
-                        let full = self.run_gates(st, dir, attempts, GateSelection::Exhaustive)?;
-                        if full.pass {
-                            // The gates passed AND the review explicitly approved: the only
-                            // path that mints an `IntegrationApproval`, so the only path that
-                            // can merge. The reject branch below has no approval to hand to
-                            // `integrate_and_emit`, so it cannot land the unit's code.
-                            //
-                            // Gap 16 invariant (spec 06 unit 3): the verdict is folded and
-                            // acted on HERE, and an approve returns before the `remediate`
-                            // terminal check below ever runs. So an approval on a unit's
-                            // FINAL permitted attempt integrates - `max_retries` gates only
-                            // STARTING another attempt, it never overrides an approval. This
-                            // ordering (verdict-fold before attempt-counter) is load-bearing;
-                            // reversing it re-opens the bug where unit-2's approved-on-
-                            // attempt-6 review was recorded as UnitFailed/UnitEscalated.
-                            let integration = self.integrate_and_emit(
-                                stages,
-                                wt,
-                                st,
-                                attempts,
-                                IntegrationApproval::approved(),
-                            )?;
-                            match integration.blocked {
-                                None => {
-                                    self.emit_meta(
-                                        ledger::TYPE_UNIT_INTEGRATED,
-                                        json!({"id": st.name, "commit": integration.commit}),
-                                        &[(META_STALE, &integration.staled.join(","))],
-                                    )?;
-                                    return Ok(true);
-                                }
-                                // The post-merge re-gate went RED (spec 12, unit 5): the pre-
-                                // merge gates passed in this unit's OWN worktree, but the MERGED
-                                // tree failed - an unpredicted batch-mate overlap auto-merged
-                                // into a broken tree. The merge was ROLLED BACK (nothing
-                                // landed), so capture the merge-break evidence and fall through
-                                // to remediation, exactly like the exhaustive pre-merge red
-                                // below - never integrate a broken merged tree.
-                                Some(evidence) => {
-                                    // spec 69, criterion 3: a post-merge break is a merge
-                                    // conflict, never a plain gate cause - set it HERE, at
-                                    // the branch that detected it, not inferred later from
-                                    // the evidence this shares with a plain gate failure.
-                                    cause = CAUSE_INTEGRATE_CONFLICT.to_string();
-                                    next.gate_evidence = evidence;
-                                }
-                            }
-                        } else {
-                            // The exhaustive suite went red on an approved unit (a gate the
-                            // inner loop had skipped fails against the merged-to-be tree): treat
-                            // it like any gate failure - capture the evidence and fall through
-                            // to remediation, do NOT integrate a tree that fails the full suite.
-                            cause = gate_failure_cause(&full.evidence);
-                            next.gate_evidence = full.evidence;
+                        PlanCommitOutcome::Conflict(detail) => {
+                            // CONSTRAINTS WALK (spec 88 c4): a plan amendment that
+                            // conflicts with a concurrent operator commit under
+                            // `specs/` must escalate to a human rather than
+                            // silently drop the amendment - bounded remediation
+                            // below eventually reaches UnitEscalated (this
+                            // project's "awaiting a human") when the planner's
+                            // retries do not resolve it.
+                            cause = CAUSE_INTEGRATE_CONFLICT.to_string();
+                            next.review_reason = format!(
+                                "the plan amendment conflicts with a concurrent specs/ change: {}",
+                                detail.trim()
+                            );
                         }
-                    } else {
-                        // A rejecting adjudicator is treated exactly like a gate failure:
-                        // capture its reasoning for the next attempt's prompt (item 5) and
-                        // fall through to remediation, do NOT integrate.
-                        cause = CAUSE_REJECT.to_string();
-                        next.review_reason = review.reason;
                     }
                 } else {
-                    // Capture the failing gates' evidence for the next attempt's
-                    // prompt (item 3 / spec 02).
-                    cause = gate_failure_cause(&gate_outcome.evidence);
-                    next.gate_evidence = gate_outcome.evidence;
-                }
+                    // The SDET-author spawn (spec 33): author periphery tests into the
+                    // implementer's OWN worktree (`dir`) at the build seam - AFTER the
+                    // implementer's green status and BEFORE the pre-gate commit below - so on
+                    // every unit the SDET authors its periphery tests into the same tree the
+                    // existing commit sweeps in and the unscoped gates and the reviewers judge.
+                    // ONE shared seam authority (`spawn_sdet_author`), so the single-lane path
+                    // and the speculation path place the spawn identically. This unit OWNS the
+                    // spawn placement and its role token; result-advancement, absent-agent, and
+                    // crash disposition are the next unit's - so only the replay-safe parked arm
+                    // acts here: `?` propagates it, holding the unit with no commit until a later
+                    // step replays the sdet and its periphery tests land in the committed tree.
+                    self.spawn_sdet_author(st, dir, attempts)?;
+                    // Commit the implementer's worktree BEFORE running the gates (§3.2),
+                    // so the gate measures EXACTLY the committed artifact that the
+                    // subsequent integrate merges - never a dirty worktree. A unit could
+                    // otherwise pass `cargo test` on uncommitted files (e.g. three new
+                    // tests the implementer wrote but never `git add`ed) while the
+                    // committed tree the adjudicator inspects is still short: a false
+                    // green that loops the unit forever on a reject it can never satisfy.
+                    // Committing here collapses gate-green to committed-green. The
+                    // worktree-less path (no `wt`, e.g. an `isolation: none` agent or a
+                    // repo-less run) has no commit step and is unchanged.
+                    if let Some(w) = wt {
+                        w.commit(&format!("rigger: {} attempt {}", st.name, attempts + 1))?;
+                    }
+                    // Blast-radius gate selection (spec 12, unit 3): the implement/remediate
+                    // INNER LOOP runs only the gates whose `inputs:` intersect the unit's grounded
+                    // blast radius (its `grounded_seed`, the SAME radius the spawn/partition/
+                    // staleness passes use), skipping and logging the rest. A remediation iteration
+                    // then re-verifies only what its change could have touched; the exhaustive suite
+                    // is asserted once at the integrate door below.
+                    let gate_outcome =
+                        self.run_gates(st, dir, attempts, GateSelection::Narrowed(&blast_radius))?;
+                    if gate_outcome.pass {
+                        // Ensure-on-park, defense in depth (spec 64 criterion 3): `stage_worktree`
+                        // asserted this worktree exists exactly ONCE, before this call began - the
+                        // gates that just ran above are real wall-clock time (a genuine cargo
+                        // build/test), the exact window in which an out-of-band actor could delete
+                        // it before the review tier's spawns below consume it. Re-assert now, right
+                        // before handing it out again, with the SAME deterministic adopt-or-create
+                        // machinery `stage_worktree` already uses - a no-op when nothing disturbed
+                        // it (see [`Worktree::ensure_present`]). This MUST run before the sha stamp
+                        // immediately below: a gate that deleted the worktree as its own side
+                        // effect (proven live above) would otherwise leave `head_sha_of` reading a
+                        // directory that does not exist yet, silently stamping an EMPTY sha
+                        // (`unwrap_or_default`) instead of the tree the review tier is about to
+                        // judge (adj-u3c3 round-2 reject: sdet-u3c3-verified-sha-stamped-before-
+                        // restore).
+                        if let Some(w) = wt {
+                            w.ensure_present()?;
+                        }
+                        // The verified status carries the gate evidence (item 4): each
+                        // gate that ran summarized for the ledger's per-unit evidence.
+                        // Replay-keyed on unit + attempt so a re-step past this unit's
+                        // recorded gates does not re-append it (spec 04, criterion 4). It is
+                        // still an event of the implementer spawn, so it carries the same
+                        // requested alias and resolved id as the green status (spec 05 line 52).
+                        // The worktree HEAD the tiers are about to judge (spec 11, unit 1):
+                        // the implementer's committed tree (committed above, before gating,
+                        // and just re-asserted present by `ensure_present` above), stamped so
+                        // a later reject/approve on the SAME sha reads as a flip-flop. Empty
+                        // (omitted) on a repo-less unit with no worktree.
+                        let reviewed_sha = worktree::head_sha_of(dir);
+                        self.emit_keyed_meta(
+                            &format!("{}/verified#{attempts}", st.name),
+                            ledger::TYPE_UNIT_STATUS,
+                            json!({
+                                "id": st.name,
+                                "status": "verified",
+                                "evidence": verified_evidence(&st.gates),
+                            }),
+                            &[
+                                (META_MODEL_ALIAS, &impl_alias),
+                                (META_MODEL_RESOLVED, &resolved_model),
+                                (META_WORKTREE_SHA, &reviewed_sha),
+                            ],
+                        )?;
+                        // Route the review tier over the UNCAPPED safe-superset view (spec 16 unit 3),
+                        // not the capped precise seed: high-risk membership tested over the full
+                        // structural width forces the full panel for a beyond-cap high-risk file, and a
+                        // wide structural change earns the full panel by size. On the non-symbols
+                        // default `radius.safe == radius.precise`, so routing is byte-for-byte unchanged.
+                        let review = self.review_unit(
+                            st,
+                            dir,
+                            attempts,
+                            attempts > 0,
+                            false,
+                            &radius.safe,
+                            any_parked,
+                            wt,
+                        )?;
+                        // A contradiction against a PRIOR integrated unit (spec 12, unit 4): the
+                        // adjudicator named another, already-integrated unit as the real defect
+                        // source. QUEUE the rollback for the run loop to drain after this wave
+                        // (single-threaded, so the git revert never races a concurrent merge). A
+                        // unit never compensates ITSELF (that is ordinary remediation below).
+                        if let Some(target) = &review.compensate {
+                            if target != &st.name {
+                                // DURABLY record the compensation INTENT here, the MOMENT the
+                                // review names the target - BEFORE this unit integrates and before
+                                // the post-wave drain reverts anything - so a crash between now and
+                                // the drain does not silently drop the rollback. A resume
+                                // re-derives this un-drained mark (`pending_compensations_from_log`)
+                                // and the pre-loop drain re-drives it. Rides the existing
+                                // `UnitStatus` vocabulary as a fold-neutral marker (no new event
+                                // type, spec 12 G2): `META_COMPENSATE_TARGET` names the unit to roll
+                                // back and `META_CONTRADICTION` the reason; keyed so a stepwise
+                                // resume re-appends it exactly once. The mark's `id` is the TARGET
+                                // and its status token is not a real lifecycle status, so folding it
+                                // leaves the target `Integrated` until the drain reverts it.
+                                self.emit_keyed_meta(
+                                    &compensation_queued_key(&st.name, target, attempts),
+                                    ledger::TYPE_UNIT_STATUS,
+                                    json!({
+                                        "id": target,
+                                        "status": STATUS_COMPENSATION_QUEUED,
+                                        "evidence": {
+                                            "compensation-queued": review.reason.trim(),
+                                        },
+                                    }),
+                                    &[
+                                        (META_COMPENSATE_TARGET, target),
+                                        (META_CONTRADICTION, review.reason.trim()),
+                                    ],
+                                )?;
+                                self.compensations.lock().unwrap().push(Compensation {
+                                    target: target.clone(),
+                                    reason: review.reason.clone(),
+                                });
+                            }
+                        }
+                        if review.approved {
+                            // on_pass governs integration (§3.2): empty or `merge` lands
+                            // the work; any other value (e.g. `none`) runs the gates but
+                            // never integrates - the verified, reviewed work stays
+                            // un-merged.
+                            if !integrates(st) {
+                                return Ok(false);
+                            }
+                            // The integrate door's EXHAUSTIVE gate (spec 12, unit 3): "done" is
+                            // asserted against the FULL gate library, never the blast-radius-narrowed
+                            // inner-loop subset, so a unit never lands on a partial suite (R6). Cheap
+                            // via unit-1's content cache - the gates the inner loop already ran replay
+                            // from the log, so only the gates it SKIPPED actually run here. A red here
+                            // (a skipped gate the merged-to-be tree fails) BLOCKS the merge and feeds
+                            // remediation, exactly like an inner-loop gate failure. `integrate_and_emit`
+                            // itself is untouched - the exhaustive suite gates whether it is CALLED.
+                            let full =
+                                self.run_gates(st, dir, attempts, GateSelection::Exhaustive)?;
+                            if full.pass {
+                                // The gates passed AND the review explicitly approved: the only
+                                // path that mints an `IntegrationApproval`, so the only path that
+                                // can merge. The reject branch below has no approval to hand to
+                                // `integrate_and_emit`, so it cannot land the unit's code.
+                                //
+                                // Gap 16 invariant (spec 06 unit 3): the verdict is folded and
+                                // acted on HERE, and an approve returns before the `remediate`
+                                // terminal check below ever runs. So an approval on a unit's
+                                // FINAL permitted attempt integrates - `max_retries` gates only
+                                // STARTING another attempt, it never overrides an approval. This
+                                // ordering (verdict-fold before attempt-counter) is load-bearing;
+                                // reversing it re-opens the bug where unit-2's approved-on-
+                                // attempt-6 review was recorded as UnitFailed/UnitEscalated.
+                                let integration = self.integrate_and_emit(
+                                    stages,
+                                    wt,
+                                    st,
+                                    attempts,
+                                    IntegrationApproval::approved(),
+                                )?;
+                                match integration.blocked {
+                                    None => {
+                                        self.emit_meta(
+                                            ledger::TYPE_UNIT_INTEGRATED,
+                                            json!({"id": st.name, "commit": integration.commit}),
+                                            &[(META_STALE, &integration.staled.join(","))],
+                                        )?;
+                                        return Ok(true);
+                                    }
+                                    // The post-merge re-gate went RED (spec 12, unit 5): the pre-
+                                    // merge gates passed in this unit's OWN worktree, but the MERGED
+                                    // tree failed - an unpredicted batch-mate overlap auto-merged
+                                    // into a broken tree. The merge was ROLLED BACK (nothing
+                                    // landed), so capture the merge-break evidence and fall through
+                                    // to remediation, exactly like the exhaustive pre-merge red
+                                    // below - never integrate a broken merged tree.
+                                    Some(evidence) => {
+                                        // spec 69, criterion 3: a post-merge break is a merge
+                                        // conflict, never a plain gate cause - set it HERE, at
+                                        // the branch that detected it, not inferred later from
+                                        // the evidence this shares with a plain gate failure.
+                                        cause = CAUSE_INTEGRATE_CONFLICT.to_string();
+                                        next.gate_evidence = evidence;
+                                    }
+                                }
+                            } else {
+                                // The exhaustive suite went red on an approved unit (a gate the
+                                // inner loop had skipped fails against the merged-to-be tree): treat
+                                // it like any gate failure - capture the evidence and fall through
+                                // to remediation, do NOT integrate a tree that fails the full suite.
+                                cause = gate_failure_cause(&full.evidence);
+                                next.gate_evidence = full.evidence;
+                            }
+                        } else {
+                            // A rejecting adjudicator is treated exactly like a gate failure:
+                            // capture its reasoning for the next attempt's prompt (item 5) and
+                            // fall through to remediation, do NOT integrate.
+                            cause = CAUSE_REJECT.to_string();
+                            next.review_reason = review.reason;
+                        }
+                    } else {
+                        // Capture the failing gates' evidence for the next attempt's
+                        // prompt (item 3 / spec 02).
+                        cause = gate_failure_cause(&gate_outcome.evidence);
+                        next.gate_evidence = gate_outcome.evidence;
+                    }
+                } // end `else` (non-producer lifecycle), spec 88 criterion 4
             }
 
             let rem = safety::remediate(attempts, self.max_retries());
@@ -7614,6 +7691,52 @@ impl RunCtx<'_> {
         })
     }
 
+    /// PLAN AMENDMENTS LAND (spec 88, criterion 4): resolve a producer stage's worktree
+    /// at its DAG-terminal integration point, BEFORE the historical no-artifact
+    /// integration runs - so a spec amendment the planner committed directly (with its
+    /// own git access) reaches the run branch instead of dying with the worktree. This
+    /// is the ONE place those commits land: the NEXT plan-critique worktree
+    /// ([`Self::review_only_worktree`]) branches from the run branch, so without this a
+    /// committed amendment is invisible to it (Goal item 4: the b6a471c amendment
+    /// reached no branch, and a fresh critique rejected the plan for the gap that
+    /// amendment had already closed).
+    ///
+    /// `None` when there is no worktree (a repo-less or non-isolated producer): there
+    /// is nothing it could have committed into.
+    fn integrate_plan_commits(&self, wt: Option<&Worktree>) -> Result<PlanCommitOutcome, Error> {
+        let Some(w) = wt else {
+            return Ok(PlanCommitOutcome::None);
+        };
+        let shas = w.commits_since_base()?;
+        if shas.is_empty() {
+            return Ok(PlanCommitOutcome::None);
+        }
+        // Validate scope BEFORE landing anything: every path this worktree touched
+        // since the run branch's current HEAD - committed AND any leftover dirty edit
+        // - must live under `specs/`, so a stray non-spec edit can never ride a
+        // legitimate amendment onto the run branch.
+        let touched = w.changed_since_base()?;
+        let mut offending: Vec<String> = touched
+            .into_iter()
+            .filter(|p| !p.starts_with("specs/"))
+            .collect();
+        if !offending.is_empty() {
+            offending.sort();
+            offending.dedup();
+            return Ok(PlanCommitOutcome::OutOfScope(offending));
+        }
+        // The SAME mutation authority every other write to the run branch checkout
+        // serializes through (`integrate_and_emit`'s merge above, `revert_on_base`'s
+        // rollback): a cherry-pick mutates `self.deps.repo` exactly like those do.
+        let _lock = self.integrate_mu.lock().unwrap();
+        match w.cherry_pick_onto_run_branch(&shas)? {
+            worktree::CherryPickOutcome::Picked(landed) => Ok(PlanCommitOutcome::Landed(landed)),
+            worktree::CherryPickOutcome::Conflict(detail) => {
+                Ok(PlanCommitOutcome::Conflict(detail))
+            }
+        }
+    }
+
     /// Build the SYSTEM prompt the conductor threads into every spawn: the agent's
     /// PERSONA (its role - the markdown body of its definition) followed by the
     /// rigger-authored communication discipline ([`RIGGER_COMMUNICATION`]). This is
@@ -8731,14 +8854,19 @@ fn review_evidence(reason: &str) -> BTreeMap<String, String> {
 ///
 /// - [`CAUSE_REJECT`]: an adjudicator/review verdict rejected the unit - the direct
 ///   per-unit reject, a standalone/fan-out review reject, a plan-critique DAG-critique
-///   reject (which runs no gates at all), and a compensation revert (a LATER unit's
-///   review proved this one wrong - a deferred reject, since the disqualifying signal is
-///   itself a review verdict).
+///   reject (which runs no gates at all), a compensation revert (a LATER unit's review
+///   proved this one wrong - a deferred reject, since the disqualifying signal is itself
+///   a review verdict), and a producer's own commit touching a path outside `specs/`
+///   (spec 88 criterion 4: the conductor's OWN scope check refuses the unit's output,
+///   the same kind of refusal a review verdict is).
 /// - [`CAUSE_INTEGRATE_CONFLICT`]: the merge landed cleanly but the POST-MERGE re-gate
-///   went red - a batch-mate's already-integrated change combined into a broken tree.
-///   Distinguished from a plain gate failure at the BRANCH POINT where it is detected
-///   (`integration.blocked`), never inferred from the shared evidence accumulator both
-///   cases populate for the retry prompt.
+///   went red - a batch-mate's already-integrated change combined into a broken tree -
+///   or a producer's `specs/`-only cherry-pick conflicted with a concurrent operator
+///   commit under `specs/` (spec 88 criterion 4: the same "a conflict blocked landing
+///   this unit's work" shape, textual git conflict either way). Distinguished from a
+///   plain gate failure at the BRANCH POINT where it is detected (`integration.blocked`
+///   or [`PlanCommitOutcome::Conflict`]), never inferred from the shared evidence
+///   accumulator both cases populate for the retry prompt.
 /// - [`CAUSE_INFRA_SPAWN`]: a mid-spawn driver crash (a non-zero exit, a non-usage-limit
 ///   error) - the usage-limit case never reaches `UnitFailed` at all (spec 06 unit 6:
 ///   wait-until-reset + re-spawn, no attempt charged).
@@ -10587,6 +10715,26 @@ mod tests {
         /// tier's spawn found the worktree ensure-on-park restored, not the gone dir a
         /// PRIOR tier's own deletion left behind (spec 64 criterion 3, round 4).
         dir_existed_at_spawn: Mutex<HashMap<String, Vec<bool>>>,
+        /// Per-agent list of (relative path, content) pairs (spec 88, criterion 4 - PLAN
+        /// AMENDMENTS LAND): on spawn, EACH pair is written into the worktree dir and
+        /// immediately committed as its OWN real git commit - mirroring a planner
+        /// agent's own direct git access (it commits a spec amendment itself; the
+        /// conductor never sweeps a producer's dirty tree the way it does an
+        /// implementer's). Isolation-guarded like `write_file`: a no-op on an empty
+        /// `opts.dir`. A `git commit` that finds nothing new (the same path/content
+        /// already committed, e.g. a remediation retry that changed nothing) is
+        /// silently absorbed - the PRIOR commit still stands, exactly as a real agent's
+        /// repeated identical commit would be.
+        commits_by_agent: HashMap<String, Vec<(String, String)>>,
+        /// Per-agent relative path (spec 88, criterion 4): on spawn, the named agent
+        /// reads THIS path from its OWN worktree dir, recording what it found into
+        /// `read_results` - so a test can prove a LATER stage's worktree (branched off
+        /// the run branch after a producer's commits landed) actually sees them.
+        read_file_by_agent: HashMap<String, String>,
+        /// What each `read_file_by_agent` reader actually found, keyed by agent id.
+        /// Absent when the agent never ran, its file was never landed, or `opts.dir`
+        /// was empty.
+        read_results: Mutex<HashMap<String, String>>,
     }
     impl Stub {
         fn new() -> Self {
@@ -10613,6 +10761,9 @@ mod tests {
                 call_order: Mutex::new(Vec::new()),
                 delete_dir_by_agent: std::collections::HashSet::new(),
                 dir_existed_at_spawn: Mutex::new(HashMap::new()),
+                commits_by_agent: HashMap::new(),
+                read_file_by_agent: HashMap::new(),
+                read_results: Mutex::new(HashMap::new()),
             }
         }
 
@@ -10771,6 +10922,41 @@ mod tests {
             if let Some(f) = self.write_file_by_agent.get(&a.id) {
                 if !opts.dir.is_empty() {
                     let _ = std::fs::write(Path::new(&opts.dir).join(f), "periphery\n");
+                }
+            }
+            // Spec 88 criterion 4 (PLAN AMENDMENTS LAND): a producer's own git commits,
+            // made with the agent's own git access - never swept/committed BY the
+            // conductor the way an implementer's dirty tree is. Isolation-guarded like
+            // `write_file` above.
+            if let Some(commits) = self.commits_by_agent.get(&a.id) {
+                if !opts.dir.is_empty() {
+                    for (path, content) in commits {
+                        let full = Path::new(&opts.dir).join(path);
+                        if let Some(parent) = full.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        let _ = std::fs::write(&full, content);
+                        let _ = std::process::Command::new("git")
+                            .arg("-C")
+                            .arg(&opts.dir)
+                            .args(["add", "-A"])
+                            .output();
+                        let _ = std::process::Command::new("git")
+                            .arg("-C")
+                            .arg(&opts.dir)
+                            .args(["commit", "-q", "-m", &format!("agent amend {path}")])
+                            .output();
+                    }
+                }
+            }
+            if let Some(path) = self.read_file_by_agent.get(&a.id) {
+                if !opts.dir.is_empty() {
+                    if let Ok(content) = std::fs::read_to_string(Path::new(&opts.dir).join(path)) {
+                        self.read_results
+                            .lock()
+                            .unwrap()
+                            .insert(a.id.clone(), content);
+                    }
                 }
             }
             for (t, v) in &self.emits {
@@ -22561,6 +22747,243 @@ mod tests {
     }
 
     #[test]
+    fn plan_stage_commit_under_specs_reaches_the_run_branch_before_the_next_worktree() {
+        // PLAN AMENDMENTS LAND (spec 88, criterion 4): a planner's own git commit under
+        // `specs/` must reach the run branch at the producer's DAG-terminal integration
+        // point - BEFORE any later stage's worktree (branched off the run branch, like
+        // the plan-critique gate's throwaway review worktree) is created. Without this,
+        // a committed amendment reaches no branch (Goal item 4: the b6a471c amendment)
+        // and a later critique never sees it.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("planner".into(), agent("planner"));
+        cfg.agents.insert("checker".into(), agent("checker"));
+        cfg.workflow.stages.insert(
+            "plan".into(),
+            Stage {
+                name: "plan".into(),
+                agent: "planner".into(),
+                produces: "dag".into(),
+                ..Default::default()
+            },
+        );
+        // Stands in for the next plan-critique worktree: a standalone review stage that
+        // needs the producer, so its throwaway worktree is created AFTER "plan" reaches
+        // Integrated - branched off whatever the run branch holds at that moment.
+        cfg.workflow.stages.insert(
+            "critique".into(),
+            Stage {
+                name: "critique".into(),
+                agents: vec!["checker".into()],
+                needs: vec!["plan".into()],
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            output: r#"{"verdict":"approve"}"#.into(),
+            commits_by_agent: HashMap::from([(
+                "planner".to_string(),
+                vec![("specs/90-foo.md".to_string(), "amendment\n".to_string())],
+            )]),
+            read_file_by_agent: HashMap::from([(
+                "checker".to_string(),
+                "specs/90-foo.md".to_string(),
+            )]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_eq!(
+            rs.units["plan"].status,
+            ledger::Status::Integrated,
+            "a producer with a landed amendment must still reach Integrated"
+        );
+        assert_ne!(
+            rs.units["plan"].commit, REVIEW_ONLY_NO_ARTIFACT,
+            "a landed specs/ commit replaces the review-only marker"
+        );
+        assert_ne!(rs.units["plan"].commit, "");
+
+        // The amendment is on the run branch itself.
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("specs").join("90-foo.md")).unwrap(),
+            "amendment\n",
+            "the plan-stage commit must reach the run branch"
+        );
+
+        // The load-bearing ordering claim: the NEXT stage's worktree (branched off the
+        // run branch after "plan" integrated) saw the amendment.
+        assert_eq!(
+            driver.read_results.lock().unwrap().get("checker").cloned(),
+            Some("amendment\n".to_string()),
+            "a later worktree branched off the run branch must already see the landed amendment"
+        );
+    }
+
+    #[test]
+    fn plan_stage_commit_outside_specs_fails_the_stage_naming_the_path() {
+        // PLAN AMENDMENTS LAND (spec 88, criterion 4): a plan-stage commit may touch
+        // ONLY `specs/`. A commit touching any other path must fail the stage loudly,
+        // naming the offending path, and never reach the run branch.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("planner".into(), agent("planner"));
+        cfg.workflow.stages.insert(
+            "plan".into(),
+            Stage {
+                name: "plan".into(),
+                agent: "planner".into(),
+                produces: "dag".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            commits_by_agent: HashMap::from([(
+                "planner".to_string(),
+                vec![("src/sneaky.rs".to_string(), "// scope creep\n".to_string())],
+            )]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_eq!(
+            rs.units["plan"].status,
+            ledger::Status::Escalated,
+            "an out-of-scope plan-stage commit must never integrate; it escalates \
+             (the same violation recurs every retry, since nothing fixes it)"
+        );
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        // Cause wire (spec 69, criterion 3): a scope violation is the same kind of
+        // refusal a review verdict is, so it is stamped the existing CAUSE_REJECT tag,
+        // never a fabricated new one.
+        let failed = events
+            .iter()
+            .find(|e| e.type_ == ledger::TYPE_UNIT_FAILED)
+            .expect("an out-of-scope commit must record a UnitFailed");
+        assert!(
+            String::from_utf8_lossy(&failed.data).contains("\"cause\":\"reject\""),
+            "an out-of-scope plan-stage commit is stamped CAUSE_REJECT"
+        );
+        // "Fails the stage LOUDLY, naming the offending path": the retry prompt (the
+        // planner's own next attempt) and the escalation lesson both carry it.
+        let prompts = driver.prompts_for("planner");
+        assert!(
+            prompts.iter().any(|p| p.contains("src/sneaky.rs")),
+            "the retry prompt must name the offending path; prompts: {prompts:?}"
+        );
+        let lesson = events
+            .iter()
+            .find(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED)
+            .expect("the escalation must record a lesson naming the violation");
+        assert!(
+            String::from_utf8_lossy(&lesson.data).contains("src/sneaky.rs"),
+            "the escalation lesson must name the offending path"
+        );
+        assert!(
+            !repo.path().join("src").join("sneaky.rs").exists(),
+            "the out-of-scope content must never reach the run branch"
+        );
+    }
+
+    #[test]
+    fn plan_stage_commit_conflicting_with_a_concurrent_specs_change_escalates() {
+        // CONSTRAINTS WALK (spec 88, criterion 4): a plan amendment that conflicts with
+        // a concurrent operator commit under `specs/` must escalate to a human rather
+        // than silently drop the amendment - never a clean (wrong) auto-resolution.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        // A PRIOR window's planner already committed a specs/ amendment onto the
+        // deterministic `rigger/u/plan` branch (mirrors Goal item 4's b6a471c) - via a
+        // throwaway worktree, never touching the run branch's own checkout.
+        let seed_dir = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let seed =
+            worktree::Worktree::create(&repo_path, seed_dir.to_str().unwrap(), "rigger/u/plan", "")
+                .unwrap();
+        std::fs::create_dir_all(seed_dir.join("specs")).unwrap();
+        std::fs::write(seed_dir.join("specs").join("90-foo.md"), "planner amend\n").unwrap();
+        run_git(seed_dir.to_str().unwrap(), &["add", "-A"]);
+        run_git(
+            seed_dir.to_str().unwrap(),
+            &["commit", "-q", "-m", "planner amend"],
+        );
+        seed.remove().unwrap(); // only the transient DIR goes; the branch persists.
+
+        // Meanwhile the run branch independently gains a CONFLICTING concurrent
+        // operator edit to the same spec path.
+        std::fs::create_dir_all(repo.path().join("specs")).unwrap();
+        std::fs::write(
+            repo.path().join("specs").join("90-foo.md"),
+            "operator edit\n",
+        )
+        .unwrap();
+        run_git(&repo_path, &["add", "-A"]);
+        run_git(&repo_path, &["commit", "-q", "-m", "operator edit"]);
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("planner".into(), agent("planner"));
+        cfg.workflow.stages.insert(
+            "plan".into(),
+            Stage {
+                name: "plan".into(),
+                agent: "planner".into(),
+                produces: "dag".into(),
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        // The planner's fresh spawn commits nothing new this run - the ALREADY-adopted
+        // branch (from the prior window) is what conflicts.
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_eq!(
+            rs.units["plan"].status,
+            ledger::Status::Escalated,
+            "a conflicting plan amendment must escalate to a human, never integrate"
+        );
+        // The run branch is untouched - the conflict never landed.
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("specs").join("90-foo.md")).unwrap(),
+            "operator edit\n",
+            "the conflicting amendment must never overwrite the concurrent operator edit"
+        );
+    }
+
+    #[test]
     fn per_unit_adjudicator_reject_blocks_integration_and_escalates() {
         // A rejecting adjudicator on the per-unit review (§3.2) is treated like a gate
         // failure: it blocks THAT unit's integration and remediates, escalating after
@@ -33304,6 +33727,26 @@ mod tests {
             "an approved-but-gate-failing standalone review stage must name the failing \
              gate, not the generic 'reject' a review verdict rejection carries"
         );
+    }
+
+    /// Run a git command in `dir`, returning combined stdout+stderr, trimmed. Panics
+    /// (naming the command and its output) on a non-zero exit - a test-only setup
+    /// convenience for building git state directly, alongside this module's existing
+    /// `std::process::Command` calls.
+    fn run_git(dir: &str, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?} in {dir} failed: {}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
     /// The current HEAD commit hash of a git repo, for asserting a lens produced no
