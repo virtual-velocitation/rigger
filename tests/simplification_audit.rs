@@ -1568,17 +1568,39 @@ fn strip_leading_impl_generics(header: &str) -> &str {
     trimmed
 }
 
+/// Strip a leading `dyn ` or `impl ` keyword token from an impl-header self-type fragment. An
+/// inherent impl block on a trait-object type is valid Rust (e.g. std's own `impl dyn Any`), so
+/// the Self-type text can genuinely start with `dyn ` (`"dyn Projection"`) - and the same shape
+/// can follow a `for` too (`"Trait for dyn Concrete"`). Gap disclosed by
+/// `adv-u87c2-r1-cheaper-fix-exists-reuse-impl-self-type`: zero `impl dyn` blocks exist in
+/// `src/` today (live-but-currently-inert), but the general resolver must still handle it
+/// correctly since this text scanner enumerates header shapes once rather than discovering them
+/// one per round.
+fn strip_leading_self_type_keyword(header: &str) -> &str {
+    for kw in ["dyn ", "impl "] {
+        if let Some(rest) = header.strip_prefix(kw) {
+            return rest.trim_start();
+        }
+    }
+    header
+}
+
 /// The `Self` type name out of an `impl` header (`"GateRatchet"` -> `"GateRatchet"`,
 /// `"AgentDriver for Stub"` -> `"Stub"`, `"gate::Runner for FlakyGate"` -> `"FlakyGate"`,
-/// `"<'a> RunCtx<'a>"` -> `"RunCtx"`, `"MyGuard where MyGuard: Sized"` -> `"MyGuard"`).
+/// `"<'a> RunCtx<'a>"` -> `"RunCtx"`, `"MyGuard where MyGuard: Sized"` -> `"MyGuard"`,
+/// `"dyn Projection"` -> `"Projection"`). The one grammar-based self-type extractor for this
+/// text scanner (`op-u87c2-round-2-impl-self-type-is-parsed-by-grammar`): every OTHER site that
+/// needs an impl header's Self type - the round-2 fix to `impl_assoc_qualifier` included -
+/// reuses this, rather than a second parallel parser reproving the same shapes.
 fn impl_self_type(header: &str) -> String {
     let after_for = header.rsplit(" for ").next().unwrap_or(header);
     let no_leading_generics = strip_leading_impl_generics(after_for);
+    let no_leading_keyword = strip_leading_self_type_keyword(no_leading_generics);
     // Strip a trailing where-clause BEFORE the generic split below: a where-clause bound can
     // itself contain `<...>` (e.g. `where T: Bar<Baz>`), and when the Self type has no
     // generics of its own the `split('<')` step would otherwise find that `<` first and cut
     // in the wrong place, leaving the where-clause text glued onto the self type.
-    let no_where_clause = strip_trailing_where_clause(no_leading_generics);
+    let no_where_clause = strip_trailing_where_clause(no_leading_keyword);
     let generic_stripped = no_where_clause.split('<').next().unwrap_or(no_where_clause);
     generic_stripped
         .rsplit("::")
@@ -5083,18 +5105,16 @@ fn free_fn_qualifier(f: &ScannedFn) -> String {
         .unwrap_or_else(|| file_module_name(&f.file))
 }
 
-/// An `ImplAssoc` fn's OWN qualifying type name - the first identifier-shaped run of its
-/// `enclosing_impl` header text, stopping at the first generic-parameter `<` or whitespace (e.g.
-/// `"Foo"` for `impl Foo`, `"Foo"` for `impl Foo<T>` too) - matched the same way
-/// [`free_fn_qualifier`] is, against a `Type::name(`-shaped call site's [`RefSite::qualifier`].
+/// An `ImplAssoc` fn's OWN qualifying type name - its `enclosing_impl` header's Self type (e.g.
+/// `"Foo"` for `impl Foo`, `"Foo"` for `impl Foo<T>` too, `"Widget"` for `impl<'a> Widget<'a>`) -
+/// matched the same way [`free_fn_qualifier`] is, against a `Type::name(`-shaped call site's
+/// [`RefSite::qualifier`]. Delegates to [`impl_self_type`], the one grammar-based extractor for
+/// this header shape (round-2 fix for `sdet-u87c2-r1-impl-assoc-qualifier-drops-leading-impl-
+/// generics-reintroduces-false-positives`: the old naive `split('<' | whitespace)` returned an
+/// EMPTY qualifier whenever the impl block declared its OWN leading generics, since the header
+/// text starts with `<` itself in that case and never carries the `impl` keyword).
 fn impl_assoc_qualifier(f: &ScannedFn) -> String {
-    f.enclosing_impl
-        .as_deref()
-        .unwrap_or_default()
-        .split(|c: char| c == '<' || c.is_whitespace())
-        .next()
-        .unwrap_or_default()
-        .to_string()
+    impl_self_type(f.enclosing_impl.as_deref().unwrap_or_default())
 }
 
 /// Per-file map: an imported bare name -> its qualifying module segment, for a SIMPLE
@@ -5808,6 +5828,20 @@ mod tests {
     #[test]
     fn impl_self_type_still_handles_a_generic_self_type_with_a_where_clause() {
         assert_eq!(impl_self_type("Foo<T> where T: Bar<Baz>"), "Foo");
+    }
+
+    #[test]
+    fn impl_self_type_strips_a_leading_dyn_token_on_the_self_type() {
+        // Regression pointer from adv-u87c2-r1-cheaper-fix-exists-reuse-impl-self-type: an
+        // inherent impl block on a trait-object type (`impl dyn Projection { .. }`, valid Rust -
+        // e.g. std's own `impl dyn Any`) has a Self type text of `dyn Projection`, and the SAME
+        // shape can appear after `for` too (`impl Trait for dyn Concrete`). Zero `impl dyn`
+        // blocks exist in `src/` today (live-but-currently-inert per that finding), but the
+        // general resolver must still handle it correctly since this scanner enumerates header
+        // shapes once rather than discovering them one per round.
+        assert_eq!(impl_self_type("dyn Projection"), "Projection");
+        assert_eq!(impl_self_type("AgentDriver for dyn Stub"), "Stub");
+        assert_eq!(impl_self_type("dyn Projection<'a>"), "Projection");
     }
 
     #[test]
@@ -8148,6 +8182,41 @@ mod tests {
         assert_eq!(news[0].line, 9, "expected B::new specifically; {news:?}");
         assert!(news[0].ambiguous, "{news:?}");
         assert_eq!(news[0].ambiguous_with, vec!["src/ctors2.rs:4".to_string()]);
+    }
+
+    #[test]
+    fn a_qualified_call_site_on_an_impls_own_generic_self_type_attributes_correctly() {
+        // Regression for round-1's own defect (sdet-u87c2-r1-impl-assoc-qualifier-drops-leading-
+        // impl-generics-reintroduces-false-positives, upheld by the round-1 adjudication reject):
+        // when the impl block declares ITS OWN leading generic/lifetime parameters
+        // (`impl<'a> Widget<'a>`), `enclosing_impl`'s header text starts with `<` itself (the
+        // `impl` keyword is never stored). The old naive
+        // `header.split(|c| c == '<' || c.is_whitespace()).next()` therefore returned an EMPTY
+        // qualifier for `Widget::new`, which could never equal the real `Widget::new()` call
+        // site's resolved qualifier `Some("Widget")` - so the genuinely-alive `Widget::new` was
+        // wrongly flagged ambiguous with zero references, exactly the false-positive shape found
+        // in the committed `dead-code.json` for `Namespaced::new`/`ReplayDriver::new`/
+        // `Buckets::new`/`Server::new`. `Other::new`, with zero callers of its own, is the one
+        // that must remain correctly flagged.
+        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
+        write_fixture(
+            dir.path(),
+            "src/generic_ctors.rs",
+            "struct Widget<'a>(std::marker::PhantomData<&'a ()>);\nstruct Other;\nimpl<'a> Widget<'a> {\n    fn new() -> Self {\n        Widget(std::marker::PhantomData)\n    }\n}\nimpl Other {\n    fn new() -> Self {\n        Other\n    }\n}\nfn make() -> Widget<'static> {\n    Widget::new()\n}\n",
+        );
+        let candidates = candidates_for(dir.path());
+        let news: Vec<&DeadCodeCandidate> = candidates.iter().filter(|c| c.name == "new").collect();
+        assert_eq!(news.len(), 1, "{candidates:?}");
+        assert_eq!(news[0].file, "src/generic_ctors.rs");
+        assert_eq!(
+            news[0].line, 9,
+            "expected Other::new specifically (Widget::new has a real qualified caller); {news:?}"
+        );
+        assert!(news[0].ambiguous, "{news:?}");
+        assert_eq!(
+            news[0].ambiguous_with,
+            vec!["src/generic_ctors.rs:4".to_string()]
+        );
     }
 
     #[test]
