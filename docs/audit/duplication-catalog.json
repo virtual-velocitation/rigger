@@ -1245,38 +1245,44 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 81,
-        "end_line": 81,
+        "start_line": 93,
+        "end_line": 93,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 92,
-        "end_line": 92,
+        "start_line": 104,
+        "end_line": 104,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 103,
-        "end_line": 103,
+        "start_line": 115,
+        "end_line": 115,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 122,
-        "end_line": 122,
+        "start_line": 134,
+        "end_line": 134,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 351,
-        "end_line": 351,
+        "start_line": 380,
+        "end_line": 380,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 550,
-        "end_line": 550,
+        "start_line": 570,
+        "end_line": 570,
+        "name": "Command::new"
+      },
+      {
+        "file": "tests/integrate_conflict_merge_periphery.rs",
+        "start_line": 818,
+        "end_line": 818,
         "name": "Command::new"
       },
       {
@@ -1845,7 +1851,7 @@
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 280 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: Command::new call sites - 281 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0007",
@@ -1939,8 +1945,8 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 137,
-        "end_line": 142,
+        "start_line": 149,
+        "end_line": 154,
         "name": "agent"
       }
     ],
@@ -3045,8 +3051,8 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 144,
-        "end_line": 150,
+        "start_line": 156,
+        "end_line": 162,
         "name": "gate_def"
       }
     ],
@@ -6295,20 +6301,20 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 185,
-        "end_line": 185,
+        "start_line": 214,
+        "end_line": 214,
         "name": "\".rigger\""
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 186,
-        "end_line": 186,
+        "start_line": 215,
+        "end_line": 215,
         "name": "\"create .rigger/agents\""
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 255,
-        "end_line": 255,
+        "start_line": 284,
+        "end_line": 284,
         "name": "\"the project's own .rigger/workflow.yml must load through the real loader\""
       },
       {
@@ -8149,8 +8155,8 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 72,
-        "end_line": 89,
+        "start_line": 84,
+        "end_line": 101,
         "name": "init_repo"
       },
       {
@@ -15779,8 +15785,8 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 184,
-        "end_line": 199,
+        "start_line": 213,
+        "end_line": 228,
         "name": "write_workflow"
       },
       {
@@ -15811,8 +15817,8 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 184,
-        "end_line": 199,
+        "start_line": 213,
+        "end_line": 228,
         "name": "write_workflow"
       },
       {

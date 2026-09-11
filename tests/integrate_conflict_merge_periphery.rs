@@ -13,9 +13,10 @@
 //! spawn at all, and the `CONFLICT_RESOLVE_BOUND`-exhausted fallback charging a real attempt
 //! with cause `"integrate-conflict"`. None of that is re-derived here.
 //!
-//! WHAT THIS FILE OWNS - three gaps those inside-out layers are structurally blind to, found
-//! by re-reading the diff against `git merge-base HEAD rigger-run` (298ffb2) rather than by
-//! inspection alone (recorded as `sdet-u88c1-boundary-accounting`).
+//! WHAT THIS FILE OWNS - four gaps those inside-out layers are structurally blind to, found
+//! by re-reading the diff against `git merge-base HEAD rigger-run` rather than by inspection
+//! alone (recorded as `sdet-u88c1-boundary-accounting` and, for GAP 4, added on round 1's own
+//! diff as `sdet-u88c1r1-boundary-accounting` / `sdet-u88c1r1-gap4-added-and-verified`).
 //!
 //! GAP 1, `regenerate_config_round_trips_through_the_real_on_disk_loader_with_back_compat`. The
 //! implementer's own tests build `cfg.workflow.regenerate` via Rust struct literals; none of
@@ -55,6 +56,17 @@
 //! retry spawn: the branch there must be a single-parent commit (the abandoned two-parent merge
 //! commit discarded) carrying exactly the loser's own prior work (not over-corrected back to
 //! the shared base either).
+//!
+//! GAP 4 (round 1 review fix), `regenerate_conflicted_paths_runs_through_the_injected_gates_
+//! port_not_a_raw_shell_out`. Round 1 fixed `run_regenerate_command` to call the injected
+//! `gate::Runner` port (`Deps.gates`) instead of a raw, un-injected `std::process::Command`
+//! shell-out (arch-u88c1-regenerate-bypasses-runner-port-and-build-budget) - but every existing
+//! test that exercises regeneration, this file's own GAP 2 included, wires `Deps.gates` to the
+//! REAL `ExecRunner`, which runs the registered command as a real shell either way and so cannot
+//! tell the two implementations apart. This drives the confined-to-regenerable scenario with a
+//! fake `Runner` that intercepts only the `"regenerate"` gate id and proves BOTH that the port is
+//! actually called (with the exact gate id/command/dir) and that the port's own output - not a
+//! parallel raw shell-out's - is what lands.
 
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
 use rigger::config::{self, AgentDef, Config, RegenerateRule, Stage};
@@ -154,6 +166,23 @@ fn review_panel() -> config::ReviewPanel {
         lenses: vec!["lens".into()],
         adjudicator: "judge".into(),
         ..Default::default()
+    }
+}
+
+/// The shared review-tier response every fake `AgentDriver` in this file returns for a
+/// non-implementer spawn: the adjudicator approves outright, any other reviewer role's own
+/// output is unread by the tests below (only its APPROVE verdict matters). One function, not a
+/// third copy of the same two-armed match hand-duplicated across driver structs.
+fn review_or_adjudicate(opts: &SpawnOpts) -> AgentResult {
+    if opts.id.contains("/adjudicator#") {
+        return AgentResult {
+            output: r#"{"verdict":"approve"}"#.into(),
+            resolved_model: String::new(),
+        };
+    }
+    AgentResult {
+        output: "reviewed the diff".into(),
+        resolved_model: String::new(),
     }
 }
 
@@ -371,16 +400,7 @@ impl AgentDriver for MixedConflictDriver {
             }
             return Ok(AgentResult::default());
         }
-        if opts.id.contains("/adjudicator#") {
-            return Ok(AgentResult {
-                output: r#"{"verdict":"approve"}"#.into(),
-                resolved_model: String::new(),
-            });
-        }
-        Ok(AgentResult {
-            output: "reviewed the diff".into(),
-            resolved_model: String::new(),
-        })
+        Ok(review_or_adjudicate(opts))
     }
 }
 
@@ -593,16 +613,7 @@ impl AgentDriver for BranchResetDriver {
             }
             return Ok(AgentResult::default());
         }
-        if opts.id.contains("/adjudicator#") {
-            return Ok(AgentResult {
-                output: r#"{"verdict":"approve"}"#.into(),
-                resolved_model: String::new(),
-            });
-        }
-        Ok(AgentResult {
-            output: "reviewed the diff".into(),
-            resolved_model: String::new(),
-        })
+        Ok(review_or_adjudicate(opts))
     }
 }
 
@@ -715,5 +726,222 @@ fn a_post_merge_red_rollback_resets_the_units_own_branch_not_just_the_repo() {
         })
         .map(|e| serde_json::from_slice::<Value>(&e.data).unwrap()["cause"].clone());
     assert_eq!(cause, Some(Value::String("integrate-conflict".into())));
+    drop(repo);
+}
+
+// ============================================================================================
+// Gap 4: `run_regenerate_command`'s NEW cross-module call into the injected `gate::Runner`
+// port (round 1 review fix for arch-u88c1-regenerate-bypasses-runner-port-and-build-budget) has
+// zero test anywhere that can tell a real port-routed call apart from a raw, un-injected
+// `std::process::Command` shell-out producing the same visible result: every existing test that
+// exercises regeneration - the implementer's own three conductor.rs unit tests AND this file's
+// GAP 2 - wires `Deps.gates` to the REAL `rigger::gate::ExecRunner`, which actually runs the
+// registered shell command either way. Reverting `run_regenerate_command` back to a raw
+// `std::process::Command::new("sh")` call (the exact regression the fix's own doc comment names)
+// would still make every one of those tests pass unchanged, because they only ever check the
+// resulting file content, never which side of the port boundary produced it.
+// ============================================================================================
+
+/// A [`rigger::gate::Runner`] fake that ONLY intercepts the `"regenerate"` gate id (recording
+/// its call - gate id, gate run command, dir - and writing its OWN sentinel content instead of
+/// actually running `g.run` as a shell command); every OTHER gate id (a unit's ordinary `"g"`
+/// gate, the post-merge re-gate) delegates straight to the REAL [`rigger::gate::ExecRunner`], so
+/// this fake changes nothing about how the surrounding conflict/merge/gate machinery behaves -
+/// it observes exactly one seam. The regenerate rule's `run` string below is deliberately a
+/// command that would write DIFFERENT content if a raw shell ever executed it for real, so the
+/// two paths can never coincidentally agree on the final file content: only one of them can have
+/// produced it.
+struct RecordingGateRunner {
+    calls: Mutex<Vec<(String, String, String)>>,
+}
+
+impl rigger::gate::Runner for RecordingGateRunner {
+    fn run(
+        &self,
+        g: &rigger::gate::Gate,
+        dir: &str,
+        target_dir: &str,
+        build_cache_dir: &str,
+        build_cache_guard: &str,
+        store_fence: &str,
+        build_env: &rigger::gate::BuildEnv,
+        budget: &rigger::budget::BuildBudget,
+    ) -> rigger::gate::GateResult {
+        if g.id != "regenerate" {
+            return rigger::gate::ExecRunner.run(
+                g,
+                dir,
+                target_dir,
+                build_cache_dir,
+                build_cache_guard,
+                store_fence,
+                build_env,
+                budget,
+            );
+        }
+        self.calls
+            .lock()
+            .unwrap()
+            .push((g.id.clone(), g.run.clone(), dir.to_string()));
+        std::fs::write(Path::new(dir).join("c.rs"), "FAKE_REGEN_VIA_PORT\n").unwrap();
+        rigger::gate::GateResult {
+            pass: true,
+            evidence: "fake runner: regenerated via the injected port, never a raw shell".into(),
+        }
+    }
+}
+
+/// Same two-batch-mates-same-line-off-the-same-base shape as the implementer's own
+/// `conflict_fixture` (conductor.rs) and this file's other drivers: `c.rs` is registered
+/// regenerable, so the loser's conflict resolves with NO implementer spawn at all - this test's
+/// whole point is the conductor's OWN regeneration call, not anything an implementer does.
+struct GatesPortConflictDriver {
+    repo: String,
+    calls: Mutex<Vec<String>>,
+}
+
+impl AgentDriver for GatesPortConflictDriver {
+    fn spawn(
+        &self,
+        _a: &AgentDef,
+        _prompt: &str,
+        opts: &SpawnOpts,
+        _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+    ) -> Result<AgentResult, Error> {
+        self.calls.lock().unwrap().push(opts.id.clone());
+        let unit = opts.id.split('/').next().unwrap_or_default();
+        if opts.id.contains("/implementer#") {
+            if !opts.dir.is_empty() {
+                // Barrier: wait until BOTH units' worktrees exist before either writes, so both
+                // branch off the identical base commit (mirrors MixedConflictDriver above).
+                for _ in 0..400 {
+                    let n = Command::new("git")
+                        .arg("-C")
+                        .arg(&self.repo)
+                        .args(["branch", "--list", "rigger/u/*"])
+                        .output()
+                        .map(|o| String::from_utf8_lossy(&o.stdout).lines().count())
+                        .unwrap_or(0);
+                    if n >= 2 {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
+                let content = if unit == "unit-a" {
+                    "A_LINE\n"
+                } else {
+                    "B_LINE\n"
+                };
+                std::fs::write(Path::new(&opts.dir).join("c.rs"), content).unwrap();
+            }
+            return Ok(AgentResult::default());
+        }
+        Ok(review_or_adjudicate(opts))
+    }
+}
+
+#[test]
+fn regenerate_conflicted_paths_runs_through_the_injected_gates_port_not_a_raw_shell_out() {
+    let repo = init_repo();
+    let repo_path = repo.path().to_str().unwrap().to_string();
+    std::fs::write(Path::new(&repo_path).join("c.rs"), "BASE\n").unwrap();
+    git_commit_all(&repo_path, "base c.rs");
+
+    let store = Store::open(":memory:").unwrap();
+    let driver = GatesPortConflictDriver {
+        repo: repo_path.clone(),
+        calls: Mutex::new(Vec::new()),
+    };
+    let runner = RecordingGateRunner {
+        calls: Mutex::new(Vec::new()),
+    };
+
+    let mut cfg = Config::default();
+    cfg.workflow.defaults.max_retries = 3;
+    cfg.workflow.regenerate = vec![RegenerateRule {
+        paths: vec!["c.rs".into()],
+        run: "printf 'REAL_SHELL_WOULD_WRITE_THIS\\n' > c.rs".into(),
+    }];
+    cfg.agents.insert("worker".into(), agent("worker"));
+    cfg.agents.insert("lens".into(), agent("lens"));
+    cfg.agents.insert("judge".into(), agent("judge"));
+    cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
+    cfg.workflow
+        .stages
+        .insert("unit-a".into(), mk_stage("unit-a", "g"));
+    cfg.workflow
+        .stages
+        .insert("unit-b".into(), mk_stage("unit-b", "g"));
+
+    let deps = Deps {
+        store: &store,
+        driver: &driver,
+        gates: &runner,
+        repo: repo_path.clone(),
+        grounder: None,
+        graph: None,
+        criteria: Vec::new(),
+    };
+    let rs = run(&cfg, &deps).unwrap();
+
+    assert_eq!(rs.units["unit-a"].status, ledger::Status::Integrated);
+    assert_eq!(
+        rs.units["unit-b"].status,
+        ledger::Status::Integrated,
+        "a conflict confined entirely to a registered regenerable path must still land"
+    );
+    assert_eq!(rs.units["unit-a"].attempts, 0);
+    assert_eq!(rs.units["unit-b"].attempts, 0);
+
+    let calls = driver.calls.lock().unwrap();
+    assert!(
+        !calls.iter().any(|id| id.contains("~retry")),
+        "a conflict confined to a registered regenerable path resolves with NO spawn; got {calls:?}"
+    );
+
+    // THE decisive proof of DI routing: the injected port was actually invoked, carrying the
+    // EXACT gate id and command `run_regenerate_command` documents constructing, in the unit's
+    // own worktree dir - never the shared repo dir.
+    let runs = runner.calls.lock().unwrap();
+    assert_eq!(
+        runs.len(),
+        1,
+        "regenerate_conflicted_paths must call the injected gate::Runner port exactly once for \
+         the one distinct registered command; got {runs:?}"
+    );
+    let (id, run_cmd, dir) = &runs[0];
+    assert_eq!(
+        id, "regenerate",
+        "run_regenerate_command's own Gate literal must carry id \"regenerate\""
+    );
+    assert_eq!(
+        run_cmd, "printf 'REAL_SHELL_WOULD_WRITE_THIS\\n' > c.rs",
+        "the injected port must receive the EXACT command the registered RegenerateRule names"
+    );
+    assert_ne!(
+        dir, &repo_path,
+        "the port must be called with the LOSING unit's own worktree dir, never the shared repo \
+         (the worktree itself may already be reclaimed by the time this assertion runs, since \
+         both units have finished integrating - matching GAP 2/3's own convention of reading \
+         final state off the repo, never a per-unit worktree, after `run()` returns)"
+    );
+    assert!(
+        dir.contains("unit-a") || dir.contains("unit-b"),
+        "the regenerable-confined conflict belongs to whichever unit loses the integrate-lock \
+         race (a genuine race, never pinned - see GAP 3's identical caveat); got {dir}"
+    );
+
+    // The final landed content is the FAKE runner's own sentinel - never the string a raw shell
+    // actually executing `run` would have produced. A regression back to a raw, un-injected
+    // `std::process::Command` shell-out (bypassing `self.deps.gates` entirely) would leave
+    // "REAL_SHELL_WOULD_WRITE_THIS\n" here instead, and `runs` would be empty above - either
+    // signal alone would fail this test, exactly the coverage no existing test (unit or
+    // periphery) provides today.
+    let final_c = std::fs::read_to_string(Path::new(&repo_path).join("c.rs")).unwrap();
+    assert_eq!(
+        final_c, "FAKE_REGEN_VIA_PORT\n",
+        "the regenerated content must come from the injected gate::Runner port, never a raw \
+         shell-out that bypassed it"
+    );
     drop(repo);
 }
