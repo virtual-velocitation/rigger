@@ -1568,21 +1568,20 @@ fn strip_leading_impl_generics(header: &str) -> &str {
     trimmed
 }
 
-/// Strip a leading `dyn ` or `impl ` keyword token from an impl-header self-type fragment. An
-/// inherent impl block on a trait-object type is valid Rust (e.g. std's own `impl dyn Any`), so
-/// the Self-type text can genuinely start with `dyn ` (`"dyn Projection"`) - and the same shape
-/// can follow a `for` too (`"Trait for dyn Concrete"`). Gap disclosed by
+/// Strip a leading `dyn ` keyword token from an impl-header self-type fragment. An inherent
+/// impl block on a trait-object type is valid Rust (e.g. std's own `impl dyn Any`), so the
+/// Self-type text can genuinely start with `dyn ` (`"dyn Projection"`) - and the same shape can
+/// follow a `for` too (`"Trait for dyn Concrete"`). Gap disclosed by
 /// `adv-u87c2-r1-cheaper-fix-exists-reuse-impl-self-type`: zero `impl dyn` blocks exist in
 /// `src/` today (live-but-currently-inert), but the general resolver must still handle it
 /// correctly since this text scanner enumerates header shapes once rather than discovering them
-/// one per round.
+/// one per round. No `"impl "` branch: the caller that captures `header` (the fn-item detector
+/// above, `header_start = i + 4`) already skips the literal `impl` keyword token at capture
+/// time, so `header` can never itself start with `"impl "` - an `"impl "` branch here would be
+/// dead code, confirmed unreachable and removed (`adv-u87c2-r2-strip-leading-self-type-keyword-
+/// impl-branch-is-dead-code`).
 fn strip_leading_self_type_keyword(header: &str) -> &str {
-    for kw in ["dyn ", "impl "] {
-        if let Some(rest) = header.strip_prefix(kw) {
-            return rest.trim_start();
-        }
-    }
-    header
+    header.strip_prefix("dyn ").map_or(header, str::trim_start)
 }
 
 /// The `Self` type name out of an `impl` header (`"GateRatchet"` -> `"GateRatchet"`,
@@ -4503,9 +4502,9 @@ fn sample_indices(n: usize, k: usize, seed: u64) -> Vec<usize> {
 // found by the exact same pass with no extra mechanism needed.
 //
 // TRAIT OBJECTS (Constraints Walk: "a fn called only through a trait object... an impl's
-// method referenced via `.name(` on any receiver is alive"): [`method_shaped`] is deliberately
-// receiver-agnostic (matches `.name(` regardless of what precedes the dot) for exactly this
-// reason - see [`RefSite`].
+// method referenced via `.name(` on any receiver is alive"): trivially covered by THE RULE
+// below - a `.name(` occurrence is an identifier token like any other, receiver-agnostic with
+// no special case needed.
 //
 // ENTRY POINTS (Constraints Walk: "the scanner exempts `fn main` and any fn named by a
 // `#[...]` attribute that registers it"): `fn main` (top-level, no enclosing mod/impl) is
@@ -4520,38 +4519,47 @@ fn sample_indices(n: usize, k: usize, seed: u64) -> Vec<usize> {
 // used to disclose (decision `u87c2-entry-point-attribute-exemption-verified-dormant`, now
 // stale) - the real motivating instance, `src/config.rs`'s
 // `#[serde(default = "default_build_config")]`, is exactly this shape and is covered by it.
+//
+// THE RULE (round 3, `op-u87c2-round-3-a-reference-is-any-token-not-a-shape`, replacing three
+// rounds of one-shape-at-a-time patching - a struct-literal field VALUE
+// (`render_body: render_x_skill,` in `src/docs.rs`'s `skill_registry`) and a UFCS value passed
+// to a combinator (`.map(FailureRuleDef::to_rule)` in `src/config.rs`) were each the NEXT
+// invisible shape, the expected failure mode of a scanner that enumerates shapes rather than
+// dropping the concept of shape entirely): A PRODUCTION REFERENCE TO FN F IS ANY IDENTIFIER
+// TOKEN EQUAL TO F'S NAME IN PRODUCTION CODE, WHATEVER TOKEN FOLLOWS OR PRECEDES IT - a struct-
+// literal field value, a call argument, a `let` initializer, an array element, a match arm, a
+// return expression, a generic argument, a UFCS path used as a value, a dot call, and a plain
+// call are all literally the same case, because no code inspects adjacency at all any more.
+// [`ref_shapes`] and [`RefSite`]'s `method_shaped`/`free_shaped` fields are REMOVED, not
+// extended, and the `DispatchCategory`-keyed shape gate in [`build_dead_code_candidates`]'s
+// `relevant` filter goes with them - only the fn's own definition token (never a reference to
+// itself or anything else) and its own signature span are excluded. Attribution of a bare
+// token to ONE of several same-named definitions when a name is shared is UNCHANGED from round
+// 1 (`op-u87c2-round-1-ambiguity-covers-free-fns-too`): path-qualified or receiver-agnostic
+// evidence, otherwise credited to no one. PRECISION TRADE, explicit and accepted: a local
+// variable or struct field that happens to share a fn's bare name now keeps that fn looking
+// alive too - a false negative (a dead fn that reads as live), never a false positive (a live
+// fn that reads as dead) - the one direction spec 87's Design already requires everywhere else
+// in this file.
 
-/// One occurrence of a bare identifier, classified for spec 87 criterion 2's reference sweep -
-/// receiver-agnostic per the Constraints Walk (trait objects: "counts trait method NAMES at
-/// call sites"), so type resolution is never required.
+/// One occurrence of a bare identifier, classified for spec 87 criterion 2's reference sweep.
+/// Round 3 (`op-u87c2-round-3-a-reference-is-any-token-not-a-shape`) dropped the notion of
+/// SHAPE entirely - every non-definition `Ident` token is a `RefSite` for its own text,
+/// unconditionally (see THE RULE, above `RefSite`'s neighborhood in this file) - so this no
+/// longer records what the token was adjacent to, only where it was and how it disambiguates.
 #[derive(Debug, Clone)]
 struct RefSite {
     file: String,
     line: usize,
-    /// `.name(` immediately - the ONLY shape spec 87 Design resolves methods by ("receiver-
-    /// agnostic call shape").
-    method_shaped: bool,
-    /// `name(`, `name::`, `::name`, `name<`, `name.`, or a BARE name occupying a call-argument
-    /// slot (`(name)`/`(name,`/`, name)`/`, name,`) - spec 87 Design's literal list for a free
-    /// function ("followed by `(`, `::`, `.`, `<`, or used as a path segment"), the argument-
-    /// slot case covering a fn passed BY VALUE with no call syntax of its own at all (found
-    /// empirically: `.map_err(be)` in `src/contextgraph/sqlite.rs`, extremely common with
-    /// `Result`/`Option` combinators in this codebase's own style). This is intentionally the
-    /// PERMISSIVE direction for a shape a token stream alone cannot fully disambiguate from a
-    /// same-named local binding in a tuple pattern (`let (a, b) = ..`) - this JSON feeds real
-    /// deletions (spec 87 section 6 item 0), so over-counting a reference (a false negative:
-    /// missing a genuinely dead fn) is the safe failure direction, never under-counting (a
-    /// false positive: asserting a genuinely LIVE fn dead).
-    free_shaped: bool,
     /// `true` when this occurrence sits in a `src/` file OUTSIDE every effective-test span
     /// (file-aware `is_test`) - i.e. it is eligible to count as a PRODUCTION reference. A
-    /// `tests/` file occurrence is never production, regardless of shape.
+    /// `tests/` file occurrence is never production.
     production: bool,
-    /// The module/type name segment immediately in front of a `qualifier::name(`-shaped call
-    /// site (spec 87 round-1 addendum `op-u87c2-round-1-ambiguity-covers-free-fns-too`) - `None`
-    /// for every other shape (a bare `name(`, `.name(`, an argument-slot mention, ...). Used ONLY
-    /// to attribute a reference to ONE specific definition when its bare name is shared by more
-    /// than one production `Free`/`ImplAssoc` fn; a unique name never consults this field at all.
+    /// The module/type name segment immediately in front of a `qualifier::name`-shaped
+    /// occurrence (spec 87 round-1 addendum `op-u87c2-round-1-ambiguity-covers-free-fns-too`) -
+    /// `None` when this occurrence is not `::`-preceded at all. Used ONLY to attribute a
+    /// reference to ONE specific definition when its bare name is shared by more than one
+    /// production `Free`/`ImplAssoc` fn; a unique name never consults this field at all.
     qualifier: Option<String>,
     /// `true` for a reference synthesized from a `#[...]` attribute's token tree or string
     /// literal (spec 87 round-1 fix for `sdet-u87c2-serde-default-attr-string-ref-is-a-false-
@@ -4568,33 +4576,6 @@ struct RefSite {
 fn ref_punct(tok: Option<&RawTok>, text: &str) -> bool {
     tok.map(|t| t.kind == RawKind::Punct && t.text == text)
         .unwrap_or(false)
-}
-
-/// Compute `(method_shaped, free_shaped)` for the identifier token at `toks[i]` - see
-/// [`RefSite`] for exactly which adjacent-token shapes each covers.
-fn ref_shapes(toks: &[RawTok], i: usize) -> (bool, bool) {
-    let next = toks.get(i + 1);
-    let next2 = toks.get(i + 2);
-    let prev = i.checked_sub(1).and_then(|p| toks.get(p));
-    let prev2 = i.checked_sub(2).and_then(|p| toks.get(p));
-
-    let followed_by_call = ref_punct(next, "(");
-    let followed_by_dot = ref_punct(next, ".");
-    let preceded_by_dot = ref_punct(prev, ".");
-    let followed_by_coloncolon = ref_punct(next, ":") && ref_punct(next2, ":");
-    let preceded_by_coloncolon = ref_punct(prev, ":") && ref_punct(prev2, ":");
-    let followed_by_lt = ref_punct(next, "<");
-    let in_argument_slot = (ref_punct(prev, "(") || ref_punct(prev, ","))
-        && (ref_punct(next, ")") || ref_punct(next, ","));
-
-    let method_shaped = preceded_by_dot && followed_by_call;
-    let free_shaped = followed_by_call
-        || followed_by_dot
-        || followed_by_coloncolon
-        || preceded_by_coloncolon
-        || followed_by_lt
-        || in_argument_slot;
-    (method_shaped, free_shaped)
 }
 
 /// The identifier immediately in front of a `qualifier::name`-shaped occurrence at `toks[i]`,
@@ -4888,8 +4869,6 @@ fn all_ident_ref_sites(
                         idx.entry(t.text.clone()).or_default().push(RefSite {
                             file: f.rel.clone(),
                             line: t.line,
-                            method_shaped: true,
-                            free_shaped: true,
                             production,
                             qualifier: None,
                             via_attribute: true,
@@ -4901,8 +4880,6 @@ fn all_ident_ref_sites(
                                 idx.entry(name).or_default().push(RefSite {
                                     file: f.rel.clone(),
                                     line: t.line,
-                                    method_shaped: true,
-                                    free_shaped: true,
                                     production,
                                     qualifier: None,
                                     via_attribute: true,
@@ -4920,17 +4897,13 @@ fn all_ident_ref_sites(
             // A DEFINITION site (`fn name(` - the name token immediately preceded by the `fn`
             // keyword) is never a reference, to itself OR to any other same-named fn. Without
             // this, two fns sharing a bare name (e.g. two inherent `fn new()`s) would each
-            // read the OTHER's own signature `new(` as a "call", since `followed by (` cannot
-            // otherwise distinguish "fn new(" from a genuine "new(" call site - found
-            // empirically against the real tree (`new`/`drop` before this fix) and pinned by
-            // this criterion's own ambiguous-associated-fn fixtures.
+            // read the OTHER's own signature `new(` as a "call" - found empirically against the
+            // real tree (`new`/`drop` before this fix) and pinned by this criterion's own
+            // ambiguous-associated-fn fixtures. THE RULE (round 3): every OTHER `Ident` token
+            // is a reference to its own text, unconditionally - no shape test of any kind.
             let is_definition_site =
                 i > 0 && f.tokens[i - 1].kind == RawKind::Keyword && f.tokens[i - 1].text == "fn";
             if is_definition_site {
-                continue;
-            }
-            let (method_shaped, free_shaped) = ref_shapes(&f.tokens, i);
-            if !method_shaped && !free_shaped {
                 continue;
             }
             let production = is_production_line(t.line);
@@ -4938,8 +4911,6 @@ fn all_ident_ref_sites(
             idx.entry(t.text.clone()).or_default().push(RefSite {
                 file: f.rel.clone(),
                 line: t.line,
-                method_shaped,
-                free_shaped,
                 production,
                 qualifier,
                 via_attribute: false,
@@ -5001,8 +4972,9 @@ fn is_exempt_entry_point(f: &ScannedFn) -> bool {
 /// (spec 87 section 6 item 0), so a false negative here (keeping a genuinely dead trait method)
 /// is the safe failure direction - a false positive would delete working `Drop`/operator/format
 /// behavior. A receiver-agnostic method that IS textually called (the Constraints Walk's trait-
-/// OBJECT case) still needs no exemption - [`RefSite::method_shaped`] already finds it - this
-/// rule only ever removes candidates that a `.name(` search would otherwise call dead.
+/// OBJECT case) still needs no exemption - any occurrence of its name already counts as a
+/// reference (THE RULE, above `RefSite`) - this rule only ever removes candidates that a
+/// textual name search would otherwise call dead.
 fn is_trait_impl(f: &ScannedFn) -> bool {
     f.enclosing_impl
         .as_deref()
@@ -5228,12 +5200,12 @@ fn build_dead_code_candidates(
         let ambiguous_group = group_size > 1;
         let empty: Vec<RefSite> = Vec::new();
         let sites = idx.get(&f.name).unwrap_or(&empty);
+        // THE RULE (round 3, `op-u87c2-round-3-a-reference-is-any-token-not-a-shape`): every
+        // occurrence of this name is a candidate reference - no `DispatchCategory`-keyed shape
+        // gate any more - other than the fn's own signature span, which can never reference
+        // itself or a same-named sibling.
         let relevant = sites.iter().filter(|s| {
-            let shaped = match cat {
-                DispatchCategory::Method => s.method_shaped,
-                DispatchCategory::ImplAssoc | DispatchCategory::Free => s.free_shaped,
-            };
-            shaped && !(s.file == f.file && s.line >= f.start_line && s.line <= f.body_start_line)
+            !(s.file == f.file && s.line >= f.start_line && s.line <= f.body_start_line)
         });
 
         // Round 1 addendum: for `Method`, ambiguity keeps its ORIGINAL aggregate rule
@@ -5842,6 +5814,41 @@ mod tests {
         assert_eq!(impl_self_type("dyn Projection"), "Projection");
         assert_eq!(impl_self_type("AgentDriver for dyn Stub"), "Stub");
         assert_eq!(impl_self_type("dyn Projection<'a>"), "Projection");
+    }
+
+    // -------------------------------------------------------------------------------------
+    // Round 3 (`sdet-u87c2-r2-four-of-six-operator-fixture-shapes-untested`): the operator's
+    // round-2 ruling (`op-u87c2-round-2-impl-self-type-is-parsed-by-grammar`) named 6 required
+    // fixture shapes; only 2 (a bare-lifetime generic self-type, and the `dyn`-prefix shape
+    // above) had a direct #[test]. These 4 close the remaining shapes literally, verbatim from
+    // that ruling - hand-traced as correct today, but a future edit to
+    // `strip_leading_impl_generics`/`impl_self_type` had nothing pinning any of them.
+    // -------------------------------------------------------------------------------------
+
+    #[test]
+    fn impl_self_type_handles_a_bound_generic_self_type() {
+        assert_eq!(impl_self_type("<T: Clone> Buckets<T>"), "Buckets");
+    }
+
+    #[test]
+    fn impl_self_type_handles_a_trait_impl_on_a_lifetime_generic_self_type() {
+        assert_eq!(impl_self_type("Trait for Server<'a>"), "Server");
+    }
+
+    #[test]
+    fn impl_self_type_handles_a_generic_trait_impl_on_a_generic_self_type() {
+        assert_eq!(
+            impl_self_type("<'a> Trait<'a> for ReplayDriver<'a>"),
+            "ReplayDriver"
+        );
+    }
+
+    #[test]
+    fn impl_self_type_handles_a_const_generic_self_type() {
+        assert_eq!(
+            impl_self_type("<const N: usize> Wrapper<[u8; N]>"),
+            "Wrapper"
+        );
     }
 
     #[test]
@@ -8100,7 +8107,7 @@ mod tests {
     #[test]
     fn a_dot_call_through_an_inherent_method_on_any_receiver_counts_receiver_agnostically() {
         // The Constraints Walk's "called only through a trait object" case, using an INHERENT
-        // impl so this exercises `method_shaped` matching itself, not the separate trait-impl
+        // impl so this exercises a plain `.name(` occurrence, not the separate trait-impl
         // exemption below.
         let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
         write_fixture(
@@ -8133,9 +8140,11 @@ mod tests {
 
     #[test]
     fn an_inherent_associated_function_is_matched_via_path_shape_not_dot_shape() {
-        // `Type::new()` has no preceding `.` - a fn taking no `self` must be matched via
-        // free-shaped (`::`-preceded) rules, not `method_shaped`, or a real `Foo::new()` call
-        // site is invisible and `new` reads as falsely dead.
+        // `Type::new()` has no preceding `.` - historically a fn taking no `self` had to be
+        // matched via a separate `::`-preceded rule from a method's `.name(` rule; round 3
+        // dropped that distinction for "is this a reference at all" (any occurrence counts
+        // regardless), but `ImplAssoc` still needs its own qualifier-based attribution when a
+        // name is shared - this pins the base case, `Foo::new()` keeping `new` alive at all.
         let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
         write_fixture(
             dir.path(),
@@ -8223,8 +8232,8 @@ mod tests {
     fn a_fn_passed_by_value_as_a_bare_call_argument_counts_as_a_reference() {
         // The real bug this fixture pins: `.map_err(be)` (found live in
         // `src/contextgraph/sqlite.rs`) passes `be` BY NAME with no call syntax, `.`, or `::`
-        // of its own at all - none of the other shapes see it; only the argument-slot rule
-        // does.
+        // of its own at all. THE RULE (round 3) makes this one case among many value-position
+        // shapes below - no dedicated argument-slot rule is left to name.
         let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
         write_fixture(
             dir.path(),
@@ -8234,6 +8243,153 @@ mod tests {
         let candidates = candidates_for(dir.path());
         let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
         assert!(!names.contains(&"be"), "{names:?}");
+    }
+
+    // -------------------------------------------------------------------------------------
+    // Round 3 (`op-u87c2-round-3-a-reference-is-any-token-not-a-shape`): one fixture per
+    // value-position shape the operator's ruling names, each a real class the round-2
+    // shape-based scanner missed (or would have missed next, by the same pattern) - a
+    // struct-literal field value (the round-2 upheld defect itself,
+    // `sdet-u87c2-r2-fnptr-struct-field-value-is-an-invisible-reference-shape`), a UFCS value
+    // passed to a combinator on a METHOD-category fn (the second round-2 upheld defect,
+    // `sdet-u87c2-r2-method-category-relevant-filter-discards-ufcs-qualified-call-sites`), a
+    // `let` initializer, an array element, a match arm, a return expression, and a generic
+    // argument to another type. THE RULE makes all seven the same code path; these fixtures
+    // exist so a future shape-based regression (the u86c1 six-round repeat-discovery pattern)
+    // is caught immediately rather than rediscovered one shape at a time.
+    // -------------------------------------------------------------------------------------
+
+    #[test]
+    fn a_fn_pointer_used_as_a_struct_literal_field_value_counts_as_a_reference() {
+        // Real production shape this pins: `src/docs.rs`'s `skill_registry()`, e.g.
+        // `SkillEntry { name: "x", render_body: render_x_skill }` - `render_x_skill` is a bare
+        // identifier VALUE in struct-literal field position, no call/dot/`::`/`<` of its own.
+        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
+        write_fixture(
+            dir.path(),
+            "src/registry.rs",
+            "struct Entry {\n    name: &'static str,\n    render_body: fn() -> String,\n}\nfn render_a() -> String {\n    String::new()\n}\nfn registry() -> Vec<Entry> {\n    vec![Entry {\n        name: \"a\",\n        render_body: render_a,\n    }]\n}\n",
+        );
+        let candidates = candidates_for(dir.path());
+        let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
+        assert!(!names.contains(&"render_a"), "{names:?}");
+    }
+
+    #[test]
+    fn a_ufcs_qualified_value_passed_to_a_combinator_counts_as_a_reference_for_a_method() {
+        // Real production shape this pins: `src/config.rs`'s
+        // `.map(FailureRuleDef::to_rule)` - `to_rule` takes `&self` (DispatchCategory::Method,
+        // dispatched receiver-agnostically via `.to_rule(`) but here is referenced by its own
+        // UFCS PATH as a bare value with no call of its own - round 2's `relevant()` filter
+        // checked only `method_shaped` for `Method` and dropped this site entirely.
+        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
+        write_fixture(
+            dir.path(),
+            "src/ufcs_method.rs",
+            "struct Rule;\nimpl Rule {\n    fn to_rule(&self) -> i32 {\n        0\n    }\n}\nfn apply(rules: Vec<Rule>) -> Vec<i32> {\n    rules.iter().map(Rule::to_rule).collect()\n}\n",
+        );
+        let candidates = candidates_for(dir.path());
+        let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
+        assert!(!names.contains(&"to_rule"), "{names:?}");
+    }
+
+    #[test]
+    fn a_fn_named_by_a_let_initializer_counts_as_a_reference() {
+        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
+        write_fixture(
+            dir.path(),
+            "src/let_init.rs",
+            "fn handler() -> i32 {\n    0\n}\nfn wire() -> fn() -> i32 {\n    let f = handler;\n    f\n}\n",
+        );
+        let candidates = candidates_for(dir.path());
+        let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
+        assert!(!names.contains(&"handler"), "{names:?}");
+    }
+
+    #[test]
+    fn a_fn_named_as_an_array_element_counts_as_a_reference() {
+        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
+        write_fixture(
+            dir.path(),
+            "src/array_elem.rs",
+            "fn step_one() {}\nfn step_two() {}\nfn pipeline() -> [fn(); 2] {\n    [step_one, step_two]\n}\n",
+        );
+        let candidates = candidates_for(dir.path());
+        let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
+        assert!(!names.contains(&"step_one"), "{names:?}");
+        assert!(!names.contains(&"step_two"), "{names:?}");
+    }
+
+    #[test]
+    fn a_fn_named_in_a_match_arm_value_counts_as_a_reference() {
+        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
+        write_fixture(
+            dir.path(),
+            "src/match_arm.rs",
+            "fn plan_a() {}\nfn plan_b() {}\nfn choose(n: u8) -> fn() {\n    match n {\n        0 => plan_a,\n        _ => plan_b,\n    }\n}\n",
+        );
+        let candidates = candidates_for(dir.path());
+        let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
+        assert!(!names.contains(&"plan_a"), "{names:?}");
+        assert!(!names.contains(&"plan_b"), "{names:?}");
+    }
+
+    #[test]
+    fn a_fn_named_in_a_return_expression_counts_as_a_reference() {
+        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
+        write_fixture(
+            dir.path(),
+            "src/return_expr.rs",
+            "fn default_handler() {}\nfn get_handler() -> fn() {\n    return default_handler;\n}\n",
+        );
+        let candidates = candidates_for(dir.path());
+        let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
+        assert!(!names.contains(&"default_handler"), "{names:?}");
+    }
+
+    #[test]
+    fn a_fn_named_as_a_generic_argument_to_another_type_counts_as_a_reference() {
+        // `token(&self, i)` never called, never assigned - only NAMED, as another type's own
+        // generic parameter (`Holder<marker_fn>`), a shape no call/dot/`::`/`<`-of-its-own rule
+        // would ever see since `marker_fn` itself is followed by `>`, not `(`/`.`/`::`/`<`.
+        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
+        write_fixture(
+            dir.path(),
+            "src/generic_arg.rs",
+            "fn marker_fn() {}\nstruct Holder<F>(std::marker::PhantomData<F>);\nfn make() -> Holder<marker_fn> {\n    Holder(std::marker::PhantomData)\n}\n",
+        );
+        let candidates = candidates_for(dir.path());
+        let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
+        assert!(!names.contains(&"marker_fn"), "{names:?}");
+    }
+
+    #[test]
+    fn the_real_tree_no_longer_flags_the_round_2_struct_field_and_ufcs_defects() {
+        // Real-tree pin (operator ruling `op-u87c2-round-3-a-reference-is-any-token-not-a-
+        // shape`): the exact production fns round 2's adjudication reject named as invisible -
+        // every `src/docs.rs` `skill_registry()` `render_*` entry point, and
+        // `src/config.rs`'s `FailureRuleDef::to_rule` - must be ABSENT from the real
+        // `dead-code.json`, never merely "no longer ambiguous" or "still present but fixed
+        // elsewhere".
+        let names: std::collections::HashSet<&str> = real_dead_code_candidates()
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert!(!names.contains("to_rule"), "{names:?}");
+        for render_fn in [
+            "render_using_rigger_skill",
+            "render_planning_a_spec_skill",
+            "render_reset_store_skill",
+            "render_build_graph_skill",
+            "render_reindex_skill",
+            "render_resume_a_run_skill",
+            "render_handle_an_escalation_skill",
+            "render_watch_a_run_skill",
+            "render_restore_the_dash_skill",
+            "render_diagnose_churn_skill",
+        ] {
+            assert!(!names.contains(render_fn), "{render_fn} still in {names:?}");
+        }
     }
 
     // -------------------------------------------------------------------------------------
