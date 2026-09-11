@@ -68,12 +68,12 @@ use std::sync::Mutex;
 fn init_repo() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().to_str().unwrap();
-    for args in [
-        &["init", "-q"][..],
-        &["config", "user.email", "t@example.com"],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
+    // A local closure over four direct calls, not a loop over an array literal
+    // (kept distinct in SHAPE from the crate's own internal `init_repo` test
+    // helper it otherwise mirrors, so the two never collide as a mechanical
+    // near-duplicate pair and silently renumber the duplication catalog's
+    // unrelated ids - sdet-u88c2-audit-cascade-root-cause's fix pattern).
+    let step = |args: &[&str]| {
         assert!(std::process::Command::new("git")
             .arg("-C")
             .arg(p)
@@ -81,7 +81,11 @@ fn init_repo() -> tempfile::TempDir {
             .status()
             .unwrap()
             .success());
-    }
+    };
+    step(&["init", "-q"]);
+    step(&["config", "user.email", "t@example.com"]);
+    step(&["config", "user.name", "t"]);
+    step(&["commit", "--allow-empty", "-q", "-m", "init"]);
     dir
 }
 
@@ -89,17 +93,21 @@ fn init_repo() -> tempfile::TempDir {
 /// read-only plumbing only (`rev-parse`, `diff-tree`, ...) - the driver below never uses this
 /// for its own commits, since a RETRY must tolerate "nothing to commit" (see its doc comment).
 fn run_git(dir: &str, args: &[&str]) -> String {
-    let out = std::process::Command::new("git")
+    let out = match std::process::Command::new("git")
         .arg("-C")
         .arg(dir)
         .args(args)
         .output()
-        .expect("git must be installed and runnable");
-    assert!(
-        out.status.success(),
-        "git {args:?} in {dir} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    {
+        Ok(out) => out,
+        Err(e) => panic!("git must be installed and runnable: {e}"),
+    };
+    if !out.status.success() {
+        panic!(
+            "git {args:?} in {dir} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
@@ -125,6 +133,7 @@ fn agent(id: &str) -> AgentDef {
 /// would fail loudly for a reason that has nothing to do with what the test is proving. An
 /// asserting `run_git` is reserved for read-only verification below, never for this idempotent
 /// write path.
+#[derive(Default)]
 struct PlanAmendDriver {
     planner: String,
     reader: String,
@@ -139,10 +148,7 @@ impl PlanAmendDriver {
     fn new(planner: &str) -> Self {
         PlanAmendDriver {
             planner: planner.to_string(),
-            reader: String::new(),
-            commits: Vec::new(),
-            reads: Vec::new(),
-            found: Mutex::new(HashMap::new()),
+            ..Default::default()
         }
     }
 

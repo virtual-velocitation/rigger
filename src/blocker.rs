@@ -59,6 +59,13 @@ pub enum Kind {
     ApprovedNotIntegrated,
     /// The unit gave up at the remediation bound and is awaiting a human.
     Escalated,
+    /// Spec 88, criterion 3 (ESCALATION RESUMES): an operator ran `rigger resume-unit`
+    /// on this unit and its grant is still in effect (no fresh escalation has retired
+    /// it yet) - [`ledger::Unit::resumed`] is `Some`. Overrides whatever building/
+    /// reject-recurrence kind the unit's raw status would otherwise map to, so the
+    /// operator sees confirmation of their own grant rather than losing it in the
+    /// ordinary remediation noise.
+    Resumed { by: String, attempts_granted: u32 },
     /// The whole run halted on the spawn budget (run-level, not a single unit).
     Budget(Budget),
 }
@@ -98,6 +105,10 @@ impl Blocker {
                 "approved, not yet integrated (review passed; integration pending)".to_string()
             }
             Kind::Escalated => "escalated (awaiting a human)".to_string(),
+            Kind::Resumed {
+                by,
+                attempts_granted,
+            } => format!("resumed by {by} ({attempts_granted} attempt(s) granted)"),
             Kind::Budget(b) => format!(
                 "budget spent {}/{} (raise defaults.budget and resume)",
                 b.spent, b.cap
@@ -119,6 +130,7 @@ impl Blocker {
             Kind::RejectRecurrence { .. } => "reject-recurrence",
             Kind::ApprovedNotIntegrated => "approved-not-integrated",
             Kind::Escalated => "escalated",
+            Kind::Resumed { .. } => "resumed",
             Kind::Budget(_) => "budget",
         }
     }
@@ -209,6 +221,25 @@ pub fn classify(run: &RunState, budget: Option<Budget>, max_retries: u32) -> Vec
         });
     }
     for (id, u) in &run.units {
+        if u.status == Status::Integrated {
+            continue;
+        }
+        // Spec 88, criterion 3: a still-in-effect resume grant overrides the unit's
+        // raw status kind (Failed while re-parked, or Grounding/Red/Green once its
+        // implementer has picked the resume back up) - the operator's own action
+        // takes precedence over the ordinary remediation noise until either a fresh
+        // escalation retires it (`Unit::resumed` folds back to `None`, the ledger's
+        // own job) or the unit integrates (excluded just above).
+        if let Some(grant) = &u.resumed {
+            out.push(Blocker {
+                subject: id.clone(),
+                kind: Kind::Resumed {
+                    by: grant.by.clone(),
+                    attempts_granted: grant.attempts_granted,
+                },
+            });
+            continue;
+        }
         let kind = match u.status {
             Status::Integrated => continue,
             Status::Escalated => Kind::Escalated,
@@ -438,6 +469,58 @@ mod tests {
             !line.contains("not on result channel") && !line.contains("verdict"),
             "must not name a verdict-channel stall: {line}"
         );
+    }
+
+    #[test]
+    fn a_resumed_units_grant_is_named_and_overrides_the_raw_status_kind() {
+        // Spec 88, criterion 3: `rigger status` names the grant, even while the
+        // resumed unit's raw status (Failed, re-parked-not-yet-picked-up) would
+        // otherwise read as reject-recurrence.
+        let events = positioned(vec![
+            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
+            ev(ledger::TYPE_UNIT_FAILED, r#"{"id":"u","attempts":3}"#),
+            ev(ledger::TYPE_UNIT_ESCALATED, r#"{"id":"u"}"#),
+            ev(
+                ledger::TYPE_UNIT_RESUMED,
+                r#"{"unit":"u","attempts_granted":2,"by":"operator"}"#,
+            ),
+        ]);
+        let blockers = from_events(&events, 3).unwrap();
+        assert_eq!(blockers.len(), 1);
+        assert_eq!(
+            blockers[0].kind,
+            Kind::Resumed {
+                by: "operator".to_string(),
+                attempts_granted: 2,
+            }
+        );
+        assert_eq!(
+            blockers[0].full_line(),
+            "u: resumed by operator (2 attempt(s) granted)"
+        );
+    }
+
+    #[test]
+    fn a_re_escalation_after_a_resume_reads_as_plain_escalated_again() {
+        // "a second escalation after the grant is final again until the next
+        // resume": once the widened bound is spent and the unit escalates a second
+        // time, the line must NOT still say "resumed" - it reads exactly like a
+        // never-resumed escalation.
+        let events = positioned(vec![
+            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
+            ev(ledger::TYPE_UNIT_FAILED, r#"{"id":"u","attempts":3}"#),
+            ev(ledger::TYPE_UNIT_ESCALATED, r#"{"id":"u"}"#),
+            ev(
+                ledger::TYPE_UNIT_RESUMED,
+                r#"{"unit":"u","attempts_granted":1,"by":"operator"}"#,
+            ),
+            ev(ledger::TYPE_UNIT_FAILED, r#"{"id":"u","attempts":4}"#),
+            ev(ledger::TYPE_UNIT_ESCALATED, r#"{"id":"u"}"#),
+        ]);
+        let blockers = from_events(&events, 4).unwrap();
+        assert_eq!(blockers.len(), 1);
+        assert_eq!(blockers[0].kind, Kind::Escalated);
+        assert_eq!(blockers[0].full_line(), "u: escalated (awaiting a human)");
     }
 
     #[test]

@@ -825,8 +825,11 @@ fn parse_status_z(out: &str) -> Vec<String> {
 
 /// Whether a local branch ref exists in the repo. Used by [`Worktree::create`] to
 /// decide between creating the unit's deterministic branch and checking out the
-/// existing one (reusing a prior window's committed work).
-fn branch_exists(repo: &str, branch: &str) -> bool {
+/// existing one (reusing a prior window's committed work). Also the durable-branch
+/// existence check `rigger resume-unit` (spec 88, criterion 3) refuses on when an
+/// escalated unit's recorded branch is gone - "refused with the branch name and the
+/// reflog hint" - so it is `pub`, not confined to this module.
+pub fn branch_exists(repo: &str, branch: &str) -> bool {
     run_git(
         repo,
         &[
