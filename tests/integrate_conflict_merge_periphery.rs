@@ -67,6 +67,25 @@
 //! fake `Runner` that intercepts only the `"regenerate"` gate id and proves BOTH that the port is
 //! actually called (with the exact gate id/command/dir) and that the port's own output - not a
 //! parallel raw shell-out's - is what lands.
+//!
+//! GAP 5 (round 2 review fix), `regenerate_never_holds_integrate_mu_letting_an_unrelated_unit_
+//! land_meanwhile`. The operator ruling op-u88c1-round-1-conflict-resolution-is-a-parked-spawn-
+//! not-an-inline-loop (round 1 REJECT) required `integrate_mu` never span a conflict-resolution
+//! implementer spawn; round 1's OWN fix (GAP 4 above) then routed `regenerate_conflicted_paths`
+//! through the injected `gate::Runner` port and `Self::build_budget` - an UNBOUNDED wait when
+//! every concurrency slot is taken (spec 65) - which round 2's review caught still running
+//! WHILE `integrate_mu` was held (adv-u88c1r1-budget-fix-worsens-unfixed-lock-span): the exact
+//! same class of defect the spawn fix had just closed, reopened one call site over. None of
+//! this file's other tests can tell a held lock from a dropped one - GAP 4's own
+//! `RecordingGateRunner` returns instantly. This drives the confined-to-regenerable scenario
+//! (unit-a/unit-b) with a `Runner` that BLOCKS inside the `"regenerate"` gate id until released,
+//! on a background thread, PLUS a third, entirely independent unit-c (gated to only attempt its
+//! own merge once the block above is confirmed active - never racing ahead of it), and polls for
+//! unit-c's own merge to land while that block is still in effect - which it only can if
+//! `integrate_mu` was dropped around the call, never held across it. (A sibling of the
+//! CONFLICT ITSELF cannot serve this proof: the loser of the integrate-lock race only ever
+//! reaches the conflict AFTER the winner's own merge - post-merge gate included - already
+//! finished and released the lock, so polling for the winner proves nothing either way.)
 
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
 use rigger::config::{self, AgentDef, Config, RegenerateRule, Stage};
@@ -942,6 +961,235 @@ fn regenerate_conflicted_paths_runs_through_the_injected_gates_port_not_a_raw_sh
         final_c, "FAKE_REGEN_VIA_PORT\n",
         "the regenerated content must come from the injected gate::Runner port, never a raw \
          shell-out that bypassed it"
+    );
+    drop(repo);
+}
+
+/// A `gate::Runner` that runs every ordinary gate for real (delegating to `ExecRunner`) but
+/// BLOCKS the `"regenerate"` gate id: it reports (over `entered_tx`) which worktree `dir` it
+/// was called for, then waits on `release_rx` before actually running the command. Simulates
+/// [`Self::build_budget`]'s real unbounded wait (spec 65) for a build slot every OTHER
+/// concurrent gate - a sibling's own pre-merge "g" gate included - would otherwise contend for,
+/// without needing to actually starve a real budget to prove the point: the test controls
+/// exactly how long the call takes, and asserts on what can complete while it is still running.
+struct BlockingRegenerateGateRunner {
+    entered_tx: Mutex<std::sync::mpsc::Sender<String>>,
+    release_rx: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl rigger::gate::Runner for BlockingRegenerateGateRunner {
+    fn run(
+        &self,
+        g: &rigger::gate::Gate,
+        dir: &str,
+        target_dir: &str,
+        build_cache_dir: &str,
+        build_cache_guard: &str,
+        store_fence: &str,
+        build_env: &rigger::gate::BuildEnv,
+        budget: &rigger::budget::BuildBudget,
+    ) -> rigger::gate::GateResult {
+        if g.id == "regenerate" {
+            self.entered_tx
+                .lock()
+                .unwrap()
+                .send(dir.to_string())
+                .expect("test thread must still be listening");
+            self.release_rx
+                .lock()
+                .unwrap()
+                .recv()
+                .expect("test thread must release this call");
+        }
+        rigger::gate::ExecRunner.run(
+            g,
+            dir,
+            target_dir,
+            build_cache_dir,
+            build_cache_guard,
+            store_fence,
+            build_env,
+            budget,
+        )
+    }
+}
+
+/// Drives unit-a/unit-b through the same conflicting-`c.rs` shape as [`GatesPortConflictDriver`]
+/// (whichever loses the integrate-lock race hits the confined-to-regenerable conflict), PLUS a
+/// third, entirely independent unit-c (its own file, `d.rs`, never touched by a or b) whose
+/// implementer commit is deliberately GATED: it waits on `proceed_rx` before writing anything,
+/// so unit-c can only become ready to attempt its OWN merge once the test explicitly releases
+/// it - never racing to integrate before the regenerate block below even begins. This is what
+/// makes the ordering assertion meaningful: without the gate, unit-c (having no conflict of its
+/// own) could race ahead and integrate before EITHER of unit-a/unit-b even reaches the
+/// regenerate call, proving nothing about whether `integrate_mu` was held across it.
+struct GatedThirdUnitDriver {
+    repo: String,
+    proceed_rx: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl AgentDriver for GatedThirdUnitDriver {
+    fn spawn(
+        &self,
+        _a: &AgentDef,
+        _prompt: &str,
+        opts: &SpawnOpts,
+        _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+    ) -> Result<AgentResult, Error> {
+        let unit = opts.id.split('/').next().unwrap_or_default();
+        if opts.id.contains("/implementer#") {
+            if unit == "unit-c" {
+                self.proceed_rx
+                    .lock()
+                    .unwrap()
+                    .recv()
+                    .expect("test thread must release unit-c");
+                if !opts.dir.is_empty() {
+                    std::fs::write(Path::new(&opts.dir).join("d.rs"), "C_LINE\n").unwrap();
+                }
+                return Ok(AgentResult::default());
+            }
+            if !opts.dir.is_empty() {
+                // Barrier: both a/b branches must exist before either writes, so both cut
+                // their worktree from the SAME base (mirrors GatesPortConflictDriver).
+                for _ in 0..400 {
+                    let n = Command::new("git")
+                        .arg("-C")
+                        .arg(&self.repo)
+                        .args(["branch", "--list", "rigger/u/*"])
+                        .output()
+                        .map(|o| String::from_utf8_lossy(&o.stdout).lines().count())
+                        .unwrap_or(0);
+                    if n >= 2 {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
+                let content = if unit == "unit-a" {
+                    "A_LINE\n"
+                } else {
+                    "B_LINE\n"
+                };
+                std::fs::write(Path::new(&opts.dir).join("c.rs"), content).unwrap();
+            }
+            return Ok(AgentResult::default());
+        }
+        Ok(review_or_adjudicate(opts))
+    }
+}
+
+#[test]
+fn regenerate_never_holds_integrate_mu_letting_an_unrelated_unit_land_meanwhile() {
+    let repo = init_repo();
+    let repo_path = repo.path().to_str().unwrap().to_string();
+    std::fs::write(Path::new(&repo_path).join("c.rs"), "BASE\n").unwrap();
+    std::fs::write(Path::new(&repo_path).join("d.rs"), "BASE_D\n").unwrap();
+    git_commit_all(&repo_path, "base c.rs + d.rs");
+
+    let store = Store::open(":memory:").unwrap();
+    let (proceed_tx, proceed_rx) = std::sync::mpsc::channel::<()>();
+    let driver = GatedThirdUnitDriver {
+        repo: repo_path.clone(),
+        proceed_rx: Mutex::new(proceed_rx),
+    };
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel::<String>();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let runner = BlockingRegenerateGateRunner {
+        entered_tx: Mutex::new(entered_tx),
+        release_rx: Mutex::new(release_rx),
+    };
+
+    let mut cfg = Config::default();
+    cfg.workflow.defaults.max_retries = 3;
+    cfg.workflow.regenerate = vec![RegenerateRule {
+        paths: vec!["c.rs".into()],
+        run: "printf 'REGENERATED\\n' > c.rs".into(),
+    }];
+    cfg.agents.insert("worker".into(), agent("worker"));
+    cfg.agents.insert("lens".into(), agent("lens"));
+    cfg.agents.insert("judge".into(), agent("judge"));
+    cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
+    cfg.workflow
+        .stages
+        .insert("unit-a".into(), mk_stage("unit-a", "g"));
+    cfg.workflow
+        .stages
+        .insert("unit-b".into(), mk_stage("unit-b", "g"));
+    cfg.workflow
+        .stages
+        .insert("unit-c".into(), mk_stage("unit-c", "g"));
+
+    let deps = Deps {
+        store: &store,
+        driver: &driver,
+        gates: &runner,
+        repo: repo_path.clone(),
+        grounder: None,
+        graph: None,
+        criteria: Vec::new(),
+    };
+
+    // `run` blocks until the whole run reaches a terminal state, so it needs its own thread -
+    // this test's own thread stays free to gate unit-c and poll the store while the regenerate
+    // call below is deliberately stuck.
+    let (unrelated_unit_integrated_while_blocked, rs) = std::thread::scope(|scope| {
+        let run_handle = scope.spawn(|| run(&cfg, &deps));
+
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect(
+                "the confined-to-regenerable conflict must reach the injected gate::Runner's \
+                 \"regenerate\" id",
+            );
+
+        // ONLY NOW - once a real conflict is confirmed stuck inside the regenerate call - let
+        // the entirely unrelated unit-c become ready to attempt its own merge. Releasing it any
+        // earlier would let it race ahead and integrate before the block above even begins,
+        // proving nothing about `integrate_mu`.
+        proceed_tx.send(()).unwrap();
+
+        // THE decisive proof (spec 88 criterion 1 round 2, adv-u88c1r1-budget-fix-worsens-
+        // unfixed-lock-span): poll for unit-c's own, entirely unrelated merge to land while the
+        // regenerate call above is STILL blocked. It can only complete this early if
+        // `integrate_mu` was dropped around that call - held across it, unit-c's own
+        // `wt.integrate` would itself be stuck waiting on the very same lock, since a or b is
+        // still holding it inside the blocked regenerate call.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        let mut landed = false;
+        while std::time::Instant::now() < deadline {
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            if events.iter().any(|e| {
+                e.type_ == ledger::TYPE_UNIT_INTEGRATED
+                    && String::from_utf8_lossy(&e.data).contains("\"id\":\"unit-c\"")
+            }) {
+                landed = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        // Release the blocked call regardless of the outcome above, so `run` (and this test)
+        // can always finish rather than hang the suite on a genuine regression.
+        release_tx.send(()).unwrap();
+        let rs = run_handle.join().unwrap().unwrap();
+        (landed, rs)
+    });
+
+    assert!(
+        unrelated_unit_integrated_while_blocked,
+        "an entirely unrelated unit's own merge must land WHILE the conflicting unit's \
+         regenerate-through-budget call is still blocked - integrate_mu must never be held \
+         across it (spec 88 criterion 1 round 2, adv-u88c1r1-budget-fix-worsens-unfixed-lock-\
+         span)"
+    );
+
+    assert_eq!(rs.units["unit-a"].status, ledger::Status::Integrated);
+    assert_eq!(rs.units["unit-b"].status, ledger::Status::Integrated);
+    assert_eq!(rs.units["unit-c"].status, ledger::Status::Integrated);
+    let final_c = std::fs::read_to_string(Path::new(&repo_path).join("c.rs")).unwrap();
+    assert_eq!(
+        final_c, "REGENERATED\n",
+        "the released regenerate call must still run for real and land its own output"
     );
     drop(repo);
 }
