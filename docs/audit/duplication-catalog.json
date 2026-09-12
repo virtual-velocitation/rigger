@@ -1251,56 +1251,68 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 127,
-        "end_line": 127,
-        "name": "Command::new"
-      },
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 138,
-        "end_line": 138,
-        "name": "Command::new"
-      },
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
         "start_line": 149,
         "end_line": 149,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 168,
-        "end_line": 168,
+        "start_line": 160,
+        "end_line": 160,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 414,
-        "end_line": 414,
+        "start_line": 171,
+        "end_line": 171,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 604,
-        "end_line": 604,
+        "start_line": 190,
+        "end_line": 190,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 852,
-        "end_line": 852,
+        "start_line": 436,
+        "end_line": 436,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1071,
-        "end_line": 1071,
+        "start_line": 626,
+        "end_line": 626,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1267,
-        "end_line": 1267,
+        "start_line": 874,
+        "end_line": 874,
+        "name": "Command::new"
+      },
+      {
+        "file": "tests/integrate_conflict_merge_periphery.rs",
+        "start_line": 1093,
+        "end_line": 1093,
+        "name": "Command::new"
+      },
+      {
+        "file": "tests/integrate_conflict_merge_periphery.rs",
+        "start_line": 1289,
+        "end_line": 1289,
+        "name": "Command::new"
+      },
+      {
+        "file": "tests/integrate_conflict_merge_periphery.rs",
+        "start_line": 1546,
+        "end_line": 1546,
+        "name": "Command::new"
+      },
+      {
+        "file": "tests/integrate_conflict_merge_periphery.rs",
+        "start_line": 1646,
+        "end_line": 1646,
         "name": "Command::new"
       },
       {
@@ -1869,7 +1881,7 @@
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 284 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: Command::new call sites - 286 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0007",
@@ -1963,8 +1975,8 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 183,
-        "end_line": 188,
+        "start_line": 205,
+        "end_line": 210,
         "name": "agent"
       }
     ],
@@ -3075,8 +3087,8 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 190,
-        "end_line": 196,
+        "start_line": 212,
+        "end_line": 218,
         "name": "gate_def"
       }
     ],
@@ -6325,20 +6337,20 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 248,
-        "end_line": 248,
+        "start_line": 270,
+        "end_line": 270,
         "name": "\".rigger\""
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 249,
-        "end_line": 249,
+        "start_line": 271,
+        "end_line": 271,
         "name": "\"create .rigger/agents\""
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 318,
-        "end_line": 318,
+        "start_line": 340,
+        "end_line": 340,
         "name": "\"the project's own .rigger/workflow.yml must load through the real loader\""
       },
       {
@@ -8179,8 +8191,8 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 118,
-        "end_line": 135,
+        "start_line": 140,
+        "end_line": 157,
         "name": "init_repo"
       },
       {
@@ -15809,8 +15821,8 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 247,
-        "end_line": 262,
+        "start_line": 269,
+        "end_line": 284,
         "name": "write_workflow"
       },
       {
@@ -15841,8 +15853,8 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 247,
-        "end_line": 262,
+        "start_line": 269,
+        "end_line": 284,
         "name": "write_workflow"
       },
       {
@@ -22143,14 +22155,14 @@
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 361,
-        "end_line": 438,
+        "start_line": 383,
+        "end_line": 460,
         "name": "spawn"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1234,
-        "end_line": 1291,
+        "start_line": 1256,
+        "end_line": 1313,
         "name": "spawn"
       }
     ],
@@ -22163,14 +22175,14 @@
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 838,
-        "end_line": 874,
+        "start_line": 860,
+        "end_line": 896,
         "name": "spawn"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1047,
-        "end_line": 1093,
+        "start_line": 1069,
+        "end_line": 1115,
         "name": "spawn"
       }
     ],
