@@ -52,6 +52,16 @@ still "rooted under" the scratch root and is reaped. Evidence: a spec-80 mutant 
 its tree; the cwd-rooted reaper never matched the deleted path, and it ran for eight days at
 roughly seventeen cores before the operator killed it by hand.
 
+AN AGENT NEVER MUTATES OUTSIDE ITS WORKTREE, decided: `rigger setup` installs a PreToolUse
+hook (beside the kill hook) that refuses a `git commit`, `git add`, `git reset`, `git merge` or
+`git cherry-pick` whose repository, resolved from the command's effective directory, is not
+the spawn's assigned worktree - the spawn env carries the assigned dir - with a message naming
+both. Evidence (2026-09-11): a unit-4 implementer's `cd` chain failed silently in a scratch
+git experiment, its shell fell back to the main checkout, and `git add -A && git commit`
+created a real commit on `rigger-run` carrying two gigabytes of untracked store backups; the
+operator reset it before any sibling merged it. The persona's "every command starts with
+`cd <worktree> &&`" rule is text; this is the tool-path guard that makes the text unnecessary.
+
 STEP RESOLVES THE MAIN WORKTREE, AND EXACTLY ONE ROOT, decided: `rigger step`, `rigger run` and
 `rigger workflow` derive the repository from `git rev-parse --git-common-dir` and operate on the
 MAIN worktree; invoked from inside a linked worktree they refuse with a message naming the main
