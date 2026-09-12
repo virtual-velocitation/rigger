@@ -3475,7 +3475,7 @@ fn kg_degree_for(file: &str, line: usize) -> u32 {
         ("src/spawn.rs", 374) => 5,
         ("src/spawn.rs", 399) => 14,
         ("src/worktree.rs", 82) => 10,
-        ("src/worktree.rs", 520) => 5,
+        ("src/worktree.rs", 525) => 5,
         (other_file, other_line) => panic!(
             "dead-code candidate {other_file}:{other_line} has no recorded knowledge-graph \
              degree - run `rigger graph --show {other_file}::<name>` and add it here (spec 87 \
@@ -5818,12 +5818,13 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              examples ('src/worktree.rs expect_merged and is_dirty'), reconfirmed on the current \
              tree: its 6 references are all test-only assertion helpers.",
         ),
-        ("src/worktree.rs", 520) => (
+        ("src/worktree.rs", 525) => (
             Delete,
             "is_dirty has no production caller - the second of spec 87's own two Goal-cited worked \
              examples, reconfirmed on the current tree: its 3 references are all test-only. (Line \
-             shifted 496->520 by spec 88 criterion 2's new create_branch_at, inserted above it; \
-             is_dirty itself is untouched.)",
+             shifted 496->520 by spec 88 criterion 2's new create_branch_at, then 520->525 by \
+             criterion 2 round 4's expanded create_branch_at doc comment (branch_tip / pinned-sha \
+             note); is_dirty itself remains untouched both times.)",
         ),
         (other_file, other_line) => panic!(
             "dead-code candidate {other_file}:{other_line} has no assigned disposition - this is \

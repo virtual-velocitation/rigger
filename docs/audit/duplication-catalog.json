@@ -183,146 +183,146 @@
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 11094,
-        "end_line": 11094,
+        "start_line": 11201,
+        "end_line": 11201,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 18124,
-        "end_line": 18124,
+        "start_line": 18231,
+        "end_line": 18231,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 21943,
-        "end_line": 21943,
+        "start_line": 22050,
+        "end_line": 22050,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 22561,
-        "end_line": 22561,
+        "start_line": 22668,
+        "end_line": 22668,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 22635,
-        "end_line": 22635,
+        "start_line": 22742,
+        "end_line": 22742,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 26382,
-        "end_line": 26382,
+        "start_line": 26489,
+        "end_line": 26489,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 26480,
-        "end_line": 26480,
+        "start_line": 26587,
+        "end_line": 26587,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 26565,
-        "end_line": 26565,
+        "start_line": 26672,
+        "end_line": 26672,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 26857,
-        "end_line": 26857,
+        "start_line": 26964,
+        "end_line": 26964,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 27187,
-        "end_line": 27187,
+        "start_line": 27294,
+        "end_line": 27294,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 27217,
-        "end_line": 27217,
+        "start_line": 27324,
+        "end_line": 27324,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 27689,
-        "end_line": 27689,
+        "start_line": 27796,
+        "end_line": 27796,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 31333,
-        "end_line": 31333,
+        "start_line": 31440,
+        "end_line": 31440,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 31994,
-        "end_line": 31994,
+        "start_line": 32101,
+        "end_line": 32101,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 32492,
-        "end_line": 32492,
+        "start_line": 32599,
+        "end_line": 32599,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 32499,
-        "end_line": 32499,
+        "start_line": 32606,
+        "end_line": 32606,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 32589,
-        "end_line": 32589,
+        "start_line": 32696,
+        "end_line": 32696,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 32646,
-        "end_line": 32646,
+        "start_line": 32753,
+        "end_line": 32753,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 32702,
-        "end_line": 32702,
+        "start_line": 32809,
+        "end_line": 32809,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 33947,
-        "end_line": 33947,
+        "start_line": 34054,
+        "end_line": 34054,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 33965,
-        "end_line": 33965,
+        "start_line": 34072,
+        "end_line": 34072,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 33995,
-        "end_line": 33995,
+        "start_line": 34102,
+        "end_line": 34102,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 34186,
-        "end_line": 34186,
+        "start_line": 34293,
+        "end_line": 34293,
         "name": "Command::new"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 34499,
-        "end_line": 34499,
+        "start_line": 34606,
+        "end_line": 34606,
         "name": "Command::new"
       },
       {
@@ -573,32 +573,32 @@
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 1396,
-        "end_line": 1396,
+        "start_line": 1415,
+        "end_line": 1415,
         "name": "Command::new"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2478,
-        "end_line": 2478,
+        "start_line": 2497,
+        "end_line": 2497,
         "name": "Command::new"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2765,
-        "end_line": 2765,
+        "start_line": 2784,
+        "end_line": 2784,
         "name": "Command::new"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 3540,
-        "end_line": 3540,
+        "start_line": 3559,
+        "end_line": 3559,
         "name": "Command::new"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 3546,
-        "end_line": 3546,
+        "start_line": 3565,
+        "end_line": 3565,
         "name": "Command::new"
       },
       {
@@ -615,14 +615,14 @@
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 136,
-        "end_line": 136,
+        "start_line": 167,
+        "end_line": 167,
         "name": "Command::new"
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 148,
-        "end_line": 148,
+        "start_line": 179,
+        "end_line": 179,
         "name": "Command::new"
       },
       {
@@ -1837,8 +1837,8 @@
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 11445,
-        "end_line": 11450,
+        "start_line": 11552,
+        "end_line": 11557,
         "name": "agent"
       },
       {
@@ -2373,20 +2373,20 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 291,
-        "end_line": 293,
+        "start_line": 308,
+        "end_line": 310,
         "name": "gate_verdict_key"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 303,
-        "end_line": 305,
+        "start_line": 320,
+        "end_line": 322,
         "name": "gate_skip_key"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 316,
-        "end_line": 318,
+        "start_line": 333,
+        "end_line": 335,
         "name": "postmerge_gate_verdict_key"
       }
     ],
@@ -2399,8 +2399,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 325,
-        "end_line": 327,
+        "start_line": 342,
+        "end_line": 344,
         "name": "compensation_queued_key"
       },
       {
@@ -2415,50 +2415,36 @@
   },
   {
     "id": "dup-0026",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "src/conductor.rs",
-        "start_line": 505,
-        "end_line": 507,
-        "name": "unit_of_gate_key"
-      },
-      {
-        "file": "src/spawn.rs",
-        "start_line": 177,
-        "end_line": 179,
-        "name": "unit_of"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: src/conductor.rs, src/spawn.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-0027",
     "classification": "near",
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 621,
-        "end_line": 623,
+        "start_line": 352,
+        "end_line": 354,
+        "name": "adoption_provenance_key"
+      },
+      {
+        "file": "src/conductor.rs",
+        "start_line": 648,
+        "end_line": 650,
         "name": "deferred_gate_verdict_key"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 632,
-        "end_line": 634,
+        "start_line": 659,
+        "end_line": 661,
         "name": "deferred_gate_failed_key"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 8951,
-        "end_line": 8953,
+        "start_line": 9019,
+        "end_line": 9021,
         "name": "build_system_prompt"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 8978,
-        "end_line": 8985,
+        "start_line": 9046,
+        "end_line": 9053,
         "name": "review_protocol"
       },
       {
@@ -2505,8 +2491,8 @@
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 817,
-        "end_line": 819,
+        "start_line": 836,
+        "end_line": 838,
         "name": "shared_build_cache_guard_path"
       },
       {
@@ -2526,19 +2512,39 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
+    "id": "dup-0027",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "src/conductor.rs",
+        "start_line": 532,
+        "end_line": 534,
+        "name": "unit_of_gate_key"
+      },
+      {
+        "file": "src/spawn.rs",
+        "start_line": 177,
+        "end_line": 179,
+        "name": "unit_of"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: src/conductor.rs, src/spawn.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+  },
+  {
     "id": "dup-0028",
     "classification": "exact",
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 655,
-        "end_line": 657,
+        "start_line": 682,
+        "end_line": 684,
         "name": "from"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 660,
-        "end_line": 662,
+        "start_line": 687,
+        "end_line": 689,
         "name": "from"
       }
     ],
@@ -2551,14 +2557,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 787,
-        "end_line": 794,
+        "start_line": 814,
+        "end_line": 821,
         "name": "approved"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 795,
-        "end_line": 802,
+        "start_line": 822,
+        "end_line": 829,
         "name": "rejected"
       }
     ],
@@ -2571,26 +2577,26 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 1121,
-        "end_line": 1123,
+        "start_line": 1148,
+        "end_line": 1150,
         "name": "is_parked"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 1159,
-        "end_line": 1161,
+        "start_line": 1186,
+        "end_line": 1188,
         "name": "is_budget_refused"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 1237,
-        "end_line": 1239,
+        "start_line": 1264,
+        "end_line": 1266,
         "name": "is_degenerate_reviewer"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 1280,
-        "end_line": 1282,
+        "start_line": 1307,
+        "end_line": 1309,
         "name": "is_verdict_channel_mismatch"
       }
     ],
@@ -2603,14 +2609,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 1150,
-        "end_line": 1154,
+        "start_line": 1177,
+        "end_line": 1181,
         "name": "budget_refused"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 1265,
-        "end_line": 1275,
+        "start_line": 1292,
+        "end_line": 1302,
         "name": "verdict_channel_mismatch"
       }
     ],
@@ -2623,8 +2629,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 2466,
-        "end_line": 2488,
+        "start_line": 2493,
+        "end_line": 2515,
         "name": "append_and_fold_batch"
       },
       {
@@ -2643,14 +2649,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 2672,
-        "end_line": 2674,
+        "start_line": 2699,
+        "end_line": 2701,
         "name": "recorded_gate_verdict"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 2684,
-        "end_line": 2686,
+        "start_line": 2711,
+        "end_line": 2713,
         "name": "cached_green_verdict"
       }
     ],
@@ -2663,8 +2669,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 3079,
-        "end_line": 3081,
+        "start_line": 3106,
+        "end_line": 3108,
         "name": "spawn_is_recorded"
       },
       {
@@ -2683,26 +2689,26 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 3123,
-        "end_line": 3125,
+        "start_line": 3150,
+        "end_line": 3152,
         "name": "budget_broke"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 3131,
-        "end_line": 3133,
+        "start_line": 3158,
+        "end_line": 3160,
         "name": "parked"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 3139,
-        "end_line": 3141,
+        "start_line": 3166,
+        "end_line": 3168,
         "name": "manual_review_pending"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 3146,
-        "end_line": 3148,
+        "start_line": 3173,
+        "end_line": 3175,
         "name": "budget_halted"
       }
     ],
@@ -2715,8 +2721,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 8699,
-        "end_line": 8701,
+        "start_line": 8767,
+        "end_line": 8769,
         "name": "normalize_ws"
       },
       {
@@ -2741,8 +2747,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 8699,
-        "end_line": 8701,
+        "start_line": 8767,
+        "end_line": 8769,
         "name": "normalize_ws"
       },
       {
@@ -2761,8 +2767,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 9759,
-        "end_line": 9761,
+        "start_line": 9827,
+        "end_line": 9829,
         "name": "unit_branch"
       },
       {
@@ -2781,14 +2787,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 9936,
-        "end_line": 9941,
+        "start_line": 10043,
+        "end_line": 10048,
         "name": "review_worktree_dir"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 9948,
-        "end_line": 9950,
+        "start_line": 10055,
+        "end_line": 10057,
         "name": "review_branch"
       }
     ],
@@ -2801,14 +2807,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 10817,
-        "end_line": 10823,
+        "start_line": 10924,
+        "end_line": 10930,
         "name": "compensated"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 10828,
-        "end_line": 10833,
+        "start_line": 10935,
+        "end_line": 10940,
         "name": "plain_failure"
       }
     ],
@@ -2821,14 +2827,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 10836,
-        "end_line": 10857,
+        "start_line": 10943,
+        "end_line": 10964,
         "name": "prior_criterion_unit_never_adopts_across_two_different_specs_sharing_the_same_criterion_id"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 10899,
-        "end_line": 10916,
+        "start_line": 11006,
+        "end_line": 11023,
         "name": "prior_criterion_unit_a_plain_non_compensation_failure_never_reopens_an_integrated_criterion"
       }
     ],
@@ -2841,14 +2847,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 10860,
-        "end_line": 10875,
+        "start_line": 10967,
+        "end_line": 10982,
         "name": "prior_criterion_unit_still_adopts_across_two_runs_of_the_same_spec"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 10878,
-        "end_line": 10896,
+        "start_line": 10985,
+        "end_line": 11003,
         "name": "prior_criterion_unit_readopts_after_a_compensation_reverts_the_integration"
       }
     ],
@@ -2861,26 +2867,26 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 11255,
-        "end_line": 11262,
+        "start_line": 11362,
+        "end_line": 11369,
         "name": "prompts_for"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 11265,
-        "end_line": 11272,
+        "start_line": 11372,
+        "end_line": 11379,
         "name": "dirs_for"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 11276,
-        "end_line": 11282,
+        "start_line": 11383,
+        "end_line": 11389,
         "name": "system_prompt_for"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 11286,
-        "end_line": 11288,
+        "start_line": 11393,
+        "end_line": 11395,
         "name": "title_for"
       }
     ],
@@ -2893,44 +2899,44 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 11298,
-        "end_line": 11300,
+        "start_line": 11405,
+        "end_line": 11407,
         "name": "spawn_ids"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 29826,
-        "end_line": 29828,
+        "start_line": 29933,
+        "end_line": 29935,
         "name": "calls"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 29829,
-        "end_line": 29831,
+        "start_line": 29936,
+        "end_line": 29938,
         "name": "targets"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 29835,
-        "end_line": 29837,
+        "start_line": 29942,
+        "end_line": 29944,
         "name": "store_fences"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 29838,
-        "end_line": 29840,
+        "start_line": 29945,
+        "end_line": 29947,
         "name": "build_cache_guards"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 29841,
-        "end_line": 29843,
+        "start_line": 29948,
+        "end_line": 29950,
         "name": "build_cache_dirs"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 29994,
-        "end_line": 29996,
+        "start_line": 30101,
+        "end_line": 30103,
         "name": "calls"
       },
       {
@@ -2973,20 +2979,20 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 11304,
-        "end_line": 11311,
+        "start_line": 11411,
+        "end_line": 11418,
         "name": "spawn_count"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 35049,
-        "end_line": 35056,
+        "start_line": 35156,
+        "end_line": 35163,
         "name": "count"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 35804,
-        "end_line": 35811,
+        "start_line": 35911,
+        "end_line": 35918,
         "name": "count"
       }
     ],
@@ -2999,8 +3005,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 11315,
-        "end_line": 11321,
+        "start_line": 11422,
+        "end_line": 11428,
         "name": "spawned"
       },
       {
@@ -3019,8 +3025,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 11455,
-        "end_line": 11461,
+        "start_line": 11562,
+        "end_line": 11568,
         "name": "agent_with_prompt"
       },
       {
@@ -3045,26 +3051,26 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 11512,
-        "end_line": 11536,
+        "start_line": 11619,
+        "end_line": 11643,
         "name": "coverage_gate_refuses_an_uncovered_criterion"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 25004,
-        "end_line": 25036,
+        "start_line": 25111,
+        "end_line": 25143,
         "name": "coverage_gap_flags_a_spec_defect_and_errors"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 25083,
-        "end_line": 25117,
+        "start_line": 25190,
+        "end_line": 25224,
         "name": "planner_leaving_a_gap_flags_a_spec_defect"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 25120,
-        "end_line": 25154,
+        "start_line": 25227,
+        "end_line": 25261,
         "name": "gate_only_stage_is_a_coverage_proxy_gap"
       }
     ],
@@ -3077,32 +3083,32 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 11868,
-        "end_line": 11895,
+        "start_line": 11975,
+        "end_line": 12002,
         "name": "supersede_cfg"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 18780,
-        "end_line": 18802,
+        "start_line": 18887,
+        "end_line": 18909,
         "name": "sha_stamp_cfg"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 19089,
-        "end_line": 19109,
+        "start_line": 19196,
+        "end_line": 19216,
         "name": "degenerate_reviewer_cfg"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 29896,
-        "end_line": 29918,
+        "start_line": 30003,
+        "end_line": 30025,
         "name": "content_cache_cfg"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 34953,
-        "end_line": 34992,
+        "start_line": 35060,
+        "end_line": 35099,
         "name": "critique_cfg"
       },
       {
@@ -3113,8 +3119,8 @@
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 249,
-        "end_line": 279,
+        "start_line": 280,
+        "end_line": 310,
         "name": "baseline_only_cfg"
       },
       {
@@ -3139,14 +3145,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 12664,
-        "end_line": 12760,
+        "start_line": 12771,
+        "end_line": 12867,
         "name": "a_later_episodes_proposal_supersedes_an_earlier_episodes_planner_unit"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 12823,
-        "end_line": 12902,
+        "start_line": 12930,
+        "end_line": 13009,
         "name": "a_planner_proposal_with_no_data_episode_field_still_supersedes_via_meta_spawn"
       }
     ],
@@ -3159,20 +3165,20 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 12905,
-        "end_line": 13032,
+        "start_line": 13012,
+        "end_line": 13139,
         "name": "a_same_id_refine_restamps_its_episode_so_its_own_episodes_sibling_does_not_reap_it"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 13035,
-        "end_line": 13157,
+        "start_line": 13142,
+        "end_line": 13264,
         "name": "a_same_id_refine_survives_its_own_episodes_sibling_add_walked_first"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 13492,
-        "end_line": 13586,
+        "start_line": 13599,
+        "end_line": 13693,
         "name": "a_legacy_proposal_never_supersedes_an_identified_episodes_owner_even_when_logged_later"
       }
     ],
@@ -3185,20 +3191,20 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 13194,
-        "end_line": 13212,
+        "start_line": 13301,
+        "end_line": 13319,
         "name": "append_one"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 13339,
-        "end_line": 13356,
+        "start_line": 13446,
+        "end_line": 13463,
         "name": "append_legacy"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 13358,
-        "end_line": 13376,
+        "start_line": 13465,
+        "end_line": 13483,
         "name": "append_identified"
       }
     ],
@@ -3211,14 +3217,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 13214,
-        "end_line": 13226,
+        "start_line": 13321,
+        "end_line": 13333,
         "name": "shape"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 13378,
-        "end_line": 13390,
+        "start_line": 13485,
+        "end_line": 13497,
         "name": "shape"
       }
     ],
@@ -3231,26 +3237,26 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 13706,
-        "end_line": 13762,
+        "start_line": 13813,
+        "end_line": 13869,
         "name": "a_verbatim_copy_still_supersedes_its_baseline"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 13765,
-        "end_line": 13839,
+        "start_line": 13872,
+        "end_line": 13946,
         "name": "a_paraphrased_proposal_matches_its_baseline_by_id_not_prose"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 13842,
-        "end_line": 13926,
+        "start_line": 13949,
+        "end_line": 14033,
         "name": "a_bracketed_id_echo_with_a_paraphrase_still_supersedes_exactly_once"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 13929,
-        "end_line": 14001,
+        "start_line": 14036,
+        "end_line": 14108,
         "name": "a_stale_non_matching_id_falls_back_to_the_verbatim_prose_match"
       }
     ],
@@ -3263,8 +3269,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 14208,
-        "end_line": 14208,
+        "start_line": 14315,
+        "end_line": 14315,
         "name": "\"the repo's own .rigger config must load\""
       },
       {
@@ -4091,38 +4097,38 @@
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 760,
-        "end_line": 760,
+        "start_line": 779,
+        "end_line": 779,
         "name": "\"{}/.rigger/tmp\""
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 1878,
-        "end_line": 1878,
+        "start_line": 1897,
+        "end_line": 1897,
         "name": "\"{repo_path}/.rigger/tmp\""
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 1895,
-        "end_line": 1895,
+        "start_line": 1914,
+        "end_line": 1914,
         "name": "\"~/.rigger-scratch-test\""
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 1896,
-        "end_line": 1896,
+        "start_line": 1915,
+        "end_line": 1915,
         "name": "\"{home}/.rigger-scratch-test\""
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 3478,
-        "end_line": 3478,
+        "start_line": 3497,
+        "end_line": 3497,
         "name": "\"{base}..rigger-run\""
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 3527,
-        "end_line": 3527,
+        "start_line": 3546,
+        "end_line": 3546,
         "name": "\".rigger\""
       },
       {
@@ -6731,14 +6737,14 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7121,
-        "end_line": 7121,
+        "start_line": 7122,
+        "end_line": 7122,
         "name": "\"fn a() {\\n    let _ = \\\".rigger/tmp\\\";\\n}\\n\""
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7124,
-        "end_line": 7124,
+        "start_line": 7125,
+        "end_line": 7125,
         "name": "\".rigger\""
       },
       {
@@ -7201,20 +7207,20 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 14920,
-        "end_line": 14940,
+        "start_line": 15027,
+        "end_line": 15047,
         "name": "render_capped_findings"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 15162,
-        "end_line": 15181,
+        "start_line": 15269,
+        "end_line": 15288,
         "name": "render_capped_lessons"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 17519,
-        "end_line": 17541,
+        "start_line": 17626,
+        "end_line": 17648,
         "name": "render_capped_lessons_scoped"
       }
     ],
@@ -7227,14 +7233,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 14943,
-        "end_line": 15010,
+        "start_line": 15050,
+        "end_line": 15117,
         "name": "findings_prompt_injection_is_capped_under_budget_with_elision_note"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 17407,
-        "end_line": 17473,
+        "start_line": 17514,
+        "end_line": 17580,
         "name": "lessons_prompt_injection_is_capped_under_budget_with_elision_note"
       }
     ],
@@ -7247,14 +7253,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 16822,
-        "end_line": 16824,
+        "start_line": 16929,
+        "end_line": 16931,
         "name": "resolve"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 30673,
-        "end_line": 30675,
+        "start_line": 30780,
+        "end_line": 30782,
         "name": "resolve"
       }
     ],
@@ -7267,14 +7273,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 17211,
-        "end_line": 17251,
+        "start_line": 17318,
+        "end_line": 17358,
         "name": "a_subgraph_with_no_design_intent_renders_no_design_intent_header"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 17374,
-        "end_line": 17404,
+        "start_line": 17481,
+        "end_line": 17511,
         "name": "a_subgraph_with_no_code_definitions_renders_no_code_neighborhood_header"
       }
     ],
@@ -7287,14 +7293,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 17707,
-        "end_line": 17724,
+        "start_line": 17814,
+        "end_line": 17831,
         "name": "commit_on_unit_branch"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 17927,
-        "end_line": 17943,
+        "start_line": 18034,
+        "end_line": 18050,
         "name": "commit_on_named_branch"
       }
     ],
@@ -7307,26 +7313,26 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 17727,
-        "end_line": 17822,
+        "start_line": 17834,
+        "end_line": 17929,
         "name": "resume_reuses_a_units_branch_instead_of_reimplementing"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 19950,
-        "end_line": 20035,
+        "start_line": 20057,
+        "end_line": 20142,
         "name": "resume_integrates_an_already_approved_unit_without_re_reviewing"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 20038,
-        "end_line": 20149,
+        "start_line": 20145,
+        "end_line": 20256,
         "name": "a_failed_unit_is_not_terminal_and_resumes"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 26976,
-        "end_line": 27079,
+        "start_line": 27083,
+        "end_line": 27186,
         "name": "a_resumed_reviewed_unit_restores_a_worktree_the_exhaustive_gate_deleted"
       }
     ],
@@ -7339,26 +7345,26 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 17825,
-        "end_line": 17919,
+        "start_line": 17932,
+        "end_line": 18026,
         "name": "branch_gc_reclaims_integrated_units_and_retains_escalated_ones_on_resume"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 17958,
-        "end_line": 18014,
+        "start_line": 18065,
+        "end_line": 18121,
         "name": "branch_gc_falls_back_to_the_derived_branch_when_unitstarted_recorded_no_branch"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 18236,
-        "end_line": 18328,
+        "start_line": 18343,
+        "end_line": 18435,
         "name": "branch_gc_reclaims_every_integrated_unit_in_one_resume_not_just_the_first"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 18331,
-        "end_line": 18412,
+        "start_line": 18438,
+        "end_line": 18519,
         "name": "branch_gc_fences_reclaim_behind_an_in_flight_straggler_spawn_and_reclaims_once_it_answers"
       }
     ],
@@ -7371,14 +7377,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 18415,
-        "end_line": 18482,
+        "start_line": 18522,
+        "end_line": 18589,
         "name": "gc_integrated_branches_logged_prints_kept_evidence_for_an_in_flight_straggler_spawn"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 18587,
-        "end_line": 18670,
+        "start_line": 18694,
+        "end_line": 18777,
         "name": "gc_integrated_branches_logged_stays_silent_for_an_already_gone_worktree_but_still_reclaims_an_orphaned_branch"
       }
     ],
@@ -7391,14 +7397,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 18485,
-        "end_line": 18584,
+        "start_line": 18592,
+        "end_line": 18691,
         "name": "gc_integrated_branches_logged_prints_removing_evidence_for_a_terminal_spawns_decision"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 18673,
-        "end_line": 18776,
+        "start_line": 18780,
+        "end_line": 18883,
         "name": "gc_integrated_branches_logged_does_not_repeat_removing_evidence_once_the_real_removal_already_happened"
       }
     ],
@@ -7411,14 +7417,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 19532,
-        "end_line": 19577,
+        "start_line": 19639,
+        "end_line": 19684,
         "name": "a_gating_spawn_that_returns_a_reject_verdict_line_is_a_normal_reject_even_if_it_emitted_approve"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 19580,
-        "end_line": 19624,
+        "start_line": 19687,
+        "end_line": 19731,
         "name": "a_gating_spawn_with_no_verdict_line_and_no_emitted_approve_is_an_ordinary_reject"
       }
     ],
@@ -7431,14 +7437,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 20474,
-        "end_line": 20516,
+        "start_line": 20581,
+        "end_line": 20623,
         "name": "scope_creep_refuses_a_criterionless_proposed_unit"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 25039,
-        "end_line": 25080,
+        "start_line": 25146,
+        "end_line": 25187,
         "name": "planner_covering_every_criterion_passes"
       }
     ],
@@ -7451,14 +7457,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 20555,
-        "end_line": 20621,
+        "start_line": 20662,
+        "end_line": 20728,
         "name": "adversary_runs_between_the_lenses_and_the_adjudicator"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 20677,
-        "end_line": 20770,
+        "start_line": 20784,
+        "end_line": 20877,
         "name": "unit_reviews_itself_within_its_own_lifecycle"
       }
     ],
@@ -7471,26 +7477,26 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 21053,
-        "end_line": 21113,
+        "start_line": 21160,
+        "end_line": 21220,
         "name": "a_low_risk_unit_skips_the_adversary_and_extra_lens"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 21116,
-        "end_line": 21186,
+        "start_line": 21223,
+        "end_line": 21293,
         "name": "a_high_risk_unit_runs_the_full_panel_and_logs_the_routing"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 21207,
-        "end_line": 21285,
+        "start_line": 21314,
+        "end_line": 21392,
         "name": "a_zero_grounding_unit_fails_safe_to_the_full_panel_and_logs_it"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 21400,
-        "end_line": 21464,
+        "start_line": 21507,
+        "end_line": 21571,
         "name": "a_stage_level_tiers_policy_routes_the_unit_by_risk"
       }
     ],
@@ -7503,14 +7509,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 23036,
-        "end_line": 23098,
+        "start_line": 23143,
+        "end_line": 23205,
         "name": "planner_proposed_unit_inherits_the_default_review_panel"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 23101,
-        "end_line": 23196,
+        "start_line": 23208,
+        "end_line": 23303,
         "name": "a_producer_stage_skips_the_three_tier_review_and_unblocks_its_dependents"
       }
     ],
@@ -7523,32 +7529,32 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 23199,
-        "end_line": 23271,
+        "start_line": 23306,
+        "end_line": 23378,
         "name": "per_unit_adjudicator_reject_blocks_integration_and_escalates"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 23598,
-        "end_line": 23671,
+        "start_line": 23705,
+        "end_line": 23778,
         "name": "approval_on_the_final_permitted_attempt_integrates_a_per_unit_stage"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 23767,
-        "end_line": 23833,
+        "start_line": 23874,
+        "end_line": 23940,
         "name": "approval_on_the_final_permitted_attempt_integrates_a_standalone_review_stage"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 25717,
-        "end_line": 25764,
+        "start_line": 25824,
+        "end_line": 25871,
         "name": "on_pass_none_runs_gates_but_does_not_integrate"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 28880,
-        "end_line": 28925,
+        "start_line": 28987,
+        "end_line": 29032,
         "name": "unparseable_adjudicator_output_blocks_integration"
       }
     ],
@@ -7561,14 +7567,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 23370,
-        "end_line": 23467,
+        "start_line": 23477,
+        "end_line": 23574,
         "name": "a_higher_max_retries_gives_more_attempts_before_escalation"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 23384,
-        "end_line": 23430,
+        "start_line": 23491,
+        "end_line": 23537,
         "name": "escalation_run"
       }
     ],
@@ -7581,14 +7587,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 23836,
-        "end_line": 23870,
+        "start_line": 23943,
+        "end_line": 23977,
         "name": "mid_spawn_crash_escalates_without_aborting_the_run"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 23873,
-        "end_line": 23924,
+        "start_line": 23980,
+        "end_line": 24031,
         "name": "a_newly_escalated_unit_stamps_an_attention_entry"
       }
     ],
@@ -7601,14 +7607,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 23927,
-        "end_line": 23977,
+        "start_line": 24034,
+        "end_line": 24084,
         "name": "a_budget_halt_stamps_an_attention_entry"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 24740,
-        "end_line": 24778,
+        "start_line": 24847,
+        "end_line": 24885,
         "name": "a_budget_halt_surfaces_its_reason_on_the_run_state"
       }
     ],
@@ -7621,20 +7627,20 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 24072,
-        "end_line": 24176,
+        "start_line": 24179,
+        "end_line": 24283,
         "name": "a_delayed_budget_halt_after_a_dependency_unlocks_still_stamps"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 24253,
-        "end_line": 24334,
+        "start_line": 24360,
+        "end_line": 24441,
         "name": "an_escalation_does_not_restamp_attention_on_a_resumed_process"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 24373,
-        "end_line": 24497,
+        "start_line": 24480,
+        "end_line": 24604,
         "name": "a_second_failure_recurs_and_a_third_also_stalls_the_frontier"
       }
     ],
@@ -7647,20 +7653,20 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 24640,
-        "end_line": 24691,
+        "start_line": 24747,
+        "end_line": 24798,
         "name": "budget_breaker_stops_the_run_after_the_first_wave"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 24694,
-        "end_line": 24737,
+        "start_line": 24801,
+        "end_line": 24844,
         "name": "budget_exhaustion_aborts_the_task"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 25157,
-        "end_line": 25216,
+        "start_line": 25264,
+        "end_line": 25323,
         "name": "manual_stage_pauses_while_an_auto_stage_integrates"
       }
     ],
@@ -7673,14 +7679,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 24816,
-        "end_line": 24884,
+        "start_line": 24923,
+        "end_line": 24991,
         "name": "the_spawn_budget_folds_from_recorded_spawn_requests_across_steps"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 24887,
-        "end_line": 24928,
+        "start_line": 24994,
+        "end_line": 25035,
         "name": "the_pre_wave_breaker_trips_only_on_a_new_over_budget_spawn"
       }
     ],
@@ -7693,20 +7699,20 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 25219,
-        "end_line": 25262,
+        "start_line": 25326,
+        "end_line": 25369,
         "name": "isolation_none_agent_gets_no_worktree_even_with_a_repo"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 25265,
-        "end_line": 25298,
+        "start_line": 25372,
+        "end_line": 25405,
         "name": "spawn_opts_isolation_is_set_for_a_worktree_agent"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 25301,
-        "end_line": 25340,
+        "start_line": 25408,
+        "end_line": 25447,
         "name": "a_spawned_implementers_title_is_the_unit_criterion"
       }
     ],
@@ -7719,26 +7725,26 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 25347,
-        "end_line": 25395,
+        "start_line": 25454,
+        "end_line": 25502,
         "name": "the_adversarys_spawn_is_stamped_with_the_units_lens_roster"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 25401,
-        "end_line": 25450,
+        "start_line": 25508,
+        "end_line": 25557,
         "name": "the_adjudicators_spawn_is_stamped_with_lenses_plus_adversary"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 25455,
-        "end_line": 25502,
+        "start_line": 25562,
+        "end_line": 25609,
         "name": "a_panel_with_no_adversary_never_fabricates_one_in_the_adjudicators_roster"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 25588,
-        "end_line": 25645,
+        "start_line": 25695,
+        "end_line": 25752,
         "name": "the_fan_out_review_loops_adversary_and_adjudicator_spawns_are_stamped_with_the_routed_roster"
       }
     ],
@@ -7751,14 +7757,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 25895,
-        "end_line": 25897,
+        "start_line": 26002,
+        "end_line": 26004,
         "name": "envs"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 29832,
-        "end_line": 29834,
+        "start_line": 29939,
+        "end_line": 29941,
         "name": "build_envs"
       }
     ],
@@ -7771,20 +7777,20 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 26298,
-        "end_line": 26404,
+        "start_line": 26405,
+        "end_line": 26511,
         "name": "a_parked_review_spawn_keeps_the_unit_worktree_registered_and_its_cache"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 26407,
-        "end_line": 26499,
+        "start_line": 26514,
+        "end_line": 26606,
         "name": "review_unit_restores_a_worktree_a_gate_deleted_out_of_band"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 26502,
-        "end_line": 26604,
+        "start_line": 26609,
+        "end_line": 26711,
         "name": "a_second_step_restores_a_still_parked_units_worktree_deleted_out_of_band"
       }
     ],
@@ -7797,14 +7803,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 26906,
-        "end_line": 26973,
+        "start_line": 27013,
+        "end_line": 27080,
         "name": "failed_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 27508,
-        "end_line": 27579,
+        "start_line": 27615,
+        "end_line": 27686,
         "name": "speculation_reject_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored"
       }
     ],
@@ -7817,14 +7823,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 27842,
-        "end_line": 27885,
+        "start_line": 27949,
+        "end_line": 27992,
         "name": "agent_stage_runs_the_per_unit_lifecycle_not_the_fan_out_path"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 27888,
-        "end_line": 27929,
+        "start_line": 27995,
+        "end_line": 28036,
         "name": "standalone_review_stage_still_takes_the_fan_out_path"
       }
     ],
@@ -7837,38 +7843,38 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 28047,
-        "end_line": 28100,
+        "start_line": 28154,
+        "end_line": 28207,
         "name": "a_parked_lens_keeps_the_standalone_review_stages_worktree"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 28103,
-        "end_line": 28199,
+        "start_line": 28210,
+        "end_line": 28306,
         "name": "a_parked_lens_keeps_the_review_worktree_even_beside_a_lower_indexed_sibling_crash"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 28202,
-        "end_line": 28295,
+        "start_line": 28309,
+        "end_line": 28402,
         "name": "a_parked_lens_keeps_the_review_worktree_beside_a_sibling_degenerate_halt"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 28298,
-        "end_line": 28383,
+        "start_line": 28405,
+        "end_line": 28490,
         "name": "the_swap_to_front_prioritizes_a_genuine_error_at_a_non_zero_chunk_index"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 28386,
-        "end_line": 28473,
+        "start_line": 28493,
+        "end_line": 28580,
         "name": "a_budget_refused_lens_beside_a_genuinely_crashing_sibling_in_one_chunk"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 28476,
-        "end_line": 28543,
+        "start_line": 28583,
+        "end_line": 28650,
         "name": "a_budget_refused_standalone_review_spawn_keeps_its_worktree"
       }
     ],
@@ -7881,14 +7887,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 28992,
-        "end_line": 29075,
+        "start_line": 29099,
+        "end_line": 29182,
         "name": "a_flaky_gate_rerun_is_a_pass_with_warning_that_never_demotes"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 29078,
-        "end_line": 29148,
+        "start_line": 29185,
+        "end_line": 29255,
         "name": "a_product_gate_failure_is_not_rerun_and_demotes_as_before"
       }
     ],
@@ -7901,14 +7907,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 29811,
-        "end_line": 29816,
+        "start_line": 29918,
+        "end_line": 29923,
         "name": "materializing"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 29820,
-        "end_line": 29825,
+        "start_line": 29927,
+        "end_line": 29932,
         "name": "deleting_worktree"
       }
     ],
@@ -7921,8 +7927,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 29922,
-        "end_line": 29928,
+        "start_line": 30029,
+        "end_line": 30035,
         "name": "attempt_of"
       },
       {
@@ -7941,14 +7947,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 30040,
-        "end_line": 30106,
+        "start_line": 30147,
+        "end_line": 30213,
         "name": "a_matching_input_digest_answers_a_gate_as_a_logged_cache_hit_citing_the_prior_green"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 30154,
-        "end_line": 30210,
+        "start_line": 30261,
+        "end_line": 30317,
         "name": "a_red_verdict_is_never_cache_answered_and_the_gate_re_runs"
       }
     ],
@@ -7961,14 +7967,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 30346,
-        "end_line": 30419,
+        "start_line": 30453,
+        "end_line": 30526,
         "name": "a_structural_grounder_records_the_audit_and_routes_full_on_a_beyond_cap_high_risk_file"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 30959,
-        "end_line": 31023,
+        "start_line": 31066,
+        "end_line": 31130,
         "name": "speculation_over_a_structural_grounder_records_the_audit_and_routes_full"
       }
     ],
@@ -7981,20 +7987,20 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 31275,
-        "end_line": 31316,
+        "start_line": 31382,
+        "end_line": 31423,
         "name": "spawn"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 32155,
-        "end_line": 32192,
+        "start_line": 32262,
+        "end_line": 32299,
         "name": "spawn"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 32290,
-        "end_line": 32335,
+        "start_line": 32397,
+        "end_line": 32442,
         "name": "spawn"
       }
     ],
@@ -8007,14 +8013,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 32196,
-        "end_line": 32279,
+        "start_line": 32303,
+        "end_line": 32386,
         "name": "a_compensated_unit_re_gates_its_re_implemented_tree_not_the_condemned_verdict"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 32339,
-        "end_line": 32437,
+        "start_line": 32446,
+        "end_line": 32544,
         "name": "a_compensated_unit_that_remediated_before_integrating_re_gates_at_a_fresh_key"
       }
     ],
@@ -8027,14 +8033,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 32944,
-        "end_line": 33012,
+        "start_line": 33051,
+        "end_line": 33119,
         "name": "a_failing_deferred_gate_is_surfaced_and_the_run_is_not_done"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 33049,
-        "end_line": 33120,
+        "start_line": 33156,
+        "end_line": 33227,
         "name": "a_default_infra_fault_at_a_deferred_gate_does_not_demote"
       }
     ],
@@ -8047,14 +8053,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 33123,
-        "end_line": 33227,
+        "start_line": 33230,
+        "end_line": 33334,
         "name": "a_replayed_step_re_runs_no_recorded_gate_and_appends_no_duplicate_events"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 33230,
-        "end_line": 33315,
+        "start_line": 33337,
+        "end_line": 33422,
         "name": "a_re_step_replays_a_recorded_deferred_gate_without_re_running_it"
       }
     ],
@@ -8067,20 +8073,20 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 34622,
-        "end_line": 34697,
+        "start_line": 34729,
+        "end_line": 34804,
         "name": "an_empty_accounting_sdet_author_result_advances_the_build_to_commit_gates_and_integrate"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 34700,
-        "end_line": 34764,
+        "start_line": 34807,
+        "end_line": 34871,
         "name": "an_absent_sdet_author_is_a_clean_no_op_and_the_build_still_integrates"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 34767,
-        "end_line": 34842,
+        "start_line": 34874,
+        "end_line": 34949,
         "name": "a_crashed_sdet_author_spawn_does_not_block_the_build_the_lifecycle_proceeds"
       }
     ],
@@ -8093,14 +8099,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 35035,
-        "end_line": 35040,
+        "start_line": 35142,
+        "end_line": 35147,
         "name": "rejecting"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 35043,
-        "end_line": 35048,
+        "start_line": 35150,
+        "end_line": 35155,
         "name": "always_rejecting"
       }
     ],
@@ -8113,14 +8119,14 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 35242,
-        "end_line": 35279,
+        "start_line": 35349,
+        "end_line": 35386,
         "name": "a_rule_7_or_8_defect_rejects_then_releases_on_the_revision"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 35282,
-        "end_line": 35333,
+        "start_line": 35389,
+        "end_line": 35440,
         "name": "a_clean_decomposition_approves_and_releases_the_fan_out"
       }
     ],
@@ -8133,20 +8139,20 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 35558,
-        "end_line": 35656,
+        "start_line": 35665,
+        "end_line": 35763,
         "name": "a_resumed_step_holds_the_fan_out_while_the_plan_critique_gate_is_escalated"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 35659,
-        "end_line": 35715,
+        "start_line": 35766,
+        "end_line": 35822,
         "name": "an_approved_gate_releases_planner_proposed_units_not_only_baselines"
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 35838,
-        "end_line": 35909,
+        "start_line": 35945,
+        "end_line": 36016,
         "name": "a_resumed_step_holds_the_fan_out_while_the_plan_critique_gate_is_mid_review"
       }
     ],
@@ -8269,8 +8275,8 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7128,
-        "end_line": 7136,
+        "start_line": 7129,
+        "end_line": 7137,
         "name": "looks_error_shaping_matches_error_and_underscore_bounded_err_but_not_an_incidental_substring"
       }
     ],
@@ -9613,44 +9619,44 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7006,
-        "end_line": 7006,
+        "start_line": 7007,
+        "end_line": 7007,
         "name": "\"fn state_of(pid: u32) -> Option<char> {\\n    let stat = std::fs::read_to_string(format!(\\\"/proc/{pid}/stat\\\")).ok()?;\\n    stat.rsplit_once(')')?.1.split_whitespace().next()?.chars().next()\\n}\\n\""
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7011,
-        "end_line": 7011,
+        "start_line": 7012,
+        "end_line": 7012,
         "name": "\"fn starttime_of(pid: u32) -> Option<u64> {\\n    let stat = std::fs::read_to_string(format!(\\\"/proc/{pid}/stat\\\")).ok()?;\\n    stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.parse().ok()\\n}\\n\""
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7016,
-        "end_line": 7016,
+        "start_line": 7017,
+        "end_line": 7017,
         "name": "\"fn ppid_of(pid: u32) -> Option<u32> {\\n    let stat = std::fs::read_to_string(format!(\\\"/proc/{pid}/stat\\\")).ok()?;\\n    stat.rsplit_once(')')?.1.split_whitespace().nth(1)?.parse().ok()\\n}\\n\""
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7107,
-        "end_line": 7107,
+        "start_line": 7108,
+        "end_line": 7108,
         "name": "\"fn a() {\\n    let _ = std::fs::read_to_string(\\\"/proc/1/stat\\\");\\n    let _ = \\\"hello\\\";\\n}\\n\""
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7110,
-        "end_line": 7110,
+        "start_line": 7111,
+        "end_line": 7111,
         "name": "\"/proc\""
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7112,
-        "end_line": 7112,
+        "start_line": 7113,
+        "end_line": 7113,
         "name": "\"/proc\""
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7176,
-        "end_line": 7176,
+        "start_line": 7177,
+        "end_line": 7177,
         "name": "\"fn state_of(pid: u32) -> Option<char> {\\n    let s = std::fs::read_to_string(format!(\\\"/proc/{pid}/stat\\\")).ok()?;\\n    s.chars().next()\\n}\\nfn ppid_of(pid: u32) -> Option<u32> {\\n    let s = std::fs::read_to_string(format!(\\\"/proc/{pid}/status\\\")).ok()?;\\n    s.parse().ok()\\n}\\nfn unrelated() -> u32 {\\n    1\\n}\\n\""
       }
     ],
@@ -9729,20 +9735,20 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6998,
-        "end_line": 7024,
+        "start_line": 6999,
+        "end_line": 7025,
         "name": "three_near_but_not_identical_functions_cluster_as_near_with_every_site_and_one_home"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7102,
-        "end_line": 7113,
+        "start_line": 7103,
+        "end_line": 7114,
         "name": "proc_literal_sweep_finds_a_proc_path_string_and_ignores_an_unrelated_one"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7170,
-        "end_line": 7183,
+        "start_line": 7171,
+        "end_line": 7184,
         "name": "proc_stat_or_status_reader_sweep_finds_a_stat_reader_and_a_status_reader_but_not_an_unrelated_fn"
       }
     ],
@@ -10863,32 +10869,32 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6370,
-        "end_line": 6372,
+        "start_line": 6371,
+        "end_line": 6373,
         "name": "impl_self_type_still_handles_a_generic_self_type_with_a_where_clause"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6398,
-        "end_line": 6400,
+        "start_line": 6399,
+        "end_line": 6401,
         "name": "impl_self_type_handles_a_bound_generic_self_type"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6403,
-        "end_line": 6405,
+        "start_line": 6404,
+        "end_line": 6406,
         "name": "impl_self_type_handles_a_trait_impl_on_a_lifetime_generic_self_type"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6408,
-        "end_line": 6413,
+        "start_line": 6409,
+        "end_line": 6414,
         "name": "impl_self_type_handles_a_generic_trait_impl_on_a_generic_self_type"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6416,
-        "end_line": 6421,
+        "start_line": 6417,
+        "end_line": 6422,
         "name": "impl_self_type_handles_a_const_generic_self_type"
       },
       {
@@ -11739,8 +11745,8 @@
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 1579,
-        "end_line": 1633,
+        "start_line": 1598,
+        "end_line": 1652,
         "name": "revert_on_base_aborts_and_errors_on_a_conflicting_revert"
       },
       {
@@ -11893,8 +11899,8 @@
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 494,
-        "end_line": 497,
+        "start_line": 499,
+        "end_line": 502,
         "name": "changed_files"
       }
     ],
@@ -12045,32 +12051,32 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6356,
-        "end_line": 6367,
+        "start_line": 6357,
+        "end_line": 6368,
         "name": "impl_self_type_strips_a_trailing_where_clause_on_a_non_generic_self_type"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6375,
-        "end_line": 6386,
+        "start_line": 6376,
+        "end_line": 6387,
         "name": "impl_self_type_strips_a_leading_dyn_token_on_the_self_type"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6424,
-        "end_line": 6430,
+        "start_line": 6425,
+        "end_line": 6431,
         "name": "strip_trailing_where_clause_is_a_word_boundary_match_not_a_substring_match"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6472,
-        "end_line": 6476,
+        "start_line": 6473,
+        "end_line": 6477,
         "name": "pluralize_functions_uses_singular_only_at_exactly_one"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6766,
-        "end_line": 6776,
+        "start_line": 6767,
+        "end_line": 6777,
         "name": "ident_kind_marker_classifies_by_casing"
       }
     ],
@@ -12149,8 +12155,8 @@
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 1987,
-        "end_line": 1989,
+        "start_line": 2006,
+        "end_line": 2008,
         "name": "read_stream"
       },
       {
@@ -14661,8 +14667,8 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6023,
-        "end_line": 6027,
+        "start_line": 6024,
+        "end_line": 6028,
         "name": "a_trait_method_signature_without_a_body_is_not_recorded"
       }
     ],
@@ -14839,14 +14845,14 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 682,
-        "end_line": 693,
+        "start_line": 687,
+        "end_line": 698,
         "name": "branch_exists"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 702,
-        "end_line": 713,
+        "start_line": 721,
+        "end_line": 732,
         "name": "ref_resolves"
       }
     ],
@@ -14859,14 +14865,14 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 769,
-        "end_line": 772,
+        "start_line": 788,
+        "end_line": 791,
         "name": "scratch_root_from_env"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 776,
-        "end_line": 779,
+        "start_line": 795,
+        "end_line": 798,
         "name": "scratch_root_path_from_env"
       }
     ],
@@ -14879,14 +14885,14 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 1360,
-        "end_line": 1367,
+        "start_line": 1379,
+        "end_line": 1386,
         "name": "head_sha_of"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 1382,
-        "end_line": 1389,
+        "start_line": 1401,
+        "end_line": 1408,
         "name": "tree_sha_of"
       }
     ],
@@ -14899,20 +14905,20 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 1451,
-        "end_line": 1471,
+        "start_line": 1470,
+        "end_line": 1490,
         "name": "integrate_lands_work_in_the_repo"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 1680,
-        "end_line": 1713,
+        "start_line": 1699,
+        "end_line": 1732,
         "name": "commit_cleans_the_tree_so_a_gate_sees_the_committed_artifact"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 1758,
-        "end_line": 1781,
+        "start_line": 1777,
+        "end_line": 1800,
         "name": "integrate_lands_a_pre_committed_artifact_unchanged"
       }
     ],
@@ -14925,14 +14931,14 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 1784,
-        "end_line": 1811,
+        "start_line": 1803,
+        "end_line": 1830,
         "name": "changed_files_reports_only_the_rename_destination"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 3503,
-        "end_line": 3515,
+        "start_line": 3522,
+        "end_line": 3534,
         "name": "changed_files_unquotes_paths_with_spaces"
       }
     ],
@@ -14945,14 +14951,14 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 1902,
-        "end_line": 1939,
+        "start_line": 1921,
+        "end_line": 1958,
         "name": "sweep_terminal_removes_merged_worktrees_and_keeps_inflight_ones"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2412,
-        "end_line": 2459,
+        "start_line": 2431,
+        "end_line": 2478,
         "name": "sweep_terminal_reclaims_a_crash_left_terminal_units_per_unit_build_cache"
       }
     ],
@@ -14965,14 +14971,14 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 2205,
-        "end_line": 2209,
+        "start_line": 2224,
+        "end_line": 2228,
         "name": "requested_and_answered"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2213,
-        "end_line": 2217,
+        "start_line": 2232,
+        "end_line": 2236,
         "name": "requested_and_hung"
       }
     ],
@@ -14985,26 +14991,26 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 2220,
-        "end_line": 2252,
+        "start_line": 2239,
+        "end_line": 2271,
         "name": "sweep_terminal_spares_a_merged_branch_whose_units_latest_spawn_is_still_in_flight"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2255,
-        "end_line": 2280,
+        "start_line": 2274,
+        "end_line": 2299,
         "name": "sweep_terminal_reclaims_a_merged_branch_once_its_latest_spawn_has_a_real_result"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2283,
-        "end_line": 2306,
+        "start_line": 2302,
+        "end_line": 2325,
         "name": "sweep_terminal_reclaims_a_merged_branch_whose_latest_spawn_is_hung"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2309,
-        "end_line": 2331,
+        "start_line": 2328,
+        "end_line": 2350,
         "name": "sweep_terminal_reclaims_a_merged_branch_with_no_spawn_recorded_at_all_unchanged"
       }
     ],
@@ -15017,14 +15023,14 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 2334,
-        "end_line": 2373,
+        "start_line": 2353,
+        "end_line": 2392,
         "name": "sweep_terminal_prints_evidence_for_a_kept_decision_but_not_for_a_removed_no_spawn_one"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2376,
-        "end_line": 2409,
+        "start_line": 2395,
+        "end_line": 2428,
         "name": "sweep_terminal_prints_evidence_for_a_removed_terminal_spawn_decision"
       }
     ],
@@ -15037,20 +15043,20 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 2531,
-        "end_line": 2572,
+        "start_line": 2550,
+        "end_line": 2591,
         "name": "worktree_remove_reclaims_the_sibling_per_unit_cache"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2575,
-        "end_line": 2610,
+        "start_line": 2594,
+        "end_line": 2629,
         "name": "worktree_remove_also_reclaims_the_store_fence_sibling"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2630,
-        "end_line": 2659,
+        "start_line": 2649,
+        "end_line": 2678,
         "name": "worktree_remove_also_reclaims_a_review_worktrees_store_fence_sibling"
       }
     ],
@@ -15063,14 +15069,14 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 2613,
-        "end_line": 2627,
+        "start_line": 2632,
+        "end_line": 2646,
         "name": "review_fence_sibling_maps_a_review_worktree_to_its_fence_sibling_and_ignores_the_rest"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2941,
-        "end_line": 2954,
+        "start_line": 2960,
+        "end_line": 2973,
         "name": "unit_cache_sibling_maps_a_unit_worktree_to_its_cache_and_ignores_the_rest"
       }
     ],
@@ -15083,14 +15089,14 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 2670,
-        "end_line": 2731,
+        "start_line": 2689,
+        "end_line": 2750,
         "name": "reclaim_worktree_on_branch_deregisters_the_lingering_worktree_reclaims_its_cache_and_frees_the_branch"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2888,
-        "end_line": 2938,
+        "start_line": 2907,
+        "end_line": 2957,
         "name": "reclaim_worktree_on_branch_prunes_a_stale_registration_whose_dir_was_deleted_and_frees_the_branch"
       }
     ],
@@ -15103,20 +15109,20 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 3604,
-        "end_line": 3680,
+        "start_line": 3623,
+        "end_line": 3699,
         "name": "create_self_heals_a_corrupt_worktree_admin_entry_and_spares_healthy_ones"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 3683,
-        "end_line": 3754,
+        "start_line": 3702,
+        "end_line": 3773,
         "name": "create_heals_a_zero_length_gitdir_marker_the_commondir_case_leaves_untested"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 3757,
-        "end_line": 3820,
+        "start_line": 3776,
+        "end_line": 3839,
         "name": "create_heals_a_fully_missing_marker_not_just_a_truncated_one"
       }
     ],
@@ -15431,8 +15437,8 @@
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 129,
-        "end_line": 144,
+        "start_line": 160,
+        "end_line": 175,
         "name": "init_repo"
       },
       {
@@ -15463,8 +15469,8 @@
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 147,
-        "end_line": 156,
+        "start_line": 178,
+        "end_line": 187,
         "name": "git_out"
       },
       {
@@ -15489,14 +15495,14 @@
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 345,
-        "end_line": 361,
+        "start_line": 376,
+        "end_line": 392,
         "name": "find_unit_started"
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 794,
-        "end_line": 813,
+        "start_line": 825,
+        "end_line": 844,
         "name": "find_unit_integrated_commit"
       }
     ],
@@ -15509,14 +15515,14 @@
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 1046,
-        "end_line": 1130,
+        "start_line": 1077,
+        "end_line": 1161,
         "name": "a_compensation_reverted_integration_reopens_adoption_of_its_real_still_existing_branch"
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 1138,
-        "end_line": 1208,
+        "start_line": 1169,
+        "end_line": 1239,
         "name": "a_plain_remediation_failure_after_integration_never_reopens_adoption_even_though_a_same_named_branch_exists"
       }
     ],
@@ -15525,6 +15531,26 @@
   },
   {
     "id": "dup-0353",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "tests/adoption_keys_on_criterion_periphery.rs",
+        "start_line": 1250,
+        "end_line": 1366,
+        "name": "a_crash_after_the_branch_exists_but_before_unitstarted_lands_recovers_the_recorded_adoption"
+      },
+      {
+        "file": "tests/adoption_keys_on_criterion_periphery.rs",
+        "start_line": 1373,
+        "end_line": 1479,
+        "name": "a_crash_after_the_provenance_record_but_before_the_branch_is_created_still_completes_the_adoption_on_resume"
+      }
+    ],
+    "proposed_home": "adoption_keys_on_criterion_periphery::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+  },
+  {
+    "id": "dup-0354",
     "classification": "near",
     "sites": [
       {
@@ -15622,7 +15648,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0354",
+    "id": "dup-0355",
     "classification": "semantic",
     "sites": [
       {
@@ -15642,7 +15668,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0355",
+    "id": "dup-0356",
     "classification": "near",
     "sites": [
       {
@@ -15668,7 +15694,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0356",
+    "id": "dup-0357",
     "classification": "exact",
     "sites": [
       {
@@ -15688,7 +15714,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0357",
+    "id": "dup-0358",
     "classification": "exact",
     "sites": [
       {
@@ -15720,7 +15746,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0358",
+    "id": "dup-0359",
     "classification": "exact",
     "sites": [
       {
@@ -15752,7 +15778,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0359",
+    "id": "dup-0360",
     "classification": "exact",
     "sites": [
       {
@@ -15778,7 +15804,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0360",
+    "id": "dup-0361",
     "classification": "semantic",
     "sites": [
       {
@@ -15816,7 +15842,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 5 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0361",
+    "id": "dup-0362",
     "classification": "exact",
     "sites": [
       {
@@ -15836,7 +15862,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0362",
+    "id": "dup-0363",
     "classification": "near",
     "sites": [
       {
@@ -15862,7 +15888,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0363",
+    "id": "dup-0364",
     "classification": "near",
     "sites": [
       {
@@ -15882,7 +15908,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0364",
+    "id": "dup-0365",
     "classification": "near",
     "sites": [
       {
@@ -15902,7 +15928,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0365",
+    "id": "dup-0366",
     "classification": "semantic",
     "sites": [
       {
@@ -15928,7 +15954,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0366",
+    "id": "dup-0367",
     "classification": "near",
     "sites": [
       {
@@ -15954,7 +15980,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0367",
+    "id": "dup-0368",
     "classification": "near",
     "sites": [
       {
@@ -15974,7 +16000,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0368",
+    "id": "dup-0369",
     "classification": "near",
     "sites": [
       {
@@ -15994,7 +16020,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0369",
+    "id": "dup-0370",
     "classification": "exact",
     "sites": [
       {
@@ -16020,7 +16046,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0370",
+    "id": "dup-0371",
     "classification": "near",
     "sites": [
       {
@@ -16058,7 +16084,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0371",
+    "id": "dup-0372",
     "classification": "near",
     "sites": [
       {
@@ -16078,7 +16104,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0372",
+    "id": "dup-0373",
     "classification": "exact",
     "sites": [
       {
@@ -16098,7 +16124,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0373",
+    "id": "dup-0374",
     "classification": "near",
     "sites": [
       {
@@ -16124,7 +16150,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0374",
+    "id": "dup-0375",
     "classification": "near",
     "sites": [
       {
@@ -16204,7 +16230,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0375",
+    "id": "dup-0376",
     "classification": "semantic",
     "sites": [
       {
@@ -16326,7 +16352,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 19 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0376",
+    "id": "dup-0377",
     "classification": "exact",
     "sites": [
       {
@@ -16412,7 +16438,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0377",
+    "id": "dup-0378",
     "classification": "near",
     "sites": [
       {
@@ -16432,7 +16458,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0378",
+    "id": "dup-0379",
     "classification": "near",
     "sites": [
       {
@@ -16452,7 +16478,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0379",
+    "id": "dup-0380",
     "classification": "exact",
     "sites": [
       {
@@ -16490,7 +16516,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0380",
+    "id": "dup-0381",
     "classification": "near",
     "sites": [
       {
@@ -16594,7 +16620,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0381",
+    "id": "dup-0382",
     "classification": "semantic",
     "sites": [
       {
@@ -16710,7 +16736,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 18 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0382",
+    "id": "dup-0383",
     "classification": "near",
     "sites": [
       {
@@ -16754,7 +16780,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0383",
+    "id": "dup-0384",
     "classification": "semantic",
     "sites": [
       {
@@ -16810,7 +16836,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 8 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0384",
+    "id": "dup-0385",
     "classification": "near",
     "sites": [
       {
@@ -16860,7 +16886,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0385",
+    "id": "dup-0386",
     "classification": "exact",
     "sites": [
       {
@@ -16880,7 +16906,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0386",
+    "id": "dup-0387",
     "classification": "exact",
     "sites": [
       {
@@ -16900,7 +16926,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0387",
+    "id": "dup-0388",
     "classification": "semantic",
     "sites": [
       {
@@ -16920,7 +16946,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0388",
+    "id": "dup-0389",
     "classification": "near",
     "sites": [
       {
@@ -16940,7 +16966,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0389",
+    "id": "dup-0390",
     "classification": "semantic",
     "sites": [
       {
@@ -16966,7 +16992,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0390",
+    "id": "dup-0391",
     "classification": "exact",
     "sites": [
       {
@@ -16986,7 +17012,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0391",
+    "id": "dup-0392",
     "classification": "semantic",
     "sites": [
       {
@@ -17018,7 +17044,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 4 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0392",
+    "id": "dup-0393",
     "classification": "exact",
     "sites": [
       {
@@ -17038,7 +17064,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0393",
+    "id": "dup-0394",
     "classification": "exact",
     "sites": [
       {
@@ -17070,7 +17096,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0394",
+    "id": "dup-0395",
     "classification": "semantic",
     "sites": [
       {
@@ -17096,7 +17122,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0395",
+    "id": "dup-0396",
     "classification": "exact",
     "sites": [
       {
@@ -17116,7 +17142,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0396",
+    "id": "dup-0397",
     "classification": "near",
     "sites": [
       {
@@ -17160,7 +17186,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0397",
+    "id": "dup-0398",
     "classification": "near",
     "sites": [
       {
@@ -17180,7 +17206,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0398",
+    "id": "dup-0399",
     "classification": "semantic",
     "sites": [
       {
@@ -17200,7 +17226,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0399",
+    "id": "dup-0400",
     "classification": "exact",
     "sites": [
       {
@@ -17220,7 +17246,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0400",
+    "id": "dup-0401",
     "classification": "near",
     "sites": [
       {
@@ -17252,7 +17278,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0401",
+    "id": "dup-0402",
     "classification": "near",
     "sites": [
       {
@@ -17272,7 +17298,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0402",
+    "id": "dup-0403",
     "classification": "near",
     "sites": [
       {
@@ -17304,7 +17330,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0403",
+    "id": "dup-0404",
     "classification": "near",
     "sites": [
       {
@@ -17330,7 +17356,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0404",
+    "id": "dup-0405",
     "classification": "near",
     "sites": [
       {
@@ -17350,7 +17376,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0405",
+    "id": "dup-0406",
     "classification": "near",
     "sites": [
       {
@@ -17370,7 +17396,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0406",
+    "id": "dup-0407",
     "classification": "semantic",
     "sites": [
       {
@@ -17414,7 +17440,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 6 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0407",
+    "id": "dup-0408",
     "classification": "near",
     "sites": [
       {
@@ -17434,7 +17460,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0408",
+    "id": "dup-0409",
     "classification": "near",
     "sites": [
       {
@@ -17532,7 +17558,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0409",
+    "id": "dup-0410",
     "classification": "semantic",
     "sites": [
       {
@@ -17552,7 +17578,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0410",
+    "id": "dup-0411",
     "classification": "near",
     "sites": [
       {
@@ -17572,7 +17598,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0411",
+    "id": "dup-0412",
     "classification": "near",
     "sites": [
       {
@@ -17598,7 +17624,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0412",
+    "id": "dup-0413",
     "classification": "near",
     "sites": [
       {
@@ -17636,7 +17662,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0413",
+    "id": "dup-0414",
     "classification": "near",
     "sites": [
       {
@@ -17656,7 +17682,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0414",
+    "id": "dup-0415",
     "classification": "near",
     "sites": [
       {
@@ -17676,7 +17702,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0415",
+    "id": "dup-0416",
     "classification": "near",
     "sites": [
       {
@@ -17696,7 +17722,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0416",
+    "id": "dup-0417",
     "classification": "exact",
     "sites": [
       {
@@ -17716,7 +17742,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0417",
+    "id": "dup-0418",
     "classification": "semantic",
     "sites": [
       {
@@ -17736,7 +17762,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0418",
+    "id": "dup-0419",
     "classification": "near",
     "sites": [
       {
@@ -17756,7 +17782,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0419",
+    "id": "dup-0420",
     "classification": "near",
     "sites": [
       {
@@ -17782,7 +17808,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0420",
+    "id": "dup-0421",
     "classification": "near",
     "sites": [
       {
@@ -17802,7 +17828,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0421",
+    "id": "dup-0422",
     "classification": "exact",
     "sites": [
       {
@@ -17828,7 +17854,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0422",
+    "id": "dup-0423",
     "classification": "near",
     "sites": [
       {
@@ -17848,7 +17874,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0423",
+    "id": "dup-0424",
     "classification": "near",
     "sites": [
       {
@@ -17874,7 +17900,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0424",
+    "id": "dup-0425",
     "classification": "exact",
     "sites": [
       {
@@ -17894,7 +17920,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0425",
+    "id": "dup-0426",
     "classification": "semantic",
     "sites": [
       {
@@ -17914,7 +17940,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0426",
+    "id": "dup-0427",
     "classification": "exact",
     "sites": [
       {
@@ -17946,7 +17972,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0427",
+    "id": "dup-0428",
     "classification": "near",
     "sites": [
       {
@@ -17966,7 +17992,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0428",
+    "id": "dup-0429",
     "classification": "near",
     "sites": [
       {
@@ -17986,7 +18012,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0429",
+    "id": "dup-0430",
     "classification": "near",
     "sites": [
       {
@@ -18036,7 +18062,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0430",
+    "id": "dup-0431",
     "classification": "exact",
     "sites": [
       {
@@ -18056,7 +18082,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0431",
+    "id": "dup-0432",
     "classification": "near",
     "sites": [
       {
@@ -18076,7 +18102,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0432",
+    "id": "dup-0433",
     "classification": "near",
     "sites": [
       {
@@ -18096,7 +18122,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0433",
+    "id": "dup-0434",
     "classification": "near",
     "sites": [
       {
@@ -18116,7 +18142,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0434",
+    "id": "dup-0435",
     "classification": "near",
     "sites": [
       {
@@ -18142,7 +18168,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0435",
+    "id": "dup-0436",
     "classification": "near",
     "sites": [
       {
@@ -18162,7 +18188,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0436",
+    "id": "dup-0437",
     "classification": "near",
     "sites": [
       {
@@ -18200,7 +18226,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0437",
+    "id": "dup-0438",
     "classification": "near",
     "sites": [
       {
@@ -18220,7 +18246,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0438",
+    "id": "dup-0439",
     "classification": "near",
     "sites": [
       {
@@ -18258,7 +18284,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0439",
+    "id": "dup-0440",
     "classification": "semantic",
     "sites": [
       {
@@ -18278,7 +18304,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0440",
+    "id": "dup-0441",
     "classification": "near",
     "sites": [
       {
@@ -18298,7 +18324,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0441",
+    "id": "dup-0442",
     "classification": "near",
     "sites": [
       {
@@ -18324,7 +18350,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0442",
+    "id": "dup-0443",
     "classification": "near",
     "sites": [
       {
@@ -18344,7 +18370,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0443",
+    "id": "dup-0444",
     "classification": "near",
     "sites": [
       {
@@ -18370,7 +18396,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0444",
+    "id": "dup-0445",
     "classification": "near",
     "sites": [
       {
@@ -18390,7 +18416,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0445",
+    "id": "dup-0446",
     "classification": "near",
     "sites": [
       {
@@ -18410,7 +18436,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0446",
+    "id": "dup-0447",
     "classification": "exact",
     "sites": [
       {
@@ -18430,7 +18456,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0447",
+    "id": "dup-0448",
     "classification": "near",
     "sites": [
       {
@@ -18450,7 +18476,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0448",
+    "id": "dup-0449",
     "classification": "near",
     "sites": [
       {
@@ -18470,7 +18496,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0449",
+    "id": "dup-0450",
     "classification": "near",
     "sites": [
       {
@@ -18508,7 +18534,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0450",
+    "id": "dup-0451",
     "classification": "near",
     "sites": [
       {
@@ -18534,7 +18560,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0451",
+    "id": "dup-0452",
     "classification": "near",
     "sites": [
       {
@@ -18578,7 +18604,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0452",
+    "id": "dup-0453",
     "classification": "near",
     "sites": [
       {
@@ -18598,7 +18624,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0453",
+    "id": "dup-0454",
     "classification": "near",
     "sites": [
       {
@@ -18618,7 +18644,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0454",
+    "id": "dup-0455",
     "classification": "near",
     "sites": [
       {
@@ -18638,7 +18664,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0455",
+    "id": "dup-0456",
     "classification": "near",
     "sites": [
       {
@@ -18688,7 +18714,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0456",
+    "id": "dup-0457",
     "classification": "near",
     "sites": [
       {
@@ -18708,7 +18734,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0457",
+    "id": "dup-0458",
     "classification": "near",
     "sites": [
       {
@@ -18728,7 +18754,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0458",
+    "id": "dup-0459",
     "classification": "near",
     "sites": [
       {
@@ -18760,7 +18786,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0459",
+    "id": "dup-0460",
     "classification": "near",
     "sites": [
       {
@@ -18786,7 +18812,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0460",
+    "id": "dup-0461",
     "classification": "near",
     "sites": [
       {
@@ -18806,7 +18832,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0461",
+    "id": "dup-0462",
     "classification": "near",
     "sites": [
       {
@@ -18826,7 +18852,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0462",
+    "id": "dup-0463",
     "classification": "near",
     "sites": [
       {
@@ -18846,7 +18872,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0463",
+    "id": "dup-0464",
     "classification": "near",
     "sites": [
       {
@@ -18866,7 +18892,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0464",
+    "id": "dup-0465",
     "classification": "near",
     "sites": [
       {
@@ -18904,7 +18930,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0465",
+    "id": "dup-0466",
     "classification": "near",
     "sites": [
       {
@@ -18936,7 +18962,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0466",
+    "id": "dup-0467",
     "classification": "near",
     "sites": [
       {
@@ -18974,7 +19000,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0467",
+    "id": "dup-0468",
     "classification": "near",
     "sites": [
       {
@@ -19006,7 +19032,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0468",
+    "id": "dup-0469",
     "classification": "near",
     "sites": [
       {
@@ -19170,7 +19196,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0469",
+    "id": "dup-0470",
     "classification": "exact",
     "sites": [
       {
@@ -19214,7 +19240,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0470",
+    "id": "dup-0471",
     "classification": "near",
     "sites": [
       {
@@ -19234,7 +19260,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0471",
+    "id": "dup-0472",
     "classification": "near",
     "sites": [
       {
@@ -19254,7 +19280,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0472",
+    "id": "dup-0473",
     "classification": "near",
     "sites": [
       {
@@ -19316,7 +19342,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0473",
+    "id": "dup-0474",
     "classification": "near",
     "sites": [
       {
@@ -19336,7 +19362,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0474",
+    "id": "dup-0475",
     "classification": "exact",
     "sites": [
       {
@@ -19356,7 +19382,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0475",
+    "id": "dup-0476",
     "classification": "semantic",
     "sites": [
       {
@@ -19394,7 +19420,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 5 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0476",
+    "id": "dup-0477",
     "classification": "exact",
     "sites": [
       {
@@ -19438,7 +19464,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0477",
+    "id": "dup-0478",
     "classification": "semantic",
     "sites": [
       {
@@ -19482,7 +19508,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 6 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0478",
+    "id": "dup-0479",
     "classification": "exact",
     "sites": [
       {
@@ -19526,7 +19552,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0479",
+    "id": "dup-0480",
     "classification": "near",
     "sites": [
       {
@@ -19582,7 +19608,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0480",
+    "id": "dup-0481",
     "classification": "exact",
     "sites": [
       {
@@ -19608,7 +19634,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0481",
+    "id": "dup-0482",
     "classification": "near",
     "sites": [
       {
@@ -19628,7 +19654,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0482",
+    "id": "dup-0483",
     "classification": "exact",
     "sites": [
       {
@@ -19648,7 +19674,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0483",
+    "id": "dup-0484",
     "classification": "near",
     "sites": [
       {
@@ -19668,7 +19694,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0484",
+    "id": "dup-0485",
     "classification": "exact",
     "sites": [
       {
@@ -19688,7 +19714,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0485",
+    "id": "dup-0486",
     "classification": "exact",
     "sites": [
       {
@@ -19708,7 +19734,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0486",
+    "id": "dup-0487",
     "classification": "exact",
     "sites": [
       {
@@ -19728,7 +19754,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0487",
+    "id": "dup-0488",
     "classification": "exact",
     "sites": [
       {
@@ -19748,7 +19774,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0488",
+    "id": "dup-0489",
     "classification": "near",
     "sites": [
       {
@@ -19774,7 +19800,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0489",
+    "id": "dup-0490",
     "classification": "exact",
     "sites": [
       {
@@ -19794,7 +19820,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0490",
+    "id": "dup-0491",
     "classification": "exact",
     "sites": [
       {
@@ -19814,7 +19840,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0491",
+    "id": "dup-0492",
     "classification": "near",
     "sites": [
       {
@@ -19846,7 +19872,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0492",
+    "id": "dup-0493",
     "classification": "semantic",
     "sites": [
       {
@@ -19866,7 +19892,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0493",
+    "id": "dup-0494",
     "classification": "exact",
     "sites": [
       {
@@ -19886,7 +19912,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0494",
+    "id": "dup-0495",
     "classification": "exact",
     "sites": [
       {
@@ -19906,7 +19932,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0495",
+    "id": "dup-0496",
     "classification": "exact",
     "sites": [
       {
@@ -19926,7 +19952,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0496",
+    "id": "dup-0497",
     "classification": "exact",
     "sites": [
       {
@@ -19946,7 +19972,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0497",
+    "id": "dup-0498",
     "classification": "exact",
     "sites": [
       {
@@ -19966,7 +19992,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0498",
+    "id": "dup-0499",
     "classification": "exact",
     "sites": [
       {
@@ -19986,7 +20012,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0499",
+    "id": "dup-0500",
     "classification": "exact",
     "sites": [
       {
@@ -20006,7 +20032,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0500",
+    "id": "dup-0501",
     "classification": "semantic",
     "sites": [
       {
@@ -20026,7 +20052,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0501",
+    "id": "dup-0502",
     "classification": "exact",
     "sites": [
       {
@@ -20046,7 +20072,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0502",
+    "id": "dup-0503",
     "classification": "semantic",
     "sites": [
       {
@@ -20066,7 +20092,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0503",
+    "id": "dup-0504",
     "classification": "near",
     "sites": [
       {
@@ -20086,7 +20112,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0504",
+    "id": "dup-0505",
     "classification": "near",
     "sites": [
       {
@@ -20106,7 +20132,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0505",
+    "id": "dup-0506",
     "classification": "near",
     "sites": [
       {
@@ -20126,7 +20152,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0506",
+    "id": "dup-0507",
     "classification": "near",
     "sites": [
       {
@@ -20146,7 +20172,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0507",
+    "id": "dup-0508",
     "classification": "near",
     "sites": [
       {
@@ -20166,7 +20192,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0508",
+    "id": "dup-0509",
     "classification": "near",
     "sites": [
       {
@@ -20252,7 +20278,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0509",
+    "id": "dup-0510",
     "classification": "near",
     "sites": [
       {
@@ -20284,7 +20310,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0510",
+    "id": "dup-0511",
     "classification": "exact",
     "sites": [
       {
@@ -20304,7 +20330,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0511",
+    "id": "dup-0512",
     "classification": "near",
     "sites": [
       {
@@ -20324,7 +20350,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0512",
+    "id": "dup-0513",
     "classification": "near",
     "sites": [
       {
@@ -20350,7 +20376,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0513",
+    "id": "dup-0514",
     "classification": "exact",
     "sites": [
       {
@@ -20382,7 +20408,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0514",
+    "id": "dup-0515",
     "classification": "near",
     "sites": [
       {
@@ -20420,7 +20446,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0515",
+    "id": "dup-0516",
     "classification": "semantic",
     "sites": [
       {
@@ -20458,7 +20484,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 5 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0516",
+    "id": "dup-0517",
     "classification": "near",
     "sites": [
       {
@@ -20478,7 +20504,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0517",
+    "id": "dup-0518",
     "classification": "semantic",
     "sites": [
       {
@@ -20498,7 +20524,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0518",
+    "id": "dup-0519",
     "classification": "near",
     "sites": [
       {
@@ -20518,7 +20544,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0519",
+    "id": "dup-0520",
     "classification": "exact",
     "sites": [
       {
@@ -20538,7 +20564,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0520",
+    "id": "dup-0521",
     "classification": "near",
     "sites": [
       {
@@ -20582,7 +20608,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0521",
+    "id": "dup-0522",
     "classification": "semantic",
     "sites": [
       {
@@ -20602,7 +20628,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0522",
+    "id": "dup-0523",
     "classification": "exact",
     "sites": [
       {
@@ -20622,7 +20648,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0523",
+    "id": "dup-0524",
     "classification": "near",
     "sites": [
       {
@@ -20642,7 +20668,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0524",
+    "id": "dup-0525",
     "classification": "semantic",
     "sites": [
       {
@@ -20662,7 +20688,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0525",
+    "id": "dup-0526",
     "classification": "semantic",
     "sites": [
       {
@@ -20694,7 +20720,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 4 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0526",
+    "id": "dup-0527",
     "classification": "near",
     "sites": [
       {
@@ -20720,7 +20746,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0527",
+    "id": "dup-0528",
     "classification": "semantic",
     "sites": [
       {
@@ -20752,7 +20778,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 4 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0528",
+    "id": "dup-0529",
     "classification": "exact",
     "sites": [
       {
@@ -20790,7 +20816,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0529",
+    "id": "dup-0530",
     "classification": "near",
     "sites": [
       {
@@ -20810,7 +20836,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0530",
+    "id": "dup-0531",
     "classification": "exact",
     "sites": [
       {
@@ -20830,7 +20856,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0531",
+    "id": "dup-0532",
     "classification": "semantic",
     "sites": [
       {
@@ -20850,7 +20876,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0532",
+    "id": "dup-0533",
     "classification": "near",
     "sites": [
       {
@@ -20882,7 +20908,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0533",
+    "id": "dup-0534",
     "classification": "near",
     "sites": [
       {
@@ -20902,7 +20928,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0534",
+    "id": "dup-0535",
     "classification": "exact",
     "sites": [
       {
@@ -20952,7 +20978,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0535",
+    "id": "dup-0536",
     "classification": "exact",
     "sites": [
       {
@@ -20978,7 +21004,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0536",
+    "id": "dup-0537",
     "classification": "exact",
     "sites": [
       {
@@ -21004,7 +21030,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0537",
+    "id": "dup-0538",
     "classification": "exact",
     "sites": [
       {
@@ -21030,7 +21056,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0538",
+    "id": "dup-0539",
     "classification": "exact",
     "sites": [
       {
@@ -21056,7 +21082,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0539",
+    "id": "dup-0540",
     "classification": "near",
     "sites": [
       {
@@ -21088,7 +21114,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0540",
+    "id": "dup-0541",
     "classification": "near",
     "sites": [
       {
@@ -21099,8 +21125,8 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9123,
-        "end_line": 9143,
+        "start_line": 9124,
+        "end_line": 9144,
         "name": "the_real_tree_disposition_split_matches_this_criterions_research"
       }
     ],
@@ -21108,7 +21134,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0541",
+    "id": "dup-0542",
     "classification": "near",
     "sites": [
       {
@@ -21128,7 +21154,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0542",
+    "id": "dup-0543",
     "classification": "near",
     "sites": [
       {
@@ -21148,7 +21174,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0543",
+    "id": "dup-0544",
     "classification": "near",
     "sites": [
       {
@@ -21168,7 +21194,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0544",
+    "id": "dup-0545",
     "classification": "exact",
     "sites": [
       {
@@ -21188,7 +21214,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0545",
+    "id": "dup-0546",
     "classification": "semantic",
     "sites": [
       {
@@ -21208,7 +21234,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0546",
+    "id": "dup-0547",
     "classification": "near",
     "sites": [
       {
@@ -21228,7 +21254,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0547",
+    "id": "dup-0548",
     "classification": "semantic",
     "sites": [
       {
@@ -21254,7 +21280,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0548",
+    "id": "dup-0549",
     "classification": "exact",
     "sites": [
       {
@@ -21274,7 +21300,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0549",
+    "id": "dup-0550",
     "classification": "exact",
     "sites": [
       {
@@ -21306,7 +21332,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0550",
+    "id": "dup-0551",
     "classification": "semantic",
     "sites": [
       {
@@ -21338,7 +21364,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 4 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0551",
+    "id": "dup-0552",
     "classification": "exact",
     "sites": [
       {
@@ -21358,7 +21384,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0552",
+    "id": "dup-0553",
     "classification": "exact",
     "sites": [
       {
@@ -21378,7 +21404,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0553",
+    "id": "dup-0554",
     "classification": "exact",
     "sites": [
       {
@@ -21398,7 +21424,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0554",
+    "id": "dup-0555",
     "classification": "exact",
     "sites": [
       {
@@ -21418,7 +21444,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0555",
+    "id": "dup-0556",
     "classification": "exact",
     "sites": [
       {
@@ -21438,7 +21464,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0556",
+    "id": "dup-0557",
     "classification": "near",
     "sites": [
       {
@@ -21458,7 +21484,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0557",
+    "id": "dup-0558",
     "classification": "near",
     "sites": [
       {
@@ -21490,7 +21516,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0558",
+    "id": "dup-0559",
     "classification": "exact",
     "sites": [
       {
@@ -21516,7 +21542,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0559",
+    "id": "dup-0560",
     "classification": "semantic",
     "sites": [
       {
@@ -21536,7 +21562,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0560",
+    "id": "dup-0561",
     "classification": "exact",
     "sites": [
       {
@@ -21568,7 +21594,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0561",
+    "id": "dup-0562",
     "classification": "exact",
     "sites": [
       {
@@ -21588,7 +21614,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0562",
+    "id": "dup-0563",
     "classification": "near",
     "sites": [
       {
@@ -21608,7 +21634,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0563",
+    "id": "dup-0564",
     "classification": "exact",
     "sites": [
       {
@@ -21634,7 +21660,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0564",
+    "id": "dup-0565",
     "classification": "exact",
     "sites": [
       {
@@ -21660,7 +21686,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0565",
+    "id": "dup-0566",
     "classification": "semantic",
     "sites": [
       {
@@ -21686,7 +21712,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0566",
+    "id": "dup-0567",
     "classification": "exact",
     "sites": [
       {
@@ -21712,7 +21738,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0567",
+    "id": "dup-0568",
     "classification": "near",
     "sites": [
       {
@@ -21738,7 +21764,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0568",
+    "id": "dup-0569",
     "classification": "exact",
     "sites": [
       {
@@ -21758,7 +21784,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0569",
+    "id": "dup-0570",
     "classification": "exact",
     "sites": [
       {
@@ -21778,7 +21804,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0570",
+    "id": "dup-0571",
     "classification": "semantic",
     "sites": [
       {
@@ -21798,7 +21824,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0571",
+    "id": "dup-0572",
     "classification": "semantic",
     "sites": [
       {
@@ -21818,7 +21844,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0572",
+    "id": "dup-0573",
     "classification": "near",
     "sites": [
       {
@@ -21904,7 +21930,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0573",
+    "id": "dup-0574",
     "classification": "semantic",
     "sites": [
       {
@@ -21924,7 +21950,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0574",
+    "id": "dup-0575",
     "classification": "near",
     "sites": [
       {
@@ -21944,7 +21970,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0575",
+    "id": "dup-0576",
     "classification": "exact",
     "sites": [
       {
@@ -21964,7 +21990,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0576",
+    "id": "dup-0577",
     "classification": "semantic",
     "sites": [
       {
@@ -21984,7 +22010,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0577",
+    "id": "dup-0578",
     "classification": "exact",
     "sites": [
       {
@@ -22004,7 +22030,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0578",
+    "id": "dup-0579",
     "classification": "exact",
     "sites": [
       {
@@ -22024,7 +22050,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0579",
+    "id": "dup-0580",
     "classification": "semantic",
     "sites": [
       {
@@ -22044,7 +22070,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0580",
+    "id": "dup-0581",
     "classification": "exact",
     "sites": [
       {
@@ -22064,7 +22090,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0581",
+    "id": "dup-0582",
     "classification": "semantic",
     "sites": [
       {
@@ -22084,7 +22110,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0582",
+    "id": "dup-0583",
     "classification": "near",
     "sites": [
       {
@@ -22104,7 +22130,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0583",
+    "id": "dup-0584",
     "classification": "semantic",
     "sites": [
       {
@@ -22142,7 +22168,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 5 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0584",
+    "id": "dup-0585",
     "classification": "near",
     "sites": [
       {
@@ -22174,7 +22200,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0585",
+    "id": "dup-0586",
     "classification": "near",
     "sites": [
       {
@@ -22230,7 +22256,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0586",
+    "id": "dup-0587",
     "classification": "near",
     "sites": [
       {
@@ -22250,7 +22276,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0587",
+    "id": "dup-0588",
     "classification": "semantic",
     "sites": [
       {
@@ -22282,7 +22308,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 4 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0588",
+    "id": "dup-0589",
     "classification": "exact",
     "sites": [
       {
@@ -22302,7 +22328,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0589",
+    "id": "dup-0590",
     "classification": "exact",
     "sites": [
       {
@@ -22322,7 +22348,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0590",
+    "id": "dup-0591",
     "classification": "exact",
     "sites": [
       {
@@ -22342,7 +22368,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0591",
+    "id": "dup-0592",
     "classification": "exact",
     "sites": [
       {
@@ -22374,7 +22400,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0592",
+    "id": "dup-0593",
     "classification": "near",
     "sites": [
       {
@@ -22394,7 +22420,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0593",
+    "id": "dup-0594",
     "classification": "exact",
     "sites": [
       {
@@ -22414,7 +22440,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0594",
+    "id": "dup-0595",
     "classification": "near",
     "sites": [
       {
@@ -22434,7 +22460,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0595",
+    "id": "dup-0596",
     "classification": "exact",
     "sites": [
       {
@@ -22454,7 +22480,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0596",
+    "id": "dup-0597",
     "classification": "near",
     "sites": [
       {
@@ -22528,7 +22554,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0597",
+    "id": "dup-0598",
     "classification": "near",
     "sites": [
       {
@@ -22560,7 +22586,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0598",
+    "id": "dup-0599",
     "classification": "exact",
     "sites": [
       {
@@ -22580,7 +22606,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0599",
+    "id": "dup-0600",
     "classification": "exact",
     "sites": [
       {
@@ -22612,7 +22638,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0600",
+    "id": "dup-0601",
     "classification": "exact",
     "sites": [
       {
@@ -22632,7 +22658,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0601",
+    "id": "dup-0602",
     "classification": "near",
     "sites": [
       {
@@ -22652,7 +22678,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0602",
+    "id": "dup-0603",
     "classification": "near",
     "sites": [
       {
@@ -22678,7 +22704,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0603",
+    "id": "dup-0604",
     "classification": "semantic",
     "sites": [
       {
@@ -22698,7 +22724,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0604",
+    "id": "dup-0605",
     "classification": "semantic",
     "sites": [
       {
@@ -22718,7 +22744,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0605",
+    "id": "dup-0606",
     "classification": "near",
     "sites": [
       {
@@ -22738,7 +22764,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0606",
+    "id": "dup-0607",
     "classification": "near",
     "sites": [
       {
@@ -22764,7 +22790,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0607",
+    "id": "dup-0608",
     "classification": "exact",
     "sites": [
       {
@@ -22862,7 +22888,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0608",
+    "id": "dup-0609",
     "classification": "near",
     "sites": [
       {
@@ -22936,7 +22962,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0609",
+    "id": "dup-0610",
     "classification": "exact",
     "sites": [
       {
@@ -22986,7 +23012,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0610",
+    "id": "dup-0611",
     "classification": "near",
     "sites": [
       {
@@ -23018,7 +23044,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0611",
+    "id": "dup-0612",
     "classification": "near",
     "sites": [
       {
@@ -23038,7 +23064,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0612",
+    "id": "dup-0613",
     "classification": "exact",
     "sites": [
       {
@@ -23058,7 +23084,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0613",
+    "id": "dup-0614",
     "classification": "near",
     "sites": [
       {
@@ -23078,7 +23104,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0614",
+    "id": "dup-0615",
     "classification": "near",
     "sites": [
       {
@@ -23098,7 +23124,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0615",
+    "id": "dup-0616",
     "classification": "near",
     "sites": [
       {
@@ -23124,7 +23150,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0616",
+    "id": "dup-0617",
     "classification": "exact",
     "sites": [
       {
@@ -23150,7 +23176,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0617",
+    "id": "dup-0618",
     "classification": "near",
     "sites": [
       {
@@ -23170,7 +23196,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0618",
+    "id": "dup-0619",
     "classification": "semantic",
     "sites": [
       {
@@ -23190,7 +23216,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0619",
+    "id": "dup-0620",
     "classification": "exact",
     "sites": [
       {
@@ -23216,7 +23242,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0620",
+    "id": "dup-0621",
     "classification": "semantic",
     "sites": [
       {
@@ -23236,7 +23262,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0621",
+    "id": "dup-0622",
     "classification": "near",
     "sites": [
       {
@@ -23262,7 +23288,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0622",
+    "id": "dup-0623",
     "classification": "near",
     "sites": [
       {
@@ -23294,7 +23320,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0623",
+    "id": "dup-0624",
     "classification": "near",
     "sites": [
       {
@@ -23314,7 +23340,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0624",
+    "id": "dup-0625",
     "classification": "near",
     "sites": [
       {
@@ -23334,7 +23360,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0625",
+    "id": "dup-0626",
     "classification": "exact",
     "sites": [
       {
@@ -23354,7 +23380,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0626",
+    "id": "dup-0627",
     "classification": "exact",
     "sites": [
       {
@@ -23380,7 +23406,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0627",
+    "id": "dup-0628",
     "classification": "exact",
     "sites": [
       {
@@ -23400,7 +23426,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0628",
+    "id": "dup-0629",
     "classification": "semantic",
     "sites": [
       {
@@ -23420,7 +23446,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0629",
+    "id": "dup-0630",
     "classification": "near",
     "sites": [
       {
@@ -23440,7 +23466,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0630",
+    "id": "dup-0631",
     "classification": "exact",
     "sites": [
       {
@@ -23460,7 +23486,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0631",
+    "id": "dup-0632",
     "classification": "exact",
     "sites": [
       {
@@ -23480,7 +23506,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0632",
+    "id": "dup-0633",
     "classification": "exact",
     "sites": [
       {
@@ -23500,7 +23526,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0633",
+    "id": "dup-0634",
     "classification": "near",
     "sites": [
       {
@@ -23532,7 +23558,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0634",
+    "id": "dup-0635",
     "classification": "exact",
     "sites": [
       {
@@ -23552,7 +23578,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0635",
+    "id": "dup-0636",
     "classification": "exact",
     "sites": [
       {
@@ -23569,8 +23595,8 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5845,
-        "end_line": 5849,
+        "start_line": 5846,
+        "end_line": 5850,
         "name": "dead_code_to_json"
       }
     ],
@@ -23578,7 +23604,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0636",
+    "id": "dup-0637",
     "classification": "near",
     "sites": [
       {
@@ -23598,7 +23624,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0637",
+    "id": "dup-0638",
     "classification": "near",
     "sites": [
       {
@@ -23630,19 +23656,19 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0638",
+    "id": "dup-0639",
     "classification": "near",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5905,
-        "end_line": 5914,
+        "start_line": 5906,
+        "end_line": 5915,
         "name": "a_simple_free_function_is_found_with_its_line_span"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6145,
-        "end_line": 6151,
+        "start_line": 6146,
+        "end_line": 6152,
         "name": "production_functions_before_a_cfg_test_mod_are_not_flagged_test"
       }
     ],
@@ -23650,115 +23676,77 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0639",
+    "id": "dup-0640",
     "classification": "exact",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5935,
-        "end_line": 5940,
+        "start_line": 5936,
+        "end_line": 5941,
         "name": "fnv1a_is_not_mistaken_for_the_fn_keyword"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5947,
-        "end_line": 5952,
+        "start_line": 5948,
+        "end_line": 5953,
         "name": "a_brace_inside_a_line_comment_is_ignored"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5955,
-        "end_line": 5960,
+        "start_line": 5956,
+        "end_line": 5961,
         "name": "a_brace_inside_a_block_comment_is_ignored"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5963,
-        "end_line": 5968,
+        "start_line": 5964,
+        "end_line": 5969,
         "name": "nested_block_comments_are_handled"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5971,
-        "end_line": 5976,
+        "start_line": 5972,
+        "end_line": 5977,
         "name": "a_brace_inside_a_string_literal_is_ignored"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5979,
-        "end_line": 5984,
+        "start_line": 5980,
+        "end_line": 5985,
         "name": "a_brace_inside_a_raw_string_with_hashes_is_ignored"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5987,
-        "end_line": 5992,
+        "start_line": 5988,
+        "end_line": 5993,
         "name": "a_brace_inside_a_byte_string_is_ignored"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5995,
-        "end_line": 6000,
+        "start_line": 5996,
+        "end_line": 6001,
         "name": "a_brace_char_literal_is_not_mistaken_for_real_braces"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6003,
-        "end_line": 6008,
+        "start_line": 6004,
+        "end_line": 6009,
         "name": "a_lifetime_is_not_mistaken_for_a_char_literal"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6011,
-        "end_line": 6016,
+        "start_line": 6012,
+        "end_line": 6017,
         "name": "an_escaped_quote_char_literal_does_not_confuse_the_scanner"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6030,
-        "end_line": 6035,
+        "start_line": 6031,
+        "end_line": 6036,
         "name": "a_trait_default_method_with_a_body_is_recorded"
       }
     ],
     "proposed_home": "simplification_audit::support (consolidate these 11 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-0640",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 6059,
-        "end_line": 6065,
-        "name": "a_method_inside_an_impl_block_carries_its_header"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 6068,
-        "end_line": 6076,
-        "name": "a_trait_impl_header_keeps_the_trait_for_type_text"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 6079,
-        "end_line": 6091,
-        "name": "a_method_inside_an_impl_nested_in_a_cfg_test_mod_is_flagged_test"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 6094,
-        "end_line": 6103,
-        "name": "a_cfg_test_attribute_directly_on_an_impl_block_is_flagged_test"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 6225,
-        "end_line": 6233,
-        "name": "a_cfg_test_pub_fn_is_still_flagged_test_pub_survives_between_attribute_and_keyword"
-      }
-    ],
-    "proposed_home": "simplification_audit::support (consolidate these 5 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -23767,14 +23755,52 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6116,
-        "end_line": 6122,
+        "start_line": 6060,
+        "end_line": 6066,
+        "name": "a_method_inside_an_impl_block_carries_its_header"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 6069,
+        "end_line": 6077,
+        "name": "a_trait_impl_header_keeps_the_trait_for_type_text"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 6080,
+        "end_line": 6092,
+        "name": "a_method_inside_an_impl_nested_in_a_cfg_test_mod_is_flagged_test"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 6095,
+        "end_line": 6104,
+        "name": "a_cfg_test_attribute_directly_on_an_impl_block_is_flagged_test"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 6226,
+        "end_line": 6234,
+        "name": "a_cfg_test_pub_fn_is_still_flagged_test_pub_survives_between_attribute_and_keyword"
+      }
+    ],
+    "proposed_home": "simplification_audit::support (consolidate these 5 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+  },
+  {
+    "id": "dup-0642",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 6117,
+        "end_line": 6123,
         "name": "a_function_directly_in_a_cfg_test_mod_is_flagged_test"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6125,
-        "end_line": 6134,
+        "start_line": 6126,
+        "end_line": 6135,
         "name": "a_nested_named_test_submodule_is_still_flagged_test_and_named"
       }
     ],
@@ -23782,49 +23808,29 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0642",
+    "id": "dup-0643",
     "classification": "exact",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6183,
-        "end_line": 6186,
+        "start_line": 6184,
+        "end_line": 6187,
         "name": "a_free_function_with_no_pub_keyword_is_private"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6196,
-        "end_line": 6199,
+        "start_line": 6197,
+        "end_line": 6200,
         "name": "a_pub_crate_function_keeps_the_qualifier"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6202,
-        "end_line": 6205,
+        "start_line": 6203,
+        "end_line": 6206,
         "name": "a_pub_super_function_keeps_the_qualifier"
       }
     ],
     "proposed_home": "simplification_audit::support (consolidate these 3 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-0643",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 6245,
-        "end_line": 6249,
-        "name": "a_cfg_test_out_of_line_mod_is_flagged_test"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 6266,
-        "end_line": 6271,
-        "name": "an_out_of_line_mod_inherits_test_ness_from_an_enclosing_cfg_test_mod"
-      }
-    ],
-    "proposed_home": "simplification_audit::support (consolidate these 2 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -23833,24 +23839,18 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6335,
-        "end_line": 6341,
-        "name": "a_method_is_classified_under_its_impl_self_type"
+        "start_line": 6246,
+        "end_line": 6250,
+        "name": "a_cfg_test_out_of_line_mod_is_flagged_test"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6344,
-        "end_line": 6353,
-        "name": "a_method_on_a_generic_impl_block_strips_the_impls_own_leading_generics"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 6433,
-        "end_line": 6438,
-        "name": "a_trait_impl_method_is_classified_under_the_implementing_type_not_the_trait"
+        "start_line": 6267,
+        "end_line": 6272,
+        "name": "an_out_of_line_mod_inherits_test_ness_from_an_enclosing_cfg_test_mod"
       }
     ],
-    "proposed_home": "simplification_audit::support (consolidate these 3 sites into one function in this file)",
+    "proposed_home": "simplification_audit::support (consolidate these 2 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -23859,21 +23859,21 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6553,
-        "end_line": 6559,
-        "name": "replace_section_1_only_touches_section_1_leaving_later_sections_intact"
+        "start_line": 6336,
+        "end_line": 6342,
+        "name": "a_method_is_classified_under_its_impl_self_type"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7552,
-        "end_line": 7559,
-        "name": "replace_section_2_only_touches_section_2_leaving_neighbors_intact"
+        "start_line": 6345,
+        "end_line": 6354,
+        "name": "a_method_on_a_generic_impl_block_strips_the_impls_own_leading_generics"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7939,
-        "end_line": 7956,
-        "name": "replace_section_6_only_touches_that_span_leaving_earlier_sections_intact"
+        "start_line": 6434,
+        "end_line": 6439,
+        "name": "a_trait_impl_method_is_classified_under_the_implementing_type_not_the_trait"
       }
     ],
     "proposed_home": "simplification_audit::support (consolidate these 3 sites into one function in this file)",
@@ -23885,21 +23885,21 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6603,
-        "end_line": 6625,
-        "name": "responsibility_map_json_matches_the_tree_or_is_rewritten"
+        "start_line": 6554,
+        "end_line": 6560,
+        "name": "replace_section_1_only_touches_section_1_leaving_later_sections_intact"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7695,
-        "end_line": 7717,
-        "name": "duplication_catalog_json_matches_the_tree_or_is_rewritten"
+        "start_line": 7553,
+        "end_line": 7560,
+        "name": "replace_section_2_only_touches_section_2_leaving_neighbors_intact"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9045,
-        "end_line": 9067,
-        "name": "dead_code_json_matches_the_tree_or_is_rewritten"
+        "start_line": 7940,
+        "end_line": 7957,
+        "name": "replace_section_6_only_touches_that_span_leaving_earlier_sections_intact"
       }
     ],
     "proposed_home": "simplification_audit::support (consolidate these 3 sites into one function in this file)",
@@ -23907,39 +23907,45 @@
   },
   {
     "id": "dup-0647",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 6720,
-        "end_line": 6728,
-        "name": "string_and_raw_string_literals_are_one_lit_token_each"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 6740,
-        "end_line": 6748,
-        "name": "number_literals_including_a_fraction_are_lit_tokens"
-      }
-    ],
-    "proposed_home": "simplification_audit::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-0648",
     "classification": "near",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6998,
-        "end_line": 7024,
-        "name": "three_near_but_not_identical_functions_cluster_as_near_with_every_site_and_one_home"
+        "start_line": 6604,
+        "end_line": 6626,
+        "name": "responsibility_map_json_matches_the_tree_or_is_rewritten"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7027,
-        "end_line": 7045,
-        "name": "cluster_ids_are_assigned_after_deterministic_sort_and_sites_are_sorted_within_a_cluster"
+        "start_line": 7696,
+        "end_line": 7718,
+        "name": "duplication_catalog_json_matches_the_tree_or_is_rewritten"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 9046,
+        "end_line": 9068,
+        "name": "dead_code_json_matches_the_tree_or_is_rewritten"
+      }
+    ],
+    "proposed_home": "simplification_audit::support (consolidate these 3 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+  },
+  {
+    "id": "dup-0648",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 6721,
+        "end_line": 6729,
+        "name": "string_and_raw_string_literals_are_one_lit_token_each"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 6741,
+        "end_line": 6749,
+        "name": "number_literals_including_a_fraction_are_lit_tokens"
       }
     ],
     "proposed_home": "simplification_audit::support (consolidate these 2 sites into one function in this file)",
@@ -23951,15 +23957,15 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7170,
-        "end_line": 7183,
-        "name": "proc_stat_or_status_reader_sweep_finds_a_stat_reader_and_a_status_reader_but_not_an_unrelated_fn"
+        "start_line": 6999,
+        "end_line": 7025,
+        "name": "three_near_but_not_identical_functions_cluster_as_near_with_every_site_and_one_home"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7430,
-        "end_line": 7447,
-        "name": "bespoke_lexer_sweep_finds_the_named_trio_but_not_an_unrelated_fn"
+        "start_line": 7028,
+        "end_line": 7046,
+        "name": "cluster_ids_are_assigned_after_deterministic_sort_and_sites_are_sorted_within_a_cluster"
       }
     ],
     "proposed_home": "simplification_audit::support (consolidate these 2 sites into one function in this file)",
@@ -23971,15 +23977,15 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7190,
-        "end_line": 7203,
-        "name": "the_dash_reap_proc_stat_pair_the_spec_names_lands_in_one_real_cluster"
+        "start_line": 7171,
+        "end_line": 7184,
+        "name": "proc_stat_or_status_reader_sweep_finds_a_stat_reader_and_a_status_reader_but_not_an_unrelated_fn"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7302,
-        "end_line": 7317,
-        "name": "the_two_exploration_graph_fixture_builders_the_adversarial_sample_found_land_in_one_real_cluster"
+        "start_line": 7431,
+        "end_line": 7448,
+        "name": "bespoke_lexer_sweep_finds_the_named_trio_but_not_an_unrelated_fn"
       }
     ],
     "proposed_home": "simplification_audit::support (consolidate these 2 sites into one function in this file)",
@@ -23991,15 +23997,15 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7206,
-        "end_line": 7213,
-        "name": "constructs_own_type_literal_matches_self_and_the_named_type_but_not_an_unrelated_call"
+        "start_line": 7191,
+        "end_line": 7204,
+        "name": "the_dash_reap_proc_stat_pair_the_spec_names_lands_in_one_real_cluster"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7216,
-        "end_line": 7224,
-        "name": "constructs_own_type_literal_matches_shorthand_field_init_too"
+        "start_line": 7303,
+        "end_line": 7318,
+        "name": "the_two_exploration_graph_fixture_builders_the_adversarial_sample_found_land_in_one_real_cluster"
       }
     ],
     "proposed_home": "simplification_audit::support (consolidate these 2 sites into one function in this file)",
@@ -24007,19 +24013,19 @@
   },
   {
     "id": "dup-0652",
-    "classification": "exact",
+    "classification": "near",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7250,
-        "end_line": 7268,
-        "name": "the_spawn_result_constructor_triple_the_adversarial_sample_found_lands_in_one_real_cluster"
+        "start_line": 7207,
+        "end_line": 7214,
+        "name": "constructs_own_type_literal_matches_self_and_the_named_type_but_not_an_unrelated_call"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7454,
-        "end_line": 7471,
-        "name": "the_bespoke_lexer_and_canonical_extractor_the_lens_routed_land_in_one_real_cluster"
+        "start_line": 7217,
+        "end_line": 7225,
+        "name": "constructs_own_type_literal_matches_shorthand_field_init_too"
       }
     ],
     "proposed_home": "simplification_audit::support (consolidate these 2 sites into one function in this file)",
@@ -24027,48 +24033,48 @@
   },
   {
     "id": "dup-0653",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 7320,
-        "end_line": 7348,
-        "name": "same_named_helper_sweep_excludes_required_trait_impl_methods_across_adapters"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 7351,
-        "end_line": 7380,
-        "name": "same_named_helper_sweep_excludes_a_trait_default_method_and_its_override"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 7383,
-        "end_line": 7407,
-        "name": "same_named_helper_sweep_still_catches_two_inherent_impls_sharing_a_method_name"
-      }
-    ],
-    "proposed_home": "simplification_audit::support (consolidate these 3 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-0654",
     "classification": "exact",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7563,
-        "end_line": 7568,
-        "name": "replace_section_2_panics_loudly_when_the_heading_is_entirely_absent"
+        "start_line": 7251,
+        "end_line": 7269,
+        "name": "the_spawn_result_constructor_triple_the_adversarial_sample_found_lands_in_one_real_cluster"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7969,
-        "end_line": 7974,
-        "name": "replace_section_6_panics_loudly_when_the_heading_is_entirely_absent"
+        "start_line": 7455,
+        "end_line": 7472,
+        "name": "the_bespoke_lexer_and_canonical_extractor_the_lens_routed_land_in_one_real_cluster"
       }
     ],
     "proposed_home": "simplification_audit::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+  },
+  {
+    "id": "dup-0654",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 7321,
+        "end_line": 7349,
+        "name": "same_named_helper_sweep_excludes_required_trait_impl_methods_across_adapters"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 7352,
+        "end_line": 7381,
+        "name": "same_named_helper_sweep_excludes_a_trait_default_method_and_its_override"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 7384,
+        "end_line": 7408,
+        "name": "same_named_helper_sweep_still_catches_two_inherent_impls_sharing_a_method_name"
+      }
+    ],
+    "proposed_home": "simplification_audit::support (consolidate these 3 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -24077,15 +24083,15 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7575,
-        "end_line": 7579,
-        "name": "sample_indices_is_deterministic_for_a_fixed_seed"
+        "start_line": 7564,
+        "end_line": 7569,
+        "name": "replace_section_2_panics_loudly_when_the_heading_is_entirely_absent"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7605,
-        "end_line": 7609,
-        "name": "different_seeds_produce_different_draws"
+        "start_line": 7970,
+        "end_line": 7975,
+        "name": "replace_section_6_panics_loudly_when_the_heading_is_entirely_absent"
       }
     ],
     "proposed_home": "simplification_audit::support (consolidate these 2 sites into one function in this file)",
@@ -24093,28 +24099,22 @@
   },
   {
     "id": "dup-0656",
-    "classification": "near",
+    "classification": "exact",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7724,
-        "end_line": 7761,
-        "name": "report_section_2_matches_the_tree_or_is_rewritten"
+        "start_line": 7576,
+        "end_line": 7580,
+        "name": "sample_indices_is_deterministic_for_a_fixed_seed"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7840,
-        "end_line": 7886,
-        "name": "report_sections_3_through_5_match_the_tree_or_are_rewritten"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 8054,
-        "end_line": 8087,
-        "name": "report_section_6_matches_the_tree_or_is_rewritten"
+        "start_line": 7606,
+        "end_line": 7610,
+        "name": "different_seeds_produce_different_draws"
       }
     ],
-    "proposed_home": "simplification_audit::support (consolidate these 3 sites into one function in this file)",
+    "proposed_home": "simplification_audit::support (consolidate these 2 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -24123,18 +24123,24 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7769,
-        "end_line": 7793,
-        "name": "replace_sections_3_to_5_only_touches_that_span_leaving_neighbors_intact"
+        "start_line": 7725,
+        "end_line": 7762,
+        "name": "report_section_2_matches_the_tree_or_is_rewritten"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7796,
-        "end_line": 7813,
-        "name": "replace_sections_3_to_5_falls_back_to_end_of_string_when_no_section_6_heading_exists"
+        "start_line": 7841,
+        "end_line": 7887,
+        "name": "report_sections_3_through_5_match_the_tree_or_are_rewritten"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 8055,
+        "end_line": 8088,
+        "name": "report_section_6_matches_the_tree_or_is_rewritten"
       }
     ],
-    "proposed_home": "simplification_audit::support (consolidate these 2 sites into one function in this file)",
+    "proposed_home": "simplification_audit::support (consolidate these 3 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -24143,36 +24149,18 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8098,
-        "end_line": 8108,
-        "name": "resolves_a_same_name_dot_rs_target"
+        "start_line": 7770,
+        "end_line": 7794,
+        "name": "replace_sections_3_to_5_only_touches_that_span_leaving_neighbors_intact"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8111,
-        "end_line": 8124,
-        "name": "resolves_a_name_slash_mod_rs_target_when_the_flat_file_does_not_exist"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 8127,
-        "end_line": 8143,
-        "name": "resolves_a_path_override_target"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 8146,
-        "end_line": 8164,
-        "name": "the_real_eventstore_mod_rs_shape_resolves_contract_rs_as_test"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 8167,
-        "end_line": 8188,
-        "name": "transitive_closure_pulls_in_a_second_hop_regardless_of_its_own_local_attribute"
+        "start_line": 7797,
+        "end_line": 7814,
+        "name": "replace_sections_3_to_5_falls_back_to_end_of_string_when_no_section_6_heading_exists"
       }
     ],
-    "proposed_home": "simplification_audit::support (consolidate these 5 sites into one function in this file)",
+    "proposed_home": "simplification_audit::support (consolidate these 2 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -24181,30 +24169,36 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8273,
-        "end_line": 8284,
-        "name": "resolvers_agree_on_a_same_name_dot_rs_target"
+        "start_line": 8099,
+        "end_line": 8109,
+        "name": "resolves_a_same_name_dot_rs_target"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8288,
-        "end_line": 8299,
-        "name": "resolvers_agree_on_a_path_override_target"
+        "start_line": 8112,
+        "end_line": 8125,
+        "name": "resolves_a_name_slash_mod_rs_target_when_the_flat_file_does_not_exist"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8303,
-        "end_line": 8319,
-        "name": "resolvers_agree_on_a_transitive_second_hop"
+        "start_line": 8128,
+        "end_line": 8144,
+        "name": "resolves_a_path_override_target"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8323,
-        "end_line": 8331,
-        "name": "resolvers_agree_on_a_non_test_out_of_line_mod"
+        "start_line": 8147,
+        "end_line": 8165,
+        "name": "the_real_eventstore_mod_rs_shape_resolves_contract_rs_as_test"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 8168,
+        "end_line": 8189,
+        "name": "transitive_closure_pulls_in_a_second_hop_regardless_of_its_own_local_attribute"
       }
     ],
-    "proposed_home": "simplification_audit::support (consolidate these 4 sites into one function in this file)",
+    "proposed_home": "simplification_audit::support (consolidate these 5 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -24213,114 +24207,30 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8356,
-        "end_line": 8370,
-        "name": "a_fn_referenced_only_by_its_own_test_is_listed"
+        "start_line": 8274,
+        "end_line": 8285,
+        "name": "resolvers_agree_on_a_same_name_dot_rs_target"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8373,
-        "end_line": 8387,
-        "name": "a_fn_referenced_from_a_production_caller_does_not_appear"
+        "start_line": 8289,
+        "end_line": 8300,
+        "name": "resolvers_agree_on_a_path_override_target"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8436,
-        "end_line": 8448,
-        "name": "a_path_qualified_reference_with_no_call_parens_still_counts"
+        "start_line": 8304,
+        "end_line": 8320,
+        "name": "resolvers_agree_on_a_transitive_second_hop"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8451,
-        "end_line": 8461,
-        "name": "a_mention_inside_a_comment_does_not_count_as_a_reference"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 8473,
-        "end_line": 8485,
-        "name": "recursion_through_the_fns_own_body_still_counts_as_a_reference"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 8488,
-        "end_line": 8505,
-        "name": "a_whole_file_test_via_out_of_line_resolution_is_never_a_candidate"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 8525,
-        "end_line": 8544,
-        "name": "a_named_use_import_at_mod_test_top_level_does_not_leak_as_a_production_reference"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 8547,
-        "end_line": 8562,
-        "name": "a_serde_default_attribute_string_names_a_real_production_reference"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 8749,
-        "end_line": 8762,
-        "name": "a_dot_call_through_an_inherent_method_on_any_receiver_counts_receiver_agnostically"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 8783,
-        "end_line": 8798,
-        "name": "an_inherent_associated_function_is_matched_via_path_shape_not_dot_shape"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 8873,
-        "end_line": 8887,
-        "name": "a_fn_passed_by_value_as_a_bare_call_argument_counts_as_a_reference"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 8904,
-        "end_line": 8917,
-        "name": "a_fn_pointer_used_as_a_struct_literal_field_value_counts_as_a_reference"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 8920,
-        "end_line": 8935,
-        "name": "a_ufcs_qualified_value_passed_to_a_combinator_counts_as_a_reference_for_a_method"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 8938,
-        "end_line": 8948,
-        "name": "a_fn_named_by_a_let_initializer_counts_as_a_reference"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 8951,
-        "end_line": 8962,
-        "name": "a_fn_named_as_an_array_element_counts_as_a_reference"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 8965,
-        "end_line": 8976,
-        "name": "a_fn_named_in_a_match_arm_value_counts_as_a_reference"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 8979,
-        "end_line": 8989,
-        "name": "a_fn_named_in_a_return_expression_counts_as_a_reference"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 8992,
-        "end_line": 9005,
-        "name": "a_fn_named_as_a_generic_argument_to_another_type_counts_as_a_reference"
+        "start_line": 8324,
+        "end_line": 8332,
+        "name": "resolvers_agree_on_a_non_test_out_of_line_mod"
       }
     ],
-    "proposed_home": "simplification_audit::support (consolidate these 18 sites into one function in this file)",
+    "proposed_home": "simplification_audit::support (consolidate these 4 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -24329,30 +24239,114 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8508,
-        "end_line": 8516,
-        "name": "main_is_exempted_as_an_entry_point"
+        "start_line": 8357,
+        "end_line": 8371,
+        "name": "a_fn_referenced_only_by_its_own_test_is_listed"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8565,
-        "end_line": 8581,
-        "name": "an_attribute_reference_to_an_ambiguous_shared_name_credits_every_sharer"
+        "start_line": 8374,
+        "end_line": 8388,
+        "name": "a_fn_referenced_from_a_production_caller_does_not_appear"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8718,
-        "end_line": 8733,
-        "name": "a_method_name_shared_by_two_impls_with_a_call_site_excludes_both"
+        "start_line": 8437,
+        "end_line": 8449,
+        "name": "a_path_qualified_reference_with_no_call_parens_still_counts"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8765,
-        "end_line": 8780,
-        "name": "a_trait_impl_method_is_exempted_even_with_zero_textual_call_sites"
+        "start_line": 8452,
+        "end_line": 8462,
+        "name": "a_mention_inside_a_comment_does_not_count_as_a_reference"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 8474,
+        "end_line": 8486,
+        "name": "recursion_through_the_fns_own_body_still_counts_as_a_reference"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 8489,
+        "end_line": 8506,
+        "name": "a_whole_file_test_via_out_of_line_resolution_is_never_a_candidate"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 8526,
+        "end_line": 8545,
+        "name": "a_named_use_import_at_mod_test_top_level_does_not_leak_as_a_production_reference"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 8548,
+        "end_line": 8563,
+        "name": "a_serde_default_attribute_string_names_a_real_production_reference"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 8750,
+        "end_line": 8763,
+        "name": "a_dot_call_through_an_inherent_method_on_any_receiver_counts_receiver_agnostically"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 8784,
+        "end_line": 8799,
+        "name": "an_inherent_associated_function_is_matched_via_path_shape_not_dot_shape"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 8874,
+        "end_line": 8888,
+        "name": "a_fn_passed_by_value_as_a_bare_call_argument_counts_as_a_reference"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 8905,
+        "end_line": 8918,
+        "name": "a_fn_pointer_used_as_a_struct_literal_field_value_counts_as_a_reference"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 8921,
+        "end_line": 8936,
+        "name": "a_ufcs_qualified_value_passed_to_a_combinator_counts_as_a_reference_for_a_method"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 8939,
+        "end_line": 8949,
+        "name": "a_fn_named_by_a_let_initializer_counts_as_a_reference"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 8952,
+        "end_line": 8963,
+        "name": "a_fn_named_as_an_array_element_counts_as_a_reference"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 8966,
+        "end_line": 8977,
+        "name": "a_fn_named_in_a_match_arm_value_counts_as_a_reference"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 8980,
+        "end_line": 8990,
+        "name": "a_fn_named_in_a_return_expression_counts_as_a_reference"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 8993,
+        "end_line": 9006,
+        "name": "a_fn_named_as_a_generic_argument_to_another_type_counts_as_a_reference"
       }
     ],
-    "proposed_home": "simplification_audit::support (consolidate these 4 sites into one function in this file)",
+    "proposed_home": "simplification_audit::support (consolidate these 18 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -24361,50 +24355,82 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8584,
-        "end_line": 8617,
+        "start_line": 8509,
+        "end_line": 8517,
+        "name": "main_is_exempted_as_an_entry_point"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 8566,
+        "end_line": 8582,
+        "name": "an_attribute_reference_to_an_ambiguous_shared_name_credits_every_sharer"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 8719,
+        "end_line": 8734,
+        "name": "a_method_name_shared_by_two_impls_with_a_call_site_excludes_both"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 8766,
+        "end_line": 8781,
+        "name": "a_trait_impl_method_is_exempted_even_with_zero_textual_call_sites"
+      }
+    ],
+    "proposed_home": "simplification_audit::support (consolidate these 4 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+  },
+  {
+    "id": "dup-0663",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 8585,
+        "end_line": 8618,
         "name": "a_free_fn_bare_name_collision_where_only_one_sharer_has_a_real_caller_flags_the_other"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8620,
-        "end_line": 8642,
+        "start_line": 8621,
+        "end_line": 8643,
         "name": "a_bare_call_in_the_same_file_as_its_definition_attributes_locally_with_no_import_needed"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8645,
-        "end_line": 8671,
+        "start_line": 8646,
+        "end_line": 8672,
         "name": "a_bare_unqualified_call_from_a_third_unrelated_file_credits_neither_sharer"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8674,
-        "end_line": 8700,
+        "start_line": 8675,
+        "end_line": 8701,
         "name": "a_bare_call_resolved_through_a_use_import_attributes_to_the_imported_definition"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8703,
-        "end_line": 8715,
+        "start_line": 8704,
+        "end_line": 8716,
         "name": "a_method_name_shared_by_two_impls_with_zero_calls_is_flagged_ambiguous"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8801,
-        "end_line": 8812,
+        "start_line": 8802,
+        "end_line": 8813,
         "name": "an_inherent_associated_fn_name_shared_by_two_types_with_zero_calls_is_ambiguous"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8815,
-        "end_line": 8835,
+        "start_line": 8816,
+        "end_line": 8836,
         "name": "a_qualified_call_site_attributes_only_to_the_sharer_it_names"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8838,
-        "end_line": 8870,
+        "start_line": 8839,
+        "end_line": 8871,
         "name": "a_qualified_call_site_on_an_impls_own_generic_self_type_attributes_correctly"
       }
     ],
@@ -24412,7 +24438,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0663",
+    "id": "dup-0664",
     "classification": "near",
     "sites": [
       {
@@ -24432,7 +24458,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0664",
+    "id": "dup-0665",
     "classification": "near",
     "sites": [
       {
@@ -24452,7 +24478,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0665",
+    "id": "dup-0666",
     "classification": "near",
     "sites": [
       {
@@ -24712,7 +24738,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0666",
+    "id": "dup-0667",
     "classification": "near",
     "sites": [
       {
@@ -24738,7 +24764,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0667",
+    "id": "dup-0668",
     "classification": "near",
     "sites": [
       {
@@ -24758,7 +24784,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0668",
+    "id": "dup-0669",
     "classification": "near",
     "sites": [
       {
@@ -24778,7 +24804,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0669",
+    "id": "dup-0670",
     "classification": "exact",
     "sites": [
       {
@@ -24798,7 +24824,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0670",
+    "id": "dup-0671",
     "classification": "semantic",
     "sites": [
       {
@@ -24830,7 +24856,7 @@
     "note": "mandatory sweep: parallel constructor functions - 4 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0671",
+    "id": "dup-0672",
     "classification": "exact",
     "sites": [
       {
@@ -24850,7 +24876,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0672",
+    "id": "dup-0673",
     "classification": "near",
     "sites": [
       {
@@ -24870,7 +24896,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0673",
+    "id": "dup-0674",
     "classification": "semantic",
     "sites": [
       {
@@ -24902,7 +24928,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 4 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0674",
+    "id": "dup-0675",
     "classification": "near",
     "sites": [
       {
@@ -24934,7 +24960,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0675",
+    "id": "dup-0676",
     "classification": "semantic",
     "sites": [
       {
@@ -24954,7 +24980,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0676",
+    "id": "dup-0677",
     "classification": "exact",
     "sites": [
       {
@@ -24974,7 +25000,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0677",
+    "id": "dup-0678",
     "classification": "semantic",
     "sites": [
       {
@@ -25000,7 +25026,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0678",
+    "id": "dup-0679",
     "classification": "semantic",
     "sites": [
       {
@@ -25020,7 +25046,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0679",
+    "id": "dup-0680",
     "classification": "near",
     "sites": [
       {
@@ -25046,7 +25072,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0680",
+    "id": "dup-0681",
     "classification": "exact",
     "sites": [
       {
@@ -25066,7 +25092,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0681",
+    "id": "dup-0682",
     "classification": "semantic",
     "sites": [
       {
@@ -25086,7 +25112,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0682",
+    "id": "dup-0683",
     "classification": "near",
     "sites": [
       {
@@ -25112,7 +25138,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0683",
+    "id": "dup-0684",
     "classification": "exact",
     "sites": [
       {
@@ -25132,7 +25158,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0684",
+    "id": "dup-0685",
     "classification": "exact",
     "sites": [
       {
@@ -25152,7 +25178,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0685",
+    "id": "dup-0686",
     "classification": "exact",
     "sites": [
       {
@@ -25178,7 +25204,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0686",
+    "id": "dup-0687",
     "classification": "exact",
     "sites": [
       {
@@ -25204,7 +25230,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0687",
+    "id": "dup-0688",
     "classification": "exact",
     "sites": [
       {
@@ -25254,7 +25280,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0688",
+    "id": "dup-0689",
     "classification": "semantic",
     "sites": [
       {
@@ -25280,7 +25306,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0689",
+    "id": "dup-0690",
     "classification": "exact",
     "sites": [
       {
@@ -25306,7 +25332,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0690",
+    "id": "dup-0691",
     "classification": "near",
     "sites": [
       {
@@ -25332,7 +25358,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0691",
+    "id": "dup-0692",
     "classification": "exact",
     "sites": [
       {
@@ -25352,7 +25378,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0692",
+    "id": "dup-0693",
     "classification": "semantic",
     "sites": [
       {
@@ -25372,7 +25398,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0693",
+    "id": "dup-0694",
     "classification": "near",
     "sites": [
       {
@@ -25392,7 +25418,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0694",
+    "id": "dup-0695",
     "classification": "near",
     "sites": [
       {
@@ -25418,7 +25444,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0695",
+    "id": "dup-0696",
     "classification": "near",
     "sites": [
       {
@@ -25438,7 +25464,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0696",
+    "id": "dup-0697",
     "classification": "near",
     "sites": [
       {
@@ -25488,7 +25514,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0697",
+    "id": "dup-0698",
     "classification": "near",
     "sites": [
       {
@@ -25508,7 +25534,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0698",
+    "id": "dup-0699",
     "classification": "near",
     "sites": [
       {
@@ -25528,7 +25554,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0699",
+    "id": "dup-0700",
     "classification": "exact",
     "sites": [
       {
@@ -25548,7 +25574,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0700",
+    "id": "dup-0701",
     "classification": "near",
     "sites": [
       {
@@ -25574,7 +25600,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0701",
+    "id": "dup-0702",
     "classification": "near",
     "sites": [
       {
@@ -25600,7 +25626,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0702",
+    "id": "dup-0703",
     "classification": "near",
     "sites": [
       {
@@ -25620,7 +25646,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0703",
+    "id": "dup-0704",
     "classification": "near",
     "sites": [
       {
@@ -25640,7 +25666,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0704",
+    "id": "dup-0705",
     "classification": "near",
     "sites": [
       {
