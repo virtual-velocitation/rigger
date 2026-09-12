@@ -1311,74 +1311,98 @@
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 117,
-        "end_line": 117,
+        "start_line": 128,
+        "end_line": 128,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 136,
-        "end_line": 136,
+        "start_line": 147,
+        "end_line": 147,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 266,
-        "end_line": 266,
+        "start_line": 277,
+        "end_line": 277,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 279,
-        "end_line": 279,
+        "start_line": 290,
+        "end_line": 290,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 622,
-        "end_line": 622,
+        "start_line": 633,
+        "end_line": 633,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 629,
-        "end_line": 629,
+        "start_line": 640,
+        "end_line": 640,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 646,
-        "end_line": 646,
+        "start_line": 657,
+        "end_line": 657,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 653,
-        "end_line": 653,
+        "start_line": 664,
+        "end_line": 664,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 892,
-        "end_line": 892,
+        "start_line": 903,
+        "end_line": 903,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 1043,
-        "end_line": 1043,
+        "start_line": 1054,
+        "end_line": 1054,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 1056,
-        "end_line": 1056,
+        "start_line": 1067,
+        "end_line": 1067,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 1181,
-        "end_line": 1181,
+        "start_line": 1192,
+        "end_line": 1192,
+        "name": "Command::new"
+      },
+      {
+        "file": "tests/plan_stage_commit_landing_periphery.rs",
+        "start_line": 1249,
+        "end_line": 1249,
+        "name": "Command::new"
+      },
+      {
+        "file": "tests/plan_stage_commit_landing_periphery.rs",
+        "start_line": 1264,
+        "end_line": 1264,
+        "name": "Command::new"
+      },
+      {
+        "file": "tests/plan_stage_commit_landing_periphery.rs",
+        "start_line": 1300,
+        "end_line": 1300,
+        "name": "Command::new"
+      },
+      {
+        "file": "tests/plan_stage_commit_landing_periphery.rs",
+        "start_line": 1307,
+        "end_line": 1307,
         "name": "Command::new"
       },
       {
@@ -1887,7 +1911,7 @@
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 287 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: Command::new call sites - 291 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0007",
@@ -1981,8 +2005,8 @@
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 154,
-        "end_line": 159,
+        "start_line": 165,
+        "end_line": 170,
         "name": "agent"
       }
     ],
