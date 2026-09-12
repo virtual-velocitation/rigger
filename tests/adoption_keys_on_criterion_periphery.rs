@@ -1292,6 +1292,16 @@ fn a_crash_after_the_branch_exists_but_before_unitstarted_lands_recovers_the_rec
         &["rev-parse", &format!("rigger/u/{prior_slug}")],
     )
     .expect("the escalated unit's durable branch must exist with a resolvable tip");
+    // The fresh unit below serves the SAME criterion text at the same position, so a
+    // real production call site computes the IDENTICAL `criterion_stable_id` - read back
+    // off the prior unit's own `UnitStarted` rather than hand-typed, so the hand-crafted
+    // provenance mark below carries the value `recorded_adoption` (round 5, keyed on the
+    // full `(unit, criterion_id, spec)` triple) actually requires to match.
+    let events_after_run1 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    let fresh_criterion_id = find_unit_started(&events_after_run1, &prior_slug)["criterion_id"]
+        .as_str()
+        .expect("the prior unit's own UnitStarted carries its criterion_id")
+        .to_string();
 
     // FRESH RUN boundary, a differently-named unit for the SAME criterion.
     start_fresh(&store, &[criterion.to_string()], "", "", "").unwrap();
@@ -1302,7 +1312,10 @@ fn a_crash_after_the_branch_exists_but_before_unitstarted_lands_recovers_the_rec
     // branch at the prior tip, via the SAME production `Worktree::create_branch_at`
     // call - and, per the fix, the durable provenance mark that is always written
     // BEFORE it is therefore ALSO already on the log; only the eventual `UnitStarted`
-    // never landed.
+    // never landed. `criterion_id` and `spec` are the fresh unit's OWN identity (round
+    // 5) - `spec` is "" since this fresh run carries no launched spec path
+    // (`current_run_spec` folds to the empty string), matching what a real crash-then-
+    // resume would have recorded at the moment of decision.
     Worktree::create_branch_at(repo.path().to_str().unwrap(), &fresh_branch, &prior_tip).unwrap();
     store
         .append(
@@ -1313,6 +1326,8 @@ fn a_crash_after_the_branch_exists_but_before_unitstarted_lands_recovers_the_rec
                 serde_json::to_vec(&json!({
                     "id": fresh_slug,
                     "status": "adoption-recorded",
+                    "criterion_id": fresh_criterion_id,
+                    "spec": "",
                     "adopted_from": {
                         "unit": prior_slug,
                         "tip": prior_tip,
@@ -1414,13 +1429,27 @@ fn a_crash_after_the_provenance_record_but_before_the_branch_is_created_still_co
         &["rev-parse", &format!("rigger/u/{prior_slug}")],
     )
     .expect("the escalated unit's durable branch must exist with a resolvable tip");
+    // The fresh unit below serves the SAME criterion text at the same position, so a
+    // real production call site computes the IDENTICAL `criterion_stable_id` - read back
+    // off the prior unit's own `UnitStarted` rather than hand-typed, so the hand-crafted
+    // provenance mark below carries the value `recorded_adoption` (round 5, keyed on the
+    // full `(unit, criterion_id, spec)` triple) actually requires to match.
+    let events_after_run1 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    let fresh_criterion_id = find_unit_started(&events_after_run1, &prior_slug)["criterion_id"]
+        .as_str()
+        .expect("the prior unit's own UnitStarted carries its criterion_id")
+        .to_string();
 
     start_fresh(&store, &[criterion.to_string()], "", "", "").unwrap();
     let fresh_slug = "crash-before-branch-unit";
     let fresh_branch = format!("rigger/u/{fresh_slug}");
 
     // Reproduce ONLY the provenance write - the crash happens before the git side
-    // effect ever runs, so the fresh unit's own branch must NOT exist yet.
+    // effect ever runs, so the fresh unit's own branch must NOT exist yet. `criterion_id`
+    // and `spec` are the fresh unit's OWN identity (round 5) - `spec` is "" since this
+    // fresh run carries no launched spec path (`current_run_spec` folds to the empty
+    // string), matching what a real crash-then-resume would have recorded at the moment
+    // of decision.
     store
         .append(
             STREAM,
@@ -1430,6 +1459,8 @@ fn a_crash_after_the_provenance_record_but_before_the_branch_is_created_still_co
                 serde_json::to_vec(&json!({
                     "id": fresh_slug,
                     "status": "adoption-recorded",
+                    "criterion_id": fresh_criterion_id,
+                    "spec": "",
                     "adopted_from": {
                         "unit": prior_slug,
                         "tip": prior_tip,
@@ -1603,5 +1634,176 @@ fn a_prior_candidates_deleted_branch_starts_the_fresh_unit_genuinely_unadopted()
         }),
         "no durable adoption-recorded mark may exist for a unit that never actually \
          adopted anything - the fix only writes it AFTER a successful branch_tip"
+    );
+}
+
+/// Test 10 (round 5, PRIMARY BLOCKER fix): `recorded_adoption`/`adoption_provenance_key`
+/// keyed the durable [`STATUS_ADOPTION_RECORDED`] fast path on the BARE unit id alone
+/// (round 4) - unlike `prior_criterion_unit`, which that same round's own doc comment
+/// requires be keyed on `(id, criterion_id, spec)` because a planner slug carries no
+/// cross-run, cross-spec uniqueness guarantee. `adopt_prior_criterion_branch` consults
+/// `recorded_adoption` FIRST, unconditionally - so once ANY unit id ever legitimately
+/// adopts once, that decision replayed FOREVER for any later, wholly UNRELATED unit that
+/// merely happens to reuse the same literal id, regardless of criterion or spec: real
+/// cross-spec content contamination via the git side effect (`Worktree::create_branch_at`),
+/// not merely a missed exclusion (arch-u88c2-r4-recorded-adoption-bare-id-crosses-specs,
+/// sdet-u88c2-r4-confirms-recorded-adoption-bare-id-crosses-criteria,
+/// adv-u88c2-r4-independently-live-reproduced-bare-id-collision).
+///
+/// Mirrors test 4's spec-scoping shape but drives the ONE case test 4's own kept fixture
+/// never covers (adv-u88c2-r4-bug-breaches-rulings-own-fixture-1-not-merely-a-di-nit): test
+/// 4 reuses the SAME spec across two DIFFERENTLY-named units; this test reuses the SAME
+/// literal unit id across two UNRELATED specs/criteria. Three real `conductor::run` calls,
+/// one store, one real git repo:
+///
+/// RUN 1 (spec A, criterion X): a baseline unit escalates with real committed work on an
+/// abandoned durable branch (test 1's setup).
+/// RUN 2 (spec A, SAME criterion X): a differently-named planner proposal `reused-id`
+/// legitimately adopts run 1's baseline and integrates for real - `gc_integrated_branches`
+/// (test 3) reclaims its durable branch once it does, so by run 3 `rigger/u/reused-id`
+/// genuinely does not exist any more, exactly as the real crash-window tests (7, 8) assume.
+/// RUN 3 (spec B, an UNRELATED criterion Y): a planner independently reuses the literal
+/// slug `reused-id` for its own unrelated criterion. `adopted_from` must come back `Null`
+/// - the pre-fix defect returned run 1's baseline verbatim instead.
+#[test]
+fn a_reused_planner_slug_never_replays_an_unrelated_specs_recorded_adoption_decision() {
+    let repo = tempfile::tempdir().unwrap();
+    init_repo(repo.path());
+    let store = Store::open(":memory:").unwrap();
+
+    let criterion_x = "the pump reports its own pressure at a stable interval";
+    let spec_a = "specs/88-adoption-keys-on-criterion.md";
+
+    // RUN 1 (spec A, criterion X): the deterministic baseline escalates with real
+    // committed work, exactly like test 1's setup.
+    start_fresh(&store, &[criterion_x.to_string()], "", "", spec_a).unwrap();
+    let driver1 = WritesFileDriver {
+        file_name: "spec-a-baseline-work.txt".into(),
+        content: "spec A's abandoned baseline attempt\n".into(),
+    };
+    let deps1 = Deps {
+        store: &store,
+        driver: &driver1,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion_x.to_string()],
+    };
+    let rs1 = run(&baseline_only_cfg("false", 1), &deps1).unwrap();
+    let prior_slug = rs1.units.keys().next().unwrap().clone();
+    assert_eq!(
+        rs1.units[&prior_slug].status,
+        ledger::Status::Escalated,
+        "an always-failing gate must exhaust remediation and escalate, never integrate"
+    );
+    let prior_tip = git_out(
+        repo.path(),
+        &["rev-parse", &format!("rigger/u/{prior_slug}")],
+    )
+    .expect("the escalated baseline's durable branch must exist with a resolvable tip");
+
+    // RUN 2 (spec A, SAME criterion X): a differently-named planner proposal
+    // legitimately adopts run 1's baseline - a SANCTIONED adoption - and integrates for
+    // real, so its durable `STATUS_ADOPTION_RECORDED` mark is keyed on the bare id
+    // `reused-id` (pre-fix) exactly like a genuine real-world adoption would produce.
+    start_fresh(&store, &[criterion_x.to_string()], "", "", spec_a).unwrap();
+    let reused_id = "reused-id";
+    let reused_branch = format!("rigger/u/{reused_id}");
+    let driver2 = ProposesSlugDriver {
+        proposed_id: reused_id.to_string(),
+        criterion: criterion_x.to_string(),
+        worker_write: Some((
+            "run2-own-work.txt".into(),
+            "reused-id's own real work\n".into(),
+        )),
+        gates: Vec::new(),
+    };
+    let deps2 = Deps {
+        store: &store,
+        driver: &driver2,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion_x.to_string()],
+    };
+    let rs2 = run(&fresh_run_cfg("true"), &deps2).unwrap();
+    assert_eq!(
+        rs2.units[reused_id].status,
+        ledger::Status::Integrated,
+        "the sanctioned adoption still runs its ordinary lifecycle through to integration"
+    );
+    let events_after_run2 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    let run2_started = find_unit_started(&events_after_run2, reused_id);
+    assert_eq!(
+        run2_started["adopted_from"]["unit"], prior_slug,
+        "run 2's reused-id must genuinely adopt spec A's baseline: {run2_started}"
+    );
+    assert_eq!(
+        run2_started["adopted_from"]["tip"].as_str(),
+        Some(prior_tip.as_str()),
+        "run 2's adoption must name spec A's baseline's real tip: {run2_started}"
+    );
+    assert!(
+        !worktree::branch_exists(repo.path().to_str().unwrap(), &reused_branch),
+        "the integrated reused-id branch must already be reclaimed by \
+         gc_integrated_branches before run 3 reuses the same literal slug, exactly like \
+         the real crash-window tests (7, 8) assume"
+    );
+
+    // RUN 3 (spec B, an UNRELATED criterion Y): a planner independently reuses the SAME
+    // literal slug `reused-id` for a wholly unrelated criterion under an unrelated spec.
+    let criterion_y = "the valve independently reports its own position on every poll";
+    let spec_b = "specs/90-hermetic-test-git-and-merge-friendly-audit-artifacts.md";
+    start_fresh(&store, &[criterion_y.to_string()], "", "", spec_b).unwrap();
+    let driver3 = ProposesSlugDriver {
+        proposed_id: reused_id.to_string(),
+        criterion: criterion_y.to_string(),
+        worker_write: Some((
+            "run3-own-work.txt".into(),
+            "run 3's own unrelated work\n".into(),
+        )),
+        gates: Vec::new(),
+    };
+    let deps3 = Deps {
+        store: &store,
+        driver: &driver3,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion_y.to_string()],
+    };
+    let rs3 = run(&fresh_run_cfg("true"), &deps3).unwrap();
+    assert_eq!(
+        rs3.units[reused_id].status,
+        ledger::Status::Integrated,
+        "the unrelated reuse still runs its ordinary lifecycle through to integration"
+    );
+    // NOTE: `spec-a-baseline-work.txt` is NOT asserted absent here - run 2 already
+    // legitimately merged it onto the ONE shared repo's trunk HEAD when it integrated
+    // above, so it is present on every subsequent unit's tree (including a genuinely
+    // fresh, unadopted one) regardless of this fix - that is ordinary, correct trunk
+    // history, not the defect under test. The decisive, non-confounded signal is
+    // `adopted_from` on run 3's OWN `UnitStarted`: a real (buggy) adoption pins run 3's
+    // branch to run 1's OLD escalated tip (a stale, disconnected commit, never the
+    // current trunk HEAD run 3's own fresh branch would otherwise start from) and
+    // records that pin as provenance - `Null` proves no such pin, real or recorded, ever
+    // happened.
+    assert!(repo.path().join("run3-own-work.txt").exists());
+
+    let events_after_run3 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    // `reused_id` now has TWO `UnitStarted` events (run 2 and run 3) - `find_last_unit_
+    // started` (test 3's helper) reads the CURRENT, still-live incarnation, never the
+    // stale run-2 one `find_unit_started` would return.
+    let run3_started = find_last_unit_started(&events_after_run3, reused_id);
+    assert_eq!(
+        run3_started["adopted_from"],
+        Value::Null,
+        "reusing a literal planner slug across two wholly unrelated specs/criteria must \
+         never replay the FIRST reuse's recorded adoption decision - the pre-fix bare-id \
+         fast path answered for ANY later unit sharing the id, regardless of criterion or \
+         spec: {run3_started}"
     );
 }

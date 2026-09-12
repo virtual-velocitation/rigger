@@ -343,14 +343,21 @@ fn compensation_queued_key(triggerer: &str, target: &str, attempt: u32) -> Strin
     format!("{triggerer}/compensate-queued:{target}#{attempt}")
 }
 
-/// The replay key for a durable [`STATUS_ADOPTION_RECORDED`] mark (spec 88 round 4),
-/// keyed by the ADOPTING unit's own id alone - unlike a gate or a compensation mark,
-/// this decision is made at most ONCE per unit ever, so a bare unit id is a sufficient
-/// key (a resumed call for the SAME unit never re-decides once recorded). The
-/// `adopted-from:` infix carries no `/gate:` substring, so [`unit_of_gate_key`] never
-/// mis-parses it as a gate key.
-fn adoption_provenance_key(unit: &str) -> String {
-    format!("{unit}/adopted-from")
+/// The replay key for a durable [`STATUS_ADOPTION_RECORDED`] mark (spec 88 round 4,
+/// rescoped round 5), keyed by the FULL `(unit, criterion_id, spec)` identity the
+/// decision was made under - NEVER the bare unit id alone. Round 4 keyed this on the bare
+/// id, reasoning the decision is made "at most once per unit ever" - false:
+/// `criterion_stable_id` and a planner slug both carry no cross-run, cross-spec
+/// uniqueness guarantee (nothing enforces one - a slug can be, and empirically is,
+/// reused across two entirely unrelated specs/criteria), so a bare-id key let a later,
+/// wholly unrelated unit reusing the same literal id replay an earlier unit's decision
+/// forever (arch-u88c2-r4-recorded-adoption-bare-id-crosses-specs,
+/// adv-u88c2-r4-independently-live-reproduced-bare-id-collision). This mirrors the exact
+/// identity scheme [`prior_criterion_unit`] already uses for its own integrated-exclusion
+/// set. The `adopted-from:` infix carries no `/gate:` substring, so [`unit_of_gate_key`]
+/// never mis-parses it as a gate key.
+fn adoption_provenance_key(unit: &str, criterion_id: &str, spec: &str) -> String {
+    format!("{unit}/{criterion_id}/{spec}/adopted-from")
 }
 
 /// Whether a gate RUNS during the blast-radius-narrowed inner loop (spec 12, unit 3): a
@@ -8158,6 +8165,13 @@ impl RunCtx<'_> {
     /// provenance. Once decided, the decision is authoritative and this call never
     /// mutates the git side effect a second time.
     ///
+    /// SCOPED TO `(unit, criterion_id, spec)` (round 5, closing
+    /// arch-u88c2-r4-recorded-adoption-bare-id-crosses-specs): the durable mark and its
+    /// replay key are keyed on this unit's full identity, never its bare id alone -
+    /// round 4's bare-id key let a later, wholly unrelated unit reusing the same literal
+    /// planner slug replay an earlier unit's decision regardless of criterion or spec, a
+    /// real content-contamination bug, not merely a missed exclusion.
+    ///
     /// Returns `Some((prior_unit_id, tip_sha, spec))` when a decision exists (freshly
     /// made this call, or recovered from a crash-resumed prior call), for the caller to
     /// stamp on `UnitStarted` as `adopted_from`. Returns `None` for: a repo-less run; a
@@ -8176,15 +8190,19 @@ impl RunCtx<'_> {
         }
         let branch = unit_branch(&st.name);
         let events = self.deps.store.read_stream(STREAM, 0, Direction::Forward)?;
-        if let Some((prior, tip, spec)) = recorded_adoption(&events, &st.name) {
+        let spec = current_run_spec(&events);
+        if let Some((prior, tip, prior_spec)) =
+            recorded_adoption(&events, &st.name, &st.criterion_id, &spec)
+        {
             if !worktree::branch_exists(&self.deps.repo, &branch) {
                 Worktree::create_branch_at(&self.deps.repo, &branch, &tip)?;
             }
-            return Ok(Some((prior, tip, spec)));
+            return Ok(Some((prior, tip, prior_spec)));
         }
         if worktree::branch_exists(&self.deps.repo, &branch) {
-            // No decision was ever recorded for this unit (checked above), so this
-            // branch carries only its own prior work - never adopted.
+            // No decision was ever recorded for this EXACT (unit, criterion, spec)
+            // triple (checked above), so this branch carries only its own prior work -
+            // never adopted.
             return Ok(None);
         }
         let Some(prior) = prior_criterion_unit(&events, &st.criterion_id, &st.name) else {
@@ -8197,13 +8215,14 @@ impl RunCtx<'_> {
             // adopt; the unit starts fresh exactly as before this feature existed.
             return Ok(None);
         };
-        let spec = current_run_spec(&events);
         self.emit_keyed_meta(
-            &adoption_provenance_key(&st.name),
+            &adoption_provenance_key(&st.name, &st.criterion_id, &spec),
             ledger::TYPE_UNIT_STATUS,
             json!({
                 "id": st.name,
                 "status": STATUS_ADOPTION_RECORDED,
+                "criterion_id": st.criterion_id,
+                "spec": spec,
                 "adopted_from": {"unit": prior, "tip": tip, "spec": spec},
             }),
             &[],
@@ -10003,20 +10022,48 @@ fn prior_criterion_unit(events: &[Event], criterion_id: &str, this_unit: &str) -
 }
 
 /// The adoption decision [`RunCtx::adopt_prior_criterion_branch`] already recorded for
-/// `unit`, if any (spec 88 round 4) - the durable [`STATUS_ADOPTION_RECORDED`] mark its
-/// crash-window fix writes as log state BEFORE its git side effect. Folds the WHOLE
-/// stream (a `UnitStatus` predates no run-boundary concept the way `UnitStarted` does,
-/// and a unit's adoption is decided at most once in its whole lifetime, never per-run)
-/// for the mark carrying this unit's own id; `None` when this unit never had an
-/// adoption decided for it (its branch, if it has one, is its own prior work).
-fn recorded_adoption(events: &[Event], unit: &str) -> Option<(String, String, String)> {
+/// the EXACT `(unit, criterion_id, spec)` triple, if any (spec 88 round 4, rescoped
+/// round 5) - the durable [`STATUS_ADOPTION_RECORDED`] mark its crash-window fix writes
+/// as log state BEFORE its git side effect. Folds the WHOLE stream (a `UnitStatus`
+/// predates no run-boundary concept the way `UnitStarted` does, and a unit's adoption
+/// for a given criterion/spec is decided at most once in its whole lifetime, never
+/// per-run) for the mark carrying this EXACT triple.
+///
+/// SCOPED (round 5, closing arch-u88c2-r4-recorded-adoption-bare-id-crosses-specs /
+/// sdet-u88c2-r4-confirms-recorded-adoption-bare-id-crosses-criteria /
+/// adv-u88c2-r4-independently-live-reproduced-bare-id-collision): round 4 matched on
+/// bare `unit` id alone, so a later, wholly unrelated unit reusing the same literal
+/// planner slug for a DIFFERENT criterion or spec silently replayed an earlier,
+/// unrelated unit's decision - real cross-spec content contamination via the git side
+/// effect ([`Worktree::create_branch_at`]), not merely a missed exclusion. `criterion_id`
+/// and `spec` are read off the SAME event's own top-level fields (stamped by
+/// [`RunCtx::adopt_prior_criterion_branch`] at write time from `st.criterion_id` and
+/// [`current_run_spec`] - the adopting unit's OWN identity, distinct from the nested
+/// `adopted_from.spec`, which names the PRIOR unit's spec for display/provenance and is
+/// never used for matching), never re-derived from `unit` alone. `None` when this exact
+/// triple never had an adoption decided for it (this unit's branch, if it has one, is
+/// its own prior work, or belongs to an unrelated earlier unit that only happens to
+/// share its bare id).
+fn recorded_adoption(
+    events: &[Event],
+    unit: &str,
+    criterion_id: &str,
+    spec: &str,
+) -> Option<(String, String, String)> {
     events.iter().find_map(|e| {
         if e.type_ != ledger::TYPE_UNIT_STATUS {
             return None;
         }
         let v: Value = serde_json::from_slice(&e.data).ok()?;
+        let own_criterion_id = v
+            .get("criterion_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let own_spec = v.get("spec").and_then(Value::as_str).unwrap_or_default();
         if v.get("id").and_then(Value::as_str) != Some(unit)
             || v.get("status").and_then(Value::as_str) != Some(STATUS_ADOPTION_RECORDED)
+            || own_criterion_id != criterion_id
+            || own_spec != spec
         {
             return None;
         }
@@ -11019,6 +11066,95 @@ mod tests {
             None,
             "a plain UnitFailed carrying no META_COMPENSATED must never reopen an \
              already-integrated criterion for adoption"
+        );
+    }
+
+    /// A hand-built `UnitStatus` event shaped exactly like the durable mark
+    /// [`RunCtx::adopt_prior_criterion_branch`] writes (spec 88 round 4, rescoped round
+    /// 5) - lets [`recorded_adoption`]'s exact `(unit, criterion_id, spec, status)`
+    /// matching be probed directly, including negative/decoy shapes a real production
+    /// run would never itself construct.
+    fn adoption_status(
+        id: &str,
+        status: &str,
+        criterion_id: &str,
+        spec: &str,
+        adopted_from: Value,
+    ) -> Event {
+        Event::new(
+            ledger::TYPE_UNIT_STATUS,
+            serde_json::to_vec(&json!({
+                "id": id,
+                "status": status,
+                "criterion_id": criterion_id,
+                "spec": spec,
+                "adopted_from": adopted_from,
+            }))
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn recorded_adoption_ignores_a_same_identity_event_carrying_the_wrong_status() {
+        // round 5 (mutation-efficacy gap closed): an id/criterion_id/spec that all
+        // match the query but a status OTHER than STATUS_ADOPTION_RECORDED must never
+        // be read as a decided adoption, even when it coincidentally carries an
+        // `adopted_from`-shaped payload. A real unit's `UnitStatus` history carries
+        // MANY status tokens sharing its id over its lifetime (`reviewed`,
+        // `compensation-queued`, ...) - only the `adoption-recorded` one is ever a
+        // real decision, and this is the one guard clause that tells them apart.
+        let decoy = adoption_status(
+            "target",
+            "reviewed",
+            "c1-aaa",
+            "spec-a",
+            json!({
+                "unit": "decoy-prior",
+                "tip": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+                "spec": "spec-a",
+            }),
+        );
+        assert_eq!(
+            recorded_adoption(&[decoy], "target", "c1-aaa", "spec-a"),
+            None,
+            "a same-identity event under any OTHER status must never be read as a \
+             decided adoption"
+        );
+    }
+
+    #[test]
+    fn recorded_adoption_never_answers_for_a_mismatched_criterion_or_a_mismatched_spec_alone() {
+        // round 5 (mutation-efficacy gap closed): the SAME unit id, correctly
+        // recorded under criterion c1-aaa/spec-a, must never answer a query for a
+        // DIFFERENT criterion under the SAME spec, nor a query for the SAME criterion
+        // under a DIFFERENT spec - each mismatch ALONE must refuse the match, not only
+        // when BOTH mismatch simultaneously (the periphery suite's own cross-spec-
+        // and-criterion fixture never isolates either coordinate alone).
+        let recorded = adoption_status(
+            "reused-id",
+            STATUS_ADOPTION_RECORDED,
+            "c1-aaa",
+            "spec-a",
+            json!({
+                "unit": "prior-unit",
+                "tip": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+                "spec": "spec-a",
+            }),
+        );
+        assert_eq!(
+            recorded_adoption(
+                std::slice::from_ref(&recorded),
+                "reused-id",
+                "c2-bbb",
+                "spec-a"
+            ),
+            None,
+            "a mismatched criterion_id alone (same id, same spec) must refuse the match"
+        );
+        assert_eq!(
+            recorded_adoption(&[recorded], "reused-id", "c1-aaa", "spec-b"),
+            None,
+            "a mismatched spec alone (same id, same criterion_id) must refuse the match"
         );
     }
 
