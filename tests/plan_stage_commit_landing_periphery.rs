@@ -63,7 +63,17 @@
 //!     and unreachable from outside the crate - so it proves the FOLD reads the right JSON
 //!     field, never that the real git revert this criterion exists to protect actually removes
 //!     every landed file from a real run branch through the public `run()` entry
-//!     (`plan_stage_compensation_reverts_every_landed_commit_not_just_the_newest`).
+//!     (`plan_stage_compensation_reverts_every_landed_commit_not_just_the_newest`);
+//!   - gap 7 (round 4, `sdet-u88c4-r4-per-commit-scope-check-not-periphery-tested`): the
+//!     PER-COMMIT scope check (`Worktree::files_touched_by_commit`, round 2's fix for
+//!     `adv-u88c4-scope-check-nets-the-diff-not-each-commit`) that catches a LATER commit
+//!     reverting an EARLIER commit's own out-of-scope touch - which the AGGREGATE
+//!     `changed_since_base` diff alone would wrongly clear - had only the implementer's own
+//!     inside-out regression (`plan_stage_commit_reverting_its_own_out_of_scope_touch_still_
+//!     fails_the_stage`, conductor.rs), never a periphery-level proof through the public
+//!     `run()` entry of what the adversary named "the ONLY safety boundary a producer commit
+//!     crosses" (`plan_stage_commit_reverting_its_own_out_of_scope_touch_still_fails_the_
+//!     stage_at_the_periphery`).
 
 use rigger::conductor::{
     run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, META_COMPENSATED,
@@ -897,5 +907,88 @@ fn plan_stage_compensation_reverts_every_landed_commit_not_just_the_newest() {
         queued.len(),
         1,
         "exactly one durable compensation-queued mark must name plan"
+    );
+}
+
+/// Criterion 4, gap 7 (round 4, `sdet-u88c4-r4-per-commit-scope-check-not-periphery-tested`):
+/// the PER-COMMIT scope check (`Worktree::files_touched_by_commit`, this file's own header
+/// names it new public API) is the fix for `adv-u88c4-scope-check-nets-the-diff-not-each-
+/// commit` - CONFIRMED BY LIVE GIT REPRO that the AGGREGATE `changed_since_base` diff alone
+/// nets a path to NOTHING when a LATER commit in the same producer attempt reverts an
+/// EARLIER commit's own non-`specs/` touch to it. The implementer's own regression for this
+/// exact shape (`plan_stage_commit_reverting_its_own_out_of_scope_touch_still_fails_the_
+/// stage`, `src/conductor.rs`) is INSIDE-OUT: crate-private `Stub` driver, `mod tests`,
+/// unreachable from outside the crate - so, per this file's own opening claim ("neither
+/// inside-out layer covers... at all"), this specific gap was left uncovered at the
+/// periphery despite being, in the adversary's own words, "the ONLY safety boundary a
+/// producer commit crosses" before landing permanently on the shared run branch
+/// (`PlanCommitOutcome::Landed` is never `review_unit`'d). Proven here through the public
+/// `run()` entry, an independently-authored driver, and real git - never the crate's own
+/// private fixture.
+#[test]
+fn plan_stage_commit_reverting_its_own_out_of_scope_touch_still_fails_the_stage_at_the_periphery() {
+    let touched_path = "docs/existing.md";
+    let repo = init_repo();
+    let repo_path = repo.path().to_str().unwrap().to_string();
+    // Pre-seed the path on the run branch BEFORE the producer worktree branches off, so
+    // reverting it back is a real, in-history no-op relative to base - not merely deleting a
+    // path base never had (mirrors the implementer's own inside-out fixture for this shape).
+    std::fs::create_dir_all(repo.path().join("docs")).unwrap();
+    std::fs::write(repo.path().join(touched_path), "seed\n").unwrap();
+    run_git(&repo_path, &["add", "-A"]);
+    run_git(&repo_path, &["commit", "-q", "-m", "seed docs/existing.md"]);
+
+    let mut cfg = Config::default();
+    cfg.agents.insert("planner".into(), agent("planner"));
+    cfg.workflow.stages.insert("plan".into(), plan_stage());
+
+    let store = Store::open(":memory:").unwrap();
+    // Two commits touching the SAME non-specs path: the first plants "scope creep", the
+    // second reverts it back to "seed" - the AGGREGATE base...HEAD diff for this path is
+    // empty even though each commit individually touched it, so only the PER-COMMIT walk
+    // this criterion added can catch it.
+    let driver = PlanAmendDriver::new("planner")
+        .commit(&[(touched_path, "scope creep\n")])
+        .commit(&[(touched_path, "seed\n")]);
+    let deps = Deps {
+        store: &store,
+        driver: &driver,
+        gates: &ExecRunner,
+        repo: repo_path.clone(),
+        grounder: None,
+        graph: None,
+        criteria: Vec::new(),
+    };
+    let rs = run(&cfg, &deps).unwrap();
+
+    assert_eq!(
+        rs.units["plan"].status,
+        ledger::Status::Escalated,
+        "a commit sequence that touches a non-specs path and later reverts it must still \
+         fail - the per-commit scope check must catch what the aggregate diff alone would \
+         wrongly clear"
+    );
+
+    let events = store
+        .read_all(0, Direction::Forward, &Filter::default())
+        .unwrap();
+    let failed = events
+        .iter()
+        .find(|e| e.type_ == ledger::TYPE_UNIT_FAILED)
+        .expect("the reverted-touch sequence must record a UnitFailed");
+    let body = String::from_utf8_lossy(&failed.data);
+    assert!(
+        body.contains("\"cause\":\"reject\""),
+        "a per-commit scope violation is stamped the same cause tag an ordinary review \
+         reject is; got: {body}"
+    );
+
+    // The pre-seeded path is UNCHANGED on the run branch - neither the transient scope
+    // creep nor the producer's own revert-back ever landed, since the whole sequence was
+    // refused before any of it reached the run branch.
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join(touched_path)).unwrap(),
+        "seed\n",
+        "the pre-existing path must be untouched by a refused plan-stage commit sequence"
     );
 }

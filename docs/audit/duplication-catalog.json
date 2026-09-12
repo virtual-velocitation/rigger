@@ -1305,56 +1305,56 @@
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 94,
-        "end_line": 94,
+        "start_line": 104,
+        "end_line": 104,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 113,
-        "end_line": 113,
+        "start_line": 123,
+        "end_line": 123,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 243,
-        "end_line": 243,
+        "start_line": 253,
+        "end_line": 253,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 256,
-        "end_line": 256,
+        "start_line": 266,
+        "end_line": 266,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 599,
-        "end_line": 599,
+        "start_line": 609,
+        "end_line": 609,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 606,
-        "end_line": 606,
+        "start_line": 616,
+        "end_line": 616,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 623,
-        "end_line": 623,
+        "start_line": 633,
+        "end_line": 633,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 630,
-        "end_line": 630,
+        "start_line": 640,
+        "end_line": 640,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 869,
-        "end_line": 869,
+        "start_line": 879,
+        "end_line": 879,
         "name": "Command::new"
       },
       {
@@ -1957,8 +1957,8 @@
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 131,
-        "end_line": 136,
+        "start_line": 141,
+        "end_line": 146,
         "name": "agent"
       }
     ],
