@@ -144,11 +144,75 @@
 //! resolves the underlying modify/delete conflict - and asserts the durable marker is recorded
 //! EXACTLY ONCE after each call, never twice, and that the resumed call skips straight to the
 //! integrate door (`ResumePhase::Reviewed`) without ever re-spawning the implementer.
+//!
+//! GAP 9 (round 4, `op-u88c1-round-4-definition-of-done`): the record -> mutate -> record TABLE
+//! `src/conductor.rs::integrate_and_emit`'s own module doc now ships (four rows: conflict
+//! detection, placeholder staging, regeneration, landing) needs a fixture at EVERY one of its
+//! eight adjacent-pair boundaries (before-record|mutation, mutation|after-record, for each of
+//! the four rows), each resuming to the same final log and run branch. Two of the eight are
+//! already this file's own GAP 6 (row 3's before-record|mutation boundary, mixed episode) and
+//! GAP 8 (row 2's before-record|mutation boundary) - not re-driven here. The remaining six:
+//!
+//! - Row 1 (conflict detection), before-record|mutation boundary,
+//!   `a_crash_right_after_the_merge_attempt_record_resumes_and_completes_row_1`: call 1's
+//!   driver plants a stray untracked file at a path it also lands directly on the bare run
+//!   branch (mirrors GAP 8's `PermanentModifyDeleteConflictDriver`'s "mutate the bare repo
+//!   directly" technique) so `Worktree::merge_into_worktree`'s own merge is refused NON-content
+//!   (GAP 7's mechanism, relocated to the unit's OWN worktree) - proving the before-record
+//!   landed but not the after-record. Call 2 (stray file removed) proves resume completes and
+//!   the after-record lands exactly once, never duplicated.
+//! - Row 1's mutation|after-record boundary,
+//!   `a_crash_right_after_the_merge_succeeds_resumes_and_completes_row_1_after_record`: an
+//!   ordinary, conflict-free single-unit merge (`SimpleWorkDriver`) - `merge_into_worktree`
+//!   itself succeeds for real (a genuine commit lands on the unit's OWN branch) - paired with a
+//!   `FailAppendContaining` case refusing `integrate-merge-outcome` specifically, proving the
+//!   merge commit's on-disk effect survives the after-record's own append failure and a resumed
+//!   call re-derives the SAME commit sha (via `merge_into_worktree`'s own idempotent re-merge -
+//!   the tip is already an ancestor, so git reports "up to date") and lands the after-record
+//!   exactly once.
+//! - Row 2's after-record boundary (mutation|after-record),
+//!   `a_crash_right_after_placeholder_staging_resumes_and_completes_row_2`: a real mixed
+//!   conflict (GAP 2's shape); call 1 uses a `FailAppendContaining` event-store decorator (an
+//!   injected `EventStore` port failure - a real backend error, never a production hook) that
+//!   refuses the SPECIFIC append carrying `integrate-conflict-placeholder-staged` after
+//!   `Worktree::accept_incoming` has ALREADY run for real on disk - proving the mutation's
+//!   on-disk effect survives a log-append failure and a resumed call still lands the
+//!   after-record exactly once.
+//! - Row 3 (regeneration), BOTH boundaries, confined-to-regenerable variant (round 4's own new
+//!   coverage - the confined branch never recorded this row at all before this diff),
+//!   `a_confined_regenerate_command_failure_and_a_store_failure_each_resume_and_complete_row_3`:
+//!   a fake `gate::Runner` fails the `"regenerate"` gate id exactly once (a real subprocess-
+//!   level failure through the injected port, mirroring GAP 4/5's `RecordingGateRunner` family)
+//!   for the before-record|mutation half, and a separate `FailAppendContaining` case for the
+//!   mutation|after-record half.
+//! - Row 4 (landing), before-record|mutation boundary,
+//!   `a_crash_right_after_the_landing_intent_record_resumes_and_completes_row_4`: the SAME
+//!   stray-untracked-file technique as row 1, relocated to `self.deps.repo` (the run branch's
+//!   own working tree) so `Worktree::land`'s `git merge --no-edit` is refused non-content AFTER
+//!   the unit's own worktree-side merge (rows 1-3) already succeeded, proving the
+//!   landing-intent record survives that failure.
+//! - Row 4's mutation|after-record boundary,
+//!   `a_crash_right_after_landing_succeeds_resumes_and_completes_row_4_after_record`: the same
+//!   ordinary conflict-free `SimpleWorkDriver` unit as row 1's after-record fixture -
+//!   `Worktree::land` itself succeeds for real (the run branch's own working tree gets the
+//!   merge commit) - paired with `FailAppendContaining` refusing `integrate-landed`
+//!   specifically, proving the land's on-disk effect survives the after-record's own append
+//!   failure and a resumed call's idempotent re-land ("already up to date") completes the
+//!   after-record exactly once.
+//!
+//! Every one of these eight is a REAL fault at a REAL injected port (`AgentDriver`,
+//! `gate::Runner`, or `EventStore`) - never a production-only test hook, and never a literal
+//! process kill (which the no-os-kill rule forbids regardless): the mutation's on-disk git
+//! effect (where one runs) is always genuinely present before the failure, exactly as a real
+//! crash would leave it.
 
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
 use rigger::config::{self, AgentDef, Config, RegenerateRule, Stage};
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Direction, EventStore};
+use rigger::eventstore::{
+    Appended, Direction, Error as EsError, EventStore, ExpectedRevision, Filter, Position,
+    Revision, Subscription,
+};
 use rigger::ledger;
 use serde_json::Value;
 use std::path::Path;
@@ -1868,5 +1932,1013 @@ fn a_resumed_run_after_accept_incoming_fails_never_double_records_the_regenerate
          genuine process restart, not just within one process; events: {events_after_call_2:?}"
     );
 
+    drop(repo);
+}
+
+// ============================================================================================
+// Gap 9 (round 4, `op-u88c1-round-4-definition-of-done`): the record -> mutate -> record TABLE.
+// See the file header for the full boundary-to-fixture mapping.
+// ============================================================================================
+
+/// An `EventStore` decorator (spec 88, criterion 1 round 4): forwards every call to `inner`
+/// UNCHANGED except `append`, which refuses (a real `Backend` error, indistinguishable from a
+/// genuine disk/backend fault) if any event in the batch's `data` contains `needle` - simulating
+/// a process crash between a mutation that already ran for real (on disk, or a real subprocess)
+/// and the SINGLE store append that would durably record it. Never a production hook: `EventStore`
+/// is the crate's own injected port ([`Deps::store`]), the SAME seam a genuine backend failure
+/// would surface through.
+struct FailAppendContaining<'a> {
+    inner: &'a dyn EventStore,
+    needle: &'static str,
+}
+
+impl EventStore for FailAppendContaining<'_> {
+    fn append(
+        &self,
+        stream: &str,
+        expected: ExpectedRevision,
+        events: &[rigger::eventstore::Event],
+    ) -> Result<Appended, EsError> {
+        if events
+            .iter()
+            .any(|e| String::from_utf8_lossy(&e.data).contains(self.needle))
+        {
+            return Err(EsError::Backend(format!(
+                "simulated crash: append containing {:?} refused",
+                self.needle
+            )));
+        }
+        self.inner.append(stream, expected, events)
+    }
+    fn read_stream(
+        &self,
+        stream: &str,
+        from: Revision,
+        dir: Direction,
+    ) -> Result<Vec<rigger::eventstore::Event>, EsError> {
+        self.inner.read_stream(stream, from, dir)
+    }
+    fn read_all(
+        &self,
+        from: Position,
+        dir: Direction,
+        filter: &Filter,
+    ) -> Result<Vec<rigger::eventstore::Event>, EsError> {
+        self.inner.read_all(from, dir, filter)
+    }
+    fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, EsError> {
+        self.inner.subscribe_all(from, filter)
+    }
+    fn subscribe_stream(&self, stream: &str, from: Revision) -> Result<Subscription, EsError> {
+        self.inner.subscribe_stream(stream, from)
+    }
+}
+
+/// Whether `events` carries a `TYPE_UNIT_STATUS` marker whose `status` field equals `status` -
+/// GAP 9's shared assertion helper for the six new row-record status tokens.
+fn has_status_marker(events: &[rigger::eventstore::Event], status: &str) -> bool {
+    events.iter().any(|e| {
+        e.type_ == ledger::TYPE_UNIT_STATUS
+            && String::from_utf8_lossy(&e.data).contains(&format!("\"status\":\"{status}\""))
+    })
+}
+
+fn count_status_marker(events: &[rigger::eventstore::Event], status: &str) -> usize {
+    events
+        .iter()
+        .filter(|e| {
+            e.type_ == ledger::TYPE_UNIT_STATUS
+                && String::from_utf8_lossy(&e.data).contains(&format!("\"status\":\"{status}\""))
+        })
+        .count()
+}
+
+/// Call 1's driver for the row-1 fixture: plants a NEW path directly on the bare run branch
+/// (mirrors `PermanentModifyDeleteConflictDriver`'s "mutate the bare repo directly" technique
+/// above) AND leaves a stray FIFO at that same path in this unit's own worktree - a FIFO,
+/// exactly like GAP 7's `NonContentMergeFailureDriver`, because git flatly refuses to track a
+/// special file at all (unlike an ordinary untracked regular file, which the conductor's own
+/// pre-merge `git add -A` would silently sweep into the implementer's commit, turning this into
+/// an ordinary ADD/ADD content conflict instead of the NON-content refusal this fixture needs) -
+/// so `Worktree::merge_into_worktree`'s own `git merge --no-commit` is refused NON-content,
+/// reached only AFTER row 1's before-record already landed.
+struct Row1MergeCrashDriver {
+    repo: String,
+    worktree_dir: Mutex<String>,
+}
+
+impl AgentDriver for Row1MergeCrashDriver {
+    fn spawn(
+        &self,
+        _a: &AgentDef,
+        _prompt: &str,
+        opts: &SpawnOpts,
+        _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+    ) -> Result<AgentResult, Error> {
+        if opts.id.contains("/implementer#") {
+            std::fs::write(Path::new(&self.repo).join("shared.rs"), "SIBLING\n").unwrap();
+            git_commit_all(&self.repo, "sibling landed directly on the run branch");
+            std::fs::write(Path::new(&opts.dir).join("a.rs"), "A_WORK\n").unwrap();
+            assert!(
+                Command::new("mkfifo")
+                    .arg(Path::new(&opts.dir).join("shared.rs"))
+                    .status()
+                    .unwrap()
+                    .success(),
+                "test setup: mkfifo must succeed"
+            );
+            *self.worktree_dir.lock().unwrap() = opts.dir.clone();
+            return Ok(AgentResult::default());
+        }
+        Ok(review_or_adjudicate(opts))
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn a_crash_right_after_the_merge_attempt_record_resumes_and_completes_row_1() {
+    let repo = init_repo();
+    let repo_path = repo.path().to_str().unwrap().to_string();
+
+    let mut cfg = Config::default();
+    cfg.agents.insert("worker".into(), agent("worker"));
+    cfg.agents.insert("lens".into(), agent("lens"));
+    cfg.agents.insert("judge".into(), agent("judge"));
+    cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
+    cfg.workflow
+        .stages
+        .insert("unit-a".into(), mk_stage("unit-a", "g"));
+
+    let store = Store::open(":memory:").unwrap();
+    let driver = Row1MergeCrashDriver {
+        repo: repo_path.clone(),
+        worktree_dir: Mutex::new(String::new()),
+    };
+    {
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &rigger::gate::ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let err = match run(&cfg, &deps) {
+            Ok(_) => panic!("call 1 must fail - the stray untracked file refuses the merge"),
+            Err(e) => e,
+        };
+        assert!(
+            err.0.contains("shared.rs") || err.0.to_lowercase().contains("untracked"),
+            "call 1 must fail for the SIMULATED non-content reason, not some other defect; got: {}",
+            err.0
+        );
+    }
+    let events_after_call_1 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    assert!(
+        has_status_marker(&events_after_call_1, "integrate-merge-attempt"),
+        "row 1's before-record must land BEFORE the merge mutation runs, surviving its failure; \
+         events: {events_after_call_1:?}"
+    );
+    assert!(
+        !has_status_marker(&events_after_call_1, "integrate-merge-outcome"),
+        "row 1's after-record must NOT land - the merge mutation itself failed; \
+         events: {events_after_call_1:?}"
+    );
+
+    // Clear the obstruction exactly as an operator resolving a real non-content failure would -
+    // both the stray file this unit's own worktree carries and the untracked copy git itself
+    // may have left in the shared repo's working tree from the refused merge attempt.
+    let wt_dir = driver.worktree_dir.lock().unwrap().clone();
+    let _ = std::fs::remove_file(Path::new(&wt_dir).join("shared.rs"));
+    let _ = std::fs::remove_file(Path::new(&repo_path).join("shared.rs"));
+
+    let driver2 = PanicOnAnyImplementerSpawnDriver;
+    let deps2 = Deps {
+        store: &store,
+        driver: &driver2,
+        gates: &rigger::gate::ExecRunner,
+        repo: repo_path.clone(),
+        grounder: None,
+        graph: None,
+        criteria: Vec::new(),
+    };
+    let rs = run(&cfg, &deps2).expect("call 2 must resume and land cleanly");
+    assert_eq!(rs.units["unit-a"].status, ledger::Status::Integrated);
+    assert_eq!(rs.units["unit-a"].attempts, 0);
+
+    let events_after_call_2 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    assert_eq!(
+        count_status_marker(&events_after_call_2, "integrate-merge-attempt"),
+        1,
+        "the before-record must never double-record across the resume (log-keyed replay guard); \
+         events: {events_after_call_2:?}"
+    );
+    assert_eq!(
+        count_status_marker(&events_after_call_2, "integrate-merge-outcome"),
+        1,
+        "the after-record must land exactly once, on the resumed call that actually succeeded; \
+         events: {events_after_call_2:?}"
+    );
+    let final_a = std::fs::read_to_string(Path::new(&repo_path).join("a.rs")).unwrap();
+    assert_eq!(final_a, "A_WORK\n");
+    drop(repo);
+}
+
+/// Call 1's driver for the row-4 fixture: writes `a.rs` for real in the unit's own worktree (no
+/// conflict at all - `Worktree::merge_into_worktree` resolves cleanly, rows 1-3 complete
+/// normally) but plants a stray FIFO at that SAME path directly in `self.deps.repo`'s own
+/// working tree - so `Worktree::land`'s `git merge --no-edit` (which must check `a.rs` out
+/// there for the first time) is refused NON-content, reached only AFTER row 4's landing-intent
+/// before-record already landed.
+struct Row4LandCrashDriver {
+    repo: String,
+}
+
+impl AgentDriver for Row4LandCrashDriver {
+    fn spawn(
+        &self,
+        _a: &AgentDef,
+        _prompt: &str,
+        opts: &SpawnOpts,
+        _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+    ) -> Result<AgentResult, Error> {
+        if opts.id.contains("/implementer#") {
+            std::fs::write(Path::new(&opts.dir).join("a.rs"), "A_WORK\n").unwrap();
+            assert!(
+                Command::new("mkfifo")
+                    .arg(Path::new(&self.repo).join("a.rs"))
+                    .status()
+                    .unwrap()
+                    .success(),
+                "test setup: mkfifo must succeed"
+            );
+            return Ok(AgentResult::default());
+        }
+        Ok(review_or_adjudicate(opts))
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn a_crash_right_after_the_landing_intent_record_resumes_and_completes_row_4() {
+    let repo = init_repo();
+    let repo_path = repo.path().to_str().unwrap().to_string();
+
+    let mut cfg = Config::default();
+    cfg.agents.insert("worker".into(), agent("worker"));
+    cfg.agents.insert("lens".into(), agent("lens"));
+    cfg.agents.insert("judge".into(), agent("judge"));
+    cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
+    cfg.workflow
+        .stages
+        .insert("unit-a".into(), mk_stage("unit-a", "g"));
+
+    let store = Store::open(":memory:").unwrap();
+    let driver = Row4LandCrashDriver {
+        repo: repo_path.clone(),
+    };
+    {
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &rigger::gate::ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let err = match run(&cfg, &deps) {
+            Ok(_) => panic!("call 1 must fail - the stray FIFO in the repo refuses the land"),
+            Err(e) => e,
+        };
+        assert!(
+            err.0.contains("a.rs") || err.0.to_lowercase().contains("untracked"),
+            "call 1 must fail for the SIMULATED non-content reason, not some other defect; got: {}",
+            err.0
+        );
+    }
+    let events_after_call_1 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    assert!(
+        has_status_marker(&events_after_call_1, "integrate-merge-outcome"),
+        "rows 1-3 must have completed cleanly before row 4 is ever reached; \
+         events: {events_after_call_1:?}"
+    );
+    assert!(
+        has_status_marker(&events_after_call_1, "integrate-landing-intent"),
+        "row 4's before-record must land BEFORE the land mutation runs, surviving its failure; \
+         events: {events_after_call_1:?}"
+    );
+    assert!(
+        !has_status_marker(&events_after_call_1, "integrate-landed"),
+        "row 4's after-record must NOT land - the land mutation itself failed; \
+         events: {events_after_call_1:?}"
+    );
+
+    std::fs::remove_file(Path::new(&repo_path).join("a.rs")).unwrap();
+
+    let driver2 = PanicOnAnyImplementerSpawnDriver;
+    let deps2 = Deps {
+        store: &store,
+        driver: &driver2,
+        gates: &rigger::gate::ExecRunner,
+        repo: repo_path.clone(),
+        grounder: None,
+        graph: None,
+        criteria: Vec::new(),
+    };
+    let rs = run(&cfg, &deps2).expect("call 2 must resume and land cleanly");
+    assert_eq!(rs.units["unit-a"].status, ledger::Status::Integrated);
+    assert_eq!(rs.units["unit-a"].attempts, 0);
+
+    let events_after_call_2 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    assert_eq!(
+        count_status_marker(&events_after_call_2, "integrate-landing-intent"),
+        1,
+        "the before-record must never double-record across the resume; \
+         events: {events_after_call_2:?}"
+    );
+    assert_eq!(
+        count_status_marker(&events_after_call_2, "integrate-landed"),
+        1,
+        "the after-record must land exactly once, on the resumed call that actually succeeded; \
+         events: {events_after_call_2:?}"
+    );
+    let final_a = std::fs::read_to_string(Path::new(&repo_path).join("a.rs")).unwrap();
+    assert_eq!(final_a, "A_WORK\n");
+    drop(repo);
+}
+
+/// Call 1's driver for the row-2 fixture: mutates the bare repo directly (mirrors
+/// `PermanentModifyDeleteConflictDriver`'s technique) to produce a MIXED conflict - `c.rs` (a
+/// SOURCE path, real content differs both sides) and `gen.txt` (a registered regenerable path) -
+/// then writes genuinely conflicting content for both in the unit's own worktree. The retry
+/// (conflict-resolution) role must never be reached: the `FailAppendContaining` store decorator
+/// aborts the whole call right after `Worktree::accept_incoming` runs for real on `gen.txt`, but
+/// BEFORE `record_placeholder_staged` - strictly earlier than the spawn that would follow it.
+struct MixedConflictRow2Driver {
+    repo: String,
+}
+
+impl AgentDriver for MixedConflictRow2Driver {
+    fn spawn(
+        &self,
+        _a: &AgentDef,
+        _prompt: &str,
+        opts: &SpawnOpts,
+        _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+    ) -> Result<AgentResult, Error> {
+        if opts.id.contains("/implementer#") {
+            assert!(
+                !opts.id.contains("~retry"),
+                "the conflict-resolution re-park must never be reached in call 1 - the store \
+                 failure aborts strictly BEFORE that spawn; got {}",
+                opts.id
+            );
+            std::fs::write(Path::new(&self.repo).join("c.rs"), "SIBLING_C\n").unwrap();
+            std::fs::write(Path::new(&self.repo).join("gen.txt"), "SIBLING_GEN\n").unwrap();
+            git_commit_all(&self.repo, "sibling landed directly on the run branch");
+            std::fs::write(Path::new(&opts.dir).join("c.rs"), "MINE_C\n").unwrap();
+            std::fs::write(Path::new(&opts.dir).join("gen.txt"), "MINE_GEN\n").unwrap();
+            return Ok(AgentResult::default());
+        }
+        Ok(review_or_adjudicate(opts))
+    }
+}
+
+/// Call 2's driver: the source conflict (`c.rs`) genuinely still needs a real implementer to
+/// resolve it - call 1 never reached that spawn - so this one DOES handle the `~retry` role
+/// (unlike `PanicOnAnyImplementerSpawnDriver`), while still asserting the ORIGINAL (non-retry)
+/// implementer role is never re-spawned (it is already `Reviewed`, durably logged before the
+/// crash).
+struct ResolveSourceOnRetryDriver;
+
+impl AgentDriver for ResolveSourceOnRetryDriver {
+    fn spawn(
+        &self,
+        _a: &AgentDef,
+        _prompt: &str,
+        opts: &SpawnOpts,
+        _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+    ) -> Result<AgentResult, Error> {
+        if opts.id.contains("/implementer#") {
+            assert!(
+                opts.id.contains("~retry"),
+                "a resumed run must skip straight to the integrate door (ResumePhase::Reviewed) \
+                 - the ORIGINAL implementer must never be re-spawned; got {}",
+                opts.id
+            );
+            std::fs::write(Path::new(&opts.dir).join("c.rs"), "MINE_C\n").unwrap();
+            git_commit_paths(&opts.dir, &["c.rs"], "resolved the source conflict");
+            return Ok(AgentResult::default());
+        }
+        Ok(review_or_adjudicate(opts))
+    }
+}
+
+#[test]
+fn a_crash_right_after_placeholder_staging_resumes_and_completes_row_2() {
+    let repo = init_repo();
+    let repo_path = repo.path().to_str().unwrap().to_string();
+
+    let mut cfg = Config::default();
+    cfg.workflow.defaults.max_retries = 3;
+    cfg.workflow.regenerate = vec![RegenerateRule {
+        paths: vec!["gen.txt".into()],
+        run: "printf 'REGENERATED\\n' > gen.txt".into(),
+    }];
+    cfg.agents.insert("worker".into(), agent("worker"));
+    cfg.agents.insert("lens".into(), agent("lens"));
+    cfg.agents.insert("judge".into(), agent("judge"));
+    cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
+    cfg.workflow
+        .stages
+        .insert("unit-a".into(), mk_stage("unit-a", "g"));
+
+    let store = Store::open(":memory:").unwrap();
+    let driver = MixedConflictRow2Driver {
+        repo: repo_path.clone(),
+    };
+    {
+        let failing_store = FailAppendContaining {
+            inner: &store,
+            needle: "integrate-conflict-placeholder-staged",
+        };
+        let deps = Deps {
+            store: &failing_store,
+            driver: &driver,
+            gates: &rigger::gate::ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let err = match run(&cfg, &deps) {
+            Ok(_) => panic!("call 1 must fail - the store refuses the placeholder-staged append"),
+            Err(e) => e,
+        };
+        assert!(
+            err.0.contains("simulated crash"),
+            "call 1 must fail for the SIMULATED store reason, not some other defect; got: {}",
+            err.0
+        );
+    }
+    let events_after_call_1 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    assert!(
+        has_status_marker(
+            &events_after_call_1,
+            "integrate-conflict-regenerate-pending"
+        ),
+        "row 2's before-record must land BEFORE accept_incoming runs, surviving the LATER \
+         after-record's own failure; events: {events_after_call_1:?}"
+    );
+    assert!(
+        !has_status_marker(
+            &events_after_call_1,
+            "integrate-conflict-placeholder-staged"
+        ),
+        "row 2's after-record must NOT land - its own append was the simulated failure; \
+         events: {events_after_call_1:?}"
+    );
+    // The mutation's on-disk effect already ran for real (accept_incoming's own git checkout),
+    // independent of the log append that failed right after it - locate the unit's own worktree
+    // via `git worktree list --porcelain` off the repo and read it back directly.
+    let gen_in_worktree = {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args(["worktree", "list", "--porcelain"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .find(|l| l.starts_with("worktree "))
+            .map(|l| l.trim_start_matches("worktree ").to_string())
+            .filter(|p| p != &repo_path)
+    };
+    if let Some(dir) = gen_in_worktree {
+        let content = std::fs::read_to_string(Path::new(&dir).join("gen.txt")).unwrap();
+        assert_eq!(
+            content, "SIBLING_GEN\n",
+            "accept_incoming must have already staged the incoming (theirs) content for real, \
+             regardless of the log append that failed right after it"
+        );
+    }
+
+    let driver2 = ResolveSourceOnRetryDriver;
+    let deps2 = Deps {
+        store: &store,
+        driver: &driver2,
+        gates: &rigger::gate::ExecRunner,
+        repo: repo_path.clone(),
+        grounder: None,
+        graph: None,
+        criteria: Vec::new(),
+    };
+    let rs = run(&cfg, &deps2).expect("call 2 must resume and land cleanly");
+    assert_eq!(rs.units["unit-a"].status, ledger::Status::Integrated);
+    assert_eq!(
+        rs.units["unit-a"].attempts, 0,
+        "conflict resolution is infrastructure recovery, never a charged remediation attempt"
+    );
+
+    let events_after_call_2 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    assert_eq!(
+        count_status_marker(
+            &events_after_call_2,
+            "integrate-conflict-placeholder-staged"
+        ),
+        1,
+        "the after-record must land exactly once, on the resumed call that actually succeeded; \
+         events: {events_after_call_2:?}"
+    );
+    let final_c = std::fs::read_to_string(Path::new(&repo_path).join("c.rs")).unwrap();
+    assert_eq!(final_c, "MINE_C\n");
+    let final_gen = std::fs::read_to_string(Path::new(&repo_path).join("gen.txt")).unwrap();
+    assert_eq!(
+        final_gen, "REGENERATED\n",
+        "the regenerable path must carry the REAL regenerated output, never the accept_incoming \
+         placeholder"
+    );
+    drop(repo);
+}
+
+/// Fails the `"regenerate"` gate id exactly once (a real subprocess-level failure through the
+/// injected `gate::Runner` port, mirroring GAP 4/5's `RecordingGateRunner` family), succeeding
+/// on every call after - one shared instance drives BOTH calls of a two-call resume, so the
+/// SAME flag (never reset) proves the second call genuinely retries rather than being handed a
+/// fresh, unrelated runner.
+struct FailRegenerateOnceRunner {
+    failed_once: Mutex<bool>,
+}
+
+impl rigger::gate::Runner for FailRegenerateOnceRunner {
+    fn run(
+        &self,
+        g: &rigger::gate::Gate,
+        dir: &str,
+        target_dir: &str,
+        build_cache_dir: &str,
+        build_cache_guard: &str,
+        store_fence: &str,
+        build_env: &rigger::gate::BuildEnv,
+        budget: &rigger::budget::BuildBudget,
+    ) -> rigger::gate::GateResult {
+        if g.id == "regenerate" {
+            let mut failed = self.failed_once.lock().unwrap();
+            if !*failed {
+                *failed = true;
+                return rigger::gate::GateResult {
+                    pass: false,
+                    evidence: "simulated crash: regenerate gate failed once".into(),
+                };
+            }
+        }
+        rigger::gate::ExecRunner.run(
+            g,
+            dir,
+            target_dir,
+            build_cache_dir,
+            build_cache_guard,
+            store_fence,
+            build_env,
+            budget,
+        )
+    }
+}
+
+/// A conflict CONFINED entirely to a registered regenerable path (`gen.txt`), via the same
+/// "mutate the bare repo directly" technique the other GAP 9 drivers use.
+struct ConfinedConflictDriver {
+    repo: String,
+}
+
+impl AgentDriver for ConfinedConflictDriver {
+    fn spawn(
+        &self,
+        _a: &AgentDef,
+        _prompt: &str,
+        opts: &SpawnOpts,
+        _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+    ) -> Result<AgentResult, Error> {
+        if opts.id.contains("/implementer#") {
+            assert!(
+                !opts.id.contains("~retry"),
+                "a conflict confined to a registered regenerable path resolves with NO spawn; \
+                 got {}",
+                opts.id
+            );
+            std::fs::write(Path::new(&self.repo).join("gen.txt"), "SIBLING_GEN\n").unwrap();
+            git_commit_all(&self.repo, "sibling landed directly on the run branch");
+            std::fs::write(Path::new(&opts.dir).join("gen.txt"), "MINE_GEN\n").unwrap();
+            return Ok(AgentResult::default());
+        }
+        Ok(review_or_adjudicate(opts))
+    }
+}
+
+fn confined_cfg() -> Config {
+    let mut cfg = Config::default();
+    cfg.workflow.defaults.max_retries = 3;
+    cfg.workflow.regenerate = vec![RegenerateRule {
+        paths: vec!["gen.txt".into()],
+        run: "printf 'REGENERATED\\n' > gen.txt".into(),
+    }];
+    cfg.agents.insert("worker".into(), agent("worker"));
+    cfg.agents.insert("lens".into(), agent("lens"));
+    cfg.agents.insert("judge".into(), agent("judge"));
+    cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
+    cfg.workflow
+        .stages
+        .insert("unit-a".into(), mk_stage("unit-a", "g"));
+    cfg
+}
+
+/// Round 4's own new coverage: BEFORE this diff, the confined-to-regenerable branch never
+/// durably recorded the still-owed regeneration at all (unlike the mixed branch, round 2's own
+/// fix) - relying solely on `conflicting_paths()` staying non-empty until the real regeneration
+/// commit lands. This drives BOTH of row 3's boundaries against that branch specifically.
+#[test]
+fn a_confined_regenerate_command_failure_and_a_store_failure_each_resume_and_complete_row_3() {
+    // --- Boundary A: before-record | mutation (the regenerate command itself fails once) ---
+    {
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let cfg = confined_cfg();
+        let store = Store::open(":memory:").unwrap();
+        let driver = ConfinedConflictDriver {
+            repo: repo_path.clone(),
+        };
+        let runner = FailRegenerateOnceRunner {
+            failed_once: Mutex::new(false),
+        };
+        {
+            let deps = Deps {
+                store: &store,
+                driver: &driver,
+                gates: &runner,
+                repo: repo_path.clone(),
+                grounder: None,
+                graph: None,
+                criteria: Vec::new(),
+            };
+            let err = match run(&cfg, &deps) {
+                Ok(_) => panic!("call 1 must fail - the regenerate gate fails once"),
+                Err(e) => e,
+            };
+            assert!(
+                err.0.contains("simulated crash"),
+                "call 1 must fail for the SIMULATED gate reason, not some other defect; got: {}",
+                err.0
+            );
+        }
+        let events_after_call_1 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            has_status_marker(
+                &events_after_call_1,
+                "integrate-conflict-regenerate-pending"
+            ),
+            "row 3's before-record must land BEFORE the regenerate command runs, surviving its \
+             failure; events: {events_after_call_1:?}"
+        );
+        assert!(
+            !has_status_marker(&events_after_call_1, "integrate-conflict-regenerate-commit"),
+            "row 3's after-record must NOT land - the regenerate mutation itself failed; \
+             events: {events_after_call_1:?}"
+        );
+
+        let driver2 = PanicOnAnyImplementerSpawnDriver;
+        let deps2 = Deps {
+            store: &store,
+            driver: &driver2,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps2).expect("call 2 must resume and land cleanly");
+        assert_eq!(rs.units["unit-a"].status, ledger::Status::Integrated);
+        assert_eq!(rs.units["unit-a"].attempts, 0);
+
+        let events_after_call_2 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(
+            count_status_marker(
+                &events_after_call_2,
+                "integrate-conflict-regenerate-pending"
+            ),
+            1,
+            "the before-record must never double-record across the resume; \
+             events: {events_after_call_2:?}"
+        );
+        assert_eq!(
+            count_status_marker(&events_after_call_2, "integrate-conflict-regenerate-commit"),
+            1,
+            "the after-record must land exactly once, on the resumed call that succeeded; \
+             events: {events_after_call_2:?}"
+        );
+        let final_gen = std::fs::read_to_string(Path::new(&repo_path).join("gen.txt")).unwrap();
+        assert_eq!(final_gen, "REGENERATED\n");
+        drop(repo);
+    }
+
+    // --- Boundary B: mutation | after-record (the regenerate command succeeds, the SPECIFIC
+    // after-record append is what a real backend failure refuses) ---
+    {
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let cfg = confined_cfg();
+        let store = Store::open(":memory:").unwrap();
+        let driver = ConfinedConflictDriver {
+            repo: repo_path.clone(),
+        };
+        {
+            let failing_store = FailAppendContaining {
+                inner: &store,
+                needle: "integrate-conflict-regenerate-commit",
+            };
+            let deps = Deps {
+                store: &failing_store,
+                driver: &driver,
+                gates: &rigger::gate::ExecRunner,
+                repo: repo_path.clone(),
+                grounder: None,
+                graph: None,
+                criteria: Vec::new(),
+            };
+            let err = match run(&cfg, &deps) {
+                Ok(_) => {
+                    panic!("call 1 must fail - the store refuses the regenerate-commit append")
+                }
+                Err(e) => e,
+            };
+            assert!(
+                err.0.contains("simulated crash"),
+                "call 1 must fail for the SIMULATED store reason, not some other defect; got: {}",
+                err.0
+            );
+        }
+        // The regenerate mutation's own real commit already landed on the UNIT'S OWN branch
+        // (durable, git-level) before this crash - the run() teardown on error may or may not
+        // keep the transient worktree DIRECTORY around (`Worktree::remove`'s own doc: "the
+        // BRANCH is the checkpoint" - the dir is not), so the decisive proof that the mutation
+        // ran for real independent of the failed log append is the branch itself, not the dir.
+        let branch_gen = git_out(&repo_path, &["show", "rigger/u/unit-a:gen.txt"]);
+        assert_eq!(
+            branch_gen, "REGENERATED",
+            "the regeneration command's own real commit must already be on the unit's branch, \
+             independent of the log append that failed right after it"
+        );
+        let events_after_call_1 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            !has_status_marker(&events_after_call_1, "integrate-conflict-regenerate-commit"),
+            "row 3's after-record must NOT land - its own append was the simulated failure; \
+             events: {events_after_call_1:?}"
+        );
+
+        let driver2 = PanicOnAnyImplementerSpawnDriver;
+        let deps2 = Deps {
+            store: &store,
+            driver: &driver2,
+            gates: &rigger::gate::ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps2).expect("call 2 must resume and land cleanly");
+        assert_eq!(rs.units["unit-a"].status, ledger::Status::Integrated);
+        assert_eq!(rs.units["unit-a"].attempts, 0);
+
+        let events_after_call_2 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(
+            count_status_marker(&events_after_call_2, "integrate-conflict-regenerate-commit"),
+            1,
+            "the after-record must land exactly once, on the resumed call that actually \
+             succeeded; events: {events_after_call_2:?}"
+        );
+        drop(repo);
+    }
+}
+
+/// An ordinary, conflict-free single-unit implementer: writes `a.rs` and nothing else, no
+/// sibling ever touches the run branch. Shared by the row 1 and row 4 mutation|after-record
+/// fixtures below - both need `Worktree::merge_into_worktree`/`Worktree::land` to succeed for
+/// REAL (a genuine git mutation lands) with no conflict anywhere, so the only thing that can
+/// crash is the specific after-record append `FailAppendContaining` targets.
+struct SimpleWorkDriver;
+
+impl AgentDriver for SimpleWorkDriver {
+    fn spawn(
+        &self,
+        _a: &AgentDef,
+        _prompt: &str,
+        opts: &SpawnOpts,
+        _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+    ) -> Result<AgentResult, Error> {
+        if opts.id.contains("/implementer#") {
+            std::fs::write(Path::new(&opts.dir).join("a.rs"), "A_WORK\n").unwrap();
+            return Ok(AgentResult::default());
+        }
+        Ok(review_or_adjudicate(opts))
+    }
+}
+
+/// Row 1's mutation|after-record boundary: `Worktree::merge_into_worktree` itself succeeds for
+/// real (a genuine merge commit lands on the unit's OWN branch, `conflicting_paths()` stays
+/// empty throughout) but the SPECIFIC append that would durably record
+/// [`STATUS_INTEGRATE_MERGE_OUTCOME`] ("integrate-merge-outcome") is refused - proving the
+/// merge's on-disk effect survives that failure and a resumed call re-derives the identical
+/// outcome (`merge_into_worktree`'s own idempotent re-merge: the run tip is already an ancestor
+/// of the unit's now-merged branch, so git reports "up to date" and no second mutation runs)
+/// rather than re-attempting or losing the commit.
+#[test]
+fn a_crash_right_after_the_merge_succeeds_resumes_and_completes_row_1_after_record() {
+    let repo = init_repo();
+    let repo_path = repo.path().to_str().unwrap().to_string();
+
+    let mut cfg = Config::default();
+    cfg.agents.insert("worker".into(), agent("worker"));
+    cfg.agents.insert("lens".into(), agent("lens"));
+    cfg.agents.insert("judge".into(), agent("judge"));
+    cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
+    cfg.workflow
+        .stages
+        .insert("unit-a".into(), mk_stage("unit-a", "g"));
+
+    let store = Store::open(":memory:").unwrap();
+    let driver = SimpleWorkDriver;
+    {
+        let failing_store = FailAppendContaining {
+            inner: &store,
+            needle: "integrate-merge-outcome",
+        };
+        let deps = Deps {
+            store: &failing_store,
+            driver: &driver,
+            gates: &rigger::gate::ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let err = match run(&cfg, &deps) {
+            Ok(_) => panic!("call 1 must fail - the store refuses the merge-outcome append"),
+            Err(e) => e,
+        };
+        assert!(
+            err.0.contains("simulated crash"),
+            "call 1 must fail for the SIMULATED store reason, not some other defect; got: {}",
+            err.0
+        );
+    }
+    // The merge's own real commit already landed on the UNIT'S OWN branch (durable, git-level)
+    // before this crash, independent of the log append that failed right after it.
+    let branch_a = git_out(&repo_path, &["show", "rigger/u/unit-a:a.rs"]);
+    assert_eq!(
+        branch_a, "A_WORK",
+        "the merge commit must already be on the unit's own branch, independent of the log \
+         append that failed right after it"
+    );
+    let events_after_call_1 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    assert!(
+        has_status_marker(&events_after_call_1, "integrate-merge-attempt"),
+        "row 1's before-record must land BEFORE the merge mutation runs, unaffected by this \
+         specific-append failure targeting only the after-record; \
+         events: {events_after_call_1:?}"
+    );
+    assert!(
+        !has_status_marker(&events_after_call_1, "integrate-merge-outcome"),
+        "row 1's after-record must NOT land - its own append was the simulated failure; \
+         events: {events_after_call_1:?}"
+    );
+
+    let driver2 = PanicOnAnyImplementerSpawnDriver;
+    let deps2 = Deps {
+        store: &store,
+        driver: &driver2,
+        gates: &rigger::gate::ExecRunner,
+        repo: repo_path.clone(),
+        grounder: None,
+        graph: None,
+        criteria: Vec::new(),
+    };
+    let rs = run(&cfg, &deps2).expect("call 2 must resume and land cleanly");
+    assert_eq!(rs.units["unit-a"].status, ledger::Status::Integrated);
+    assert_eq!(rs.units["unit-a"].attempts, 0);
+
+    let events_after_call_2 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    assert_eq!(
+        count_status_marker(&events_after_call_2, "integrate-merge-attempt"),
+        1,
+        "the before-record must never double-record across the resume; \
+         events: {events_after_call_2:?}"
+    );
+    assert_eq!(
+        count_status_marker(&events_after_call_2, "integrate-merge-outcome"),
+        1,
+        "the after-record must land exactly once, on the resumed call that actually succeeded; \
+         events: {events_after_call_2:?}"
+    );
+    let final_a = std::fs::read_to_string(Path::new(&repo_path).join("a.rs")).unwrap();
+    assert_eq!(final_a, "A_WORK\n");
+    drop(repo);
+}
+
+/// Row 4's mutation|after-record boundary: `Worktree::land` itself succeeds for real (the run
+/// branch's own working tree receives the merge commit via a genuine `git merge --no-edit`) but
+/// the SPECIFIC append that would durably record [`STATUS_INTEGRATE_LANDED`] ("integrate-landed")
+/// is refused - proving the land's on-disk effect survives that failure and a resumed call's
+/// idempotent re-land (`Worktree::land`'s own "already up to date" case - the run branch already
+/// contains the unit's tip) completes the after-record exactly once, never re-attempting a real
+/// mutation that already happened.
+#[test]
+fn a_crash_right_after_landing_succeeds_resumes_and_completes_row_4_after_record() {
+    let repo = init_repo();
+    let repo_path = repo.path().to_str().unwrap().to_string();
+
+    let mut cfg = Config::default();
+    cfg.agents.insert("worker".into(), agent("worker"));
+    cfg.agents.insert("lens".into(), agent("lens"));
+    cfg.agents.insert("judge".into(), agent("judge"));
+    cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
+    cfg.workflow
+        .stages
+        .insert("unit-a".into(), mk_stage("unit-a", "g"));
+
+    let store = Store::open(":memory:").unwrap();
+    let driver = SimpleWorkDriver;
+    {
+        let failing_store = FailAppendContaining {
+            inner: &store,
+            needle: "integrate-landed",
+        };
+        let deps = Deps {
+            store: &failing_store,
+            driver: &driver,
+            gates: &rigger::gate::ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let err = match run(&cfg, &deps) {
+            Ok(_) => panic!("call 1 must fail - the store refuses the landed append"),
+            Err(e) => e,
+        };
+        assert!(
+            err.0.contains("simulated crash"),
+            "call 1 must fail for the SIMULATED store reason, not some other defect; got: {}",
+            err.0
+        );
+    }
+    // The land itself already ran for real - the run branch's own working tree already has
+    // a.rs, independent of the log append that failed right after it.
+    let final_a_before_resume = std::fs::read_to_string(Path::new(&repo_path).join("a.rs"));
+    assert_eq!(
+        final_a_before_resume.unwrap_or_default(),
+        "A_WORK\n",
+        "Worktree::land must already have merged onto the run branch for real before this crash"
+    );
+    let events_after_call_1 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    assert!(
+        has_status_marker(&events_after_call_1, "integrate-landing-intent"),
+        "row 4's before-record must already be present; events: {events_after_call_1:?}"
+    );
+    assert!(
+        !has_status_marker(&events_after_call_1, "integrate-landed"),
+        "row 4's after-record must NOT land - its own append was the simulated failure; \
+         events: {events_after_call_1:?}"
+    );
+
+    let driver2 = PanicOnAnyImplementerSpawnDriver;
+    let deps2 = Deps {
+        store: &store,
+        driver: &driver2,
+        gates: &rigger::gate::ExecRunner,
+        repo: repo_path.clone(),
+        grounder: None,
+        graph: None,
+        criteria: Vec::new(),
+    };
+    let rs = run(&cfg, &deps2).expect("call 2 must resume and land cleanly");
+    assert_eq!(rs.units["unit-a"].status, ledger::Status::Integrated);
+    assert_eq!(rs.units["unit-a"].attempts, 0);
+
+    let events_after_call_2 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    assert_eq!(
+        count_status_marker(&events_after_call_2, "integrate-landing-intent"),
+        1,
+        "the before-record must never double-record across the resume; \
+         events: {events_after_call_2:?}"
+    );
+    assert_eq!(
+        count_status_marker(&events_after_call_2, "integrate-landed"),
+        1,
+        "the after-record must land exactly once, on the resumed call that actually succeeded; \
+         events: {events_after_call_2:?}"
+    );
+    let final_a = std::fs::read_to_string(Path::new(&repo_path).join("a.rs")).unwrap();
+    assert_eq!(final_a, "A_WORK\n");
     drop(repo);
 }

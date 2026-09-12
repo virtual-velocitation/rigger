@@ -919,6 +919,28 @@ fn pending_compensations_from_log(prior_events: &[Event]) -> Vec<Compensation> {
 /// readable from the LOG.
 const STATUS_INTEGRATE_CONFLICT_REGEN: &str = "integrate-conflict-regenerate-pending";
 
+/// Round 4 TABLE row 1's after-record status: the outcome of a
+/// [`RunCtx::record_merge_attempt`]-bracketed [`Worktree::merge_into_worktree`] call - clean
+/// (ready to land) or conflicted (with the conflicting path list). Fold-neutral like its
+/// siblings below - none of these is a real lifecycle status, so `ledger::Status::parse`
+/// returns `None` for every one and folding is a no-op on `Unit.status`; all ride the
+/// existing `TYPE_UNIT_STATUS` vocabulary, no new event type.
+const STATUS_INTEGRATE_MERGE_ATTEMPT: &str = "integrate-merge-attempt";
+/// See [`STATUS_INTEGRATE_MERGE_ATTEMPT`] - this is its paired after-record's status.
+const STATUS_INTEGRATE_MERGE_OUTCOME: &str = "integrate-merge-outcome";
+/// Round 4 TABLE row 2's after-record status: `paths` finished placeholder-staging via
+/// `Worktree::accept_incoming`, bracketing [`STATUS_INTEGRATE_CONFLICT_REGEN`]'s before-record.
+const STATUS_INTEGRATE_PLACEHOLDER_STAGED: &str = "integrate-conflict-placeholder-staged";
+/// Round 4 TABLE row 3's after-record status: the real regeneration commit's sha, bracketing
+/// [`STATUS_INTEGRATE_CONFLICT_REGEN`]'s before-record.
+const STATUS_INTEGRATE_REGENERATE_COMMIT: &str = "integrate-conflict-regenerate-commit";
+/// Round 4 TABLE row 4's before-record status: the landing intent (unit tip, run tip) about
+/// to be merged via `Worktree::land`.
+const STATUS_INTEGRATE_LANDING_INTENT: &str = "integrate-landing-intent";
+/// See [`STATUS_INTEGRATE_LANDING_INTENT`] - this is its paired after-record's status (the
+/// landed sha).
+const STATUS_INTEGRATE_LANDED: &str = "integrate-landed";
+
 /// Re-derive, per unit+attempt, the FULL set of regenerable paths an integrate-conflict
 /// resolution has placeholder-staged so far in the CURRENT (not-yet-integrated) merge
 /// episode: the union of every [`STATUS_INTEGRATE_CONFLICT_REGEN`] marker recorded for
@@ -968,6 +990,104 @@ fn conflict_regenerate_pending_from_log(prior_events: &[Event]) -> HashMap<Strin
 /// the two can never drift onto different key shapes.
 fn conflict_regenerate_key(unit: &str, attempt: u32) -> String {
     format!("{unit}#{attempt}")
+}
+
+/// Re-derive [`RunCtx::pending_landing`]: per `(unit, attempt)` ([`conflict_regenerate_key`]'s
+/// shape), the `(pass, unit_tip, run_tip)` of the LATEST [`STATUS_INTEGRATE_LANDING_INTENT`]
+/// (row 4's before-record) not yet matched by a [`STATUS_INTEGRATE_LANDED`] (its after-
+/// record) - round 4's own fix for the SAME class of gap
+/// [`conflict_regenerate_pending_from_log`] closes for row 3: `Worktree::land` can fast-
+/// forward the run branch to exactly the unit's own tip, so a crash between that real
+/// mutation and its durable after-record leaves BOTH `integrate_and_emit`'s own
+/// `changed_since_base` (its very first read) and a fresh `merge_into_worktree` call
+/// reporting a genuine "nothing new" on resume - indistinguishable, from git state alone,
+/// from a stage that never had anything to land at all. `run_tip` (the OLDER base this
+/// landing merged FROM) is carried so a resumed `integrate_and_emit` can recompute the
+/// files this landing touched via [`Worktree::committed_diff_names`] against it, since the
+/// CURRENT base has already absorbed them. `pass` is recovered from the recording event's
+/// own `replay_key` meta (`{unit}/landing-intent#{attempt}~{pass}`, the exact key
+/// [`RunCtx::record_landing_intent`] already stamps) rather than a second field, so the fold
+/// and the live writer can never drift onto two different sources for the same number.
+fn pending_landing_from_log(prior_events: &[Event]) -> HashMap<String, (u32, String, String)> {
+    let mut pending: HashMap<String, (u32, String, String)> = HashMap::new();
+    for e in prior_events {
+        if e.type_ != ledger::TYPE_UNIT_STATUS {
+            continue;
+        }
+        let Ok(v) = serde_json::from_slice::<Value>(&e.data) else {
+            continue;
+        };
+        let Some(status) = v.get("status").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(id) = v.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let attempt = v.get("attempt").and_then(Value::as_u64).unwrap_or(0) as u32;
+        let key = conflict_regenerate_key(id, attempt);
+        if status == STATUS_INTEGRATE_LANDING_INTENT {
+            let Some(evidence) = v.get("evidence") else {
+                continue;
+            };
+            let (Some(unit_tip), Some(run_tip)) = (
+                evidence.get("unit_tip").and_then(Value::as_str),
+                evidence.get("run_tip").and_then(Value::as_str),
+            ) else {
+                continue;
+            };
+            let pass = e
+                .meta
+                .get("replay_key")
+                .and_then(|k| k.rsplit_once('~'))
+                .and_then(|(_, p)| p.parse::<u32>().ok())
+                .unwrap_or(0);
+            pending.insert(key, (pass, unit_tip.to_string(), run_tip.to_string()));
+        } else if status == STATUS_INTEGRATE_LANDED {
+            pending.remove(&key);
+        }
+    }
+    pending
+}
+
+/// Re-derive [`RunCtx::integrate_attempted`]: the `(unit, attempt)` keys for which `prior_events`
+/// carries at least one spec 88 criterion 1 round 4 TABLE marker (any of the seven
+/// `STATUS_INTEGRATE_*` tokens) - durable proof that `Worktree::merge_into_worktree` was
+/// genuinely invoked for that unit's episode, so its branch's work is never the "lost" case
+/// `resume_phase`'s `branch_has_work` guard exists to catch, however git state itself now
+/// reads (see [`RunCtx::integrate_attempted`]'s own doc for the crash window this closes).
+/// Reuses [`conflict_regenerate_key`]'s exact key shape (never a second, parallel one) even
+/// though this fold tracks a different fact.
+fn integrate_attempted_from_log(prior_events: &[Event]) -> HashSet<String> {
+    const MARKERS: [&str; 7] = [
+        STATUS_INTEGRATE_MERGE_ATTEMPT,
+        STATUS_INTEGRATE_MERGE_OUTCOME,
+        STATUS_INTEGRATE_PLACEHOLDER_STAGED,
+        STATUS_INTEGRATE_CONFLICT_REGEN,
+        STATUS_INTEGRATE_REGENERATE_COMMIT,
+        STATUS_INTEGRATE_LANDING_INTENT,
+        STATUS_INTEGRATE_LANDED,
+    ];
+    let mut attempted = HashSet::new();
+    for e in prior_events {
+        if e.type_ != ledger::TYPE_UNIT_STATUS {
+            continue;
+        }
+        let Ok(v) = serde_json::from_slice::<Value>(&e.data) else {
+            continue;
+        };
+        let Some(status) = v.get("status").and_then(Value::as_str) else {
+            continue;
+        };
+        if !MARKERS.contains(&status) {
+            continue;
+        }
+        let Some(id) = v.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let attempt = v.get("attempt").and_then(Value::as_u64).unwrap_or(0);
+        attempted.insert(conflict_regenerate_key(id, attempt as u32));
+    }
+    attempted
 }
 
 /// The proof, carried into [`RunCtx::integrate_and_emit`], that a unit's three-tier
@@ -1654,6 +1774,15 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // though the worktree alone (after the implementer's own commit finalized the merge) now
     // looks entirely clean. Empty on a fresh run and on a resume with no such episode pending.
     let conflict_regenerate_pending = conflict_regenerate_pending_from_log(prior_events);
+    // Round 4 fix (`RunCtx::integrate_attempted`'s own doc): durable proof a unit's integrate
+    // door was already reached in a prior window, so a Reviewed unit whose branch now reads
+    // `tip == base` (already fast-forward-landed, not merely never-committed) still resumes at
+    // the integrate door instead of restarting from implement.
+    let integrate_attempted = integrate_attempted_from_log(prior_events);
+    // Round 4 fix (`RunCtx::pending_landing`'s own doc): a landing-intent durably recorded
+    // with no matching landed record yet - `Worktree::land` may have already fast-forwarded
+    // the run branch onto the unit's own tip before this process crashed.
+    let pending_landing = pending_landing_from_log(prior_events);
 
     // The RunCtx is created BEFORE the coverage check so a coverage gap can be
     // flagged as a spec defect through the event log (item 2 / §4.4) instead of
@@ -1715,6 +1844,8 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         compensation_attempts: Mutex::new(HashMap::new()),
         compensated_commits: Mutex::new(compensated_commits),
         conflict_regenerate_pending: Mutex::new(conflict_regenerate_pending),
+        integrate_attempted,
+        pending_landing: Mutex::new(pending_landing),
         // The failure taxonomy is built ONCE here from the same validated config the run
         // loads (its regexes were compiled and classes checked at `Config::validate`), so
         // every gate-failure classification this run makes reads one rule set.
@@ -2355,6 +2486,25 @@ struct RunCtx<'a> {
     /// never zero (the bug a bare status revert without this override would produce,
     /// since the global bound is already spent) and never unbounded.
     prior_resume_bound: HashMap<String, u32>,
+    /// The `(unit, attempt)` keys ([`conflict_regenerate_key`]'s shape) for which the prior
+    /// log durably recorded at least one spec 88 criterion 1 round 4 TABLE marker (round 4's
+    /// own fix, `resume_phase`'s sole reader): [`Worktree::branch_has_work`]'s `tip == base`
+    /// check alone cannot distinguish "this branch never carried committed work" (the ONLY
+    /// case `resume_phase`'s own doc comment names: "the prior worktree's commits were
+    /// lost") from "this branch's work already fast-forward-landed into base" (GAP 9's row-4
+    /// after-record fixture: a crash between `Worktree::land` and the durable
+    /// `UnitIntegrated`/[`STATUS_INTEGRATE_LANDED`] record leaves EXACTLY this git state) -
+    /// both make `tip == base` true. A `Reviewed` unit whose log already shows a genuine
+    /// integrate attempt is never the lost-branch case, so `resume_phase` trusts THIS durable
+    /// evidence over `branch_has_work`'s git-state-only answer, exactly the principle the
+    /// whole round 4 table exists to establish. Seeded once from `prior_events` at run start
+    /// ([`integrate_attempted_from_log`]), mirroring [`RunCtx::conflict_regenerate_pending`]'s
+    /// own seeded-once-at-start pattern - never mutated afterward. Sufficient because
+    /// `resume_phase` for a given unit is only ever consulted BEFORE this process's own first
+    /// integrate attempt for it; a unit this same process later re-parks back to `Reviewed`
+    /// re-enters through a FRESH `run()` call next step, which re-seeds from the by-then-
+    /// updated log exactly like every other `prior_*` field.
+    integrate_attempted: HashSet<String>,
     /// The set of REPLAY KEYS an emit may be suppressed against. Its SEED is a PARTITION over two
     /// scopes decided BY EVENT TYPE (spec 60), not one seed with one meaning - so read the half a
     /// key was seeded into before reading membership. The run-scoped half's keys, once inserted,
@@ -2496,11 +2646,25 @@ struct RunCtx<'a> {
     /// skips-regeneration). Seeded ONCE at run start from the prior log's
     /// [`STATUS_INTEGRATE_CONFLICT_REGEN`] markers ([`conflict_regenerate_pending_from_log`])
     /// and extended live as this process stages more. Read at the top of
-    /// [`integrate_and_emit`](RunCtx::integrate_and_emit) - BEFORE `Worktree::integrate` is
-    /// even called - so a resumed process whose worktree already looks entirely clean (the
+    /// [`integrate_and_emit`](RunCtx::integrate_and_emit) - BEFORE `Worktree::merge_into_worktree`
+    /// is even called - so a resumed process whose worktree already looks entirely clean (the
     /// implementer's commit landed pre-crash, placeholder content included) still knows a
     /// real regeneration is owed, never trusting live git state alone to answer that.
     conflict_regenerate_pending: Mutex<HashMap<String, Vec<String>>>,
+    /// Row 4's own crash-resume ledger (round 4 fix, mirrors
+    /// [`conflict_regenerate_pending`](RunCtx::conflict_regenerate_pending) exactly): per
+    /// `(unit, attempt)`, the `(pass, unit_tip, run_tip)` of the latest durably-recorded
+    /// `integrate-landing-intent` not yet matched by an `integrate-landed`. Seeded ONCE at run
+    /// start from the prior log ([`pending_landing_from_log`]) and only ever REMOVED (never
+    /// added to) live, the moment [`RunCtx::record_landed`] closes it out. Read at the very
+    /// TOP of [`integrate_and_emit`](RunCtx::integrate_and_emit), BEFORE trusting
+    /// `Worktree::changed_since_base`'s "nothing new" answer as "there was never anything to
+    /// land": `Worktree::land` can fast-forward the run branch to exactly the unit's own tip,
+    /// so a crash between that real mutation and its durable after-record leaves git state
+    /// alone unable to tell that apart from a stage that genuinely never had anything to
+    /// contribute. `run_tip` lets the resumed call recompute the actual touched-files set via
+    /// [`Worktree::committed_diff_names`] against the OLDER base this landing merged from.
+    pending_landing: Mutex<HashMap<String, (u32, String, String)>>,
     /// The declarative failure taxonomy (spec 10, unit 2): the SINGLE authority the
     /// conductor folds its gate-failure classification from, built once from
     /// `defaults.failure_rules` (or the shipped spec-07-preserving default when none are
@@ -2557,6 +2721,8 @@ impl<'a> RunCtx<'a> {
             compensation_attempts: Mutex::new(HashMap::new()),
             compensated_commits: Mutex::new(HashSet::new()),
             conflict_regenerate_pending: Mutex::new(HashMap::new()),
+            integrate_attempted: HashSet::new(),
+            pending_landing: Mutex::new(HashMap::new()),
             // The pure-helper test context builds no gates through the taxonomy; the
             // shipped default is a harmless placeholder. The gate-behavior tests drive the
             // full `run`, which builds the taxonomy from the config under test.
@@ -7634,6 +7800,62 @@ impl RunCtx<'_> {
         }
     }
 
+    /// Merge a unit's worktree into the run branch (spec 88, criterion 1: INTEGRATE-CONFLICT
+    /// MERGES) - the run branch's tip merges INTO the unit's own worktree, never the reverse,
+    /// so a conflict re-parks the implementer on the SAME branch with every prior commit
+    /// intact, and a conflict confined to a registered `regenerate:` path resolves itself with
+    /// no spawn at all.
+    ///
+    /// # THE RECORD -> MUTATE -> RECORD TABLE (round 4, `op-u88c1-round-4-definition-of-done`)
+    ///
+    /// Operator ruling `op-u88c1-round-3-record-before-mutate-everywhere-in-integration`:
+    /// every git mutation this function (or the `Worktree` methods it calls) performs during
+    /// integration is preceded by a durable log record a resumed step needs to redo it
+    /// idempotently or skip it, and followed by an outcome record - a resumed step re-derives
+    /// its position from the log AND the worktree markers, never from what the tree happens to
+    /// contain alone. Four rows, each `record-before -> mutation -> record-after`:
+    ///
+    /// | # | record-before | mutation | record-after |
+    /// |---|---|---|---|
+    /// | 1 | [`Self::record_merge_attempt`]: the run tip about to be merged | [`Worktree::merge_into_worktree`]: `git merge --no-commit --no-ff` into the unit worktree | [`Self::record_merge_outcome`]: "clean" (ready to land) or the conflicting path list |
+    /// | 2 | [`Self::record_regenerate_pending`]: the paths about to be placeholder-staged (mixed-conflict episode) | [`Worktree::accept_incoming`]: `git checkout --theirs` per regenerable path | [`Self::record_placeholder_staged`]: those paths finished staging |
+    /// | 3 | [`Self::record_regenerate_pending`]: the regenerate-pending set (identical marker for a mixed episode; its own fresh marker for a confined-to-regenerable conflict, round 4's own gap fix) | [`Self::regenerate_conflicted_paths`]: run the registered regeneration command through the gates port and commit | [`Self::record_regenerate_commit`]: the regeneration commit's sha |
+    /// | 4 | [`Self::record_landing_intent`]: the landing intent (unit tip, run tip) | [`Worktree::land`]: `git merge --no-edit` onto the run branch | [`Self::record_landed`]: the landed sha |
+    ///
+    /// Row 1's and row 4's OWN git mutations are individually idempotent via worktree state
+    /// alone once re-entered (`merge_into_worktree`'s `MERGE_HEAD` / `conflicting_paths`
+    /// re-derivation; `land`'s plain `git merge` is a harmless no-op once the branches already
+    /// coincide) - confirmed sound reasoning, per `sdet-u88c1r3-verdict-no-blocking-defect` and
+    /// the round-3 adjudicator's own trace. The round-4 ruling still requires the explicit
+    /// record either way, and round 4's OWN GAP 9 fixtures (the row-1 and row-4 after-record
+    /// boundaries specifically) found a SEPARATE, previously unidentified gap ONE LEVEL UP from
+    /// those individual mutations: the FUNCTION-LEVEL entry checks that decide whether to even
+    /// ATTEMPT them are themselves git-state-only, and suffer the identical blindness.
+    /// [`RunCtx::resume_phase`]'s `Worktree::branch_has_work` (`tip == base`) and this
+    /// function's own `Worktree::changed_since_base` (diffed against the run branch's CURRENT
+    /// tip) both read IDENTICALLY whether a unit's branch never had anything to land at all, OR
+    /// its landing already succeeded for real via an earlier, crashed attempt of THIS SAME
+    /// function - the CURRENT tip has, in the latter case, already absorbed everything, so
+    /// both checks answer "nothing to do" and short-circuit BEFORE the internal,
+    /// correctly-idempotent merge/land machinery is ever reached: row 1's or row 4's
+    /// after-record is lost, and - for `resume_phase`'s own copy of the gap - the WHOLE unit
+    /// silently restarts from implement instead of resuming at the integrate door.
+    /// [`RunCtx::integrate_attempted`] (consulted by `resume_phase`) and
+    /// [`RunCtx::pending_landing`] (consulted at this function's own entry, just below) close
+    /// these two entry-level gaps respectively - both durable, log-derived, seeded once at run
+    /// start exactly like [`RunCtx::conflict_regenerate_pending`] already does for row 3. Rows
+    /// 2 and 3 are the pair whose MUTATION itself (not merely its outer entry check) has a
+    /// REAL, previously-missed crash window (round 3's own fix, `adv-u88c1r2-accept-incoming-
+    /// precedes-durable-record-crash-window`; round 4's own fix for row 3's confined variant,
+    /// `RunCtx::regenerate_conflicted_paths` now returning the current worktree HEAD instead of
+    /// an empty sentinel on an idempotent no-op resume): `accept_incoming`/the regeneration
+    /// command are git mutations that can fail outright, so the SAME record must land before
+    /// either can run at all.
+    ///
+    /// THE FIXTURES: `tests/integrate_conflict_merge_periphery.rs` GAP 9 drives all eight
+    /// crash points this table implies (one between each row's record-before and mutation, one
+    /// between each row's mutation and record-after), each resuming to the same final log and
+    /// run branch - see that file's own header for the fixture-by-fixture mapping.
     fn integrate_and_emit(
         &self,
         // The LIVE unit DAG (spec 12, unit 2): the set of units the staleness pass grounds
@@ -7677,9 +7899,30 @@ impl RunCtx<'_> {
         // we take the COMMITTED diff vs base unioned with any residual dirty files,
         // so the FILE_TOUCHED / GATED_BY edges and the reindex see the real artifact
         // set whether or not the unit was pre-committed.
-        let files = wt.changed_since_base()?;
+        let mut files = wt.changed_since_base()?;
+        // Round 4 fix (`RunCtx::pending_landing`'s own doc): `changed_since_base` diffs
+        // against the run branch's CURRENT tip, so it reads EMPTY both for a stage that
+        // genuinely never had anything to land AND for one whose `Worktree::land` already
+        // fast-forwarded the run branch to exactly this worktree's tip in an earlier,
+        // crashed attempt - before that attempt's process ever durably recorded row 4's
+        // after-record. The durable log (never git state) is the one thing that can tell
+        // these two apart - but ONLY when `files` itself came back empty: a still-open
+        // landing-intent whose `land` genuinely FAILED (a real non-content error, GAP 9's own
+        // row-4 before-record fixture) leaves `files` non-empty (the worktree's commit never
+        // reached the run branch at all), and that case must still run the merge loop for
+        // real, never take this short-circuit.
+        let mut already_landed: Option<(u32, String, String)> = None;
         if files.is_empty() {
-            return Ok(Integration::default());
+            match self.pending_landing_for(&st.name, attempt) {
+                None => return Ok(Integration::default()),
+                Some((pass, unit_tip, run_tip)) => {
+                    // Recompute the ACTUAL files this already-landed merge touched from the
+                    // OLDER base it merged FROM (the current base has since absorbed them,
+                    // which is exactly why `changed_since_base` read empty above).
+                    files = wt.committed_diff_names(&run_tip)?;
+                    already_landed = Some((pass, unit_tip, run_tip));
+                }
+            }
         }
         // spec 12, unit 5 (Gap 21): `pre_merge`, produced by the loop below alongside `commit`
         // (bound just under it), is the run-branch tip BEFORE the merge that ultimately lands -
@@ -7728,127 +7971,217 @@ impl RunCtx<'_> {
         // (unchanged from before this fix) through the post-merge gate suite and staleness
         // marking below.
         let mut lock = self.integrate_mu.lock().unwrap();
-        let mut retry = 0u32;
-        let (commit, pre_merge) = loop {
-            // Captured HERE, under `lock`, immediately before the merge attempt it describes -
-            // see the doc comment on `pre_merge`'s declaration above for why a snapshot taken
-            // anywhere else (before the loop, or before re-acquiring `lock` on a later
-            // iteration) can go stale. A fresh local each iteration, escaping only via the
-            // `break` that actually lands - never an outer variable a stale earlier iteration
-            // could leave behind.
-            let pre_merge = worktree::head_sha_of(&self.deps.repo);
-            match wt.integrate(&format!("rigger: integrate {}", st.name))? {
-                worktree::IntegrateOutcome::Merged(c) => {
-                    // Spec 88, criterion 1 round 2 (adv-u88c1r1-crash-resume-permanently-
-                    // skips-regeneration): a MIXED conflict's source side can clear (the
-                    // implementer's own commit lands, bundling in the ALREADY-staged
-                    // placeholder) without `wt.integrate` ever re-observing the tree as
-                    // conflicted - it short-circuits straight to `Merged` the instant nothing
-                    // is unmerged, regardless of whether a follow-up regeneration is still
-                    // owed. This is also exactly what a CRASH-RESUMED process's very FIRST
-                    // call for this unit sees: the implementer's commit landed pre-crash, so
-                    // the worktree already looks entirely clean. Live git state cannot tell
-                    // "resolved for real" from "resolved via placeholder" apart - the durable
-                    // ledger ([`Self::regenerate_pending_for`], seeded at run start from the
-                    // log by [`conflict_regenerate_pending_from_log`]) can, so check it before
-                    // trusting this `Merged` as final, on EVERY pass through this arm.
-                    let owed = self.regenerate_pending_for(&st.name, attempt);
-                    if owed.is_empty() {
-                        break (c, pre_merge);
-                    }
-                    drop(lock);
-                    self.regenerate_conflicted_paths(wt, &st.name, &owed)?;
-                    self.clear_regenerate_pending(&st.name, attempt);
-                    lock = self.integrate_mu.lock().unwrap();
-                    // Loop back: `wt.integrate` picks up the follow-up regenerate commit
-                    // just made and fast-forwards it too, this time with nothing owed.
-                }
-                worktree::IntegrateOutcome::Conflict(conflicting) => {
-                    // An unpredicted overlap the partitioner did not serialize (two
-                    // batch-mates the grounder placed together that edit the same region)
-                    // is NOT a defect of this unit. `wt.integrate` already merged the run
-                    // branch INTO this worktree, leaving conflict markers there and the
-                    // unit's branch (every prior commit) untouched.
-                    let (regenerable, source): (Vec<String>, Vec<String>) = conflicting
-                        .iter()
-                        .cloned()
-                        .partition(|p| self.regenerate_rule_for(p).is_some());
-                    if source.is_empty() {
-                        // Confined to registered regenerable paths: the conductor resolves
-                        // it itself, no spawn at all - together with any regenerable path a
-                        // PRIOR round of THIS SAME episode already placeholder-staged
-                        // (durably accumulated, spec 88 criterion 1 round 2) but whose real
-                        // regeneration was still pending because THIS round's own partition
-                        // no longer sees it as unmerged (`accept_incoming` staged it away).
-                        let all_regenerable =
-                            self.union_regenerate_pending(&st.name, attempt, &regenerable);
+        // Round 4 fix (`RunCtx::pending_landing`'s own doc): `already_landed` is set ONLY
+        // when `files` came back empty above AND a still-open landing-intent explained it -
+        // together, proof `Worktree::land` already completed this exact landing for real in
+        // an earlier, crashed attempt. Finish recording row 4's after-record and skip the
+        // merge loop ENTIRELY: re-attempting `merge_into_worktree`/`land` here would be a
+        // redundant, pointless no-op at best, and - unlike every other row's mutation -
+        // `Worktree::land`'s own `git merge` cannot even be safely re-invoked once the
+        // branches already coincide (nothing left to merge, not "already up to date" in
+        // every git version's exact wording). A still-open landing-intent whose `land`
+        // genuinely never ran (or failed) instead leaves `files` non-empty, `already_landed`
+        // `None`, and this loop runs for real - it durably re-records row 4 itself once
+        // `land` actually succeeds, same as any other resumed pass.
+        let (commit, pre_merge) = if let Some((landed_pass, unit_tip, run_tip)) = already_landed {
+            self.record_landed(&st.name, attempt, landed_pass, &unit_tip)?;
+            self.clear_pending_landing(&st.name, attempt);
+            (unit_tip, run_tip)
+        } else {
+            let mut retry = 0u32;
+            // Counts EVERY loop iteration (spec 88, criterion 1 round 4 TABLE rows 1 and 4):
+            // unlike `retry`, which counts only mixed-conflict-episode ROUNDS, `pass`
+            // advances on every single attempt at the merge - a confined-regenerate loop-back
+            // and an owed-regenerate loop-back each get their own fresh value too - so the
+            // row 1 / row 4 records below always key a genuinely NEW merge/land attempt,
+            // never alias a stale earlier one.
+            let mut pass = 0u32;
+            loop {
+                pass += 1;
+                // Captured HERE, under `lock`, immediately before the merge attempt it describes -
+                // see the doc comment on `pre_merge`'s declaration above for why a snapshot taken
+                // anywhere else (before the loop, or before re-acquiring `lock` on a later
+                // iteration) can go stale. A fresh local each iteration, escaping only via the
+                // `break` that actually lands - never an outer variable a stale earlier iteration
+                // could leave behind. It also serves as row 1's before-record content (the run
+                // branch tip about to be merged) and row 4's before-record content (the run tip
+                // half of "the landing intent").
+                let pre_merge = worktree::head_sha_of(&self.deps.repo);
+                // TABLE row 1's before-record: "the conflicting path list" - i.e. the merge
+                // attempt about to run, whose outcome (row 1's after-record, just below) names
+                // that list if it conflicts.
+                self.record_merge_attempt(&st.name, attempt, pass, &pre_merge)?;
+                match wt.merge_into_worktree(&format!("rigger: integrate {}", st.name))? {
+                    worktree::MergeOutcome::Ready(c) => {
+                        // TABLE row 1's after-record: clean (nothing conflicted).
+                        self.record_merge_outcome(&st.name, attempt, pass, &[])?;
+                        if c.is_empty() {
+                            // A true no-op pass within a LIVE loop iteration (e.g. the follow-up
+                            // check after a confined/owed regenerate round found nothing further
+                            // to land): the already-landed-but-uncrecorded case this function's
+                            // OWN entry already special-cased before this loop ever starts (see
+                            // `pending_landing` above) never reaches here - a resumed call whose
+                            // FIRST pass would otherwise hit this exact branch takes that earlier
+                            // fast path instead, recording row 4's after-record without ever
+                            // re-attempting `merge_into_worktree`/`land` at all.
+                            break (c, pre_merge);
+                        }
+                        // TABLE row 4: land this pass's resolved commit onto the run branch,
+                        // bracketed by its own before/after records - unconditionally, exactly
+                        // like the pre-split `Worktree::integrate` always did before this function
+                        // ever checked whether a follow-up regeneration is still owed (a mixed
+                        // conflict's placeholder-staged version lands now; the real regeneration,
+                        // if any, lands as a SEPARATE, later pass's own row 4).
+                        self.record_landing_intent(&st.name, attempt, pass, &c, &pre_merge)?;
+                        wt.land()?;
+                        self.record_landed(&st.name, attempt, pass, &c)?;
+                        // Spec 88, criterion 1 round 2 (adv-u88c1r1-crash-resume-permanently-
+                        // skips-regeneration): a MIXED conflict's source side can clear (the
+                        // implementer's own commit lands, bundling in the ALREADY-staged
+                        // placeholder) without `merge_into_worktree` ever re-observing the tree as
+                        // conflicted - it short-circuits straight to `Ready` the instant nothing
+                        // is unmerged, regardless of whether a follow-up regeneration is still
+                        // owed. This is also exactly what a CRASH-RESUMED process's very FIRST
+                        // call for this unit sees: the implementer's commit landed pre-crash, so
+                        // the worktree already looks entirely clean. Live git state cannot tell
+                        // "resolved for real" from "resolved via placeholder" apart - the durable
+                        // ledger ([`Self::regenerate_pending_for`], seeded at run start from the
+                        // log by [`conflict_regenerate_pending_from_log`]) can, so check it before
+                        // trusting this `Ready` as final, on EVERY pass through this arm.
+                        let owed = self.regenerate_pending_for(&st.name, attempt);
+                        if owed.is_empty() {
+                            break (c, pre_merge);
+                        }
                         drop(lock);
-                        self.regenerate_conflicted_paths(wt, &st.name, &all_regenerable)?;
+                        // TABLE row 3's mutation - its before-record (the regenerate-pending set)
+                        // is the SAME durable marker `record_regenerate_pending` already wrote
+                        // below, keyed by this same mixed-conflict episode's `retry` (unchanged
+                        // since that write - no new conflict has been detected in between).
+                        let regen_sha = self.regenerate_conflicted_paths(wt, &st.name, &owed)?;
+                        self.record_regenerate_commit(
+                            &st.name,
+                            attempt,
+                            &retry.to_string(),
+                            &regen_sha,
+                        )?;
                         self.clear_regenerate_pending(&st.name, attempt);
                         lock = self.integrate_mu.lock().unwrap();
-                        continue;
+                        // Loop back: the next pass's `merge_into_worktree` picks up the follow-up
+                        // regenerate commit just made and fast-forwards it too, this time with
+                        // nothing owed.
                     }
-                    // A mixed conflict needs a real implementer to resolve the SOURCE
-                    // paths. `retry` counts implementer ROUNDS this ONE conflict episode
-                    // has cost (mirroring the historical `CONFLICT_RESOLVE_BOUND` meaning),
-                    // regardless of how many `wt.integrate` attempts it took to get here.
-                    retry += 1;
-                    if retry > CONFLICT_RESOLVE_BOUND {
-                        // The bound was reached with a real conflict still unresolved:
-                        // abort the in-progress merge by rolling the unit's branch back to
-                        // where it stood before this call, so the unit's NEXT
-                        // (attempt-charging) remediation round starts from a clean,
-                        // uncommitted-merge-free tree.
-                        wt.reset_branch_to(&unit_head_before_merge)?;
-                        return Ok(Integration {
-                            blocked: Some(vec![format!(
-                                "integrate conflict unresolved after {CONFLICT_RESOLVE_BOUND} \
+                    worktree::MergeOutcome::Conflict(conflicting) => {
+                        // TABLE row 1's after-record: conflicted (names the conflicting paths).
+                        self.record_merge_outcome(&st.name, attempt, pass, &conflicting)?;
+                        // An unpredicted overlap the partitioner did not serialize (two
+                        // batch-mates the grounder placed together that edit the same region)
+                        // is NOT a defect of this unit. `merge_into_worktree` already merged the
+                        // run branch INTO this worktree, leaving conflict markers there and the
+                        // unit's branch (every prior commit) untouched.
+                        let (regenerable, source): (Vec<String>, Vec<String>) = conflicting
+                            .iter()
+                            .cloned()
+                            .partition(|p| self.regenerate_rule_for(p).is_some());
+                        if source.is_empty() {
+                            // Confined to registered regenerable paths: the conductor resolves
+                            // it itself, no spawn at all - together with any regenerable path a
+                            // PRIOR round of THIS SAME episode already placeholder-staged
+                            // (durably accumulated, spec 88 criterion 1 round 2) but whose real
+                            // regeneration was still pending because THIS round's own partition
+                            // no longer sees it as unmerged (`accept_incoming` staged it away).
+                            let all_regenerable =
+                                self.union_regenerate_pending(&st.name, attempt, &regenerable);
+                            // TABLE row 3's before-record (round 4: this branch never recorded
+                            // the obligation at all before this diff - the regeneration command
+                            // it is about to run through the gates port/build budget is real,
+                            // open-ended wall-clock time, the same class of crash window the
+                            // mixed branch's own `record_regenerate_pending` call already closes).
+                            let episode = format!("confined{pass}");
+                            self.record_regenerate_pending(
+                                &st.name,
+                                attempt,
+                                &episode,
+                                &all_regenerable,
+                            )?;
+                            drop(lock);
+                            let regen_sha =
+                                self.regenerate_conflicted_paths(wt, &st.name, &all_regenerable)?;
+                            self.record_regenerate_commit(&st.name, attempt, &episode, &regen_sha)?;
+                            self.clear_regenerate_pending(&st.name, attempt);
+                            lock = self.integrate_mu.lock().unwrap();
+                            continue;
+                        }
+                        // A mixed conflict needs a real implementer to resolve the SOURCE
+                        // paths. `retry` counts implementer ROUNDS this ONE conflict episode
+                        // has cost (mirroring the historical `CONFLICT_RESOLVE_BOUND` meaning),
+                        // regardless of how many merge attempts it took to get here.
+                        retry += 1;
+                        if retry > CONFLICT_RESOLVE_BOUND {
+                            // The bound was reached with a real conflict still unresolved:
+                            // abort the in-progress merge by rolling the unit's branch back to
+                            // where it stood before this call, so the unit's NEXT
+                            // (attempt-charging) remediation round starts from a clean,
+                            // uncommitted-merge-free tree.
+                            wt.reset_branch_to(&unit_head_before_merge)?;
+                            return Ok(Integration {
+                                blocked: Some(vec![format!(
+                                    "integrate conflict unresolved after {CONFLICT_RESOLVE_BOUND} \
                                  implementer attempt(s); still unmerged: {}",
-                                conflicting.join(", ")
-                            )]),
-                            ..Default::default()
-                        });
+                                    conflicting.join(", ")
+                                )]),
+                                ..Default::default()
+                            });
+                        }
+                        // Durably record the still-owed regeneration BEFORE placeholder-staging
+                        // it (round 3 fix for adv-u88c1r2-accept-incoming-precedes-durable-
+                        // record-crash-window, upheld round 2 REJECT): the OLD order ran
+                        // `accept_incoming` (a real git mutation - `git checkout --theirs`, which
+                        // resolves the path's conflict stage on disk) BEFORE this log write, so a
+                        // crash in between left the obligation unrecorded forever even once the
+                        // source side later cleared for real - `conflicting_paths` no longer sees
+                        // the path as unmerged, a resumed retry's own `regenerable` partition
+                        // computes it empty, and `record_regenerate_pending`'s own
+                        // `paths.is_empty()` early return means the obligation NEVER lands on the
+                        // log at all. Recording first closes the window: a crash before this log
+                        // write leaves the path genuinely unmerged (this call never ran), so a
+                        // resumed retry re-derives `regenerable` non-empty and redoes both steps
+                        // from scratch - `record_regenerate_pending`'s own per-path dedup (never a
+                        // duplicate log write) and `accept_incoming` (plain `git checkout
+                        // --theirs`, idempotent) both tolerate the redo. A crash AFTER both
+                        // succeed is unaffected either way - the log already has it. This is the
+                        // design's "in that order" for the regeneration ITSELF (the real
+                        // regeneration commit still lands strictly after the implementer's own
+                        // resolution commit, unchanged) - this ordering is a narrower guarantee,
+                        // for the LOG WRITE that must survive a crash purely to unblock `git
+                        // commit`, which refuses while ANY path is still unmerged.
+                        self.record_regenerate_pending(
+                            &st.name,
+                            attempt,
+                            &retry.to_string(),
+                            &regenerable,
+                        )?;
+                        for p in &regenerable {
+                            wt.accept_incoming(p)?;
+                        }
+                        // TABLE row 2's after-record: the placeholder-staging just above is done.
+                        self.record_placeholder_staged(&st.name, attempt, retry, &regenerable)?;
+                        // integrate_mu is released HERE, before the spawn, so siblings
+                        // integrate meanwhile (the ruling's own words: "returns the unit to
+                        // building"). A park propagates straight through the `?` below with
+                        // no lock held at all; a real (non-parked) result - a replay hit, or a
+                        // synchronous/blocking driver - re-acquires `lock` and loops back to
+                        // re-attempt the merge from scratch, never trusting anything this
+                        // iteration observed before the spawn.
+                        drop(lock);
+                        self.spawn_conflict_resolution_implementer(
+                            st, wt, attempt, retry, &source,
+                        )?;
+                        // Defense in depth (spec 64 criterion 3): the spawn just above is real
+                        // wall-clock time, the window in which an out-of-band actor could
+                        // delete the worktree before the next iteration's read consumes it.
+                        wt.ensure_present()?;
+                        lock = self.integrate_mu.lock().unwrap();
                     }
-                    // Durably record the still-owed regeneration BEFORE placeholder-staging
-                    // it (round 3 fix for adv-u88c1r2-accept-incoming-precedes-durable-
-                    // record-crash-window, upheld round 2 REJECT): the OLD order ran
-                    // `accept_incoming` (a real git mutation - `git checkout --theirs`, which
-                    // resolves the path's conflict stage on disk) BEFORE this log write, so a
-                    // crash in between left the obligation unrecorded forever even once the
-                    // source side later cleared for real - `conflicting_paths` no longer sees
-                    // the path as unmerged, a resumed retry's own `regenerable` partition
-                    // computes it empty, and `record_regenerate_pending`'s own
-                    // `paths.is_empty()` early return means the obligation NEVER lands on the
-                    // log at all. Recording first closes the window: a crash before this log
-                    // write leaves the path genuinely unmerged (this call never ran), so a
-                    // resumed retry re-derives `regenerable` non-empty and redoes both steps
-                    // from scratch - `record_regenerate_pending`'s own per-path dedup (never a
-                    // duplicate log write) and `accept_incoming` (plain `git checkout
-                    // --theirs`, idempotent) both tolerate the redo. A crash AFTER both
-                    // succeed is unaffected either way - the log already has it. This is the
-                    // design's "in that order" for the regeneration ITSELF (the real
-                    // regeneration commit still lands strictly after the implementer's own
-                    // resolution commit, unchanged) - this ordering is a narrower guarantee,
-                    // for the LOG WRITE that must survive a crash purely to unblock `git
-                    // commit`, which refuses while ANY path is still unmerged.
-                    self.record_regenerate_pending(&st.name, attempt, retry, &regenerable)?;
-                    for p in &regenerable {
-                        wt.accept_incoming(p)?;
-                    }
-                    // integrate_mu is released HERE, before the spawn, so siblings
-                    // integrate meanwhile (the ruling's own words: "returns the unit to
-                    // building"). A park propagates straight through the `?` below with
-                    // no lock held at all; a real (non-parked) result - a replay hit, or a
-                    // synchronous/blocking driver - re-acquires `lock` and loops back to
-                    // re-attempt the merge from scratch, never trusting anything this
-                    // iteration observed before the spawn.
-                    drop(lock);
-                    self.spawn_conflict_resolution_implementer(st, wt, attempt, retry, &source)?;
-                    // Defense in depth (spec 64 criterion 3): the spawn just above is real
-                    // wall-clock time, the window in which an out-of-band actor could
-                    // delete the worktree before the next iteration's read consumes it.
-                    wt.ensure_present()?;
-                    lock = self.integrate_mu.lock().unwrap();
                 }
             }
         };
@@ -7997,13 +8330,25 @@ impl RunCtx<'_> {
     /// criterion 1): run each DISTINCT matching command once in the worktree - a rule's
     /// command may cover several of the conflicting paths - then commit the regenerated,
     /// now-conflict-free tree, completing the merge with NO implementer spawn at all.
-    /// `paths` must already be verified (by the caller) to be entirely regenerable.
+    /// `paths` must already be verified (by the caller) to be entirely regenerable. Returns
+    /// the regeneration commit's sha (round 4, TABLE row 3's after-record content) - the
+    /// CURRENT worktree HEAD when the regenerated tree was already identical to what was
+    /// staged (nothing NEW to commit, `u88c1-nothing-to-commit-guard-justified`'s established
+    /// idempotent no-op), never an empty sentinel: that HEAD already IS the regenerate
+    /// commit, whether this call just made it or an earlier one did, so the caller's
+    /// [`Self::record_regenerate_commit`] durably records the SAME real sha either way. Round
+    /// 4's own fix (its previous "" contract silently and PERMANENTLY lost row 3's after-
+    /// record on exactly the resume this idempotent no-op exists to make safe: a crash right
+    /// after this call's real mutation but before that record left the durable regenerate-
+    /// pending marker un-cleared, so a resumed call re-enters here, finds nothing new to
+    /// commit, and - under the old "" contract - never re-recorded the after-record for the
+    /// mutation that already, genuinely happened).
     fn regenerate_conflicted_paths(
         &self,
         wt: &Worktree,
         unit: &str,
         paths: &[String],
-    ) -> Result<(), Error> {
+    ) -> Result<String, Error> {
         let mut commands: Vec<&str> = Vec::new();
         for p in paths {
             if let Some(rule) = self.regenerate_rule_for(p) {
@@ -8015,10 +8360,14 @@ impl RunCtx<'_> {
         for cmd in commands {
             self.run_regenerate_command(&wt.dir, cmd)?;
         }
-        wt.commit(&format!(
+        let committed = wt.commit(&format!(
             "rigger: regenerate conflicting artifacts for {unit}"
         ))?;
-        Ok(())
+        if committed.is_empty() {
+            Ok(worktree::head_sha_of(&wt.dir))
+        } else {
+            Ok(committed)
+        }
     }
 
     /// The regenerable paths recorded so far (durably, [`STATUS_INTEGRATE_CONFLICT_REGEN`])
@@ -8049,6 +8398,27 @@ impl RunCtx<'_> {
             .remove(&conflict_regenerate_key(unit, attempt));
     }
 
+    /// The `(pass, unit_tip, run_tip)` of `unit`'s durably-recorded landing-intent at `attempt`
+    /// not yet matched by a landed record, if any (round 4 fix - see
+    /// [`RunCtx::pending_landing`]'s own doc for the crash window this closes).
+    fn pending_landing_for(&self, unit: &str, attempt: u32) -> Option<(u32, String, String)> {
+        self.pending_landing
+            .lock()
+            .unwrap()
+            .get(&conflict_regenerate_key(unit, attempt))
+            .cloned()
+    }
+
+    /// Clear the LIVE pending-landing entry for `unit`'s `attempt` once
+    /// [`Self::record_landed`] has closed it out - mirrors
+    /// [`Self::clear_regenerate_pending`] exactly.
+    fn clear_pending_landing(&self, unit: &str, attempt: u32) {
+        self.pending_landing
+            .lock()
+            .unwrap()
+            .remove(&conflict_regenerate_key(unit, attempt));
+    }
+
     /// [`Self::regenerate_pending_for`] unioned with `fresh` (this round's own regenerable
     /// partition) - the full set [`Self::regenerate_conflicted_paths`] must cover once a
     /// mixed conflict's source side finally clears, so a path a PRIOR round staged (whose
@@ -8064,22 +8434,36 @@ impl RunCtx<'_> {
         all
     }
 
-    /// Durably record (spec 88, criterion 1 round 2) that `paths` - a mixed conflict's
-    /// regenerable side, about to be placeholder-staged via [`Worktree::accept_incoming`] -
-    /// still owe a REAL regeneration for `unit`'s episode at `attempt`, keyed by `retry` so a
-    /// replayed step never re-emits it (spec 04, criterion 4) yet a genuinely new round's
-    /// paths still get their own entry. Rides the existing `TYPE_UNIT_STATUS` vocabulary
-    /// ([`STATUS_INTEGRATE_CONFLICT_REGEN`], fold-neutral - `ledger::Status::parse` rejects
-    /// it) - no new event type, mirroring spec 12 unit 4's `STATUS_COMPENSATION_QUEUED`
-    /// precedent. Fixes adv-u88c1r1-crash-resume-permanently-skips-regeneration: called
-    /// BEFORE the implementer spawn that will finalize the merge commit, so the marker is on
-    /// the log even if this process crashes before the follow-up real-regeneration commit
-    /// ever runs - a fresh process's [`Self::regenerate_pending_for`] then still finds it.
+    /// Durably record (spec 88, criterion 1 round 2; round 4 TABLE row 3's before-record,
+    /// "the regenerate-pending set") that `paths` still owe a REAL regeneration for `unit`'s
+    /// episode at `attempt`, keyed by the caller's `episode` tag so a replayed step never
+    /// re-emits it (spec 04, criterion 4) yet a genuinely new episode's paths still get their
+    /// own entry. `episode` distinguishes the two DISTINCT callers so their keys can never
+    /// collide even when their numeric counters coincide: the mixed-conflict branch (round 2)
+    /// passes its `retry` counter verbatim (`"{retry}"` - the pre-existing, byte-identical key
+    /// shape `sdet-u88c1r3-gap8-crosscall-dedup`'s test already pins), where this is ALSO row
+    /// 2's before-record - the paths are about to be placeholder-staged via
+    /// [`Worktree::accept_incoming`] before a real regeneration can run, and no separate row-3
+    /// write is needed at regeneration time since it is the identical obligation. The
+    /// confined-to-regenerable branch (round 4, closing a gap the mixed branch alone used to
+    /// cover: this path never recorded the obligation at all before running the regeneration
+    /// command, relying solely on `conflicting_paths()` staying non-empty until the real
+    /// commit lands - true, but round 4's ruling wants the same explicit record either way)
+    /// passes `"confined{pass}"` - a disjoint literal prefix, so its own per-pass counter can
+    /// never alias the mixed branch's per-retry counter for the same unit+attempt. Rides the
+    /// existing `TYPE_UNIT_STATUS` vocabulary ([`STATUS_INTEGRATE_CONFLICT_REGEN`], fold-
+    /// neutral - `ledger::Status::parse` rejects it) - no new event type, mirroring spec 12
+    /// unit 4's `STATUS_COMPENSATION_QUEUED` precedent. Fixes
+    /// adv-u88c1r1-crash-resume-permanently-skips-regeneration: called BEFORE the mutation
+    /// that can fail (the mixed branch's `accept_incoming`, or the confined branch's
+    /// regeneration command itself), so the marker is on the log even if this process crashes
+    /// before the real regeneration commit ever runs - a fresh process's
+    /// [`Self::regenerate_pending_for`] then still finds it.
     fn record_regenerate_pending(
         &self,
         unit: &str,
         attempt: u32,
-        retry: u32,
+        episode: &str,
         paths: &[String],
     ) -> Result<(), Error> {
         if paths.is_empty() {
@@ -8096,14 +8480,174 @@ impl RunCtx<'_> {
                 }
             }
         }
+        self.record_integrate_row(
+            &format!("{unit}/conflict-regen#{attempt}~{episode}"),
+            STATUS_INTEGRATE_CONFLICT_REGEN,
+            unit,
+            attempt,
+            json!({"regenerate": paths.join(",")}),
+        )
+    }
+
+    /// Durably record (spec 88, criterion 1 round 4, TABLE row 2's after-record, "staged") that
+    /// `paths` finished [`Worktree::accept_incoming`] placeholder-staging for `unit`'s mixed-
+    /// conflict episode at `attempt`/`retry` - the mutation the row's before-record
+    /// ([`Self::record_regenerate_pending`], already durable by construction before this runs)
+    /// brackets. Keyed identically to that before-record's episode tag so the pair is
+    /// unambiguously one row's before/after, idempotent across a resume exactly like every
+    /// other keyed emit here.
+    fn record_placeholder_staged(
+        &self,
+        unit: &str,
+        attempt: u32,
+        retry: u32,
+        paths: &[String],
+    ) -> Result<(), Error> {
+        self.record_integrate_row(
+            &format!("{unit}/placeholder-staged#{attempt}~{retry}"),
+            STATUS_INTEGRATE_PLACEHOLDER_STAGED,
+            unit,
+            attempt,
+            json!({"staged": paths.join(",")}),
+        )
+    }
+
+    /// Durably record (spec 88, criterion 1 round 4, TABLE row 3's after-record, "the
+    /// regeneration commit sha") that the real regeneration for `unit`'s episode at
+    /// `attempt`/`episode` landed as `sha` on the unit's own branch - the mutation
+    /// [`Self::record_regenerate_pending`]'s before-record (same `episode` tag) brackets.
+    /// [`Self::regenerate_conflicted_paths`] never returns an empty sha (round 4's own fix:
+    /// it falls back to the current worktree HEAD when there was nothing NEW to commit,
+    /// since that HEAD already IS the regenerate commit either way) - the empty-sha guard
+    /// below is kept purely defensive, never expected to fire in real operation.
+    fn record_regenerate_commit(
+        &self,
+        unit: &str,
+        attempt: u32,
+        episode: &str,
+        sha: &str,
+    ) -> Result<(), Error> {
+        if sha.is_empty() {
+            return Ok(());
+        }
+        self.record_integrate_row(
+            &format!("{unit}/regenerate-commit#{attempt}~{episode}"),
+            STATUS_INTEGRATE_REGENERATE_COMMIT,
+            unit,
+            attempt,
+            json!({"sha": sha}),
+        )
+    }
+
+    /// Durably record (spec 88, criterion 1 round 4, TABLE row 1's before-record, "the
+    /// conflicting path list" - i.e. the merge about to be attempted, whose outcome names that
+    /// list when it conflicts) that `unit` is about to merge the run branch's tip `run_tip`
+    /// into its own worktree, at `attempt`/`pass` (`pass` counts EVERY loop iteration of
+    /// `integrate_and_emit`'s merge-attempt loop for this call, so a confined-regenerate or
+    /// owed-regenerate loop-back gets its own fresh pass and record, never reusing a stale
+    /// one). Brackets [`Worktree::merge_into_worktree`]; the after-record is
+    /// [`Self::record_merge_outcome`].
+    fn record_merge_attempt(
+        &self,
+        unit: &str,
+        attempt: u32,
+        pass: u32,
+        run_tip: &str,
+    ) -> Result<(), Error> {
+        self.record_integrate_row(
+            &format!("{unit}/merge-attempt#{attempt}~{pass}"),
+            STATUS_INTEGRATE_MERGE_ATTEMPT,
+            unit,
+            attempt,
+            json!({"run_tip": run_tip}),
+        )
+    }
+
+    /// Durably record (spec 88, criterion 1 round 4, TABLE row 1's after-record, "merge-in-
+    /// progress outcome (conflicts or clean)") the result of the [`Worktree::merge_into_worktree`]
+    /// call [`Self::record_merge_attempt`] bracketed for `unit`'s `attempt`/`pass`: `conflicts`
+    /// is empty for a clean/ready outcome, or names the conflicting paths.
+    fn record_merge_outcome(
+        &self,
+        unit: &str,
+        attempt: u32,
+        pass: u32,
+        conflicts: &[String],
+    ) -> Result<(), Error> {
+        let evidence = if conflicts.is_empty() {
+            json!({"outcome": "clean"})
+        } else {
+            json!({"outcome": "conflict", "paths": conflicts.join(",")})
+        };
+        self.record_integrate_row(
+            &format!("{unit}/merge-outcome#{attempt}~{pass}"),
+            STATUS_INTEGRATE_MERGE_OUTCOME,
+            unit,
+            attempt,
+            evidence,
+        )
+    }
+
+    /// Durably record (spec 88, criterion 1 round 4, TABLE row 4's before-record, "the landing
+    /// intent (unit tip, run tip)") that `unit` is about to land `unit_tip` (its own,
+    /// already-resolved-and-committed branch head) onto the run branch currently at `run_tip`,
+    /// at `attempt`/`pass`. Brackets [`Worktree::land`]; the after-record is
+    /// [`Self::record_landed`].
+    fn record_landing_intent(
+        &self,
+        unit: &str,
+        attempt: u32,
+        pass: u32,
+        unit_tip: &str,
+        run_tip: &str,
+    ) -> Result<(), Error> {
+        self.record_integrate_row(
+            &format!("{unit}/landing-intent#{attempt}~{pass}"),
+            STATUS_INTEGRATE_LANDING_INTENT,
+            unit,
+            attempt,
+            json!({"unit_tip": unit_tip, "run_tip": run_tip}),
+        )
+    }
+
+    /// Durably record (spec 88, criterion 1 round 4, TABLE row 4's after-record, "the landed
+    /// sha") that `sha` landed on the run branch for `unit`'s `attempt`/`pass` - the mutation
+    /// [`Self::record_landing_intent`]'s before-record brackets.
+    fn record_landed(&self, unit: &str, attempt: u32, pass: u32, sha: &str) -> Result<(), Error> {
+        self.record_integrate_row(
+            &format!("{unit}/landed#{attempt}~{pass}"),
+            STATUS_INTEGRATE_LANDED,
+            unit,
+            attempt,
+            json!({"sha": sha}),
+        )
+    }
+
+    /// The ONE mutation authority every spec 88 criterion 1 round 4 TABLE row-record above
+    /// funnels through: a `TYPE_UNIT_STATUS` marker keyed for idempotent replay
+    /// ([`Self::emit_keyed`]), carrying `status` (which of the six fold-neutral row tokens this
+    /// is) and `evidence` (the row-specific payload). Factored out once the six near-identical
+    /// wrappers made the shared envelope a real duplication cluster the project's own
+    /// simplification audit would otherwise flag - one shared composer, never six parallel
+    /// copies of the same `emit_keyed(..., json!({"id":..,"status":..,"attempt":..,
+    /// "evidence":..}))` shape (mirrors [`Self::record_regenerate_pending`]'s own pre-existing
+    /// key/status/evidence envelope, which now composes the same way).
+    fn record_integrate_row(
+        &self,
+        key: &str,
+        status: &str,
+        unit: &str,
+        attempt: u32,
+        evidence: Value,
+    ) -> Result<(), Error> {
         self.emit_keyed(
-            &format!("{unit}/conflict-regen#{attempt}~{retry}"),
+            key,
             ledger::TYPE_UNIT_STATUS,
             json!({
                 "id": unit,
-                "status": STATUS_INTEGRATE_CONFLICT_REGEN,
+                "status": status,
                 "attempt": attempt,
-                "evidence": {"regenerate": paths.join(",")},
+                "evidence": evidence,
             }),
         )
     }
@@ -8662,7 +9206,11 @@ impl RunCtx<'_> {
     ///
     /// Both the recorded status AND real committed work on the branch are required:
     /// the status alone could be stale (e.g. the prior worktree was lost), so we never
-    /// skip implement unless the branch actually holds the code to build on.
+    /// skip implement unless the branch actually holds the code to build on - UNLESS the
+    /// log itself already proves the integrate door was reached (round 4 fix,
+    /// [`RunCtx::integrate_attempted`]'s own doc): `branch_has_work`'s `tip == base` check
+    /// alone cannot tell "never had work" apart from "already fast-forward-landed", and a
+    /// `Reviewed` unit with a durably-recorded integrate attempt is never the former.
     fn resume_phase(&self, st: &Stage) -> ResumePhase {
         // A repo-less or non-isolated unit has no branch to checkpoint on, so there is
         // never reusable prior work - it always runs fresh.
@@ -8673,10 +9221,25 @@ impl RunCtx<'_> {
             Some(s) => *s,
             None => return ResumePhase::Fresh,
         };
+        let attempts = self.prior_attempts.get(&st.name).copied().unwrap_or(0);
+        // Round 4 fix: a `Reviewed` unit whose log already durably proves an integrate
+        // attempt was made for THIS attempt is never the "prior worktree's commits were
+        // lost" case `branch_has_work` exists to catch - it is the OTHER git state that
+        // check cannot tell apart from that: the unit's own merge already fast-forward-
+        // landed onto the run branch (GAP 9's row-4 after-record fixture: a crash between
+        // `Worktree::land` and the durable landed/`UnitIntegrated` record leaves exactly
+        // `tip == base` behind), so the integrate door must still run to finish recording
+        // and reporting it - never restart the whole unit from implement.
+        let already_integrating = prior == ledger::Status::Reviewed
+            && self
+                .integrate_attempted
+                .contains(&conflict_regenerate_key(&st.name, attempts));
         // The unit's branch must actually carry committed work to build on; a recorded
         // status with an empty/missing branch (the prior worktree's commits were lost)
         // falls back to a fresh run rather than skipping a non-existent implementation.
-        if !Worktree::branch_has_work(&self.deps.repo, &unit_branch(&st.name)) {
+        if !Worktree::branch_has_work(&self.deps.repo, &unit_branch(&st.name))
+            && !already_integrating
+        {
             return ResumePhase::Fresh;
         }
         match prior {
@@ -19629,6 +20192,8 @@ mod tests {
             compensation_attempts: Mutex::new(HashMap::new()),
             compensated_commits: Mutex::new(HashSet::new()),
             conflict_regenerate_pending: Mutex::new(HashMap::new()),
+            integrate_attempted: HashSet::new(),
+            pending_landing: Mutex::new(HashMap::new()),
             taxonomy: failure::Taxonomy::default(),
         };
 
@@ -25783,6 +26348,8 @@ mod tests {
             compensation_attempts: Mutex::new(HashMap::new()),
             compensated_commits: Mutex::new(HashSet::new()),
             conflict_regenerate_pending: Mutex::new(HashMap::new()),
+            integrate_attempted: HashSet::new(),
+            pending_landing: Mutex::new(HashMap::new()),
             taxonomy: failure::Taxonomy::default(),
         };
         ctx.record_gate("ok", gate::Kind::Core, GateRatchet::CleanPass, "silent");
