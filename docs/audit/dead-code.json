@@ -1185,43 +1185,43 @@
       },
       {
         "file": "src/worktree.rs",
-        "line": 3097
+        "line": 3331
       },
       {
         "file": "src/worktree.rs",
-        "line": 3120
+        "line": 3354
       },
       {
         "file": "src/worktree.rs",
-        "line": 3156
+        "line": 3390
       },
       {
         "file": "src/worktree.rs",
-        "line": 3188
+        "line": 3422
       },
       {
         "file": "src/worktree.rs",
-        "line": 3223
+        "line": 3457
       },
       {
         "file": "src/worktree.rs",
-        "line": 3239
+        "line": 3473
       },
       {
         "file": "src/worktree.rs",
-        "line": 3266
+        "line": 3500
       },
       {
         "file": "src/worktree.rs",
-        "line": 3296
+        "line": 3530
       },
       {
         "file": "src/worktree.rs",
-        "line": 3303
+        "line": 3537
       },
       {
         "file": "src/worktree.rs",
-        "line": 3311
+        "line": 3545
       },
       {
         "file": "tests/cli.rs",
@@ -1688,27 +1688,27 @@
     "test_only_references": [
       {
         "file": "src/worktree.rs",
-        "line": 1842
+        "line": 1859
       },
       {
         "file": "src/worktree.rs",
-        "line": 1869
+        "line": 1886
       },
       {
         "file": "src/worktree.rs",
-        "line": 2641
+        "line": 2875
       },
       {
         "file": "src/worktree.rs",
-        "line": 2695
+        "line": 2929
       },
       {
         "file": "src/worktree.rs",
-        "line": 2748
+        "line": 2982
       },
       {
         "file": "src/worktree.rs",
-        "line": 2868
+        "line": 3102
       }
     ],
     "disposition": "delete",
@@ -1723,15 +1723,15 @@
     "test_only_references": [
       {
         "file": "src/worktree.rs",
-        "line": 2790
+        "line": 3024
       },
       {
         "file": "src/worktree.rs",
-        "line": 2800
+        "line": 3034
       },
       {
         "file": "src/worktree.rs",
-        "line": 2866
+        "line": 3100
       }
     ],
     "disposition": "delete",
