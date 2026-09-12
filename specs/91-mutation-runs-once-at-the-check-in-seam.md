@@ -99,8 +99,11 @@ lands); the first run to use the stage is the one after it.
   repository's workflow define the `mutation` gate and the `checkin` stage as above, the gate
   command receives the unit-keyed mutants root and reaps it at terminus, `build.mutation` is
   rejected by validation with a message naming this spec, and a workflow listing the gate
-  refuses to start without `cargo-mutants`. This criterion OWNS the template, the gate
-  environment and the schema retirement; the persona text is criterion 3's, NOT this one's.
+  refuses to start without `cargo-mutants`, and a timed-out mutant's test process dies with
+  the `cargo` that launched it (the shipped test runner marks itself `--pdeathsig=KILL`; a
+  launcher-exits fixture proves no process survives, so a sweep can never wait on an orphan's
+  pipe). This criterion OWNS the template, the gate environment, the runner guarantee and the
+  schema retirement; the persona text is criterion 3's, NOT this one's.
 - [ ] a test proves NO SWEEP IN THE LOOP: no persona under `.rigger/agents/` invokes
   `cargo mutants`, an implementer round on a fixture creates no mutants directory, and the
   `checkin` stage's task text carries the kill-or-justify protocol and the accounting shape.
