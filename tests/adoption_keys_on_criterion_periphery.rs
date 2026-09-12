@@ -65,6 +65,47 @@
 //! sharing one store and one real git repo - a literal id reused across two runs for two
 //! different real criterion texts - so the fix is proven at the boundary the bug actually
 //! threatens, not only inside the private function's own unit test.
+//!
+//! ROUND 3 (tests 4-6): `prior_criterion_unit` grew two more production behaviors, each
+//! closing an upheld round-2 review finding:
+//!
+//! - SPEC-SCOPED (`adv-u88c2-r2-criterion-id-unscoped-crosses-specs`): `criterion_id`
+//!   (`criterion_stable_id`) is position plus a content hash of the criterion TEXT alone -
+//!   no spec identity folded in. Two UNRELATED specs whose criterion at the same position
+//!   is byte-for-byte identical text mint the SAME id (this repo's own corpus proves it
+//!   happens: several specs share boilerplate Done-when text). Fixed: a candidate only
+//!   counts when its own `RunStarted.spec`, stemmed through `ledger::spec_stem`, matches
+//!   the current unit's owning spec (the LAST `RunStarted` in the whole stream).
+//! - TEMPORAL (`adv-u88c2-r2-exclusion-set-permanent-blocks-a-genuine-redo-after-
+//!   integration`): the integrated-exclusion set only ever grew - once a unit integrated
+//!   for a criterion it was barred from adoption FOREVER, even after a later compensation
+//!   (spec 12, unit 4 - a `UnitFailed` carrying `META_COMPENSATED`) genuinely reverts that
+//!   integration. Fixed: a compensation walked for an id clears its exclusion triple.
+//!
+//! Test 4 proves spec-scoping at the real boundary AND proves STEMMED-identity matching
+//! rather than raw path equality: its two same-spec runs spell that spec's path two
+//! different ways (`ledger::spec_stem` is now `pub(crate)` specifically so
+//! `prior_criterion_unit` and `pr_head_branch` share ONE canonical derivation - a test
+//! that reused one literal path string twice could pass even if the two callers silently
+//! used different derivations, exactly the drift class this file's own header explains
+//! the inside-out tests are structurally blind to).
+//!
+//! Tests 5 and 6 prove the temporal fix against a REAL git branch, not a hand-built
+//! `Event` list. `drain_compensations` (src/conductor.rs) - the mechanism that actually
+//! PRODUCES a `META_COMPENSATED` `UnitFailed`, via a later unit's review naming an
+//! earlier integrated unit as a rollback target - is spec 12's own, UNCHANGED-by-this-
+//! diff machinery; driving its full adjudicator-names-a-target trigger is out of this
+//! unit's blast radius (only `prior_criterion_unit`'s READING of its output is new this
+//! round). So the shared setup below reproduces the exact SHAPE `drain_compensations`
+//! appends directly, while building the reverted unit's real post-compensation branch
+//! through the SAME real `Worktree::create` production call a re-entered remediation
+//! round would use once its branch is reclaimed - proving the full real chain
+//! (`prior_criterion_unit` unblocking the candidate AND `Worktree::create_branch_at`
+//! actually finding a real branch to adopt), which the implementer's own round-3 `mod
+//! tests` (hand-built events, no real git) cannot see: an integrated unit's durable
+//! branch is reclaimed by `gc_integrated_branches` (test 3 above proves this), so
+//! whether a real branch ever again exists for the fix to adopt is exactly the kind of
+//! boundary question a private function operating on a bare `Vec<Event>` never touches.
 
 use std::path::Path;
 use std::process::Command;
@@ -72,12 +113,14 @@ use std::process::Command;
 use rigger::conductor::{
     run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM, TYPE_UNIT_PROPOSED,
 };
+use rigger::conductor::{META_COMPENSATED, META_CONTRADICTION};
 use rigger::config::{AgentDef, Config, Gate, Stage};
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Direction, Event, EventStore};
+use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision};
 use rigger::gate::ExecRunner;
 use rigger::ledger;
 use rigger::run::start_fresh;
+use rigger::worktree::{self, Worktree};
 use serde_json::{json, Value};
 
 /// A bare git repo with one empty commit, so `HEAD` resolves for `Worktree::create`'s
@@ -742,5 +785,424 @@ fn a_units_integration_for_one_criterion_never_masks_a_later_runs_still_abandone
         adopted_tip, shared_tip_after_run2,
         "adopted_from.tip must be shared_slug's ACTUAL run-2 tip sha, read back off real git \
          (never re-derived by this test): {run3_started}"
+    );
+}
+
+/// The `commit` field of `id`'s `UnitIntegrated` event, read back off the real store -
+/// used to stamp a realistic `META_COMPENSATED` value (a real reverted commit sha, never
+/// a placeholder string) on the hand-authored compensation marker tests 5 and 6 append.
+fn find_unit_integrated_commit(events: &[Event], id: &str) -> String {
+    for e in events {
+        if e.type_ != ledger::TYPE_UNIT_INTEGRATED {
+            continue;
+        }
+        let Ok(body) = serde_json::from_slice::<Value>(&e.data) else {
+            continue;
+        };
+        if body.get("id").and_then(Value::as_str) == Some(id) {
+            return body["commit"]
+                .as_str()
+                .expect("UnitIntegrated must carry a commit sha")
+                .to_string();
+        }
+    }
+    panic!(
+        "no UnitIntegrated recorded for unit {id:?} among {} events",
+        events.len()
+    );
+}
+
+/// Test 4's Done-when proof (round 3, SPEC-SCOPED): "regardless of the planner's slug" is
+/// scoped to the OWNING SPEC - a fresh unit for a DIFFERENT spec must never adopt an
+/// abandoned attempt at a textually-identical criterion, and a fresh unit for its OWN
+/// spec must still adopt across a run boundary even when that spec's path is spelled two
+/// different ways (stemmed-identity matching, never raw path equality - see the module
+/// doc comment's rationale for why this matters).
+#[test]
+fn spec_scoping_blocks_adoption_across_specs_sharing_a_criterion_id_but_not_across_two_runs_of_the_same_spec(
+) {
+    let repo = tempfile::tempdir().unwrap();
+    init_repo(repo.path());
+    let store = Store::open(":memory:").unwrap();
+    // Deliberately the SAME criterion text throughout: two UNRELATED specs whose Nth
+    // Done-when item happens to be byte-for-byte identical text mint the IDENTICAL
+    // criterion_stable_id (position + content hash, no spec identity folded in) - the
+    // exact real-world collision adv-u88c2-r2-criterion-id-unscoped-crosses-specs names.
+    let criterion = "both feature lanes stay green (fmt, clippy -D warnings, cargo test)";
+
+    let spec_a = "specs/88-adoption-keys-on-criterion.md";
+    // The SAME spec, spelled with a DIFFERENT raw path (a different directory) - proves
+    // `ledger::spec_stem` identity matching, never raw path string equality.
+    let spec_a_reshelved = "docs/completed-specs/88-adoption-keys-on-criterion.md";
+    let spec_b = "specs/90-hermetic-test-git-and-merge-friendly-audit-artifacts.md";
+
+    // RUN 1 (spec A): the baseline unit's gate always fails - one remediation attempt
+    // then escalate, so it never integrates and its real committed work sits on an
+    // abandoned durable branch, exactly like test 1's prior-run setup. `start_fresh` is
+    // called explicitly (spec_path non-empty) rather than left to `run`'s own internal
+    // `ensure_started` (which never threads a spec through), mirroring how a real `rigger
+    // run --spec ...` CLI invocation mints the run before the conductor ever touches it.
+    start_fresh(&store, &[criterion.to_string()], "", "", spec_a).unwrap();
+    let driver1 = WritesFileDriver {
+        file_name: "spec-a-prior-work.txt".into(),
+        content: "spec A's abandoned attempt\n".into(),
+    };
+    let deps1 = Deps {
+        store: &store,
+        driver: &driver1,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion.to_string()],
+    };
+    let rs1 = run(&baseline_only_cfg("false", 1), &deps1).unwrap();
+    let prior_slug = rs1.units.keys().next().unwrap().clone();
+    assert_eq!(
+        rs1.units[&prior_slug].status,
+        ledger::Status::Escalated,
+        "an always-failing gate must exhaust remediation and escalate, never integrate"
+    );
+    let prior_branch = format!("rigger/u/{prior_slug}");
+    let prior_tip = git_out(repo.path(), &["rev-parse", &prior_branch])
+        .expect("spec A's escalated unit must carry a real, resolvable durable branch");
+
+    // RUN 2 (spec B): a DIFFERENT spec, the SAME criterion text (so a second, independent
+    // production call site computes the SAME criterion_stable_id) - a differently-named
+    // unit must NOT adopt spec A's abandoned attempt.
+    start_fresh(&store, &[criterion.to_string()], "", "", spec_b).unwrap();
+    let fresh_slug_b = "spec-b-cross-spec-unit";
+    let driver2 = ProposesSlugDriver {
+        proposed_id: fresh_slug_b.to_string(),
+        criterion: criterion.to_string(),
+        worker_write: Some(("spec-b-own-work.txt".into(), "spec B's own work\n".into())),
+        gates: Vec::new(),
+    };
+    let deps2 = Deps {
+        store: &store,
+        driver: &driver2,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion.to_string()],
+    };
+    let rs2 = run(&fresh_run_cfg("true"), &deps2).unwrap();
+    assert_eq!(
+        rs2.units[fresh_slug_b].status,
+        ledger::Status::Integrated,
+        "a cross-spec unit still runs its ordinary lifecycle through to integration"
+    );
+    assert!(repo.path().join("spec-b-own-work.txt").exists());
+    assert!(
+        !repo.path().join("spec-a-prior-work.txt").exists(),
+        "spec A's abandoned attempt must NEVER be adopted by spec B's unit, despite both \
+         computing the identical criterion_stable_id for the identical criterion text"
+    );
+    let events_after_run2 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    assert_eq!(
+        find_unit_started(&events_after_run2, fresh_slug_b)["adopted_from"],
+        Value::Null,
+        "cross-spec adoption must be refused even though the criterion_id matches"
+    );
+
+    // RUN 3 (spec A again, re-shelved under a DIFFERENT raw path): the SAME spec
+    // identity, spelled differently - a differently-named unit MUST still adopt spec A's
+    // still-abandoned attempt, proving spec-scoping matches on STEMMED identity, never on
+    // the raw path string.
+    start_fresh(&store, &[criterion.to_string()], "", "", spec_a_reshelved).unwrap();
+    let fresh_slug_a2 = "spec-a-same-spec-different-path-unit";
+    let driver3 = ProposesSlugDriver {
+        proposed_id: fresh_slug_a2.to_string(),
+        criterion: criterion.to_string(),
+        worker_write: Some((
+            "spec-a-run3-own-work.txt".into(),
+            "spec A run 3's own work\n".into(),
+        )),
+        gates: Vec::new(),
+    };
+    let deps3 = Deps {
+        store: &store,
+        driver: &driver3,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion.to_string()],
+    };
+    let rs3 = run(&fresh_run_cfg("true"), &deps3).unwrap();
+    assert_eq!(
+        rs3.units[fresh_slug_a2].status,
+        ledger::Status::Integrated,
+        "the adopted unit still runs its ordinary lifecycle through to integration"
+    );
+    assert!(
+        repo.path().join("spec-a-prior-work.txt").exists(),
+        "spec A's abandoned attempt must ride the SAME-spec adoption into the base once a \
+         differently-pathed rerun of its own spec proposes a unit for the same criterion"
+    );
+    assert!(repo.path().join("spec-a-run3-own-work.txt").exists());
+
+    let events_after_run3 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    let run3_started = find_unit_started(&events_after_run3, fresh_slug_a2);
+    assert_eq!(
+        run3_started["adopted_from"]["unit"], prior_slug,
+        "same-spec adoption (raw path differs, stem matches) must still name the prior \
+         unit: {run3_started}"
+    );
+    assert_eq!(
+        run3_started["adopted_from"]["tip"].as_str(),
+        Some(prior_tip.as_str()),
+        "adopted_from.tip must be spec A's original escalated tip, read back off real git: \
+         {run3_started}"
+    );
+}
+
+/// Shared setup for tests 5 and 6 (round 3, TEMPORAL): a baseline unit integrates for
+/// real - its durable branch reclaimed by `gc_integrated_branches`, exactly as test 3
+/// above proves - then a REAL post-compensation "second life" branch is built for it
+/// through the SAME production `Worktree::create` call a re-entered remediation round
+/// takes when its branch is absent (see the module doc comment for why this is built
+/// directly rather than through spec 12's own full compensation-trigger flow). Returns
+/// `(repo, store, prior_slug, prior_branch, integrated_commit, second_life_tip)`.
+fn integrate_then_build_a_real_second_life_branch(
+    criterion: &str,
+    first_life_file: &str,
+    second_life_file: &str,
+) -> (tempfile::TempDir, Store, String, String, String, String) {
+    let repo = tempfile::tempdir().unwrap();
+    init_repo(repo.path());
+    let repo_path = repo.path().to_str().unwrap().to_string();
+    let store = Store::open(":memory:").unwrap();
+
+    let driver1 = WritesFileDriver {
+        file_name: first_life_file.into(),
+        content: "first life, later compensated\n".into(),
+    };
+    let deps1 = Deps {
+        store: &store,
+        driver: &driver1,
+        gates: &ExecRunner,
+        repo: repo_path.clone(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion.to_string()],
+    };
+    let rs1 = run(&baseline_only_cfg("true", 3), &deps1).unwrap();
+    let prior_slug = rs1.units.keys().next().unwrap().clone();
+    assert_eq!(
+        rs1.units[&prior_slug].status,
+        ledger::Status::Integrated,
+        "the unit later compensated must genuinely integrate first"
+    );
+    let prior_branch = format!("rigger/u/{prior_slug}");
+    assert!(
+        !worktree::branch_exists(&repo_path, &prior_branch),
+        "an integrated unit's durable branch must be reclaimed before any compensation - \
+         the second-life branch built below must be a genuinely FRESH ref, mirroring \
+         production, never a leftover from the first life"
+    );
+
+    let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    let integrated_commit = find_unit_integrated_commit(&events, &prior_slug);
+
+    // The REAL production path a re-entered remediation round takes when its branch is
+    // absent (`Worktree::create`'s no-branch-exists arm: `git worktree add -b <branch>
+    // <dir> HEAD`).
+    let scratch = tempfile::tempdir().unwrap();
+    let second_life_dir = scratch.path().join("second-life-wt");
+    let wt = Worktree::create(
+        &repo_path,
+        second_life_dir.to_str().unwrap(),
+        &prior_branch,
+        "",
+    )
+    .unwrap();
+    std::fs::write(second_life_dir.join(second_life_file), "second life work\n").unwrap();
+    let second_life_tip = wt
+        .commit("attempt-1 re-implements after a compensation revert")
+        .unwrap();
+    assert_eq!(second_life_tip.len(), 40, "a real git commit sha");
+    assert!(
+        worktree::branch_exists(&repo_path, &prior_branch),
+        "the second-life branch must exist before either test's fresh-run adoption attempt"
+    );
+
+    (
+        repo,
+        store,
+        prior_slug,
+        prior_branch,
+        integrated_commit,
+        second_life_tip,
+    )
+}
+
+/// Test 5's Done-when proof (round 3, TEMPORAL): a later compensation (spec 12, unit 4)
+/// that reverts an integrated unit's work must REOPEN that unit's candidacy, so a
+/// genuinely fresh redo can adopt its real, still-existing (second-life) branch instead
+/// of starting from base and losing reviewed progress.
+#[test]
+fn a_compensation_reverted_integration_reopens_adoption_of_its_real_still_existing_branch() {
+    let criterion = "the turbine reports its own vibration";
+    let (repo, store, prior_slug, prior_branch, integrated_commit, second_life_tip) =
+        integrate_then_build_a_real_second_life_branch(
+            criterion,
+            "first-life-work.txt",
+            "second-life-work.txt",
+        );
+
+    // A REAL compensation revert's `UnitFailed` - the EXACT shape `drain_compensations`
+    // (src/conductor.rs) appends: the existing `UnitFailed` vocabulary (no new event
+    // type) carrying `META_COMPENSATED` with the reverted commit(s) and
+    // `META_CONTRADICTION` with the reviewer's reason.
+    store
+        .append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[Event::new(
+                ledger::TYPE_UNIT_FAILED,
+                serde_json::to_vec(&json!({
+                    "id": prior_slug,
+                    "attempts": 2,
+                    "cause": "reject",
+                }))
+                .unwrap(),
+            )
+            .with_meta(META_COMPENSATED, &integrated_commit)
+            .with_meta(
+                META_CONTRADICTION,
+                "a later unit's review proved this attempt's approach wrong",
+            )],
+        )
+        .unwrap();
+
+    // FRESH RUN: a differently-named unit re-serves the SAME criterion.
+    start_fresh(&store, &[criterion.to_string()], "", "", "").unwrap();
+    let fresh_slug = "temporal-redo-unit";
+    let driver2 = ProposesSlugDriver {
+        proposed_id: fresh_slug.to_string(),
+        criterion: criterion.to_string(),
+        worker_write: Some(("run2-own-work.txt".into(), "genuinely new\n".into())),
+        gates: Vec::new(),
+    };
+    let deps2 = Deps {
+        store: &store,
+        driver: &driver2,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion.to_string()],
+    };
+    let rs2 = run(&fresh_run_cfg("true"), &deps2).unwrap();
+    assert_eq!(
+        rs2.units[fresh_slug].status,
+        ledger::Status::Integrated,
+        "the reopened-adoption unit still runs its ordinary lifecycle through to \
+         integration"
+    );
+
+    assert!(
+        repo.path().join("second-life-work.txt").exists(),
+        "the compensation-reopened unit's REAL second-life branch must ride the \
+         adoption into the base"
+    );
+    assert!(repo.path().join("run2-own-work.txt").exists());
+
+    let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    let fresh_started = find_unit_started(&events, fresh_slug);
+    assert_eq!(
+        fresh_started["adopted_from"]["unit"], prior_slug,
+        "a compensation-reverted integration must reopen adoption: {fresh_started}"
+    );
+    assert_eq!(
+        fresh_started["adopted_from"]["tip"].as_str(),
+        Some(second_life_tip.as_str()),
+        "adopted_from.tip must be the REAL second-life branch's actual tip, read back \
+         off real git (never re-derived by this test): {fresh_started}"
+    );
+    assert!(
+        worktree::branch_exists(repo.path().to_str().unwrap(), &prior_branch),
+        "adoption creates a NEW ref at the prior branch's tip, never a rename - the \
+         prior branch name must stay resolvable afterward"
+    );
+}
+
+/// Test 6's Done-when proof (round 3, TEMPORAL control): an ORDINARY remediation
+/// `UnitFailed` - no `META_COMPENSATED` at all - must NEVER be mistaken for a
+/// compensation revert, even when a real, adoptable second-life branch happens to exist
+/// under the same unit id. The exclusion stays permanent for a genuine, non-reverted
+/// integration.
+#[test]
+fn a_plain_remediation_failure_after_integration_never_reopens_adoption_even_though_a_same_named_branch_exists(
+) {
+    let criterion = "the compressor logs every restart";
+    let (repo, store, prior_slug, prior_branch, _integrated_commit, _second_life_tip) =
+        integrate_then_build_a_real_second_life_branch(
+            criterion,
+            "first-life-work-2.txt",
+            "second-life-work-2.txt",
+        );
+    assert!(worktree::branch_exists(
+        repo.path().to_str().unwrap(),
+        &prior_branch
+    ));
+
+    // An ORDINARY remediation `UnitFailed` - no `META_COMPENSATED` metadata at all.
+    store
+        .append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[Event::new(
+                ledger::TYPE_UNIT_FAILED,
+                serde_json::to_vec(&json!({
+                    "id": prior_slug,
+                    "attempts": 1,
+                    "cause": "reject",
+                }))
+                .unwrap(),
+            )],
+        )
+        .unwrap();
+
+    start_fresh(&store, &[criterion.to_string()], "", "", "").unwrap();
+    let fresh_slug = "plain-failure-control-unit";
+    let driver2 = ProposesSlugDriver {
+        proposed_id: fresh_slug.to_string(),
+        criterion: criterion.to_string(),
+        worker_write: Some(("run2-own-work-2.txt".into(), "genuinely fresh\n".into())),
+        gates: Vec::new(),
+    };
+    let deps2 = Deps {
+        store: &store,
+        driver: &driver2,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion.to_string()],
+    };
+    let rs2 = run(&fresh_run_cfg("true"), &deps2).unwrap();
+    assert_eq!(
+        rs2.units[fresh_slug].status,
+        ledger::Status::Integrated,
+        "the control unit still runs its ordinary lifecycle through to integration"
+    );
+
+    assert!(
+        !repo.path().join("second-life-work-2.txt").exists(),
+        "a plain UnitFailed (no META_COMPENSATED) must never reopen adoption, even \
+         though a same-named real branch exists ready to be adopted"
+    );
+    assert!(repo.path().join("run2-own-work-2.txt").exists());
+
+    let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    let fresh_started = find_unit_started(&events, fresh_slug);
+    assert_eq!(
+        fresh_started["adopted_from"],
+        Value::Null,
+        "an ordinary remediation failure must never reopen an integrated criterion's \
+         exclusion: {fresh_started}"
     );
 }
