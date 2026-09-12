@@ -17,6 +17,15 @@ one unit's finished round waits on a sibling's hour-long sweep before its review
 
 ## Design
 
+A RUNNING TOOL IS LIVENESS, decided: the driver refreshes a worker's activity marker for as
+long as one of the worker's tool calls is still executing (the harness knows a Bash call is in
+flight), so a worker blocked in one legitimately long command is never classified hung; only a
+worker with no tool in flight and a stale marker is. Evidence (2026-09-12, u88c1 implementer#2):
+a 59-mutant `cargo mutants` call outlasted `max_wall_clock`, the sweep aborted the worker and
+re-ran the same spawn, and the re-run restarted the same sweep - five incarnations in one night
+with zero progress, a livelock the operator broke by hand (shard the sweep, report between
+shards). The outer wall-clock still bounds the whole spawn; it no longer bounds one command.
+
 CHECKPOINT BEFORE LONG WORK, decided: the implementer persona commits a checkpoint
 (`wip(<unit>): checkpoint before <mutation sweep | lane suite>`) before `cargo mutants` and before
 any full lane suite, and squashes it into its round commit when the round is reported. When a
