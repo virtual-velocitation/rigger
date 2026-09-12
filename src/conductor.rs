@@ -1310,6 +1310,50 @@ fn is_verdict_channel_mismatch(e: &Error) -> bool {
     e.0.contains(MISMATCH_MARKER)
 }
 
+/// The sentinel a hard PLAN-STAGE-COMMIT-LANDING failure
+/// ([`RunCtx::integrate_plan_commits`], spec 88 criterion 4) embeds in its error so
+/// [`run_wave`](RunCtx::run_wave) recognizes it through its own error wrapping and
+/// routes it through a DEDICATED arm - like [`DEGENERATE_MARKER`] and
+/// [`MISMATCH_MARKER`] it uses control characters no real error text carries.
+/// `integrate_plan_commits` performs GIT PLUMBING directly (it is not a spawn): every
+/// hard Err it can produce - a `record_plan_intent`/`record_plan_landed` store-append
+/// failure, a `find_landed_by_patch_id`/`patch_id_of` subprocess failure, an
+/// unresolvable leftover cherry-pick state, or any other git-level surprise - is a
+/// CONDUCTOR-SIDE infrastructure fault around landing the producer's own commits,
+/// never a defect in the unit's own code or tests (adv-u88c4-r7-plan-commit-errors-
+/// still-carry-no-infra-fault-marker - the SAME structural gap named at round 2
+/// (adv-u88c4-crash-resume-halts-the-whole-run-not-just-the-stage) and round 4
+/// (adv-u88c4-r4-cherry-pick-in-progress-marker-survives-a-crash-mid-skip-loop),
+/// never closed by three successive git-level-only fixes to the TRIGGER while the
+/// missing marker itself went unaddressed). Routed exactly like the degenerate-
+/// reviewer and verdict-channel-mismatch halts: the dedicated arm propagates the
+/// loud halt but emits NO per-unit lesson (a lesson there would misattribute a
+/// conductor/git-plumbing fault to the producer unit under review) and charges the
+/// unit no remediation attempt (no `UnitFailed`, no `UnitEscalated`).
+const PLAN_LANDING_MARKER: &str = "\u{1}rigger:plan-landing-failed\u{1}";
+
+/// Wrap `e` - any hard Err out of [`RunCtx::integrate_plan_commits`]'s own body -
+/// with the [`PLAN_LANDING_MARKER`] naming `unit`, so [`is_plan_landing_failed`]
+/// recognizes it through the conductor's own error wrapping (the `?` at its one
+/// call site, conductor.rs `run_single_stage`). Wrapping ONCE at this single
+/// boundary - rather than annotating each of the function's several internal `?`
+/// sites individually - is what guarantees every current AND future internal
+/// failure path carries the marker, with no site left un-wrapped by omission.
+fn plan_landing_failed(unit: &str, e: Error) -> Error {
+    Error(format!(
+        "{PLAN_LANDING_MARKER}unit {unit:?}: landing its plan-stage commits onto the run \
+         branch failed: {}",
+        e.0
+    ))
+}
+
+/// Whether `e` is a plan-landing infra-fault HALT (see [`plan_landing_failed`])
+/// rather than a real unit failure. Robust to callers' own error wrapping, since the
+/// [`PLAN_LANDING_MARKER`] survives as a substring.
+fn is_plan_landing_failed(e: &Error) -> bool {
+    e.0.contains(PLAN_LANDING_MARKER)
+}
+
 /// The conductor's injected ports.
 pub struct Deps<'a> {
     pub store: &'a dyn EventStore,
@@ -3389,6 +3433,21 @@ impl RunCtx<'_> {
                     Err(e) if is_verdict_channel_mismatch(&e) => {
                         if first_err.is_none() {
                             first_err = Some(Error(e.0.replace(MISMATCH_MARKER, "")));
+                        }
+                    }
+                    // A plan-stage commit-landing infra fault (spec 88 c4,
+                    // adv-u88c4-r7-plan-commit-errors-still-carry-no-infra-fault-marker)
+                    // is a CONDUCTOR-SIDE git-plumbing fault around landing a
+                    // producer's own commits onto the run branch, not the unit's
+                    // fault: route it through its OWN arm exactly like the
+                    // degenerate-reviewer and verdict-channel-mismatch halts -
+                    // propagate the loud hard error (marker stripped) but emit NO
+                    // per-unit lesson (a lesson would misattribute the conductor's own
+                    // git-plumbing fault to the producer unit) and charge no attempt
+                    // (no UnitFailed/UnitEscalated is written on this path).
+                    Err(e) if is_plan_landing_failed(&e) => {
+                        if first_err.is_none() {
+                            first_err = Some(Error(e.0.replace(PLAN_LANDING_MARKER, "")));
                         }
                     }
                     Err(e) => {
@@ -7789,7 +7848,25 @@ impl RunCtx<'_> {
     /// intended sha's real landed identity - `PlanCommitOutcome::None` is reachable
     /// only when `shas` itself is empty (a genuinely review-only producer), matching
     /// item (2) literally.
+    ///
+    /// EVERY hard Err this produces is an infra-fault marked with
+    /// [`PLAN_LANDING_MARKER`] (adv-u88c4-r7-plan-commit-errors-still-carry-no-infra-
+    /// fault-marker): this is a thin boundary wrapper over
+    /// [`Self::integrate_plan_commits_inner`], which does the actual work - wrapping
+    /// ONCE here, rather than at each of that function's several internal `?` sites,
+    /// is what guarantees no failure path is left un-marked by omission. See
+    /// [`plan_landing_failed`]'s doc comment for why this is a conductor-side fault,
+    /// never the unit's own.
     fn integrate_plan_commits(
+        &self,
+        unit: &str,
+        wt: Option<&Worktree>,
+    ) -> Result<PlanCommitOutcome, Error> {
+        self.integrate_plan_commits_inner(unit, wt)
+            .map_err(|e| plan_landing_failed(unit, e))
+    }
+
+    fn integrate_plan_commits_inner(
         &self,
         unit: &str,
         wt: Option<&Worktree>,
@@ -23635,6 +23712,212 @@ mod tests {
             other => panic!("expected a two-commit Landed outcome, got {other:?}"),
         }
         wt.remove().unwrap();
+    }
+
+    /// An [`EventStore`] wrapper that fails ONE specific append - any batch containing
+    /// an event whose JSON payload contains `fail_containing` - and delegates every
+    /// other call straight to `inner` (the real store), so a test can force a hard
+    /// Err out of exactly one internal write ([`RunCtx::record_plan_intent`]'s
+    /// `plan-intent:<unit>` `DecisionMade`, in the tests below) without disturbing
+    /// anything else the run does.
+    struct FailingStore<'a> {
+        inner: &'a dyn EventStore,
+        fail_containing: &'static str,
+    }
+    impl EventStore for FailingStore<'_> {
+        fn append(
+            &self,
+            stream: &str,
+            expected: ExpectedRevision,
+            events: &[Event],
+        ) -> Result<Appended, crate::eventstore::Error> {
+            if events
+                .iter()
+                .any(|e| String::from_utf8_lossy(&e.data).contains(self.fail_containing))
+            {
+                return Err(crate::eventstore::Error::Backend(format!(
+                    "simulated store failure appending an event containing {:?}",
+                    self.fail_containing
+                )));
+            }
+            self.inner.append(stream, expected, events)
+        }
+        fn read_stream(
+            &self,
+            stream: &str,
+            from: crate::eventstore::Revision,
+            dir: Direction,
+        ) -> Result<Vec<Event>, crate::eventstore::Error> {
+            self.inner.read_stream(stream, from, dir)
+        }
+        fn read_all(
+            &self,
+            from: crate::eventstore::Position,
+            dir: Direction,
+            filter: &Filter,
+        ) -> Result<Vec<Event>, crate::eventstore::Error> {
+            self.inner.read_all(from, dir, filter)
+        }
+        fn subscribe_all(
+            &self,
+            from: crate::eventstore::Position,
+            filter: &Filter,
+        ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
+            self.inner.subscribe_all(from, filter)
+        }
+        fn subscribe_stream(
+            &self,
+            stream: &str,
+            from: crate::eventstore::Revision,
+        ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
+            self.inner.subscribe_stream(stream, from)
+        }
+    }
+
+    #[test]
+    fn integrate_plan_commits_wraps_any_hard_error_with_the_plan_landing_marker() {
+        // adv-u88c4-r7-plan-commit-errors-still-carry-no-infra-fault-marker: EVERY
+        // hard Err `integrate_plan_commits` can produce - a `record_plan_intent`/
+        // `record_plan_landed` store-append failure, a `find_landed_by_patch_id`/
+        // `patch_id_of` subprocess failure, an unresolvable leftover cherry-pick
+        // state, or any other git-level surprise - is a CONDUCTOR-SIDE
+        // infrastructure fault around landing the producer's own commits, never the
+        // unit's own defect, so it must carry PLAN_LANDING_MARKER (recognized by
+        // `is_plan_landing_failed`) through the ONE wrapping boundary every call site
+        // shares, rather than each internal `?` needing its own bespoke wrap. Forced
+        // here via a store double that fails specifically the `plan-intent:<unit>`
+        // `DecisionMade` write `record_plan_intent` makes BEFORE any git mutation -
+        // proving the wrap covers an INTERNAL call site, not just a git failure.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt =
+            Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/u/plan", "").unwrap();
+        std::fs::create_dir_all(wt_path.join("specs")).unwrap();
+        std::fs::write(wt_path.join("specs").join("90-a.md"), "amend\n").unwrap();
+        run_git(wt_path.to_str().unwrap(), &["add", "-A"]);
+        run_git(wt_path.to_str().unwrap(), &["commit", "-q", "-m", "amend"]);
+
+        let real_store = Store::open(":memory:").unwrap();
+        let store = FailingStore {
+            inner: &real_store,
+            fail_containing: "plan-intent:",
+        };
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        let err = match ctx.integrate_plan_commits("plan", Some(&wt)) {
+            Ok(outcome) => panic!("expected a hard error from the failing store, got {outcome:?}"),
+            Err(e) => e,
+        };
+        assert!(
+            is_plan_landing_failed(&err),
+            "a hard Err out of integrate_plan_commits must carry PLAN_LANDING_MARKER so \
+             run_wave routes it through the no-lesson infra-fault arm, not the generic \
+             wave-collapse arm: {:?}",
+            err.0
+        );
+        assert!(
+            err.0.contains("\"plan\""),
+            "the wrapped error must still name the unit: {:?}",
+            err.0
+        );
+        wt.remove().unwrap();
+    }
+
+    #[test]
+    fn a_plan_landing_infra_fault_halts_the_run_loudly_with_no_per_unit_lesson_or_attempt() {
+        // adv-u88c4-r7-plan-commit-errors-still-carry-no-infra-fault-marker, bundled
+        // fix: end-to-end through the real `run()` loop, a plan-stage commit-landing
+        // infra fault (here, the SAME forced `record_plan_intent` store failure as
+        // the focused test above) must halt the run LOUDLY (an Err out of `run`,
+        // marker stripped) while recording NEITHER a per-unit lesson NOR a charged
+        // attempt (no UnitFailed/UnitEscalated) - exactly the treatment the
+        // pre-existing degenerate-reviewer and verdict-channel-mismatch halts
+        // already get, proving the new arm is actually reached from the real
+        // producer call site (conductor.rs `run_single_stage` -> `run_wave`), not
+        // just from a direct unit-level call.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("planner".into(), agent("planner"));
+        cfg.workflow.stages.insert(
+            "plan".into(),
+            Stage {
+                name: "plan".into(),
+                agent: "planner".into(),
+                produces: "dag".into(),
+                ..Default::default()
+            },
+        );
+        let real_store = Store::open(":memory:").unwrap();
+        let store = FailingStore {
+            inner: &real_store,
+            fail_containing: "plan-intent:",
+        };
+        let driver = Stub {
+            commits_by_agent: HashMap::from([(
+                "planner".to_string(),
+                vec![("specs/90-foo.md".to_string(), "amendment\n".to_string())],
+            )]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+
+        let err = match run(&cfg, &deps) {
+            Ok(_) => panic!("a plan-landing infra fault must halt the run, not succeed"),
+            Err(e) => e,
+        };
+        assert!(
+            err.0.contains("\"plan\""),
+            "the halt must name the producer unit: {:?}",
+            err.0
+        );
+        assert!(
+            !err.0.contains(PLAN_LANDING_MARKER),
+            "the operator-facing halt must not carry the internal sentinel marker: {:?}",
+            err.0
+        );
+
+        let events = real_store
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        assert!(
+            !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
+            "a plan-landing infra-fault halt must not charge the unit an attempt \
+             (no UnitFailed)"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == ledger::TYPE_UNIT_ESCALATED),
+            "a plan-landing infra-fault halt must not escalate the unit either"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED),
+            "a plan-landing infra-fault halt must record NO per-unit lesson - it would \
+             misattribute a conductor/git-plumbing fault to the producer unit"
+        );
     }
 
     #[test]
