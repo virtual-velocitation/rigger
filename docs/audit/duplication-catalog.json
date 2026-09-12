@@ -1263,86 +1263,86 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 234,
-        "end_line": 234,
+        "start_line": 269,
+        "end_line": 269,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 245,
-        "end_line": 245,
+        "start_line": 280,
+        "end_line": 280,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 256,
-        "end_line": 256,
+        "start_line": 291,
+        "end_line": 291,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 275,
-        "end_line": 275,
+        "start_line": 310,
+        "end_line": 310,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 521,
-        "end_line": 521,
+        "start_line": 556,
+        "end_line": 556,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 711,
-        "end_line": 711,
+        "start_line": 746,
+        "end_line": 746,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 959,
-        "end_line": 959,
+        "start_line": 994,
+        "end_line": 994,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1178,
-        "end_line": 1178,
+        "start_line": 1213,
+        "end_line": 1213,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1374,
-        "end_line": 1374,
+        "start_line": 1409,
+        "end_line": 1409,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1631,
-        "end_line": 1631,
+        "start_line": 1666,
+        "end_line": 1666,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1731,
-        "end_line": 1731,
+        "start_line": 1766,
+        "end_line": 1766,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2043,
-        "end_line": 2043,
+        "start_line": 2078,
+        "end_line": 2078,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2169,
-        "end_line": 2169,
+        "start_line": 2204,
+        "end_line": 2204,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2407,
-        "end_line": 2407,
+        "start_line": 2442,
+        "end_line": 2442,
         "name": "Command::new"
       },
       {
@@ -2005,8 +2005,8 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 290,
-        "end_line": 295,
+        "start_line": 325,
+        "end_line": 330,
         "name": "agent"
       }
     ],
@@ -3163,8 +3163,8 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 297,
-        "end_line": 303,
+        "start_line": 332,
+        "end_line": 338,
         "name": "gate_def"
       }
     ],
@@ -6413,20 +6413,20 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 355,
-        "end_line": 355,
+        "start_line": 390,
+        "end_line": 390,
         "name": "\".rigger\""
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 356,
-        "end_line": 356,
+        "start_line": 391,
+        "end_line": 391,
         "name": "\"create .rigger/agents\""
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 425,
-        "end_line": 425,
+        "start_line": 460,
+        "end_line": 460,
         "name": "\"the project's own .rigger/workflow.yml must load through the real loader\""
       },
       {
@@ -8267,8 +8267,8 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 225,
-        "end_line": 242,
+        "start_line": 260,
+        "end_line": 277,
         "name": "init_repo"
       },
       {
@@ -10925,8 +10925,8 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1992,
-        "end_line": 1994,
+        "start_line": 2027,
+        "end_line": 2029,
         "name": "subscribe_stream"
       }
     ],
@@ -14465,8 +14465,8 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1989,
-        "end_line": 1991,
+        "start_line": 2024,
+        "end_line": 2026,
         "name": "subscribe_all"
       }
     ],
@@ -15923,8 +15923,8 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 354,
-        "end_line": 369,
+        "start_line": 389,
+        "end_line": 404,
         "name": "write_workflow"
       },
       {
@@ -15955,8 +15955,8 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 354,
-        "end_line": 369,
+        "start_line": 389,
+        "end_line": 404,
         "name": "write_workflow"
       },
       {
@@ -22257,14 +22257,14 @@
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 468,
-        "end_line": 545,
+        "start_line": 503,
+        "end_line": 580,
         "name": "spawn"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1341,
-        "end_line": 1398,
+        "start_line": 1376,
+        "end_line": 1433,
         "name": "spawn"
       }
     ],
@@ -22277,14 +22277,14 @@
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 945,
-        "end_line": 981,
+        "start_line": 980,
+        "end_line": 1016,
         "name": "spawn"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1154,
-        "end_line": 1200,
+        "start_line": 1189,
+        "end_line": 1235,
         "name": "spawn"
       }
     ],
@@ -22297,20 +22297,20 @@
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1764,
-        "end_line": 1789,
+        "start_line": 1799,
+        "end_line": 1824,
         "name": "spawn"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2284,
-        "end_line": 2306,
+        "start_line": 2319,
+        "end_line": 2341,
         "name": "spawn"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2517,
-        "end_line": 2537,
+        "start_line": 2552,
+        "end_line": 2572,
         "name": "spawn"
       }
     ],
@@ -22323,14 +22323,14 @@
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1999,
-        "end_line": 2004,
+        "start_line": 2034,
+        "end_line": 2039,
         "name": "has_status_marker"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2006,
-        "end_line": 2014,
+        "start_line": 2041,
+        "end_line": 2049,
         "name": "count_status_marker"
       }
     ],
@@ -22343,14 +22343,14 @@
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2031,
-        "end_line": 2054,
+        "start_line": 2066,
+        "end_line": 2089,
         "name": "spawn"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2159,
-        "end_line": 2179,
+        "start_line": 2194,
+        "end_line": 2214,
         "name": "spawn"
       }
     ],
@@ -22363,44 +22363,44 @@
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2059,
-        "end_line": 2146,
+        "start_line": 2094,
+        "end_line": 2181,
         "name": "a_crash_right_after_the_merge_attempt_record_resumes_and_completes_row_1"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2184,
-        "end_line": 2270,
+        "start_line": 2219,
+        "end_line": 2305,
         "name": "a_crash_right_after_the_landing_intent_record_resumes_and_completes_row_4"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2562,
-        "end_line": 2722,
+        "start_line": 2597,
+        "end_line": 2757,
         "name": "a_confined_regenerate_command_failure_and_a_store_failure_each_resume_and_complete_row_3"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2756,
-        "end_line": 2846,
+        "start_line": 2791,
+        "end_line": 2881,
         "name": "a_crash_right_after_the_merge_succeeds_resumes_and_completes_row_1_after_record"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2856,
-        "end_line": 2944,
+        "start_line": 2891,
+        "end_line": 2979,
         "name": "a_crash_right_after_landing_succeeds_resumes_and_completes_row_4_after_record"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 3026,
-        "end_line": 3128,
+        "start_line": 3061,
+        "end_line": 3163,
         "name": "a_regenerate_command_failure_right_after_landing_completes_row_3_on_resume_when_row_4_is_already_closed"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 3141,
-        "end_line": 3261,
+        "start_line": 3176,
+        "end_line": 3296,
         "name": "a_crash_right_after_landing_succeeds_with_owed_regeneration_completes_row_3_on_resume"
       }
     ],
@@ -22413,14 +22413,14 @@
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2540,
-        "end_line": 2555,
+        "start_line": 2575,
+        "end_line": 2590,
         "name": "confined_cfg"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 3002,
-        "end_line": 3017,
+        "start_line": 3037,
+        "end_line": 3052,
         "name": "mixed_cfg"
       }
     ],
