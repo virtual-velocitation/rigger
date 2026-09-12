@@ -164,6 +164,36 @@
 //!     trait) plus the public `run()` entry and an independently-authored `AgentDriver` -
 //!     proving the new cross-module wiring is reachable by, and behaves correctly for, a
 //!     genuine outside caller of this library.
+//!   - gap 15 (round 9, sdet re-enumeration `sdet-u88c4-r9-surface-enumeration`; fix for
+//!     `adj-u88c4-r8-verdict-reject` upholding both `sdet-u88c4-r8-single-commit-leftover-
+//!     marker-hard-errors-on-missing-sequencer-todo` and `adv-u88c4-r8-single-commit-trigger-
+//!     is-any-still-pending-len-1-not-just-single-commit-units`): the private
+//!     `Worktree::sequencer_todo_remaining` helper - which `cherry_pick_onto_run_branch`'s
+//!     leftover-marker classification (gap 13) calls to bound its own skip loop - hard-errored
+//!     on `io::ErrorKind::NotFound` reading `.git/sequencer/todo`, but git NEVER materializes
+//!     that file for a plain single-sha `git cherry-pick`, which is exactly the shape
+//!     `cherry_pick_onto_run_branch` issues whenever its caller's `shas` has exactly one
+//!     entry, the routine steady state of an iterative multi-commit plan amendment (a
+//!     conductor resume whose `still_pending` has shrunk to one confirmed-pending sha, per
+//!     `integrate_plan_commits_inner`'s own `prior_landed`/`find_landed_by_patch_id`
+//!     recomputation), not merely a literal one-commit-total unit. Round 9 reads a missing
+//!     todo file as exactly ONE remaining entry instead of propagating the io error. All five
+//!     probes over the round's diff (`2540768^..2540768`) return EMPTY for new/changed public
+//!     signatures, trait impls, CLI registrations, and event/serialized forms - this changes no
+//!     public SIGNATURE (probe 1 found nothing new since round 8), only the BODY of a PRIVATE
+//!     helper behind an already-public method, the same "invisible to a bare grep, caught only
+//!     by reading the diff" shape gap 13's own header names. The implementer's own two
+//!     `worktree.rs` unit tests (`cherry_pick_onto_run_branch_self_heals_a_leftover_marker_
+//!     with_no_sequencer_todo_file`, a literal one-commit-total unit; `..._self_heals_when_a_
+//!     multi_commit_amendment_shrinks_to_one_still_pending`, the conductor's real resume shape)
+//!     prove the mechanics from INSIDE the crate's private test module - unreachable from
+//!     outside the crate. Both angles collapse to the IDENTICAL public-API call shape at the
+//!     `Worktree` boundary (a single-element `shas` slice against a leftover marker with no
+//!     `sequencer/todo` file), so one periphery test proves the full externally-observable
+//!     contract: `cherry_pick_onto_run_branch_self_heals_a_leftover_marker_with_a_missing_
+//!     sequencer_todo_file_at_the_periphery` drives nothing but the PUBLIC `Worktree` API, no
+//!     conductor or `run()` involved - the same "public API, no conductor" boundary gaps 5, 10
+//!     and 13 above already established for this file's other `Worktree` methods.
 
 use rigger::conductor::{
     run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, META_COMPENSATED,
@@ -2192,4 +2222,132 @@ fn a_plan_landing_store_failure_halts_the_run_loudly_with_no_per_unit_lesson_or_
         "a plan-landing infra-fault halt must record NO per-unit lesson - it would \
          misattribute a conductor/git-plumbing fault to the producer unit"
     );
+}
+
+/// Criterion 4, gap 15 (round 9, `Worktree::sequencer_todo_remaining` body fix): a MISSING
+/// `.git/sequencer/todo` file is the NORMAL shape for a leftover cherry-pick marker whose
+/// remaining set is exactly ONE commit, not an anomaly - git's sequencer machinery is never
+/// engaged by a plain single-sha `git cherry-pick`, so it never creates `.git/sequencer/` at
+/// all. `cherry_pick_onto_run_branch`'s leftover-marker classification (gap 13) must still
+/// resolve this the same way it resolves every other empty-commit pause - one `--skip` - never
+/// hard-error on the missing file.
+///
+/// WHY THIS, DISTINCT FROM THE IMPLEMENTER'S OWN TESTS. `worktree.rs`'s own private test
+/// module proves this from two angles - a literal one-commit-total unit, and a multi-commit
+/// amendment whose `still_pending` has shrunk to one sha across two separate calls (the
+/// conductor's real resume shape via `integrate_plan_commits_inner`'s `prior_landed` map) -
+/// but both are the implementer's own inside-out authorship, invisible to an external
+/// consumer of this library. At the `Worktree` public-API boundary the two angles are
+/// indistinguishable: both reduce to a single-element `shas` slice against a leftover marker
+/// with no `sequencer/todo` file, since `Worktree` never sees how many total commits an
+/// amendment originally had - only the slice it is handed. This test drives that one call
+/// shape through nothing but the PUBLIC `Worktree` API, independently constructed from outside
+/// the crate, no conductor or `run()` involved - the same "public API, no conductor" boundary
+/// gaps 5, 10 and 13 above already established for this file's other `Worktree` methods.
+#[test]
+fn cherry_pick_onto_run_branch_self_heals_a_leftover_marker_with_a_missing_sequencer_todo_file_at_the_periphery(
+) {
+    let repo = init_repo();
+    let repo_path = repo.path().to_str().unwrap().to_string();
+    let wt_dir = tempfile::tempdir().unwrap();
+    let wt_path = wt_dir.path().to_str().unwrap().to_string();
+    let wt = Worktree::create(&repo_path, &wt_path, "rigger/u/ext-plan-missing-todo", "").unwrap();
+
+    // One commit, touching its own path.
+    std::fs::create_dir_all(wt_dir.path().join("specs")).unwrap();
+    std::fs::write(
+        wt_dir.path().join("specs").join("99-solo.md"),
+        "amend 99-solo.md\n",
+    )
+    .unwrap();
+    assert!(std::process::Command::new("git")
+        .arg("-C")
+        .arg(&wt_path)
+        .args(["add", "-A"])
+        .status()
+        .unwrap()
+        .success());
+    assert!(std::process::Command::new("git")
+        .arg("-C")
+        .arg(&wt_path)
+        .args(["commit", "-q", "-m", "amend 99-solo.md"])
+        .status()
+        .unwrap()
+        .success());
+    let sha = run_git(&wt_path, &["rev-parse", "HEAD"]);
+    let shas = vec![sha.clone()];
+
+    // Pre-land the sole commit's content directly on the run branch, independent of the
+    // interrupted attempt below, so replaying it becomes an EMPTY re-pick.
+    assert!(std::process::Command::new("git")
+        .arg("-C")
+        .arg(&repo_path)
+        .args(["cherry-pick", &sha])
+        .status()
+        .unwrap()
+        .success());
+    assert!(
+        repo.path().join("specs").join("99-solo.md").exists(),
+        "precondition: the sole commit's content is already present"
+    );
+
+    // Simulate the crash: run the RAW single-sha cherry-pick directly against the run branch
+    // (bypassing the public API entirely, via a bare git subprocess) - the exact same
+    // invocation shape a call with `shas.len() == 1` makes - so it naturally pauses empty with
+    // NO sequencer directory ever created.
+    let raw = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&repo_path)
+        .args(["cherry-pick", &sha])
+        .status()
+        .unwrap();
+    assert!(
+        !raw.success(),
+        "the raw single-sha pick must pause on the empty commit, not succeed outright"
+    );
+    assert!(
+        repo.path().join(".git").join("CHERRY_PICK_HEAD").exists(),
+        "precondition: a leftover cherry-pick sequencer marker is left in progress"
+    );
+    assert!(
+        run_git(&repo_path, &["ls-files", "--unmerged"]).is_empty(),
+        "precondition: the pause carries ZERO unmerged files - it is not a conflict"
+    );
+    let todo_path = run_git(&repo_path, &["rev-parse", "--git-path", "sequencer/todo"]);
+    let todo_path = std::path::Path::new(&todo_path);
+    let todo_path = if todo_path.is_absolute() {
+        todo_path.to_path_buf()
+    } else {
+        std::path::Path::new(&repo_path).join(todo_path)
+    };
+    assert!(
+        !todo_path.exists(),
+        "precondition: git never materializes sequencer/todo for a genuinely single-sha \
+         cherry-pick - {} must be ABSENT",
+        todo_path.display()
+    );
+
+    // A FRESH call through the PUBLIC API, with the ORIGINAL (identity) single-element shas
+    // exactly as a resumed caller recomputing a shrunk-to-one pending set would - must
+    // self-heal the leftover marker despite the missing sequencer/todo file, never hard-error.
+    match wt.cherry_pick_onto_run_branch(&shas) {
+        Ok(CherryPickOutcome::Picked(_)) => {}
+        Ok(CherryPickOutcome::Conflict(detail)) => {
+            panic!("a self-healed, non-conflicting pause must not read as a conflict: {detail}")
+        }
+        Err(e) => panic!(
+            "a leftover marker with no sequencer/todo file must self-heal through the public \
+             API, never hard-error: {:?}",
+            e.0
+        ),
+    }
+    assert!(
+        !repo.path().join(".git").join("CHERRY_PICK_HEAD").exists(),
+        "no cherry-pick is left in progress after the self-healed retry"
+    );
+    assert!(
+        repo.path().join("specs").join("99-solo.md").exists(),
+        "the sole commit's content must still be present on the run branch"
+    );
+    wt.remove().unwrap();
 }
