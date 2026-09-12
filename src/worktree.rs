@@ -272,21 +272,26 @@ impl Worktree {
         Ok(())
     }
 
-    /// Create a NEW branch ref `new_branch` pointing at `at_branch`'s CURRENT tip (spec
-    /// 88, ADOPTION KEYS ON THE CRITERION): a plain `git branch <new_branch> <at_branch>`,
-    /// so `at_branch` itself is left completely untouched - a new ref, never a rename, so
-    /// the prior unit's own branch name stays resolvable. This is how the conductor seeds
-    /// a FRESH unit's durable branch from a prior (differently-named) run's still
-    /// un-integrated unit that served the same criterion: once this ref exists,
-    /// [`Self::create`]'s ordinary adopt-by-path-lookup machinery reuses it exactly as it
-    /// reuses this unit's own prior work on any other resume.
+    /// Create a NEW branch ref `new_branch` pointing at `at_branch` (spec 88, ADOPTION
+    /// KEYS ON THE CRITERION): a plain `git branch <new_branch> <at_branch>`, so
+    /// `at_branch` itself is left completely untouched - a new ref, never a rename, so
+    /// the prior unit's own branch name stays resolvable. `at_branch` is any git
+    /// revision, not necessarily a branch name: since round 4 the conductor passes the
+    /// exact sha it already read via [`branch_tip`] and recorded as durable provenance
+    /// (rather than the moving branch name a second time), so the new ref lands on
+    /// EXACTLY the commit the provenance record names even if the source branch moved
+    /// in between. This is how the conductor seeds a FRESH unit's durable branch from a
+    /// prior (differently-named) run's still un-integrated unit that served the same
+    /// criterion: once this ref exists, [`Self::create`]'s ordinary adopt-by-path-lookup
+    /// machinery reuses it exactly as it reuses this unit's own prior work on any other
+    /// resume.
     ///
-    /// Returns the new branch's tip sha (== `at_branch`'s tip at the moment of creation)
-    /// so the caller can record it as adoption provenance. The caller is responsible for
-    /// confirming `new_branch` does not already exist ([`branch_exists`]) - `git branch`
-    /// refuses to clobber an existing ref, so a caller that races this against an
-    /// already-started unit fails loudly rather than silently re-pointing a durable
-    /// checkpoint.
+    /// Returns the new branch's tip sha (== `at_branch` resolved at the moment of
+    /// creation - identical to the input when the caller already passed a sha). The
+    /// caller is responsible for confirming `new_branch` does not already exist
+    /// ([`branch_exists`]) - `git branch` refuses to clobber an existing ref, so a
+    /// caller that races this against an already-started unit fails loudly rather than
+    /// silently re-pointing a durable checkpoint.
     pub fn create_branch_at(
         repo: &str,
         new_branch: &str,
@@ -690,6 +695,20 @@ pub fn branch_exists(repo: &str, branch: &str) -> bool {
         ],
     )
     .is_ok()
+}
+
+/// The CURRENT tip commit sha of local branch `branch` in `repo`, or an error when the
+/// branch does not exist. Public so the conductor's ADOPTION KEYS ON THE CRITERION check
+/// (spec 88 round 4) can read a prior unit's tip and record it as durable provenance
+/// BEFORE seeding the adopting unit's own branch AT that exact sha
+/// ([`Worktree::create_branch_at`] pinned to a sha rather than the moving branch name) -
+/// closing the crash window between deciding to adopt and creating the branch by making
+/// the two agree by construction rather than by re-resolving the (possibly since-moved)
+/// branch name a second time.
+pub fn branch_tip(repo: &str, branch: &str) -> Result<String, Error> {
+    run_git(repo, &["rev-parse", &format!("refs/heads/{branch}")])
+        .map(|s| s.trim().to_string())
+        .map_err(Error)
 }
 
 /// Whether `r` resolves to a commit in `repo` (a branch, tag, remote-tracking ref,
