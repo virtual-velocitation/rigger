@@ -1855,20 +1855,20 @@ mandatory sweep: Command::new call sites - 291 site(s), collected mechanically r
 - `tests/graph_show_surface.rs:77-77` `Command::new`
 - `tests/heartbeat_write_read_agree_periphery.rs:55-55` `Command::new`
 - `tests/heartbeat_write_read_agree_periphery.rs:69-69` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:234-234` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:245-245` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:256-256` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:275-275` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:521-521` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:711-711` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:959-959` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:1178-1178` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:1374-1374` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:1631-1631` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:1731-1731` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:2043-2043` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:2169-2169` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:2407-2407` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:269-269` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:280-280` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:291-291` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:310-310` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:556-556` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:746-746` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:994-994` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:1213-1213` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:1409-1409` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:1666-1666` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:1766-1766` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:2078-2078` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:2204-2204` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:2442-2442` `Command::new`
 - `tests/meta_phases_declaration_periphery.rs:119-119` `Command::new`
 - `tests/metadata_card_handoff_viz.rs:43-43` `Command::new`
 - `tests/metadata_card_handoff_viz.rs:151-151` `Command::new`
@@ -1990,7 +1990,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/canary_progress_hook_periphery.rs:47-52` `agent`
 - `tests/canary_tolerant_attribution_periphery.rs:88-93` `agent`
 - `tests/canary_unattributed_rejects_periphery.rs:110-115` `agent`
-- `tests/integrate_conflict_merge_periphery.rs:290-295` `agent`
+- `tests/integrate_conflict_merge_periphery.rs:325-330` `agent`
 
 #### `dup-0009` (exact, 2 sites)
 
@@ -2404,7 +2404,7 @@ Proposed home: `a new shared module (sites span 2 files: src/conductor.rs, tests
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/conductor.rs:12038-12044` `gate_def`
-- `tests/integrate_conflict_merge_periphery.rs:297-303` `gate_def`
+- `tests/integrate_conflict_merge_periphery.rs:332-338` `gate_def`
 
 #### `dup-0048` (near, 4 sites)
 
@@ -3369,9 +3369,9 @@ __END__
 - `tests/heartbeat_write_read_agree_periphery.rs:521-521` `".rigger"`
 - `tests/heartbeat_write_read_agree_periphery.rs:593-593` `".rigger"`
 - `tests/heartbeat_write_read_agree_periphery.rs:603-603` `".rigger"`
-- `tests/integrate_conflict_merge_periphery.rs:355-355` `".rigger"`
-- `tests/integrate_conflict_merge_periphery.rs:356-356` `"create .rigger/agents"`
-- `tests/integrate_conflict_merge_periphery.rs:425-425` `"the project's own .rigger/workflow.yml must load through the real loader"`
+- `tests/integrate_conflict_merge_periphery.rs:390-390` `".rigger"`
+- `tests/integrate_conflict_merge_periphery.rs:391-391` `"create .rigger/agents"`
+- `tests/integrate_conflict_merge_periphery.rs:460-460` `"the project's own .rigger/workflow.yml must load through the real loader"`
 - `tests/migration_is_deliberate_periphery.rs:454-454` `".rigger"`
 - `tests/migration_is_deliberate_periphery.rs:454-454` `"create .rigger"`
 - `tests/migration_is_deliberate_periphery.rs:474-474` `".rigger"`
@@ -4000,7 +4000,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `src/conductor.rs:35377-35394` `init_repo`
 - `tests/gate_store_fence_periphery.rs:488-504` `init_repo_with_head`
-- `tests/integrate_conflict_merge_periphery.rs:225-242` `init_repo`
+- `tests/integrate_conflict_merge_periphery.rs:260-277` `init_repo`
 - `tests/spawn_target_dir_periphery.rs:55-71` `init_repo_with_head`
 - `tests/unified_traversal_grounding.rs:573-590` `init_seam_repo`
 
@@ -5039,7 +5039,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `src/eventstore/contract.rs:844-846` `subscribe_stream`
 - `src/spawn.rs:1514-1516` `subscribe_stream`
-- `tests/integrate_conflict_merge_periphery.rs:1992-1994` `subscribe_stream`
+- `tests/integrate_conflict_merge_periphery.rs:2027-2029` `subscribe_stream`
 
 #### `dup-0173` (exact, 2 sites)
 
@@ -6411,7 +6411,7 @@ Proposed home: `a new shared module (sites span 2 files: src/spawn.rs, tests/int
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/spawn.rs:1510-1512` `subscribe_all`
-- `tests/integrate_conflict_merge_periphery.rs:1989-1991` `subscribe_all`
+- `tests/integrate_conflict_merge_periphery.rs:2024-2026` `subscribe_all`
 
 #### `dup-0311` (near, 2 sites)
 
@@ -6926,7 +6926,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `tests/build_budget_slots_periphery.rs:195-210` `write_workflow`
 - `tests/build_env_authority_periphery.rs:165-180` `write_workflow`
-- `tests/integrate_conflict_merge_periphery.rs:354-369` `write_workflow`
+- `tests/integrate_conflict_merge_periphery.rs:389-404` `write_workflow`
 - `tests/store_flag_precedence.rs:75-90` `write_workflow`
 
 #### `dup-0359` (semantic, 6 sites)
@@ -6937,7 +6937,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 
 - `tests/build_budget_slots_periphery.rs:195-210` `write_workflow`
 - `tests/build_env_authority_periphery.rs:165-180` `write_workflow`
-- `tests/integrate_conflict_merge_periphery.rs:354-369` `write_workflow`
+- `tests/integrate_conflict_merge_periphery.rs:389-404` `write_workflow`
 - `tests/scratch_workdir_config.rs:37-39` `write_workflow`
 - `tests/store_config.rs:40-42` `write_workflow`
 - `tests/store_flag_precedence.rs:75-90` `write_workflow`
@@ -9217,8 +9217,8 @@ Proposed home: `integrate_conflict_merge_periphery::support (consolidate these 2
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/integrate_conflict_merge_periphery.rs:468-545` `spawn`
-- `tests/integrate_conflict_merge_periphery.rs:1341-1398` `spawn`
+- `tests/integrate_conflict_merge_periphery.rs:503-580` `spawn`
+- `tests/integrate_conflict_merge_periphery.rs:1376-1433` `spawn`
 
 #### `dup-0577` (near, 2 sites)
 
@@ -9226,8 +9226,8 @@ Proposed home: `integrate_conflict_merge_periphery::support (consolidate these 2
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/integrate_conflict_merge_periphery.rs:945-981` `spawn`
-- `tests/integrate_conflict_merge_periphery.rs:1154-1200` `spawn`
+- `tests/integrate_conflict_merge_periphery.rs:980-1016` `spawn`
+- `tests/integrate_conflict_merge_periphery.rs:1189-1235` `spawn`
 
 #### `dup-0578` (near, 3 sites)
 
@@ -9235,9 +9235,9 @@ Proposed home: `integrate_conflict_merge_periphery::support (consolidate these 3
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/integrate_conflict_merge_periphery.rs:1764-1789` `spawn`
-- `tests/integrate_conflict_merge_periphery.rs:2284-2306` `spawn`
-- `tests/integrate_conflict_merge_periphery.rs:2517-2537` `spawn`
+- `tests/integrate_conflict_merge_periphery.rs:1799-1824` `spawn`
+- `tests/integrate_conflict_merge_periphery.rs:2319-2341` `spawn`
+- `tests/integrate_conflict_merge_periphery.rs:2552-2572` `spawn`
 
 #### `dup-0579` (near, 2 sites)
 
@@ -9245,8 +9245,8 @@ Proposed home: `integrate_conflict_merge_periphery::support (consolidate these 2
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/integrate_conflict_merge_periphery.rs:1999-2004` `has_status_marker`
-- `tests/integrate_conflict_merge_periphery.rs:2006-2014` `count_status_marker`
+- `tests/integrate_conflict_merge_periphery.rs:2034-2039` `has_status_marker`
+- `tests/integrate_conflict_merge_periphery.rs:2041-2049` `count_status_marker`
 
 #### `dup-0580` (near, 2 sites)
 
@@ -9254,8 +9254,8 @@ Proposed home: `integrate_conflict_merge_periphery::support (consolidate these 2
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/integrate_conflict_merge_periphery.rs:2031-2054` `spawn`
-- `tests/integrate_conflict_merge_periphery.rs:2159-2179` `spawn`
+- `tests/integrate_conflict_merge_periphery.rs:2066-2089` `spawn`
+- `tests/integrate_conflict_merge_periphery.rs:2194-2214` `spawn`
 
 #### `dup-0581` (near, 7 sites)
 
@@ -9263,13 +9263,13 @@ Proposed home: `integrate_conflict_merge_periphery::support (consolidate these 7
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/integrate_conflict_merge_periphery.rs:2059-2146` `a_crash_right_after_the_merge_attempt_record_resumes_and_completes_row_1`
-- `tests/integrate_conflict_merge_periphery.rs:2184-2270` `a_crash_right_after_the_landing_intent_record_resumes_and_completes_row_4`
-- `tests/integrate_conflict_merge_periphery.rs:2562-2722` `a_confined_regenerate_command_failure_and_a_store_failure_each_resume_and_complete_row_3`
-- `tests/integrate_conflict_merge_periphery.rs:2756-2846` `a_crash_right_after_the_merge_succeeds_resumes_and_completes_row_1_after_record`
-- `tests/integrate_conflict_merge_periphery.rs:2856-2944` `a_crash_right_after_landing_succeeds_resumes_and_completes_row_4_after_record`
-- `tests/integrate_conflict_merge_periphery.rs:3026-3128` `a_regenerate_command_failure_right_after_landing_completes_row_3_on_resume_when_row_4_is_already_closed`
-- `tests/integrate_conflict_merge_periphery.rs:3141-3261` `a_crash_right_after_landing_succeeds_with_owed_regeneration_completes_row_3_on_resume`
+- `tests/integrate_conflict_merge_periphery.rs:2094-2181` `a_crash_right_after_the_merge_attempt_record_resumes_and_completes_row_1`
+- `tests/integrate_conflict_merge_periphery.rs:2219-2305` `a_crash_right_after_the_landing_intent_record_resumes_and_completes_row_4`
+- `tests/integrate_conflict_merge_periphery.rs:2597-2757` `a_confined_regenerate_command_failure_and_a_store_failure_each_resume_and_complete_row_3`
+- `tests/integrate_conflict_merge_periphery.rs:2791-2881` `a_crash_right_after_the_merge_succeeds_resumes_and_completes_row_1_after_record`
+- `tests/integrate_conflict_merge_periphery.rs:2891-2979` `a_crash_right_after_landing_succeeds_resumes_and_completes_row_4_after_record`
+- `tests/integrate_conflict_merge_periphery.rs:3061-3163` `a_regenerate_command_failure_right_after_landing_completes_row_3_on_resume_when_row_4_is_already_closed`
+- `tests/integrate_conflict_merge_periphery.rs:3176-3296` `a_crash_right_after_landing_succeeds_with_owed_regeneration_completes_row_3_on_resume`
 
 #### `dup-0582` (exact, 2 sites)
 
@@ -9277,8 +9277,8 @@ Proposed home: `integrate_conflict_merge_periphery::support (consolidate these 2
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/integrate_conflict_merge_periphery.rs:2540-2555` `confined_cfg`
-- `tests/integrate_conflict_merge_periphery.rs:3002-3017` `mixed_cfg`
+- `tests/integrate_conflict_merge_periphery.rs:2575-2590` `confined_cfg`
+- `tests/integrate_conflict_merge_periphery.rs:3037-3052` `mixed_cfg`
 
 #### `dup-0583` (semantic, 2 sites)
 
