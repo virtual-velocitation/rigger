@@ -106,6 +106,37 @@
 //! branch is reclaimed by `gc_integrated_branches` (test 3 above proves this), so
 //! whether a real branch ever again exists for the fix to adopt is exactly the kind of
 //! boundary question a private function operating on a bare `Vec<Event>` never touches.
+//!
+//! ROUND 4 (tests 7-8): operator ruling
+//! `op-u88c2-round-4-adoption-keys-corrected-escalated-baselines-are-always-candidates`
+//! item 3 closes the crash window between `adopt_prior_criterion_branch` deciding to
+//! adopt and the caller's `UnitStarted` recording that decision - the ONLY other place
+//! `adopted_from` was ever written (upheld three review rounds running as
+//! `sdet-u88c2-adopted-from-lost-on-crash-between-branch-create-and-unitstarted`, then as
+//! the round-3 PRIMARY BLOCKER left entirely unimplemented). The fix writes the decision
+//! `{unit, tip, spec}` as durable `UnitStatus` log state the MOMENT it is made - BEFORE
+//! the git side effect (`Worktree::create_branch_at`) that seeds the adopting unit's own
+//! branch, which itself lands BEFORE `UnitStarted`. No public API can interrupt
+//! `adopt_prior_criterion_branch` mid-call to inject a real crash, so - exactly like
+//! tests 5 and 6 above - these two tests reproduce the precise durable SHAPE the fix
+//! writes (a `UnitStatus` carrying `status: "adoption-recorded"` and the decided
+//! `adopted_from` triple) directly, paired with whichever of the two OTHER writes (the
+//! git branch, the `UnitStarted`) a crash at that exact point would or would not have
+//! reached, then drive a REAL second `run()` call against the same store and repo - a
+//! genuine resumed process - and prove the decision survives onto the unit's real
+//! `UnitStarted` either way. Both tests deliberately record a `spec` value a FRESH
+//! re-derivation could never produce (the fresh run below carries no launched spec, so
+//! `current_run_spec` would fold to the empty string) - the surviving value must be the
+//! recorded one, proving these tests exercise the READ-BACK path, not merely a
+//! coincidental re-computation.
+//!
+//! Test 7 reproduces BOTH the git branch and the provenance mark already landed - the
+//! window `sdet-u88c2-adopted-from-lost-on-crash-between-branch-create-and-unitstarted`
+//! originally named, where the pre-fix code's `branch_exists` check alone short-circuited
+//! straight to `None` the moment the unit's own branch already existed, discarding the
+//! decision permanently. Test 8 reproduces only the provenance mark, proving a resumed
+//! call creates the still-missing branch at the recorded tip rather than failing or
+//! silently starting fresh.
 
 use std::path::Path;
 use std::process::Command;
@@ -1204,5 +1235,245 @@ fn a_plain_remediation_failure_after_integration_never_reopens_adoption_even_tho
         Value::Null,
         "an ordinary remediation failure must never reopen an integrated criterion's \
          exclusion: {fresh_started}"
+    );
+}
+
+/// Test 7 (round 4): the PRIMARY BLOCKER's own named scenario -
+/// `sdet-u88c2-adopted-from-lost-on-crash-between-branch-create-and-unitstarted` - a
+/// crash AFTER `Worktree::create_branch_at` lands the adopting unit's branch but BEFORE
+/// its `UnitStarted` append. Pre-fix, `adopt_prior_criterion_branch`'s FIRST check
+/// (`branch_exists`) alone short-circuited straight to `None` the instant the branch
+/// existed, so the resumed `UnitStarted` recorded no adoption at all despite the unit's
+/// branch carrying real adopted content - a genuine unit lifecycle continuing on
+/// silently-unrecorded provenance.
+#[test]
+fn a_crash_after_the_branch_exists_but_before_unitstarted_lands_recovers_the_recorded_adoption() {
+    let repo = tempfile::tempdir().unwrap();
+    init_repo(repo.path());
+    let store = Store::open(":memory:").unwrap();
+    let criterion = "the pump reports its own pressure";
+
+    // PRIOR RUN: an escalated baseline unit with real committed work, exactly like test
+    // 1's setup.
+    let driver1 = WritesFileDriver {
+        file_name: "prior-work.txt".into(),
+        content: "escalated attempt\n".into(),
+    };
+    let deps1 = Deps {
+        store: &store,
+        driver: &driver1,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion.to_string()],
+    };
+    let rs1 = run(&baseline_only_cfg("false", 1), &deps1).unwrap();
+    let prior_slug = rs1.units.keys().next().unwrap().clone();
+    assert_eq!(
+        rs1.units[&prior_slug].status,
+        ledger::Status::Escalated,
+        "an always-failing gate must exhaust remediation and escalate, never integrate"
+    );
+    let prior_tip = git_out(
+        repo.path(),
+        &["rev-parse", &format!("rigger/u/{prior_slug}")],
+    )
+    .expect("the escalated unit's durable branch must exist with a resolvable tip");
+
+    // FRESH RUN boundary, a differently-named unit for the SAME criterion.
+    start_fresh(&store, &[criterion.to_string()], "", "", "").unwrap();
+    let fresh_slug = "crash-after-branch-unit";
+    let fresh_branch = format!("rigger/u/{fresh_slug}");
+
+    // Reproduce the EXACT crash state: the git side effect already landed - a real
+    // branch at the prior tip, via the SAME production `Worktree::create_branch_at`
+    // call - and, per the fix, the durable provenance mark that is always written
+    // BEFORE it is therefore ALSO already on the log; only the eventual `UnitStarted`
+    // never landed.
+    Worktree::create_branch_at(repo.path().to_str().unwrap(), &fresh_branch, &prior_tip).unwrap();
+    store
+        .append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[Event::new(
+                ledger::TYPE_UNIT_STATUS,
+                serde_json::to_vec(&json!({
+                    "id": fresh_slug,
+                    "status": "adoption-recorded",
+                    "adopted_from": {
+                        "unit": prior_slug,
+                        "tip": prior_tip,
+                        "spec": "specs/88-a-unit-lineage-is-durable",
+                    },
+                }))
+                .unwrap(),
+            )],
+        )
+        .unwrap();
+    let events_before_resume = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    assert!(
+        !events_before_resume
+            .iter()
+            .any(|e| e.type_ == ledger::TYPE_UNIT_STARTED
+                && serde_json::from_slice::<Value>(&e.data)
+                    .ok()
+                    .and_then(|v| v.get("id").and_then(Value::as_str).map(str::to_string))
+                    == Some(fresh_slug.to_string())),
+        "the simulated crash must leave NO UnitStarted for the fresh unit yet"
+    );
+
+    // RESUME: a real second `run()` call against the SAME store and repo - exactly what
+    // a fresh `rigger step` process does after the crash.
+    let driver2 = ProposesSlugDriver {
+        proposed_id: fresh_slug.to_string(),
+        criterion: criterion.to_string(),
+        worker_write: Some(("run2-own-work.txt".into(), "genuinely new\n".into())),
+        gates: Vec::new(),
+    };
+    let deps2 = Deps {
+        store: &store,
+        driver: &driver2,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion.to_string()],
+    };
+    let rs2 = run(&fresh_run_cfg("true"), &deps2).unwrap();
+    assert_eq!(
+        rs2.units[fresh_slug].status,
+        ledger::Status::Integrated,
+        "the recovered unit still runs its ordinary lifecycle through to integration"
+    );
+    assert!(
+        repo.path().join("prior-work.txt").exists(),
+        "the adopted branch's real prior content must still ride into the base"
+    );
+    assert!(repo.path().join("run2-own-work.txt").exists());
+
+    let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    let fresh_started = find_unit_started(&events, fresh_slug);
+    assert_eq!(
+        fresh_started["adopted_from"],
+        json!({"unit": prior_slug, "tip": prior_tip, "spec": "specs/88-a-unit-lineage-is-durable"}),
+        "the crash-resumed unit must recover the EXACT recorded decision, spec field \
+         included - never None (the pre-fix defect: `branch_exists` alone returned None \
+         the instant the unit's own branch already existed) and never a freshly \
+         re-derived value (this run's own empty spec would fold to \"\", not the \
+         recorded value, if `current_run_spec` ran again here): {fresh_started}"
+    );
+}
+
+/// Test 8 (round 4): the OTHER half of the same crash window - a crash AFTER the durable
+/// provenance mark is written but BEFORE `Worktree::create_branch_at` ever runs, so the
+/// adopting unit's own branch does not exist yet at all. A resumed call must create it
+/// at the RECORDED tip and complete the adoption exactly as an uninterrupted run would.
+#[test]
+fn a_crash_after_the_provenance_record_but_before_the_branch_is_created_still_completes_the_adoption_on_resume(
+) {
+    let repo = tempfile::tempdir().unwrap();
+    init_repo(repo.path());
+    let store = Store::open(":memory:").unwrap();
+    let criterion = "the valve reports its own position";
+
+    let driver1 = WritesFileDriver {
+        file_name: "prior-work.txt".into(),
+        content: "escalated attempt\n".into(),
+    };
+    let deps1 = Deps {
+        store: &store,
+        driver: &driver1,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion.to_string()],
+    };
+    let rs1 = run(&baseline_only_cfg("false", 1), &deps1).unwrap();
+    let prior_slug = rs1.units.keys().next().unwrap().clone();
+    assert_eq!(
+        rs1.units[&prior_slug].status,
+        ledger::Status::Escalated,
+        "an always-failing gate must exhaust remediation and escalate, never integrate"
+    );
+    let prior_tip = git_out(
+        repo.path(),
+        &["rev-parse", &format!("rigger/u/{prior_slug}")],
+    )
+    .expect("the escalated unit's durable branch must exist with a resolvable tip");
+
+    start_fresh(&store, &[criterion.to_string()], "", "", "").unwrap();
+    let fresh_slug = "crash-before-branch-unit";
+    let fresh_branch = format!("rigger/u/{fresh_slug}");
+
+    // Reproduce ONLY the provenance write - the crash happens before the git side
+    // effect ever runs, so the fresh unit's own branch must NOT exist yet.
+    store
+        .append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[Event::new(
+                ledger::TYPE_UNIT_STATUS,
+                serde_json::to_vec(&json!({
+                    "id": fresh_slug,
+                    "status": "adoption-recorded",
+                    "adopted_from": {
+                        "unit": prior_slug,
+                        "tip": prior_tip,
+                        "spec": "specs/88-a-unit-lineage-is-durable",
+                    },
+                }))
+                .unwrap(),
+            )],
+        )
+        .unwrap();
+    assert!(
+        !worktree::branch_exists(repo.path().to_str().unwrap(), &fresh_branch),
+        "the simulated crash must leave the fresh unit's branch NOT YET created"
+    );
+
+    let driver2 = ProposesSlugDriver {
+        proposed_id: fresh_slug.to_string(),
+        criterion: criterion.to_string(),
+        worker_write: Some(("run2-own-work.txt".into(), "genuinely new\n".into())),
+        gates: Vec::new(),
+    };
+    let deps2 = Deps {
+        store: &store,
+        driver: &driver2,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion.to_string()],
+    };
+    let rs2 = run(&fresh_run_cfg("true"), &deps2).unwrap();
+    assert_eq!(
+        rs2.units[fresh_slug].status,
+        ledger::Status::Integrated,
+        "the resumed unit still runs its ordinary lifecycle through to integration"
+    );
+    // The adopted content (`prior-work.txt`) AND the unit's own fresh work
+    // (`run2-own-work.txt`) both riding into the base is only possible if the resumed
+    // call actually created `fresh_branch` at the recorded tip and continued the
+    // ordinary lifecycle on it - a genuinely fresh (non-adopting) start would never
+    // produce `prior-work.txt` at all (exactly as test 1 establishes). `fresh_branch`
+    // itself is NOT re-checked here: `gc_integrated_branches` reclaims an integrated
+    // unit's durable branch in the SAME call that integrates it (test 3's own doc
+    // comment), so by the time `run` returns, a genuinely correct resume has ALREADY
+    // deleted the very branch it created - asserting its continued existence here would
+    // be asserting a bug, not the fix.
+    assert!(repo.path().join("prior-work.txt").exists());
+    assert!(repo.path().join("run2-own-work.txt").exists());
+
+    let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    let fresh_started = find_unit_started(&events, fresh_slug);
+    assert_eq!(
+        fresh_started["adopted_from"],
+        json!({"unit": prior_slug, "tip": prior_tip, "spec": "specs/88-a-unit-lineage-is-durable"}),
+        "the resumed adoption must record the SAME recorded decision, spec field \
+         included - a fresh re-derivation here would fold to an empty spec, not the \
+         recorded value: {fresh_started}"
     );
 }
