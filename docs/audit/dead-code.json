@@ -1185,43 +1185,43 @@
       },
       {
         "file": "src/worktree.rs",
-        "line": 2229
+        "line": 2326
       },
       {
         "file": "src/worktree.rs",
-        "line": 2252
+        "line": 2349
       },
       {
         "file": "src/worktree.rs",
-        "line": 2288
+        "line": 2385
       },
       {
         "file": "src/worktree.rs",
-        "line": 2320
+        "line": 2417
       },
       {
         "file": "src/worktree.rs",
-        "line": 2355
+        "line": 2452
       },
       {
         "file": "src/worktree.rs",
-        "line": 2371
+        "line": 2468
       },
       {
         "file": "src/worktree.rs",
-        "line": 2398
+        "line": 2495
       },
       {
         "file": "src/worktree.rs",
-        "line": 2428
+        "line": 2525
       },
       {
         "file": "src/worktree.rs",
-        "line": 2435
+        "line": 2532
       },
       {
         "file": "src/worktree.rs",
-        "line": 2443
+        "line": 2540
       },
       {
         "file": "tests/cli.rs",
@@ -1688,39 +1688,39 @@
     "test_only_references": [
       {
         "file": "src/worktree.rs",
-        "line": 1509
+        "line": 1528
       },
       {
         "file": "src/worktree.rs",
-        "line": 1539
+        "line": 1558
       },
       {
         "file": "src/worktree.rs",
-        "line": 1624
+        "line": 1643
       },
       {
         "file": "src/worktree.rs",
-        "line": 1664
+        "line": 1761
       },
       {
         "file": "src/worktree.rs",
-        "line": 1735
+        "line": 1832
       },
       {
         "file": "src/worktree.rs",
-        "line": 1773
+        "line": 1870
       },
       {
         "file": "src/worktree.rs",
-        "line": 1827
+        "line": 1924
       },
       {
         "file": "src/worktree.rs",
-        "line": 1880
+        "line": 1977
       },
       {
         "file": "src/worktree.rs",
-        "line": 2000
+        "line": 2097
       }
     ],
     "disposition": "delete",
@@ -1735,15 +1735,15 @@
     "test_only_references": [
       {
         "file": "src/worktree.rs",
-        "line": 1922
+        "line": 2019
       },
       {
         "file": "src/worktree.rs",
-        "line": 1932
+        "line": 2029
       },
       {
         "file": "src/worktree.rs",
-        "line": 1998
+        "line": 2095
       }
     ],
     "disposition": "delete",
