@@ -1335,98 +1335,158 @@
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 128,
-        "end_line": 128,
+        "start_line": 159,
+        "end_line": 159,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 147,
-        "end_line": 147,
+        "start_line": 178,
+        "end_line": 178,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 277,
-        "end_line": 277,
+        "start_line": 317,
+        "end_line": 317,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 290,
-        "end_line": 290,
+        "start_line": 330,
+        "end_line": 330,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 633,
-        "end_line": 633,
+        "start_line": 337,
+        "end_line": 337,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 640,
-        "end_line": 640,
+        "start_line": 686,
+        "end_line": 686,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 657,
-        "end_line": 657,
+        "start_line": 693,
+        "end_line": 693,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 664,
-        "end_line": 664,
+        "start_line": 710,
+        "end_line": 710,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 903,
-        "end_line": 903,
+        "start_line": 717,
+        "end_line": 717,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 1054,
-        "end_line": 1054,
+        "start_line": 956,
+        "end_line": 956,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 1067,
-        "end_line": 1067,
+        "start_line": 1107,
+        "end_line": 1107,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 1192,
-        "end_line": 1192,
+        "start_line": 1120,
+        "end_line": 1120,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 1252,
-        "end_line": 1252,
+        "start_line": 1245,
+        "end_line": 1245,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 1267,
-        "end_line": 1267,
+        "start_line": 1305,
+        "end_line": 1305,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 1303,
-        "end_line": 1303,
+        "start_line": 1320,
+        "end_line": 1320,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 1310,
-        "end_line": 1310,
+        "start_line": 1356,
+        "end_line": 1356,
+        "name": "Command::new"
+      },
+      {
+        "file": "tests/plan_stage_commit_landing_periphery.rs",
+        "start_line": 1363,
+        "end_line": 1363,
+        "name": "Command::new"
+      },
+      {
+        "file": "tests/plan_stage_commit_landing_periphery.rs",
+        "start_line": 1474,
+        "end_line": 1474,
+        "name": "Command::new"
+      },
+      {
+        "file": "tests/plan_stage_commit_landing_periphery.rs",
+        "start_line": 1486,
+        "end_line": 1486,
+        "name": "Command::new"
+      },
+      {
+        "file": "tests/plan_stage_commit_landing_periphery.rs",
+        "start_line": 1522,
+        "end_line": 1522,
+        "name": "Command::new"
+      },
+      {
+        "file": "tests/plan_stage_commit_landing_periphery.rs",
+        "start_line": 1529,
+        "end_line": 1529,
+        "name": "Command::new"
+      },
+      {
+        "file": "tests/plan_stage_commit_landing_periphery.rs",
+        "start_line": 1546,
+        "end_line": 1546,
+        "name": "Command::new"
+      },
+      {
+        "file": "tests/plan_stage_commit_landing_periphery.rs",
+        "start_line": 1553,
+        "end_line": 1553,
+        "name": "Command::new"
+      },
+      {
+        "file": "tests/plan_stage_commit_landing_periphery.rs",
+        "start_line": 1726,
+        "end_line": 1726,
+        "name": "Command::new"
+      },
+      {
+        "file": "tests/plan_stage_commit_landing_periphery.rs",
+        "start_line": 1735,
+        "end_line": 1735,
+        "name": "Command::new"
+      },
+      {
+        "file": "tests/plan_stage_commit_landing_periphery.rs",
+        "start_line": 1767,
+        "end_line": 1767,
         "name": "Command::new"
       },
       {
@@ -1935,7 +1995,7 @@
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 295 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: Command::new call sites - 305 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0007",
@@ -2029,8 +2089,8 @@
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 165,
-        "end_line": 170,
+        "start_line": 196,
+        "end_line": 201,
         "name": "agent"
       }
     ],
