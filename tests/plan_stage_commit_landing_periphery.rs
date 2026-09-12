@@ -128,6 +128,42 @@
 //!     mutation` proves the resumed call trusts the log record directly - no new cherry-pick, no
 //!     successful patch-id search - and still reaches `Integrated` with the real landed sha and
 //!     content a downstream stage can read.
+//!   - gap 13 (round 8, sdet re-enumeration `sdet-u88c4-r8-surface-enumeration`; fix for
+//!     `arch-u88c4-r7-classification-skip-is-single-shot-not-a-loop` reopened through a narrower
+//!     trigger): the leftover-`CHERRY_PICK_HEAD` classification in `Worktree::cherry_pick_onto_
+//!     run_branch` issued exactly ONE `--skip` before giving up, so a leftover marker sitting
+//!     ahead of TWO OR MORE chained empty commits - an ordinary shape for a multi-commit plan
+//!     amendment resumed after a crash - re-paused on the second empty commit and hard-errored.
+//!     Round 8 replaces it with a bounded `skips_left` loop. This changes no public SIGNATURE
+//!     (probe 1 found nothing new since round 7), only the BODY of an already-public method, so
+//!     it is invisible to a bare grep - caught only by reading the diff. The implementer's own
+//!     `worktree.rs` test module proves the mechanics from inside the crate's private test
+//!     module; `cherry_pick_onto_run_branch_self_heals_a_leftover_marker_ahead_of_two_chained_
+//!     empty_commits_at_the_periphery` drives the SAME scenario through nothing but the PUBLIC
+//!     `Worktree` API, no conductor or `run()` involved - the same "public API, no conductor"
+//!     boundary gaps 5 and 10 above already established for this file's other `Worktree`
+//!     methods.
+//!   - gap 14 (round 8, new cross-module seam): `RunCtx::integrate_plan_commits` is now a thin
+//!     wrapper over `integrate_plan_commits_inner` that tags EVERY hard Err with a new, private
+//!     `PLAN_LANDING_MARKER` sentinel (the fifth alongside the pre-existing PARKED/BUDGET/
+//!     DEGENERATE/MISMATCH markers), and `RunCtx::run_wave` gained a matching `Err(e) if
+//!     is_plan_landing_failed(&e)` arm that propagates the halt loudly but records NO per-unit
+//!     lesson and charges NO attempt - fixing `adv-u88c4-r7-plan-commit-errors-still-carry-no-
+//!     infra-fault-marker`, the same structural gap named at round 2 and round 4 and never
+//!     closed by three successive git-level-only fixes to the trigger. The implementer's own
+//!     `integrate_plan_commits_wraps_any_hard_error_with_the_plan_landing_marker` and `a_plan_
+//!     landing_infra_fault_halts_the_run_loudly_with_no_per_unit_lesson_or_attempt` force the
+//!     identical failure (a `record_plan_intent` store-append error) through a crate-PRIVATE
+//!     `FailingStore` double and a crate-PRIVATE `Stub` driver, both defined inside
+//!     `conductor.rs`'s own `#[cfg(test)] mod tests` - unreachable from outside the crate,
+//!     exactly the class of gap gap 1's own header names for `Stub`. `a_plan_landing_store_
+//!     failure_halts_the_run_loudly_with_no_per_unit_lesson_or_charged_attempt_at_the_periphery`
+//!     forces the SAME failure from OUTSIDE the crate, through nothing but the PUBLIC
+//!     `EventStore` trait every real `Deps::store` caller already implements against
+//!     (`FailingExternalStore`, an independently-authored double built only on that public
+//!     trait) plus the public `run()` entry and an independently-authored `AgentDriver` -
+//!     proving the new cross-module wiring is reachable by, and behaves correctly for, a
+//!     genuine outside caller of this library.
 
 use rigger::conductor::{
     run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, META_COMPENSATED,
@@ -136,7 +172,10 @@ use rigger::conductor::{
 use rigger::config::{AgentDef, Config, Gate, ReviewPanel, Stage};
 use rigger::contextgraph;
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision, Filter};
+use rigger::eventstore::{
+    Appended, Direction, Event, EventStore, ExpectedRevision, Filter, Position, Revision,
+    Subscription,
+};
 use rigger::gate::ExecRunner;
 use rigger::ledger;
 use rigger::worktree::{CherryPickOutcome, Worktree};
@@ -1858,5 +1897,299 @@ fn plan_stage_resumed_with_a_pre_existing_plan_landed_record_recovers_without_an
         driver.found.lock().unwrap().get("specs/97-preconfirmed.md"),
         Some(&"amend\n".to_string()),
         "a downstream stage must see the real, recovered amendment content"
+    );
+}
+
+/// Criterion 4, gap 13 (round 8, `sdet-u88c4-r8-surface-enumeration`; fix for `arch-u88c4-r7-
+/// classification-skip-is-single-shot-not-a-loop` reopened through a narrower trigger): the
+/// leftover-`CHERRY_PICK_HEAD` classification in `Worktree::cherry_pick_onto_run_branch` used to
+/// issue exactly ONE `--skip` before giving up. Git's own `--skip` only ever advances the
+/// sequencer past the CURRENT paused commit, and the very next one can ALSO be empty - an
+/// ordinary shape for a multi-commit plan amendment resumed after a crash - so a single attempt
+/// left `CHERRY_PICK_HEAD` still set and hard-errored on a state that was actually still
+/// resolvable. Round 8 replaces the single shot with a bounded `skips_left` loop.
+///
+/// WHY THIS, DISTINCT FROM THE IMPLEMENTER'S OWN TEST. `src/worktree.rs`'s own
+/// `cherry_pick_onto_run_branch_self_heals_a_leftover_marker_ahead_of_two_chained_empty_commits`
+/// proves the identical mechanics from INSIDE the crate's own private test module. This method's
+/// PUBLIC signature never changed (probe 1 - a grep for added `pub fn` lines - found nothing new
+/// since round 7), only its BODY did, so the fix is invisible to a bare surface scan; it earns a
+/// periphery-level proof anyway because `cherry_pick_onto_run_branch` is itself a public API an
+/// external consumer of this library calls directly - the same "public API, no conductor
+/// involved" boundary gaps 5 and 10 above already established for this file's other `Worktree`
+/// methods. Drives the exact same crash shape through nothing but the public `Worktree` /
+/// `CherryPickOutcome` API, independently authored, with no conductor or `run()` in the loop at
+/// all.
+#[test]
+fn cherry_pick_onto_run_branch_self_heals_a_leftover_marker_ahead_of_two_chained_empty_commits_at_the_periphery(
+) {
+    let repo = init_repo();
+    let repo_path = repo.path().to_str().unwrap().to_string();
+    let wt_dir = tempfile::tempdir().unwrap();
+    let wt_path = wt_dir.path().to_str().unwrap().to_string();
+    let wt = Worktree::create(&repo_path, &wt_path, "rigger/u/ext-plan-skip", "").unwrap();
+
+    // Three commits in the producer's own worktree, each touching its OWN path - no real
+    // conflicts among them.
+    let mut shas = Vec::new();
+    for name in ["98-a.md", "98-b.md", "98-c.md"] {
+        std::fs::create_dir_all(wt_dir.path().join("specs")).unwrap();
+        std::fs::write(
+            wt_dir.path().join("specs").join(name),
+            format!("amend {name}\n"),
+        )
+        .unwrap();
+        assert!(std::process::Command::new("git")
+            .arg("-C")
+            .arg(&wt_path)
+            .args(["add", "-A"])
+            .status()
+            .unwrap()
+            .success());
+        assert!(std::process::Command::new("git")
+            .arg("-C")
+            .arg(&wt_path)
+            .args(["commit", "-q", "-m", &format!("amend {name}")])
+            .status()
+            .unwrap()
+            .success());
+        shas.push(run_git(&wt_path, &["rev-parse", "HEAD"]));
+    }
+    assert_eq!(shas.len(), 3);
+
+    // Pre-land the FIRST and SECOND commits' content directly on the run branch, independent of
+    // the interrupted sequence below - so replaying the full sequence pauses on the first (now
+    // empty) commit, and a single skip lands on the second, which is ALSO empty: exactly the
+    // "2+ chained empty commits ahead of the marker" shape.
+    assert!(std::process::Command::new("git")
+        .arg("-C")
+        .arg(&repo_path)
+        .args(["cherry-pick", &shas[0], &shas[1]])
+        .status()
+        .unwrap()
+        .success());
+    for name in ["98-a.md", "98-b.md"] {
+        assert!(
+            repo.path().join("specs").join(name).exists(),
+            "precondition: {name}'s content is already present before the interrupted \
+             sequence starts"
+        );
+    }
+
+    // Simulate the crash: run the RAW multi-sha cherry-pick directly against the run branch
+    // (bypassing the public API entirely, via a bare git subprocess), so it naturally pauses on
+    // the first, now-empty commit - exactly the state a process death right after the pause
+    // (before even one skip ran) leaves, never a synthetic one.
+    let raw = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&repo_path)
+        .args(["cherry-pick", &shas[0], &shas[1], &shas[2]])
+        .status()
+        .unwrap();
+    assert!(
+        !raw.success(),
+        "the raw sequence must pause on the empty first commit, not succeed outright"
+    );
+    assert!(
+        repo.path().join(".git").join("CHERRY_PICK_HEAD").exists(),
+        "precondition: a leftover cherry-pick sequencer marker is left in progress"
+    );
+    assert!(
+        run_git(&repo_path, &["ls-files", "--unmerged"]).is_empty(),
+        "precondition: the pause carries ZERO unmerged files - it is not a conflict"
+    );
+
+    // A FRESH call through the PUBLIC API, with the ORIGINAL (identity) shas exactly as a
+    // resumed process recomputing `commits_since_base` would - must self-heal the leftover
+    // marker THROUGH BOTH chained empty commits and complete, never hard-error after only one
+    // skip.
+    match wt.cherry_pick_onto_run_branch(&shas) {
+        Ok(CherryPickOutcome::Picked(_)) => {}
+        Ok(CherryPickOutcome::Conflict(detail)) => {
+            panic!("a self-healed, non-conflicting sequence must not read as a conflict: {detail}")
+        }
+        Err(e) => panic!(
+            "a leftover marker ahead of two chained empty commits must self-heal through the \
+             public API, never hard-error: {:?}",
+            e.0
+        ),
+    }
+    assert!(
+        !repo.path().join(".git").join("CHERRY_PICK_HEAD").exists(),
+        "no cherry-pick is left in progress after the self-healed retry"
+    );
+    for name in ["98-a.md", "98-b.md", "98-c.md"] {
+        assert!(
+            repo.path().join("specs").join(name).exists(),
+            "every commit's content must be present on the run branch after the self-healed \
+             retry completes the interrupted sequence: missing {name}"
+        );
+    }
+    wt.remove().unwrap();
+}
+
+/// A public [`EventStore`] wrapper that fails ONE specific append - a batch containing a
+/// `DecisionMade` whose `id` field is EXACTLY `fail_decision_id` - and delegates every other
+/// call straight to `inner`. Authored independently from `conductor.rs`'s own crate-private
+/// `FailingStore` test double (spec 32: the periphery layer never reuses an implementer's
+/// crate-internal test doubles, since an external consumer of this library could never reach
+/// them) - the SAME technique, built entirely on the PUBLIC `EventStore` trait this crate
+/// exports for exactly this purpose (`Deps::store: &'a dyn EventStore`).
+///
+/// Matches on the parsed `id` field, NOT a raw substring of the serialized bytes: the failure
+/// this forces (`record_plan_intent`'s own store-append error) gets QUOTED, verbatim, inside
+/// the very error message the conductor's own fallback path would embed in a LATER
+/// `LessonLearned` summary if the regression this test exists to catch ever reappeared - a raw
+/// substring match on `"plan-intent:"` would ALSO poison that later, unrelated append (since
+/// the quoted error text itself contains the substring), silently producing zero `LessonLearned`
+/// events for the WRONG reason (the double eating its own error message) and masking the exact
+/// regression under test. The precise `id`-field match fails only the one real intent-record
+/// append and never anything downstream that merely mentions it.
+struct FailingExternalStore<'a> {
+    inner: &'a dyn EventStore,
+    fail_decision_id: &'static str,
+}
+
+impl EventStore for FailingExternalStore<'_> {
+    fn append(
+        &self,
+        stream: &str,
+        expected: ExpectedRevision,
+        events: &[Event],
+    ) -> Result<Appended, rigger::eventstore::Error> {
+        let hits = events.iter().any(|e| {
+            e.type_ == contextgraph::TYPE_DECISION_MADE
+                && serde_json::from_slice::<Value>(&e.data)
+                    .ok()
+                    .and_then(|v| v.get("id").and_then(Value::as_str).map(str::to_string))
+                    .as_deref()
+                    == Some(self.fail_decision_id)
+        });
+        if hits {
+            return Err(rigger::eventstore::Error::Backend(format!(
+                "simulated store failure appending the DecisionMade id {:?}",
+                self.fail_decision_id
+            )));
+        }
+        self.inner.append(stream, expected, events)
+    }
+    fn read_stream(
+        &self,
+        stream: &str,
+        from: Revision,
+        dir: Direction,
+    ) -> Result<Vec<Event>, rigger::eventstore::Error> {
+        self.inner.read_stream(stream, from, dir)
+    }
+    fn read_all(
+        &self,
+        from: Position,
+        dir: Direction,
+        filter: &Filter,
+    ) -> Result<Vec<Event>, rigger::eventstore::Error> {
+        self.inner.read_all(from, dir, filter)
+    }
+    fn subscribe_all(
+        &self,
+        from: Position,
+        filter: &Filter,
+    ) -> Result<Subscription, rigger::eventstore::Error> {
+        self.inner.subscribe_all(from, filter)
+    }
+    fn subscribe_stream(
+        &self,
+        stream: &str,
+        from: Revision,
+    ) -> Result<Subscription, rigger::eventstore::Error> {
+        self.inner.subscribe_stream(stream, from)
+    }
+}
+
+/// Criterion 4, gap 14 (round 8, new cross-module seam `is_plan_landing_failed` / `run_wave`):
+/// `RunCtx::integrate_plan_commits` is now a thin wrapper over `integrate_plan_commits_inner`
+/// that tags EVERY hard Err with a new, private `PLAN_LANDING_MARKER` sentinel (the fifth
+/// alongside the pre-existing PARKED/BUDGET/DEGENERATE/MISMATCH markers), and `RunCtx::run_wave`
+/// gained a matching arm that propagates the halt loudly but records NO per-unit lesson and
+/// charges NO attempt - fixing `adv-u88c4-r7-plan-commit-errors-still-carry-no-infra-fault-
+/// marker`, the same structural gap named at round 2 and round 4 and never closed by three
+/// successive git-level-only fixes to the trigger while the missing marker itself went
+/// unaddressed.
+///
+/// WHY THIS, DISTINCT FROM THE IMPLEMENTER'S OWN TESTS. `conductor.rs`'s own
+/// `integrate_plan_commits_wraps_any_hard_error_with_the_plan_landing_marker` and `a_plan_
+/// landing_infra_fault_halts_the_run_loudly_with_no_per_unit_lesson_or_attempt` force the
+/// identical failure (a `record_plan_intent` store-append error) through a crate-PRIVATE
+/// `FailingStore` double and a crate-PRIVATE `Stub` driver, both defined inside `conductor.rs`'s
+/// own `#[cfg(test)] mod tests` - unreachable from outside the crate, exactly the class of gap
+/// this file's own gap 1 names for `Stub`. This test forces the SAME failure from OUTSIDE the
+/// crate, through nothing but the PUBLIC `EventStore` trait every real `Deps::store` caller
+/// already implements against (`FailingExternalStore`, above - independently authored, built
+/// only on that public trait) plus the public `run()` entry and an independently-authored
+/// `AgentDriver` - proving the new cross-module wiring is reachable by, and behaves correctly
+/// for, a genuine outside caller of this library, not merely from within the crate's own
+/// private test module. The externally-observable contract is proven via nothing but public
+/// reads of the real store: no `UnitFailed`, no `UnitEscalated`, no `LessonLearned`.
+#[test]
+fn a_plan_landing_store_failure_halts_the_run_loudly_with_no_per_unit_lesson_or_charged_attempt_at_the_periphery(
+) {
+    let repo = init_repo();
+    let repo_path = repo.path().to_str().unwrap().to_string();
+
+    let mut cfg = Config::default();
+    cfg.agents.insert("planner".into(), agent("planner"));
+    cfg.workflow.stages.insert("plan".into(), plan_stage());
+
+    let real_store = Store::open(":memory:").unwrap();
+    let store = FailingExternalStore {
+        inner: &real_store,
+        fail_decision_id: "plan-intent:plan",
+    };
+    let driver = PlanAmendDriver::new("planner").commit(&[("specs/98-halt.md", "amend\n")]);
+    let deps = Deps {
+        store: &store,
+        driver: &driver,
+        gates: &ExecRunner,
+        repo: repo_path.clone(),
+        grounder: None,
+        graph: None,
+        criteria: Vec::new(),
+    };
+
+    let err = match run(&cfg, &deps) {
+        Ok(rs) => panic!(
+            "a plan-landing store failure must halt the run, not succeed: {:?}",
+            rs.units.get("plan").map(|u| u.status)
+        ),
+        Err(e) => e,
+    };
+    assert!(
+        err.0.contains("\"plan\""),
+        "the operator-facing halt must name the producer unit: {:?}",
+        err.0
+    );
+
+    // The externally-observable contract, proven via nothing but public reads of the real
+    // store: a plan-landing infra-fault halt must charge the unit NEITHER a lesson NOR an
+    // attempt - the same treatment the pre-existing degenerate-reviewer and verdict-channel-
+    // mismatch halts already get.
+    let events = real_store
+        .read_all(0, Direction::Forward, &Filter::default())
+        .unwrap();
+    assert!(
+        !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
+        "a plan-landing infra-fault halt must not charge the unit an attempt (no UnitFailed)"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| e.type_ == ledger::TYPE_UNIT_ESCALATED),
+        "a plan-landing infra-fault halt must not escalate the unit either"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED),
+        "a plan-landing infra-fault halt must record NO per-unit lesson - it would \
+         misattribute a conductor/git-plumbing fault to the producer unit"
     );
 }
