@@ -2942,3 +2942,320 @@ fn a_crash_right_after_landing_succeeds_resumes_and_completes_row_4_after_record
     assert_eq!(final_a, "A_WORK\n");
     drop(repo);
 }
+
+// ============================================================================================
+// Round 5 (adjudicator REJECT, round 4: `d40e2e4`, upheld
+// sdet-u88c1r4-pending-landing-hides-owed-regeneration /
+// adv-u88c1r4-independently-confirms-pending-landing-hides-regen). Round 4's OWN new
+// entry-level fast path (`integrate_and_emit`'s `files.is_empty()` / `pending_landing_for`
+// check, GAP 9's own new code) treated "row 4 (landing) is closed" as "fully integrated"
+// without ever consulting row 3 (the owed regeneration): whenever a mixed-conflict episode's
+// placeholder content had already landed but the owed regeneration never completed (an
+// ordinary regenerate-command failure right after the land is enough, no crash required),
+// the unit was reported `Integrated` while the durable `conflict_regenerate_pending` marker
+// sat orphaned and the `accept_incoming` placeholder shipped permanently. Neither of GAP 9's
+// own row-4 fixtures above can catch this: both use `SimpleWorkDriver` - no conflict, no
+// owed regeneration ever in play. These two fixtures drive the row-4-closed-but-row-3-owed
+// shape through EACH of the fast path's two recovery sub-paths - `pending_landing_for`
+// returning `None` (row 4's after-record already landed too) and returning `Some` (row 4's
+// mutation already landed for real but only its OWN after-record was still open) - the same
+// root cause, reached via its sibling branch, closed the identical way.
+// ============================================================================================
+
+/// Produces a MIXED conflict (`c.rs` source, `gen.txt` regenerable) - the same shape
+/// `MixedConflictRow2Driver` produces - then, within the SAME call, resolves the source
+/// conflict for real on the first `~retry` implementer spawn, so the merge/land loop drives
+/// all the way to a genuine, successful land of the resolved tree (unlike
+/// `MixedConflictRow2Driver`, which a failing store aborts before that spawn ever runs).
+/// Shared by both round 5 fixtures below.
+struct MixedConflictThenResolveDriver {
+    repo: String,
+}
+
+impl AgentDriver for MixedConflictThenResolveDriver {
+    fn spawn(
+        &self,
+        _a: &AgentDef,
+        _prompt: &str,
+        opts: &SpawnOpts,
+        _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+    ) -> Result<AgentResult, Error> {
+        if opts.id.contains("/implementer#") {
+            if opts.id.contains("~retry") {
+                std::fs::write(Path::new(&opts.dir).join("c.rs"), "MINE_C\n").unwrap();
+                git_commit_paths(&opts.dir, &["c.rs"], "resolved the source conflict");
+                return Ok(AgentResult::default());
+            }
+            std::fs::write(Path::new(&self.repo).join("c.rs"), "SIBLING_C\n").unwrap();
+            std::fs::write(Path::new(&self.repo).join("gen.txt"), "SIBLING_GEN\n").unwrap();
+            git_commit_all(&self.repo, "sibling landed directly on the run branch");
+            std::fs::write(Path::new(&opts.dir).join("c.rs"), "MINE_C\n").unwrap();
+            std::fs::write(Path::new(&opts.dir).join("gen.txt"), "MINE_GEN\n").unwrap();
+            return Ok(AgentResult::default());
+        }
+        Ok(review_or_adjudicate(opts))
+    }
+}
+
+/// Shared config for both round 5 fixtures: one regenerate rule on `gen.txt`, room for the
+/// one conflict-resolution retry each drives.
+fn mixed_cfg() -> Config {
+    let mut cfg = Config::default();
+    cfg.workflow.defaults.max_retries = 3;
+    cfg.workflow.regenerate = vec![RegenerateRule {
+        paths: vec!["gen.txt".into()],
+        run: "printf 'REGENERATED\\n' > gen.txt".into(),
+    }];
+    cfg.agents.insert("worker".into(), agent("worker"));
+    cfg.agents.insert("lens".into(), agent("lens"));
+    cfg.agents.insert("judge".into(), agent("judge"));
+    cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
+    cfg.workflow
+        .stages
+        .insert("unit-a".into(), mk_stage("unit-a", "g"));
+    cfg
+}
+
+/// Round 5, the `None`-arm boundary (`sdet-u88c1r4-pending-landing-hides-owed-regeneration`'s
+/// own repro shape): row 4 (landing) closes for real AND its after-record lands too (no store
+/// failure anywhere) - but row 3's regeneration command itself fails right after, an ordinary
+/// gate failure, no crash needed. On resume, `pending_landing_for` correctly reads `None`
+/// (both of row 4's records are already durable) while `regenerate_pending_for` still names
+/// `gen.txt` - the entry-level fast path this round fixes.
+#[test]
+fn a_regenerate_command_failure_right_after_landing_completes_row_3_on_resume_when_row_4_is_already_closed(
+) {
+    let repo = init_repo();
+    let repo_path = repo.path().to_str().unwrap().to_string();
+    let cfg = mixed_cfg();
+    let store = Store::open(":memory:").unwrap();
+    let driver = MixedConflictThenResolveDriver {
+        repo: repo_path.clone(),
+    };
+    let runner = FailRegenerateOnceRunner {
+        failed_once: Mutex::new(false),
+    };
+    {
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let err = match run(&cfg, &deps) {
+            Ok(_) => {
+                panic!("call 1 must fail - the regenerate gate fails once, right after landing")
+            }
+            Err(e) => e,
+        };
+        assert!(
+            err.0.contains("simulated crash"),
+            "call 1 must fail for the SIMULATED gate reason, not some other defect; got: {}",
+            err.0
+        );
+    }
+    let events_after_call_1 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    assert!(
+        has_status_marker(&events_after_call_1, "integrate-landed"),
+        "row 4 must already be FULLY closed (both before- and after-record) before this \
+         fix's own defect can manifest - `pending_landing_for` must read `None` on resume; \
+         events: {events_after_call_1:?}"
+    );
+    assert!(
+        has_status_marker(
+            &events_after_call_1,
+            "integrate-conflict-regenerate-pending"
+        ),
+        "row 3's before-record must already be durable; events: {events_after_call_1:?}"
+    );
+    assert!(
+        !has_status_marker(&events_after_call_1, "integrate-conflict-regenerate-commit"),
+        "row 3's after-record must NOT land - the regenerate command itself failed; \
+         events: {events_after_call_1:?}"
+    );
+    // The placeholder content already landed on the run branch for real - exactly the
+    // defect's own shape: wrong content already shipped, before the resumed call ever fixes
+    // it.
+    let gen_before_resume = std::fs::read_to_string(Path::new(&repo_path).join("gen.txt")).unwrap();
+    assert_eq!(
+        gen_before_resume, "SIBLING_GEN\n",
+        "the accept_incoming placeholder must already be on the run branch, not yet the real \
+         regenerated output"
+    );
+
+    let driver2 = PanicOnAnyImplementerSpawnDriver;
+    let deps2 = Deps {
+        store: &store,
+        driver: &driver2,
+        gates: &runner,
+        repo: repo_path.clone(),
+        grounder: None,
+        graph: None,
+        criteria: Vec::new(),
+    };
+    let rs = run(&cfg, &deps2).expect("call 2 must resume, catch row 3 up, and land it for real");
+    assert_eq!(rs.units["unit-a"].status, ledger::Status::Integrated);
+    assert_eq!(
+        rs.units["unit-a"].attempts, 0,
+        "conflict resolution is infrastructure recovery, never a charged remediation attempt"
+    );
+
+    let events_after_call_2 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    assert_eq!(
+        count_status_marker(&events_after_call_2, "integrate-landed"),
+        2,
+        "row 4 records the SEPARATE land of the follow-up regenerate commit too (a genuinely \
+         new commit, a genuinely new pass) - never re-recording call 1's own land a second \
+         time; events: {events_after_call_2:?}"
+    );
+    assert!(
+        has_status_marker(&events_after_call_2, "integrate-conflict-regenerate-commit"),
+        "row 3's after-record must land on the resumed call that actually regenerated; \
+         events: {events_after_call_2:?}"
+    );
+    let final_c = std::fs::read_to_string(Path::new(&repo_path).join("c.rs")).unwrap();
+    assert_eq!(final_c, "MINE_C\n");
+    let final_gen = std::fs::read_to_string(Path::new(&repo_path).join("gen.txt")).unwrap();
+    assert_eq!(
+        final_gen, "REGENERATED\n",
+        "THE defect this round fixes: the fast path must never report `Integrated` while the \
+         placeholder content still ships instead of the real regenerated output"
+    );
+    drop(repo);
+}
+
+/// Round 5, the `Some`-arm boundary - the SAME root cause reached through the fast path's
+/// OTHER recovery sub-path: `Worktree::land` itself succeeds for real (a genuine `git merge`
+/// onto the run branch) but the SPECIFIC append that would durably record
+/// `integrate-landed` is what the simulated crash refuses - so row 3's regeneration is never
+/// even ATTEMPTED in call 1 (it runs strictly after `record_landed` in the source). On
+/// resume, `pending_landing_for` reads `Some` (an open landing-intent, its own after-record
+/// still missing) while `regenerate_pending_for` still names `gen.txt` - the sibling fast
+/// path this round also fixes (`d40e2e4`'s own new code left this branch just as exposed as
+/// the `None` arm above, never named by the adjudicator's own repro but the identical
+/// defect).
+#[test]
+fn a_crash_right_after_landing_succeeds_with_owed_regeneration_completes_row_3_on_resume() {
+    let repo = init_repo();
+    let repo_path = repo.path().to_str().unwrap().to_string();
+    let cfg = mixed_cfg();
+    let store = Store::open(":memory:").unwrap();
+    let driver = MixedConflictThenResolveDriver {
+        repo: repo_path.clone(),
+    };
+    {
+        let failing_store = FailAppendContaining {
+            inner: &store,
+            needle: "integrate-landed",
+        };
+        let deps = Deps {
+            store: &failing_store,
+            driver: &driver,
+            gates: &rigger::gate::ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let err = match run(&cfg, &deps) {
+            Ok(_) => panic!("call 1 must fail - the store refuses the landed append"),
+            Err(e) => e,
+        };
+        assert!(
+            err.0.contains("simulated crash"),
+            "call 1 must fail for the SIMULATED store reason, not some other defect; got: {}",
+            err.0
+        );
+    }
+    // The land itself already ran for real - the run branch's own working tree already has
+    // the resolved source content - independent of the log append that failed right after it.
+    let c_before_resume = std::fs::read_to_string(Path::new(&repo_path).join("c.rs")).unwrap();
+    assert_eq!(
+        c_before_resume, "MINE_C\n",
+        "Worktree::land must already have merged the resolved tree onto the run branch for \
+         real before this crash"
+    );
+    let gen_before_resume = std::fs::read_to_string(Path::new(&repo_path).join("gen.txt")).unwrap();
+    assert_eq!(
+        gen_before_resume, "SIBLING_GEN\n",
+        "row 3 was never even ATTEMPTED in call 1 (it runs strictly after `record_landed`, \
+         which is the very append this crash refuses) - the placeholder must still be what \
+         landed"
+    );
+    let events_after_call_1 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    assert!(
+        has_status_marker(&events_after_call_1, "integrate-landing-intent"),
+        "row 4's before-record must already be present; events: {events_after_call_1:?}"
+    );
+    assert!(
+        !has_status_marker(&events_after_call_1, "integrate-landed"),
+        "row 4's after-record must NOT land - its own append was the simulated failure; \
+         events: {events_after_call_1:?}"
+    );
+    assert!(
+        has_status_marker(
+            &events_after_call_1,
+            "integrate-conflict-regenerate-pending"
+        ),
+        "row 3's before-record must already be durable (recorded before `accept_incoming`, \
+         long before this call ever reaches the land); events: {events_after_call_1:?}"
+    );
+    assert!(
+        !has_status_marker(&events_after_call_1, "integrate-conflict-regenerate-commit"),
+        "row 3's after-record must NOT be present - regeneration was never attempted this \
+         call; events: {events_after_call_1:?}"
+    );
+
+    let driver2 = PanicOnAnyImplementerSpawnDriver;
+    let deps2 = Deps {
+        store: &store,
+        driver: &driver2,
+        gates: &rigger::gate::ExecRunner,
+        repo: repo_path.clone(),
+        grounder: None,
+        graph: None,
+        criteria: Vec::new(),
+    };
+    let rs = run(&cfg, &deps2)
+        .expect("call 2 must resume, finish row 4's after-record, catch row 3 up, and land it");
+    assert_eq!(rs.units["unit-a"].status, ledger::Status::Integrated);
+    assert_eq!(
+        rs.units["unit-a"].attempts, 0,
+        "conflict resolution is infrastructure recovery, never a charged remediation attempt"
+    );
+
+    let events_after_call_2 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    assert_eq!(
+        count_status_marker(&events_after_call_2, "integrate-landing-intent"),
+        2,
+        "TWO genuinely separate landings occur here (the ORIGINAL resolved-source merge, \
+         already durably recorded before the crash, and the follow-up regenerate commit's \
+         OWN fresh merge/land pass this resume drives) - each keyed by its own `pass`, so \
+         the before-record fires once per landing, never a double-record of the SAME one; \
+         events: {events_after_call_2:?}"
+    );
+    assert_eq!(
+        count_status_marker(&events_after_call_2, "integrate-landed"),
+        2,
+        "row 4 fires once to finish the ORIGINAL land's after-record and again for the \
+         SEPARATE land of the follow-up regenerate commit; events: {events_after_call_2:?}"
+    );
+    assert!(
+        has_status_marker(&events_after_call_2, "integrate-conflict-regenerate-commit"),
+        "row 3's after-record must land on the resumed call that actually regenerated; \
+         events: {events_after_call_2:?}"
+    );
+    let final_c = std::fs::read_to_string(Path::new(&repo_path).join("c.rs")).unwrap();
+    assert_eq!(final_c, "MINE_C\n");
+    let final_gen = std::fs::read_to_string(Path::new(&repo_path).join("gen.txt")).unwrap();
+    assert_eq!(
+        final_gen, "REGENERATED\n",
+        "the SAME defect class, reached through the fast path's OTHER recovery sub-path: \
+         never report `Integrated` while the placeholder content still ships instead of the \
+         real regenerated output"
+    );
+    drop(repo);
+}
