@@ -7914,13 +7914,56 @@ impl RunCtx<'_> {
         let mut already_landed: Option<(u32, String, String)> = None;
         if files.is_empty() {
             match self.pending_landing_for(&st.name, attempt) {
-                None => return Ok(Integration::default()),
+                None => {
+                    // Round 5 fix (sdet-u88c1r4-pending-landing-hides-owed-regeneration):
+                    // `None` here means row 4 (landing) is fully closed - but says nothing
+                    // about row 3 (the follow-up real regeneration), which this arm used to
+                    // treat as implied by "nothing left to land." An ordinary regenerate-
+                    // command failure right after an otherwise-successful land is enough to
+                    // leave [`Self::regenerate_pending_for`] non-empty here with nothing
+                    // further to merge - so check it before declaring the unit done, exactly
+                    // mirroring the merge/land loop's own post-land owed-check below.
+                    if !self.catch_up_owed_regeneration(wt, &st.name, attempt)? {
+                        return Ok(Integration::default());
+                    }
+                    // The catch-up made a real regenerate commit on the worktree's own
+                    // branch, still unlanded - recompute `files` and fall through to the
+                    // ordinary merge/land loop below (`already_landed` stays `None`), which
+                    // will merge and land this commit for real (a trivial fast-forward,
+                    // since nothing else changed base-side) and re-check owed once more
+                    // (now empty) before breaking.
+                    files = wt.changed_since_base()?;
+                }
                 Some((pass, unit_tip, run_tip)) => {
                     // Recompute the ACTUAL files this already-landed merge touched from the
                     // OLDER base it merged FROM (the current base has since absorbed them,
                     // which is exactly why `changed_since_base` read empty above).
                     files = wt.committed_diff_names(&run_tip)?;
-                    already_landed = Some((pass, unit_tip, run_tip));
+                    // Row 5 fix, generalized to this sibling recovery sub-path (the SAME
+                    // root cause: "row 4 closed" was treated as "fully integrated" without
+                    // ever consulting row 3): `Worktree::land` already fast-forwarded the
+                    // run branch for real here too - this branch exists ONLY to finish its
+                    // still-open after-record - so row 3 can be owed here exactly as it can
+                    // in the `None` arm above (e.g. a crash between `wt.land()` succeeding
+                    // and its own `record_landed` append, before regeneration was even
+                    // attempted). When nothing is owed this is UNCHANGED from before this
+                    // fix: `already_landed` carries `(pass, unit_tip, run_tip)` down to the
+                    // shared finalization below, which records row 4's after-record and
+                    // resolves `(commit, pre_merge)` to `(unit_tip, run_tip)`. When
+                    // something IS owed, finish that same after-record HERE instead (an
+                    // idempotently-keyed call - never a duplicate of the shared
+                    // finalization's own, since `already_landed` stays `None` and that
+                    // finalization is never reached for this call), catch row 3 up, and
+                    // fall through to the ordinary merge/land loop below to land the fresh
+                    // regenerate commit for real, exactly like the `None` arm above.
+                    if self.regenerate_pending_for(&st.name, attempt).is_empty() {
+                        already_landed = Some((pass, unit_tip, run_tip));
+                    } else {
+                        self.record_landed(&st.name, attempt, pass, &unit_tip)?;
+                        self.clear_pending_landing(&st.name, attempt);
+                        self.catch_up_owed_regeneration(wt, &st.name, attempt)?;
+                        files = wt.changed_since_base()?;
+                    }
                 }
             }
         }
@@ -8368,6 +8411,48 @@ impl RunCtx<'_> {
         } else {
             Ok(committed)
         }
+    }
+
+    /// Round 5 fix for sdet-u88c1r4-pending-landing-hides-owed-regeneration: the shared
+    /// catch-up mutation a resumed [`Self::integrate_and_emit`] call runs when it discovers
+    /// row 4 (landing) is ALREADY closed - by either of its own two recovery sub-paths,
+    /// [`Self::pending_landing_for`] returning `None` (an earlier attempt's land AND its own
+    /// after-record both completed) or returning `Some` (the land completed for real but only
+    /// its after-record was still open, now finished by the caller just before this runs) -
+    /// while [`Self::regenerate_pending_for`] still names paths nobody ever regenerated for
+    /// real. An ordinary regenerate-command failure (or a store failure on its own after-
+    /// record) right after an otherwise-successful land is enough to reach here, no crash
+    /// required: both recovery sub-paths used to treat "row 4 closed" as "fully integrated,"
+    /// mirroring only the merge/land loop's OWN post-land owed-check (`conductor.rs` around
+    /// the loop's `Ready(c)` arm) rather than ALSO running it here - so the durable
+    /// `conflict_regenerate_pending` marker sat orphaned and the `accept_incoming` placeholder
+    /// content shipped permanently. Mirrors that same loop check exactly (regenerate, record,
+    /// clear) but does NOT land the resulting commit itself - the caller must still let the
+    /// ordinary merge/land loop run once more (trivially, a fast-forward) to land it for real,
+    /// so `files` is left for the caller to recompute once this returns. The episode tag
+    /// (`record_regenerate_commit`'s pairing key with the ORIGINAL `record_regenerate_pending`
+    /// before-record) can never be recovered here - the pending map holds only paths, not the
+    /// episode string that produced them, and by construction this call is reached only from
+    /// a DIFFERENT, later invocation than the one that wrote it - so a fresh tag scoped to
+    /// this catch-up's own real regenerate commit (guaranteed unique; a repeated idempotent
+    /// no-op naturally reuses the same sha and so the same, correctly-deduplicated tag) is
+    /// used instead of trying to reconstruct a value this call structurally cannot know.
+    /// Returns whether anything was actually owed (and thus regenerated) so the caller can
+    /// decide whether to recompute `files` at all.
+    fn catch_up_owed_regeneration(
+        &self,
+        wt: &Worktree,
+        unit: &str,
+        attempt: u32,
+    ) -> Result<bool, Error> {
+        let owed = self.regenerate_pending_for(unit, attempt);
+        if owed.is_empty() {
+            return Ok(false);
+        }
+        let regen_sha = self.regenerate_conflicted_paths(wt, unit, &owed)?;
+        self.record_regenerate_commit(unit, attempt, &format!("resume-{regen_sha}"), &regen_sha)?;
+        self.clear_regenerate_pending(unit, attempt);
+        Ok(true)
     }
 
     /// The regenerable paths recorded so far (durably, [`STATUS_INTEGRATE_CONFLICT_REGEN`])
