@@ -74,6 +74,19 @@
 //!     `run()` entry of what the adversary named "the ONLY safety boundary a producer commit
 //!     crosses" (`plan_stage_commit_reverting_its_own_out_of_scope_touch_still_fails_the_
 //!     stage_at_the_periphery`).
+//!   - gap 8 (round 5, `adv-u88c4-r4-resumed-none-landing-is-permanently-uncompensable`): a
+//!     new public API, `Worktree::already_landed_commits` (`src/worktree.rs`), recovers the
+//!     real run-branch commit a crashed-before-emit prior attempt already landed - the
+//!     implementer's own inside-out regression
+//!     (`integrate_plan_commits_is_idempotent_on_a_resumed_already_landed_worktree`,
+//!     conductor.rs) proves the private seam calls it and gets `Landed` back, but never that
+//!     the recovered sha survives all the way through the public `run()` entry into a REAL,
+//!     revertible compensation - the exact end-to-end guarantee the bug broke (a unit's own
+//!     already-landed content becoming silently, permanently uncompensable). Proven here by
+//!     pre-landing an amendment directly through the public `Worktree::cherry_pick_onto_run_
+//!     branch` API (standing in for the crashed prior attempt), then driving the SAME branch
+//!     through a fresh `run()` and a real compensating unit
+//!     (`plan_stage_resumed_after_a_crash_recovers_the_real_sha_and_stays_compensable`).
 
 use rigger::conductor::{
     run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, META_COMPENSATED,
@@ -990,5 +1003,196 @@ fn plan_stage_commit_reverting_its_own_out_of_scope_touch_still_fails_the_stage_
         std::fs::read_to_string(repo.path().join(touched_path)).unwrap(),
         "seed\n",
         "the pre-existing path must be untouched by a refused plan-stage commit sequence"
+    );
+}
+
+/// Criterion 4, gap 8 (round 5, `adv-u88c4-r4-resumed-none-landing-is-permanently-
+/// uncompensable`): a crash between a producer's cherry-pick REALLY landing an amendment and
+/// the `UnitIntegrated` that would have recorded it must not make that real, permanent commit
+/// silently, permanently uncompensable - indistinguishable from a producer that never touched
+/// the run branch at all. Simulated here entirely through PUBLIC API a crashed-and-resumed
+/// process would itself use: the amendment is pre-landed for real via `Worktree::cherry_pick_
+/// onto_run_branch` directly (standing in for the crashed prior attempt's own successful git
+/// mutation), then a fresh `run()` adopts the SAME producer branch - its own worktree still
+/// carries only the ORIGINAL (pre-landing) commit identity, so the conductor's `integrate_plan_
+/// commits` must recover what already landed rather than discarding it as a bare no-artifact
+/// marker. Proven both by the event's own shape AND by a REAL downstream compensation actually
+/// reverting the recovered commit from the run branch - the concrete, business-relevant
+/// consequence permanently uncompensable content would otherwise have.
+#[test]
+fn plan_stage_resumed_after_a_crash_recovers_the_real_sha_and_stays_compensable() {
+    let repo = init_repo();
+    let repo_path = repo.path().to_str().unwrap().to_string();
+
+    // A PRIOR window's planner committed its amendment onto the deterministic `rigger/u/plan`
+    // branch, via its own throwaway worktree - never touching the run branch directly.
+    let seed_dir = tempfile::tempdir().unwrap();
+    let seed = Worktree::create(
+        &repo_path,
+        seed_dir.path().to_str().unwrap(),
+        "rigger/u/plan",
+        "",
+    )
+    .unwrap();
+    std::fs::create_dir_all(seed_dir.path().join("specs")).unwrap();
+    std::fs::write(
+        seed_dir.path().join("specs").join("97-resumed.md"),
+        "amend\n",
+    )
+    .unwrap();
+    assert!(std::process::Command::new("git")
+        .arg("-C")
+        .arg(seed_dir.path())
+        .args(["add", "-A"])
+        .status()
+        .unwrap()
+        .success());
+    // A FIXED, deliberately old author/committer date - never the wall-clock "now" a bare
+    // `git commit` would use - so the cherry-pick just below (which stamps its OWN committer
+    // time as real "now") cannot coincidentally reproduce a byte-identical commit object (the
+    // same-committer-second case `CherryPickOutcome::Picked`'s own doc comment names). A real
+    // crash-and-later-resume always spans wall-clock seconds, so the two dates would never
+    // coincide in production; this only guards the test against a same-second fluke.
+    assert!(std::process::Command::new("git")
+        .arg("-C")
+        .arg(seed_dir.path())
+        .args(["commit", "-q", "-m", "amend"])
+        .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00")
+        .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00")
+        .status()
+        .unwrap()
+        .success());
+    let original_shas = seed.commits_since_base().unwrap();
+    assert_eq!(original_shas.len(), 1);
+
+    // The CRASHED PRIOR ATTEMPT's own successful git mutation: land it for real, through the
+    // same public API `integrate_plan_commits` itself calls - simulating a process death
+    // strictly AFTER this succeeds but BEFORE the caller ever records it.
+    let prior_landed = match seed.cherry_pick_onto_run_branch(&original_shas).unwrap() {
+        CherryPickOutcome::Picked(landed) => landed,
+        CherryPickOutcome::Conflict(detail) => {
+            panic!("a clean specs/-only cherry-pick must not conflict: {detail}")
+        }
+    };
+    assert_eq!(prior_landed.len(), 1, "one commit in, one commit landed");
+    let prior_landed_sha = prior_landed[0].clone();
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("specs").join("97-resumed.md")).unwrap(),
+        "amend\n",
+        "precondition: the amendment's content is already on the run branch before run() starts"
+    );
+    seed.remove().unwrap(); // only the transient dir goes; the branch persists.
+
+    // A FRESH run() adopts the SAME producer branch. Its own worktree still carries only the
+    // ORIGINAL (pre-landing) commit identity - `commits_since_base` is identity-based, so it
+    // recomputes the exact same non-empty `original_shas` even though the content already
+    // landed under a different, cherry-pick-minted object. The planner's own spawn commits
+    // NOTHING new (no `.commit(...)` calls) - there is nothing left for it to do; a genuine
+    // resume never re-does work a crashed attempt already finished at the git level.
+    let mut cfg = Config::default();
+    cfg.agents.insert("planner".into(), agent("planner"));
+    cfg.agents
+        .insert("checker_impl".into(), agent("checker_impl"));
+    cfg.agents.insert("judge".into(), agent("judge"));
+    cfg.workflow.gates.insert(
+        "g".into(),
+        Gate {
+            run: "true".into(),
+            kind: "core".into(),
+            inputs: Vec::new(),
+        },
+    );
+    cfg.workflow.stages.insert("plan".into(), plan_stage());
+    cfg.workflow.stages.insert(
+        "checker".into(),
+        Stage {
+            name: "checker".into(),
+            agent: "checker_impl".into(),
+            gates: vec!["g".into()],
+            on_pass: "merge".into(),
+            needs: vec!["plan".into()],
+            review: ReviewPanel {
+                adjudicator: "judge".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+
+    let store = Store::open(":memory:").unwrap();
+    // checker's own work always approves; its verdict names "plan" as the real defect
+    // source, exactly like the sibling multi-commit compensation test - the concrete,
+    // business-relevant proof that the recovered commit is genuinely revertible, not merely
+    // recorded.
+    let driver = PlanAmendDriver::new("planner").judging("judge", "plan");
+    let deps = Deps {
+        store: &store,
+        driver: &driver,
+        gates: &ExecRunner,
+        repo: repo_path.clone(),
+        grounder: None,
+        graph: None,
+        criteria: Vec::new(),
+    };
+    let rs = run(&cfg, &deps).unwrap();
+
+    assert_eq!(
+        rs.units["checker"].status,
+        ledger::Status::Integrated,
+        "checker's own work is fine and must integrate"
+    );
+    assert_eq!(
+        rs.units["plan"].status,
+        ledger::Status::Integrated,
+        "plan re-converges via the ordinary no-artifact path after its compensation rollback \
+         (the planner's fresh spawn commits nothing new)"
+    );
+
+    // (1) THE RECOVERED EVENT SHAPE: the FIRST (pre-compensation) UnitIntegrated for "plan"
+    // must name the REAL landed sha - never the bare REVIEW_ONLY_NO_ARTIFACT marker a genuine
+    // no-commit producer would carry, which is exactly what made the pre-fix behavior
+    // permanently uncompensable.
+    let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    let unit_of = |e: &Event| -> Option<String> {
+        serde_json::from_slice::<Value>(&e.data)
+            .ok()
+            .and_then(|v| v.get("id").and_then(Value::as_str).map(str::to_string))
+    };
+    let first_integrated = events
+        .iter()
+        .find(|e| e.type_ == ledger::TYPE_UNIT_INTEGRATED && unit_of(e).as_deref() == Some("plan"))
+        .expect("plan's first integration must be recorded");
+    let first_v: Value = serde_json::from_slice(&first_integrated.data).unwrap();
+    assert_ne!(
+        first_v["commit"].as_str(),
+        Some(REVIEW_ONLY_NO_ARTIFACT),
+        "a resumed, already-landed amendment must never be recorded as a bare no-artifact \
+         marker - that is exactly what made it permanently uncompensable"
+    );
+    assert_eq!(
+        first_v["commit"].as_str(),
+        Some(prior_landed_sha.as_str()),
+        "the recovered commit must be the REAL sha the crashed prior attempt actually landed"
+    );
+
+    // (2) REAL COMPENSABILITY: an evented (not history-rewriting) revert of the recovered
+    // commit actually reaches the run branch - the concrete consequence the bug's silent,
+    // permanent uncompensability would otherwise have prevented forever.
+    let log = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&repo_path)
+        .args(["log", "--pretty=%s"])
+        .output()
+        .unwrap();
+    let log = String::from_utf8_lossy(&log.stdout);
+    assert!(
+        log.lines()
+            .any(|l| l.contains("compensate plan") && l.contains(prior_landed_sha.as_str())),
+        "the run branch must carry an evented revert of the recovered commit {prior_landed_sha}; \
+         log:\n{log}"
+    );
+    assert!(
+        !repo.path().join("specs").join("97-resumed.md").exists(),
+        "the recovered-then-compensated amendment must be gone from the run branch"
     );
 }

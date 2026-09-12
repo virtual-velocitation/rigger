@@ -734,7 +734,10 @@ struct Integration {
 /// branch (Goal item 4: the b6a471c amendment).
 enum PlanCommitOutcome {
     /// No commit exists on the worktree beyond the run branch's current HEAD: the
-    /// historical review-only path, byte-for-byte unchanged.
+    /// historical review-only path, byte-for-byte unchanged. Also the rare, defensive
+    /// fallback (spec 88 c4, adv-u88c4-r4-resumed-none-landing-is-permanently-
+    /// uncompensable) when a resumed call's already-landed sequence cannot be
+    /// CONFIRMED by tree identity - never used to discard a confirmable one.
     None,
     /// Every commit touched ONLY `specs/` and landed on the run branch cleanly: the
     /// shas AS THEY LANDED (see [`worktree::CherryPickOutcome::Picked`]), oldest-first.
@@ -7799,21 +7802,34 @@ impl RunCtx<'_> {
         // rollback): a cherry-pick mutates `self.deps.repo` exactly like those do.
         let _lock = self.integrate_mu.lock().unwrap();
         match w.cherry_pick_onto_run_branch(&shas)? {
-            // RESUME IDEMPOTENCY (spec 88 c4, sdet-u88c4-cherry-pick-resume-not-
-            // idempotent / adv-u88c4-crash-resume-halts-the-whole-run-not-just-the-
-            // stage): an EMPTY `landed` means nothing NEW reached the run branch this
-            // call - either `shas` was empty (already handled above) or every one of
-            // them was ALREADY there (a crash between a prior successful cherry-pick
-            // and the `UnitIntegrated` that would have recorded it: `commits_since_
-            // base` is identity-based, so a resumed process recomputes the SAME
-            // pre-landing shas even once their content already landed under different,
-            // cherry-pick-minted commit objects - `cherry_pick_onto_run_branch` proves
-            // this case by finding every pick empty). Either way there is no fresh
-            // artifact for THIS call to integrate: degrade to the SAME no-artifact
-            // outcome a producer with no commits at all reaches, rather than inventing
-            // a new "landed nothing" shape nothing else in the tree produces.
+            // RESUME RECOVERY (spec 88 c4, adv-u88c4-r4-resumed-none-landing-is-
+            // permanently-uncompensable, superseding this arm's own prior
+            // sdet-u88c4-cherry-pick-resume-not-idempotent /
+            // adv-u88c4-crash-resume-halts-the-whole-run-not-just-the-stage fix): an
+            // EMPTY `landed` means nothing NEW reached the run branch this call -
+            // every one of `shas` was ALREADY there (a crash between a prior
+            // successful cherry-pick and the `UnitIntegrated` that would have
+            // recorded it: `commits_since_base` is identity-based, so a resumed
+            // process recomputes the SAME pre-landing shas even once their content
+            // already landed under different, cherry-pick-minted commit objects -
+            // `cherry_pick_onto_run_branch` proves this case by finding every pick
+            // empty). The PRIOR fix degraded this straight to the same no-artifact
+            // outcome a producer with no commits at all reaches - discarding a REAL,
+            // permanently-landed commit's identity and making it silently
+            // uncompensable forever, indistinguishable from a producer that never
+            // touched the run branch at all. Recover what that prior call actually
+            // landed instead (`Worktree::already_landed_commits`, a tree-identity
+            // walk of the run branch's own recent history): a confirmed match
+            // carries the real sha(s) forward exactly like a fresh `Landed` would,
+            // so `commits_to_compensate` can still find and revert them. Only when
+            // the walk cannot CONFIRM every position (should not happen absent an
+            // operator race on the run branch meanwhile) does this fall back to the
+            // historical no-artifact marker - never a guess.
             worktree::CherryPickOutcome::Picked(landed) if landed.is_empty() => {
-                Ok(PlanCommitOutcome::None)
+                match w.already_landed_commits(&shas)? {
+                    Some(landed) => Ok(PlanCommitOutcome::Landed(landed)),
+                    None => Ok(PlanCommitOutcome::None),
+                }
             }
             worktree::CherryPickOutcome::Picked(landed) => Ok(PlanCommitOutcome::Landed(landed)),
             worktree::CherryPickOutcome::Conflict(detail) => {
@@ -23164,9 +23180,14 @@ mod tests {
         // means a resumed process calls `integrate_plan_commits` a SECOND time against
         // the SAME worktree, recomputing the SAME `commits_since_base()` (identity-
         // based reachability cannot see the already-landed cherry-picked equivalent).
-        // The second call must resolve to `PlanCommitOutcome::None` (nothing NEW to
-        // land), never propagate a hard `Err` through the caller's `?` - which would
-        // halt the WHOLE step/wave, not merely re-fail this one stage.
+        // The second call must resolve WITHOUT propagating a hard `Err` through the
+        // caller's `?` - which would halt the WHOLE step/wave, not merely re-fail this
+        // one stage - and (adv-u88c4-r4-resumed-none-landing-is-permanently-
+        // uncompensable, superseding this test's own prior `None` expectation) it must
+        // still carry the REAL, permanent, revertible commit the first call actually
+        // landed, recovered via `Worktree::already_landed_commits` - never discard it
+        // as a bare no-artifact marker, which would make that commit uncompensable
+        // forever.
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let wt_dir = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
@@ -23176,7 +23197,26 @@ mod tests {
         std::fs::create_dir_all(wt_dir.join("specs")).unwrap();
         std::fs::write(wt_dir.join("specs").join("90-foo.md"), "amend\n").unwrap();
         run_git(wt_dir.to_str().unwrap(), &["add", "-A"]);
-        run_git(wt_dir.to_str().unwrap(), &["commit", "-q", "-m", "amend"]);
+        // A FIXED, deliberately old author/committer date on the original commit -
+        // never the wall-clock "now" a bare `git commit` would use - so the fresh
+        // cherry-pick below (which stamps its OWN committer time as real "now")
+        // cannot coincidentally reproduce a byte-identical commit object (the rare
+        // same-committer-second case `CherryPickOutcome::Picked`'s own doc comment
+        // names). Without this, a fast test run risks the pre-landing sha and the
+        // landed sha being the SAME object, which would make `commits_since_base`
+        // already read empty on the second call via plain identity - never
+        // exercising the `already_landed_commits` recovery path this test exists to
+        // prove, the REALISTIC shape being a real crash-and-later-resume spanning
+        // wall-clock seconds, so the two dates would never coincide in production.
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(wt_dir.to_str().unwrap())
+            .args(["commit", "-q", "-m", "amend"])
+            .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00")
+            .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "fixed-date commit failed");
 
         let store = Store::open(":memory:").unwrap();
         let cfg = Config::default();
@@ -23194,8 +23234,11 @@ mod tests {
 
         // FIRST call: a real, fresh landing (the pre-crash attempt) - never itself
         // recorded via `UnitIntegrated`, mirroring the crash-before-emit window.
-        match ctx.integrate_plan_commits(Some(&wt)).unwrap() {
-            PlanCommitOutcome::Landed(shas) => assert_eq!(shas.len(), 1),
+        let first_shas = match ctx.integrate_plan_commits(Some(&wt)).unwrap() {
+            PlanCommitOutcome::Landed(shas) => {
+                assert_eq!(shas.len(), 1);
+                shas
+            }
             PlanCommitOutcome::None => panic!("expected a fresh landing, got None"),
             PlanCommitOutcome::OutOfScope(paths) => {
                 panic!("expected a fresh landing, got OutOfScope({paths:?})")
@@ -23203,19 +23246,26 @@ mod tests {
             PlanCommitOutcome::Conflict(detail) => {
                 panic!("expected a fresh landing, got Conflict({detail})")
             }
-        }
+        };
 
-        // SECOND call against the SAME worktree - the resumed-process shape.
+        // SECOND call against the SAME worktree - the resumed-process shape. Nothing
+        // NEW lands (the git-level work already happened), but the REAL commit the
+        // first call landed must still come back, recovered - never a bare no-
+        // artifact marker that would make it uncompensable forever.
         let second = ctx.integrate_plan_commits(Some(&wt));
         assert!(
             second.is_ok(),
             "a resumed already-landed worktree must resolve, never hard-error and halt the step"
         );
         match second.unwrap() {
-            PlanCommitOutcome::None => {}
-            PlanCommitOutcome::Landed(shas) => {
-                panic!("nothing NEW should land the second time; got Landed({shas:?})")
-            }
+            PlanCommitOutcome::Landed(shas) => assert_eq!(
+                shas, first_shas,
+                "the resumed call must recover the SAME real commit the first call landed"
+            ),
+            PlanCommitOutcome::None => panic!(
+                "a resumed already-landed worktree must recover its real commit, not \
+                 discard it as a bare no-artifact marker (uncompensable forever)"
+            ),
             PlanCommitOutcome::OutOfScope(paths) => {
                 panic!("an already-landed resume must never read as OutOfScope({paths:?})")
             }
@@ -32344,6 +32394,60 @@ mod tests {
             vec!["c1".to_string()],
             "a duplicated raw event must not double-queue its commit, and an \
              already-compensated commit must never be queued again"
+        );
+    }
+
+    #[test]
+    fn commits_to_compensate_excludes_the_review_only_marker_even_alongside_a_real_sha() {
+        // Mutation-efficacy (spec 88 c4 round 5): `commit == REVIEW_ONLY_NO_ARTIFACT` is
+        // its OWN disjunct in the skip condition, independent of `commit.is_empty()` -
+        // the marker is a non-empty string, so an `||`-to-`&&` mutation on this specific
+        // clause is undetectable by any fixture that only ever seeds an EMPTY commit
+        // alongside it (empty-and-marker can never both be true, so the two clauses look
+        // interchangeable unless the marker is exercised on its own, non-empty). A real
+        // producer's non-artifact `UnitIntegrated` (the historical review-only path)
+        // carries exactly this shape - `commit: REVIEW_ONLY_NO_ARTIFACT`, no `shas` field -
+        // and must never be queued for compensation, alongside a SEPARATE unit's genuine
+        // landed sha, which must still be queued normally.
+        let store = Store::open(":memory:").unwrap();
+        let seed = |data: Value| {
+            store
+                .append(
+                    STREAM,
+                    ExpectedRevision::Any,
+                    std::slice::from_ref(&Event::new(
+                        ledger::TYPE_UNIT_INTEGRATED,
+                        serde_json::to_vec(&data).unwrap(),
+                    )),
+                )
+                .unwrap();
+        };
+        seed(json!({"id": "review-only", "commit": REVIEW_ONLY_NO_ARTIFACT}));
+        seed(json!({"id": "ordinary", "commit": "o1"}));
+
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        assert_eq!(
+            ctx.commits_to_compensate("review-only"),
+            Vec::<String>::new(),
+            "a review-only marker commit must never be queued for compensation - there is \
+             nothing on the run branch to revert"
+        );
+        assert_eq!(
+            ctx.commits_to_compensate("ordinary"),
+            vec!["o1".to_string()],
+            "a genuine landed sha from a DIFFERENT unit must still compensate normally"
         );
     }
 
