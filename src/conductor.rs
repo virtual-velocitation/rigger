@@ -732,12 +732,16 @@ struct Integration {
 /// decomposing - and unlike an ordinary unit, nothing else ever merges that worktree
 /// into the run branch, so without resolving it here a committed amendment reaches no
 /// branch (Goal item 4: the b6a471c amendment).
+#[derive(Debug)]
 enum PlanCommitOutcome {
     /// No commit exists on the worktree beyond the run branch's current HEAD: the
-    /// historical review-only path, byte-for-byte unchanged. Also the rare, defensive
-    /// fallback (spec 88 c4, adv-u88c4-r4-resumed-none-landing-is-permanently-
-    /// uncompensable) when a resumed call's already-landed sequence cannot be
-    /// CONFIRMED by tree identity - never used to discard a confirmable one.
+    /// historical review-only path, byte-for-byte unchanged. Per operator ruling
+    /// `op-u88c4-next-round-plan-commit-landing-is-log-carried-and-idempotent` item
+    /// (2), this is reachable ONLY when the intent itself (`commits_since_base`) is
+    /// empty - never as a fallback for a non-empty intent this call could not
+    /// confirm (that case is [`Self::Landed`] with whatever subset patch-id
+    /// recovery could confirm, which - absent an internal bug - is always all of
+    /// it).
     None,
     /// Every commit touched ONLY `specs/` and landed on the run branch cleanly: the
     /// shas AS THEY LANDED (see [`worktree::CherryPickOutcome::Picked`]), oldest-first.
@@ -4491,7 +4495,7 @@ impl RunCtx<'_> {
                     // branch instead of dying with the worktree. See
                     // `integrate_plan_commits`'s doc comment for the mechanism and
                     // why this is the one place it must happen.
-                    match self.integrate_plan_commits(wt)? {
+                    match self.integrate_plan_commits(&st.name, wt)? {
                         PlanCommitOutcome::None => {
                             self.emit(
                                 ledger::TYPE_UNIT_INTEGRATED,
@@ -7766,7 +7770,30 @@ impl RunCtx<'_> {
     ///
     /// `None` when there is no worktree (a repo-less or non-isolated producer): there
     /// is nothing it could have committed into.
-    fn integrate_plan_commits(&self, wt: Option<&Worktree>) -> Result<PlanCommitOutcome, Error> {
+    ///
+    /// LOG-CARRIED, IDEMPOTENT (operator ruling
+    /// `op-u88c4-next-round-plan-commit-landing-is-log-carried-and-idempotent`,
+    /// superseding rounds 4-6's git-state heuristics - `commits_since_base` identity
+    /// plus the removed `Worktree::already_landed_commits` tree-position walk, both
+    /// upheld REJECT for deriving landing state from git instead of the log): item
+    /// (1) - before touching git at all, the FULL current intent (every commit the
+    /// worktree has ever committed, oldest-first) is recorded durably via
+    /// [`Self::record_plan_intent`], a `DecisionMade`-shaped record this conductor
+    /// owns (no new event type). Item (2) - the durable, per-original-sha landed-sha
+    /// map [`Self::read_plan_landed`] wrote on some PRIOR call (if any) is consulted
+    /// FIRST; only a sha this unit has never confirmed before is even considered for
+    /// a fresh git mutation, and any such sha found ALREADY on the run branch by
+    /// [`Worktree::find_landed_by_patch_id`] (content identity, never tree position -
+    /// so an unrelated commit landing on the run branch in between changes nothing)
+    /// is confirmed without mutating anything. The outcome always carries every
+    /// intended sha's real landed identity - `PlanCommitOutcome::None` is reachable
+    /// only when `shas` itself is empty (a genuinely review-only producer), matching
+    /// item (2) literally.
+    fn integrate_plan_commits(
+        &self,
+        unit: &str,
+        wt: Option<&Worktree>,
+    ) -> Result<PlanCommitOutcome, Error> {
         let Some(w) = wt else {
             return Ok(PlanCommitOutcome::None);
         };
@@ -7797,45 +7824,194 @@ impl RunCtx<'_> {
             offending.dedup();
             return Ok(PlanCommitOutcome::OutOfScope(offending));
         }
+
+        // RULING ITEM 1: durable, log-carried intent BEFORE any git mutation - a
+        // resumed call (a crash anywhere after this point) always has a durable
+        // record of exactly what this worktree meant to land, never re-derived from
+        // git tree state alone.
+        self.record_plan_intent(unit, &shas)?;
+
         // The SAME mutation authority every other write to the run branch checkout
         // serializes through (`integrate_and_emit`'s merge above, `revert_on_base`'s
-        // rollback): a cherry-pick mutates `self.deps.repo` exactly like those do.
+        // rollback): a cherry-pick mutates `self.deps.repo` exactly like those do -
+        // and so does the patch-id recovery search just below, so a concurrent
+        // writer can never land between "what's already there" and "cherry-pick the
+        // rest".
         let _lock = self.integrate_mu.lock().unwrap();
-        match w.cherry_pick_onto_run_branch(&shas)? {
-            // RESUME RECOVERY (spec 88 c4, adv-u88c4-r4-resumed-none-landing-is-
-            // permanently-uncompensable, superseding this arm's own prior
-            // sdet-u88c4-cherry-pick-resume-not-idempotent /
-            // adv-u88c4-crash-resume-halts-the-whole-run-not-just-the-stage fix): an
-            // EMPTY `landed` means nothing NEW reached the run branch this call -
-            // every one of `shas` was ALREADY there (a crash between a prior
-            // successful cherry-pick and the `UnitIntegrated` that would have
-            // recorded it: `commits_since_base` is identity-based, so a resumed
-            // process recomputes the SAME pre-landing shas even once their content
-            // already landed under different, cherry-pick-minted commit objects -
-            // `cherry_pick_onto_run_branch` proves this case by finding every pick
-            // empty). The PRIOR fix degraded this straight to the same no-artifact
-            // outcome a producer with no commits at all reaches - discarding a REAL,
-            // permanently-landed commit's identity and making it silently
-            // uncompensable forever, indistinguishable from a producer that never
-            // touched the run branch at all. Recover what that prior call actually
-            // landed instead (`Worktree::already_landed_commits`, a tree-identity
-            // walk of the run branch's own recent history): a confirmed match
-            // carries the real sha(s) forward exactly like a fresh `Landed` would,
-            // so `commits_to_compensate` can still find and revert them. Only when
-            // the walk cannot CONFIRM every position (should not happen absent an
-            // operator race on the run branch meanwhile) does this fall back to the
-            // historical no-artifact marker - never a guess.
-            worktree::CherryPickOutcome::Picked(landed) if landed.is_empty() => {
-                match w.already_landed_commits(&shas)? {
-                    Some(landed) => Ok(PlanCommitOutcome::Landed(landed)),
-                    None => Ok(PlanCommitOutcome::None),
+
+        // RULING ITEM 2: resume compares against intent, never against "nothing
+        // new". The durable landed-map from a PRIOR call is the fast, authoritative
+        // path; only a sha this unit has never confirmed is even considered pending.
+        let prior_landed = self.read_plan_landed(unit)?;
+        let mut landed_map: HashMap<String, String> = HashMap::new();
+        let mut pending: Vec<String> = Vec::new();
+        for s in &shas {
+            match prior_landed.get(s) {
+                Some(l) => {
+                    landed_map.insert(s.clone(), l.clone());
                 }
-            }
-            worktree::CherryPickOutcome::Picked(landed) => Ok(PlanCommitOutcome::Landed(landed)),
-            worktree::CherryPickOutcome::Conflict(detail) => {
-                Ok(PlanCommitOutcome::Conflict(detail))
+                None => pending.push(s.clone()),
             }
         }
+
+        // A pending sha may ALREADY be on the run branch by CONTENT (a crash between
+        // a prior call's real git success and that call's own confirmation write) -
+        // confirm by patch-id, bounded to the run branch's own recent history,
+        // before deciding anything still needs a fresh cherry-pick. `never a guess`:
+        // an entry this cannot confirm stays pending for the cherry-pick below.
+        const SEARCH_WINDOW: usize = 256;
+        let mut still_pending: Vec<String> = Vec::new();
+        for s in &pending {
+            match w.find_landed_by_patch_id(s, SEARCH_WINDOW)? {
+                Some(l) => {
+                    landed_map.insert(s.clone(), l);
+                }
+                None => still_pending.push(s.clone()),
+            }
+        }
+
+        if !still_pending.is_empty() {
+            match w.cherry_pick_onto_run_branch(&still_pending)? {
+                worktree::CherryPickOutcome::Conflict(detail) => {
+                    return Ok(PlanCommitOutcome::Conflict(detail));
+                }
+                worktree::CherryPickOutcome::Picked(landed) => {
+                    if landed.len() == still_pending.len() {
+                        // The common, fast path: a clean cherry-pick of N genuinely
+                        // new commits lands N new commits in the SAME order.
+                        for (orig, sha) in still_pending.iter().zip(landed.iter()) {
+                            landed_map.insert(orig.clone(), sha.clone());
+                        }
+                    } else {
+                        // A coincidental empty pick (content identical to something
+                        // ALREADY on the run branch under a commit this call's own
+                        // pre-check did not find - e.g. a duplicate amendment)
+                        // shifted `landed` shorter than requested. Recover every
+                        // entry by CONTENT, never by position - the SAME never-a-
+                        // guess contract as the pre-check above, now over the run
+                        // branch's state AFTER this call's own mutation.
+                        for orig in &still_pending {
+                            if let Some(sha) = w.find_landed_by_patch_id(orig, SEARCH_WINDOW)? {
+                                landed_map.insert(orig.clone(), sha);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // RULING ITEM 2: "the outcome always carries the FULL landed list from
+        // intent" - record the durable confirmation BEFORE returning, then emit
+        // exactly the ordered list every entry this call could confirm carries.
+        self.record_plan_landed(unit, &landed_map, &shas)?;
+        let full_landed: Vec<String> = shas
+            .iter()
+            .filter_map(|s| landed_map.get(s).cloned())
+            .collect();
+        Ok(PlanCommitOutcome::Landed(full_landed))
+    }
+
+    /// RULING ITEM 1 (`op-u88c4-next-round-plan-commit-landing-is-log-carried-and-
+    /// idempotent`): the durable, auditable record of the FULL ordered list of
+    /// plan-stage commits `unit`'s worktree intends to land, written on a
+    /// `DecisionMade`-shaped record this conductor owns (no new event type) BEFORE
+    /// any git mutation - so a crash anywhere after this call leaves a log-carried
+    /// trail of exactly what was meant, never only git tree state. Idempotent to
+    /// re-record (a later call with a GROWN `shas` simply appends a fresh record);
+    /// outcome decisions are driven by [`Self::read_plan_landed`], never by reading
+    /// this one back - this exists as the durable intent trail itself.
+    fn record_plan_intent(&self, unit: &str, shas: &[String]) -> Result<(), Error> {
+        self.emit(
+            contextgraph::TYPE_DECISION_MADE,
+            json!({
+                "id": format!("plan-intent:{unit}"),
+                "summary": format!(
+                    "plan-stage commit landing intent for {unit}: {} commit(s) queued to land \
+                     on the run branch, oldest-first: {}",
+                    shas.len(),
+                    shas.join(", ")
+                ),
+                "governs": [],
+                "unit": unit,
+                "shas": shas,
+            }),
+        )
+    }
+
+    /// RULING ITEM 2: the durable record of what `unit`'s plan-stage commits have
+    /// ACTUALLY landed on the run branch so far, keyed by each ORIGINAL commit's own
+    /// sha (the producer worktree's identity, stable across resumes) to the real
+    /// run-branch commit that carries its content - "resume compares against
+    /// intent, not against nothing new". Scans the CURRENT run's stream
+    /// ([`crate::run::current_run`]) for the `DecisionMade`-shaped `plan-landed:
+    /// <unit>` record and keeps only the LATEST one (a later call's confirmation
+    /// simply supersedes an earlier, smaller map) - the same latest-position-wins
+    /// idiom every other log-derived state in this file already reads by.
+    fn read_plan_landed(&self, unit: &str) -> Result<HashMap<String, String>, Error> {
+        let all = self.deps.store.read_stream(STREAM, 0, Direction::Forward)?;
+        let events = crate::run::current_run(&all);
+        let id = format!("plan-landed:{unit}");
+        let mut map = HashMap::new();
+        for e in events
+            .iter()
+            .filter(|e| e.type_ == contextgraph::TYPE_DECISION_MADE)
+        {
+            let Ok(v) = serde_json::from_slice::<Value>(&e.data) else {
+                continue;
+            };
+            if v.get("id").and_then(Value::as_str) != Some(id.as_str()) {
+                continue;
+            }
+            if let Some(arr) = v.get("landed").and_then(Value::as_array) {
+                map.clear();
+                for entry in arr {
+                    if let (Some(o), Some(l)) = (
+                        entry.get("sha").and_then(Value::as_str),
+                        entry.get("landed_sha").and_then(Value::as_str),
+                    ) {
+                        map.insert(o.to_string(), l.to_string());
+                    }
+                }
+            }
+        }
+        Ok(map)
+    }
+
+    /// Write this call's confirmed `landed_map` (a subset, possibly all, of `shas`)
+    /// as the new `plan-landed:<unit>` record [`Self::read_plan_landed`] reads back
+    /// on a resumed call - BEFORE this call's own `PlanCommitOutcome` is even
+    /// returned to the caller, let alone before the caller's `UnitIntegrated` emit,
+    /// so a crash immediately after this write still leaves the confirmation
+    /// durable. Ordered by `shas` (the intent order), not map iteration order.
+    fn record_plan_landed(
+        &self,
+        unit: &str,
+        landed_map: &HashMap<String, String>,
+        shas: &[String],
+    ) -> Result<(), Error> {
+        let landed: Vec<Value> = shas
+            .iter()
+            .filter_map(|s| {
+                landed_map
+                    .get(s)
+                    .map(|l| json!({"sha": s, "landed_sha": l}))
+            })
+            .collect();
+        self.emit(
+            contextgraph::TYPE_DECISION_MADE,
+            json!({
+                "id": format!("plan-landed:{unit}"),
+                "summary": format!(
+                    "plan-stage commit landing confirmed for {unit}: {}/{} intended commit(s) \
+                     landed",
+                    landed.len(),
+                    shas.len()
+                ),
+                "governs": [],
+                "unit": unit,
+                "landed": landed,
+            }),
+        )
     }
 
     /// Build the SYSTEM prompt the conductor threads into every spawn: the agent's
@@ -23174,20 +23350,22 @@ mod tests {
 
     #[test]
     fn integrate_plan_commits_is_idempotent_on_a_resumed_already_landed_worktree() {
-        // adv-u88c4-crash-resume-halts-the-whole-run-not-just-the-stage (sharpening
-        // sdet-u88c4-cherry-pick-resume-not-idempotent): a crash between a successful
-        // cherry-pick landing and the `UnitIntegrated` that would have recorded it
-        // means a resumed process calls `integrate_plan_commits` a SECOND time against
-        // the SAME worktree, recomputing the SAME `commits_since_base()` (identity-
-        // based reachability cannot see the already-landed cherry-picked equivalent).
-        // The second call must resolve WITHOUT propagating a hard `Err` through the
-        // caller's `?` - which would halt the WHOLE step/wave, not merely re-fail this
-        // one stage - and (adv-u88c4-r4-resumed-none-landing-is-permanently-
-        // uncompensable, superseding this test's own prior `None` expectation) it must
-        // still carry the REAL, permanent, revertible commit the first call actually
-        // landed, recovered via `Worktree::already_landed_commits` - never discard it
-        // as a bare no-artifact marker, which would make that commit uncompensable
-        // forever.
+        // RULING ITEM 4, crash points "after landing but before emit" AND "after
+        // emit" (op-u88c4-next-round-plan-commit-landing-is-log-carried-and-
+        // idempotent): a crash between a successful cherry-pick landing and the
+        // `UnitIntegrated` that would have recorded it means a resumed process calls
+        // `integrate_plan_commits` a SECOND (or third - the "after emit" point,
+        // since a bug reintroducing a call post-emit must be just as safe) time
+        // against the SAME worktree, recomputing the SAME `commits_since_base()`
+        // (identity-based reachability cannot see the already-landed cherry-picked
+        // equivalent). Every call must resolve WITHOUT propagating a hard `Err`
+        // through the caller's `?` - which would halt the WHOLE step/wave, not
+        // merely re-fail this one stage - and (adv-u88c4-r4-resumed-none-landing-is-
+        // permanently-uncompensable) it must still carry the REAL, permanent,
+        // revertible commit the first call actually landed, recovered via the
+        // durable `plan-landed:<unit>` record [`RunCtx::read_plan_landed`] writes -
+        // never discard it as a bare no-artifact marker, which would make that
+        // commit uncompensable forever.
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let wt_dir = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
@@ -23205,8 +23383,8 @@ mod tests {
         // names). Without this, a fast test run risks the pre-landing sha and the
         // landed sha being the SAME object, which would make `commits_since_base`
         // already read empty on the second call via plain identity - never
-        // exercising the `already_landed_commits` recovery path this test exists to
-        // prove, the REALISTIC shape being a real crash-and-later-resume spanning
+        // exercising the patch-id recovery path this test exists to prove, the
+        // REALISTIC shape being a real crash-and-later-resume spanning
         // wall-clock seconds, so the two dates would never coincide in production.
         let out = std::process::Command::new("git")
             .arg("-C")
@@ -23234,7 +23412,7 @@ mod tests {
 
         // FIRST call: a real, fresh landing (the pre-crash attempt) - never itself
         // recorded via `UnitIntegrated`, mirroring the crash-before-emit window.
-        let first_shas = match ctx.integrate_plan_commits(Some(&wt)).unwrap() {
+        let first_shas = match ctx.integrate_plan_commits("plan", Some(&wt)).unwrap() {
             PlanCommitOutcome::Landed(shas) => {
                 assert_eq!(shas.len(), 1);
                 shas
@@ -23248,11 +23426,14 @@ mod tests {
             }
         };
 
-        // SECOND call against the SAME worktree - the resumed-process shape. Nothing
-        // NEW lands (the git-level work already happened), but the REAL commit the
-        // first call landed must still come back, recovered - never a bare no-
-        // artifact marker that would make it uncompensable forever.
-        let second = ctx.integrate_plan_commits(Some(&wt));
+        // SECOND call against the SAME worktree - the "after landing but before
+        // emit" crash point. Nothing NEW lands (the git-level work already
+        // happened), but the REAL commit the first call landed must still come
+        // back, recovered - never a bare no-artifact marker that would make it
+        // uncompensable forever. No NEW git mutation happens either: the durable
+        // record alone answers it.
+        let head_after_first = run_git(&repo_path, &["rev-parse", "HEAD"]);
+        let second = ctx.integrate_plan_commits("plan", Some(&wt));
         assert!(
             second.is_ok(),
             "a resumed already-landed worktree must resolve, never hard-error and halt the step"
@@ -23272,6 +23453,186 @@ mod tests {
             PlanCommitOutcome::Conflict(detail) => {
                 panic!("an already-landed resume must never read as a Conflict({detail})")
             }
+        }
+        assert_eq!(
+            run_git(&repo_path, &["rev-parse", "HEAD"]),
+            head_after_first,
+            "the resumed call must not mutate the run branch again - the durable record alone \
+             answers it"
+        );
+
+        // THIRD call - the "after emit" crash point: even once a caller has (in the
+        // real conductor) already recorded `UnitIntegrated` from the second call's
+        // outcome, a stray re-entry must resolve exactly the same way, not diverge.
+        match ctx.integrate_plan_commits("plan", Some(&wt)).unwrap() {
+            PlanCommitOutcome::Landed(shas) => assert_eq!(
+                shas, first_shas,
+                "a third, post-emit call must still recover the SAME real commit"
+            ),
+            PlanCommitOutcome::None => {
+                panic!("a third, post-emit call must still resolve to Landed, got None")
+            }
+            PlanCommitOutcome::OutOfScope(paths) => {
+                panic!("a third, post-emit call must still resolve to Landed, got OutOfScope({paths:?})")
+            }
+            PlanCommitOutcome::Conflict(detail) => {
+                panic!(
+                    "a third, post-emit call must still resolve to Landed, got Conflict({detail})"
+                )
+            }
+        }
+        wt.remove().unwrap();
+    }
+
+    #[test]
+    fn integrate_plan_commits_tolerates_a_pre_existing_intent_record_with_no_git_mutation_yet() {
+        // RULING ITEM 4, crash point "after the intent record but before git" (op-u88c4-
+        // next-round-plan-commit-landing-is-log-carried-and-idempotent): a crash strictly
+        // between `record_plan_intent` returning and `cherry_pick_onto_run_branch` ever
+        // running leaves a durable `plan-intent:<unit>` record with NO corresponding
+        // `plan-landed:<unit>` confirmation and NO git-level change at all. A resumed call
+        // must land normally - the pre-existing intent record is purely an audit trail,
+        // never consulted for the landing decision itself (only `plan-landed` is), so its
+        // presence changes nothing observable.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_dir = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt =
+            worktree::Worktree::create(&repo_path, wt_dir.to_str().unwrap(), "rigger/u/plan", "")
+                .unwrap();
+        std::fs::create_dir_all(wt_dir.join("specs")).unwrap();
+        std::fs::write(wt_dir.join("specs").join("90-foo.md"), "amend\n").unwrap();
+        run_git(wt_dir.to_str().unwrap(), &["add", "-A"]);
+        run_git(wt_dir.to_str().unwrap(), &["commit", "-q", "-m", "amend"]);
+        let shas = wt.commits_since_base().unwrap();
+        assert_eq!(shas.len(), 1);
+
+        let store = Store::open(":memory:").unwrap();
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        // Simulate the crash point directly: the intent record exists, but no
+        // `plan-landed` confirmation and no git mutation ever happened.
+        ctx.record_plan_intent("plan", &shas).unwrap();
+        assert!(
+            ctx.read_plan_landed("plan").unwrap().is_empty(),
+            "precondition: no confirmation exists yet"
+        );
+
+        match ctx.integrate_plan_commits("plan", Some(&wt)).unwrap() {
+            PlanCommitOutcome::Landed(landed) => assert_eq!(
+                landed.len(),
+                1,
+                "a resumed call must land normally despite a pre-existing intent record"
+            ),
+            PlanCommitOutcome::None => {
+                panic!("a non-empty, in-scope intent must never resolve to None")
+            }
+            PlanCommitOutcome::OutOfScope(paths) => {
+                panic!("expected a fresh landing, got OutOfScope({paths:?})")
+            }
+            PlanCommitOutcome::Conflict(detail) => {
+                panic!("expected a fresh landing, got Conflict({detail})")
+            }
+        }
+        wt.remove().unwrap();
+    }
+
+    #[test]
+    fn integrate_plan_commits_keeps_the_earlier_commits_identity_when_the_worktree_grows_between_calls(
+    ) {
+        // adv-u88c4-r6-partial-landing-with-a-grown-shas-drops-the-first-commit-identity:
+        // a resumed call whose worktree GAINED an additional commit since a prior landing
+        // (a re-spawned planner committing a SECOND amendment in a later round) must never
+        // drop the FIRST commit's identity from `shas` - the round-6 defect, reachable
+        // through the untouched non-empty `CherryPickOutcome::Picked` arm, which the
+        // durable `plan-landed` record now closes: the first commit's landed identity is
+        // read back from the record, not re-derived from this call's own (empty, since
+        // already-applied) cherry-pick result.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_dir = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt =
+            worktree::Worktree::create(&repo_path, wt_dir.to_str().unwrap(), "rigger/u/plan", "")
+                .unwrap();
+        std::fs::create_dir_all(wt_dir.join("specs")).unwrap();
+        std::fs::write(wt_dir.join("specs").join("90-first.md"), "amend 1\n").unwrap();
+        run_git(wt_dir.to_str().unwrap(), &["add", "-A"]);
+        // A FIXED, deliberately old author/committer date - never the wall-clock "now"
+        // a bare `git commit` would use - so the cherry-pick below (which stamps its
+        // OWN committer time as real "now") cannot coincidentally reproduce a
+        // byte-identical commit object in the rare same-committer-second case (see the
+        // sibling idempotency tests' identical guard) - which would collapse `first`'s
+        // original and landed shas into the SAME object and defeat this test's whole
+        // premise (a distinguishable original vs. landed identity).
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(wt_dir.to_str().unwrap())
+            .args(["commit", "-q", "-m", "amend 1"])
+            .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00")
+            .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "fixed-date commit failed");
+
+        let store = Store::open(":memory:").unwrap();
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        // FIRST call: lands the first commit for real and records its confirmation.
+        let first = match ctx.integrate_plan_commits("plan", Some(&wt)).unwrap() {
+            PlanCommitOutcome::Landed(shas) => {
+                assert_eq!(shas.len(), 1);
+                shas
+            }
+            other => panic!("expected a fresh single-commit landing, got {other:?}"),
+        };
+
+        // MEANWHILE: a re-spawned planner commits a SECOND amendment onto the SAME
+        // worktree - the shape a re-spawn across review rounds naturally produces.
+        std::fs::write(wt_dir.join("specs").join("91-second.md"), "amend 2\n").unwrap();
+        run_git(wt_dir.to_str().unwrap(), &["add", "-A"]);
+        run_git(wt_dir.to_str().unwrap(), &["commit", "-q", "-m", "amend 2"]);
+
+        // SECOND call: `commits_since_base` now returns BOTH commits (grown). The
+        // first must keep its already-confirmed identity; the second lands fresh.
+        match ctx.integrate_plan_commits("plan", Some(&wt)).unwrap() {
+            PlanCommitOutcome::Landed(shas) => {
+                assert_eq!(
+                    shas.len(),
+                    2,
+                    "both commits must be present, not just the new one"
+                );
+                assert_eq!(
+                    shas[0], first[0],
+                    "the FIRST commit's identity must be preserved, never dropped"
+                );
+                assert_ne!(
+                    shas[1], first[0],
+                    "the second entry must be the genuinely new commit, not a repeat"
+                );
+            }
+            other => panic!("expected a two-commit Landed outcome, got {other:?}"),
         }
         wt.remove().unwrap();
     }

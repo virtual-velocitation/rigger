@@ -1208,25 +1208,28 @@ fn plan_stage_resumed_after_a_crash_recovers_the_real_sha_and_stays_compensable(
     );
 }
 
-/// Criterion 4, gap 9 (round 5, `already_landed_commits`' OWN fallback contract): the
-/// recovery gap-8 closes has two meaningfully different outcomes - a CONFIRMED match
-/// (proven above) and the "cannot confirm, never a guess" fallback its own doc comment
-/// promises. Both are reachable through the SAME new public API and the SAME `run()` seam,
-/// so both need a periphery-level witness - a boundary this specific precisely because
-/// getting it wrong the OTHER way (guessing) would silently attribute a compensation-worthy
-/// identity to the wrong commit, exactly the class of bug gap 8 exists to prevent.
+/// Round 7, closing operator ruling `op-u88c4-next-round-plan-commit-landing-is-log-
+/// carried-and-idempotent` items (1)/(2): rounds 4-6's recovery (`already_landed_commits`,
+/// REMOVED) confirmed an already-landed commit by tree POSITION - the run branch's most
+/// recent N commits had to match, position for position, the originals' own trees. That
+/// heuristic was rejected three review rounds running (arch-u88c4-r6-operator-ruling-
+/// unimplemented-still-a-heuristic, sdet-u88c4-r6-fallback-still-violates-ruling-item2-
+/// proven-by-its-own-test) precisely because ANY unrelated commit landing on the run branch
+/// in between - a concurrent sibling unit, an operator edit - shifts every position, forcing
+/// a safe-but-wrong fallback to the historical `REVIEW_ONLY_NO_ARTIFACT` marker even though
+/// the amendment genuinely, permanently landed (making it silently uncompensable forever,
+/// the exact defect class the ruling exists to close).
 ///
-/// Simulated realistically as the doc comment's own named cause - "an operator race on the
-/// run branch meanwhile": between the crashed prior attempt's real cherry-pick landing and
-/// this resume, the run branch gains an UNRELATED commit of its own (a concurrent sibling
-/// unit, or an operator edit). `commits_since_base` still recomputes the same single
-/// original (pre-landing) sha, so the resumed cherry-pick still finds its diff already
-/// applied (an empty pick, `Picked(vec![])`) - but the run branch's OWN most recent commit is
-/// now the unrelated one, not the landed pick, so `already_landed_commits`' position-by-
-/// position TREE check (not the count check the unit-level `too_many` case already covers)
-/// must refuse to confirm it.
+/// This test proves the fix: the SAME "operator race on the run branch meanwhile" setup now
+/// resolves CORRECTLY. Between the crashed prior attempt's real cherry-pick landing and this
+/// resume, the run branch gains an UNRELATED commit of its own. `commits_since_base` still
+/// recomputes the same single original (pre-landing) sha, and the resumed process has no
+/// durable `plan-landed` record yet (the crash happened before ANY log write - crash point 1
+/// of ruling item 4), so the resume must recover it via `Worktree::find_landed_by_patch_id`
+/// (CONTENT identity - a patch-id never shifts when something unrelated lands nearby) rather
+/// than fall back to the no-artifact marker.
 #[test]
-fn plan_stage_resumed_amendment_with_an_intervening_operator_commit_falls_back_safely() {
+fn plan_stage_resumed_amendment_with_an_intervening_operator_commit_still_confirms_by_patch_id() {
     let repo = init_repo();
     let repo_path = repo.path().to_str().unwrap().to_string();
 
@@ -1335,15 +1338,19 @@ fn plan_stage_resumed_amendment_with_an_intervening_operator_commit_falls_back_s
     assert_eq!(
         rs.units["plan"].status,
         ledger::Status::Integrated,
-        "an unconfirmable resume must still converge safely, never hang or escalate"
+        "a resume that confirms by content must still converge safely"
     );
 
-    // THE SAFETY CONTRACT: never a guess. The unconfirmed recovery must fall back to the
-    // historical no-artifact marker exactly like a genuine no-commit producer, NOT invent a
-    // sha for content that was never actually confirmed as this producer's own landed work.
-    assert_eq!(
+    // THE FIX: the real, permanently-landed commit is now correctly recognized DESPITE
+    // the intervening unrelated commit - never the no-artifact marker a position-based
+    // heuristic would have wrongly fallen back to.
+    assert_ne!(
         rs.units["plan"].commit, REVIEW_ONLY_NO_ARTIFACT,
-        "an unconfirmable recovery must fall back to the no-artifact marker, never guess a sha"
+        "an intervening unrelated commit must never defeat content-based recovery"
+    );
+    assert_eq!(
+        rs.units["plan"].commit, prior_landed[0],
+        "the recovered commit must be the REAL sha the crashed prior attempt actually landed"
     );
     let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
     let unit_of = |e: &Event| -> Option<String> {
@@ -1356,19 +1363,19 @@ fn plan_stage_resumed_amendment_with_an_intervening_operator_commit_falls_back_s
         .find(|e| e.type_ == ledger::TYPE_UNIT_INTEGRATED && unit_of(e).as_deref() == Some("plan"))
         .expect("plan's integration must be recorded");
     let v: Value = serde_json::from_slice(&integrated.data).unwrap();
-    assert!(
-        v.get("shas").is_none(),
-        "the no-artifact fallback must never carry a `shas` field - only a genuinely \
-         confirmed recovery does; got: {v}"
+    assert_eq!(
+        v.get("shas").and_then(Value::as_array).map(|a| a.len()),
+        Some(1),
+        "a genuinely confirmed recovery must carry the real sha in `shas`; got: {v}"
     );
 
-    // The run branch itself is untouched by this resolution - neither the operator's
-    // unrelated commit nor the earlier landed content is reverted (nothing was ever
-    // confirmed as THIS producer's compensable output, so nothing is queued to compensate).
+    // The run branch's git state is UNTOUCHED by this resolution - confirmation is a
+    // read-only patch-id search, never a new commit; neither the operator's unrelated
+    // commit nor the earlier landed content moves.
     assert_eq!(
         run_git(&repo_path, &["rev-parse", "HEAD"]),
         head_before_run,
-        "an unconfirmable resume must not mutate the run branch at all"
+        "content-based confirmation must not mutate the run branch at all"
     );
     assert_eq!(
         std::fs::read_to_string(repo.path().join("specs").join("98-diverged.md")).unwrap(),
