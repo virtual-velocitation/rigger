@@ -137,6 +137,18 @@
 //! decision permanently. Test 8 reproduces only the provenance mark, proving a resumed
 //! call creates the still-missing branch at the recorded tip rather than failing or
 //! silently starting fresh.
+//!
+//! Test 9 (round 4, new-public-API probe): `Worktree::branch_tip` (src/worktree.rs) is a
+//! brand-new public function this round - `adopt_prior_criterion_branch` now calls it to
+//! read a prior candidate's tip BEFORE writing durable provenance, in place of the old
+//! `branch_exists` guard the pre-round-4 code checked first. Tests 1-8 above all exercise
+//! its SUCCESS arm implicitly (any fresh adoption decision calls it), but none exercise its
+//! error arm: a prior candidate whose own branch has since been deleted (an operator's
+//! manual cleanup, or any process that pruned the ref) must still resolve to "nothing to
+//! adopt, start fresh" - the exact pre-existing contract `adopt_prior_criterion_branch`'s
+//! own doc comment names - never a propagated error and never a spurious
+//! `STATUS_ADOPTION_RECORDED` mark (which the fix's own ordering only ever writes AFTER a
+//! successful `branch_tip`).
 
 use std::path::Path;
 use std::process::Command;
@@ -1475,5 +1487,121 @@ fn a_crash_after_the_provenance_record_but_before_the_branch_is_created_still_co
         "the resumed adoption must record the SAME recorded decision, spec field \
          included - a fresh re-derivation here would fold to an empty spec, not the \
          recorded value: {fresh_started}"
+    );
+}
+
+/// Test 9 (round 4, new-public-API probe): `Worktree::branch_tip`'s error arm - a prior
+/// candidate found via `prior_criterion_unit` (right criterion, right spec, never
+/// integrated) whose own durable branch has since been deleted. Pre-round-4, the
+/// equivalent guard was `!worktree::branch_exists(&prior_branch)`; round 4 replaced it
+/// with a single `branch_tip` call whose `Err` arm must reach the identical outcome -
+/// nothing adopted, no error propagated, no provenance mark written - never a regression
+/// introduced by collapsing the two-step check into one.
+#[test]
+fn a_prior_candidates_deleted_branch_starts_the_fresh_unit_genuinely_unadopted() {
+    let repo = tempfile::tempdir().unwrap();
+    init_repo(repo.path());
+    let store = Store::open(":memory:").unwrap();
+    let criterion = "the sensor reports its own calibration";
+
+    // PRIOR RUN: an escalated baseline unit with real committed work, exactly like test
+    // 1's setup - a genuine adoption candidate by every other measure.
+    let driver1 = WritesFileDriver {
+        file_name: "prior-work.txt".into(),
+        content: "escalated attempt\n".into(),
+    };
+    let deps1 = Deps {
+        store: &store,
+        driver: &driver1,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion.to_string()],
+    };
+    let rs1 = run(&baseline_only_cfg("false", 1), &deps1).unwrap();
+    let prior_slug = rs1.units.keys().next().unwrap().clone();
+    assert_eq!(
+        rs1.units[&prior_slug].status,
+        ledger::Status::Escalated,
+        "an always-failing gate must exhaust remediation and escalate, never integrate"
+    );
+    let prior_branch = format!("rigger/u/{prior_slug}");
+    assert!(
+        worktree::branch_exists(repo.path().to_str().unwrap(), &prior_branch),
+        "the escalated unit's durable branch must exist before this test deletes it"
+    );
+
+    // Delete the prior candidate's own durable branch - the exact "already gone" case
+    // `adopt_prior_criterion_branch`'s doc comment has always named, reached this round
+    // through `branch_tip`'s error arm instead of a `branch_exists` guard.
+    assert!(Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args(["branch", "-D", &prior_branch])
+        .status()
+        .unwrap()
+        .success());
+    assert!(
+        !worktree::branch_exists(repo.path().to_str().unwrap(), &prior_branch),
+        "the prior candidate's branch must be genuinely gone before the fresh run starts"
+    );
+
+    // FRESH RUN: a differently-named unit re-serves the SAME criterion. `prior_criterion_
+    // unit` still finds `prior_slug` as a candidate (never integrated, same criterion,
+    // same spec) - only the git side effect that would seed the new branch is now
+    // impossible.
+    start_fresh(&store, &[criterion.to_string()], "", "", "").unwrap();
+    let fresh_slug = "deleted-prior-branch-unit";
+    let driver2 = ProposesSlugDriver {
+        proposed_id: fresh_slug.to_string(),
+        criterion: criterion.to_string(),
+        worker_write: Some(("run2-own-work.txt".into(), "genuinely new\n".into())),
+        gates: Vec::new(),
+    };
+    let deps2 = Deps {
+        store: &store,
+        driver: &driver2,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion.to_string()],
+    };
+    let rs2 = run(&fresh_run_cfg("true"), &deps2).unwrap();
+    assert_eq!(
+        rs2.units[fresh_slug].status,
+        ledger::Status::Integrated,
+        "a candidate whose branch is gone must never block the fresh unit's own ordinary \
+         lifecycle; units: {:?}",
+        rs2.units.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        !repo.path().join("prior-work.txt").exists(),
+        "nothing was adopted, so the prior candidate's content must NOT ride into the base"
+    );
+    assert!(repo.path().join("run2-own-work.txt").exists());
+
+    let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    let fresh_started = find_unit_started(&events, fresh_slug);
+    assert_eq!(
+        fresh_started["adopted_from"],
+        Value::Null,
+        "branch_tip's error arm must resolve to no adoption, exactly like the pre-round-4 \
+         branch_exists guard it replaced - never a propagated error, never a fabricated \
+         provenance triple: {fresh_started}"
+    );
+    assert!(
+        !events.iter().any(|e| {
+            e.type_ == ledger::TYPE_UNIT_STATUS
+                && serde_json::from_slice::<Value>(&e.data)
+                    .ok()
+                    .is_some_and(|v| {
+                        v.get("id").and_then(Value::as_str) == Some(fresh_slug)
+                            && v.get("status").and_then(Value::as_str) == Some("adoption-recorded")
+                    })
+        }),
+        "no durable adoption-recorded mark may exist for a unit that never actually \
+         adopted anything - the fix only writes it AFTER a successful branch_tip"
     );
 }
