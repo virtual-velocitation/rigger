@@ -605,6 +605,9 @@ impl Worktree {
         // as "resolved" content, and re-invoking `git merge` would be refused outright by
         // git regardless. Worktree state - read below via `conflicting_paths` - is the sole
         // authority for what happens next; this whole commit-and-attempt block is skipped.
+        // Set only by a fresh attempt's own merge command below - `None` on a crash-resumed
+        // re-entry (the block below is skipped entirely) or when no merge was even needed.
+        let mut merge_attempt: Option<String> = None;
         if !self.merge_in_progress() {
             let committed = self.commit(message)?;
             // Nothing at all for this unit to contribute (no fresh commit here, and its
@@ -619,9 +622,19 @@ impl Worktree {
             }
             let run_tip = git(&self.repo, &["rev-parse", "HEAD"])?.trim().to_string();
             // Outcome (clean vs conflict) is read from worktree state just below, not
-            // from this command's own exit code - so the same read path serves both a
-            // fresh attempt and a crash-resumed one.
-            let _ = run_git(&self.dir, &["merge", "--no-commit", "--no-ff", &run_tip]);
+            // from this command's own exit code alone - a genuine CONTENT conflict also
+            // exits non-zero, and is read back (and returned) via `conflicting_paths` right
+            // below regardless of what this call returns. But a NON-content failure (spec
+            // 88 criterion 1, operator ruling point (e): sdet-u88c1-worktree-merge-result-
+            // discarded) - e.g. a stray untracked file at a path `run_tip` newly tracks,
+            // which git refuses to clobber - leaves BOTH `conflicting_paths()` and
+            // `merge_in_progress()` at their ordinary "nothing to do" defaults. Worktree
+            // state alone cannot tell that apart from "nothing changed", so the error is
+            // captured here and, once the checks below have ruled out a real conflict,
+            // surfaced as a genuine `Err` instead of silently falling through to land the
+            // unit's branch UNCHANGED.
+            merge_attempt =
+                run_git(&self.dir, &["merge", "--no-commit", "--no-ff", &run_tip]).err();
         }
         let conflicts = self.conflicting_paths()?;
         if !conflicts.is_empty() {
@@ -635,6 +648,12 @@ impl Worktree {
                 Err(out) if out.contains("nothing to commit") => {}
                 Err(out) => return Err(Error(format!("commit merge: {out}"))),
             }
+        } else if let Some(out) = merge_attempt {
+            // Worktree state has now ruled out a real content conflict (`conflicts` empty
+            // above) and an in-progress merge to finalize (`merge_in_progress` just above) -
+            // so a fresh attempt's own merge command failing here is a genuine, non-content
+            // error (spec 88 criterion 1, operator ruling point (e)), never a silent no-op.
+            return Err(Error(format!("worktree merge --no-commit --no-ff: {out}")));
         }
         let commit = git(&self.dir, &["rev-parse", "HEAD"])?.trim().to_string();
         // The worktree's branch is now, by construction, a strict descendant of the run
@@ -1641,6 +1660,84 @@ mod tests {
         assert!(
             b.merge_in_progress(),
             "the in-progress merge survives the idempotent re-entry untouched"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn integrate_reports_a_non_content_merge_failure_instead_of_silently_landing_a_stale_branch() {
+        // Spec 88, criterion 1, operator ruling op-u88c1-round-1-conflict-resolution-is-a-
+        // parked-spawn-not-an-inline-loop, point (e): "Every worktree git result is checked: a
+        // non-content failure of merge --no-commit ... is an integration ERROR ..., never a
+        // silent fall-through that lands an unvalidated branch." (sdet-u88c1-worktree-merge-
+        // result-discarded). `git merge --no-commit --no-ff` can fail for a reason that leaves
+        // BOTH `conflicting_paths()` and `merge_in_progress()` at their ordinary "nothing to
+        // do" defaults - a stray untracked, non-regular file (a build tool's leftover FIFO or
+        // socket, say) at a path the run branch's tip newly tracks makes git refuse outright
+        // ("untracked working tree files would be overwritten"), with no MERGE_HEAD and no
+        // unmerged path ever created. `Worktree::commit`'s own `git add -A` (always run first)
+        // cannot sweep it into the unit's own commit first (unlike a plain regular file) - `git
+        // add` has no blob to record for a FIFO, so `git status`/`add -A` never even see it -
+        // which is exactly what makes this reachable via the ordinary call sequence, not a
+        // fabricated repository state. Reading only worktree state (as every other outcome in
+        // this function correctly does) cannot distinguish that from "nothing changed", so
+        // discarding this command's own Result silently falls through to landing the unit's
+        // branch UNCHANGED - never actually merging the run branch's new content in at all.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wb = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        // b branches off the CURRENT base first, so its own history never learns about
+        // "clash.rs" - only the run branch's tip (landed directly below) tracks it.
+        let b = Worktree::create(&repo_path, wb.to_str().unwrap(), "rigger/u/b", "").unwrap();
+
+        // Land "clash.rs" on the run branch directly (simulating a sibling unit's own
+        // already-integrated work).
+        std::fs::write(repo.path().join("clash.rs"), "FROM_A\n").unwrap();
+        run_git(&repo_path, &["add", "--", "clash.rs"]).unwrap();
+        run_git(&repo_path, &["commit", "-q", "-m", "a lands clash.rs"]).unwrap();
+
+        std::fs::write(wb.join("b.rs"), "B_WORK\n").unwrap();
+        b.commit("rigger: b's own work").unwrap();
+        // A stray untracked FIFO at the exact path the run branch's tip now carries - `git
+        // add -A` cannot stage a non-regular file, so it stays genuinely untracked (invisible
+        // to `git status`, even) all the way to the merge attempt below; git itself (not this
+        // crate) then refuses to clobber it.
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(wb.join("clash.rs"))
+                .status()
+                .unwrap()
+                .success(),
+            "test setup: mkfifo must succeed"
+        );
+
+        let err = match b.integrate("rigger: integrate b") {
+            Err(e) => e,
+            Ok(IntegrateOutcome::Merged(c)) => panic!(
+                "a non-content git failure must surface as an Err, never a silent Merged({c:?})"
+            ),
+            Ok(IntegrateOutcome::Conflict(paths)) => panic!(
+                "a non-content git failure is not a real content conflict, got Conflict({paths:?})"
+            ),
+        };
+        assert!(
+            err.0.contains("clash.rs") || err.0.to_lowercase().contains("untracked"),
+            "the real git failure must propagate, not a fabricated message: {}",
+            err.0
+        );
+        // The stray FIFO is exactly what git itself refused to touch - proof this is the real
+        // git refusal, not some other failure.
+        use std::os::unix::fs::FileTypeExt;
+        assert!(
+            std::fs::symlink_metadata(wb.join("clash.rs"))
+                .unwrap()
+                .file_type()
+                .is_fifo(),
+            "git's own refusal leaves the stray file untouched"
+        );
+        assert!(
+            !b.merge_in_progress(),
+            "git refused before ever starting the merge - no MERGE_HEAD to speak of"
         );
     }
 

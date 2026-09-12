@@ -585,32 +585,38 @@
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 1441,
-        "end_line": 1441,
+        "start_line": 1460,
+        "end_line": 1460,
         "name": "Command::new"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2707,
-        "end_line": 2707,
+        "start_line": 1706,
+        "end_line": 1706,
         "name": "Command::new"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2994,
-        "end_line": 2994,
+        "start_line": 2804,
+        "end_line": 2804,
         "name": "Command::new"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 3699,
-        "end_line": 3699,
+        "start_line": 3091,
+        "end_line": 3091,
         "name": "Command::new"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 3705,
-        "end_line": 3705,
+        "start_line": 3796,
+        "end_line": 3796,
+        "name": "Command::new"
+      },
+      {
+        "file": "src/worktree.rs",
+        "start_line": 3802,
+        "end_line": 3802,
         "name": "Command::new"
       },
       {
@@ -1863,7 +1869,7 @@
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 283 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: Command::new call sites - 284 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0007",
@@ -2583,8 +2589,8 @@
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 862,
-        "end_line": 864,
+        "start_line": 881,
+        "end_line": 883,
         "name": "shared_build_cache_guard_path"
       },
       {
@@ -4123,38 +4129,38 @@
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 805,
-        "end_line": 805,
+        "start_line": 824,
+        "end_line": 824,
         "name": "\"{}/.rigger/tmp\""
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2107,
-        "end_line": 2107,
+        "start_line": 2204,
+        "end_line": 2204,
         "name": "\"{repo_path}/.rigger/tmp\""
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2124,
-        "end_line": 2124,
+        "start_line": 2221,
+        "end_line": 2221,
         "name": "\"~/.rigger-scratch-test\""
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2125,
-        "end_line": 2125,
+        "start_line": 2222,
+        "end_line": 2222,
         "name": "\"{home}/.rigger-scratch-test\""
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 3637,
-        "end_line": 3637,
+        "start_line": 3734,
+        "end_line": 3734,
         "name": "\"{base}..rigger-run\""
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 3686,
-        "end_line": 3686,
+        "start_line": 3783,
+        "end_line": 3783,
         "name": "\".rigger\""
       },
       {
@@ -11871,8 +11877,8 @@
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 1808,
-        "end_line": 1862,
+        "start_line": 1905,
+        "end_line": 1959,
         "name": "revert_on_base_aborts_and_errors_on_a_conflicting_revert"
       },
       {
@@ -12281,8 +12287,8 @@
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2216,
-        "end_line": 2218,
+        "start_line": 2313,
+        "end_line": 2315,
         "name": "read_stream"
       },
       {
@@ -14971,14 +14977,14 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 727,
-        "end_line": 738,
+        "start_line": 746,
+        "end_line": 757,
         "name": "branch_exists"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 747,
-        "end_line": 758,
+        "start_line": 766,
+        "end_line": 777,
         "name": "ref_resolves"
       }
     ],
@@ -14991,14 +14997,14 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 814,
-        "end_line": 817,
+        "start_line": 833,
+        "end_line": 836,
         "name": "scratch_root_from_env"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 821,
-        "end_line": 824,
+        "start_line": 840,
+        "end_line": 843,
         "name": "scratch_root_path_from_env"
       }
     ],
@@ -15011,14 +15017,14 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 1405,
-        "end_line": 1412,
+        "start_line": 1424,
+        "end_line": 1431,
         "name": "head_sha_of"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 1427,
-        "end_line": 1434,
+        "start_line": 1446,
+        "end_line": 1453,
         "name": "tree_sha_of"
       }
     ],
@@ -15031,20 +15037,20 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 1496,
-        "end_line": 1516,
+        "start_line": 1515,
+        "end_line": 1535,
         "name": "integrate_lands_work_in_the_repo"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 1909,
-        "end_line": 1942,
+        "start_line": 2006,
+        "end_line": 2039,
         "name": "commit_cleans_the_tree_so_a_gate_sees_the_committed_artifact"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 1987,
-        "end_line": 2010,
+        "start_line": 2084,
+        "end_line": 2107,
         "name": "integrate_lands_a_pre_committed_artifact_unchanged"
       }
     ],
@@ -15057,14 +15063,14 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 2013,
-        "end_line": 2040,
+        "start_line": 2110,
+        "end_line": 2137,
         "name": "changed_files_reports_only_the_rename_destination"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 3662,
-        "end_line": 3674,
+        "start_line": 3759,
+        "end_line": 3771,
         "name": "changed_files_unquotes_paths_with_spaces"
       }
     ],
@@ -15077,14 +15083,14 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 2131,
-        "end_line": 2168,
+        "start_line": 2228,
+        "end_line": 2265,
         "name": "sweep_terminal_removes_merged_worktrees_and_keeps_inflight_ones"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2641,
-        "end_line": 2688,
+        "start_line": 2738,
+        "end_line": 2785,
         "name": "sweep_terminal_reclaims_a_crash_left_terminal_units_per_unit_build_cache"
       }
     ],
@@ -15097,14 +15103,14 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 2434,
-        "end_line": 2438,
+        "start_line": 2531,
+        "end_line": 2535,
         "name": "requested_and_answered"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2442,
-        "end_line": 2446,
+        "start_line": 2539,
+        "end_line": 2543,
         "name": "requested_and_hung"
       }
     ],
@@ -15117,26 +15123,26 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 2449,
-        "end_line": 2481,
+        "start_line": 2546,
+        "end_line": 2578,
         "name": "sweep_terminal_spares_a_merged_branch_whose_units_latest_spawn_is_still_in_flight"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2484,
-        "end_line": 2509,
+        "start_line": 2581,
+        "end_line": 2606,
         "name": "sweep_terminal_reclaims_a_merged_branch_once_its_latest_spawn_has_a_real_result"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2512,
-        "end_line": 2535,
+        "start_line": 2609,
+        "end_line": 2632,
         "name": "sweep_terminal_reclaims_a_merged_branch_whose_latest_spawn_is_hung"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2538,
-        "end_line": 2560,
+        "start_line": 2635,
+        "end_line": 2657,
         "name": "sweep_terminal_reclaims_a_merged_branch_with_no_spawn_recorded_at_all_unchanged"
       }
     ],
@@ -15149,14 +15155,14 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 2563,
-        "end_line": 2602,
+        "start_line": 2660,
+        "end_line": 2699,
         "name": "sweep_terminal_prints_evidence_for_a_kept_decision_but_not_for_a_removed_no_spawn_one"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2605,
-        "end_line": 2638,
+        "start_line": 2702,
+        "end_line": 2735,
         "name": "sweep_terminal_prints_evidence_for_a_removed_terminal_spawn_decision"
       }
     ],
@@ -15169,20 +15175,20 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 2760,
-        "end_line": 2801,
+        "start_line": 2857,
+        "end_line": 2898,
         "name": "worktree_remove_reclaims_the_sibling_per_unit_cache"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2804,
-        "end_line": 2839,
+        "start_line": 2901,
+        "end_line": 2936,
         "name": "worktree_remove_also_reclaims_the_store_fence_sibling"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 2859,
-        "end_line": 2888,
+        "start_line": 2956,
+        "end_line": 2985,
         "name": "worktree_remove_also_reclaims_a_review_worktrees_store_fence_sibling"
       }
     ],
@@ -15195,14 +15201,14 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 2842,
-        "end_line": 2856,
+        "start_line": 2939,
+        "end_line": 2953,
         "name": "review_fence_sibling_maps_a_review_worktree_to_its_fence_sibling_and_ignores_the_rest"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 3170,
-        "end_line": 3183,
+        "start_line": 3267,
+        "end_line": 3280,
         "name": "unit_cache_sibling_maps_a_unit_worktree_to_its_cache_and_ignores_the_rest"
       }
     ],
@@ -15215,14 +15221,14 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 2899,
-        "end_line": 2960,
+        "start_line": 2996,
+        "end_line": 3057,
         "name": "reclaim_worktree_on_branch_deregisters_the_lingering_worktree_reclaims_its_cache_and_frees_the_branch"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 3117,
-        "end_line": 3167,
+        "start_line": 3214,
+        "end_line": 3264,
         "name": "reclaim_worktree_on_branch_prunes_a_stale_registration_whose_dir_was_deleted_and_frees_the_branch"
       }
     ],
@@ -15235,20 +15241,20 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 3763,
-        "end_line": 3839,
+        "start_line": 3860,
+        "end_line": 3936,
         "name": "create_self_heals_a_corrupt_worktree_admin_entry_and_spares_healthy_ones"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 3842,
-        "end_line": 3913,
+        "start_line": 3939,
+        "end_line": 4010,
         "name": "create_heals_a_zero_length_gitdir_marker_the_commondir_case_leaves_untested"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 3916,
-        "end_line": 3979,
+        "start_line": 4013,
+        "end_line": 4076,
         "name": "create_heals_a_fully_missing_marker_not_just_a_truncated_one"
       }
     ],
