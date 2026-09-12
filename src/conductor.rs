@@ -9789,27 +9789,60 @@ struct StartedCriterionProbe {
     criterion_id: String,
 }
 
-/// The MOST RECENT prior unit (any run, any id) that served `criterion_id` and never
-/// reached [`ledger::TYPE_UNIT_INTEGRATED`] (spec 88, ADOPTION KEYS ON THE CRITERION -
-/// decided, and its tie-break: two prior units sharing a criterion, a replanned run,
-/// resolve to the most recent tip).
+/// The MOST RECENT prior unit, OF THE SAME SPEC, that served `criterion_id` and either
+/// never reached [`ledger::TYPE_UNIT_INTEGRATED`] or had that integration later REVERTED
+/// by a compensation (spec 88, ADOPTION KEYS ON THE CRITERION - decided; round 3 fix for
+/// `adv-u88c2-r2-criterion-id-unscoped-crosses-specs` and
+/// `adv-u88c2-r2-exclusion-set-permanent-blocks-a-genuine-redo-after-integration`; its
+/// tie-break: two prior units sharing a criterion, a replanned run, resolve to the most
+/// recent tip).
+///
+/// SPEC-SCOPED (round 3, criterion-id-unscoped-crosses-specs): [`criterion_stable_id`] is
+/// only `position` + a content hash of the criterion TEXT - two unrelated specs whose
+/// criterion at the same position is byte-for-byte identical text (this repo's own
+/// corpus proved this happens today: several specs share the boilerplate "both feature
+/// lanes green..." as their 3rd Done-when item) mint the IDENTICAL `criterion_id`. Without
+/// scoping, a fresh unit for spec B's criterion could adopt spec A's abandoned attempt at
+/// its own, textually-identical criterion - real content contamination across unrelated
+/// specs. So a candidate only ever counts when its OWN `[RunStarted, next RunStarted)`
+/// window's spec ([`crate::run::RunStarted::spec`], stemmed through the SAME
+/// [`ledger::spec_stem`] authority `pr_head_branch` uses) matches `this_unit`'s - the
+/// LAST `RunStarted` in `events`, since this call always runs live within the current
+/// (still-open) run and that is exactly this unit's own owning spec. A store with no
+/// `RunStarted` at all (a legacy pre-spec-82 log, or a bare unit test) resolves every
+/// spec identity to the same empty string, so matching is UNCHANGED there.
 ///
 /// A single forward fold over `events` in LOG order (deliberately the WHOLE stream, not
 /// [`crate::run::current_run`] - a prior run's `UnitStarted` lives BEFORE the current
 /// run's boundary by construction, and that is exactly the history this looks for):
-/// every `UnitStarted` whose OWN `criterion_id` matches becomes the new leading
-/// candidate, so the LAST one walked (the most recent) is what survives. The
-/// integrated-exclusion set is keyed on `(id, criterion_id)`, never bare id: a planner
-/// id carries no cross-run uniqueness guarantee (nothing enforces one - a slug can be
-/// reused across two runs for two different criteria), so a later integration of the
-/// SAME id for a DIFFERENT criterion must never mask an EARLIER, still-abandoned
-/// attempt at THIS criterion sharing that id. `UnitIntegrated` itself carries only
-/// `id` (no `criterion_id`), so the criterion an integration actually satisfied is
-/// looked up off the most recent `UnitStarted` walked for that id so far - a unit
-/// cannot integrate before it starts, so its `UnitStarted` always precedes its
-/// `UnitIntegrated` earlier in this same log, regardless of how many resumed
-/// processes wrote the two events. The final candidate is returned only when
-/// `(candidate, criterion_id)` is NOT in that set.
+/// every `UnitStarted` whose OWN `criterion_id` matches, AND whose spec (at the moment it
+/// started) matches the target spec, becomes the new leading candidate (with the spec it
+/// was recorded under), so the LAST one walked (the most recent) is what survives. The
+/// integrated-exclusion set is keyed on `(id, criterion_id, spec)`, never bare id: a
+/// planner id carries no cross-run uniqueness guarantee (nothing enforces one - a slug
+/// can be reused across two runs, or two specs, for two different criteria), so a later
+/// integration of the SAME id for a DIFFERENT criterion or spec must never mask an
+/// EARLIER, still-abandoned attempt at THIS criterion sharing that id. `UnitIntegrated`
+/// itself carries only `id` (no `criterion_id`/spec), so the criterion and spec an
+/// integration actually satisfied are looked up off the most recent `UnitStarted` walked
+/// for that id so far - a unit cannot integrate before it starts, so its `UnitStarted`
+/// always precedes its `UnitIntegrated` earlier in this same log, regardless of how many
+/// resumed processes wrote the two events.
+///
+/// TEMPORAL (round 3, exclusion-set-permanent-blocks-a-genuine-redo): a later
+/// COMPENSATION (spec 12, unit 4 - a `UnitFailed` carrying [`META_COMPENSATED`] metadata,
+/// never a new event type) proves an integrated unit's work wrong and reverts it -
+/// genuinely un-integrating its criterion again, an established mechanism this same
+/// fold must honor rather than treat the exclusion set as monotonic-only. So a
+/// compensation walked for an id CLEARS that id's `(id, criterion, spec)` triple from the
+/// set (using the same "most recently walked `UnitStarted`" lookup `UnitIntegrated`
+/// uses), letting a genuine later redo adopt the reverted unit's still-existing branch
+/// instead of being permanently barred from its reviewed progress. An ORDINARY
+/// remediation `UnitFailed` (no `META_COMPENSATED`) touches nothing - only a real
+/// compensation reopens the exclusion.
+///
+/// The final candidate is returned only when `(candidate, criterion_id, candidate's own
+/// spec)` is NOT in that set at the end of the fold.
 ///
 /// This deliberately does NOT re-search for an OLDER non-integrated unit when the most
 /// recent one for this criterion already integrated: a criterion whose latest attempt
@@ -9824,33 +9857,72 @@ fn prior_criterion_unit(events: &[Event], criterion_id: &str, this_unit: &str) -
     if criterion_id.is_empty() {
         return None;
     }
-    let mut candidate: Option<String> = None;
-    // The criterion each id's most recently walked `UnitStarted` served - consulted
-    // when that id later reaches `UnitIntegrated`, which carries no criterion of its
-    // own to key the exclusion set on directly.
+    // This unit's OWN owning spec: the LAST RunStarted in the whole stream, since this
+    // call always runs live within the current, still-open run. Empty (never `None`) on
+    // a store with no RunStarted at all, so the comparison below degrades to "always
+    // equal" there rather than refusing every match.
+    let target_spec = events
+        .iter()
+        .rev()
+        .find(|e| e.type_ == crate::run::TYPE_RUN_STARTED)
+        .and_then(|e| serde_json::from_slice::<crate::run::RunStarted>(&e.data).ok())
+        .map(|rs| ledger::spec_stem(&rs.spec))
+        .unwrap_or_default();
+    // (id, spec) at the moment of selection, so a LATER RunStarted encountered further
+    // along the fold (a still-later, unrelated run reusing the same id) can never
+    // retroactively change which spec THIS candidate was actually recorded under.
+    let mut candidate: Option<(String, String)> = None;
+    let mut current_spec = String::new();
+    // The criterion (and spec) each id's most recently walked `UnitStarted` served -
+    // consulted when that id later reaches `UnitIntegrated` (or a compensating
+    // `UnitFailed`), neither of which carries a criterion/spec of its own to key the
+    // exclusion set on directly.
     let mut started_criterion: HashMap<String, String> = HashMap::new();
-    let mut integrated: HashSet<(String, String)> = HashSet::new();
+    let mut started_spec: HashMap<String, String> = HashMap::new();
+    let mut integrated: HashSet<(String, String, String)> = HashSet::new();
     for e in events {
-        if e.type_ == ledger::TYPE_UNIT_STARTED {
+        if e.type_ == crate::run::TYPE_RUN_STARTED {
+            if let Ok(rs) = serde_json::from_slice::<crate::run::RunStarted>(&e.data) {
+                current_spec = ledger::spec_stem(&rs.spec);
+            }
+        } else if e.type_ == ledger::TYPE_UNIT_STARTED {
             if let Ok(u) = serde_json::from_slice::<StartedCriterionProbe>(&e.data) {
                 if !u.id.is_empty() {
-                    if u.id != this_unit && u.criterion_id == criterion_id {
-                        candidate = Some(u.id.clone());
+                    if u.id != this_unit
+                        && u.criterion_id == criterion_id
+                        && current_spec == target_spec
+                    {
+                        candidate = Some((u.id.clone(), current_spec.clone()));
                     }
-                    started_criterion.insert(u.id, u.criterion_id);
+                    started_criterion.insert(u.id.clone(), u.criterion_id);
+                    started_spec.insert(u.id, current_spec.clone());
                 }
             }
         } else if e.type_ == ledger::TYPE_UNIT_INTEGRATED {
             if let Ok(u) = serde_json::from_slice::<StartedCriterionProbe>(&e.data) {
                 if !u.id.is_empty() {
-                    if let Some(served) = started_criterion.get(&u.id) {
-                        integrated.insert((u.id, served.clone()));
+                    if let Some(served) = started_criterion.get(&u.id).cloned() {
+                        let spec = started_spec.get(&u.id).cloned().unwrap_or_default();
+                        integrated.insert((u.id, served, spec));
                     }
+                }
+            }
+        } else if e.type_ == ledger::TYPE_UNIT_FAILED
+            && e.meta.get(META_COMPENSATED).is_some_and(|c| !c.is_empty())
+        {
+            if let Ok(u) = serde_json::from_slice::<StartedCriterionProbe>(&e.data) {
+                if let Some(served) = started_criterion.get(&u.id).cloned() {
+                    let spec = started_spec.get(&u.id).cloned().unwrap_or_default();
+                    integrated.remove(&(u.id, served, spec));
                 }
             }
         }
     }
-    candidate.filter(|c| !integrated.contains(&(c.clone(), criterion_id.to_string())))
+    candidate
+        .filter(|(c, spec)| {
+            !integrated.contains(&(c.clone(), criterion_id.to_string(), spec.clone()))
+        })
+        .map(|(c, _)| c)
 }
 
 /// The DETERMINISTIC dir for a STANDALONE review stage's throwaway worktree (spec 06):
@@ -10725,6 +10797,122 @@ mod tests {
         ];
         assert_eq!(prior_criterion_unit(&events, "c1-aaa", "new-slug"), None);
         assert_eq!(prior_criterion_unit(&events, "", "new-slug"), None);
+    }
+
+    /// A minimal `RunStarted` event carrying only the one field
+    /// [`prior_criterion_unit`]'s spec-scoping needs (spec 88 round 3) - mirroring
+    /// [`started_with_criterion`]'s own minimal-shape convention rather than routing
+    /// through [`crate::run::RunStarted::to_event`] (which also stamps metadata this
+    /// unit test has no need of).
+    fn run_started_with_spec(spec: &str) -> Event {
+        Event::new(
+            crate::run::TYPE_RUN_STARTED,
+            serde_json::to_vec(&json!({"run": "r", "spec": spec})).unwrap(),
+        )
+    }
+
+    /// A compensation revert's `UnitFailed` (spec 12, unit 4): the exact shape
+    /// `drain_compensations` appends - the existing `UnitFailed` vocabulary carrying
+    /// [`META_COMPENSATED`] metadata, never a new event type.
+    fn compensated(id: &str) -> Event {
+        Event::new(
+            ledger::TYPE_UNIT_FAILED,
+            serde_json::to_vec(&json!({"id": id, "attempts": 2, "cause": CAUSE_REJECT})).unwrap(),
+        )
+        .with_meta(META_COMPENSATED, "deadbeef")
+    }
+
+    /// An ORDINARY remediation `UnitFailed` (spec 88 round 3's control case): no
+    /// [`META_COMPENSATED`] metadata at all, so it must never be mistaken for a
+    /// compensation revert.
+    fn plain_failure(id: &str) -> Event {
+        Event::new(
+            ledger::TYPE_UNIT_FAILED,
+            serde_json::to_vec(&json!({"id": id, "attempts": 1, "cause": CAUSE_REJECT})).unwrap(),
+        )
+    }
+
+    #[test]
+    fn prior_criterion_unit_never_adopts_across_two_different_specs_sharing_the_same_criterion_id()
+    {
+        // adv-u88c2-r2-criterion-id-unscoped-crosses-specs (upheld, round 2): two
+        // UNRELATED specs whose criterion at the same position happens to be
+        // byte-for-byte identical text mint the SAME criterion_id (position + content
+        // hash, spec 18 §3.3 - no spec identity folded in). A fresh unit for spec B's
+        // criterion must never adopt spec A's abandoned attempt at ITS OWN, textually
+        // identical criterion - that is real content contamination across unrelated
+        // specs, not a legitimate continuation.
+        let events = vec![
+            run_started_with_spec("specs/80-criteria-survive-extraction.md"),
+            started_with_criterion("spec-a-unit", "c3-deadbeef"),
+            // Spec B's own run begins later in the SAME log (a later campaign).
+            run_started_with_spec("specs/90-hermetic-test-git.md"),
+        ];
+        assert_eq!(
+            prior_criterion_unit(&events, "c3-deadbeef", "spec-b-unit"),
+            None,
+            "spec A's un-integrated attempt must never be adopted by spec B's unit even \
+             though both share the same position+content criterion_id"
+        );
+    }
+
+    #[test]
+    fn prior_criterion_unit_still_adopts_across_two_runs_of_the_same_spec() {
+        // The positive control for the same fix: TWO runs of the SAME spec (a
+        // replanned campaign) must still adopt across the run boundary exactly as
+        // spec 88 originally decided - the spec-scoping must not regress the
+        // feature's own reason to exist.
+        let events = vec![
+            run_started_with_spec("specs/88-adoption-keys-on-criterion.md"),
+            started_with_criterion("old-slug", "c1-aaa"),
+            run_started_with_spec("specs/88-adoption-keys-on-criterion.md"),
+        ];
+        assert_eq!(
+            prior_criterion_unit(&events, "c1-aaa", "new-slug"),
+            Some("old-slug".to_string()),
+            "a re-run of the SAME spec must still adopt its own prior abandoned attempt"
+        );
+    }
+
+    #[test]
+    fn prior_criterion_unit_readopts_after_a_compensation_reverts_the_integration() {
+        // adv-u88c2-r2-exclusion-set-permanent-blocks-a-genuine-redo-after-integration
+        // (upheld, round 2): a LATER compensation (spec 12, unit 4) proves the
+        // integrated unit's work wrong and reverts it - the criterion is genuinely
+        // un-integrated again, so a fresh redo must be able to adopt the reverted
+        // unit's still-existing, mostly-reviewed branch rather than starting from base.
+        let events = vec![
+            run_started_with_spec("specs/1-x.md"),
+            started_with_criterion("attempt-1", "c1-aaa"),
+            integrated("attempt-1"),
+            compensated("attempt-1"),
+        ];
+        assert_eq!(
+            prior_criterion_unit(&events, "c1-aaa", "new-slug"),
+            Some("attempt-1".to_string()),
+            "a compensation-reverted integration must clear the exclusion so the \
+             genuine redo can still adopt the reverted unit's branch"
+        );
+    }
+
+    #[test]
+    fn prior_criterion_unit_a_plain_non_compensation_failure_never_reopens_an_integrated_criterion()
+    {
+        // The control for the same fix: an ORDINARY `UnitFailed` (no META_COMPENSATED)
+        // must never be mistaken for a compensation revert - an integrated unit stays
+        // excluded from adoption unless a REAL compensation reverted it.
+        let events = vec![
+            run_started_with_spec("specs/1-x.md"),
+            started_with_criterion("attempt-1", "c1-aaa"),
+            integrated("attempt-1"),
+            plain_failure("attempt-1"),
+        ];
+        assert_eq!(
+            prior_criterion_unit(&events, "c1-aaa", "new-slug"),
+            None,
+            "a plain UnitFailed carrying no META_COMPENSATED must never reopen an \
+             already-integrated criterion for adoption"
+        );
     }
 
     /// The UnitStarted event for `id`, keyed exactly as [`Self::start_and_run_stage`]
