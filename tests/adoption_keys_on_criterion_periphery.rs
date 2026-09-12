@@ -1807,3 +1807,113 @@ fn a_reused_planner_slug_never_replays_an_unrelated_specs_recorded_adoption_deci
          spec: {run3_started}"
     );
 }
+
+/// Test 11 (round 5, "event type / serialized form" probe - the back-compat half test 10
+/// does not cover): round 5 widened the durable [`STATUS_ADOPTION_RECORDED`] `UnitStatus`
+/// mark's payload with two NEW top-level fields (`criterion_id`, `spec`) so
+/// `recorded_adoption` can match on the full triple instead of the bare id alone (test 10).
+/// Every mark test 10's own real `run()` calls produce is written by THIS SAME round-5
+/// binary, so it always carries both new fields - it cannot exercise what happens when the
+/// reader meets a mark durably written by the PRE-round-5 binary (rounds 1-4's shape: only
+/// `id`, `status`, `adopted_from`, exactly what `adopt_prior_criterion_branch`'s round-4
+/// `emit_keyed_meta` call constructed, before this round's touch-up added the two fields).
+/// That shape can already sit on a real, persistent event store the moment a running
+/// process upgrades mid-campaign - the self-hosting exposure this project's own `.rigger/`
+/// store carries on every "refresh the binary after a landed spec" cycle (unlike test 10's
+/// three runs, which share one ephemeral `:memory:` store the same binary writes end to
+/// end). Mirrors test 2's own "event type / serialized form" back-compat precedent (a
+/// pre-spec-88 `UnitStarted` missing `criterion_id` entirely) for this round's new fields
+/// instead.
+///
+/// The property under test is NOT "recognize the legacy mark with full fidelity" - round 5
+/// exists PRECISELY because bare-id recognition alone is unsafe (test 10's whole point). It
+/// is that a legacy-shaped record, missing the new fields altogether, is safely treated as
+/// UNRECOGNIZED rather than resurrecting the exact cross-identity contamination test 10
+/// closes through a different route: `recorded_adoption` (conductor.rs) defaults
+/// `own_criterion_id`/`own_spec` to `""` via `unwrap_or_default()` when the keys are absent,
+/// and this proves that default can never coincide with a real `criterion_stable_id` (never
+/// empty) at the one real boundary that matters - a real `conductor::run()` call - rather
+/// than only inside the private function's own unit tests.
+#[test]
+fn a_legacy_adoption_mark_missing_criterion_id_and_spec_never_matches_a_reused_id_for_an_unrelated_criterion(
+) {
+    let repo = tempfile::tempdir().unwrap();
+    init_repo(repo.path());
+    let store = Store::open(":memory:").unwrap();
+
+    let legacy_id = "legacy-shape-unit";
+    let legacy_branch = format!("rigger/u/{legacy_id}");
+    let legacy_tip = git_out(repo.path(), &["rev-parse", "HEAD"])
+        .expect("the bare init commit must resolve a tip to point the legacy branch at");
+
+    // Reproduce the EXACT pre-round-5 durable shape: `adopt_prior_criterion_branch`'s
+    // round-4 `emit_keyed_meta` call wrote only `id`, `status` and `adopted_from` - no
+    // `criterion_id`, no `spec`. The git side effect a real completed round-4 adoption
+    // would also have finished by this point is reproduced too, exactly like tests 7-9's
+    // "reproduce the exact state" technique, so `branch_exists` sees the same
+    // unit-already-has-a-branch condition a real completed legacy adoption left behind.
+    Worktree::create_branch_at(repo.path().to_str().unwrap(), &legacy_branch, &legacy_tip).unwrap();
+    store
+        .append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[Event::new(
+                ledger::TYPE_UNIT_STATUS,
+                serde_json::to_vec(&json!({
+                    "id": legacy_id,
+                    "status": "adoption-recorded",
+                    "adopted_from": {
+                        "unit": "some-other-run-s-unrelated-baseline",
+                        "tip": legacy_tip,
+                        "spec": "specs/some-unrelated-old-spec.md",
+                    },
+                }))
+                .unwrap(),
+            )],
+        )
+        .unwrap();
+
+    // A LATER, wholly unrelated run reuses the SAME literal id for a criterion nothing
+    // above has ever served - the exact reused-slug shape test 10 drives, but against a
+    // legacy-shaped mark rather than an explicit, well-formed mismatch.
+    let criterion = "the gauge independently reports its own reading on every cycle";
+    let spec_path = "specs/91-an-unrelated-later-spec.md";
+    start_fresh(&store, &[criterion.to_string()], "", "", spec_path).unwrap();
+    let driver = ProposesSlugDriver {
+        proposed_id: legacy_id.to_string(),
+        criterion: criterion.to_string(),
+        worker_write: Some((
+            "own-work.txt".into(),
+            "genuinely new, unrelated work\n".into(),
+        )),
+        gates: Vec::new(),
+    };
+    let deps = Deps {
+        store: &store,
+        driver: &driver,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion.to_string()],
+    };
+    let rs = run(&fresh_run_cfg("true"), &deps).unwrap();
+    assert_eq!(
+        rs.units[legacy_id].status,
+        ledger::Status::Integrated,
+        "reusing a literal id over a legacy mark must still run its ordinary lifecycle \
+         through to integration"
+    );
+    assert!(repo.path().join("own-work.txt").exists());
+
+    let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    let started = find_unit_started(&events, legacy_id);
+    assert_eq!(
+        started["adopted_from"],
+        Value::Null,
+        "a durable mark missing criterion_id/spec entirely (the pre-round-5 shape) must \
+         never be read as a match for an unrelated criterion just because its `id` and \
+         `status` fields happen to coincide - defaulting the missing fields to \"\" must \
+         never accidentally equal a real criterion_stable_id: {started}"
+    );
+}
