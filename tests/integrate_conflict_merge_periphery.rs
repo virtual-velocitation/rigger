@@ -101,6 +101,28 @@
 //! owed regeneration from the durable log marker (never re-entering conflict resolution) and the
 //! regenerable path's FINAL content is the real regenerated output, not the crash-frozen
 //! placeholder.
+//!
+//! GAP 7 (round 2 review fix), `a_non_content_merge_failure_surfaces_as_a_run_error_leaving_
+//! branches_intact`. The round-2 fix for operator ruling point
+//! (e) (`d-u88c1r2-worktree-merge-result-checked`, sdet-u88c1-worktree-merge-result-discarded)
+//! makes `Worktree::integrate` surface a genuine `Err` for a non-content merge failure (a stray
+//! untracked file `git merge --no-commit --no-ff` refuses to clobber) instead of silently
+//! falling through - but its own proof (`src/worktree.rs`'s
+//! `integrate_reports_a_non_content_merge_failure_instead_of_silently_landing_a_stale_branch`)
+//! calls `Worktree::integrate` directly, never through the conductor. `integrate_and_emit`
+//! (conductor.rs:7740) reads that `Err` through a bare `?` - a cross-module seam (Worktree ->
+//! conductor -> the shared run branch and a batch-mate's own already-landed work) with zero
+//! coverage anywhere in the diff. The ORIGINAL finding named exactly this as the fix's possible
+//! new hazard: "hard-errors ... on the SHARED self.repo working directory ... a run-wedging
+//! regression on shared state" - trading a silent-corruption bug for a shared-state-corrupting
+//! one would be no fix at all. This drives it with two real batch-mates: `unit-b` lands a file
+//! on the run branch for real (implementer -> gate -> review -> `wt.integrate`, no shortcuts),
+//! `unit-a`'s own worktree - branched off the base BEFORE that landing - carries a stray FIFO at
+//! that exact path so its own later `wt.integrate` hits the non-content failure. Proves the
+//! whole `run()` call surfaces a genuine `Err`, `unit-b`'s already-landed content is untouched
+//! by `unit-a`'s later failure, and `unit-a`'s own branch keeps its one real commit intact -
+//! extending spec 88 criterion 1's "branch keeps every prior commit" guarantee to this
+//! non-content failure, not just an ordinary content conflict.
 
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
 use rigger::config::{self, AgentDef, Config, RegenerateRule, Stage};
@@ -1469,6 +1491,169 @@ fn a_crash_between_the_source_commit_and_regeneration_still_regenerates_on_resum
     assert!(
         log.contains("regenerate conflicting artifacts for"),
         "the resumed call's own regeneration commit must land as a distinct commit; log:\n{log}"
+    );
+}
+
+// ============================================================================================
+// Gap 7 (round 2 review fix): the item-(e) fix's OWN cross-module seam - `Worktree::integrate`
+// now surfaces a non-content merge failure as a genuine `Err`, and `integrate_and_emit` reads it
+// through a bare `?` - has zero coverage anywhere in the diff. See the file header for the full
+// rationale.
+// ============================================================================================
+
+/// `unit-b` lands `clash.rs` on the run branch for real, through the ordinary
+/// implementer/gate/review/integrate pipeline; `unit-a` waits for that real landing (polling the
+/// RUN BRANCH's own working tree, not just `unit-b`'s worktree existing) before writing its own
+/// real work AND leaving a stray, untracked FIFO at the exact path `unit-b` just landed - the
+/// only way `git add -A` (`Worktree::commit`'s own first step) can let a path survive untracked
+/// all the way to `unit-a`'s later merge attempt.
+struct NonContentMergeFailureDriver {
+    repo: String,
+}
+
+impl AgentDriver for NonContentMergeFailureDriver {
+    fn spawn(
+        &self,
+        _a: &AgentDef,
+        _prompt: &str,
+        opts: &SpawnOpts,
+        _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+    ) -> Result<AgentResult, Error> {
+        let unit = opts.id.split('/').next().unwrap_or_default();
+        if opts.id.contains("/implementer#") {
+            if unit == "unit-b" {
+                std::fs::write(Path::new(&opts.dir).join("clash.rs"), "B_LANDED\n").unwrap();
+                return Ok(AgentResult::default());
+            }
+            // unit-a: its OWN worktree already branched off the ORIGINAL base (before
+            // "clash.rs" existed anywhere) the instant this stage started - waiting here, before
+            // writing anything, is what keeps that branch point pre-dating unit-b's landing.
+            let clash = Path::new(&self.repo).join("clash.rs");
+            let mut landed = false;
+            for _ in 0..400 {
+                if std::fs::read_to_string(&clash).ok().as_deref() == Some("B_LANDED\n") {
+                    landed = true;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            assert!(
+                landed,
+                "test setup: unit-b must land clash.rs on the run branch before unit-a proceeds"
+            );
+            std::fs::write(Path::new(&opts.dir).join("a.rs"), "A_WORK\n").unwrap();
+            assert!(
+                Command::new("mkfifo")
+                    .arg(Path::new(&opts.dir).join("clash.rs"))
+                    .status()
+                    .unwrap()
+                    .success(),
+                "test setup: mkfifo must succeed"
+            );
+            return Ok(AgentResult::default());
+        }
+        Ok(review_or_adjudicate(opts))
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn a_non_content_merge_failure_surfaces_as_a_run_error_leaving_branches_intact() {
+    let repo = init_repo();
+    let repo_path = repo.path().to_str().unwrap().to_string();
+
+    let store = Store::open(":memory:").unwrap();
+    let driver = NonContentMergeFailureDriver {
+        repo: repo_path.clone(),
+    };
+
+    let mut cfg = Config::default();
+    cfg.agents.insert("worker".into(), agent("worker"));
+    cfg.agents.insert("lens".into(), agent("lens"));
+    cfg.agents.insert("judge".into(), agent("judge"));
+    cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
+    cfg.workflow
+        .stages
+        .insert("unit-a".into(), mk_stage("unit-a", "g"));
+    cfg.workflow
+        .stages
+        .insert("unit-b".into(), mk_stage("unit-b", "g"));
+
+    let deps = Deps {
+        store: &store,
+        driver: &driver,
+        gates: &rigger::gate::ExecRunner,
+        repo: repo_path.clone(),
+        grounder: None,
+        graph: None,
+        criteria: Vec::new(),
+    };
+    let err = match run(&cfg, &deps) {
+        Err(e) => e,
+        Ok(_) => panic!(
+            "a non-content merge failure must surface as a genuine run() Err, never a silently \
+             completed run"
+        ),
+    };
+    assert!(
+        err.0.contains("clash.rs") || err.0.to_lowercase().contains("untracked"),
+        "the real git failure must propagate all the way out of run(), not be swallowed or \
+         replaced by a fabricated message: {}",
+        err.0
+    );
+
+    // unit-b's already-landed work is untouched by unit-a's LATER failure in the same wave -
+    // the shared-state corruption the original finding warned a hard error could cause.
+    let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    assert!(
+        events.iter().any(|e| {
+            e.type_ == ledger::TYPE_UNIT_INTEGRATED
+                && String::from_utf8_lossy(&e.data).contains("\"id\":\"unit-b\"")
+        }),
+        "unit-b must have genuinely integrated before unit-a's failure was even reached"
+    );
+    assert!(
+        !events.iter().any(|e| {
+            e.type_ == ledger::TYPE_UNIT_INTEGRATED
+                && String::from_utf8_lossy(&e.data).contains("\"id\":\"unit-a\"")
+        }),
+        "unit-a must never be recorded as integrated - its merge genuinely failed"
+    );
+    let landed = std::fs::read_to_string(Path::new(&repo_path).join("clash.rs")).unwrap();
+    assert_eq!(
+        landed, "B_LANDED\n",
+        "the run branch's file content must be exactly unit-b's landed work, unperturbed by \
+         unit-a's later, unrelated merge failure"
+    );
+
+    // unit-a's own durable branch keeps every prior commit (spec 88 criterion 1's own
+    // guarantee, extended here to a non-content failure): its worktree DIRECTORY is reclaimed
+    // (an ordinary terminal teardown, matching every other non-parked terminal exit), but the
+    // branch itself is untouched - a single-parent commit carrying exactly unit-a's own real
+    // work, never a partially-applied or corrupted merge.
+    let branch_log = git_out(&repo_path, &["log", "--oneline", "rigger/u/unit-a"]);
+    assert_eq!(
+        branch_log.lines().count(),
+        2,
+        "unit-a's branch must carry exactly its base commit plus its own one real commit, no \
+         partial merge state; got:\n{branch_log}"
+    );
+    let a_content = git_out(&repo_path, &["show", "rigger/u/unit-a:a.rs"]);
+    assert_eq!(
+        a_content, "A_WORK",
+        "unit-a's own real work must survive on its branch untouched by the failed merge"
+    );
+    let clash_in_branch = Command::new("git")
+        .arg("-C")
+        .arg(&repo_path)
+        .args(["cat-file", "-e", "rigger/u/unit-a:clash.rs"])
+        .status()
+        .unwrap()
+        .success();
+    assert!(
+        !clash_in_branch,
+        "unit-a's branch must never have actually merged clash.rs in - the merge was refused \
+         before touching the tree, so the path stays absent from the branch's own history"
     );
     drop(repo);
 }
