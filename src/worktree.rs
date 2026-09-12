@@ -62,38 +62,24 @@ pub enum RunBranchSetup {
     CreatedFromHead,
 }
 
-/// The outcome of merging a unit's branch into the run branch ([`Worktree::integrate`]).
-pub enum IntegrateOutcome {
-    /// The branch merged cleanly; carries the integrated commit sha (empty for a read-only
-    /// stage that merged nothing).
-    Merged(String),
-    /// The merge CONFLICTED. Spec 88, criterion 1 (INTEGRATE-CONFLICT MERGES): the run
-    /// branch's tip was merged INTO this worktree (`git merge --no-commit`), so the
-    /// conflict markers are left in place THERE, on the unit's own branch, which stays
-    /// otherwise untouched (`--no-commit` never advances its ref - no commit, no reset).
-    /// Carries the sorted, deduplicated list of conflicting paths, read directly from the
-    /// worktree (never the event log) so a crash-resumed re-check of an already-in-progress
-    /// merge answers identically without re-invoking `git merge` (which git would refuse).
-    /// This is the textual-conflict sibling of spec-12-unit-5's semantic-break rollback: that
-    /// one re-gates a SUCCESSFUL merge; this one never gets a clean merge to gate until the
-    /// conflict is resolved and the worktree-side merge commit lands.
+/// The outcome of [`Worktree::merge_into_worktree`] (spec 88, criterion 1 round 4, TABLE row
+/// 1: "conflict detection"). This is the FRONT HALF of what a single pre-round-4 `integrate`
+/// method used to do in one call - merging the run branch's tip into the unit's own worktree
+/// and either leaving conflict markers or finishing with a committed, ready-to-land branch -
+/// split out so the
+/// caller (`integrate_and_emit`) can bracket the durable row-1 record around exactly this
+/// mutation and the row-4 record around the separate [`Worktree::land`] call, instead of both
+/// rows sharing one opaque function call with no seam in between.
+pub enum MergeOutcome {
+    /// The merge (or an already-resolved worktree) is fully committed on the unit's OWN
+    /// branch and ready to land via [`Worktree::land`]. Empty for a true no-op stage (nothing
+    /// to merge or land at all) - the caller must not call `land` in that case.
+    Ready(String),
+    /// The merge CONFLICTED: the sorted, deduplicated list of conflicting paths, read
+    /// directly from the worktree (never the event log) so a crash-resumed re-check of an
+    /// already-in-progress merge answers identically without re-invoking `git merge` (which
+    /// git would refuse).
     Conflict(Vec<String>),
-}
-
-impl IntegrateOutcome {
-    /// The merged commit sha; panics on a conflict. A convenience for a caller that has
-    /// already established a clean merge is expected (the happy-path tests).
-    pub fn expect_merged(self) -> String {
-        match self {
-            IntegrateOutcome::Merged(sha) => sha,
-            IntegrateOutcome::Conflict(paths) => {
-                panic!(
-                    "expected a clean merge, got a conflict in: {}",
-                    paths.join(", ")
-                )
-            }
-        }
-    }
 }
 
 impl Worktree {
@@ -524,9 +510,26 @@ impl Worktree {
         // and a three-dot diff from the merge-base reports only THIS branch's own
         // changes, never the unrelated commits that landed meanwhile.
         let base = git(&self.repo, &["rev-parse", "HEAD"])?.trim().to_string();
+        let mut paths = self.committed_diff_names(&base)?;
+        paths.extend(self.changed_files()?);
+        paths.sort();
+        paths.dedup();
+        Ok(paths)
+    }
+
+    /// The committed (three-dot, merge-base-anchored) diff between `from` and this
+    /// worktree's current `HEAD`, name-only, sorted and de-duplicated - the shared
+    /// primitive [`Self::changed_since_base`] calls with `from` = the run branch's
+    /// CURRENT tip. Exposed separately (round 4, spec 88 criterion 1) for a resumed
+    /// [`RunCtx::integrate_and_emit`] to recompute the SAME fact against an OLDER `from` -
+    /// the tip a durably-recorded landing-intent named - when `changed_since_base` itself
+    /// would see nothing: by the time that resume runs, the run branch has ALREADY
+    /// fast-forward-absorbed everything this worktree has, so a fresh diff against its
+    /// CURRENT tip is empty even though real, unrecorded work landed.
+    pub fn committed_diff_names(&self, from: &str) -> Result<Vec<String>, Error> {
         let committed = git(
             &self.dir,
-            &["diff", "--name-only", &format!("{base}...HEAD")],
+            &["diff", "--name-only", &format!("{from}...HEAD")],
         )?;
         let mut paths: Vec<String> = committed
             .lines()
@@ -534,7 +537,6 @@ impl Worktree {
             .filter(|l| !l.is_empty())
             .map(|l| l.to_string())
             .collect();
-        paths.extend(self.changed_files()?);
         paths.sort();
         paths.dedup();
         Ok(paths)
@@ -584,27 +586,25 @@ impl Worktree {
         Ok(())
     }
 
-    /// Commit any remaining changes, then land the branch on the run branch, returning the
-    /// commit hash that landed. A read-only stage (no changes, nothing ever committed, and
-    /// the branch never advanced past the run branch's tip) merges nothing and returns "".
+    /// Merge the run branch's tip INTO this worktree (spec 88, criterion 1 round 4, TABLE row
+    /// 1: "conflict detection" - the mutation between the row's before-record, "the conflicting
+    /// path list"'s intent, i.e. the merge about to be attempted, and its after-record, "the
+    /// merge-in-progress outcome (conflicts or clean)"). Together with [`Self::land`] (TABLE
+    /// row 4) this is the split-in-two FRONT HALF of what a single `integrate` method used to
+    /// do before round 4: `integrate_and_emit` calls each half directly so it can durably
+    /// record its own row's before/after pair around exactly that one mutation - two rows, two
+    /// mutations, two independently resumable boundaries, rather than one opaque call spanning
+    /// both (this file's own `mod tests` recomposes the two into a test-only `integrate` that
+    /// mirrors the pre-round-4 combined shape, since the tests it re-derives - crash-resume
+    /// idempotency, conflict-leaves-markers, non-content-failure-surfaces - exercise the
+    /// combined git behavior end to end and gain nothing from being split across two calls).
     ///
-    /// Spec 88, criterion 1 (INTEGRATE-CONFLICT MERGES), decided: the merge direction is
-    /// the RUN BRANCH's tip INTO this worktree (`git merge --no-commit --no-ff <tip>`, run
-    /// HERE, in the unit's own worktree) - the opposite of merging the unit branch into the
-    /// run branch. A clean merge (or "already up to date") is finalized with a plain commit
-    /// and the now strictly-ahead unit branch fast-forwards cleanly into the run branch
-    /// below. A CONFLICT leaves markers in place, uncommitted, on the unit's OWN branch
-    /// (`--no-commit` never advances its ref - no reset, no lost commit): reported as
-    /// [`IntegrateOutcome::Conflict`] so the conductor re-parks the implementer to resolve
-    /// it on this SAME branch, rather than discarding the unit's work or wedging the run on
-    /// a broken run branch. A merge already in progress (crash-resume) is never re-invoked -
-    /// [`Self::conflicting_paths`] reads the worktree's current state instead.
-    pub fn integrate(&self, message: &str) -> Result<IntegrateOutcome, Error> {
-        // A merge already in progress (crash-resume) is NEVER re-entered here: `commit`'s
-        // `git add -A` would blindly stage any still-conflicted file's literal marker text
-        // as "resolved" content, and re-invoking `git merge` would be refused outright by
-        // git regardless. Worktree state - read below via `conflicting_paths` - is the sole
-        // authority for what happens next; this whole commit-and-attempt block is skipped.
+    /// A merge already in progress (crash-resume) is NEVER re-entered here: `commit`'s `git add
+    /// -A` would blindly stage any still-conflicted file's literal marker text as "resolved"
+    /// content, and re-invoking `git merge` would be refused outright by git regardless.
+    /// Worktree state - read below via `conflicting_paths` - is the sole authority for what
+    /// happens next; this whole commit-and-attempt block is skipped.
+    pub fn merge_into_worktree(&self, message: &str) -> Result<MergeOutcome, Error> {
         // Set only by a fresh attempt's own merge command below - `None` on a crash-resumed
         // re-entry (the block below is skipped entirely) or when no merge was even needed.
         let mut merge_attempt: Option<String> = None;
@@ -617,7 +617,7 @@ impl Worktree {
                 let head = git(&self.dir, &["rev-parse", "HEAD"])?.trim().to_string();
                 let base = git(&self.repo, &["rev-parse", "HEAD"])?.trim().to_string();
                 if head == base {
-                    return Ok(IntegrateOutcome::Merged(String::new()));
+                    return Ok(MergeOutcome::Ready(String::new()));
                 }
             }
             let run_tip = git(&self.repo, &["rev-parse", "HEAD"])?.trim().to_string();
@@ -638,7 +638,7 @@ impl Worktree {
         }
         let conflicts = self.conflicting_paths()?;
         if !conflicts.is_empty() {
-            return Ok(IntegrateOutcome::Conflict(conflicts));
+            return Ok(MergeOutcome::Conflict(conflicts));
         }
         if self.merge_in_progress() {
             // Every conflict (if any arose) is resolved and staged: finalize the merge
@@ -656,12 +656,21 @@ impl Worktree {
             return Err(Error(format!("worktree merge --no-commit --no-ff: {out}")));
         }
         let commit = git(&self.dir, &["rev-parse", "HEAD"])?.trim().to_string();
-        // The worktree's branch is now, by construction, a strict descendant of the run
-        // branch's tip (the merge just above, or an earlier one already established
-        // that), so this lands as a clean fast-forward. A failure here is a genuine,
-        // unexpected error - never a conflict (conflicts are caught, and returned, above).
+        Ok(MergeOutcome::Ready(commit))
+    }
+
+    /// Land this worktree's branch - already fully resolved and committed by a prior
+    /// [`Self::merge_into_worktree`] call that returned `Ready` with a non-empty commit - onto
+    /// the run branch (spec 88, criterion 1 round 4, TABLE row 4: "landing", the mutation
+    /// between the row's before-record, "the landing intent (unit tip, run tip)", and its
+    /// after-record, "the landed sha"). The worktree's branch is, by construction, a strict
+    /// descendant of the run branch's tip (the merge `merge_into_worktree` just performed, or
+    /// an earlier one already established that), so this lands as a clean fast-forward. A
+    /// failure here is a genuine, unexpected error - never a conflict (conflicts are caught,
+    /// and returned, by `merge_into_worktree` itself, which the caller must check first).
+    pub fn land(&self) -> Result<(), Error> {
         match run_git(&self.repo, &["merge", "--no-edit", &self.branch]) {
-            Ok(_) => Ok(IntegrateOutcome::Merged(commit)),
+            Ok(_) => Ok(()),
             Err(out) => Err(Error(format!("git merge --no-edit {}: {out}", self.branch))),
         }
     }
@@ -1478,6 +1487,54 @@ fn run_git(dir: &str, args: &[&str]) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Test-only recomposition of [`Worktree::merge_into_worktree`] + [`Worktree::land`] into
+    /// the single combined call this file's OWN pre-round-4 tests were written against (spec
+    /// 88, criterion 1 round 4): a plain merge-then-land, matching the production shape
+    /// `integrate_and_emit` used before it split the two so it could bracket each with its own
+    /// durable row-level record. Kept HERE, test-scoped, rather than in production - production
+    /// has no caller for the combined form any more (only this module's tests did, which the
+    /// dead-code audit would otherwise flag as a real production surface with zero real
+    /// callers, exactly the class `expect_merged`/`is_dirty` are already dispositioned for
+    /// nearby) - so the tests that genuinely want to exercise the combined merge+land behavior
+    /// end to end (crash-resume idempotency, conflict-leaves-markers-in-place, a non-content
+    /// merge failure surfacing) keep doing so through one call, unchanged.
+    enum IntegrateOutcome {
+        Merged(String),
+        Conflict(Vec<String>),
+    }
+
+    impl IntegrateOutcome {
+        fn expect_merged(self) -> String {
+            match self {
+                IntegrateOutcome::Merged(sha) => sha,
+                IntegrateOutcome::Conflict(paths) => {
+                    panic!(
+                        "expected a clean merge, got a conflict in: {}",
+                        paths.join(", ")
+                    )
+                }
+            }
+        }
+    }
+
+    trait IntegrateForTest {
+        fn integrate(&self, message: &str) -> Result<IntegrateOutcome, Error>;
+    }
+
+    impl IntegrateForTest for Worktree {
+        fn integrate(&self, message: &str) -> Result<IntegrateOutcome, Error> {
+            match self.merge_into_worktree(message)? {
+                MergeOutcome::Conflict(paths) => Ok(IntegrateOutcome::Conflict(paths)),
+                MergeOutcome::Ready(commit) => {
+                    if !commit.is_empty() {
+                        self.land()?;
+                    }
+                    Ok(IntegrateOutcome::Merged(commit))
+                }
+            }
+        }
+    }
 
     fn init_repo() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
