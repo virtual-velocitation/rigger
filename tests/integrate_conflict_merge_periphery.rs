@@ -86,6 +86,21 @@
 //! CONFLICT ITSELF cannot serve this proof: the loser of the integrate-lock race only ever
 //! reaches the conflict AFTER the winner's own merge - post-merge gate included - already
 //! finished and released the lock, so polling for the winner proves nothing either way.)
+//!
+//! GAP 6 (round 2 review fix), `a_crash_between_the_source_commit_and_regeneration_still_
+//! regenerates_on_resume`. adv-u88c1r1-crash-resume-permanently-skips-regeneration (round 1
+//! REJECT) was proven live by the round-1 adversary with a temporary probe test - explicitly
+//! REVERTED afterward, never committed - so nothing on this branch actually holds the line. This
+//! makes that proof permanent: a real two-call drive (not hand-seeded events) against the SAME
+//! store and repo. Call 1's driver resolves the mixed conflict's SOURCE path for real (a genuine
+//! git commit, landed on disk regardless of what the function returns) and then returns an
+//! ordinary `Err` - a real process crash after the commit, before `regenerate_conflicted_paths`
+//! ever runs, leaves exactly this on-disk state. Call 2 drives a FRESH `run()` against the same
+//! store+repo with a driver that panics if the conflict-resolution role (a `~retry` implementer
+//! id) is ever spawned again, proving `integrate_and_emit`'s `Merged` arm re-derives the still-
+//! owed regeneration from the durable log marker (never re-entering conflict resolution) and the
+//! regenerable path's FINAL content is the real regenerated output, not the crash-frozen
+//! placeholder.
 
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
 use rigger::config::{self, AgentDef, Config, RegenerateRule, Stage};
@@ -1190,6 +1205,270 @@ fn regenerate_never_holds_integrate_mu_letting_an_unrelated_unit_land_meanwhile(
     assert_eq!(
         final_c, "REGENERATED\n",
         "the released regenerate call must still run for real and land its own output"
+    );
+    drop(repo);
+}
+
+// ============================================================================================
+// Gap 6: a real crash between the source-resolving commit and the follow-up regenerate commit
+// (adv-u88c1r1-crash-resume-permanently-skips-regeneration) has no PERMANENT test anywhere - the
+// round-1 adversary's own proof was a temporary probe, reverted before it ever reached this file.
+// ============================================================================================
+
+/// Call 1's driver for the crash test: identical fixture shape to `MixedConflictDriver` (two
+/// batch-mates conflicting on both `c.rs`, a source path, and `docs/audit/report.md`, a
+/// registered regenerable path), but the ONE conflict-resolution re-park it ever answers
+/// resolves the source conflict for real (a genuine, durable git commit) and then returns an
+/// ordinary `Err` - simulating the process dying right there, after the commit lands on disk but
+/// before `RunCtx::integrate_and_emit` ever reaches the follow-up regeneration.
+struct CrashBeforeRegenerateDriver {
+    repo: String,
+    /// Which of unit-a/unit-b actually lost the integrate-lock race and hit the conflict -
+    /// a genuine race between two concurrently-integrating siblings (mirrors every other
+    /// fixture in this file), so the test reads this back afterward rather than assuming
+    /// either name.
+    loser: Mutex<Option<String>>,
+}
+
+impl AgentDriver for CrashBeforeRegenerateDriver {
+    fn spawn(
+        &self,
+        _a: &AgentDef,
+        _prompt: &str,
+        opts: &SpawnOpts,
+        _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+    ) -> Result<AgentResult, Error> {
+        let unit = opts.id.split('/').next().unwrap_or_default();
+        if opts.id.contains("/implementer#") {
+            if opts.id.contains("~retry") {
+                assert!(
+                    !opts.dir.is_empty(),
+                    "a conflict re-park must still run in the unit's own worktree"
+                );
+                *self.loser.lock().unwrap() = Some(unit.to_string());
+                std::fs::write(Path::new(&opts.dir).join("c.rs"), "RESOLVED_C\n").unwrap();
+                // Only `c.rs`, deliberately NOT `-A`: this only succeeds because
+                // `docs/audit/report.md` was already placeholder-staged by the conductor's own
+                // `accept_incoming` before this spawn ran - the same load-bearing proof
+                // `MixedConflictDriver`'s own `~retry2` arm relies on. This commit is the REAL,
+                // durable crash boundary: everything up to and including it is genuinely on
+                // disk when the `Err` below unwinds the whole `run()` call.
+                git_commit_paths(&opts.dir, &["c.rs"], "resolve source conflict");
+                return Err(Error(
+                    "simulated crash: process dies right after the source commit, before \
+                     regeneration ever runs"
+                        .into(),
+                ));
+            }
+            if !opts.dir.is_empty() {
+                // Barrier: both branches must exist before either writes (mirrors
+                // MixedConflictDriver), guaranteeing the same-line overlap on both files.
+                for _ in 0..400 {
+                    let n = Command::new("git")
+                        .arg("-C")
+                        .arg(&self.repo)
+                        .args(["branch", "--list", "rigger/u/*"])
+                        .output()
+                        .map(|o| String::from_utf8_lossy(&o.stdout).lines().count())
+                        .unwrap_or(0);
+                    if n >= 2 {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
+                let (c, audit) = if unit == "unit-a" {
+                    ("A_C\n", "A_AUDIT\n")
+                } else {
+                    ("B_C\n", "B_AUDIT\n")
+                };
+                std::fs::write(Path::new(&opts.dir).join("c.rs"), c).unwrap();
+                std::fs::create_dir_all(Path::new(&opts.dir).join("docs/audit")).unwrap();
+                std::fs::write(Path::new(&opts.dir).join("docs/audit/report.md"), audit).unwrap();
+            }
+            return Ok(AgentResult::default());
+        }
+        Ok(review_or_adjudicate(opts))
+    }
+}
+
+/// Call 2's driver: a FRESH `run()` against the same store+repo must NEVER reach the
+/// conflict-resolution role again - proof that `integrate_and_emit`'s `Merged` arm answered the
+/// still-owed regeneration from the durable log marker instead of re-entering conflict
+/// resolution. Every OTHER role (an already-recorded stage the outer orchestration re-drives, or
+/// simply never needs to) gets the same harmless, deterministic response call 1's driver would
+/// have given it - safe to repeat idempotently either way.
+struct NoConflictRespawnAfterCrashDriver;
+
+impl AgentDriver for NoConflictRespawnAfterCrashDriver {
+    fn spawn(
+        &self,
+        _a: &AgentDef,
+        _prompt: &str,
+        opts: &SpawnOpts,
+        _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+    ) -> Result<AgentResult, Error> {
+        let unit = opts.id.split('/').next().unwrap_or_default();
+        if opts.id.contains("/implementer#") {
+            assert!(
+                !opts.id.contains("~retry"),
+                "the conflict-resolution role must NEVER be re-spawned on resume - the durable \
+                 regenerate-pending ledger must answer the still-owed regeneration itself; got \
+                 spawn id {:?}",
+                opts.id
+            );
+            if !opts.dir.is_empty() {
+                let (c, audit) = if unit == "unit-a" {
+                    ("A_C\n", "A_AUDIT\n")
+                } else {
+                    ("B_C\n", "B_AUDIT\n")
+                };
+                std::fs::write(Path::new(&opts.dir).join("c.rs"), c).unwrap();
+                std::fs::create_dir_all(Path::new(&opts.dir).join("docs/audit")).unwrap();
+                std::fs::write(Path::new(&opts.dir).join("docs/audit/report.md"), audit).unwrap();
+            }
+            return Ok(AgentResult::default());
+        }
+        Ok(review_or_adjudicate(opts))
+    }
+}
+
+#[test]
+fn a_crash_between_the_source_commit_and_regeneration_still_regenerates_on_resume() {
+    let repo = init_repo();
+    let repo_path = repo.path().to_str().unwrap().to_string();
+    std::fs::create_dir_all(Path::new(&repo_path).join("docs/audit")).unwrap();
+    std::fs::write(Path::new(&repo_path).join("c.rs"), "BASE_C\n").unwrap();
+    std::fs::write(
+        Path::new(&repo_path).join("docs/audit/report.md"),
+        "BASE_AUDIT\n",
+    )
+    .unwrap();
+    git_commit_all(&repo_path, "base c.rs + docs/audit/report.md");
+
+    let mut cfg = Config::default();
+    cfg.workflow.defaults.max_retries = 3;
+    cfg.workflow.regenerate = vec![RegenerateRule {
+        paths: vec!["docs/audit/*".into()],
+        run: "printf 'REGENERATED\\n' > docs/audit/report.md".into(),
+    }];
+    cfg.agents.insert("worker".into(), agent("worker"));
+    cfg.agents.insert("lens".into(), agent("lens"));
+    cfg.agents.insert("judge".into(), agent("judge"));
+    cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
+    cfg.workflow
+        .stages
+        .insert("unit-a".into(), mk_stage("unit-a", "g"));
+    cfg.workflow
+        .stages
+        .insert("unit-b".into(), mk_stage("unit-b", "g"));
+
+    let store = Store::open(":memory:").unwrap();
+
+    // Call 1: a mixed conflict's source side resolves for real, then the process "crashes"
+    // (an ordinary Err, not a park) before the follow-up regeneration ever runs. The repo on
+    // disk keeps every commit made up to that point regardless of what this call returns.
+    let loser = {
+        let driver = CrashBeforeRegenerateDriver {
+            repo: repo_path.clone(),
+            loser: Mutex::new(None),
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &rigger::gate::ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let err = match run(&cfg, &deps) {
+            Ok(_) => panic!(
+                "call 1 must end in an Err - the simulated crash right after the source commit"
+            ),
+            Err(e) => e,
+        };
+        assert!(
+            err.0.contains("simulated crash"),
+            "call 1 must fail for the SIMULATED reason, not some other defect; got: {}",
+            err.0
+        );
+        let loser = driver
+            .loser
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the conflict-resolution role must have been spawned exactly once");
+        loser
+    };
+
+    // A durable marker recording the still-owed regeneration must have survived call 1's crash -
+    // the whole point of keying it off the log (conflict_regenerate_pending_from_log) rather
+    // than an in-process accumulator local to the crashed call.
+    let events_after_call_1 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    assert!(
+        events_after_call_1.iter().any(|e| {
+            e.type_ == ledger::TYPE_UNIT_STATUS
+                && String::from_utf8_lossy(&e.data)
+                    .contains("integrate-conflict-regenerate-pending")
+                && String::from_utf8_lossy(&e.data).contains("docs/audit/report.md")
+        }),
+        "call 1 must durably record the still-owed regeneration BEFORE the spawn that crashes, \
+         not only accumulate it in memory"
+    );
+    assert!(
+        !events_after_call_1.iter().any(|e| {
+            e.type_ == ledger::TYPE_UNIT_INTEGRATED
+                && String::from_utf8_lossy(&e.data).contains(&format!("\"id\":\"{loser}\""))
+        }),
+        "the losing unit ({loser}) must NOT be integrated yet - call 1 crashed before its merge \
+         ever landed"
+    );
+
+    // Call 2: a genuinely fresh `run()` (a fresh RunCtx, fresh in-process state) against the
+    // SAME store and repo - the real crash-resume shape, not a hand-seeded approximation.
+    let driver2 = NoConflictRespawnAfterCrashDriver;
+    let deps2 = Deps {
+        store: &store,
+        driver: &driver2,
+        gates: &rigger::gate::ExecRunner,
+        repo: repo_path.clone(),
+        grounder: None,
+        graph: None,
+        criteria: Vec::new(),
+    };
+    let rs = run(&cfg, &deps2).expect("call 2 must resume and converge cleanly");
+
+    assert_eq!(rs.units["unit-a"].status, ledger::Status::Integrated);
+    assert_eq!(
+        rs.units["unit-b"].status,
+        ledger::Status::Integrated,
+        "unit-b must still land on resume, never left dangling on the crashed merge"
+    );
+    assert_eq!(
+        rs.units[loser.as_str()].attempts,
+        0,
+        "the crash-resumed regeneration is still infrastructure recovery, not a charged \
+         remediation attempt (loser: {loser})"
+    );
+
+    let final_c = std::fs::read_to_string(Path::new(&repo_path).join("c.rs")).unwrap();
+    assert_eq!(
+        final_c, "RESOLVED_C\n",
+        "the source path keeps call 1's real, pre-crash resolution - resume must never re-do \
+         (or undo) it"
+    );
+    let final_audit =
+        std::fs::read_to_string(Path::new(&repo_path).join("docs/audit/report.md")).unwrap();
+    assert_eq!(
+        final_audit, "REGENERATED\n",
+        "the regenerable path must carry the REAL regenerated output on resume, not the \
+         accept_incoming placeholder call 1's crash left frozen in place"
+    );
+
+    let log = git_out(&repo_path, &["log", "--format=%s"]);
+    assert!(
+        log.contains("regenerate conflicting artifacts for"),
+        "the resumed call's own regeneration commit must land as a distinct commit; log:\n{log}"
     );
     drop(repo);
 }
