@@ -24,7 +24,14 @@ worker with no tool in flight and a stale marker is. Evidence (2026-09-12, u88c1
 a 59-mutant `cargo mutants` call outlasted `max_wall_clock`, the sweep aborted the worker and
 re-ran the same spawn, and the re-run restarted the same sweep - five incarnations in one night
 with zero progress, a livelock the operator broke by hand (shard the sweep, report between
-shards). The outer wall-clock still bounds the whole spawn; it no longer bounds one command.
+shards). The outer wall-clock still bounds the whole spawn; it no longer bounds one command. When the
+driver does abort a worker, the worker's own process tree ends with it: the harness abort
+reaches the agent, not the `cargo mutants` (or `cargo test`) it started, which today survives
+as an orphan burning cores against its dead owner (2026-09-12: a sweep from an aborted u88c1
+incarnation was still running two rounds later, reported by a sibling's SDET author as
+"apparently-orphaned implementer scratch process"). The driver records every worker's spawned
+process group in its marker and, on abort, hands that group to rigger's handle-bound lifecycle
+(spec 78) so it is ended by its owner, never by an OS-level kill from a script.
 
 CHECKPOINT BEFORE LONG WORK, decided: the implementer persona commits a checkpoint
 (`wip(<unit>): checkpoint before <mutation sweep | lane suite>`) before `cargo mutants` and before
