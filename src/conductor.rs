@@ -7809,17 +7809,32 @@ impl RunCtx<'_> {
                             ..Default::default()
                         });
                     }
-                    // Pre-resolve the regenerable side with a deterministic placeholder
-                    // (regenerated for REAL, in a follow-up commit, only AFTER the
-                    // implementer's own commit lands - the design's "in that order")
-                    // purely to unblock `git commit`, which refuses while ANY path is
-                    // unmerged - then durably record it (survives a crash before the
-                    // follow-up commit) before re-parking the implementer with ONLY the
-                    // source paths.
+                    // Durably record the still-owed regeneration BEFORE placeholder-staging
+                    // it (round 3 fix for adv-u88c1r2-accept-incoming-precedes-durable-
+                    // record-crash-window, upheld round 2 REJECT): the OLD order ran
+                    // `accept_incoming` (a real git mutation - `git checkout --theirs`, which
+                    // resolves the path's conflict stage on disk) BEFORE this log write, so a
+                    // crash in between left the obligation unrecorded forever even once the
+                    // source side later cleared for real - `conflicting_paths` no longer sees
+                    // the path as unmerged, a resumed retry's own `regenerable` partition
+                    // computes it empty, and `record_regenerate_pending`'s own
+                    // `paths.is_empty()` early return means the obligation NEVER lands on the
+                    // log at all. Recording first closes the window: a crash before this log
+                    // write leaves the path genuinely unmerged (this call never ran), so a
+                    // resumed retry re-derives `regenerable` non-empty and redoes both steps
+                    // from scratch - `record_regenerate_pending`'s own per-path dedup (never a
+                    // duplicate log write) and `accept_incoming` (plain `git checkout
+                    // --theirs`, idempotent) both tolerate the redo. A crash AFTER both
+                    // succeed is unaffected either way - the log already has it. This is the
+                    // design's "in that order" for the regeneration ITSELF (the real
+                    // regeneration commit still lands strictly after the implementer's own
+                    // resolution commit, unchanged) - this ordering is a narrower guarantee,
+                    // for the LOG WRITE that must survive a crash purely to unblock `git
+                    // commit`, which refuses while ANY path is still unmerged.
+                    self.record_regenerate_pending(&st.name, attempt, retry, &regenerable)?;
                     for p in &regenerable {
                         wt.accept_incoming(p)?;
                     }
-                    self.record_regenerate_pending(&st.name, attempt, retry, &regenerable)?;
                     // integrate_mu is released HERE, before the spawn, so siblings
                     // integrate meanwhile (the ruling's own words: "returns the unit to
                     // building"). A park propagates straight through the `?` below with
@@ -33453,6 +33468,167 @@ mod tests {
                 "expected a ~retry{n} re-park for {loser}; got {calls:?}"
             );
         }
+        drop(repo);
+    }
+
+    #[test]
+    fn integrate_conflict_records_regenerate_pending_before_the_accept_incoming_mutation_that_can_fail(
+    ) {
+        // adv-u88c1r2-accept-incoming-precedes-durable-record-crash-window (round 2 REJECT,
+        // upheld): the mixed-conflict arm ran `Worktree::accept_incoming` (a real git
+        // mutation, staged to disk) BEFORE `record_regenerate_pending` (the durable log
+        // write) - so a crash between the two left the regenerable path's obligation
+        // unrecorded forever, even after the source side later cleared for real (the log's
+        // `regenerate_pending_for` came back empty on the call that finally landed a
+        // `Merged` outcome). Fixed by reordering: record FIRST, mutate second.
+        //
+        // Proven here WITHOUT any timing/permission trick, deterministically: a genuine
+        // modify/delete git conflict on the regenerable path makes `accept_incoming`'s own
+        // `git checkout --theirs` fail for real (theirs - the run branch - deleted the path,
+        // so there is no "theirs" version to check out at all). Under the OLD (buggy) order
+        // that failure's `?` unwinds the call before `record_regenerate_pending` is ever
+        // reached, so the durable marker never lands - this test is RED against that order.
+        // Under the FIXED order the record already happened before the mutation was even
+        // attempted, so the marker survives the very same failure - GREEN.
+        //
+        // The run branch's "already landed" state is constructed DIRECTLY by this single
+        // unit's own driver callback (never a race with a second live unit): deterministic,
+        // not flaky, and it still reaches the exact same code path a genuine sibling landing
+        // first would have left behind.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        std::fs::write(Path::new(&repo_path).join("c.rs"), "BASE_C\n").unwrap();
+        std::fs::write(Path::new(&repo_path).join("gen.txt"), "BASE_GEN\n").unwrap();
+        for args in [&["add", "-A"][..], &["commit", "-q", "-m", "base"][..]] {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo_path)
+                .args(args)
+                .output()
+                .unwrap();
+        }
+
+        struct Driver {
+            repo: String,
+        }
+        impl AgentDriver for Driver {
+            fn spawn(
+                &self,
+                _a: &AgentDef,
+                _prompt: &str,
+                opts: &SpawnOpts,
+                _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+            ) -> Result<AgentResult, Error> {
+                if opts.id.contains("/implementer#") {
+                    assert!(
+                        !opts.id.contains("~retry"),
+                        "accept_incoming must fail and abort the whole call BEFORE any \
+                         conflict-resolution re-park is ever spawned; got {}",
+                        opts.id
+                    );
+                    // Simulate "a sibling already landed on the run branch" deterministically:
+                    // delete gen.txt and edit c.rs directly on the run branch itself, right
+                    // here, before this unit's own merge ever runs against it.
+                    std::fs::remove_file(Path::new(&self.repo).join("gen.txt")).unwrap();
+                    std::fs::write(Path::new(&self.repo).join("c.rs"), "OTHER_C\n").unwrap();
+                    for args in [
+                        &["add", "-A"][..],
+                        &["commit", "-q", "-m", "other landed"][..],
+                    ] {
+                        std::process::Command::new("git")
+                            .arg("-C")
+                            .arg(&self.repo)
+                            .args(args)
+                            .output()
+                            .unwrap();
+                    }
+                    // This unit's OWN worktree: keeps (modifies) gen.txt, edits c.rs
+                    // differently - theirs (the run branch, above) deleted gen.txt; ours
+                    // (this branch) modified it - a genuine modify/delete conflict on the
+                    // regenerable path, alongside an ordinary content conflict on c.rs (the
+                    // source path).
+                    std::fs::write(Path::new(&opts.dir).join("c.rs"), "MINE_C\n").unwrap();
+                    std::fs::write(Path::new(&opts.dir).join("gen.txt"), "MINE_GEN\n").unwrap();
+                    return Ok(AgentResult::default());
+                }
+                Ok(AgentResult {
+                    output: r#"{"verdict":"approve"}"#.into(),
+                    resolved_model: String::new(),
+                })
+            }
+        }
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver {
+            repo: repo_path.clone(),
+        };
+
+        let mut cfg = Config::default();
+        cfg.workflow.defaults.max_retries = 3;
+        cfg.workflow.regenerate = vec![RegenerateRule {
+            paths: vec!["gen.txt".into()],
+            run: "printf 'REGENERATED\\n' > gen.txt".into(),
+        }];
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
+        let panel = crate::config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adjudicator: "judge".into(),
+            ..Default::default()
+        };
+        cfg.workflow.stages.insert(
+            "unit-b".into(),
+            Stage {
+                name: "unit-b".into(),
+                agent: "worker".into(),
+                gates: vec!["g".into()],
+                on_pass: "merge".into(),
+                needs: vec![],
+                review: panel,
+                ..Default::default()
+            },
+        );
+
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let err = match run(&cfg, &deps) {
+            Ok(_) => panic!(
+                "the modify/delete conflict on the regenerable path must make \
+                 accept_incoming fail for real - there is no \"theirs\" version to check out"
+            ),
+            Err(e) => e,
+        };
+        assert!(
+            err.0.contains("checkout") || err.0.contains("their version"),
+            "must fail for the SIMULATED git reason (accept_incoming's own failing checkout), \
+             not some other defect; got: {}",
+            err.0
+        );
+
+        // The durable regenerate-pending marker must ALREADY be on the log despite the
+        // mutation it was about to precede failing right after - proving
+        // `record_regenerate_pending` runs BEFORE `Worktree::accept_incoming`, never after.
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            events.iter().any(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data)
+                        .contains("integrate-conflict-regenerate-pending")
+                    && String::from_utf8_lossy(&e.data).contains("gen.txt")
+            }),
+            "the still-owed regeneration for gen.txt must be durably recorded BEFORE \
+             accept_incoming's own git mutation runs, so a crash exactly there never loses \
+             it; events: {events:?}"
+        );
         drop(repo);
     }
 
