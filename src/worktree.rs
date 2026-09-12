@@ -702,6 +702,21 @@ impl Worktree {
     /// since nothing has been skipped yet); reading it directly here is what lets the
     /// leftover-marker classification bound its OWN skip loop the identical way when
     /// it has no `shas` of its own to count.
+    ///
+    /// A MISSING todo file (`io::ErrorKind::NotFound`) is the NORMAL shape for a
+    /// leftover sequence whose remaining set is exactly ONE commit, not an anomaly
+    /// (adj-u88c4-r8-verdict-reject / sdet-u88c4-r8-single-commit-leftover-marker-
+    /// hard-errors-on-missing-sequencer-todo): git's sequencer machinery is never
+    /// engaged by a plain single-sha `git cherry-pick <sha>`, so it never creates
+    /// `.git/sequencer/` at all - and that single-sha shape is exactly what
+    /// [`Self::cherry_pick_onto_run_branch`] issues whenever its caller's own
+    /// `shas` (equivalently, the conductor's `still_pending`) has shrunk to one,
+    /// the routine steady state of an iterative multi-commit plan amendment, not
+    /// merely a literal one-commit-total unit. Reading it as exactly ONE remaining
+    /// entry (rather than propagating the io error) guarantees the bounded skip
+    /// loop above still attempts at least one `--skip`, so it resolves this
+    /// leftover the same way it resolves every other empty-commit pause instead of
+    /// hard-failing the very case it exists to handle.
     fn sequencer_todo_remaining(repo: &str) -> Result<usize, Error> {
         let raw = git(repo, &["rev-parse", "--git-path", "sequencer/todo"])?
             .trim()
@@ -712,15 +727,17 @@ impl Worktree {
         } else {
             std::path::Path::new(repo).join(todo_path)
         };
-        let contents = std::fs::read_to_string(&todo_path)
-            .map_err(|e| Error(format!("reading {}: {e}", todo_path.display())))?;
-        Ok(contents
-            .lines()
-            .filter(|l| {
-                let l = l.trim();
-                !l.is_empty() && !l.starts_with('#')
-            })
-            .count())
+        match std::fs::read_to_string(&todo_path) {
+            Ok(contents) => Ok(contents
+                .lines()
+                .filter(|l| {
+                    let l = l.trim();
+                    !l.is_empty() && !l.starts_with('#')
+                })
+                .count()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(1),
+            Err(e) => Err(Error(format!("reading {}: {e}", todo_path.display()))),
+        }
     }
 
     pub fn cherry_pick_onto_run_branch(&self, shas: &[String]) -> Result<CherryPickOutcome, Error> {
@@ -2336,6 +2353,223 @@ mod tests {
                 "every commit's content must be present on the run branch after the \
                  self-healed retry completes the interrupted sequence: missing {name}"
             );
+        }
+        wt.remove().unwrap();
+    }
+
+    #[test]
+    fn cherry_pick_onto_run_branch_self_heals_a_leftover_marker_with_no_sequencer_todo_file() {
+        // adj-u88c4-r8-verdict-reject / sdet-u88c4-r8-single-commit-leftover-marker-
+        // hard-errors-on-missing-sequencer-todo: git NEVER materializes
+        // `.git/sequencer/todo` for a cherry-pick whose remaining set is exactly ONE
+        // sha - a plain `git cherry-pick <sha>` never engages the sequencer
+        // machinery at all, so `sequencer_todo_remaining`'s
+        // `std::fs::read_to_string` sees a genuine `NotFound`, not an empty file.
+        // This is the ORDINARY shape for a single-commit plan-stage amendment
+        // resumed after a crash, not a corner case - the leftover-marker
+        // classification above must resolve it with one `--skip`, never hard-error.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt =
+            Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/u/plan", "").unwrap();
+
+        std::fs::create_dir_all(wt_path.join("specs")).unwrap();
+        std::fs::write(wt_path.join("specs").join("90-a.md"), "amend a\n").unwrap();
+        run_git(wt_path.to_str().unwrap(), &["add", "-A"]).unwrap();
+        run_git(
+            wt_path.to_str().unwrap(),
+            &["commit", "-q", "-m", "amend 90-a.md"],
+        )
+        .unwrap();
+        let sha = git(wt_path.to_str().unwrap(), &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+        let shas = vec![sha.clone()];
+
+        // Pre-land the ONLY commit's content directly, independent of the
+        // interrupted attempt below, so replaying it becomes an EMPTY re-pick.
+        run_git(&repo_path, &["cherry-pick", &sha]).unwrap();
+        assert!(
+            repo.path().join("specs").join("90-a.md").exists(),
+            "precondition: the sole commit's content is already present"
+        );
+
+        // Simulate the crash: a RAW single-sha cherry-pick (bypassing this crate's
+        // own skip-loop entirely), the exact same invocation shape a call with
+        // `shas.len() == 1` makes - so it naturally pauses empty with NO sequencer
+        // directory ever created.
+        let raw = run_git(&repo_path, &["cherry-pick", &sha]);
+        assert!(
+            raw.is_err(),
+            "the raw single-sha pick must pause on the empty commit, not succeed outright"
+        );
+        assert!(
+            repo.path().join(".git").join("CHERRY_PICK_HEAD").exists(),
+            "precondition: a cherry-pick sequencer marker is left in progress"
+        );
+        assert!(
+            run_git(&repo_path, &["ls-files", "--unmerged"])
+                .unwrap()
+                .trim()
+                .is_empty(),
+            "precondition: the pause carries ZERO unmerged files - it is not a conflict"
+        );
+        let todo_path = git(&repo_path, &["rev-parse", "--git-path", "sequencer/todo"])
+            .unwrap()
+            .trim()
+            .to_string();
+        let todo_path = std::path::Path::new(&todo_path);
+        let todo_path = if todo_path.is_absolute() {
+            todo_path.to_path_buf()
+        } else {
+            std::path::Path::new(&repo_path).join(todo_path)
+        };
+        assert!(
+            !todo_path.exists(),
+            "precondition: git never materializes sequencer/todo for a genuinely \
+             single-sha cherry-pick - {} must be ABSENT",
+            todo_path.display()
+        );
+
+        // A FRESH call with the ORIGINAL (identity) single-element shas, exactly as
+        // a resumed process recomputing a shrunk-to-one `still_pending` would - must
+        // self-heal the leftover marker despite the missing sequencer/todo file,
+        // never hard-error on it.
+        let resumed = wt.cherry_pick_onto_run_branch(&shas);
+        assert!(
+            resumed.is_ok(),
+            "a leftover in-progress marker with no sequencer/todo file must be \
+             self-healed, never surfaced as a hard error: {:?}",
+            resumed.err().map(|e| e.0)
+        );
+        match resumed.unwrap() {
+            CherryPickOutcome::Conflict(detail) => {
+                panic!("a self-healed, non-conflicting pause must not read as a conflict: {detail}")
+            }
+            CherryPickOutcome::Picked(_) => {}
+        }
+        assert!(
+            !repo.path().join(".git").join("CHERRY_PICK_HEAD").exists(),
+            "no cherry-pick is left in progress after the self-healed retry"
+        );
+        assert!(repo.path().join("specs").join("90-a.md").exists());
+        wt.remove().unwrap();
+    }
+
+    #[test]
+    fn cherry_pick_onto_run_branch_self_heals_when_a_multi_commit_amendment_shrinks_to_one_still_pending(
+    ) {
+        // adv-u88c4-r8-single-commit-trigger-is-any-still-pending-len-1-not-just-
+        // single-commit-units: the sibling test above proves the missing-
+        // sequencer/todo trigger with a literal one-commit-total unit; this proves
+        // the trigger is reachable from the conductor's REAL, routine steady state
+        // too - an ordinary multi-commit plan amendment whose `still_pending` set
+        // has shrunk to exactly one sha across two separate calls (all-but-one of
+        // its commits already confirmed landed), never merely a synthetic single-
+        // commit unit.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt =
+            Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/u/plan", "").unwrap();
+
+        let mut shas = Vec::new();
+        for (name, content) in [
+            ("90-a.md", "amend a\n"),
+            ("90-b.md", "amend b\n"),
+            ("90-c.md", "amend c\n"),
+        ] {
+            std::fs::create_dir_all(wt_path.join("specs")).unwrap();
+            std::fs::write(wt_path.join("specs").join(name), content).unwrap();
+            run_git(wt_path.to_str().unwrap(), &["add", "-A"]).unwrap();
+            run_git(
+                wt_path.to_str().unwrap(),
+                &["commit", "-q", "-m", &format!("amend {name}")],
+            )
+            .unwrap();
+            shas.push(
+                git(wt_path.to_str().unwrap(), &["rev-parse", "HEAD"])
+                    .unwrap()
+                    .trim()
+                    .to_string(),
+            );
+        }
+        assert_eq!(shas.len(), 3);
+
+        // CALL 1: a real, ordinary landing of the first two commits - mirroring the
+        // conductor calling `cherry_pick_onto_run_branch(&still_pending)` while two
+        // of the amendment's three commits are still pending.
+        let first_call = shas[0..2].to_vec();
+        let first = wt.cherry_pick_onto_run_branch(&first_call).unwrap();
+        match first {
+            CherryPickOutcome::Picked(landed) => assert_eq!(landed.len(), 2),
+            CherryPickOutcome::Conflict(detail) => {
+                panic!("the first two commits must land cleanly: {detail}")
+            }
+        }
+        for name in ["90-a.md", "90-b.md"] {
+            assert!(repo.path().join("specs").join(name).exists());
+        }
+
+        // The conductor now recomputes `still_pending` down to the ONE commit its
+        // patch-id check has not yet confirmed: `shas[2]` alone.
+        let still_pending = vec![shas[2].clone()];
+
+        // That sole remaining commit's content is separately, coincidentally
+        // already on the run branch (an out-of-band landing, or a duplicate
+        // amendment) - so a call with this single-element list pauses empty too.
+        run_git(&repo_path, &["cherry-pick", &shas[2]]).unwrap();
+        assert!(repo.path().join("specs").join("90-c.md").exists());
+
+        // Simulate a crash mid this SECOND, single-remaining-sha call: the raw
+        // single-sha invocation the crate's own fresh path would have made.
+        let raw = run_git(&repo_path, &["cherry-pick", &shas[2]]);
+        assert!(
+            raw.is_err(),
+            "the raw single-sha pick must pause on the empty commit, not succeed outright"
+        );
+        assert!(repo.path().join(".git").join("CHERRY_PICK_HEAD").exists());
+        assert!(run_git(&repo_path, &["ls-files", "--unmerged"])
+            .unwrap()
+            .trim()
+            .is_empty());
+        let todo_path = git(&repo_path, &["rev-parse", "--git-path", "sequencer/todo"])
+            .unwrap()
+            .trim()
+            .to_string();
+        let todo_path = std::path::Path::new(&todo_path);
+        let todo_path = if todo_path.is_absolute() {
+            todo_path.to_path_buf()
+        } else {
+            std::path::Path::new(&repo_path).join(todo_path)
+        };
+        assert!(
+            !todo_path.exists(),
+            "precondition: a single-element still_pending call never materializes \
+             sequencer/todo either - {} must be ABSENT",
+            todo_path.display()
+        );
+
+        // A FRESH call with the SAME shrunk-to-one still_pending list, exactly as a
+        // resumed conductor recomputing it would - must self-heal, never hard-error.
+        let resumed = wt.cherry_pick_onto_run_branch(&still_pending);
+        assert!(
+            resumed.is_ok(),
+            "a shrunk-to-one still_pending leftover marker with no sequencer/todo \
+             file must be self-healed, never surfaced as a hard error: {:?}",
+            resumed.err().map(|e| e.0)
+        );
+        match resumed.unwrap() {
+            CherryPickOutcome::Conflict(detail) => {
+                panic!("a self-healed, non-conflicting pause must not read as a conflict: {detail}")
+            }
+            CherryPickOutcome::Picked(_) => {}
+        }
+        assert!(!repo.path().join(".git").join("CHERRY_PICK_HEAD").exists());
+        for name in ["90-a.md", "90-b.md", "90-c.md"] {
+            assert!(repo.path().join("specs").join(name).exists());
         }
         wt.remove().unwrap();
     }
