@@ -87,23 +87,54 @@
 //!     branch` API (standing in for the crashed prior attempt), then driving the SAME branch
 //!     through a fresh `run()` and a real compensating unit
 //!     (`plan_stage_resumed_after_a_crash_recovers_the_real_sha_and_stays_compensable`).
-//!   - gap 9 (round 5, sdet re-enumeration `sdet-u88c4-r5-surface-enumeration`): gap 8's
-//!     `already_landed_commits` has a SECOND branch its own doc comment names but gap 8's test
-//!     never exercises - the "cannot confirm, never a guess" fallback. Getting THIS branch
-//!     wrong the other way (over-confirming) is the same class of bug gap 8 closes, applied in
-//!     reverse: silently attributing a compensation-worthy identity to a commit that was never
-//!     actually confirmed as this producer's own. Proven by simulating the doc comment's own
-//!     named cause - an intervening, unrelated commit landing on the run branch between the
-//!     crashed prior attempt and the resume (`plan_stage_resumed_amendment_with_an_
-//!     intervening_operator_commit_falls_back_safely`) - through the public `run()` entry: the
-//!     resume must still converge to `Integrated` via the historical `REVIEW_ONLY_NO_ARTIFACT`
-//!     marker, never an invented sha, and the run branch must be left byte-for-byte untouched.
+//!   - gap 9 (round 5, sdet re-enumeration `sdet-u88c4-r5-surface-enumeration`; REWRITTEN round
+//!     7 for operator ruling `op-u88c4-next-round-plan-commit-landing-is-log-carried-and-
+//!     idempotent`): an intervening, unrelated commit landing on the run branch between a
+//!     crashed prior attempt's real landing and the resume - the shape that defeated rounds
+//!     4-6's tree-POSITION recovery (`Worktree::already_landed_commits`, REMOVED, rejected three
+//!     review rounds running) and forced a safe-but-wrong fallback to the historical `REVIEW_
+//!     ONLY_NO_ARTIFACT` marker even though the amendment genuinely landed. Round 7 replaces the
+//!     position walk with `Worktree::find_landed_by_patch_id` (git patch-id, content identity,
+//!     position-independent): `plan_stage_resumed_amendment_with_an_intervening_operator_
+//!     commit_still_confirms_by_patch_id` proves the SAME setup now resolves CORRECTLY - the
+//!     real landed sha, never the no-artifact marker - through the public `run()` entry;
+//!   - gap 10 (round 7, new public API `Worktree::patch_id` / `Worktree::find_landed_by_
+//!     patch_id`, ruling item (2)): the same "public API, no conductor involved" boundary gap 5
+//!     closed for `cherry_pick_onto_run_branch(&[])`, applied to the two functions that replaced
+//!     `already_landed_commits`. The implementer's own `worktree.rs` unit tests prove the
+//!     identical mechanics from INSIDE the crate's private test module - unreachable by an
+//!     external consumer of this library. `patch_id_and_find_landed_by_patch_id_are_a_public_
+//!     content_identity_api` drives both directly through the public `Worktree` API, with no
+//!     `run()` involved at all: stability across a cherry-pick, difference for different
+//!     content, confirmation across an intervening unrelated commit, and refusal to confirm
+//!     content that was never landed;
+//!   - gap 11 (round 7, new serialized form `plan-intent:<unit>`, ruling item (1) "INTENT IS LOG
+//!     STATE FIRST"): `RunCtx::record_plan_intent` writes a `DecisionMade`-shaped record naming
+//!     every commit the producer intends to land, BEFORE any git mutation - write-only audit
+//!     trail today, the same shape of gap this file's gap 2 closed for `UnitIntegrated.shas`
+//!     when IT was write-only. `plan_intent_record_is_log_carried_before_any_git_mutation_and_
+//!     names_the_original_shas` proves the record's shape (the correct, ordered ORIGINAL - never
+//!     the cherry-pick-minted landed - shas) and its position: strictly before the `UnitIntegrated`
+//!     the same call eventually produces;
+//!   - gap 12 (round 7, new fold arm `RunCtx::read_plan_landed` / `record_plan_landed`, ruling
+//!     item (2) "reachable... by patch-id OR BY THE RECORDED LANDED SHA" - the second of the
+//!     ruling's two named mechanisms, gap 9 above being the first): a crash strictly AFTER a
+//!     prior call both landed an amendment for real and recorded its own `plan-landed:<unit>`
+//!     confirmation, but BEFORE `UnitIntegrated` - hand-seeded onto the store with the EXACT
+//!     shape `record_plan_landed` itself writes (gap 2's legacy-event technique), then adopted by
+//!     a fresh `run()` AFTER filler commits push the landed sha beyond the patch-id search's own
+//!     window, isolating the log record as the ONLY mechanism that can recover it.
+//!     `plan_stage_resumed_with_a_pre_existing_plan_landed_record_recovers_without_any_new_git_
+//!     mutation` proves the resumed call trusts the log record directly - no new cherry-pick, no
+//!     successful patch-id search - and still reaches `Integrated` with the real landed sha and
+//!     content a downstream stage can read.
 
 use rigger::conductor::{
     run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, META_COMPENSATED,
     META_COMPENSATE_TARGET, REVIEW_ONLY_NO_ARTIFACT, STREAM,
 };
 use rigger::config::{AgentDef, Config, Gate, ReviewPanel, Stage};
+use rigger::contextgraph;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision, Filter};
 use rigger::gate::ExecRunner;
@@ -212,6 +243,15 @@ struct PlanAmendDriver {
     /// final, unambiguous word on those two files. Every existing test still calls the
     /// planner exactly once, so this changes nothing for gaps 1-5.
     committed: AtomicBool,
+    /// The worktree's own HEAD sha immediately after this driver's commit loop finishes (gap
+    /// 11) - the ORIGINAL, pre-cherry-pick identity a caller has no other way to read back
+    /// once `opts.dir` is torn down with the stage. A same-parent, same-committer-second
+    /// cherry-pick can legitimately mint a BYTE-IDENTICAL object (git's content addressing),
+    /// so comparing this against the eventual landed sha for inequality would be racy; reading
+    /// it back directly and comparing for EQUALITY against what the intent record names is the
+    /// sound proof. `None` (the default) for every existing gap-1-through-10 test, which never
+    /// reads this field.
+    committed_sha: Mutex<Option<String>>,
 }
 
 impl PlanAmendDriver {
@@ -292,6 +332,19 @@ impl AgentDriver for PlanAmendDriver {
                     .arg(&opts.dir)
                     .args(["commit", "-q", "-m", &msg])
                     .output();
+            }
+            if !self.commits.is_empty() {
+                if let Ok(out) = std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&opts.dir)
+                    .args(["rev-parse", "HEAD"])
+                    .output()
+                {
+                    if out.status.success() {
+                        *self.committed_sha.lock().unwrap() =
+                            Some(String::from_utf8_lossy(&out.stdout).trim().to_string());
+                    }
+                }
             }
         }
         if a.id == self.reader && !opts.dir.is_empty() {
@@ -1384,5 +1437,426 @@ fn plan_stage_resumed_amendment_with_an_intervening_operator_commit_still_confir
     assert_eq!(
         std::fs::read_to_string(repo.path().join("specs").join("99-unrelated.md")).unwrap(),
         "unrelated\n"
+    );
+}
+
+/// Criterion 4, gap 10 (round 7, new public API `Worktree::patch_id` / `Worktree::
+/// find_landed_by_patch_id`, operator ruling `op-u88c4-next-round-plan-commit-landing-is-log-
+/// carried-and-idempotent` item (2)): the same "public API, no conductor involved at all"
+/// boundary gap 5 closed for `cherry_pick_onto_run_branch(&[])`, applied to the two functions
+/// that replaced `Worktree::already_landed_commits` (removed, round 7, rejected three review
+/// rounds running as a tree-POSITION heuristic). The implementer's own `worktree.rs` unit tests
+/// (`patch_id_is_stable_across_a_cherry_pick_but_differs_for_different_content`,
+/// `find_landed_by_patch_id_recovers_by_content_never_by_position`) prove the identical git
+/// mechanics from INSIDE the crate's private test module - unreachable by an external consumer
+/// of this library, exactly like every other "new public API" gap this file exists to close.
+/// This test drives the same contract through the PUBLIC `Worktree` API only, with no `run()`
+/// or conductor involvement whatsoever: `patch_id` is stable across a cherry-pick (content
+/// identity, never object identity) and differs for genuinely different content;
+/// `find_landed_by_patch_id` confirms a landed commit by content DESPITE an intervening,
+/// unrelated commit shifting every tree position - the exact defect class the ruling exists to
+/// close - and refuses to confirm content that was never landed at all, never a guess.
+#[test]
+fn patch_id_and_find_landed_by_patch_id_are_a_public_content_identity_api() {
+    let repo = init_repo();
+    let repo_path = repo.path().to_str().unwrap().to_string();
+    let wt_dir = tempfile::tempdir().unwrap();
+    let wt = Worktree::create(
+        &repo_path,
+        wt_dir.path().to_str().unwrap(),
+        "rigger/u/ext-patch-id",
+        "",
+    )
+    .unwrap();
+
+    std::fs::create_dir_all(wt_dir.path().join("specs")).unwrap();
+    std::fs::write(wt_dir.path().join("specs").join("95-a.md"), "amend a\n").unwrap();
+    assert!(std::process::Command::new("git")
+        .arg("-C")
+        .arg(wt_dir.path())
+        .args(["add", "-A"])
+        .status()
+        .unwrap()
+        .success());
+    // A FIXED, deliberately old author/committer date - never the wall-clock "now" a bare
+    // `git commit` would use - so the cherry-pick below (which stamps its own committer time as
+    // real "now") cannot coincidentally reproduce a byte-identical commit object in the rare
+    // same-committer-second case, which would defeat this test's own `assert_ne!` below (the
+    // implementer's own sibling unit test guards the identical risk the identical way).
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(wt_dir.path())
+        .args(["commit", "-q", "-m", "amend a"])
+        .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00")
+        .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "fixed-date commit failed");
+    let original = run_git(wt_dir.path().to_str().unwrap(), &["rev-parse", "HEAD"]);
+
+    let landed = match wt
+        .cherry_pick_onto_run_branch(std::slice::from_ref(&original))
+        .unwrap()
+    {
+        CherryPickOutcome::Picked(landed) => landed,
+        CherryPickOutcome::Conflict(detail) => {
+            panic!("a clean specs/-only cherry-pick must not conflict: {detail}")
+        }
+    };
+    assert_eq!(landed.len(), 1);
+    assert_ne!(
+        landed[0], original,
+        "a cherry-pick mints a genuinely different commit object"
+    );
+
+    // (1) STABLE ACROSS A CHERRY-PICK: the same content re-committed under a different object
+    // carries the SAME `patch_id` - called directly, bare, no conductor involved.
+    assert_eq!(
+        wt.patch_id(&original).unwrap(),
+        wt.patch_id(&landed[0]).unwrap(),
+        "the same content re-committed by a cherry-pick must carry the SAME patch_id"
+    );
+
+    // (2) DIFFERENT CONTENT DIFFERS: proves this is a real content hash, not a constant.
+    std::fs::write(wt_dir.path().join("specs").join("95-b.md"), "amend b\n").unwrap();
+    assert!(std::process::Command::new("git")
+        .arg("-C")
+        .arg(wt_dir.path())
+        .args(["add", "-A"])
+        .status()
+        .unwrap()
+        .success());
+    assert!(std::process::Command::new("git")
+        .arg("-C")
+        .arg(wt_dir.path())
+        .args(["commit", "-q", "-m", "amend b"])
+        .status()
+        .unwrap()
+        .success());
+    let other = run_git(wt_dir.path().to_str().unwrap(), &["rev-parse", "HEAD"]);
+    assert_ne!(
+        wt.patch_id(&original).unwrap(),
+        wt.patch_id(&other).unwrap(),
+        "different content must carry a different patch_id"
+    );
+
+    // (3) CONFIRMS BY CONTENT DESPITE AN INTERVENING, UNRELATED COMMIT - the exact position
+    // shift that defeated the removed tree-position walk.
+    std::fs::write(repo.path().join("specs").join("95-unrelated.md"), "x\n").unwrap();
+    assert!(std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args(["add", "-A"])
+        .status()
+        .unwrap()
+        .success());
+    assert!(std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args(["commit", "-q", "-m", "unrelated meanwhile"])
+        .status()
+        .unwrap()
+        .success());
+    let recovered = wt
+        .find_landed_by_patch_id(&original, 50)
+        .unwrap()
+        .expect("content-based recovery must succeed despite the intervening commit");
+    assert_eq!(
+        recovered, landed[0],
+        "the recovered sha must be the real, reachable run-branch commit"
+    );
+
+    // (4) NEVER A GUESS: content that was never landed at all must never be confirmed.
+    assert_eq!(
+        wt.find_landed_by_patch_id(&other, 50).unwrap(),
+        None,
+        "content that was never landed must never be confirmed - never a guess"
+    );
+
+    wt.remove().unwrap();
+}
+
+/// Criterion 4, gap 11 (round 7, new serialized form `plan-intent:<unit>`, operator ruling item
+/// (1) "INTENT IS LOG STATE FIRST: before any git mutation, the step records the ordered list of
+/// plan-stage shas it intends to land"): `RunCtx::record_plan_intent` writes a `DecisionMade`-
+/// shaped record BEFORE any git mutation - write-only audit trail today (`RunCtx::
+/// read_plan_landed`, the only outcome-driving read, looks for a DIFFERENT id, `plan-landed:
+/// <unit>`) - the same shape of gap this file's gap 2 closed for `UnitIntegrated.shas` when IT
+/// was write-only. Proves the record's shape (the correct, ordered ORIGINAL shas - never the
+/// cherry-pick-minted landed sha) and its position in the stream: strictly BEFORE the
+/// `UnitIntegrated` the same call eventually produces, the literal periphery-observable fact
+/// "before any git mutation" requires.
+#[test]
+fn plan_intent_record_is_log_carried_before_any_git_mutation_and_names_the_original_shas() {
+    let repo = init_repo();
+    let repo_path = repo.path().to_str().unwrap().to_string();
+
+    let mut cfg = Config::default();
+    cfg.agents.insert("planner".into(), agent("planner"));
+    cfg.workflow.stages.insert("plan".into(), plan_stage());
+
+    let store = Store::open(":memory:").unwrap();
+    let driver = PlanAmendDriver::new("planner").commit(&[("specs/96-intent.md", "amend\n")]);
+    let deps = Deps {
+        store: &store,
+        driver: &driver,
+        gates: &ExecRunner,
+        repo: repo_path.clone(),
+        grounder: None,
+        graph: None,
+        criteria: Vec::new(),
+    };
+    let rs = run(&cfg, &deps).unwrap();
+    assert_eq!(rs.units["plan"].status, ledger::Status::Integrated);
+
+    let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    let id_of = |e: &Event| -> Option<String> {
+        serde_json::from_slice::<Value>(&e.data)
+            .ok()
+            .and_then(|v| v.get("id").and_then(Value::as_str).map(str::to_string))
+    };
+    let intent_pos = events
+        .iter()
+        .position(|e| {
+            e.type_ == contextgraph::TYPE_DECISION_MADE
+                && id_of(e).as_deref() == Some("plan-intent:plan")
+        })
+        .expect("the plan-intent:plan record must be recorded");
+    let integrated_pos = events
+        .iter()
+        .position(|e| {
+            e.type_ == ledger::TYPE_UNIT_INTEGRATED && id_of(e).as_deref() == Some("plan")
+        })
+        .expect("plan's integration must be recorded");
+    assert!(
+        intent_pos < integrated_pos,
+        "the intent record (position {intent_pos}) must be recorded strictly BEFORE the \
+         integration it precedes (position {integrated_pos}) - log state first, before any \
+         git mutation"
+    );
+
+    let intent: Value = serde_json::from_slice(&events[intent_pos].data).unwrap();
+    assert_eq!(intent["unit"].as_str(), Some("plan"));
+    let intent_shas: Vec<String> = intent["shas"]
+        .as_array()
+        .expect("shas must be a JSON array")
+        .iter()
+        .map(|v| {
+            v.as_str()
+                .expect("each sha must be a JSON string")
+                .to_string()
+        })
+        .collect();
+    assert_eq!(
+        intent_shas.len(),
+        1,
+        "one commit intended; got {intent_shas:?}"
+    );
+    assert!(
+        intent_shas[0].len() >= 7 && intent_shas[0].chars().all(|c| c.is_ascii_hexdigit()),
+        "the intended sha must look like a real git object id; got {intent_shas:?}"
+    );
+
+    // The intent record must name the ORIGINAL commit identity the planner's own worktree
+    // actually produced - read back directly via `PlanAmendDriver`'s own recording, since
+    // comparing against the eventual landed sha for INEQUALITY would be unsound: a same-
+    // parent, same-committer-second cherry-pick can legitimately mint a byte-identical git
+    // object (content addressing), which is exactly what this fixture's single, unopposed
+    // commit onto a fresh run branch produces in a fast test run.
+    let committed_sha = driver
+        .committed_sha
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("the planner's own commit sha must have been recorded");
+    assert_eq!(
+        intent_shas[0], committed_sha,
+        "the intent record must name the real, original sha the worktree committed"
+    );
+
+    let integrated: Value = serde_json::from_slice(&events[integrated_pos].data).unwrap();
+    let landed_sha = integrated["commit"].as_str().unwrap().to_string();
+    assert!(
+        !landed_sha.is_empty() && landed_sha.chars().all(|c| c.is_ascii_hexdigit()),
+        "the eventual integration must carry a real landed sha; got {landed_sha}"
+    );
+}
+
+/// Criterion 4, gap 12 (round 7, new fold arm `RunCtx::read_plan_landed` / `record_plan_landed`,
+/// operator ruling item (2): "decide landed (an equivalent commit is reachable from the run
+/// branch by patch-id OR BY THE RECORDED LANDED SHA)" - the ruling names TWO distinct
+/// confirmation mechanisms; gap 9 above proves the patch-id one for a resume with NO prior
+/// confirmation record, this test proves the SECOND, the durable log record itself): simulated
+/// as a crash strictly AFTER a prior call both landed the amendment for real AND recorded its
+/// own `plan-landed:<unit>` confirmation, but BEFORE `UnitIntegrated` - by hand-seeding the log
+/// with the EXACT `DecisionMade` shape `RunCtx::record_plan_landed` itself writes (the technique
+/// gap 2's legacy-event test established), landing the amendment for real through the same
+/// public `Worktree::cherry_pick_onto_run_branch` a crashed prior attempt would itself have
+/// used, then adopting the SAME run (`rigger::run::ensure_started`, matching criteria) with a
+/// fresh `run()`. Filler commits deliberately push the landed sha beyond `find_landed_by_
+/// patch_id`'s own search window BEFORE the resumed `run()` starts, so a patch-id search alone
+/// could no longer recover it - isolating the log record as the ONLY mechanism that can produce
+/// the correct outcome, rather than merely a scenario where either mechanism happens to work.
+/// Proves the resumed call trusts the log record directly - no NEW cherry-pick, no successful
+/// patch-id search - and still reaches `Integrated` with the real landed sha and content a
+/// downstream stage can read.
+#[test]
+fn plan_stage_resumed_with_a_pre_existing_plan_landed_record_recovers_without_any_new_git_mutation()
+{
+    let repo = init_repo();
+    let repo_path = repo.path().to_str().unwrap().to_string();
+
+    // A PRIOR window's planner committed its amendment onto the deterministic `rigger/u/plan`
+    // branch, via its own throwaway worktree - the shape every sibling crash-resume test in this
+    // file uses.
+    let seed_dir = tempfile::tempdir().unwrap();
+    let seed = Worktree::create(
+        &repo_path,
+        seed_dir.path().to_str().unwrap(),
+        "rigger/u/plan",
+        "",
+    )
+    .unwrap();
+    std::fs::create_dir_all(seed_dir.path().join("specs")).unwrap();
+    std::fs::write(
+        seed_dir.path().join("specs").join("97-preconfirmed.md"),
+        "amend\n",
+    )
+    .unwrap();
+    assert!(std::process::Command::new("git")
+        .arg("-C")
+        .arg(seed_dir.path())
+        .args(["add", "-A"])
+        .status()
+        .unwrap()
+        .success());
+    // A FIXED, deliberately old date - the same guard every sibling crash-resume test in this
+    // file uses, so this cherry-pick cannot coincidentally reproduce a byte-identical object.
+    assert!(std::process::Command::new("git")
+        .arg("-C")
+        .arg(seed_dir.path())
+        .args(["commit", "-q", "-m", "amend"])
+        .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00")
+        .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00")
+        .status()
+        .unwrap()
+        .success());
+    let original_shas = seed.commits_since_base().unwrap();
+    assert_eq!(original_shas.len(), 1);
+    let original_sha = original_shas[0].clone();
+
+    // The CRASHED PRIOR ATTEMPT's own successful git mutation: landed for real, through the
+    // same public API `integrate_plan_commits` itself calls.
+    let prior_landed = match seed.cherry_pick_onto_run_branch(&original_shas).unwrap() {
+        CherryPickOutcome::Picked(landed) => landed,
+        CherryPickOutcome::Conflict(detail) => {
+            panic!("a clean specs/-only cherry-pick must not conflict: {detail}")
+        }
+    };
+    assert_eq!(prior_landed.len(), 1);
+    let landed_sha = prior_landed[0].clone();
+    seed.remove().unwrap();
+
+    // Push the landed commit beyond `find_landed_by_patch_id`'s own search window (a private
+    // constant, 256, in `integrate_plan_commits`) with filler commits on the run branch - so
+    // THIS test genuinely isolates the log-record mechanism: a patch-id search alone could not
+    // recover this sha any more, only the durable `plan-landed` record can. Without this, the
+    // scenario below would ALSO resolve correctly via patch-id search alone (gap 9's mechanism),
+    // which would prove nothing distinct about the NEW fold arm this test exists to close.
+    for i in 0..260 {
+        assert!(std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args([
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                &format!("filler {i}")
+            ])
+            .status()
+            .unwrap()
+            .success());
+    }
+
+    let head_after_prior_landing = run_git(&repo_path, &["rev-parse", "HEAD"]);
+
+    // The CRASHED PRIOR ATTEMPT'S OWN CONFIRMATION WRITE: the EXACT `DecisionMade` shape
+    // `RunCtx::record_plan_landed` itself produces, hand-seeded directly onto the store before
+    // any fresh `run()` ever starts - proving the record's OWN shape is what a resumed call
+    // actually consults, not merely that the private method which writes it also happens to
+    // read it back correctly in-process (already proven by the implementer's own conductor.rs
+    // unit tests).
+    let store = Store::open(":memory:").unwrap();
+    rigger::run::ensure_started(&store, &[]).unwrap();
+    store
+        .append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[Event::new(
+                contextgraph::TYPE_DECISION_MADE,
+                serde_json::to_vec(&json!({
+                    "id": "plan-landed:plan",
+                    "summary": "plan-stage commit landing confirmed for plan: 1/1 intended \
+                                commit(s) landed",
+                    "governs": [],
+                    "unit": "plan",
+                    "landed": [{"sha": original_sha, "landed_sha": landed_sha}],
+                }))
+                .unwrap(),
+            )],
+        )
+        .unwrap();
+
+    // A FRESH run() adopts the SAME producer branch and the SAME run (matching, empty
+    // criteria). Its own worktree still carries only the ORIGINAL (pre-landing) commit
+    // identity; the planner's fresh spawn commits NOTHING new, mirroring every sibling resume
+    // test - a genuine resume never re-does work a crashed attempt already finished.
+    let mut cfg = Config::default();
+    cfg.agents.insert("planner".into(), agent("planner"));
+    cfg.agents.insert("reader".into(), agent("reader"));
+    cfg.workflow.stages.insert("plan".into(), plan_stage());
+    cfg.workflow
+        .stages
+        .insert("critique".into(), downstream_reader_stage("reader"));
+
+    let driver = PlanAmendDriver::new("planner").reading("reader", "specs/97-preconfirmed.md");
+    let deps = Deps {
+        store: &store,
+        driver: &driver,
+        gates: &ExecRunner,
+        repo: repo_path.clone(),
+        grounder: None,
+        graph: None,
+        criteria: Vec::new(),
+    };
+    let rs = run(&cfg, &deps).unwrap();
+
+    assert_eq!(
+        rs.units["plan"].status,
+        ledger::Status::Integrated,
+        "a resume with a pre-existing plan-landed record must still converge"
+    );
+    assert_eq!(
+        rs.units["plan"].commit, landed_sha,
+        "the recovered commit must be exactly the log's own recorded landed sha"
+    );
+
+    // NO NEW GIT MUTATION: the run branch is byte-for-byte unchanged from the state the prior
+    // (crashed) attempt's real cherry-pick already left it in - the durable record alone
+    // answers this call; no fresh cherry-pick and no patch-id search are needed to reach it.
+    assert_eq!(
+        run_git(&repo_path, &["rev-parse", "HEAD"]),
+        head_after_prior_landing,
+        "a resume driven purely by the log record must not mutate the run branch at all"
+    );
+
+    // The downstream stage - branched off the run branch only after "plan" integrates - already
+    // sees the amendment, proving the recovered commit is the SAME real content, not merely a
+    // recorded label.
+    assert_eq!(
+        driver.found.lock().unwrap().get("specs/97-preconfirmed.md"),
+        Some(&"amend\n".to_string()),
+        "a downstream stage must see the real, recovered amendment content"
     );
 }
