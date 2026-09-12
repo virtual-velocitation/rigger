@@ -1917,3 +1917,155 @@ fn a_legacy_adoption_mark_missing_criterion_id_and_spec_never_matches_a_reused_i
          never accidentally equal a real criterion_stable_id: {started}"
     );
 }
+
+/// Test 12 (round 6, PRIMARY BLOCKER fix): round 5 closed the METADATA layer
+/// (`recorded_adoption`/`adoption_provenance_key` triple-keying, test 10/11 above) but left
+/// the GIT-CONTENT-REUSE mechanism completely untouched
+/// (sdet-u88c2-r5-stage-worktree-branch-reuse-crosses-specs,
+/// adv-u88c2-r5-independently-confirms-branch-reuse-crosses-specs,
+/// arch-u88c2-r5-branch-exists-fallback-still-bare-id-crosses-specs, upheld ADJUDICATOR
+/// VERDICT round 5): `stage_worktree` (src/conductor.rs) calls `Worktree::create`
+/// UNCONDITIONALLY on every unit with the bare `unit_branch(&st.name)` name, regardless of
+/// what `adopt_prior_criterion_branch` decided - and `Worktree::create`'s own
+/// branch-exists fallback (src/worktree.rs) checks out and REUSES whatever real content
+/// already sits on that literal branch name, with NO criterion/spec check of its own.
+///
+/// This drives the EXACT shape the round-5 reject named as still missing
+/// (sdet-u88c2-r5-ruling-fixture-b-not-driven): test 10 above only ever reuses a slug
+/// AFTER an intermediate legitimate-adoption-then-integrate-then-GC step, so
+/// `rigger/u/reused-id` genuinely does not exist by the time it is reused and the bug
+/// never fires. Here the FIRST run's unit ESCALATES (never integrates, so its branch is
+/// NEVER reclaimed by `gc_integrated_branches` - test 3's own proof of that reclaim only
+/// ever fires for `Integrated` units) and the SECOND run's planner reuses that exact
+/// literal slug directly, with no adoption ever legitimately decided for it (a wholly
+/// different criterion, under a wholly different spec) - the precise "escalated,
+/// unreclaimed branch coinciding with an unrelated later reuse" construction the round-5
+/// reject's own probe used.
+///
+/// `adopted_from` reading `Null` is NOT sufficient proof by itself (the pre-fix code
+/// already read `Null` here too - `adopt_prior_criterion_branch`'s `branch_exists` guard
+/// short-circuits to `Ok(None)` before ever deciding an adoption, exactly as its own doc
+/// comment always described the "common repeat case"). The decisive assertion is that
+/// spec A's escalated, unrelated content must never ride into spec B's unit's own tree:
+/// spec B's unit never adopted anything, so its own tree must be built from HEAD alone,
+/// not from the coincidentally-named branch's stale committed content.
+#[test]
+fn an_escalated_units_unreclaimed_branch_is_never_reused_by_an_unrelated_specs_slug_collision() {
+    let repo = tempfile::tempdir().unwrap();
+    init_repo(repo.path());
+    let store = Store::open(":memory:").unwrap();
+
+    let criterion_x = "the turbine reports its own rotation speed continuously";
+    let spec_a = "specs/88-a-unit-lineage-is-durable.md";
+
+    // RUN 1 (spec A, criterion X): a planner proposes a literal slug directly (never the
+    // deterministic baseline path), so THIS test controls the exact string RUN 2 reuses,
+    // with no intermediate adoption step. Its gate always fails, so it exhausts
+    // remediation and escalates - real committed work, never integrated, never GC'd.
+    start_fresh(&store, &[criterion_x.to_string()], "", "", spec_a).unwrap();
+    let shared_slug = "escalated-then-collided-slug";
+    let shared_branch = format!("rigger/u/{shared_slug}");
+    let driver1 = ProposesSlugDriver {
+        proposed_id: shared_slug.to_string(),
+        criterion: criterion_x.to_string(),
+        worker_write: Some((
+            "spec-a-secret.txt".into(),
+            "spec A's escalated, unrelated secret\n".into(),
+        )),
+        gates: vec!["gate".to_string()],
+    };
+    let deps1 = Deps {
+        store: &store,
+        driver: &driver1,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion_x.to_string()],
+    };
+    let mut cfg1 = fresh_run_cfg("false");
+    cfg1.workflow.defaults.max_retries = 1;
+    let rs1 = run(&cfg1, &deps1).unwrap();
+    assert_eq!(
+        rs1.units[shared_slug].status,
+        ledger::Status::Escalated,
+        "an always-failing gate must exhaust remediation and escalate, never integrate; \
+         units: {:?}",
+        rs1.units.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        worktree::branch_exists(repo.path().to_str().unwrap(), &shared_branch),
+        "the escalated unit's durable branch must exist, unreclaimed, before RUN 2 - \
+         gc_integrated_branches only ever reclaims an Integrated unit's branch"
+    );
+    let shown = git_out(
+        repo.path(),
+        &["show", &format!("{shared_branch}:spec-a-secret.txt")],
+    )
+    .expect("the escalated branch must carry spec A's real committed secret");
+    assert_eq!(shown.trim(), "spec A's escalated, unrelated secret");
+    assert!(
+        !repo.path().join("spec-a-secret.txt").exists(),
+        "the escalated unit never integrated, so its secret must not be on the base yet"
+    );
+
+    // RUN 2 (spec B, an UNRELATED criterion Y): a planner independently reuses the exact
+    // same literal slug for a wholly unrelated criterion under a wholly unrelated spec -
+    // no adoption is ever legitimately decided for this pair (differing criterion AND
+    // spec), yet the literal branch name collides.
+    let criterion_y = "the compressor independently reports its own duty cycle on every poll";
+    let spec_b = "specs/90-hermetic-test-git-and-merge-friendly-audit-artifacts.md";
+    start_fresh(&store, &[criterion_y.to_string()], "", "", spec_b).unwrap();
+    let driver2 = ProposesSlugDriver {
+        proposed_id: shared_slug.to_string(),
+        criterion: criterion_y.to_string(),
+        worker_write: Some((
+            "run2-own-work.txt".into(),
+            "spec B's own genuinely new work\n".into(),
+        )),
+        gates: Vec::new(),
+    };
+    let deps2 = Deps {
+        store: &store,
+        driver: &driver2,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion_y.to_string()],
+    };
+    let rs2 = run(&fresh_run_cfg("true"), &deps2).unwrap();
+    assert_eq!(
+        rs2.units[shared_slug].status,
+        ledger::Status::Integrated,
+        "spec B's own unit must run its ordinary lifecycle through to integration; units: {:?}",
+        rs2.units.keys().collect::<Vec<_>>()
+    );
+
+    // THE DECISIVE ASSERTION: spec A's escalated, unrelated content must NEVER ride into
+    // spec B's unit's own tree merely because the two planners happened to reuse the same
+    // literal slug - regardless of what `adopted_from` reads.
+    assert!(
+        !repo.path().join("spec-a-secret.txt").exists(),
+        "spec B's unit must never inherit spec A's escalated, unrelated content just \
+         because its planner reused the same literal slug - this is the primary blocker's \
+         exact contamination: the git-content-reuse mechanism (stage_worktree's \
+         unconditional Worktree::create call) bypassing the criterion/spec check entirely, \
+         with adopted_from reading Null throughout"
+    );
+    assert!(
+        repo.path().join("run2-own-work.txt").exists(),
+        "spec B's own genuinely new work must still land on the base"
+    );
+
+    let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    let run2_started = find_last_unit_started(&events, shared_slug);
+    assert_eq!(
+        run2_started["adopted_from"],
+        Value::Null,
+        "spec B's unit legitimately adopted nothing (differing criterion AND spec) - this \
+         alone was already true before the fix and is not sufficient proof on its own; \
+         paired with the content assertion above it confirms the fix acts on the git side, \
+         not the metadata side: {run2_started}"
+    );
+}

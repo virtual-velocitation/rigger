@@ -8181,6 +8181,27 @@ impl RunCtx<'_> {
     /// branch is already gone (nothing to adopt - the unit simply starts fresh, exactly
     /// as before this feature existed); or - the common repeat case - a unit whose
     /// branch carries only its OWN prior work, with no adoption ever decided for it.
+    ///
+    /// PRIMARY BLOCKER FIX (round 6, closing
+    /// sdet-u88c2-r5-stage-worktree-branch-reuse-crosses-specs /
+    /// adv-u88c2-r5-independently-confirms-branch-reuse-crosses-specs /
+    /// arch-u88c2-r5-branch-exists-fallback-still-bare-id-crosses-specs): `unit_branch`
+    /// derives purely from the planner's bare slug, so a wholly unrelated unit under a
+    /// wholly unrelated (criterion, spec) can coincidentally reuse the same literal
+    /// name. The `branch_exists` check below used to trust that unconditionally as "this
+    /// unit's own prior work" - but `stage_worktree`'s own later `Worktree::create` call
+    /// (its own `branch_exists` fallback, src/worktree.rs) then checks out and reuses
+    /// whatever REAL content sits on that name, with no criterion/spec check of its own:
+    /// real cross-spec content contamination that never shows up as a wrong
+    /// `adopted_from` (which correctly reads `Null` the whole time - this is not an
+    /// adoption at all, sanctioned or otherwise). [`branch_owner`] answers WHOSE
+    /// (criterion_id, spec) the branch's most recent identity actually is, off the same
+    /// durable `UnitStarted` provenance every unit already writes; a mismatch means the
+    /// literal name is a coincidence, not this unit's own history, so the foreign
+    /// occupant is quarantined aside (never destroyed - Operator rule, spec 88 Goal:
+    /// "a unit's reviewed history is never discarded by the harness") so the caller's own
+    /// `Worktree::create` recomputes `branch_exists` as false and starts this unit
+    /// genuinely fresh, off HEAD.
     fn adopt_prior_criterion_branch(
         &self,
         st: &Stage,
@@ -8201,8 +8222,17 @@ impl RunCtx<'_> {
         }
         if worktree::branch_exists(&self.deps.repo, &branch) {
             // No decision was ever recorded for this EXACT (unit, criterion, spec)
-            // triple (checked above), so this branch carries only its own prior work -
-            // never adopted.
+            // triple (checked above). Before trusting this as "this branch carries only
+            // its own prior work", confirm it actually IS this unit's own history: a
+            // literal slug collision with an unrelated (criterion, spec) must never let
+            // that unrelated content ride into THIS unit's tree (the primary blocker
+            // fix above).
+            if branch_is_foreign(&branch_owner(&events, &st.name), &st.criterion_id, &spec) {
+                let tip = worktree::branch_tip(&self.deps.repo, &branch)?;
+                let quarantine = quarantine_branch_name(&st.name, &tip);
+                Worktree::create_branch_at(&self.deps.repo, &quarantine, &tip)?;
+                Worktree::delete_branch(&self.deps.repo, &branch)?;
+            }
             return Ok(None);
         }
         let Some(prior) = prior_criterion_unit(&events, &st.criterion_id, &st.name) else {
@@ -10021,6 +10051,85 @@ fn prior_criterion_unit(events: &[Event], criterion_id: &str, this_unit: &str) -
         .map(|(c, _)| c)
 }
 
+/// The `(criterion_id, spec)` THIS BARE unit id's branch was most recently started under,
+/// anywhere in the whole log (spec 88 round 6, closing the PRIMARY BLOCKER round 5 left
+/// open: `sdet-u88c2-r5-stage-worktree-branch-reuse-crosses-specs` /
+/// `adv-u88c2-r5-independently-confirms-branch-reuse-crosses-specs` /
+/// `arch-u88c2-r5-branch-exists-fallback-still-bare-id-crosses-specs`). [`unit_branch`]
+/// derives purely from the planner's bare slug, so two wholly unrelated units under two
+/// unrelated (criterion, spec) pairs can coincidentally resolve to the SAME git ref;
+/// [`RunCtx::adopt_prior_criterion_branch`]'s own `branch_exists` guard used to trust that
+/// unconditionally as "this unit's own prior work", with no check of whose work it
+/// actually is. This answers exactly that, off the same durable [`ledger::TYPE_UNIT_
+/// STARTED`] provenance every unit already writes on every start - read the same way
+/// [`prior_criterion_unit`]'s own `started_criterion`/`started_spec` maps are (a plain
+/// forward fold, last write wins, so a unit that started more than once always resolves
+/// to its MOST RECENT identity), for THIS unit's own bare id instead of a different
+/// candidate's.
+///
+/// `None` when this bare id has never started before anywhere in the log - nothing to
+/// compare against, so the caller preserves the historical behavior (every call site
+/// already checks `branch_exists` first, so a `None` here only ever arises for a branch
+/// with no recorded provenance at all, e.g. a pre-spec-88 legacy branch - never touched,
+/// exactly as before this feature existed).
+fn branch_owner(events: &[Event], unit_id: &str) -> Option<(String, String)> {
+    let mut current_spec = String::new();
+    let mut owner: Option<(String, String)> = None;
+    for e in events {
+        if e.type_ == crate::run::TYPE_RUN_STARTED {
+            if let Ok(rs) = serde_json::from_slice::<crate::run::RunStarted>(&e.data) {
+                current_spec = ledger::spec_stem(&rs.spec);
+            }
+        } else if e.type_ == ledger::TYPE_UNIT_STARTED {
+            if let Ok(u) = serde_json::from_slice::<StartedCriterionProbe>(&e.data) {
+                if u.id == unit_id {
+                    owner = Some((u.criterion_id, current_spec.clone()));
+                }
+            }
+        }
+    }
+    owner
+}
+
+/// Whether `owner` ([`branch_owner`]'s answer for the bare unit id about to reuse a
+/// literal branch name) proves that branch's real content belongs to an UNRELATED
+/// (criterion_id, spec) - extracted as its own pure predicate (spec 88 round 6, closing
+/// a mutation-efficacy gap: the inline `||` this replaces let a mutant flip either single
+/// `!=` to `==` without failing any test, because every periphery fixture that reaches
+/// this check happens to differ on BOTH axes at once, never isolating either alone -
+/// mirroring `recorded_adoption`'s own identical round-5 gap and fix, one axis at a
+/// time) so each axis is directly, cheaply unit-testable without a real repo. `None`
+/// (no recorded provenance at all - a pre-spec-88 legacy branch) is never foreign - the
+/// caller preserves the historical behavior.
+fn branch_is_foreign(owner: &Option<(String, String)>, criterion_id: &str, spec: &str) -> bool {
+    match owner {
+        Some((owner_criterion, owner_spec)) => {
+            owner_criterion != criterion_id || owner_spec != spec
+        }
+        None => false,
+    }
+}
+
+/// The deterministic name a FOREIGN occupant of a unit's canonical branch is preserved
+/// under when [`branch_owner`] proves its content belongs to an unrelated (criterion,
+/// spec) (spec 88 round 6, primary blocker fix): `rigger/orphaned/<sanitized-id>-
+/// <short-tip>`. Never a destructive `Worktree::delete_branch` alone - the branch is
+/// first re-pointed here (via [`Worktree::create_branch_at`], a new ref, exactly the
+/// "never a rename" pattern the legitimate adoption path already uses to keep an old name
+/// resolvable) so its commits stay reachable under a real name, honoring spec 88's own
+/// Goal-level Operator rule ("a unit's reviewed history is never discarded by the
+/// harness") even for this collision case. Keyed on the branch's own tip sha, never a
+/// random/uuid discriminator, so the derivation stays pure and reproducible - a repeat
+/// collision against a DIFFERENT foreign tip on a later run lands at a DIFFERENT
+/// quarantine name instead of colliding with an earlier quarantine of the same literal id.
+fn quarantine_branch_name(unit_id: &str, tip: &str) -> String {
+    format!(
+        "rigger/orphaned/{}-{}",
+        sanitize_for_path(unit_id),
+        &tip[..tip.len().min(12)]
+    )
+}
+
 /// The adoption decision [`RunCtx::adopt_prior_criterion_branch`] already recorded for
 /// the EXACT `(unit, criterion_id, spec)` triple, if any (spec 88 round 4, rescoped
 /// round 5) - the durable [`STATUS_ADOPTION_RECORDED`] mark its crash-window fix writes
@@ -11155,6 +11264,92 @@ mod tests {
             recorded_adoption(&[recorded], "reused-id", "c1-aaa", "spec-b"),
             None,
             "a mismatched spec alone (same id, same criterion_id) must refuse the match"
+        );
+    }
+
+    #[test]
+    fn branch_owner_returns_none_for_an_id_that_never_started() {
+        // Nothing to compare against - the caller preserves the historical behavior
+        // (every call site already checks `branch_exists` first).
+        let events = vec![started_with_criterion("someone-else", "c1-aaa")];
+        assert_eq!(branch_owner(&events, "never-started"), None);
+    }
+
+    #[test]
+    fn branch_owner_reads_the_most_recent_started_criterion_and_spec_for_this_bare_id() {
+        // Last write wins across the WHOLE log, mirroring `prior_criterion_unit`'s own
+        // `started_criterion`/`started_spec` maps: a bare id that started more than
+        // once (a genuine repeat run of the same logical unit) always resolves to its
+        // CURRENT, most recent identity, never a stale earlier one.
+        let events = vec![
+            run_started_with_spec("specs/1-old.md"),
+            started_with_criterion("shared-slug", "c1-aaa"),
+            run_started_with_spec("specs/2-new.md"),
+            started_with_criterion("shared-slug", "c2-bbb"),
+        ];
+        assert_eq!(
+            branch_owner(&events, "shared-slug"),
+            Some(("c2-bbb".to_string(), "2-new".to_string())),
+            "must read the SECOND (most recent) start, never the first"
+        );
+    }
+
+    #[test]
+    fn branch_owner_ignores_a_non_unit_started_event_even_when_it_shares_the_id_field() {
+        // spec 88 round 6 (mutation-efficacy gap): flipping the `TYPE_UNIT_STARTED`
+        // type-guard to `!=` would make this fold walk EVERY other event type instead -
+        // many of which (UnitIntegrated included) also carry a bare `id` field and
+        // would otherwise be misread as a start. A real `UnitStarted` for this id is
+        // present too, so a wrong answer here is masked only by ignoring the decoy.
+        let events = vec![
+            integrated("shared-slug"),
+            started_with_criterion("shared-slug", "c1-aaa"),
+        ];
+        assert_eq!(
+            branch_owner(&events, "shared-slug"),
+            Some(("c1-aaa".to_string(), String::new())),
+            "a UnitIntegrated sharing the same bare id must never be read as a start"
+        );
+    }
+
+    #[test]
+    fn branch_is_foreign_is_false_when_nothing_is_recorded_or_everything_matches() {
+        assert!(
+            !branch_is_foreign(&None, "c1-aaa", "spec-a"),
+            "no recorded provenance at all (a pre-spec-88 legacy branch) is never foreign"
+        );
+        assert!(
+            !branch_is_foreign(
+                &Some(("c1-aaa".to_string(), "spec-a".to_string())),
+                "c1-aaa",
+                "spec-a"
+            ),
+            "an owner matching on both axes is this unit's own history, never foreign"
+        );
+    }
+
+    #[test]
+    fn branch_is_foreign_when_only_one_axis_differs() {
+        // round 6 (mutation-efficacy gap): the `||` must be load-bearing on EACH `!=`
+        // independently - a query differing on only the criterion (same spec), and one
+        // differing on only the spec (same criterion), must each alone be caught, not
+        // only when both differ at once (mirrors `recorded_adoption`'s own identical
+        // round-5 fix and gap for the same reason).
+        assert!(
+            branch_is_foreign(
+                &Some(("c1-aaa".to_string(), "spec-a".to_string())),
+                "c2-bbb",
+                "spec-a"
+            ),
+            "a mismatched criterion_id alone (same spec) must be foreign"
+        );
+        assert!(
+            branch_is_foreign(
+                &Some(("c1-aaa".to_string(), "spec-a".to_string())),
+                "c1-aaa",
+                "spec-b"
+            ),
+            "a mismatched spec alone (same criterion_id) must be foreign"
         );
     }
 
