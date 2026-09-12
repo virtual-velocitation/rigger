@@ -228,6 +228,23 @@ pub const META_COMPENSATE_TARGET: &str = "compensate_target";
 /// real re-derivation signal is [`META_COMPENSATE_TARGET`], not this string.
 const STATUS_COMPENSATION_QUEUED: &str = "compensation-queued";
 
+/// The `UnitStatus.status` token recording ADOPTION PROVENANCE durably (spec 88 round 4,
+/// operator correction
+/// `op-u88c2-round-4-adoption-keys-corrected-escalated-baselines-are-always-candidates`
+/// item 3): [`RunCtx::adopt_prior_criterion_branch`] stamps this the MOMENT it decides to
+/// adopt - BEFORE the git side effect ([`Worktree::create_branch_at`]) that actually seeds
+/// the adopting unit's branch, which itself happens BEFORE the eventual `UnitStarted` that
+/// would otherwise be the only place this decision is recorded. This closes the crash
+/// window: whichever of the two writes below it a process dies before, a resumed call
+/// finds this mark already durable and reads the SAME decision back
+/// ([`recorded_adoption`]) instead of silently losing it (re-deciding fresh could, in a
+/// pathological case, compute a different answer if intervening log state changed - once
+/// decided, the decision is log-state-authoritative). Rides the existing `UnitStatus`
+/// vocabulary as a fold-neutral marker (no new event type), exactly like
+/// [`STATUS_COMPENSATION_QUEUED`]: deliberately NOT a [`ledger::Status`] variant, so
+/// `Status::parse` returns `None` and both the ledger and metrics folds ignore it.
+const STATUS_ADOPTION_RECORDED: &str = "adoption-recorded";
+
 /// The metadata key naming a first-green-wins speculation GROUP (spec 13, unit 3) on the
 /// events its candidates emit: the winner's `UnitIntegrated`, every cancelled candidate's
 /// `UnitStatus`, and each candidate's green/verified status carry it. It is audit metadata
@@ -324,6 +341,16 @@ fn postmerge_gate_verdict_key(unit: &str, attempt: u32, gate: &str) -> String {
 /// carries no `/gate:` substring, so [`unit_of_gate_key`] never mis-parses it as a gate key.
 fn compensation_queued_key(triggerer: &str, target: &str, attempt: u32) -> String {
     format!("{triggerer}/compensate-queued:{target}#{attempt}")
+}
+
+/// The replay key for a durable [`STATUS_ADOPTION_RECORDED`] mark (spec 88 round 4),
+/// keyed by the ADOPTING unit's own id alone - unlike a gate or a compensation mark,
+/// this decision is made at most ONCE per unit ever, so a bare unit id is a sufficient
+/// key (a resumed call for the SAME unit never re-decides once recorded). The
+/// `adopted-from:` infix carries no `/gate:` substring, so [`unit_of_gate_key`] never
+/// mis-parses it as a gate key.
+fn adoption_provenance_key(unit: &str) -> String {
+    format!("{unit}/adopted-from")
 }
 
 /// Whether a gate RUNS during the blast-radius-narrowed inner loop (spec 12, unit 3): a
@@ -3439,8 +3466,11 @@ impl RunCtx<'_> {
         // replay-keyed) UnitStarted records the adoption in the SAME event as its own
         // branch/agent - never a second event, and never a window where the emitted
         // record and the actual worktree seed could disagree. Computed unconditionally
-        // on every call (a cheap full-log fold), but its git side effect only ever
-        // mutates once - see [`Self::adopt_prior_criterion_branch`]'s own doc comment.
+        // on every call (a cheap full-log fold), but its own durable provenance write
+        // and git side effect only ever mutate once - see
+        // [`Self::adopt_prior_criterion_branch`]'s own doc comment (round 4: the
+        // provenance below is never freshly re-derived once decided, so this call is
+        // also what a crash-resumed process reads back rather than losing).
         let adopted_from = self.adopt_prior_criterion_branch(st)?;
         self.emit_keyed_meta(
             &format!("{name}/started"),
@@ -3456,7 +3486,7 @@ impl RunCtx<'_> {
                 "branch": unit_branch(name),
                 "adopted_from": adopted_from
                     .as_ref()
-                    .map(|(unit, tip)| json!({"unit": unit, "tip": tip})),
+                    .map(|(unit, tip, spec)| json!({"unit": unit, "tip": tip, "spec": spec})),
             }),
             // UnitStarted is a once-per-unit checkpoint, so it names the model the unit's
             // FIRST attempt asks for - rung 0 of any cascade. The per-attempt rungs a
@@ -8098,50 +8128,88 @@ impl RunCtx<'_> {
             .unwrap_or(true)
     }
 
-    /// ADOPTION KEYS ON THE CRITERION (spec 88, decided): when this unit's own durable
-    /// branch ([`unit_branch`]) does not exist yet, look across the WHOLE event log for
-    /// a prior unit ([`prior_criterion_unit`]) that served the SAME criterion
-    /// (`st.criterion_id`) and never reached `UnitIntegrated` - regardless of the
-    /// planner's slug, so a fresh run's differently-named unit still continues a prior
-    /// run's abandoned attempt instead of discarding it. Found: seed THIS unit's branch
-    /// as a NEW ref at that prior branch's CURRENT tip
-    /// ([`Worktree::create_branch_at`]) - a new ref, never a rename, so the prior
-    /// branch name stays resolvable - and [`Self::stage_worktree`]'s ordinary
+    /// ADOPTION KEYS ON THE CRITERION (spec 88, decided; round 4 corrects the crash
+    /// durability per operator ruling
+    /// `op-u88c2-round-4-adoption-keys-corrected-escalated-baselines-are-always-
+    /// candidates`): look across the WHOLE event log for a prior unit
+    /// ([`prior_criterion_unit`]) that served the SAME (spec, criterion) as this unit
+    /// (`st.criterion_id`) and has not integrated - regardless of the planner's slug, so
+    /// a fresh run's differently-named unit still continues a prior run's abandoned
+    /// attempt instead of discarding it. Found: seed THIS unit's branch as a NEW ref at
+    /// that prior branch's CURRENT tip ([`Worktree::create_branch_at`], pinned to the
+    /// exact sha rather than the moving branch name) - a new ref, never a rename, so the
+    /// prior branch name stays resolvable - and [`Self::stage_worktree`]'s ordinary
     /// `Worktree::create` call (which the caller runs right after this) then reuses it
     /// exactly as it reuses this unit's OWN prior work on any other resume, via its
     /// existing adopt-by-path-lookup machinery.
     ///
-    /// Returns `Some((prior_unit_id, tip_sha))` when adoption happened THIS call, for
-    /// the caller to stamp on `UnitStarted` as `adopted_from`. Returns `None` for: a
-    /// repo-less run; a unit that serves no criterion at all (`st.criterion_id` empty -
-    /// the plan/plan-critique infrastructure stages); no prior un-integrated attempt for
-    /// this criterion; a prior candidate whose own branch is already gone (nothing to
-    /// adopt - the unit simply starts fresh, exactly as before this feature existed);
-    /// or - the common repeat case - a unit whose branch ALREADY exists (a resumed step
-    /// of THIS run, or an earlier call this same process that already adopted): the git
-    /// side effect is itself guarded on non-existence, so a later call is a safe,
-    /// idempotent no-op.
-    fn adopt_prior_criterion_branch(&self, st: &Stage) -> Result<Option<(String, String)>, Error> {
+    /// PROVENANCE IS LOG STATE FIRST (round 4, closing
+    /// `sdet-u88c2-adopted-from-lost-on-crash-between-branch-create-and-unitstarted`,
+    /// upheld three rounds running): the decision `{unit, tip, spec}` is stamped via
+    /// [`STATUS_ADOPTION_RECORDED`] the MOMENT it is made - BEFORE the git side effect
+    /// below, which itself lands BEFORE the caller's `UnitStarted` (the only OTHER place
+    /// this triple would otherwise be recorded). This closes the crash window from
+    /// EITHER side: [`recorded_adoption`] is consulted FIRST, before anything else, so a
+    /// resumed call whose prior incarnation died after writing the mark - whether or not
+    /// it reached the git side effect - reads the SAME already-decided triple back and
+    /// merely ensures the branch exists (a no-op if it already does), rather than
+    /// re-deriving fresh (which could, in principle, compute a different answer if
+    /// intervening log state changed) or silently returning `None` and losing the
+    /// provenance. Once decided, the decision is authoritative and this call never
+    /// mutates the git side effect a second time.
+    ///
+    /// Returns `Some((prior_unit_id, tip_sha, spec))` when a decision exists (freshly
+    /// made this call, or recovered from a crash-resumed prior call), for the caller to
+    /// stamp on `UnitStarted` as `adopted_from`. Returns `None` for: a repo-less run; a
+    /// unit that serves no criterion at all (`st.criterion_id` empty - the
+    /// plan/plan-critique infrastructure stages); no recorded decision AND no prior
+    /// un-integrated attempt for this (spec, criterion); a prior candidate whose own
+    /// branch is already gone (nothing to adopt - the unit simply starts fresh, exactly
+    /// as before this feature existed); or - the common repeat case - a unit whose
+    /// branch carries only its OWN prior work, with no adoption ever decided for it.
+    fn adopt_prior_criterion_branch(
+        &self,
+        st: &Stage,
+    ) -> Result<Option<(String, String, String)>, Error> {
         if self.deps.repo.is_empty() || st.criterion_id.is_empty() {
             return Ok(None);
         }
         let branch = unit_branch(&st.name);
+        let events = self.deps.store.read_stream(STREAM, 0, Direction::Forward)?;
+        if let Some((prior, tip, spec)) = recorded_adoption(&events, &st.name) {
+            if !worktree::branch_exists(&self.deps.repo, &branch) {
+                Worktree::create_branch_at(&self.deps.repo, &branch, &tip)?;
+            }
+            return Ok(Some((prior, tip, spec)));
+        }
         if worktree::branch_exists(&self.deps.repo, &branch) {
+            // No decision was ever recorded for this unit (checked above), so this
+            // branch carries only its own prior work - never adopted.
             return Ok(None);
         }
-        let events = self.deps.store.read_stream(STREAM, 0, Direction::Forward)?;
         let Some(prior) = prior_criterion_unit(&events, &st.criterion_id, &st.name) else {
             return Ok(None);
         };
         let prior_branch = unit_branch(&prior);
-        if !worktree::branch_exists(&self.deps.repo, &prior_branch) {
+        let Ok(tip) = worktree::branch_tip(&self.deps.repo, &prior_branch) else {
             // The prior unit's durable branch is gone (manually pruned, or the prior
             // process never actually committed one despite starting) - nothing to
             // adopt; the unit starts fresh exactly as before this feature existed.
             return Ok(None);
-        }
-        let tip = Worktree::create_branch_at(&self.deps.repo, &branch, &prior_branch)?;
-        Ok(Some((prior, tip)))
+        };
+        let spec = current_run_spec(&events);
+        self.emit_keyed_meta(
+            &adoption_provenance_key(&st.name),
+            ledger::TYPE_UNIT_STATUS,
+            json!({
+                "id": st.name,
+                "status": STATUS_ADOPTION_RECORDED,
+                "adopted_from": {"unit": prior, "tip": tip, "spec": spec},
+            }),
+            &[],
+        )?;
+        Worktree::create_branch_at(&self.deps.repo, &branch, &tip)?;
+        Ok(Some((prior, tip, spec)))
     }
 
     /// Decide how a unit ENTERS its lifecycle on this run (resume-continuity).
@@ -9789,6 +9857,25 @@ struct StartedCriterionProbe {
     criterion_id: String,
 }
 
+/// This run's OWN owning spec identity (spec 88 round 3, factored out round 4 so
+/// [`RunCtx::adopt_prior_criterion_branch`]'s durable provenance record and
+/// [`prior_criterion_unit`]'s match use the exact SAME derivation - never two parallel
+/// ones that could drift apart): the LAST `RunStarted` in the whole stream, stemmed
+/// through [`ledger::spec_stem`] (the same authority [`pr_head_branch`] uses), since
+/// both callers always run live within the current, still-open run. Empty (never
+/// `None`) on a store with no `RunStarted` at all (a legacy pre-spec-82 log, or a bare
+/// unit test), so every comparison against it degrades to "always equal" there rather
+/// than refusing every match.
+fn current_run_spec(events: &[Event]) -> String {
+    events
+        .iter()
+        .rev()
+        .find(|e| e.type_ == crate::run::TYPE_RUN_STARTED)
+        .and_then(|e| serde_json::from_slice::<crate::run::RunStarted>(&e.data).ok())
+        .map(|rs| ledger::spec_stem(&rs.spec))
+        .unwrap_or_default()
+}
+
 /// The MOST RECENT prior unit, OF THE SAME SPEC, that served `criterion_id` and either
 /// never reached [`ledger::TYPE_UNIT_INTEGRATED`] or had that integration later REVERTED
 /// by a compensation (spec 88, ADOPTION KEYS ON THE CRITERION - decided; round 3 fix for
@@ -9857,17 +9944,7 @@ fn prior_criterion_unit(events: &[Event], criterion_id: &str, this_unit: &str) -
     if criterion_id.is_empty() {
         return None;
     }
-    // This unit's OWN owning spec: the LAST RunStarted in the whole stream, since this
-    // call always runs live within the current, still-open run. Empty (never `None`) on
-    // a store with no RunStarted at all, so the comparison below degrades to "always
-    // equal" there rather than refusing every match.
-    let target_spec = events
-        .iter()
-        .rev()
-        .find(|e| e.type_ == crate::run::TYPE_RUN_STARTED)
-        .and_then(|e| serde_json::from_slice::<crate::run::RunStarted>(&e.data).ok())
-        .map(|rs| ledger::spec_stem(&rs.spec))
-        .unwrap_or_default();
+    let target_spec = current_run_spec(events);
     // (id, spec) at the moment of selection, so a LATER RunStarted encountered further
     // along the fold (a still-later, unrelated run reusing the same id) can never
     // retroactively change which spec THIS candidate was actually recorded under.
@@ -9923,6 +10000,36 @@ fn prior_criterion_unit(events: &[Event], criterion_id: &str, this_unit: &str) -
             !integrated.contains(&(c.clone(), criterion_id.to_string(), spec.clone()))
         })
         .map(|(c, _)| c)
+}
+
+/// The adoption decision [`RunCtx::adopt_prior_criterion_branch`] already recorded for
+/// `unit`, if any (spec 88 round 4) - the durable [`STATUS_ADOPTION_RECORDED`] mark its
+/// crash-window fix writes as log state BEFORE its git side effect. Folds the WHOLE
+/// stream (a `UnitStatus` predates no run-boundary concept the way `UnitStarted` does,
+/// and a unit's adoption is decided at most once in its whole lifetime, never per-run)
+/// for the mark carrying this unit's own id; `None` when this unit never had an
+/// adoption decided for it (its branch, if it has one, is its own prior work).
+fn recorded_adoption(events: &[Event], unit: &str) -> Option<(String, String, String)> {
+    events.iter().find_map(|e| {
+        if e.type_ != ledger::TYPE_UNIT_STATUS {
+            return None;
+        }
+        let v: Value = serde_json::from_slice(&e.data).ok()?;
+        if v.get("id").and_then(Value::as_str) != Some(unit)
+            || v.get("status").and_then(Value::as_str) != Some(STATUS_ADOPTION_RECORDED)
+        {
+            return None;
+        }
+        let from = v.get("adopted_from")?;
+        Some((
+            from.get("unit")?.as_str()?.to_string(),
+            from.get("tip")?.as_str()?.to_string(),
+            from.get("spec")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        ))
+    })
 }
 
 /// The DETERMINISTIC dir for a STANDALONE review stage's throwaway worktree (spec 06):
