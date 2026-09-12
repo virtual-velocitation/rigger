@@ -257,7 +257,13 @@ pub fn short_run_id(run_id: &str) -> String {
 /// collapse to one), and the result is trimmed of leading/trailing `-`/`.` (git refuses a ref
 /// component that starts or ends with either). Empty input - a no-spec workflow run, or a
 /// legacy `RunStarted` that predates this field - yields an empty stem.
-fn spec_stem(spec_path: &str) -> String {
+///
+/// `pub(crate)` (spec 88 round 3): [`crate::conductor::prior_criterion_unit`] reuses this
+/// SAME stemming authority to derive the spec identity it scopes cross-run adoption matching
+/// to (`adv-u88c2-r2-criterion-id-unscoped-crosses-specs`) - one canonical spec-path-to-
+/// identity derivation, never a second parallel normalization that could drift from
+/// [`pr_head_branch`]'s.
+pub(crate) fn spec_stem(spec_path: &str) -> String {
     let raw = std::path::Path::new(spec_path)
         .file_stem()
         .and_then(|s| s.to_str())

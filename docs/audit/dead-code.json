@@ -209,7 +209,7 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 15866
+        "line": 16054
       },
       {
         "file": "src/eventstore/sqlite.rs",
@@ -675,7 +675,7 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "line": 8232
+        "line": 8235
       }
     ],
     "disposition": "delete",
@@ -814,64 +814,64 @@
   {
     "name": "fully_done",
     "file": "src/ledger.rs",
-    "line": 500,
+    "line": 506,
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 32750
+        "line": 32938
       },
       {
         "file": "src/conductor.rs",
-        "line": 32817
+        "line": 33005
       },
       {
         "file": "src/conductor.rs",
-        "line": 33591
+        "line": 33779
       },
       {
         "file": "src/ledger.rs",
-        "line": 766
+        "line": 772
       },
       {
         "file": "src/ledger.rs",
-        "line": 774
+        "line": 780
       },
       {
         "file": "src/ledger.rs",
-        "line": 784
+        "line": 790
       },
       {
         "file": "src/ledger.rs",
-        "line": 804
+        "line": 810
       },
       {
         "file": "src/ledger.rs",
-        "line": 808
+        "line": 814
       }
     ],
     "disposition": "delete",
-    "reason": "fully_done has no production caller. Its own doc comment's three-conjunct completion check is subsumed elsewhere: nothing in conductor.rs or main.rs calls it (confirmed whole-tree, recursively) - the wired run-completion checks it was apparently meant to serve use done() and the per-unit is_terminal predicate instead."
+    "reason": "fully_done has no production caller. Its own doc comment's three-conjunct completion check is subsumed elsewhere: nothing in conductor.rs or main.rs calls it (confirmed whole-tree, recursively) - the wired run-completion checks it was apparently meant to serve use done() and the per-unit is_terminal predicate instead. (Line shifted 500 -> 506, spec 88 round 3: prior_criterion_unit's spec-scoping fix added 6 lines of doc comment above spec_stem, earlier in this same file.)"
   },
   {
     "name": "is_integrated",
     "file": "src/ledger.rs",
-    "line": 577,
+    "line": 583,
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [
       {
         "file": "src/ledger.rs",
-        "line": 672
+        "line": 678
       },
       {
         "file": "src/ledger.rs",
-        "line": 715
+        "line": 721
       }
     ],
     "disposition": "delete",
-    "reason": "is_integrated has no production caller, though its doc comment claims one ('used by resume to skip completed work'): the real resume-skip logic uses is_terminal (Integrated OR Escalated - confirmed live at conductor.rs:1621/9829, ledger.rs:623, main.rs:9927/9932), which correctly subsumes is_integrated's narrower Integrated-only check (a resume must also skip an Escalated unit, which is_integrated alone would wrongly re-attempt). Superseded, not merely unused."
+    "reason": "is_integrated has no production caller, though its doc comment claims one ('used by resume to skip completed work'): the real resume-skip logic uses is_terminal (Integrated OR Escalated - confirmed live at conductor.rs:1621/9829, ledger.rs:629, main.rs:9927/9932), which correctly subsumes is_integrated's narrower Integrated-only check (a resume must also skip an Escalated unit, which is_integrated alone would wrongly re-attempt). Superseded, not merely unused. (Line shifted 577 -> 583, spec 88 round 3: same 6-line doc-comment addition above.)"
   },
   {
     "name": "new",
@@ -890,42 +890,42 @@
       "src/eventstore/mod.rs:500",
       "src/eventstore/namespace.rs:28",
       "src/failure.rs:218",
-      "src/ledger.rs:393",
+      "src/ledger.rs:399",
       "src/mcpserver.rs:94",
       "src/watch.rs:577"
     ],
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 18181
+        "line": 18369
       },
       {
         "file": "src/conductor.rs",
-        "line": 18258
+        "line": 18446
       },
       {
         "file": "src/conductor.rs",
-        "line": 18352
+        "line": 18540
       },
       {
         "file": "src/conductor.rs",
-        "line": 18439
+        "line": 18627
       },
       {
         "file": "src/conductor.rs",
-        "line": 18534
+        "line": 18722
       },
       {
         "file": "src/conductor.rs",
-        "line": 24638
+        "line": 24826
       },
       {
         "file": "src/conductor.rs",
-        "line": 24643
+        "line": 24831
       },
       {
         "file": "src/conductor.rs",
-        "line": 24706
+        "line": 24894
       },
       {
         "file": "src/dash.rs",
@@ -1557,15 +1557,15 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 24636
+        "line": 24824
       },
       {
         "file": "src/conductor.rs",
-        "line": 24641
+        "line": 24829
       },
       {
         "file": "src/conductor.rs",
-        "line": 24704
+        "line": 24892
       },
       {
         "file": "src/driver/replay.rs",
