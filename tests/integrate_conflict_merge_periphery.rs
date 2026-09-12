@@ -205,6 +205,41 @@
 //! process kill (which the no-os-kill rule forbids regardless): the mutation's on-disk git
 //! effect (where one runs) is always genuinely present before the failure, exactly as a real
 //! crash would leave it.
+//!
+//! GAP 10 (round 5 fix for `sdet-u88c1r4-pending-landing-hides-owed-regeneration`, upheld by
+//! `adv-u88c1r4-independently-confirms-pending-landing-hides-regen`): GAP 9's row-3 fixture
+//! above drives only the CONFINED branch, and only through the ordinary merge/land loop's OWN
+//! post-land owed-check, never through `integrate_and_emit`'s entry-level fast path (the
+//! `files.is_empty()` / `pending_landing_for` short-circuit taken on every RESUMED call once
+//! nothing is left for `changed_since_base` to see). That fast path has two recovery
+//! sub-paths - `pending_landing_for` returning `None` (row 4's mutation AND its own
+//! after-record both already durable) or `Some` (row 4's mutation landed for real but only its
+//! after-record was still open) - and round 4 shipped both without ever consulting row 3
+//! (`regenerate_pending_for`) first, so an ordinary regenerate-command failure right after an
+//! otherwise-successful land left the durable `conflict_regenerate_pending` marker orphaned
+//! and the `accept_incoming` placeholder shipping as the unit's permanent, reported-`Integrated`
+//! content. Two fixtures, one per sub-path, both driving the identical MIXED conflict +
+//! owed-regeneration shape end to end through `run()`:
+//!
+//! - The `None` sub-path,
+//!   `a_regenerate_command_failure_right_after_landing_completes_row_3_on_resume_when_row_4_is_already_closed`:
+//!   a real `gate::Runner` failure on the regenerate command's first attempt, occurring AFTER
+//!   row 4's landing (mutation and after-record) both already succeeded for real, proves the
+//!   resumed call still finishes row 3 (the real regenerated content lands) instead of
+//!   reporting `Integrated` with `regenerate_pending_for` still non-empty.
+//! - The `Some` sub-path,
+//!   `a_crash_right_after_landing_succeeds_with_owed_regeneration_completes_row_3_on_resume`: a
+//!   `FailAppendContaining` case refusing `integrate-landed` specifically (row 4's mutation
+//!   succeeds, only its after-record is open) proves the SAME defect reached through the
+//!   sibling branch is closed identically - the resumed call finishes row 4's after-record,
+//!   catches row 3 up for real, and a THIRD `run()` observation (the on-disk content) confirms
+//!   the regenerated output shipped, never the placeholder.
+//!
+//! Neither of GAP 9's own row-4 fixtures can catch this (both use `SimpleWorkDriver` - no
+//! conflict, no owed regeneration ever in play), and GAP 9's row-3 fixture never exercises the
+//! entry-level fast path at all (its failures land before `files.is_empty()` can ever be true
+//! on a resumed call). This is the accounting this file's own header promises: a re-read of the
+//! diff against `git merge-base HEAD rigger-run`, not inspection, found this boundary.
 
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
 use rigger::config::{self, AgentDef, Config, RegenerateRule, Stage};
