@@ -209,7 +209,7 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 15882
+        "line": 15959
       },
       {
         "file": "src/eventstore/sqlite.rs",
@@ -820,15 +820,15 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 33701
+        "line": 33984
       },
       {
         "file": "src/conductor.rs",
-        "line": 33768
+        "line": 34051
       },
       {
         "file": "src/conductor.rs",
-        "line": 34542
+        "line": 34825
       },
       {
         "file": "src/ledger.rs",
@@ -897,35 +897,35 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 18197
-      },
-      {
-        "file": "src/conductor.rs",
         "line": 18274
       },
       {
         "file": "src/conductor.rs",
-        "line": 18368
+        "line": 18351
       },
       {
         "file": "src/conductor.rs",
-        "line": 18455
+        "line": 18445
       },
       {
         "file": "src/conductor.rs",
-        "line": 18550
+        "line": 18532
       },
       {
         "file": "src/conductor.rs",
-        "line": 25418
+        "line": 18627
       },
       {
         "file": "src/conductor.rs",
-        "line": 25423
+        "line": 25701
       },
       {
         "file": "src/conductor.rs",
-        "line": 25486
+        "line": 25706
+      },
+      {
+        "file": "src/conductor.rs",
+        "line": 25769
       },
       {
         "file": "src/dash.rs",
@@ -1185,43 +1185,43 @@
       },
       {
         "file": "src/worktree.rs",
-        "line": 2908
+        "line": 3097
       },
       {
         "file": "src/worktree.rs",
-        "line": 2931
+        "line": 3120
       },
       {
         "file": "src/worktree.rs",
-        "line": 2967
+        "line": 3156
       },
       {
         "file": "src/worktree.rs",
-        "line": 2999
+        "line": 3188
       },
       {
         "file": "src/worktree.rs",
-        "line": 3034
+        "line": 3223
       },
       {
         "file": "src/worktree.rs",
-        "line": 3050
+        "line": 3239
       },
       {
         "file": "src/worktree.rs",
-        "line": 3077
+        "line": 3266
       },
       {
         "file": "src/worktree.rs",
-        "line": 3107
+        "line": 3296
       },
       {
         "file": "src/worktree.rs",
-        "line": 3114
+        "line": 3303
       },
       {
         "file": "src/worktree.rs",
-        "line": 3122
+        "line": 3311
       },
       {
         "file": "tests/cli.rs",
@@ -1557,15 +1557,15 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 25416
+        "line": 25699
       },
       {
         "file": "src/conductor.rs",
-        "line": 25421
+        "line": 25704
       },
       {
         "file": "src/conductor.rs",
-        "line": 25484
+        "line": 25767
       },
       {
         "file": "src/driver/replay.rs",
@@ -1688,27 +1688,27 @@
     "test_only_references": [
       {
         "file": "src/worktree.rs",
-        "line": 1765
+        "line": 1842
       },
       {
         "file": "src/worktree.rs",
-        "line": 1792
+        "line": 1869
       },
       {
         "file": "src/worktree.rs",
-        "line": 2452
+        "line": 2641
       },
       {
         "file": "src/worktree.rs",
-        "line": 2506
+        "line": 2695
       },
       {
         "file": "src/worktree.rs",
-        "line": 2559
+        "line": 2748
       },
       {
         "file": "src/worktree.rs",
-        "line": 2679
+        "line": 2868
       }
     ],
     "disposition": "delete",
@@ -1723,15 +1723,15 @@
     "test_only_references": [
       {
         "file": "src/worktree.rs",
-        "line": 2601
+        "line": 2790
       },
       {
         "file": "src/worktree.rs",
-        "line": 2611
+        "line": 2800
       },
       {
         "file": "src/worktree.rs",
-        "line": 2677
+        "line": 2866
       }
     ],
     "disposition": "delete",

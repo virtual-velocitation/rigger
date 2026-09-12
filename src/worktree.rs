@@ -685,6 +685,44 @@ impl Worktree {
     /// nothing new created (`Picked(vec![])`, the SAME no-op shape an empty `shas`
     /// produces), and a batch that is PARTLY empty still lands whichever picks are
     /// genuinely new.
+    /// The cherry-pick sequencer's own remaining-pick count for `repo` (spec 88 c4,
+    /// arch-u88c4-r7-classification-skip-is-single-shot-not-a-loop): a leftover
+    /// `CHERRY_PICK_HEAD`'s pending-commit count, read via `git rev-parse --git-path
+    /// sequencer/todo` - WORKTREE-SAFE, since this crate runs several worktrees off
+    /// ONE shared object database and sequencer state lives per-worktree under
+    /// `.git/worktrees/<name>/sequencer/`, never the shared `.git/sequencer`. Unlike
+    /// most `--git-path` uses, git's OWN output here is relative to `repo` (its `-C`
+    /// argument is a real chdir for the git subprocess, not for this one) for a
+    /// PLAIN repo, but already absolute for a LINKED worktree - joined onto `repo`
+    /// only when it is not already absolute, so both shapes resolve correctly from
+    /// this process's own cwd. Counts every non-blank, non-comment line (each is one
+    /// `pick <sha> <subject>` entry) - this is the SAME quantity
+    /// [`Self::cherry_pick_onto_run_branch`]'s fresh-sequence loop bounds itself by
+    /// proxy by using `shas.len()` (the two are equal at the point that loop starts,
+    /// since nothing has been skipped yet); reading it directly here is what lets the
+    /// leftover-marker classification bound its OWN skip loop the identical way when
+    /// it has no `shas` of its own to count.
+    fn sequencer_todo_remaining(repo: &str) -> Result<usize, Error> {
+        let raw = git(repo, &["rev-parse", "--git-path", "sequencer/todo"])?
+            .trim()
+            .to_string();
+        let todo_path = std::path::Path::new(&raw);
+        let todo_path = if todo_path.is_absolute() {
+            todo_path.to_path_buf()
+        } else {
+            std::path::Path::new(repo).join(todo_path)
+        };
+        let contents = std::fs::read_to_string(&todo_path)
+            .map_err(|e| Error(format!("reading {}: {e}", todo_path.display())))?;
+        Ok(contents
+            .lines()
+            .filter(|l| {
+                let l = l.trim();
+                !l.is_empty() && !l.starts_with('#')
+            })
+            .count())
+    }
+
     pub fn cherry_pick_onto_run_branch(&self, shas: &[String]) -> Result<CherryPickOutcome, Error> {
         if shas.is_empty() {
             return Ok(CherryPickOutcome::Picked(Vec::new()));
@@ -721,17 +759,56 @@ impl Worktree {
                     "a leftover cherry-pick from an earlier, crashed attempt conflicted: {detail}"
                 )));
             }
-            if let Err(out) = run_git(&self.repo, &["cherry-pick", "--skip"]) {
-                if run_git(
-                    &self.repo,
-                    &["rev-parse", "-q", "--verify", "CHERRY_PICK_HEAD"],
-                )
-                .is_ok()
-                {
-                    return Err(Error(format!(
+            // BOUNDED LOOP, NOT A SINGLE SHOT (arch-u88c4-r7-classification-skip-is-
+            // single-shot-not-a-loop / sdet-u88c4-r7-classification-skip-confirmed-
+            // live-and-untested-for-2plus-chained-empties): git's own `--skip` only
+            // ever advances the sequencer past the CURRENT paused commit, and the
+            // very next one can ALSO be empty (an ordinary shape for a multi-commit
+            // plan amendment resumed after a crash) - a single attempt leaves
+            // CHERRY_PICK_HEAD still set and would wrongly read as an unrecognized
+            // state. This reuses the SAME `skips_left` shape the fresh-sequence loop
+            // below uses, bounded by the leftover sequence's OWN remaining `todo`
+            // count (read BEFORE any skip, via [`Self::sequencer_todo_remaining`]) -
+            // exactly mirroring that loop's `shas.len()` bound and the SAME
+            // reasoning: the sequencer's own remaining-commit list strictly shrinks
+            // by one each skip, so a correct git can never need more skips than this.
+            let mut skips_left = Self::sequencer_todo_remaining(&self.repo)?;
+            loop {
+                if skips_left == 0 {
+                    return Err(Error(
                         "CHERRY_PICK_HEAD left in progress by an earlier attempt, and it is \
-                         neither a conflict nor a resolvable empty-commit pause: {out}"
-                    )));
+                         neither a conflict nor a resolvable empty-commit pause: exhausted the \
+                         sequencer's own remaining-todo count without resolving"
+                            .to_string(),
+                    ));
+                }
+                skips_left -= 1;
+                match run_git(&self.repo, &["cherry-pick", "--skip"]) {
+                    Ok(_) => break, // the leftover sequence is now fully resolved
+                    Err(out) => {
+                        let unmerged_now = run_git(&self.repo, &["ls-files", "--unmerged"])
+                            .map(|u| !u.trim().is_empty())
+                            .unwrap_or(false);
+                        if unmerged_now {
+                            let detail = run_git(&self.repo, &["diff", "--diff-filter=U"])
+                                .unwrap_or_default();
+                            let _ = run_git(&self.repo, &["cherry-pick", "--abort"]);
+                            return Ok(CherryPickOutcome::Conflict(format!(
+                                "a leftover cherry-pick from an earlier, crashed attempt \
+                                 conflicted: {detail}"
+                            )));
+                        }
+                        if !out.contains("previous cherry-pick is now empty") {
+                            return Err(Error(format!(
+                                "CHERRY_PICK_HEAD left in progress by an earlier attempt, and \
+                                 it is neither a conflict nor a resolvable empty-commit pause: \
+                                 {out}"
+                            )));
+                        }
+                        // Another empty-commit pause further down the leftover
+                        // sequence - loop around and skip it too, bounded by
+                        // `skips_left`.
+                    }
                 }
             }
         }
@@ -2127,6 +2204,118 @@ mod tests {
             resumed.is_ok(),
             "a leftover in-progress marker from a crash mid skip-loop must be self-healed, \
              never surfaced as a hard error: {:?}",
+            resumed.err().map(|e| e.0)
+        );
+        match resumed.unwrap() {
+            CherryPickOutcome::Conflict(detail) => {
+                panic!(
+                    "a self-healed, non-conflicting sequence must not read as a conflict: {detail}"
+                )
+            }
+            CherryPickOutcome::Picked(_) => {}
+        }
+        assert!(
+            !repo.path().join(".git").join("CHERRY_PICK_HEAD").exists(),
+            "no cherry-pick is left in progress after the self-healed retry"
+        );
+        for name in ["90-a.md", "90-b.md", "90-c.md"] {
+            assert!(
+                repo.path().join("specs").join(name).exists(),
+                "every commit's content must be present on the run branch after the \
+                 self-healed retry completes the interrupted sequence: missing {name}"
+            );
+        }
+        wt.remove().unwrap();
+    }
+
+    #[test]
+    fn cherry_pick_onto_run_branch_self_heals_a_leftover_marker_ahead_of_two_chained_empty_commits()
+    {
+        // arch-u88c4-r7-classification-skip-is-single-shot-not-a-loop /
+        // sdet-u88c4-r7-classification-skip-confirmed-live-and-untested-for-2plus-
+        // chained-empties: the leftover-marker classification above issues exactly
+        // ONE `--skip` before re-checking CHERRY_PICK_HEAD. That is enough for the
+        // sibling test above (a SINGLE empty commit ahead of the marker), but an
+        // ordinary multi-commit plan amendment can leave TWO OR MORE chained empty
+        // commits ahead of the leftover marker - each `--skip` only ever advances the
+        // sequencer by ONE, so a single attempt still finds CHERRY_PICK_HEAD set on
+        // the SECOND empty commit and (pre-fix) hard-errors on a state that is
+        // actually still resolvable, reopening
+        // adv-u88c4-r4-cherry-pick-in-progress-marker-survives-a-crash-mid-skip-loop
+        // through a narrower trigger.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt =
+            Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/u/plan", "").unwrap();
+
+        // Three commits, each adding its OWN new path - no real conflicts among them.
+        let mut shas = Vec::new();
+        for (name, content) in [
+            ("90-a.md", "amend a\n"),
+            ("90-b.md", "amend b\n"),
+            ("90-c.md", "amend c\n"),
+        ] {
+            std::fs::create_dir_all(wt_path.join("specs")).unwrap();
+            std::fs::write(wt_path.join("specs").join(name), content).unwrap();
+            run_git(wt_path.to_str().unwrap(), &["add", "-A"]).unwrap();
+            run_git(
+                wt_path.to_str().unwrap(),
+                &["commit", "-q", "-m", &format!("amend {name}")],
+            )
+            .unwrap();
+            shas.push(
+                git(wt_path.to_str().unwrap(), &["rev-parse", "HEAD"])
+                    .unwrap()
+                    .trim()
+                    .to_string(),
+            );
+        }
+        assert_eq!(shas.len(), 3);
+
+        // Pre-land the FIRST *and* SECOND commits' content directly, independent of
+        // the interrupted sequence below - so replaying the sequence pauses on the
+        // first (empty), and skipping ONCE lands on the second, which is ALSO empty:
+        // exactly the "2+ chained empty commits ahead of the marker" shape.
+        run_git(&repo_path, &["cherry-pick", &shas[0], &shas[1]]).unwrap();
+        for name in ["90-a.md", "90-b.md"] {
+            assert!(
+                repo.path().join("specs").join(name).exists(),
+                "precondition: {name}'s content is already present before the \
+                 interrupted sequence starts"
+            );
+        }
+
+        // Simulate the crash: run the RAW multi-sha cherry-pick directly (bypassing
+        // this crate's own skip-loop entirely) so it naturally pauses on the first,
+        // now-empty commit - exactly the state a process death right after the pause
+        // (before even ONE skip ran) leaves, never a synthetic one.
+        let raw = run_git(&repo_path, &["cherry-pick", &shas[0], &shas[1], &shas[2]]);
+        assert!(
+            raw.is_err(),
+            "the raw sequence must pause on the empty first commit, not succeed outright"
+        );
+        assert!(
+            repo.path().join(".git").join("CHERRY_PICK_HEAD").exists(),
+            "precondition: a cherry-pick sequencer marker is left in progress"
+        );
+        assert!(
+            run_git(&repo_path, &["ls-files", "--unmerged"])
+                .unwrap()
+                .trim()
+                .is_empty(),
+            "precondition: the pause carries ZERO unmerged files - it is not a conflict"
+        );
+
+        // A FRESH call with the ORIGINAL (identity) shas, exactly as a resumed
+        // process recomputing `commits_since_base` would - must self-heal the
+        // leftover marker THROUGH BOTH chained empty commits and complete, never
+        // hard-error after only one skip.
+        let resumed = wt.cherry_pick_onto_run_branch(&shas);
+        assert!(
+            resumed.is_ok(),
+            "a leftover in-progress marker ahead of two chained empty commits must be \
+             self-healed, never surfaced as a hard error: {:?}",
             resumed.err().map(|e| e.0)
         );
         match resumed.unwrap() {
