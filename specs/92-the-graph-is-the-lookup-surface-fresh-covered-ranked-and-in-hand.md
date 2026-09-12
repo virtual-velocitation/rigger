@@ -30,6 +30,14 @@ definition's stages, gates and agents become graph entities (`stage:implement`,
 "how is a stage's needs satisfied" has both the definition node and the conductor function on
 one page.
 
+A FILE'S NEIGHBORHOOD IS CODE FIRST, decided: `graph --around <file>` lists the file's code
+entities and their typed relations first, then its governing decisions and findings in a
+separate, capped section (newest ten, with a count of the rest), never interleaved. Evidence
+(2026-09-11, u88c1 implementer#2, recorded in its own progress line): "graph --around returned
+only generic decision-node spam (not code structure) for conductor.rs; falling back to targeted
+grep" - the operator's rulings governing that file had crowded every code entity off the page,
+so a loop agent grepped for `driver.spawn` call sites the graph holds as `calls` edges.
+
 RANKED BY INTENT, decided: `ground` scores a hit by exact-name match first (a query token that
 equals an entity's name beats a token that merely occurs in it), then by inverse document
 frequency of the token across the tree (a token in hundreds of files - `run`, `new`, `tests`
