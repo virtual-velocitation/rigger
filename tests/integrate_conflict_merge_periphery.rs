@@ -123,6 +123,27 @@
 //! by `unit-a`'s later failure, and `unit-a`'s own branch keeps its one real commit intact -
 //! extending spec 88 criterion 1's "branch keeps every prior commit" guarantee to this
 //! non-content failure, not just an ordinary content conflict.
+//!
+//! GAP 8 (round 3 fix's own untested safety claim),
+//! `a_resumed_run_after_accept_incoming_fails_never_double_records_the_regenerate_pending_
+//! marker`. Round 3 (`adv-u88c1r2-accept-incoming-precedes-durable-record-crash-window`,
+//! upheld round 2 REJECT) reordered the mixed-conflict arm to durably record the still-owed
+//! regeneration BEFORE `Worktree::accept_incoming`'s own git mutation, and the implementer's
+//! own new `conductor.rs` unit test proves that ordering with a SINGLE `run()` call: a genuine
+//! modify/delete conflict (`theirs` deleted the regenerable path) makes `accept_incoming` fail
+//! for real, and the marker already landed despite it. That test's own reasoning names the
+//! safety net for a REAL crash-then-resume as "`record_regenerate_pending`'s own per-path
+//! dedup" - but per-path dedup is an IN-PROCESS `HashMap` (`conflict_regenerate_pending`) that
+//! does not survive a real process restart at all; what actually protects a resumed `run()`
+//! from double-recording is the LOG-KEYED replay guard `emit_keyed` rests on (spec 04,
+//! criterion 4: `unit/conflict-regen#attempt~retry`, reseeded into `replayed_keys` from the
+//! store at RunCtx construction) - and nothing anywhere in the diff calls `record_regenerate_
+//! pending` twice against the SAME store to prove that guard actually fires here. This drives
+//! a real two-call resume (mirrors GAP 6's technique) against the SAME still-conflicted
+//! worktree - `accept_incoming` fails identically both times, since nothing between the calls
+//! resolves the underlying modify/delete conflict - and asserts the durable marker is recorded
+//! EXACTLY ONCE after each call, never twice, and that the resumed call skips straight to the
+//! integrate door (`ResumePhase::Reviewed`) without ever re-spawning the implementer.
 
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
 use rigger::config::{self, AgentDef, Config, RegenerateRule, Stage};
@@ -1655,5 +1676,197 @@ fn a_non_content_merge_failure_surfaces_as_a_run_error_leaving_branches_intact()
         "unit-a's branch must never have actually merged clash.rs in - the merge was refused \
          before touching the tree, so the path stays absent from the branch's own history"
     );
+    drop(repo);
+}
+
+// ============================================================================================
+// Gap 8 (round 3 fix's own untested safety claim): a resumed `run()` must never double-record
+// the durable regenerate-pending marker. See the file header for the full rationale.
+// ============================================================================================
+
+/// A single unit whose `implementer#` (non-retry) spawn fakes "a sibling already landed" by
+/// mutating the BARE repo directly - the same technique `src/conductor.rs`'s own round-3 unit
+/// test uses - then leaves its OWN worktree with a genuine, PERMANENT modify/delete conflict on
+/// the regenerable path (`theirs` deletes it, `ours` modifies it) so `Worktree::accept_incoming`
+/// can never succeed. Idempotent by construction: the run-branch mutation only fires once (it
+/// checks the file is still there first), so if this driver were ever invoked a second time -
+/// which a correct resume must NOT do, see `PanicOnAnyImplementerSpawnDriver` below - it would
+/// still not corrupt the fixture.
+struct PermanentModifyDeleteConflictDriver {
+    repo: String,
+}
+
+impl AgentDriver for PermanentModifyDeleteConflictDriver {
+    fn spawn(
+        &self,
+        _a: &AgentDef,
+        _prompt: &str,
+        opts: &SpawnOpts,
+        _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+    ) -> Result<AgentResult, Error> {
+        if opts.id.contains("/implementer#") {
+            assert!(
+                !opts.id.contains("~retry"),
+                "accept_incoming must fail and abort the whole call BEFORE any conflict- \
+                 resolution re-park is ever spawned; got {}",
+                opts.id
+            );
+            let gen_path = Path::new(&self.repo).join("gen.txt");
+            if gen_path.exists() {
+                std::fs::remove_file(&gen_path).unwrap();
+                std::fs::write(Path::new(&self.repo).join("c.rs"), "OTHER_C\n").unwrap();
+                git_commit_all(&self.repo, "other landed");
+            }
+            std::fs::write(Path::new(&opts.dir).join("c.rs"), "MINE_C\n").unwrap();
+            std::fs::write(Path::new(&opts.dir).join("gen.txt"), "MINE_GEN\n").unwrap();
+            return Ok(AgentResult::default());
+        }
+        Ok(review_or_adjudicate(opts))
+    }
+}
+
+/// A resumed run's driver: the unit's implementer/review already recorded `Reviewed` before
+/// the crash (call 1's failure unwinds from INSIDE `integrate_and_emit`, reached only after
+/// that recording), so `ResumePhase::Reviewed` must skip straight to the integrate door -
+/// the implementer must never be re-spawned at all on resume, retry suffix or not.
+struct PanicOnAnyImplementerSpawnDriver;
+
+impl AgentDriver for PanicOnAnyImplementerSpawnDriver {
+    fn spawn(
+        &self,
+        _a: &AgentDef,
+        _prompt: &str,
+        opts: &SpawnOpts,
+        _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+    ) -> Result<AgentResult, Error> {
+        assert!(
+            !opts.id.contains("/implementer#"),
+            "a resumed run, with the unit already Reviewed before the crash, must skip \
+             straight to the integrate door (ResumePhase::Reviewed) - the implementer must \
+             never be re-spawned on resume at all; got {}",
+            opts.id
+        );
+        Ok(review_or_adjudicate(opts))
+    }
+}
+
+fn count_regenerate_pending_markers(events: &[rigger::eventstore::Event]) -> usize {
+    events
+        .iter()
+        .filter(|e| {
+            e.type_ == ledger::TYPE_UNIT_STATUS
+                && String::from_utf8_lossy(&e.data)
+                    .contains("integrate-conflict-regenerate-pending")
+                && String::from_utf8_lossy(&e.data).contains("gen.txt")
+        })
+        .count()
+}
+
+#[test]
+fn a_resumed_run_after_accept_incoming_fails_never_double_records_the_regenerate_pending_marker() {
+    let repo = init_repo();
+    let repo_path = repo.path().to_str().unwrap().to_string();
+    std::fs::write(Path::new(&repo_path).join("c.rs"), "BASE_C\n").unwrap();
+    std::fs::write(Path::new(&repo_path).join("gen.txt"), "BASE_GEN\n").unwrap();
+    git_commit_all(&repo_path, "base c.rs + gen.txt");
+
+    let mut cfg = Config::default();
+    cfg.workflow.defaults.max_retries = 3;
+    cfg.workflow.regenerate = vec![RegenerateRule {
+        paths: vec!["gen.txt".into()],
+        run: "printf 'REGENERATED\\n' > gen.txt".into(),
+    }];
+    cfg.agents.insert("worker".into(), agent("worker"));
+    cfg.agents.insert("lens".into(), agent("lens"));
+    cfg.agents.insert("judge".into(), agent("judge"));
+    cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
+    cfg.workflow
+        .stages
+        .insert("unit-a".into(), mk_stage("unit-a", "g"));
+
+    let store = Store::open(":memory:").unwrap();
+
+    // Call 1: accept_incoming fails for real (a genuine, permanent modify/delete conflict -
+    // `theirs` deleted the regenerable path outright, so there is no version to check out,
+    // ever). The durable marker must already be on the log despite it, and exactly once.
+    {
+        let driver = PermanentModifyDeleteConflictDriver {
+            repo: repo_path.clone(),
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &rigger::gate::ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let err = match run(&cfg, &deps) {
+            Ok(_) => panic!(
+                "call 1 must fail - accept_incoming's own checkout can never succeed against \
+                 a deleted 'theirs' path"
+            ),
+            Err(e) => e,
+        };
+        assert!(
+            err.0.contains("checkout") || err.0.contains("their version"),
+            "call 1 must fail for the SIMULATED git reason (accept_incoming's own failing \
+             checkout), not some other defect; got: {}",
+            err.0
+        );
+    }
+    let events_after_call_1 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    assert_eq!(
+        count_regenerate_pending_markers(&events_after_call_1),
+        1,
+        "call 1 must durably record the still-owed regeneration exactly once; events: \
+         {events_after_call_1:?}"
+    );
+
+    // Call 2: a genuinely fresh `run()` (a fresh RunCtx, `replayed_keys` reseeded from the
+    // STORE rather than carried over in memory) against the SAME store and repo - the real
+    // crash-resume shape, not a hand-seeded approximation (mirrors GAP 6). Nothing between the
+    // two calls touched the underlying git conflict, so accept_incoming fails again for the
+    // IDENTICAL reason - proving it was genuinely retried, not skipped - and the point this
+    // test exists for: the marker must still be recorded EXACTLY ONCE, never twice, because
+    // `record_regenerate_pending`'s replay key (`unit-a/conflict-regen#0~1`) is the same both
+    // times (neither `attempt` nor the per-episode `retry` counter survive a hard `run()` Err
+    // to bump them) and the LOG - not the in-process map the round-3 fix's own comment credits
+    // - is what a real restart actually reads back.
+    {
+        let driver2 = PanicOnAnyImplementerSpawnDriver;
+        let deps2 = Deps {
+            store: &store,
+            driver: &driver2,
+            gates: &rigger::gate::ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let err2 = match run(&cfg, &deps2) {
+            Ok(_) => panic!(
+                "call 2 must fail identically - nothing between the two calls resolved the \
+                 underlying modify/delete conflict"
+            ),
+            Err(e) => e,
+        };
+        assert!(
+            err2.0.contains("checkout") || err2.0.contains("their version"),
+            "call 2 must fail for the SAME simulated git reason as call 1, proving \
+             accept_incoming was genuinely retried on resume (not silently skipped); got: {}",
+            err2.0
+        );
+    }
+    let events_after_call_2 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    assert_eq!(
+        count_regenerate_pending_markers(&events_after_call_2),
+        1,
+        "a resumed run must NEVER double-record the durable regenerate-pending marker for the \
+         same unit/attempt/retry - the log-keyed replay guard must dedup it even across a \
+         genuine process restart, not just within one process; events: {events_after_call_2:?}"
+    );
+
     drop(repo);
 }
