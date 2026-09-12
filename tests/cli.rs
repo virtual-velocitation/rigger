@@ -4401,6 +4401,217 @@ fn step_reclaims_the_units_worktree_but_keeps_its_branch_on_a_terminal_escalatio
     );
 }
 
+/// Spec 88, criterion 3 (ESCALATION RESUMES) shared setup: drive `solo` to a genuine
+/// terminal escalation through the REAL two-process replay lifecycle (park, then an
+/// out-of-process crash report), exactly as
+/// [`step_reclaims_the_units_worktree_but_keeps_its_branch_on_a_terminal_escalation`]
+/// does, and assert the fixpoint before returning - every `resume-unit` test below
+/// builds on this SAME real, git-backed escalated unit.
+fn escalate_solo_unit(root: &Path) {
+    write_reviewless_git_escalating_unit_workflow(root);
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/implementer#0""#) && out.contains(r#""done":false"#),
+        "step 1 parks the implementer; got: {out:?}"
+    );
+    let (_o, err, ok) = run_rigger(
+        root,
+        &[
+            "result",
+            "solo/implementer#0",
+            "boundary-genuine-crash-marker",
+            "--error",
+        ],
+    );
+    assert!(ok, "recording the crash must succeed; stderr: {err}");
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok,
+        "an escalation-fixpoint step still exits 0; stderr: {err}"
+    );
+    assert!(
+        out.contains(r#""done":true"#) && out.contains(r#""escalated":["solo"]"#),
+        "the crash must exhaust remediation into an escalated fixpoint; got: {out:?}"
+    );
+}
+
+/// Spec 88, criterion 3's own Done-when, end to end through the compiled binary against
+/// a real git repo: `rigger resume-unit` re-parks the implementer on the SAME durable
+/// branch with the granted attempts as its new bound, `rigger status` names the grant
+/// while it is in effect, and a SECOND escalation (once the widened bound is spent)
+/// retires the banner - reading exactly like a fresh, never-resumed escalation again.
+#[test]
+fn resume_unit_re_parks_on_the_durable_branch_and_status_names_the_grant() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    escalate_solo_unit(root);
+
+    let branch_tip_before =
+        git_out(root, &["rev-parse", "refs/heads/rigger/u/solo"]).expect("the branch survives");
+
+    let (out, err) = {
+        let (out, err, ok) = run_rigger(root, &["status"]);
+        assert!(ok, "status must succeed; stderr: {err}");
+        (out, err)
+    };
+    assert!(
+        out.contains("solo: escalated (awaiting a human)"),
+        "before any resume the status line reads plain escalated; got: {out:?} (stderr: {err})"
+    );
+
+    // Grant exactly ONE more attempt - `--attempts 1` widens the bound from 1 to 2.
+    let (out, err, ok) = run_rigger(root, &["resume-unit", "solo", "--attempts", "1"]);
+    assert!(
+        ok,
+        "resume-unit on an escalated unit must succeed; stderr: {err}"
+    );
+    assert!(
+        out.contains("solo") && out.contains('1'),
+        "resume-unit must confirm the unit and the grant size; got: {out:?}"
+    );
+
+    // `rigger status` names the grant - This criterion's own wording, verbatim.
+    let (out, err, ok) = run_rigger(root, &["status"]);
+    assert!(ok, "status must succeed; stderr: {err}");
+    assert!(
+        out.contains("solo: resumed by operator (1 attempt(s) granted)"),
+        "status must name the grant; got: {out:?} (stderr: {err})"
+    );
+
+    // The next `rigger step` re-parks the implementer - a FRESH spawn at attempt #1 (the
+    // folded attempts count the escalation left behind), never attempt #0 again - on the
+    // SAME durable branch, unchanged since the escalation.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the resumed step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/implementer#1""#) && out.contains(r#""done":false"#),
+        "resume must re-park a FRESH implementer attempt, not report a clean fixpoint; got: {out:?}"
+    );
+    assert_eq!(
+        git_out(root, &["rev-parse", "refs/heads/rigger/u/solo"]).as_deref(),
+        Some(branch_tip_before.as_str()),
+        "the re-parked implementer must build on the SAME durable branch tip, not a fresh one"
+    );
+
+    // Fail the resumed attempt too: the widened bound (2) is now spent, so this is the
+    // FINAL escalation the grant covers.
+    let (_o, err, ok) = run_rigger(
+        root,
+        &[
+            "result",
+            "solo/implementer#1",
+            "boundary-genuine-crash-marker-2",
+            "--error",
+        ],
+    );
+    assert!(ok, "recording the second crash must succeed; stderr: {err}");
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok,
+        "the second escalation-fixpoint step still exits 0; stderr: {err}"
+    );
+    assert!(
+        out.contains(r#""done":true"#) && out.contains(r#""escalated":["solo"]"#),
+        "spending the widened bound must escalate again; got: {out:?}"
+    );
+
+    // "a second escalation after the grant is final again until the next resume": the
+    // status line reads plain escalated once more, the stale "resumed" banner retired.
+    let (out, err, ok) = run_rigger(root, &["status"]);
+    assert!(ok, "status must succeed; stderr: {err}");
+    assert!(
+        out.contains("solo: escalated (awaiting a human)") && !out.contains("resumed by operator"),
+        "a second escalation must read as plain escalated again, not still \"resumed\"; \
+         got: {out:?} (stderr: {err})"
+    );
+}
+
+#[test]
+fn resume_unit_defaults_to_granting_one_attempt_when_attempts_is_omitted() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    escalate_solo_unit(root);
+
+    let (out, err, ok) = run_rigger(root, &["resume-unit", "solo"]);
+    assert!(
+        ok,
+        "resume-unit with no --attempts must default to 1; stderr: {err}"
+    );
+    assert!(
+        out.contains('1'),
+        "the default grant is 1 attempt; got: {out:?}"
+    );
+
+    let (out, err, ok) = run_rigger(root, &["status"]);
+    assert!(ok, "status must succeed; stderr: {err}");
+    assert!(
+        out.contains("solo: resumed by operator (1 attempt(s) granted)"),
+        "the default --attempts must grant exactly 1; got: {out:?} (stderr: {err})"
+    );
+}
+
+#[test]
+fn resume_unit_refuses_an_unknown_unit() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    escalate_solo_unit(root);
+
+    let (out, err, ok) = run_rigger(root, &["resume-unit", "no-such-unit"]);
+    assert!(
+        !ok,
+        "resume-unit on an id absent from the current run must refuse; stdout: {out:?}"
+    );
+    assert!(
+        err.contains("no-such-unit"),
+        "the refusal must name the unknown unit id; stderr: {err:?}"
+    );
+}
+
+#[test]
+fn resume_unit_refuses_a_unit_that_has_not_escalated() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_reviewless_git_escalating_unit_workflow(root);
+    // Step 1 only: `solo` is mid-remediation (parked), never yet escalated.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/implementer#0""#),
+        "precondition: solo must be freshly parked, not escalated; got: {out:?}"
+    );
+
+    let (out, err, ok) = run_rigger(root, &["resume-unit", "solo"]);
+    assert!(
+        !ok,
+        "resume-unit on a non-escalated unit must refuse; stdout: {out:?}"
+    );
+    assert!(
+        err.contains("solo") && err.to_lowercase().contains("escalat"),
+        "the refusal must name the unit and that it is not escalated; stderr: {err:?}"
+    );
+}
+
+#[test]
+fn resume_unit_refuses_when_the_durable_branch_is_gone() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    escalate_solo_unit(root);
+
+    // An operator (or some external cleanup) deleted the durable branch out of band.
+    git_ok(root, &["branch", "-D", "rigger/u/solo"]);
+
+    let (out, err, ok) = run_rigger(root, &["resume-unit", "solo"]);
+    assert!(
+        !ok,
+        "resume-unit must refuse when the unit's durable branch is gone; stdout: {out:?}"
+    );
+    assert!(
+        err.contains("rigger/u/solo") && err.to_lowercase().contains("reflog"),
+        "the refusal must name the missing branch and hint at `git reflog`; stderr: {err:?}"
+    );
+}
+
 /// Spec 64, criterion 3 (ensure-on-park, defense in depth: `Worktree::ensure_present` in
 /// `src/worktree.rs`, called from `run_single_stage` in `src/conductor.rs` immediately
 /// before `review_unit`): the conductor's next hand-off restores a unit worktree an

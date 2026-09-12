@@ -17,6 +17,22 @@ one unit's finished round waits on a sibling's hour-long sweep before its review
 
 ## Design
 
+A RUNNING TOOL IS LIVENESS, decided: the driver refreshes a worker's activity marker for as
+long as one of the worker's tool calls is still executing (the harness knows a Bash call is in
+flight), so a worker blocked in one legitimately long command is never classified hung; only a
+worker with no tool in flight and a stale marker is. Evidence (2026-09-12, u88c1 implementer#2):
+a 59-mutant `cargo mutants` call outlasted `max_wall_clock`, the sweep aborted the worker and
+re-ran the same spawn, and the re-run restarted the same sweep - five incarnations in one night
+with zero progress, a livelock the operator broke by hand (shard the sweep, report between
+shards). The outer wall-clock still bounds the whole spawn; it no longer bounds one command. When the
+driver does abort a worker, the worker's own process tree ends with it: the harness abort
+reaches the agent, not the `cargo mutants` (or `cargo test`) it started, which today survives
+as an orphan burning cores against its dead owner (2026-09-12: a sweep from an aborted u88c1
+incarnation was still running two rounds later, reported by a sibling's SDET author as
+"apparently-orphaned implementer scratch process"). The driver records every worker's spawned
+process group in its marker and, on abort, hands that group to rigger's handle-bound lifecycle
+(spec 78) so it is ended by its owner, never by an OS-level kill from a script.
+
 CHECKPOINT BEFORE LONG WORK, decided: the implementer persona commits a checkpoint
 (`wip(<unit>): checkpoint before <mutation sweep | lane suite>`) before `cargo mutants` and before
 any full lane suite, and squashes it into its round commit when the round is reported. When a
@@ -24,6 +40,14 @@ spawn is halted by the liveness sweep with UNCOMMITTED changes in its worktree, 
 commits them as `wip(<unit>): tree of halted spawn <id>` before re-parking - the re-park prompt
 names that commit and says "finish and report; do not start over" - so a halt never discards a
 tree. The halt still charges no attempt (it is an infrastructure fault today and stays one).
+
+THE FAN-OUT IS A DEFINITION KNOB, decided: the number of units a run builds at once is
+`defaults.max_parallel_units` in workflow.yml (default 2), replacing the conductor constant
+`MAX_CONCURRENCY = 4` (src/conductor.rs:35); a review round costs one SDET author, two lenses,
+an adversary and an adjudicator, each an independent cold build in its own target dir, so four
+parallel units put ~90 cargo/rustc processes on a 32-core workstation at once (load average
+125, 2026-09-11) and ~200G of embedded worktree targets on disk. The operator sizes the run to
+the machine in the definition, never in code.
 
 SCRATCH LIVES OUTSIDE THE STORE TREE, decided: the per-spawn scratch container, `TMPDIR`, and
 `CARGO_TARGET_DIR` defaults move to `$XDG_CACHE_HOME/rigger/<project-id>/<run>/<spawn>` (on the
@@ -36,7 +60,23 @@ under a spawn's environment, with no per-test workaround.
 THE RECLAIM GUARD COMPARES PATHS, decided: `reap.rs` normalizes the joined path lexically
 (`.`/`..` segments resolved, no filesystem canonicalization) before the "strictly under" check,
 and treats a target that no longer exists as already reclaimed (silent), so the refusal message
-appears only for a path that is genuinely outside the root.
+appears only for a path that is genuinely outside the root. The same lexical rule governs the
+process side: a process whose `/proc/<pid>/cwd` resolves to a DELETED path is matched by the
+path text (the ` (deleted)` suffix stripped), so a runaway whose scratch was removed under it is
+still "rooted under" the scratch root and is reaped. Evidence: a spec-80 mutant test binary
+(u80c1, 2026-09-03) hung in a busy loop inside its pid namespace after `cargo-mutants` removed
+its tree; the cwd-rooted reaper never matched the deleted path, and it ran for eight days at
+roughly seventeen cores before the operator killed it by hand.
+
+AN AGENT NEVER MUTATES OUTSIDE ITS WORKTREE, decided: `rigger setup` installs a PreToolUse
+hook (beside the kill hook) that refuses a `git commit`, `git add`, `git reset`, `git merge` or
+`git cherry-pick` whose repository, resolved from the command's effective directory, is not
+the spawn's assigned worktree - the spawn env carries the assigned dir - with a message naming
+both. Evidence (2026-09-11): a unit-4 implementer's `cd` chain failed silently in a scratch
+git experiment, its shell fell back to the main checkout, and `git add -A && git commit`
+created a real commit on `rigger-run` carrying two gigabytes of untracked store backups; the
+operator reset it before any sibling merged it. The persona's "every command starts with
+`cd <worktree> &&`" rule is text; this is the tool-path guard that makes the text unnecessary.
 
 STEP RESOLVES THE MAIN WORKTREE, AND EXACTLY ONE ROOT, decided: `rigger step`, `rigger run` and
 `rigger workflow` derive the repository from `git rev-parse --git-common-dir` and operate on the

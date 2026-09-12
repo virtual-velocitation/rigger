@@ -683,7 +683,10 @@ fn parse_status_z(out: &str) -> Vec<String> {
 /// existing one (reusing a prior window's committed work). Public so the conductor's
 /// ADOPTION KEYS ON THE CRITERION check (spec 88) can guard
 /// [`Worktree::create_branch_at`] against re-pointing a unit's branch that already
-/// exists, and confirm a prior unit's branch is still around before adopting it.
+/// exists, and confirm a prior unit's branch is still around before adopting it; also
+/// the durable-branch existence check `rigger resume-unit` (spec 88, criterion 3)
+/// refuses on when an escalated unit's recorded branch is gone - "refused with the
+/// branch name and the reflog hint."
 pub fn branch_exists(repo: &str, branch: &str) -> bool {
     run_git(
         repo,

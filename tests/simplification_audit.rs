@@ -3463,8 +3463,8 @@ fn kg_degree_for(file: &str, line: usize) -> u32 {
         ("src/grounder/symbols/model.rs", 211) => 10,
         ("src/ingest.rs", 124) => 3,
         ("src/ingest.rs", 468) => 3,
-        ("src/ledger.rs", 506) => 6,
-        ("src/ledger.rs", 583) => 3,
+        ("src/ledger.rs", 574) => 6,
+        ("src/ledger.rs", 651) => 3,
         ("src/spawn.rs", 320) => 5,
         ("src/spawn.rs", 338) => 6,
         ("src/spawn.rs", 344) => 7,
@@ -5732,24 +5732,27 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              sibling at ingest.rs:124: production calls ingest_project_batched exclusively on \
              both lanes.",
         ),
-        ("src/ledger.rs", 506) => (
+        ("src/ledger.rs", 574) => (
             Delete,
             "fully_done has no production caller. Its own doc comment's three-conjunct \
              completion check is subsumed elsewhere: nothing in conductor.rs or main.rs calls it \
              (confirmed whole-tree, recursively) - the wired run-completion checks it was \
              apparently meant to serve use done() and the per-unit is_terminal predicate instead. \
-             (Line shifted 500 -> 506, spec 88 round 3: prior_criterion_unit's spec-scoping fix \
-             added 6 lines of doc comment above spec_stem, earlier in this same file.)",
+             (Line shifted 500 -> 506 -> 574: spec 88 round 3's prior_criterion_unit spec-scoping \
+             fix added 6 lines above spec_stem, then merging rigger-run's spec 88 criterion 3 \
+             (ESCALATION RESUMES) added resume_bound/ResumeGrant/UnitResumed earlier in this same \
+             file.)",
         ),
-        ("src/ledger.rs", 583) => (
+        ("src/ledger.rs", 651) => (
             Delete,
             "is_integrated has no production caller, though its doc comment claims one ('used by \
              resume to skip completed work'): the real resume-skip logic uses is_terminal \
-             (Integrated OR Escalated - confirmed live at conductor.rs:1621/9829, ledger.rs:629, \
+             (Integrated OR Escalated - confirmed live at conductor.rs:1621/9829, ledger.rs:643, \
              main.rs:9927/9932), which correctly subsumes is_integrated's narrower Integrated-only \
              check (a resume must also skip an Escalated unit, which is_integrated alone would \
              wrongly re-attempt). Superseded, not merely unused. \
-             (Line shifted 577 -> 583, spec 88 round 3: same 6-line doc-comment addition above.)",
+             (Line shifted 577 -> 583 -> 651: same round-3 doc-comment addition, then the same \
+             rigger-run merge shift above.)",
         ),
         ("src/spawn.rs", 320) => (
             Delete,
