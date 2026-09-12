@@ -615,14 +615,20 @@
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 167,
-        "end_line": 167,
+        "start_line": 179,
+        "end_line": 179,
         "name": "Command::new"
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 179,
-        "end_line": 179,
+        "start_line": 191,
+        "end_line": 191,
+        "name": "Command::new"
+      },
+      {
+        "file": "tests/adoption_keys_on_criterion_periphery.rs",
+        "start_line": 1538,
+        "end_line": 1538,
         "name": "Command::new"
       },
       {
@@ -1797,7 +1803,7 @@
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 272 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: Command::new call sites - 273 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0007",
@@ -3119,8 +3125,8 @@
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 280,
-        "end_line": 310,
+        "start_line": 292,
+        "end_line": 322,
         "name": "baseline_only_cfg"
       },
       {
@@ -15437,8 +15443,8 @@
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 160,
-        "end_line": 175,
+        "start_line": 172,
+        "end_line": 187,
         "name": "init_repo"
       },
       {
@@ -15469,8 +15475,8 @@
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 178,
-        "end_line": 187,
+        "start_line": 190,
+        "end_line": 199,
         "name": "git_out"
       },
       {
@@ -15495,14 +15501,14 @@
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 376,
-        "end_line": 392,
+        "start_line": 388,
+        "end_line": 404,
         "name": "find_unit_started"
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 825,
-        "end_line": 844,
+        "start_line": 837,
+        "end_line": 856,
         "name": "find_unit_integrated_commit"
       }
     ],
@@ -15515,14 +15521,14 @@
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 1077,
-        "end_line": 1161,
+        "start_line": 1089,
+        "end_line": 1173,
         "name": "a_compensation_reverted_integration_reopens_adoption_of_its_real_still_existing_branch"
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 1169,
-        "end_line": 1239,
+        "start_line": 1181,
+        "end_line": 1251,
         "name": "a_plain_remediation_failure_after_integration_never_reopens_adoption_even_though_a_same_named_branch_exists"
       }
     ],
@@ -15535,14 +15541,14 @@
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 1250,
-        "end_line": 1366,
+        "start_line": 1262,
+        "end_line": 1378,
         "name": "a_crash_after_the_branch_exists_but_before_unitstarted_lands_recovers_the_recorded_adoption"
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 1373,
-        "end_line": 1479,
+        "start_line": 1385,
+        "end_line": 1491,
         "name": "a_crash_after_the_provenance_record_but_before_the_branch_is_created_still_completes_the_adoption_on_resume"
       }
     ],
