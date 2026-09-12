@@ -87,6 +87,17 @@
 //!     branch` API (standing in for the crashed prior attempt), then driving the SAME branch
 //!     through a fresh `run()` and a real compensating unit
 //!     (`plan_stage_resumed_after_a_crash_recovers_the_real_sha_and_stays_compensable`).
+//!   - gap 9 (round 5, sdet re-enumeration `sdet-u88c4-r5-surface-enumeration`): gap 8's
+//!     `already_landed_commits` has a SECOND branch its own doc comment names but gap 8's test
+//!     never exercises - the "cannot confirm, never a guess" fallback. Getting THIS branch
+//!     wrong the other way (over-confirming) is the same class of bug gap 8 closes, applied in
+//!     reverse: silently attributing a compensation-worthy identity to a commit that was never
+//!     actually confirmed as this producer's own. Proven by simulating the doc comment's own
+//!     named cause - an intervening, unrelated commit landing on the run branch between the
+//!     crashed prior attempt and the resume (`plan_stage_resumed_amendment_with_an_
+//!     intervening_operator_commit_falls_back_safely`) - through the public `run()` entry: the
+//!     resume must still converge to `Integrated` via the historical `REVIEW_ONLY_NO_ARTIFACT`
+//!     marker, never an invented sha, and the run branch must be left byte-for-byte untouched.
 
 use rigger::conductor::{
     run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, META_COMPENSATED,
@@ -1194,5 +1205,177 @@ fn plan_stage_resumed_after_a_crash_recovers_the_real_sha_and_stays_compensable(
     assert!(
         !repo.path().join("specs").join("97-resumed.md").exists(),
         "the recovered-then-compensated amendment must be gone from the run branch"
+    );
+}
+
+/// Criterion 4, gap 9 (round 5, `already_landed_commits`' OWN fallback contract): the
+/// recovery gap-8 closes has two meaningfully different outcomes - a CONFIRMED match
+/// (proven above) and the "cannot confirm, never a guess" fallback its own doc comment
+/// promises. Both are reachable through the SAME new public API and the SAME `run()` seam,
+/// so both need a periphery-level witness - a boundary this specific precisely because
+/// getting it wrong the OTHER way (guessing) would silently attribute a compensation-worthy
+/// identity to the wrong commit, exactly the class of bug gap 8 exists to prevent.
+///
+/// Simulated realistically as the doc comment's own named cause - "an operator race on the
+/// run branch meanwhile": between the crashed prior attempt's real cherry-pick landing and
+/// this resume, the run branch gains an UNRELATED commit of its own (a concurrent sibling
+/// unit, or an operator edit). `commits_since_base` still recomputes the same single
+/// original (pre-landing) sha, so the resumed cherry-pick still finds its diff already
+/// applied (an empty pick, `Picked(vec![])`) - but the run branch's OWN most recent commit is
+/// now the unrelated one, not the landed pick, so `already_landed_commits`' position-by-
+/// position TREE check (not the count check the unit-level `too_many` case already covers)
+/// must refuse to confirm it.
+#[test]
+fn plan_stage_resumed_amendment_with_an_intervening_operator_commit_falls_back_safely() {
+    let repo = init_repo();
+    let repo_path = repo.path().to_str().unwrap().to_string();
+
+    // A PRIOR window's planner committed its amendment onto the deterministic `rigger/u/plan`
+    // branch, via its own throwaway worktree - identical setup to the sibling recovery test.
+    let seed_dir = tempfile::tempdir().unwrap();
+    let seed = Worktree::create(
+        &repo_path,
+        seed_dir.path().to_str().unwrap(),
+        "rigger/u/plan",
+        "",
+    )
+    .unwrap();
+    std::fs::create_dir_all(seed_dir.path().join("specs")).unwrap();
+    std::fs::write(
+        seed_dir.path().join("specs").join("98-diverged.md"),
+        "amend\n",
+    )
+    .unwrap();
+    assert!(std::process::Command::new("git")
+        .arg("-C")
+        .arg(seed_dir.path())
+        .args(["add", "-A"])
+        .status()
+        .unwrap()
+        .success());
+    // A FIXED, deliberately old author/committer date - never the wall-clock "now" a bare
+    // `git commit` would use - so the cherry-pick just below (which stamps its OWN
+    // committer time as real "now") cannot coincidentally reproduce a byte-identical
+    // commit object (the same-committer-second case `CherryPickOutcome::Picked`'s own doc
+    // comment names - see the sibling recovery test's identical guard). Without this, a
+    // fast test run risks the landed pick being the SAME object as `original_shas[0]`,
+    // which would make it a (misleading) ancestor of itself once the operator commit
+    // lands on top - never exercising the tree-mismatch this test exists to prove.
+    assert!(std::process::Command::new("git")
+        .arg("-C")
+        .arg(seed_dir.path())
+        .args(["commit", "-q", "-m", "amend"])
+        .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00")
+        .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00")
+        .status()
+        .unwrap()
+        .success());
+    let original_shas = seed.commits_since_base().unwrap();
+    assert_eq!(original_shas.len(), 1);
+
+    // The CRASHED PRIOR ATTEMPT's own successful git mutation: land it for real.
+    let prior_landed = match seed.cherry_pick_onto_run_branch(&original_shas).unwrap() {
+        CherryPickOutcome::Picked(landed) => landed,
+        CherryPickOutcome::Conflict(detail) => {
+            panic!("a clean specs/-only cherry-pick must not conflict: {detail}")
+        }
+    };
+    assert_eq!(prior_landed.len(), 1, "one commit in, one commit landed");
+    assert_ne!(
+        prior_landed[0], original_shas[0],
+        "the landed pick must be a genuinely different commit object from the original \
+         (guaranteed by the fixed old commit date above), so it can become a real ancestor \
+         of the operator's later commit rather than colliding with it by identity"
+    );
+    seed.remove().unwrap(); // only the transient dir goes; the branch persists.
+
+    // MEANWHILE: the run branch independently gains an unrelated commit of its own - the
+    // named "operator race" the recovery's doc comment defends against. This is the ONLY
+    // difference from the sibling recovery test's setup.
+    std::fs::write(
+        repo.path().join("specs").join("99-unrelated.md"),
+        "unrelated\n",
+    )
+    .unwrap();
+    assert!(std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args(["add", "-A"])
+        .status()
+        .unwrap()
+        .success());
+    assert!(std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args(["commit", "-q", "-m", "unrelated meanwhile"])
+        .status()
+        .unwrap()
+        .success());
+    let head_before_run = run_git(&repo_path, &["rev-parse", "HEAD"]);
+
+    // A FRESH run() adopts the SAME producer branch, exactly like the sibling recovery
+    // test - the planner's fresh spawn commits nothing new.
+    let mut cfg = Config::default();
+    cfg.agents.insert("planner".into(), agent("planner"));
+    cfg.workflow.stages.insert("plan".into(), plan_stage());
+
+    let store = Store::open(":memory:").unwrap();
+    let driver = PlanAmendDriver::new("planner");
+    let deps = Deps {
+        store: &store,
+        driver: &driver,
+        gates: &ExecRunner,
+        repo: repo_path.clone(),
+        grounder: None,
+        graph: None,
+        criteria: Vec::new(),
+    };
+    let rs = run(&cfg, &deps).unwrap();
+
+    assert_eq!(
+        rs.units["plan"].status,
+        ledger::Status::Integrated,
+        "an unconfirmable resume must still converge safely, never hang or escalate"
+    );
+
+    // THE SAFETY CONTRACT: never a guess. The unconfirmed recovery must fall back to the
+    // historical no-artifact marker exactly like a genuine no-commit producer, NOT invent a
+    // sha for content that was never actually confirmed as this producer's own landed work.
+    assert_eq!(
+        rs.units["plan"].commit, REVIEW_ONLY_NO_ARTIFACT,
+        "an unconfirmable recovery must fall back to the no-artifact marker, never guess a sha"
+    );
+    let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    let unit_of = |e: &Event| -> Option<String> {
+        serde_json::from_slice::<Value>(&e.data)
+            .ok()
+            .and_then(|v| v.get("id").and_then(Value::as_str).map(str::to_string))
+    };
+    let integrated = events
+        .iter()
+        .find(|e| e.type_ == ledger::TYPE_UNIT_INTEGRATED && unit_of(e).as_deref() == Some("plan"))
+        .expect("plan's integration must be recorded");
+    let v: Value = serde_json::from_slice(&integrated.data).unwrap();
+    assert!(
+        v.get("shas").is_none(),
+        "the no-artifact fallback must never carry a `shas` field - only a genuinely \
+         confirmed recovery does; got: {v}"
+    );
+
+    // The run branch itself is untouched by this resolution - neither the operator's
+    // unrelated commit nor the earlier landed content is reverted (nothing was ever
+    // confirmed as THIS producer's compensable output, so nothing is queued to compensate).
+    assert_eq!(
+        run_git(&repo_path, &["rev-parse", "HEAD"]),
+        head_before_run,
+        "an unconfirmable resume must not mutate the run branch at all"
+    );
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("specs").join("98-diverged.md")).unwrap(),
+        "amend\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("specs").join("99-unrelated.md")).unwrap(),
+        "unrelated\n"
     );
 }
