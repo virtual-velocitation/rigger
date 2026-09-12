@@ -822,7 +822,11 @@ for (;;) {
     // untouched: this gates only the FINAL terminus (`done`), never a mid-run wave.
     const escalated = step.escalated || []
     if (escalated.length > 0) {
-      stop(`the run reached a fixpoint but ${escalated.length} unit(s) never integrated (escalated after exhausting remediation): ${escalated.join(', ')}`)
+      // Spec 88, criterion 3 (ESCALATION RESUMES): the stop reason names the operator's
+      // own remedy - `rigger resume-unit <unit>` grants a wedged unit more attempts
+      // without replanning the whole spec - so an unattended run's failure surfaces the
+      // exact next command, not just the bare fact that it is stuck.
+      stop(`the run reached a fixpoint but ${escalated.length} unit(s) never integrated (escalated after exhausting remediation): ${escalated.join(', ')} - run \`rigger resume-unit <unit>\` to grant it more attempts before replanning`)
     }
     log(`run complete: the conductor reached a fixpoint after ${waves} wave(s)`)
     break

@@ -10,7 +10,11 @@
 # default `symbols` lane is the memory-sensitive one; a caller who only builds the grep
 # lane can override with `CARGO_BUILD_JOBS=<n>` (env wins over this file) for more parallelism.
 [build]
-jobs = 8
+jobs = 4
+# Every compile runs at low CPU priority (rationale in the wrapper): a run's review fan-out
+# starts many independent cargo builds at once, and `jobs` caps one cargo, not their number.
+# An environment RUSTC_WRAPPER (CI's sccache) overrides this entry.
+rustc-wrapper = ".cargo/nice-rustc.sh"
 
 # Run every test binary inside a user+pid+mount namespace (blast-radius containment for the
 # process reaping rigger's tests do). Rationale, fail-closed behavior and the opt-out for

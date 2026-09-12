@@ -66,23 +66,23 @@
       },
       {
         "file": "src/main.rs",
-        "line": 12820
+        "line": 12923
       },
       {
         "file": "src/main.rs",
-        "line": 12841
+        "line": 12944
       },
       {
         "file": "src/main.rs",
-        "line": 13356
+        "line": 13459
       },
       {
         "file": "tests/cli.rs",
-        "line": 22021
+        "line": 22232
       },
       {
         "file": "tests/cli.rs",
-        "line": 22036
+        "line": 22247
       }
     ],
     "disposition": "delete",
@@ -209,7 +209,7 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 16492
+        "line": 16532
       },
       {
         "file": "src/eventstore/sqlite.rs",
@@ -675,7 +675,7 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "line": 8236
+        "line": 8239
       }
     ],
     "disposition": "delete",
@@ -814,64 +814,64 @@
   {
     "name": "fully_done",
     "file": "src/ledger.rs",
-    "line": 506,
+    "line": 574,
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 33376
+        "line": 33568
       },
       {
         "file": "src/conductor.rs",
-        "line": 33443
+        "line": 33635
       },
       {
         "file": "src/conductor.rs",
-        "line": 34217
+        "line": 34409
       },
       {
         "file": "src/ledger.rs",
-        "line": 772
+        "line": 896
       },
       {
         "file": "src/ledger.rs",
-        "line": 780
+        "line": 904
       },
       {
         "file": "src/ledger.rs",
-        "line": 790
+        "line": 914
       },
       {
         "file": "src/ledger.rs",
-        "line": 810
+        "line": 934
       },
       {
         "file": "src/ledger.rs",
-        "line": 814
+        "line": 938
       }
     ],
     "disposition": "delete",
-    "reason": "fully_done has no production caller. Its own doc comment's three-conjunct completion check is subsumed elsewhere: nothing in conductor.rs or main.rs calls it (confirmed whole-tree, recursively) - the wired run-completion checks it was apparently meant to serve use done() and the per-unit is_terminal predicate instead. (Line shifted 500 -> 506, spec 88 round 3: prior_criterion_unit's spec-scoping fix added 6 lines of doc comment above spec_stem, earlier in this same file.)"
+    "reason": "fully_done has no production caller. Its own doc comment's three-conjunct completion check is subsumed elsewhere: nothing in conductor.rs or main.rs calls it (confirmed whole-tree, recursively) - the wired run-completion checks it was apparently meant to serve use done() and the per-unit is_terminal predicate instead. (Line shifted 500 -> 506 -> 574: spec 88 round 3's prior_criterion_unit spec-scoping fix added 6 lines above spec_stem, then merging rigger-run's spec 88 criterion 3 (ESCALATION RESUMES) added resume_bound/ResumeGrant/UnitResumed earlier in this same file.)"
   },
   {
     "name": "is_integrated",
     "file": "src/ledger.rs",
-    "line": 583,
+    "line": 651,
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [
       {
         "file": "src/ledger.rs",
-        "line": 678
+        "line": 746
       },
       {
         "file": "src/ledger.rs",
-        "line": 721
+        "line": 845
       }
     ],
     "disposition": "delete",
-    "reason": "is_integrated has no production caller, though its doc comment claims one ('used by resume to skip completed work'): the real resume-skip logic uses is_terminal (Integrated OR Escalated - confirmed live at conductor.rs:1621/9829, ledger.rs:629, main.rs:9927/9932), which correctly subsumes is_integrated's narrower Integrated-only check (a resume must also skip an Escalated unit, which is_integrated alone would wrongly re-attempt). Superseded, not merely unused. (Line shifted 577 -> 583, spec 88 round 3: same 6-line doc-comment addition above.)"
+    "reason": "is_integrated has no production caller, though its doc comment claims one ('used by resume to skip completed work'): the real resume-skip logic uses is_terminal (Integrated OR Escalated - confirmed live at conductor.rs:1621/9829, ledger.rs:643, main.rs:9927/9932), which correctly subsumes is_integrated's narrower Integrated-only check (a resume must also skip an Escalated unit, which is_integrated alone would wrongly re-attempt). Superseded, not merely unused. (Line shifted 577 -> 583 -> 651: same round-3 doc-comment addition, then the same rigger-run merge shift above.)"
   },
   {
     "name": "new",
@@ -890,42 +890,42 @@
       "src/eventstore/mod.rs:500",
       "src/eventstore/namespace.rs:28",
       "src/failure.rs:218",
-      "src/ledger.rs:399",
+      "src/ledger.rs:441",
       "src/mcpserver.rs:94",
       "src/watch.rs:577"
     ],
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 18807
+        "line": 18847
       },
       {
         "file": "src/conductor.rs",
-        "line": 18884
+        "line": 18924
       },
       {
         "file": "src/conductor.rs",
-        "line": 18978
+        "line": 19018
       },
       {
         "file": "src/conductor.rs",
-        "line": 19065
+        "line": 19105
       },
       {
         "file": "src/conductor.rs",
-        "line": 19160
+        "line": 19200
       },
       {
         "file": "src/conductor.rs",
-        "line": 25264
+        "line": 25455
       },
       {
         "file": "src/conductor.rs",
-        "line": 25269
+        "line": 25460
       },
       {
         "file": "src/conductor.rs",
-        "line": 25332
+        "line": 25523
       },
       {
         "file": "src/dash.rs",
@@ -1009,47 +1009,47 @@
       },
       {
         "file": "src/main.rs",
-        "line": 15888
+        "line": 15991
       },
       {
         "file": "src/main.rs",
-        "line": 15921
+        "line": 16024
       },
       {
         "file": "src/main.rs",
-        "line": 15940
+        "line": 16043
       },
       {
         "file": "src/main.rs",
-        "line": 15943
+        "line": 16046
       },
       {
         "file": "src/main.rs",
-        "line": 15946
+        "line": 16049
       },
       {
         "file": "src/main.rs",
-        "line": 17578
+        "line": 17681
       },
       {
         "file": "src/main.rs",
-        "line": 17591
+        "line": 17694
       },
       {
         "file": "src/main.rs",
-        "line": 17606
+        "line": 17709
       },
       {
         "file": "src/main.rs",
-        "line": 22980
+        "line": 23091
       },
       {
         "file": "src/main.rs",
-        "line": 22981
+        "line": 23092
       },
       {
         "file": "src/main.rs",
-        "line": 22982
+        "line": 23093
       },
       {
         "file": "src/mcpserver.rs",
@@ -1185,75 +1185,75 @@
       },
       {
         "file": "src/worktree.rs",
-        "line": 2019
+        "line": 2022
       },
       {
         "file": "src/worktree.rs",
-        "line": 2042
+        "line": 2045
       },
       {
         "file": "src/worktree.rs",
-        "line": 2078
+        "line": 2081
       },
       {
         "file": "src/worktree.rs",
-        "line": 2110
+        "line": 2113
       },
       {
         "file": "src/worktree.rs",
-        "line": 2145
+        "line": 2148
       },
       {
         "file": "src/worktree.rs",
-        "line": 2161
+        "line": 2164
       },
       {
         "file": "src/worktree.rs",
-        "line": 2188
+        "line": 2191
       },
       {
         "file": "src/worktree.rs",
-        "line": 2218
+        "line": 2221
       },
       {
         "file": "src/worktree.rs",
-        "line": 2225
+        "line": 2228
       },
       {
         "file": "src/worktree.rs",
-        "line": 2233
+        "line": 2236
       },
       {
         "file": "tests/cli.rs",
-        "line": 9682
+        "line": 9893
       },
       {
         "file": "tests/cli.rs",
-        "line": 9683
+        "line": 9894
       },
       {
         "file": "tests/cli.rs",
-        "line": 9684
+        "line": 9895
       },
       {
         "file": "tests/cli.rs",
-        "line": 9685
+        "line": 9896
       },
       {
         "file": "tests/cli.rs",
-        "line": 9770
+        "line": 9981
       },
       {
         "file": "tests/cli.rs",
-        "line": 9830
+        "line": 10041
       },
       {
         "file": "tests/cli.rs",
-        "line": 9831
+        "line": 10042
       },
       {
         "file": "tests/cli.rs",
-        "line": 9832
+        "line": 10043
       },
       {
         "file": "tests/dash_run_tree_spine.rs",
@@ -1557,15 +1557,15 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 25262
+        "line": 25453
       },
       {
         "file": "src/conductor.rs",
-        "line": 25267
+        "line": 25458
       },
       {
         "file": "src/conductor.rs",
-        "line": 25330
+        "line": 25521
       },
       {
         "file": "src/driver/replay.rs",
@@ -1688,27 +1688,27 @@
     "test_only_references": [
       {
         "file": "src/worktree.rs",
-        "line": 1483
+        "line": 1486
       },
       {
         "file": "src/worktree.rs",
-        "line": 1510
+        "line": 1513
       },
       {
         "file": "src/worktree.rs",
-        "line": 1563
+        "line": 1566
       },
       {
         "file": "src/worktree.rs",
-        "line": 1617
+        "line": 1620
       },
       {
         "file": "src/worktree.rs",
-        "line": 1670
+        "line": 1673
       },
       {
         "file": "src/worktree.rs",
-        "line": 1790
+        "line": 1793
       }
     ],
     "disposition": "delete",
@@ -1723,15 +1723,15 @@
     "test_only_references": [
       {
         "file": "src/worktree.rs",
-        "line": 1712
+        "line": 1715
       },
       {
         "file": "src/worktree.rs",
-        "line": 1722
+        "line": 1725
       },
       {
         "file": "src/worktree.rs",
-        "line": 1788
+        "line": 1791
       }
     ],
     "disposition": "delete",
