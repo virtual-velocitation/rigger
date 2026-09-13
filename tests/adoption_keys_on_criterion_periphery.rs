@@ -472,7 +472,7 @@ fn a_fresh_runs_differently_named_planner_proposal_adopts_a_prior_runs_escalated
     // deterministic baseline slug (`prior_slug` above), so the ONLY way this unit can
     // start from the prior tip is the real `criterion_id` match, not ordinary same-name
     // branch continuity.
-    start_fresh(&store, &[criterion.to_string()], "", "", "").unwrap();
+    start_fresh(&store, &[criterion.to_string()], "", "", "", "").unwrap();
     let fresh_slug = "totally-differently-named-unit";
     assert_ne!(
         fresh_slug, prior_slug,
@@ -600,7 +600,7 @@ fn a_fresh_runs_differently_named_planner_proposal_never_adopts_a_criterion_whos
         .unwrap();
 
     // FRESH RUN: same criterion, a differently-named planner proposal again.
-    start_fresh(&store, &[criterion.to_string()], "", "", "").unwrap();
+    start_fresh(&store, &[criterion.to_string()], "", "", "", "").unwrap();
     let fresh_slug = "another-fresh-planner-proposal";
     let driver2 = ProposesSlugDriver {
         proposed_id: fresh_slug.to_string(),
@@ -738,7 +738,7 @@ fn a_units_integration_for_one_criterion_never_masks_a_later_runs_still_abandone
     // RUN 2: a fresh run boundary, the SAME literal id reused for a DIFFERENT criterion;
     // its gate always fails, one remediation attempt (max_retries: 1) then escalate, so it
     // never integrates - a genuinely fresh branch (the old ref is gone) carries real work.
-    start_fresh(&store, &[criterion_a.to_string()], "", "", "").unwrap();
+    start_fresh(&store, &[criterion_a.to_string()], "", "", "", "").unwrap();
     let driver2 = ProposesSlugDriver {
         proposed_id: shared_slug.to_string(),
         criterion: criterion_a.to_string(),
@@ -771,7 +771,7 @@ fn a_units_integration_for_one_criterion_never_masks_a_later_runs_still_abandone
     );
 
     // RUN 3: a THIRD, independently-named unit re-serves criterion A.
-    start_fresh(&store, &[criterion_a.to_string()], "", "", "").unwrap();
+    start_fresh(&store, &[criterion_a.to_string()], "", "", "", "").unwrap();
     let fresh_slug = "run3-independently-named-unit";
     let driver3 = ProposesSlugDriver {
         proposed_id: fresh_slug.to_string(),
@@ -891,7 +891,7 @@ fn spec_scoping_blocks_adoption_across_specs_sharing_a_criterion_id_but_not_acro
     // called explicitly (spec_path non-empty) rather than left to `run`'s own internal
     // `ensure_started` (which never threads a spec through), mirroring how a real `rigger
     // run --spec ...` CLI invocation mints the run before the conductor ever touches it.
-    start_fresh(&store, &[criterion.to_string()], "", "", spec_a).unwrap();
+    start_fresh(&store, &[criterion.to_string()], "", "", "", spec_a).unwrap();
     let driver1 = WritesFileDriver {
         file_name: "spec-a-prior-work.txt".into(),
         content: "spec A's abandoned attempt\n".into(),
@@ -919,7 +919,7 @@ fn spec_scoping_blocks_adoption_across_specs_sharing_a_criterion_id_but_not_acro
     // RUN 2 (spec B): a DIFFERENT spec, the SAME criterion text (so a second, independent
     // production call site computes the SAME criterion_stable_id) - a differently-named
     // unit must NOT adopt spec A's abandoned attempt.
-    start_fresh(&store, &[criterion.to_string()], "", "", spec_b).unwrap();
+    start_fresh(&store, &[criterion.to_string()], "", "", "", spec_b).unwrap();
     let fresh_slug_b = "spec-b-cross-spec-unit";
     let driver2 = ProposesSlugDriver {
         proposed_id: fresh_slug_b.to_string(),
@@ -959,7 +959,15 @@ fn spec_scoping_blocks_adoption_across_specs_sharing_a_criterion_id_but_not_acro
     // identity, spelled differently - a differently-named unit MUST still adopt spec A's
     // still-abandoned attempt, proving spec-scoping matches on STEMMED identity, never on
     // the raw path string.
-    start_fresh(&store, &[criterion.to_string()], "", "", spec_a_reshelved).unwrap();
+    start_fresh(
+        &store,
+        &[criterion.to_string()],
+        "",
+        "",
+        "",
+        spec_a_reshelved,
+    )
+    .unwrap();
     let fresh_slug_a2 = "spec-a-same-spec-different-path-unit";
     let driver3 = ProposesSlugDriver {
         proposed_id: fresh_slug_a2.to_string(),
@@ -1127,7 +1135,7 @@ fn a_compensation_reverted_integration_reopens_adoption_of_its_real_still_existi
         .unwrap();
 
     // FRESH RUN: a differently-named unit re-serves the SAME criterion.
-    start_fresh(&store, &[criterion.to_string()], "", "", "").unwrap();
+    start_fresh(&store, &[criterion.to_string()], "", "", "", "").unwrap();
     let fresh_slug = "temporal-redo-unit";
     let driver2 = ProposesSlugDriver {
         proposed_id: fresh_slug.to_string(),
@@ -1215,7 +1223,7 @@ fn a_plain_remediation_failure_after_integration_never_reopens_adoption_even_tho
         )
         .unwrap();
 
-    start_fresh(&store, &[criterion.to_string()], "", "", "").unwrap();
+    start_fresh(&store, &[criterion.to_string()], "", "", "", "").unwrap();
     let fresh_slug = "plain-failure-control-unit";
     let driver2 = ProposesSlugDriver {
         proposed_id: fresh_slug.to_string(),
@@ -1310,7 +1318,7 @@ fn a_crash_after_the_branch_exists_but_before_unitstarted_lands_recovers_the_rec
         .to_string();
 
     // FRESH RUN boundary, a differently-named unit for the SAME criterion.
-    start_fresh(&store, &[criterion.to_string()], "", "", "").unwrap();
+    start_fresh(&store, &[criterion.to_string()], "", "", "", "").unwrap();
     let fresh_slug = "crash-after-branch-unit";
     let fresh_branch = format!("rigger/u/{fresh_slug}");
 
@@ -1446,7 +1454,7 @@ fn a_crash_after_the_provenance_record_but_before_the_branch_is_created_still_co
         .expect("the prior unit's own UnitStarted carries its criterion_id")
         .to_string();
 
-    start_fresh(&store, &[criterion.to_string()], "", "", "").unwrap();
+    start_fresh(&store, &[criterion.to_string()], "", "", "", "").unwrap();
     let fresh_slug = "crash-before-branch-unit";
     let fresh_branch = format!("rigger/u/{fresh_slug}");
 
@@ -1588,7 +1596,7 @@ fn a_prior_candidates_deleted_branch_starts_the_fresh_unit_genuinely_unadopted()
     // unit` still finds `prior_slug` as a candidate (never integrated, same criterion,
     // same spec) - only the git side effect that would seed the new branch is now
     // impossible.
-    start_fresh(&store, &[criterion.to_string()], "", "", "").unwrap();
+    start_fresh(&store, &[criterion.to_string()], "", "", "", "").unwrap();
     let fresh_slug = "deleted-prior-branch-unit";
     let driver2 = ProposesSlugDriver {
         proposed_id: fresh_slug.to_string(),
@@ -1682,7 +1690,7 @@ fn a_reused_planner_slug_never_replays_an_unrelated_specs_recorded_adoption_deci
 
     // RUN 1 (spec A, criterion X): the deterministic baseline escalates with real
     // committed work, exactly like test 1's setup.
-    start_fresh(&store, &[criterion_x.to_string()], "", "", spec_a).unwrap();
+    start_fresh(&store, &[criterion_x.to_string()], "", "", "", spec_a).unwrap();
     let driver1 = WritesFileDriver {
         file_name: "spec-a-baseline-work.txt".into(),
         content: "spec A's abandoned baseline attempt\n".into(),
@@ -1713,7 +1721,7 @@ fn a_reused_planner_slug_never_replays_an_unrelated_specs_recorded_adoption_deci
     // legitimately adopts run 1's baseline - a SANCTIONED adoption - and integrates for
     // real, so its durable `STATUS_ADOPTION_RECORDED` mark is keyed on the bare id
     // `reused-id` (pre-fix) exactly like a genuine real-world adoption would produce.
-    start_fresh(&store, &[criterion_x.to_string()], "", "", spec_a).unwrap();
+    start_fresh(&store, &[criterion_x.to_string()], "", "", "", spec_a).unwrap();
     let reused_id = "reused-id";
     let reused_branch = format!("rigger/u/{reused_id}");
     let driver2 = ProposesSlugDriver {
@@ -1762,7 +1770,7 @@ fn a_reused_planner_slug_never_replays_an_unrelated_specs_recorded_adoption_deci
     // literal slug `reused-id` for a wholly unrelated criterion under an unrelated spec.
     let criterion_y = "the valve independently reports its own position on every poll";
     let spec_b = "specs/90-hermetic-test-git-and-merge-friendly-audit-artifacts.md";
-    start_fresh(&store, &[criterion_y.to_string()], "", "", spec_b).unwrap();
+    start_fresh(&store, &[criterion_y.to_string()], "", "", "", spec_b).unwrap();
     let driver3 = ProposesSlugDriver {
         proposed_id: reused_id.to_string(),
         criterion: criterion_y.to_string(),
@@ -1884,7 +1892,7 @@ fn a_legacy_adoption_mark_missing_criterion_id_and_spec_never_matches_a_reused_i
     // legacy-shaped mark rather than an explicit, well-formed mismatch.
     let criterion = "the gauge independently reports its own reading on every cycle";
     let spec_path = "specs/91-an-unrelated-later-spec.md";
-    start_fresh(&store, &[criterion.to_string()], "", "", spec_path).unwrap();
+    start_fresh(&store, &[criterion.to_string()], "", "", "", spec_path).unwrap();
     let driver = ProposesSlugDriver {
         proposed_id: legacy_id.to_string(),
         criterion: criterion.to_string(),
@@ -1968,7 +1976,7 @@ fn an_escalated_units_unreclaimed_branch_is_never_reused_by_an_unrelated_specs_s
     // deterministic baseline path), so THIS test controls the exact string RUN 2 reuses,
     // with no intermediate adoption step. Its gate always fails, so it exhausts
     // remediation and escalates - real committed work, never integrated, never GC'd.
-    start_fresh(&store, &[criterion_x.to_string()], "", "", spec_a).unwrap();
+    start_fresh(&store, &[criterion_x.to_string()], "", "", "", spec_a).unwrap();
     let shared_slug = "escalated-then-collided-slug";
     let shared_branch = format!("rigger/u/{shared_slug}");
     let driver1 = ProposesSlugDriver {
@@ -2021,7 +2029,7 @@ fn an_escalated_units_unreclaimed_branch_is_never_reused_by_an_unrelated_specs_s
     // spec), yet the literal branch name collides.
     let criterion_y = "the compressor independently reports its own duty cycle on every poll";
     let spec_b = "specs/90-hermetic-test-git-and-merge-friendly-audit-artifacts.md";
-    start_fresh(&store, &[criterion_y.to_string()], "", "", spec_b).unwrap();
+    start_fresh(&store, &[criterion_y.to_string()], "", "", "", spec_b).unwrap();
     let driver2 = ProposesSlugDriver {
         proposed_id: shared_slug.to_string(),
         criterion: criterion_y.to_string(),
@@ -2112,7 +2120,7 @@ fn a_genuine_retry_of_a_quarantined_criterion_adopts_from_the_quarantine_ref() {
 
     // RUN 1 (spec A, criterion X): escalates with real committed work, never integrated,
     // never GC'd - mirrors test 12's own setup exactly.
-    start_fresh(&store, &[criterion_x.to_string()], "", "", spec_a).unwrap();
+    start_fresh(&store, &[criterion_x.to_string()], "", "", "", spec_a).unwrap();
     let shared_slug = "quarantine-retry-original-slug";
     let shared_branch = format!("rigger/u/{shared_slug}");
     let driver1 = ProposesSlugDriver {
@@ -2148,7 +2156,7 @@ fn a_genuine_retry_of_a_quarantined_criterion_adopts_from_the_quarantine_ref() {
     // no adoption ever legitimately decided for it - triggers the round-6 quarantine.
     let criterion_y = "the injector independently reports its own duty cycle on every poll";
     let spec_b = "specs/90-hermetic-test-git-and-merge-friendly-audit-artifacts.md";
-    start_fresh(&store, &[criterion_y.to_string()], "", "", spec_b).unwrap();
+    start_fresh(&store, &[criterion_y.to_string()], "", "", "", spec_b).unwrap();
     let driver2 = ProposesSlugDriver {
         proposed_id: shared_slug.to_string(),
         criterion: criterion_y.to_string(),
@@ -2189,7 +2197,7 @@ fn a_genuine_retry_of_a_quarantined_criterion_adopts_from_the_quarantine_ref() {
     // `prior_criterion_unit` still names `shared_slug` for this exact (criterion, spec),
     // but its canonical branch is gone (quarantined above). This round's fix must resolve
     // the durable quarantine record instead of reading the deleted name as "never existed".
-    start_fresh(&store, &[criterion_x.to_string()], "", "", spec_a).unwrap();
+    start_fresh(&store, &[criterion_x.to_string()], "", "", "", spec_a).unwrap();
     let retry_slug = "quarantine-retry-new-slug";
     let driver3 = ProposesSlugDriver {
         proposed_id: retry_slug.to_string(),
@@ -2271,7 +2279,7 @@ fn a_crash_between_the_quarantine_rename_and_the_canonical_delete_completes_on_a
     let criterion_x = "the condenser reports its own coolant flow rate continuously";
     let spec_a = "specs/88-a-unit-lineage-is-durable.md";
 
-    start_fresh(&store, &[criterion_x.to_string()], "", "", spec_a).unwrap();
+    start_fresh(&store, &[criterion_x.to_string()], "", "", "", spec_a).unwrap();
     let shared_slug = "crash-window-shared-slug";
     let shared_branch = format!("rigger/u/{shared_slug}");
     let driver1 = ProposesSlugDriver {
@@ -2324,7 +2332,7 @@ fn a_crash_between_the_quarantine_rename_and_the_canonical_delete_completes_on_a
     // recomputes after the crash.
     let criterion_y = "the fan independently reports its own duty cycle on every poll";
     let spec_b = "specs/90-hermetic-test-git-and-merge-friendly-audit-artifacts.md";
-    start_fresh(&store, &[criterion_y.to_string()], "", "", spec_b).unwrap();
+    start_fresh(&store, &[criterion_y.to_string()], "", "", "", spec_b).unwrap();
     let driver2 = ProposesSlugDriver {
         proposed_id: shared_slug.to_string(),
         criterion: criterion_y.to_string(),
@@ -2414,7 +2422,7 @@ fn a_quarantine_record_whose_ref_was_since_deleted_hard_errors_instead_of_silent
 
     // RUN 1 (spec A, criterion X): escalates with real committed work, never integrated,
     // never GC'd - identical shape to test 13's own RUN 1.
-    start_fresh(&store, &[criterion_x.to_string()], "", "", spec_a).unwrap();
+    start_fresh(&store, &[criterion_x.to_string()], "", "", "", spec_a).unwrap();
     let shared_slug = "deleted-quarantine-ref-original-slug";
     let shared_branch = format!("rigger/u/{shared_slug}");
     let driver1 = ProposesSlugDriver {
@@ -2451,7 +2459,7 @@ fn a_quarantine_record_whose_ref_was_since_deleted_hard_errors_instead_of_silent
     // records the quarantine ref's identity.
     let criterion_y = "the pump independently reports its own duty cycle on every poll";
     let spec_b = "specs/90-hermetic-test-git-and-merge-friendly-audit-artifacts.md";
-    start_fresh(&store, &[criterion_y.to_string()], "", "", spec_b).unwrap();
+    start_fresh(&store, &[criterion_y.to_string()], "", "", "", spec_b).unwrap();
     let driver2 = ProposesSlugDriver {
         proposed_id: shared_slug.to_string(),
         criterion: criterion_y.to_string(),
@@ -2504,7 +2512,7 @@ fn a_quarantine_record_whose_ref_was_since_deleted_hard_errors_instead_of_silent
     // durable record was never touched), but `branch_tip` on that ref must now fail - and
     // that failure must propagate as a real `Error`, never silently degrade to "nothing to
     // adopt, start fresh".
-    start_fresh(&store, &[criterion_x.to_string()], "", "", spec_a).unwrap();
+    start_fresh(&store, &[criterion_x.to_string()], "", "", "", spec_a).unwrap();
     let retry_slug = "deleted-quarantine-ref-retry-slug";
     let driver3 = ProposesSlugDriver {
         proposed_id: retry_slug.to_string(),
@@ -2711,7 +2719,7 @@ fn a_store_failure_writing_the_quarantine_record_never_lets_the_canonical_branch
 
     // RUN 1 (spec A, criterion X): escalates with real committed work, never integrated,
     // never GC'd - identical shape to tests 13-15's own RUN 1.
-    start_fresh(&store, &[criterion_x.to_string()], "", "", spec_a).unwrap();
+    start_fresh(&store, &[criterion_x.to_string()], "", "", "", spec_a).unwrap();
     let shared_slug = "quarantine-write-failure-shared-slug";
     let shared_branch = format!("rigger/u/{shared_slug}");
     let driver1 = ProposesSlugDriver {
@@ -2746,7 +2754,7 @@ fn a_store_failure_writing_the_quarantine_record_never_lets_the_canonical_branch
     // OWN append, once, with a real backend error.
     let criterion_y = "the compressor independently reports its own duty cycle on every poll";
     let spec_b = "specs/90-hermetic-test-git-and-merge-friendly-audit-artifacts.md";
-    start_fresh(&store, &[criterion_y.to_string()], "", "", spec_b).unwrap();
+    start_fresh(&store, &[criterion_y.to_string()], "", "", "", spec_b).unwrap();
     let failing_store = FailsOnceOn {
         inner: &store,
         matches: is_quarantine_record_write,
@@ -2839,7 +2847,7 @@ fn a_store_failure_writing_the_quarantine_record_never_lets_the_canonical_branch
     // RUN 4 (spec A AGAIN, criterion X AGAIN): the genuine later retry of the ORIGINAL
     // criterion/spec, mirroring test 13's own final assertions - proves the store failure
     // above cost nothing: the quarantined content is still fully recoverable.
-    start_fresh(&store, &[criterion_x.to_string()], "", "", spec_a).unwrap();
+    start_fresh(&store, &[criterion_x.to_string()], "", "", "", spec_a).unwrap();
     let retry_slug = "quarantine-write-failure-retry-slug";
     let driver4 = ProposesSlugDriver {
         proposed_id: retry_slug.to_string(),
@@ -2907,7 +2915,7 @@ fn a_crash_after_the_quarantine_record_but_before_the_canonical_delete_completes
 
     // RUN 1 (spec A, criterion X): escalates with real committed work, never integrated,
     // never GC'd - identical shape to tests 13-16's own RUN 1.
-    start_fresh(&store, &[criterion_x.to_string()], "", "", spec_a).unwrap();
+    start_fresh(&store, &[criterion_x.to_string()], "", "", "", spec_a).unwrap();
     let shared_slug = "record-before-delete-shared-slug";
     let shared_branch = format!("rigger/u/{shared_slug}");
     let driver1 = ProposesSlugDriver {
@@ -2954,7 +2962,7 @@ fn a_crash_after_the_quarantine_record_but_before_the_canonical_delete_completes
     // would have left it, for the resumed call's own idempotent re-emit to recognize it.
     let criterion_y = "the alternator independently reports its own duty cycle on every poll";
     let spec_b = "specs/90-hermetic-test-git-and-merge-friendly-audit-artifacts.md";
-    start_fresh(&store, &[criterion_y.to_string()], "", "", spec_b).unwrap();
+    start_fresh(&store, &[criterion_y.to_string()], "", "", "", spec_b).unwrap();
 
     // Reproduce the CRASH STATE directly: the durable quarantine RECORD has already
     // landed (round 8's own new ordering writes it BEFORE delete_branch) but the
@@ -3058,7 +3066,7 @@ fn a_crash_after_the_quarantine_record_but_before_the_canonical_delete_completes
     // RUN 3 (spec A AGAIN, criterion X AGAIN): the genuine later retry of the ORIGINAL
     // criterion/spec must still recover its real, reviewed work from the quarantine ref -
     // proving the crash between the record and the delete cost nothing.
-    start_fresh(&store, &[criterion_x.to_string()], "", "", spec_a).unwrap();
+    start_fresh(&store, &[criterion_x.to_string()], "", "", "", spec_a).unwrap();
     let retry_slug = "record-before-delete-retry-slug";
     let driver3 = ProposesSlugDriver {
         proposed_id: retry_slug.to_string(),

@@ -162,16 +162,25 @@ gates:                      # the project's verification library, referenced by 
   # exports to every gate command exactly like `CARGO_TARGET_DIR` already is
   # (`worktree::unit_mutants_sibling`), and reaps at unit terminus alongside it
   # (`worktree::reclaim_cache_sibling`) - this command owns creating/wiping it each
-  # run, never this crate. The checkin stage's own task text (below, and the
-  # `rust-engineer` persona's checkin-stage prose) carries the kill-or-justify
-  # protocol: read `mutants.out/outcomes.json`, kill each missed mutant with a
-  # strengthened test or justify it via an `exclude_re` entry in `.cargo/mutants.toml`
-  # with a one-line reason, commit, and record the deterministic per-mutant
-  # accounting as a DecisionMade. Declaring a gate under this exact id requires
-  # `cargo-mutants` on PATH (`rigger validate` checks at run start).
+  # run, never this crate. `$RIGGER_RUN_BASE` is the run branch's tip commit sha AT
+  # THE MOMENT this run started (`RunStarted.base_tip`, exported to every gate
+  # command the same way `$MUTANTS` is) - NEVER a `git merge-base` with the run
+  # branch: the checkin stage's own worktree branches off the run branch AFTER every
+  # implement unit has already integrated, so a merge-base there is already HEAD and
+  # would diff nothing (the whole-spec sweep would then certify zero mutants, every
+  # run, silently). A run whose `RunStarted` predates this field has no base to diff
+  # against; `test -n` refuses loud rather than sweeping an empty diff. The checkin
+  # stage's own task text (below, and the `rust-engineer` persona's checkin-stage
+  # prose) carries the kill-or-justify protocol: read `mutants.out/outcomes.json`,
+  # kill each missed mutant with a strengthened test or justify it via an
+  # `exclude_re` entry in `.cargo/mutants.toml` with a one-line reason, commit, and
+  # record the deterministic per-mutant accounting as a DecisionMade. Declaring a
+  # gate under this exact id requires `cargo-mutants` on PATH (`rigger validate`
+  # checks at run start).
   mutation:
     run: >-
-      git diff "$(git merge-base rigger-run HEAD)" -- '*.rs' > unit.diff &&
+      test -n "$RIGGER_RUN_BASE" &&
+      git diff "$RIGGER_RUN_BASE" -- '*.rs' > unit.diff &&
       rm -rf "$MUTANTS" && mkdir -p "$MUTANTS" &&
       TMPDIR="$MUTANTS" cargo mutants --in-diff unit.diff --timeout-multiplier 1.5 -j 2
     kind: core

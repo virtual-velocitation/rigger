@@ -1093,6 +1093,11 @@ fn definition_hash(dir: &str) -> Result<String, Box<dyn std::error::Error>> {
 /// log rather than re-resolving without the run's `--base` flag. On an ADOPTED (resumed) run
 /// it is ignored - the base its original start stamped stands.
 ///
+/// `base_tip` is the run branch's tip commit sha this run anchored at (spec 91), persisted on
+/// a freshly-minted RunStarted alongside `base` so the checkin stage's `mutation` gate can
+/// later diff the whole spec against it via `$RIGGER_RUN_BASE`, never a `git merge-base` with
+/// the run branch. Mint-only, exactly like `base`.
+///
 /// `spec_path` is the spec file this run was launched with (spec 82, criterion 1), persisted
 /// on a freshly-minted RunStarted the same mint-only way as `base`, so the ready-to-release
 /// handoff can later derive this run's per-run-unique PR head name.
@@ -1102,9 +1107,12 @@ fn enforce_definition_pin(
     definition: &str,
     rebase: bool,
     base: &str,
+    base_tip: &str,
     spec_path: &str,
 ) -> Res {
-    match runscope::ensure_started_pinned(store, criteria, definition, rebase, base, spec_path)? {
+    match runscope::ensure_started_pinned(
+        store, criteria, definition, rebase, base, base_tip, spec_path,
+    )? {
         runscope::RunStart::Ready(_) => Ok(()),
         runscope::RunStart::Rebased {
             run,
@@ -2236,6 +2244,13 @@ fn cmd_step(args: &[String]) -> Res {
     // failure here aborts the step (with a clear, actionable error) rather than driving
     // the conductor on the wrong branch - isolation is a precondition, not best-effort.
     let repo = git_repo();
+    // The run branch's tip commit sha AT THIS STEP'S ANCHOR (spec 91): resolved right after
+    // `ensure_run_branch` below, BEFORE the conductor ever branches a unit worktree off it or
+    // advances it - so a mint further down (a `--fresh` boundary, or a new campaign inside
+    // `enforce_definition_pin`) persists the tip the run genuinely started at, never a value
+    // some later step's own re-anchor could shift. `""` on the repo-less path: the checkin
+    // stage never runs without a real repo to diff against anyway.
+    let mut base_tip = String::new();
     if !repo.is_empty() {
         // Refuse an obviously-wrong base BEFORE the run branch is anchored (spec 18, criterion
         // 7). Gating on the PLANNED anchor (a side-effect-free peek) - not on the created branch
@@ -2256,6 +2271,7 @@ fn cmd_step(args: &[String]) -> Res {
             )
         })?;
         warn_on_run_branch_divergence("rigger step", setup, &args.base, args.base_explicit);
+        base_tip = rigger::worktree::branch_tip(&repo, RUN_BRANCH).unwrap_or_default();
     }
 
     // Migrate a pre-spec-09 store's legacy-namespace history to the minted identity once,
@@ -2294,6 +2310,7 @@ fn cmd_step(args: &[String]) -> Res {
             &criteria,
             &definition,
             &args.base,
+            &base_tip,
             args.spec.as_deref().unwrap_or(""),
         )?;
         eprintln!("rigger step: --fresh: began a new run {run} (the prior run stays in the log)");
@@ -2375,6 +2392,7 @@ fn cmd_step(args: &[String]) -> Res {
         &definition,
         args.rebase_definition,
         &args.base,
+        &base_tip,
         args.spec.as_deref().unwrap_or(""),
     ) {
         // A definition-drift HALT is a terminal state for this run process (spec 34, criterion
@@ -3351,6 +3369,11 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // (how `rigger workflow` threads its `--base` through the shim), then `origin/main`.
     // Guarded on a real repo, so the repo-less path is untouched.
     let repo = git_repo();
+    // The run branch's tip commit sha AT THIS ANCHOR (spec 91): resolved right after
+    // `anchor_run_branch` below, before the conductor branches any unit worktree off it -
+    // threaded to `fresh_run_if_requested` so a mint persists the tip the run genuinely
+    // started at. `""` on the repo-less path.
+    let mut base_tip = String::new();
     if !repo.is_empty() {
         let (base, base_explicit) = resolve_run_base(
             parsed.base.as_deref(),
@@ -3366,6 +3389,7 @@ fn run_cli(parsed: &RunArgs) -> Res {
         refuse_when_base_unreachable(&repo, "rigger run", &base, planned)?;
         refuse_when_base_lacks_spec_paths(&repo, "rigger run", &base, planned, &criteria)?;
         anchor_run_branch(&repo, "rigger run", &base, base_explicit)?;
+        base_tip = rigger::worktree::branch_tip(&repo, RUN_BRANCH).unwrap_or_default();
     }
     // The boxed backend and its namespaced wrapper both live here, in this stack
     // frame, for the whole run: the decorator borrows the concrete store, and both
@@ -3391,7 +3415,7 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // `runscope::start_fresh` - the evented restart for a terminal escalation on an
     // unchanged spec. `false`: this is the standalone CLI path, so stdout is the normal
     // human-facing channel and the `--fresh` notice belongs there, unchanged.
-    fresh_run_if_requested(parsed, &store, &criteria, false)?;
+    fresh_run_if_requested(parsed, &store, &criteria, false, &base_tip)?;
     let graph = Projector::open(&db_path("graph.db"), &project_identity())?;
     let driver = cli::Driver::default();
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
@@ -3459,11 +3483,18 @@ fn run_cli(parsed: &RunArgs) -> Res {
 /// passes `false`: stdout is the normal human-facing channel there and must keep printing.
 /// `run_workflow` passes `true`, mirroring the reminder's own `eprintln!` three lines above its
 /// call site - ONE shared implementation, not a second parallel copy per caller.
+///
+/// `base_tip` is the run branch's tip commit sha the caller anchored at (spec 91), resolved via
+/// [`worktree::branch_tip`] right after its own `anchor_run_branch` call - BEFORE the conductor
+/// (or anything else) advances that branch - so this always names the tip AT run start, never a
+/// live re-resolution. Persisted only on a mint, exactly like `base`; `""` from a repo-less path
+/// leaves the checkin stage (which never runs without a real repo anyway) nothing to diff.
 fn fresh_run_if_requested(
     parsed: &RunArgs,
     store: &dyn EventStore,
     criteria: &[String],
     fresh_notice_to_stderr: bool,
+    base_tip: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let definition = definition_hash(".")?;
     // The resolved run-branch base to persist on the RunStarted this mints (spec 38, criterion
@@ -3481,6 +3512,7 @@ fn fresh_run_if_requested(
             criteria,
             &definition,
             &base,
+            base_tip,
             parsed.spec.as_deref().unwrap_or(""),
         )?;
         let notice =
@@ -3497,6 +3529,7 @@ fn fresh_run_if_requested(
         &definition,
         parsed.rebase_definition,
         &base,
+        base_tip,
         parsed.spec.as_deref().unwrap_or(""),
     )?;
     Ok(())
@@ -3533,6 +3566,12 @@ fn run_workflow(parsed: &RunArgs) -> Res {
     // env (the shim spawns this `rigger serve` with the inherited environment); an explicit
     // `--base` on `rigger serve` / `rigger run --driver workflow` takes precedence. Guarded
     // on a real repo, so the repo-less path is untouched.
+    // The run branch's tip commit sha AT THIS ANCHOR (spec 91): resolved right after
+    // `anchor_run_branch` below, threaded to `fresh_run_if_requested` so a mint persists the
+    // tip the run genuinely started at. `""` on the repo-less path. Declared outside the
+    // scoped block below (whose own `repo` goes out of scope at its end) so it survives to
+    // this fn's later `fresh_run_if_requested` call.
+    let mut base_tip = String::new();
     {
         let repo = git_repo();
         if !repo.is_empty() {
@@ -3550,6 +3589,7 @@ fn run_workflow(parsed: &RunArgs) -> Res {
             refuse_when_base_unreachable(&repo, "rigger workflow", &base, planned)?;
             refuse_when_base_lacks_spec_paths(&repo, "rigger workflow", &base, planned, &criteria)?;
             anchor_run_branch(&repo, "rigger workflow", &base, base_explicit)?;
+            base_tip = rigger::worktree::branch_tip(&repo, RUN_BRANCH).unwrap_or_default();
         }
     }
     // One-time spec-09 identity migration before opening the run backend (local-sqlite only).
@@ -3569,7 +3609,7 @@ fn run_workflow(parsed: &RunArgs) -> Res {
     // adopts this boundary rather than the latest (possibly wedged) run. `true`: this is the
     // MCP-serving path, so the notice must land on stderr, mirroring the reminder three lines
     // above (spec 66, criterion 5 escalation remedy round 2) - stdout stays the pure MCP wire.
-    fresh_run_if_requested(parsed, &store, &criteria, true)?;
+    fresh_run_if_requested(parsed, &store, &criteria, true, &base_tip)?;
     let graph = Projector::open(&db_path("graph.db"), &project_identity())?;
     let driver = rigger::driver::workflow::Driver::new();
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
@@ -5401,7 +5441,7 @@ fn cmd_replay(args: &[String]) -> Res {
         let iso = Namespaced::new(iso_backend.as_ref(), "rigger-replay");
         // An offline replay re-fold over an isolated store: no run branch, no PR, so no base
         // or spec path to persist (spec 38, criterion 3; spec 82, criterion 1).
-        runscope::start_fresh(&iso, &criteria, &candidate_definition, "", "")?;
+        runscope::start_fresh(&iso, &criteria, &candidate_definition, "", "", "")?;
         let trajectory = conductor::replay_trajectory(baseline);
         iso.append(conductor::STREAM, ExpectedRevision::Any, &trajectory)?;
 
