@@ -615,20 +615,26 @@
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 179,
-        "end_line": 179,
+        "start_line": 180,
+        "end_line": 180,
         "name": "Command::new"
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 191,
-        "end_line": 191,
+        "start_line": 192,
+        "end_line": 192,
         "name": "Command::new"
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 1569,
-        "end_line": 1569,
+        "start_line": 1570,
+        "end_line": 1570,
+        "name": "Command::new"
+      },
+      {
+        "file": "tests/adoption_keys_on_criterion_periphery.rs",
+        "start_line": 2484,
+        "end_line": 2484,
         "name": "Command::new"
       },
       {
@@ -1815,7 +1821,7 @@
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 275 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: Command::new call sites - 276 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0007",
@@ -3169,8 +3175,8 @@
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 292,
-        "end_line": 322,
+        "start_line": 293,
+        "end_line": 323,
         "name": "baseline_only_cfg"
       },
       {
@@ -11798,6 +11804,12 @@
         "name": "revert_on_base_aborts_and_errors_on_a_conflicting_revert"
       },
       {
+        "file": "tests/adoption_keys_on_criterion_periphery.rs",
+        "start_line": 2401,
+        "end_line": 2573,
+        "name": "a_quarantine_record_whose_ref_was_since_deleted_hard_errors_instead_of_silently_starting_fresh"
+      },
+      {
         "file": "tests/batched_fold_cadence.rs",
         "start_line": 184,
         "end_line": 262,
@@ -11817,7 +11829,7 @@
       }
     ],
     "proposed_home": "one error-shaping helper module",
-    "note": "mandatory sweep: error-shaping helper functions - 5 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: error-shaping helper functions - 6 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0214",
@@ -15485,8 +15497,8 @@
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 172,
-        "end_line": 187,
+        "start_line": 173,
+        "end_line": 188,
         "name": "init_repo"
       },
       {
@@ -15517,8 +15529,8 @@
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 190,
-        "end_line": 199,
+        "start_line": 191,
+        "end_line": 200,
         "name": "git_out"
       },
       {
@@ -15543,14 +15555,14 @@
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 388,
-        "end_line": 404,
+        "start_line": 389,
+        "end_line": 405,
         "name": "find_unit_started"
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 837,
-        "end_line": 856,
+        "start_line": 838,
+        "end_line": 857,
         "name": "find_unit_integrated_commit"
       }
     ],
@@ -15563,14 +15575,14 @@
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 865,
-        "end_line": 1002,
+        "start_line": 866,
+        "end_line": 1003,
         "name": "spec_scoping_blocks_adoption_across_specs_sharing_a_criterion_id_but_not_across_two_runs_of_the_same_spec"
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 1669,
-        "end_line": 1809,
+        "start_line": 1670,
+        "end_line": 1810,
         "name": "a_reused_planner_slug_never_replays_an_unrelated_specs_recorded_adoption_decision"
       }
     ],
@@ -15583,14 +15595,14 @@
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 1089,
-        "end_line": 1173,
+        "start_line": 1090,
+        "end_line": 1174,
         "name": "a_compensation_reverted_integration_reopens_adoption_of_its_real_still_existing_branch"
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 1181,
-        "end_line": 1251,
+        "start_line": 1182,
+        "end_line": 1252,
         "name": "a_plain_remediation_failure_after_integration_never_reopens_adoption_even_though_a_same_named_branch_exists"
       }
     ],
@@ -15603,14 +15615,14 @@
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 1262,
-        "end_line": 1393,
+        "start_line": 1263,
+        "end_line": 1394,
         "name": "a_crash_after_the_branch_exists_but_before_unitstarted_lands_recovers_the_recorded_adoption"
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 1400,
-        "end_line": 1522,
+        "start_line": 1401,
+        "end_line": 1523,
         "name": "a_crash_after_the_provenance_record_but_before_the_branch_is_created_still_completes_the_adoption_on_resume"
       }
     ],
@@ -15623,14 +15635,14 @@
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 1953,
-        "end_line": 2071,
+        "start_line": 1954,
+        "end_line": 2072,
         "name": "an_escalated_units_unreclaimed_branch_is_never_reused_by_an_unrelated_specs_slug_collision"
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 2099,
-        "end_line": 2238,
+        "start_line": 2100,
+        "end_line": 2239,
         "name": "a_genuine_retry_of_a_quarantined_criterion_adopts_from_the_quarantine_ref"
       }
     ],
