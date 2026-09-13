@@ -3457,7 +3457,7 @@ fn kg_degree_for(file: &str, line: usize) -> u32 {
         ("src/dash.rs", 4665) => 3,
         ("src/distiller.rs", 231) => 15,
         ("src/eventstore/sqlite.rs", 192) => 32,
-        ("src/gate.rs", 446) => 3,
+        ("src/gate.rs", 463) => 3,
         ("src/grounder/symbols/events.rs", 29) => 17,
         ("src/grounder/symbols/model.rs", 201) => 7,
         ("src/grounder/symbols/model.rs", 211) => 10,
@@ -5685,15 +5685,15 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              a follow-up spec should either wire it into open_sqlite_store or explicitly retire \
              it, rather than let it sit silently unwired indefinitely.",
         ),
-        ("src/gate.rs", 446) => (
+        ("src/gate.rs", 463) => (
             Delete,
             "resolve_wrapper_name has no production caller - independently confirmed (u87c2's own \
              decision u87c2-three-precision-fixes-from-real-tree-spot-check already found this by \
              hand: 'resolve_build_layer duplicates its ambient-PATH read inline rather than \
-             calling it'). resolve_build_layer (gate.rs:564), its own doc comment's named sole \
+             calling it'). resolve_build_layer (gate.rs:581), its own doc comment's named sole \
              intended caller ('kept pub as the wrapper-only building block ... \
              resolve_build_layer composes'), instead reads std::env::var_os(\"PATH\") itself \
-             (gate.rs:571) rather than calling resolve_wrapper_name(wrapper) - a small, \
+             (gate.rs:588) rather than calling resolve_wrapper_name(wrapper) - a small, \
              confirmed duplicate-glue defect (worth folding into section 2's duplication catalog \
              on a follow-up pass), not a sign the function is unneeded. resolve_wrapper_name's 4 \
              references are its own tests.",

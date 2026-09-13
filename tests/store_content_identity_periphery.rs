@@ -1151,7 +1151,7 @@ fn no_public_run_entry_reports_a_boundary_the_store_never_wrote() {
     let criteria = ["build the thing".to_string()];
 
     let silent = PortDouble::new(vec![None]);
-    let message = rigger::run::start_fresh(&silent, &criteria, "hash-A", "base-sha", "")
+    let message = rigger::run::start_fresh(&silent, &criteria, "hash-A", "base-sha", "", "")
         .expect_err("a run whose boundary was never written has not started")
         .to_string();
     assert!(
@@ -1164,7 +1164,7 @@ fn no_public_run_entry_reports_a_boundary_the_store_never_wrote() {
     // store: a caller that only ever uses the pinned entry must not get a run id either.
     let silent = PortDouble::over_an_empty_stream(vec![None]);
     let message =
-        rigger::run::ensure_started_pinned(&silent, &criteria, "hash-A", false, "base-sha", "")
+        rigger::run::ensure_started_pinned(&silent, &criteria, "hash-A", false, "base-sha", "", "")
             .expect_err("the pinned entry mints on an empty store and inherits the same answer")
             .to_string();
     assert!(
@@ -1178,7 +1178,8 @@ fn no_public_run_entry_reports_a_boundary_the_store_never_wrote() {
     // to the old hash - the silent mid-campaign reconfiguration this pinning exists to
     // stop, now invisible in the very log that was supposed to show it.
     let live = Store::open(":memory:").expect("an in-memory store opens");
-    rigger::run::start_fresh(&live, &criteria, "hash-A", "base-sha", "").expect("a real run mints");
+    rigger::run::start_fresh(&live, &criteria, "hash-A", "base-sha", "", "")
+        .expect("a real run mints");
     let recorded = live
         .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
         .expect("the boundary reads back");
@@ -1186,7 +1187,7 @@ fn no_public_run_entry_reports_a_boundary_the_store_never_wrote() {
 
     let drifted = PortDouble::over_a_stream(recorded, vec![None]);
     let message =
-        rigger::run::ensure_started_pinned(&drifted, &criteria, "hash-B", true, "base-sha", "")
+        rigger::run::ensure_started_pinned(&drifted, &criteria, "hash-B", true, "base-sha", "", "")
             .expect_err("a supersession nobody can locate has not superseded anything")
             .to_string();
     assert!(

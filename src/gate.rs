@@ -314,6 +314,23 @@ impl BuildEnv {
         &self.vars
     }
 
+    /// Layer one more `(name, value)` pair onto this environment, appended after whatever
+    /// [`resolve`](Self::resolve) already produced (spec 91, THE GATE ENVIRONMENT) - for a
+    /// caller that must add a value `resolve`'s pure `build.*` config resolution cannot see
+    /// (the checkin stage's `mutation` gate needs `$RIGGER_RUN_BASE`, the run's own recorded
+    /// state, never anything `build.wrapper`/`build.cache_dir`/`build.jobs` carries). A no-op
+    /// for an empty `value` - "empty means off", the same convention every other optional var
+    /// in this environment already follows - so an unconfigured caller's `apply` sets nothing
+    /// extra. No new [`Runner::run`] parameter and no new call site to update: every existing
+    /// caller already threads `build_env` through unconditionally, so a value layered on here
+    /// reaches every gate command this environment is passed to.
+    pub fn with_var(mut self, name: &str, value: &str) -> BuildEnv {
+        if !value.is_empty() {
+            self.vars.push((name.to_string(), value.to_string()));
+        }
+        self
+    }
+
     /// Apply every resolved var to `cmd`, so this environment reaches the process
     /// unchanged whether the caller is a gate's own `Command` ([`ExecRunner::run`])
     /// or an agent driver's.
