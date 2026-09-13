@@ -284,6 +284,7 @@ fn a_real_fenced_courier_actually_succeeds_and_lands_in_an_isolated_persistent_s
         "",
         "",
         "",
+        "",
         &BuildEnv::default(),
         &BuildBudget::default(),
     );
@@ -304,6 +305,7 @@ fn a_real_fenced_courier_actually_succeeds_and_lands_in_an_isolated_persistent_s
         &emit_gate("fence-emit-2", "fence-probe-2"),
         &dir,
         &target_dir,
+        "",
         "",
         "",
         "",
@@ -386,6 +388,7 @@ fn an_unfenced_integrated_tree_gate_still_walks_up_to_the_live_store() {
     let result = ExecRunner.run(
         &emit_gate("unfenced-emit", "unfenced-probe"),
         &dir,
+        "",
         "",
         "",
         "",
@@ -544,6 +547,7 @@ fn a_real_fenced_couriers_scratch_store_is_reclaimed_when_the_worktree_is_remove
         "",
         "",
         "",
+        "",
         &BuildEnv::default(),
         &BuildBudget::default(),
     );
@@ -645,6 +649,7 @@ fn a_real_fenced_couriers_scratch_store_is_reclaimed_for_a_review_worktree_too()
         "",
         "",
         "",
+        "",
         &fence_dir,
         &BuildEnv::default(),
         &BuildBudget::default(),
@@ -719,6 +724,7 @@ fn a_real_fenced_couriers_scratch_store_is_reclaimed_by_discard_too() {
     let result = ExecRunner.run(
         &emit_gate("discard-reclaim-emit", "discard-reclaim-probe"),
         &dir,
+        "",
         "",
         "",
         "",
@@ -914,6 +920,7 @@ fn an_unfenced_integrated_tree_couriers_registry_refresh_never_touches_the_real_
     let result = ExecRunner.run(
         &emit_gate("unfenced-registry-emit", "unfenced-registry-probe"),
         &dir,
+        "",
         "",
         "",
         "",

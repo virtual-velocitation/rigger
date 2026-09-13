@@ -7294,6 +7294,14 @@ impl RunCtx<'_> {
         // `isolation: none` agent or a repo-less run) has no per-unit tree to isolate, so
         // `unit_cache_sibling` returns None and the gate inherits the ambient/shared target.
         let target = crate::worktree::unit_cache_sibling(dir).unwrap_or_default();
+        // The unit-keyed mutants root (spec 91, THE GATE ENVIRONMENT): derived from the
+        // SAME `dir` and the SAME sibling shape as `target` immediately above (Gap 19's own
+        // precedent) - a `checkin` stage's `mutation` gate command creates/wipes/repopulates
+        // this dir itself each run (`rm -rf "$MUTANTS" && mkdir -p "$MUTANTS"`), never this
+        // crate. Empty for anything that owns no per-unit `target` either (a review/plan
+        // worktree-less run), mirroring `target`'s own empty case; harmless for every OTHER
+        // gate, whose command never reads `$MUTANTS`.
+        let mutants = crate::worktree::unit_mutants_sibling(dir).unwrap_or_default();
         // The shared gate build cache's guard path (spec 77 criterion 5, BOUNDED SHARED
         // CACHE), on the SAME signal as `target` above: a non-empty `target` means this
         // gate builds into its OWN per-unit `cargo-target-<slug>` cache, never at risk from
@@ -7441,6 +7449,7 @@ impl RunCtx<'_> {
                 &g,
                 dir,
                 &target,
+                &mutants,
                 &build_cache_dir,
                 &build_cache_guard,
                 &store_fence,
@@ -7491,11 +7500,13 @@ impl RunCtx<'_> {
     ///
     /// Returns `(recorded_pass, flaky_annotation, ratchet_effect, evidence)`.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn run_gate_with_taxonomy(
         &self,
         g: &Gate,
         dir: &str,
         target: &str,
+        mutants: &str,
         build_cache_dir: &str,
         build_cache_guard: &str,
         store_fence: &str,
@@ -7506,6 +7517,7 @@ impl RunCtx<'_> {
             g,
             dir,
             target,
+            mutants,
             build_cache_dir,
             build_cache_guard,
             store_fence,
@@ -7556,6 +7568,7 @@ impl RunCtx<'_> {
                 g,
                 dir,
                 target,
+                mutants,
                 build_cache_dir,
                 build_cache_guard,
                 store_fence,
@@ -7906,6 +7919,7 @@ impl RunCtx<'_> {
                     let (cache_dir, guard) = self.shared_build_cache_paths();
                     let res = self.deps.gates.run(
                         &g,
+                        "",
                         "",
                         "",
                         &cache_dir,
@@ -8896,6 +8910,7 @@ impl RunCtx<'_> {
     /// event store.
     fn run_regenerate_command(&self, dir: &str, run: &str) -> Result<(), Error> {
         let target = crate::worktree::unit_cache_sibling(dir).unwrap_or_default();
+        let mutants = crate::worktree::unit_mutants_sibling(dir).unwrap_or_default();
         let (build_cache_dir, build_cache_guard) = if target.is_empty() {
             self.shared_build_cache_paths()
         } else {
@@ -8915,6 +8930,7 @@ impl RunCtx<'_> {
             &g,
             dir,
             &target,
+            &mutants,
             &build_cache_dir,
             &build_cache_guard,
             &store_fence,
@@ -29544,6 +29560,75 @@ mod tests {
         }
     }
 
+    #[test]
+    fn two_units_gate_environments_never_share_a_mutants_root() {
+        // Spec 91, THE GATE ENVIRONMENT: the identical isolation proof as
+        // `two_units_gate_environments_never_share_a_target_dir` above, for the `checkin`
+        // stage's unit-keyed `$MUTANTS` root instead of `CARGO_TARGET_DIR` - registered
+        // ALONGSIDE it (per the spec's own Design), so it must reach every gate command with
+        // the same per-unit isolation: DISTINCT, both NON-EMPTY, and each the
+        // `cargo-mutants-<unit-slug>` sibling of that unit's worktree under the run's scratch
+        // root.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        for name in ["alpha", "beta"] {
+            cfg.workflow.stages.insert(
+                name.into(),
+                Stage {
+                    name: name.into(),
+                    agent: "a".into(),
+                    gates: vec!["ok".into()],
+                    on_pass: "none".into(),
+                    ..Default::default()
+                },
+            );
+        }
+        let store = Store::open(":memory:").unwrap();
+        let driver = UnitDistinctWriter;
+        let runner = RecordingRunner::new(&[]);
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+
+        let mutants_dirs = runner.mutants_dirs();
+        assert_eq!(
+            mutants_dirs.len(),
+            2,
+            "each of the two units ran its one gate exactly once: {mutants_dirs:?}"
+        );
+        assert!(
+            mutants_dirs.iter().all(|m| !m.is_empty()),
+            "a gate inside a unit worktree must get a per-unit $MUTANTS root, never the empty \
+             (inherit-shared) one: {mutants_dirs:?}"
+        );
+        let unique: HashSet<&String> = mutants_dirs.iter().collect();
+        assert_eq!(
+            unique.len(),
+            2,
+            "the two units' gate mutants roots must DIFFER - never one shared root: {mutants_dirs:?}"
+        );
+
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        for name in ["alpha", "beta"] {
+            let want =
+                crate::worktree::unit_mutants_sibling(&unit_worktree_dir(&scratch, name)).unwrap();
+            assert!(
+                mutants_dirs.contains(&want),
+                "unit {name} must get mutants root {want}, got {mutants_dirs:?}"
+            );
+        }
+    }
+
     /// A driver that records the `SpawnOpts.env` handed to each spawn (spec 65) - lets a
     /// test assert the ONE build-environment authority reaches an agent spawn exactly as
     /// it reaches a gate build.
@@ -32343,6 +32428,7 @@ mod tests {
             _g: &Gate,
             _dir: &str,
             _target: &str,
+            _mutants: &str,
             _build_cache_dir: &str,
             _build_cache_guard: &str,
             _store_fence: &str,
@@ -33421,6 +33507,10 @@ mod tests {
         /// The CARGO_TARGET_DIR (`target_dir`) handed to each run, in invocation order -
         /// lets a test assert two units' gate environments never share a target (Gap 19).
         targets: Mutex<Vec<String>>,
+        /// The `$MUTANTS` unit-keyed mutants root (`mutants_dir`) handed to each run, in
+        /// invocation order (spec 91, THE GATE ENVIRONMENT) - lets a test assert two units'
+        /// gate environments never share a mutants root, mirroring `targets` above.
+        mutants_dirs: Mutex<Vec<String>>,
         /// The resolved [`gate::BuildEnv`] vars handed to each run, in invocation order
         /// (spec 65) - lets a test assert the ONE build-environment authority reaches
         /// every gate build.
@@ -33461,6 +33551,7 @@ mod tests {
             RecordingRunner {
                 calls: Mutex::new(Vec::new()),
                 targets: Mutex::new(Vec::new()),
+                mutants_dirs: Mutex::new(Vec::new()),
                 build_envs: Mutex::new(Vec::new()),
                 store_fences: Mutex::new(Vec::new()),
                 build_cache_guards: Mutex::new(Vec::new()),
@@ -33493,6 +33584,9 @@ mod tests {
         fn targets(&self) -> Vec<String> {
             self.targets.lock().unwrap().clone()
         }
+        fn mutants_dirs(&self) -> Vec<String> {
+            self.mutants_dirs.lock().unwrap().clone()
+        }
         fn build_envs(&self) -> Vec<Vec<(String, String)>> {
             self.build_envs.lock().unwrap().clone()
         }
@@ -33512,6 +33606,7 @@ mod tests {
             g: &Gate,
             dir: &str,
             target: &str,
+            mutants_dir: &str,
             build_cache_dir: &str,
             build_cache_guard: &str,
             store_fence: &str,
@@ -33520,6 +33615,10 @@ mod tests {
         ) -> gate::GateResult {
             self.calls.lock().unwrap().push(g.id.clone());
             self.targets.lock().unwrap().push(target.to_string());
+            self.mutants_dirs
+                .lock()
+                .unwrap()
+                .push(mutants_dir.to_string());
             self.build_cache_dirs
                 .lock()
                 .unwrap()
@@ -33665,6 +33764,7 @@ mod tests {
             g: &Gate,
             _dir: &str,
             _target: &str,
+            _mutants: &str,
             _build_cache_dir: &str,
             _build_cache_guard: &str,
             _store_fence: &str,
@@ -37547,6 +37647,7 @@ mod tests {
             g: &Gate,
             _dir: &str,
             _target: &str,
+            _mutants: &str,
             _build_cache_dir: &str,
             _build_cache_guard: &str,
             _store_fence: &str,
@@ -38528,6 +38629,7 @@ mod tests {
             _g: &Gate,
             dir: &str,
             _target: &str,
+            _mutants: &str,
             _build_cache_dir: &str,
             _build_cache_guard: &str,
             _store_fence: &str,

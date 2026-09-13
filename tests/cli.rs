@@ -12173,23 +12173,11 @@ fn real_path_dir_of(bin: &str) -> String {
         .unwrap_or_else(|| panic!("{bin} must be resolvable on the real PATH for this test"))
 }
 
-/// A minimal synthetic `PATH` carrying only what `rigger validate` itself needs (`git`, for
-/// its drift/residue advisories) - an ALLOWLIST, not a denylist, so it can never
-/// accidentally strip a directory `rigger validate` needs while still guaranteeing NEITHER
-/// known build-cache wrapper (`sccache`/`ccache`) is reachable, regardless of what the real
-/// machine running this test happens to have installed (some systems co-locate `ccache`
-/// with `git` in the same `/usr/bin`, which a directory-denylist filter could not tell
-/// apart).
-fn path_with_no_known_wrapper() -> String {
-    real_path_dir_of("git")
-}
-
-/// [`path_with_no_known_wrapper`] with a fake `name` executable staged in a fresh bin dir
-/// under `root` and prepended, so `name` resolves unambiguously as the ONLY wrapper-shaped
-/// binary on this synthetic `PATH`.
-fn path_with_fake_wrapper(root: &Path, name: &str) -> String {
-    let bindir = root.join("fake-wrapper-bin");
-    std::fs::create_dir_all(&bindir).unwrap();
+/// Stage a fake, merely-exits-0 executable named `name` in `bindir` (creating it if
+/// needed) - the shared building block [`path_with_no_known_wrapper`] and
+/// [`path_with_fake_wrapper`] both stage their fixtures with.
+fn write_fake_executable(bindir: &Path, name: &str) {
+    std::fs::create_dir_all(bindir).unwrap();
     let bin = bindir.join(name);
     std::fs::write(&bin, "#!/bin/sh\nexit 0\n").unwrap();
     #[cfg(unix)]
@@ -12197,7 +12185,31 @@ fn path_with_fake_wrapper(root: &Path, name: &str) -> String {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-    format!("{}:{}", bindir.display(), path_with_no_known_wrapper())
+}
+
+/// A minimal synthetic `PATH` carrying only what `rigger validate` itself needs: `git` (for
+/// its drift/residue advisories) - an ALLOWLIST, not a denylist, so it can never
+/// accidentally strip a directory `rigger validate` needs while still guaranteeing NEITHER
+/// known build-cache wrapper (`sccache`/`ccache`) is reachable, regardless of what the real
+/// machine running this test happens to have installed (some systems co-locate `ccache`
+/// with `git` in the same `/usr/bin`, which a directory-denylist filter could not tell
+/// apart) - PLUS a fake `cargo-mutants` staged under `root` (spec 91: every fresh `rigger
+/// init` scaffold now declares `gates.mutation`, so `Config::validate` requires the binary
+/// resolvable regardless of what a wrapper-focused test is actually exercising; distinct
+/// from [`path_with_no_cargo_mutants`] below, which deliberately omits it).
+fn path_with_no_known_wrapper(root: &Path) -> String {
+    let bindir = root.join("fake-cargo-mutants-only-bin");
+    write_fake_executable(&bindir, "cargo-mutants");
+    format!("{}:{}", bindir.display(), real_path_dir_of("git"))
+}
+
+/// [`path_with_no_known_wrapper`] with a fake `name` executable ALSO staged in its own fresh
+/// bin dir under `root` and prepended, so `name` resolves unambiguously as the only
+/// wrapper-shaped binary on this synthetic `PATH` while `cargo-mutants` still resolves too.
+fn path_with_fake_wrapper(root: &Path, name: &str) -> String {
+    let bindir = root.join("fake-wrapper-bin");
+    write_fake_executable(&bindir, name);
+    format!("{}:{}", bindir.display(), path_with_no_known_wrapper(root))
 }
 
 /// A CONFIGURED (non-auto, non-off) `build.wrapper` absent from PATH fails `rigger
@@ -12244,7 +12256,7 @@ fn validate_reports_none_when_auto_finds_no_known_wrapper_on_path() {
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
     append_build_block(root, "build:\n  wrapper: auto\n");
 
-    let path = path_with_no_known_wrapper();
+    let path = path_with_no_known_wrapper(root);
     let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
     assert!(
         ok,
@@ -12581,18 +12593,19 @@ fn validate_reports_none_when_autos_discovered_wrapper_has_a_preexisting_unwrita
 }
 
 // ---------------------------------------------------------------------------
-// `rigger validate` build.mutation resolution (spec 73, ENABLED-BUT-ABSENT FAILS LOUD)
+// `rigger validate` mutation-gate resolution (spec 91: gates-list-driven, moved from the
+// retired per-round `build.mutation` switch spec 73 introduced)
 // ---------------------------------------------------------------------------
 
-/// [`path_with_no_known_wrapper`] additionally VERIFIED to lack the mutation-efficacy
-/// binary too: unlike the wrapper case (an operator-chosen name, so a nonsense string is
-/// used against the real ambient PATH instead), `cargo-mutants`'s name is fixed and this
-/// repo's own development environment genuinely has it installed - so the git-only
-/// directory is the only way to exercise the absent-binary direction, and this asserts
-/// (rather than merely reasons in a doc comment) that it really is absent, so a
-/// coincidental co-location could never silently turn this into a false pass.
+/// A `PATH` that genuinely lacks `cargo-mutants` (unlike every other helper above, which
+/// stages a fake one so a wrapper-focused test is never incidentally blocked by the also-
+/// mandatory scaffolded `mutation` gate): the plain git-only directory, asserted
+/// (rather than merely reasoned in a doc comment) to really lack the tool, so a coincidental
+/// co-location could never silently turn this into a false pass. This repo's own real
+/// ambient PATH genuinely has `cargo-mutants` installed, so this git-only directory is the
+/// only way to exercise the absent-binary direction.
 fn path_with_no_cargo_mutants() -> String {
-    let dir = path_with_no_known_wrapper();
+    let dir = real_path_dir_of("git");
     assert!(
         !Path::new(&dir).join("cargo-mutants").exists(),
         "the git-only directory {dir:?} unexpectedly also carries a cargo-mutants binary; \
@@ -12601,62 +12614,62 @@ fn path_with_no_cargo_mutants() -> String {
     dir
 }
 
-/// A CONFIGURED `build.mutation: on` with no `cargo-mutants` resolvable on PATH fails
-/// `rigger validate` at run start (`config::load`'s `Config::validate` call), naming both
-/// the missing binary and the `build.mutation` config key - a configured-explicit failure,
-/// never a silent skip (spec 73). Mirrors
+/// A fresh `rigger init` scaffold DECLARES the `mutation` gate by default (spec 91:
+/// `gates.mutation` + `stages.checkin` are shipped in `SCAFFOLD_WORKFLOW`) - so `Config::
+/// validate` requires `cargo-mutants` resolvable on PATH at run start with NO
+/// `build.mutation` override needed at all, unlike spec 73's retired switch which required
+/// an explicit `on`. A configured-explicit failure, never a silent skip. Mirrors
 /// `validate_fails_at_run_start_when_a_named_build_wrapper_is_absent_from_path` above.
 #[test]
-fn validate_fails_at_run_start_when_mutation_is_on_and_cargo_mutants_is_absent_from_path() {
+fn validate_fails_at_run_start_when_the_scaffolded_mutation_gate_has_no_cargo_mutants_on_path() {
     let dir = temp_project();
     let root = dir.path();
     let (_out, err, ok) = run_rigger(root, &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    append_build_block(root, "build:\n  mutation: on\n");
 
     let path = path_with_no_cargo_mutants();
     let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
     assert!(
         !ok,
-        "build.mutation: on with no cargo-mutants on PATH must fail validate (run start); \
-         stdout:\n{out}\nstderr:\n{err}"
+        "a scaffolded mutation gate with no cargo-mutants on PATH must fail validate (run \
+         start); stdout:\n{out}\nstderr:\n{err}"
     );
     assert!(
         err.contains("cargo-mutants"),
         "the failure must name the missing binary; stderr:\n{err}"
     );
     assert!(
-        err.contains("build.mutation"),
-        "the failure must name the config key; stderr:\n{err}"
+        err.contains("mutation"),
+        "the failure must name the gate id; stderr:\n{err}"
     );
 }
 
-/// The cross-module seam (spec 73): `Config::validate` (`config.rs`) and `cmd_validate`'s
-/// own reporting call (`main.rs`) both read `gate::resolve_mutation_layer` - by design,
-/// "never a second, independently re-derived check" (per the doc comments at both call
-/// sites). A black-box exit-code-and-stderr check alone cannot tell WHICH of the two calls
-/// actually produced the failure: `cmd_validate` prints the version line and a "config
-/// valid: ..." line to stdout BEFORE it ever reaches its own `resolve_mutation_layer` call,
-/// so if `Config::validate` ever stopped gating this (leaving only `cmd_validate`'s local
-/// call as a redundant backstop), this same scenario would still exit non-zero and still
-/// name the binary and the key - but only AFTER that partial stdout had already printed.
-/// Asserting stdout is EMPTY here proves the failure truly originates in `config::load`'s
-/// `Config::validate` call, before `cmd_validate`'s body runs at all - the single-authority
-/// guarantee that also makes every OTHER `config::load` caller (not just `validate`) fail
-/// at run start, not merely this one command's own report.
+/// The cross-module seam (spec 91, moved from spec 73's retired switch): `Config::validate`
+/// (`config.rs`) and `cmd_validate`'s own reporting call (`main.rs`) both read the SAME
+/// gates-list-driven `mutation_gate_binary_on_path` resolution - "never a second,
+/// independently re-derived check" (per the doc comments at both call sites). A black-box
+/// exit-code-and-stderr check alone cannot tell WHICH of the two calls actually produced the
+/// failure: `cmd_validate` prints the version line and a "config valid: ..." line to stdout
+/// BEFORE it ever reaches its own report, so if `Config::validate` ever stopped gating this
+/// (leaving only `cmd_validate`'s local report as a redundant backstop), this same scenario
+/// would still exit non-zero and still name the binary and the gate id - but only AFTER
+/// that partial stdout had already printed. Asserting stdout is EMPTY here proves the
+/// failure truly originates in `config::load`'s `Config::validate` call, before
+/// `cmd_validate`'s body runs at all - the single-authority guarantee that also makes every
+/// OTHER `config::load` caller (not just `validate`) fail at run start, not merely this one
+/// command's own report.
 #[test]
-fn validate_fails_before_any_output_when_mutation_is_on_and_cargo_mutants_is_absent() {
+fn validate_fails_before_any_output_when_the_mutation_gate_has_no_cargo_mutants() {
     let dir = temp_project();
     let root = dir.path();
     let (_out, err, ok) = run_rigger(root, &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    append_build_block(root, "build:\n  mutation: on\n");
 
     let path = path_with_no_cargo_mutants();
     let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
     assert!(
         !ok,
-        "build.mutation: on with no cargo-mutants on PATH must fail validate; \
+        "a scaffolded mutation gate with no cargo-mutants on PATH must fail validate; \
          stdout:\n{out}\nstderr:\n{err}"
     );
     assert!(
@@ -12668,15 +12681,14 @@ fn validate_fails_before_any_output_when_mutation_is_on_and_cargo_mutants_is_abs
     );
 }
 
-/// `build.mutation: on` with `cargo-mutants` resolvable on PATH must not fail validate, and
-/// `rigger validate` must report the resolved setting through its output.
+/// A declared `mutation` gate with `cargo-mutants` resolvable on PATH must not fail
+/// validate, and `rigger validate` must report it as declared through its output.
 #[test]
-fn validate_reports_mutation_on_when_cargo_mutants_is_resolvable() {
+fn validate_reports_mutation_gate_declared_when_cargo_mutants_is_resolvable() {
     let dir = temp_project();
     let root = dir.path();
     let (_out, err, ok) = run_rigger(root, &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    append_build_block(root, "build:\n  mutation: on\n");
 
     let path = path_with_fake_wrapper(root, "cargo-mutants");
     let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
@@ -12685,40 +12697,18 @@ fn validate_reports_mutation_on_when_cargo_mutants_is_resolvable() {
         "a resolvable cargo-mutants must not fail validate; stdout:\n{out}\nstderr:\n{err}"
     );
     assert!(
-        out.lines().any(|l| l == "build mutation: on"),
-        "a resolved-enabled mutation step must report on through validate; stdout:\n{out}"
+        out.lines()
+            .any(|l| l == "mutation gate (\"mutation\"): declared"),
+        "a declared mutation gate must report declared through validate; stdout:\n{out}"
     );
 }
 
-/// An EXPLICIT `build.mutation: off` must validate successfully and report "off" even with
-/// `cargo-mutants` entirely absent from PATH - off never even probes PATH, so its absence
-/// can never surface as a failure (spec 73).
+/// A fresh `rigger init` scaffold DECLARES the `mutation` gate by default (spec 91) - on
+/// this test suite's own real ambient PATH (which genuinely has `cargo-mutants` installed,
+/// per this repo's own committed gate), `rigger validate` must succeed and report it
+/// declared, never the retired switch's "on"/"off" vocabulary.
 #[test]
-fn validate_reports_mutation_off_without_probing_path_when_configured_off() {
-    let dir = temp_project();
-    let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    append_build_block(root, "build:\n  mutation: off\n");
-
-    let path = path_with_no_cargo_mutants();
-    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
-    assert!(
-        ok,
-        "build.mutation: off must never fail validate regardless of PATH; \
-         stdout:\n{out}\nstderr:\n{err}"
-    );
-    assert!(
-        out.lines().any(|l| l == "build mutation: off"),
-        "an explicitly-off mutation step must report off through validate; stdout:\n{out}"
-    );
-}
-
-/// A fresh `rigger init` scaffold sets no `build.mutation` key at all, so it defaults to
-/// off - back-compat with every workflow committed before this key existed - and `rigger
-/// validate` reports that default through its output.
-#[test]
-fn validate_reports_mutation_off_by_default_on_a_fresh_scaffold() {
+fn validate_reports_mutation_gate_declared_by_default_on_a_fresh_scaffold() {
     let dir = temp_project();
     let root = dir.path();
     let (_out, err, ok) = run_rigger(root, &["init"]);
@@ -12727,12 +12717,44 @@ fn validate_reports_mutation_off_by_default_on_a_fresh_scaffold() {
     let (out, err, ok) = run_rigger(root, &["validate"]);
     assert!(
         ok,
-        "a fresh scaffold must validate; stdout:\n{out}\nstderr:\n{err}"
+        "a fresh scaffold must validate on the real ambient PATH; stdout:\n{out}\nstderr:\n{err}"
     );
     assert!(
-        out.lines().any(|l| l == "build mutation: off"),
-        "an unconfigured mutation step must default to off, reported through validate; \
-         stdout:\n{out}"
+        out.lines()
+            .any(|l| l == "mutation gate (\"mutation\"): declared"),
+        "a fresh scaffold's default-declared mutation gate must report declared through \
+         validate; stdout:\n{out}"
+    );
+}
+
+/// The retired `build.mutation` switch (spec 73) is now a schema-rejection naming spec 91,
+/// end to end through the real CLI: an explicit `build.mutation: on` fails `rigger validate`
+/// at run start with a message naming both the retired key and this spec, regardless of
+/// whether `cargo-mutants` is even resolvable - the config.rs unit tests
+/// (`validate_rejects_any_explicit_build_mutation_value_naming_spec_91`) already prove the
+/// full on/off/nonsense matrix against the pure `Config`; this is the one black-box proof
+/// that the real compiled binary's `config::load` path enforces it too.
+#[test]
+fn validate_rejects_an_explicit_build_mutation_value_naming_spec_91_end_to_end() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    append_build_block(root, "build:\n  mutation: on\n");
+
+    let (out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        !ok,
+        "an explicit build.mutation value must fail validate (run start), retired by spec \
+         91; stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        err.contains("build.mutation"),
+        "the failure must name the retired config key; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("91"),
+        "the failure must name spec 91; stderr:\n{err}"
     );
 }
 
@@ -24936,101 +24958,48 @@ fn dash_serving_on_recognizes_a_real_dash_and_rejects_a_non_dash_holder() {
     );
 }
 
-/// Spec 73, criterion 2 - the implementer persona's seeded MUTATION ACCOUNTING CONTRACT.
-///
-/// Spec 73 resolved a nine-round plan-critique deadlock (rule 7: no unit can ever own a
-/// Markdown blast radius, since the symbols grounder never indexes `.md` content and
-/// `UnitProposed` carries no explicit blast-radius field - see the decision chain ending
-/// in `d73-escalation-config-vs-code`) by SEEDING the mutation-step and accounting-
-/// contract prose directly into `.rigger/agents/rust-engineer.md` as operator
-/// configuration. Spec 73's units therefore own DRIFT-GUARD TESTS that READ that seeded
-/// text and PIN it - never edit it. This criterion (2) OWNS the ACCOUNTING half of the
-/// contract: a deterministically ordered `DecisionMade`, one entry per mutant, all five
-/// status vocabularies (caught, missed-killed naming the killing test, missed-justified
-/// with a reason, unviable, timeout), the diff base, the mutant total, and the provably-
-/// empty case for a diff touching no Rust file. Criterion 1 (u73c1) owns the STEP-
-/// PLACEMENT half (when the step runs, the diff-vs-merge-base `cargo mutants` invocation,
-/// the kill-or-justify disposition on a missed mutant) - this test deliberately asserts
-/// none of those substrings, so each criterion's drift-guard fails for its own reason
-/// only and neither can mask the other's regression.
-///
-/// Reads the committed file via `CARGO_MANIFEST_DIR` (the same CWD-independent pattern
-/// `architecture_current_surface.rs` and `ci_lanes.rs` already use for their own
-/// committed-file pins) and compares against WHITESPACE-NORMALIZED text, so the pin
-/// survives an incidental rewrap of the persona's prose and fails only on a real content
-/// change. It is deliberately NOT feature-gated: it parses a text file and touches no
-/// backend symbol, so it runs identically in both feature lanes.
-fn rust_engineer_persona_text() -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join(".rigger")
-        .join("agents")
-        .join("rust-engineer.md");
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
-}
-
 /// Collapse all whitespace runs (including newlines) to a single space, so a phrase that
 /// wraps across physical lines in the committed Markdown still matches a one-line needle.
 fn normalize_ws(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Every fragment the accounting contract (spec 73 criterion 2) requires, each a literal
-/// (whitespace-normalized) substring of the seeded persona text today. The pin fails
-/// loudly, naming exactly which fragment went missing, the moment any one of them is
-/// reworded away or dropped.
-const ACCOUNTING_CONTRACT_FRAGMENTS: &[(&str, &str)] = &[
-    (
-        "the event type (no new event type; rides DecisionMade)",
-        "one DecisionMade (no new event type)",
-    ),
-    (
-        "the deterministic-ordering guarantee",
-        "deterministically ordered",
-    ),
-    (
-        "the one-entry-per-mutant cardinality",
-        "one entry per mutant",
-    ),
-    ("the caught status", "caught"),
-    ("the missed-killed status", "missed-killed"),
-    (
-        "missed-killed names the killing test",
-        "naming the killing test",
-    ),
-    ("the missed-justified status", "missed-justified"),
-    ("missed-justified carries a reason", "with reason"),
-    ("the unviable status", "unviable"),
-    ("the timeout status", "unviable | timeout,"),
-    ("the diff-base field", "the diff base"),
-    ("the mutant-total field", "the mutant total"),
-    (
-        "the no-Rust-file provably-empty case",
-        "A diff touching no Rust file records a provably-empty accounting",
-    ),
-    (
-        "the empty accounting is never a skipped step",
-        "never a skipped step",
-    ),
-];
+/// The committed `.rigger/workflow.yml` text, read fresh each call (mirrors
+/// `rust_engineer_persona_text`'s own shape) - so a pin against it fails loudly the moment
+/// the checked-in workflow definition drifts, rather than against a stale in-memory copy.
+fn rigger_workflow_yml_text() -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(".rigger")
+        .join("workflow.yml");
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
+}
 
+/// Spec 91 (THE CHECK-IN STAGE IS DEFINITION, criterion 2): the committed `.rigger/
+/// workflow.yml` must define the `checkin` stage and its `mutation` gate, and must NAME
+/// this spec in the definition's own prose - superseding
+/// `rust_engineer_persona_pins_the_mutation_accounting_contract` (spec 73's persona pin,
+/// retired here per `plan-u91-shared-spec-lint-file-blast-radius`): the kill-or-justify
+/// accounting contract that pin checked now lives in the `checkin` stage's task text
+/// (criterion 3's own new pin on the `rust-engineer` persona), not unconditionally in every
+/// implementer round.
 #[test]
-fn rust_engineer_persona_pins_the_mutation_accounting_contract() {
-    let text = normalize_ws(&rust_engineer_persona_text());
-
-    let missing: Vec<String> = ACCOUNTING_CONTRACT_FRAGMENTS
-        .iter()
-        .filter(|(_, fragment)| !text.contains(fragment))
-        .map(|(what, fragment)| format!("{what}  (missing: {fragment:?})"))
-        .collect();
+fn rigger_workflow_yml_pins_the_checkin_stage_and_mutation_gate_definition_to_spec_91() {
+    let text = normalize_ws(&rigger_workflow_yml_text());
 
     assert!(
-        missing.is_empty(),
-        ".rigger/agents/rust-engineer.md must pin the mutation ACCOUNTING contract spec 73 \
-         criterion 2 owns - a deterministically ordered DecisionMade, one entry per mutant, \
-         all five statuses (caught, missed-killed naming the test, missed-justified with a \
-         reason, unviable, timeout), the diff base, the mutant total, and the provably-empty \
-         no-Rust-file case - so drift in the operator-seeded persona fails this suite instead \
-         of silently diverging from the spec it satisfies. Missing fragments: {missing:#?}"
+        text.contains("checkin:"),
+        ".rigger/workflow.yml must define a `checkin:` stage (spec 91): {text:?}"
+    );
+    assert!(
+        text.contains("mutation:") && text.contains("cargo mutants"),
+        ".rigger/workflow.yml must define a `mutation:` gate that invokes cargo mutants \
+         (spec 91): {text:?}"
+    );
+    assert!(
+        text.contains("spec 91"),
+        ".rigger/workflow.yml's checkin stage / mutation gate definition must name spec 91, \
+         so drift in the committed workflow fails this suite instead of silently diverging \
+         from the spec it satisfies: {text:?}"
     );
 }
 

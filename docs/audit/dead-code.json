@@ -27,23 +27,23 @@
     "test_only_references": [
       {
         "file": "src/config.rs",
-        "line": 2317
+        "line": 2339
       },
       {
         "file": "src/config.rs",
-        "line": 2322
+        "line": 2344
       },
       {
         "file": "src/config.rs",
-        "line": 2327
+        "line": 2349
       },
       {
         "file": "src/config.rs",
-        "line": 2332
+        "line": 2354
       },
       {
         "file": "src/config.rs",
-        "line": 2338
+        "line": 2360
       }
     ],
     "disposition": "keep-pending",
@@ -66,23 +66,23 @@
       },
       {
         "file": "src/main.rs",
-        "line": 12923
+        "line": 12951
       },
       {
         "file": "src/main.rs",
-        "line": 12944
+        "line": 12972
       },
       {
         "file": "src/main.rs",
-        "line": 13459
+        "line": 13487
       },
       {
         "file": "tests/cli.rs",
-        "line": 22232
+        "line": 22254
       },
       {
         "file": "tests/cli.rs",
-        "line": 22247
+        "line": 22269
       }
     ],
     "disposition": "delete",
@@ -209,7 +209,7 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 18690
+        "line": 18706
       },
       {
         "file": "src/eventstore/sqlite.rs",
@@ -390,7 +390,7 @@
   {
     "name": "resolve_wrapper_name",
     "file": "src/gate.rs",
-    "line": 434,
+    "line": 446,
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [
@@ -412,7 +412,7 @@
       }
     ],
     "disposition": "delete",
-    "reason": "resolve_wrapper_name has no production caller - independently confirmed (u87c2's own decision u87c2-three-precision-fixes-from-real-tree-spot-check already found this by hand: 'resolve_build_layer duplicates its ambient-PATH read inline rather than calling it'). resolve_build_layer (gate.rs:552), its own doc comment's named sole intended caller ('kept pub as the wrapper-only building block ... resolve_build_layer composes'), instead reads std::env::var_os(\"PATH\") itself (gate.rs:558-559) rather than calling resolve_wrapper_name(wrapper) - a small, confirmed duplicate-glue defect (worth folding into section 2's duplication catalog on a follow-up pass), not a sign the function is unneeded. resolve_wrapper_name's 4 references are its own tests."
+    "reason": "resolve_wrapper_name has no production caller - independently confirmed (u87c2's own decision u87c2-three-precision-fixes-from-real-tree-spot-check already found this by hand: 'resolve_build_layer duplicates its ambient-PATH read inline rather than calling it'). resolve_build_layer (gate.rs:564), its own doc comment's named sole intended caller ('kept pub as the wrapper-only building block ... resolve_build_layer composes'), instead reads std::env::var_os(\"PATH\") itself (gate.rs:571) rather than calling resolve_wrapper_name(wrapper) - a small, confirmed duplicate-glue defect (worth folding into section 2's duplication catalog on a follow-up pass), not a sign the function is unneeded. resolve_wrapper_name's 4 references are its own tests."
   },
   {
     "name": "index_events",
@@ -675,7 +675,7 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "line": 8251
+        "line": 8254
       }
     ],
     "disposition": "delete",
@@ -820,15 +820,15 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 37460
+        "line": 37560
       },
       {
         "file": "src/conductor.rs",
-        "line": 37527
+        "line": 37627
       },
       {
         "file": "src/conductor.rs",
-        "line": 38301
+        "line": 38402
       },
       {
         "file": "src/ledger.rs",
@@ -897,35 +897,35 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 21005
+        "line": 21021
       },
       {
         "file": "src/conductor.rs",
-        "line": 21082
+        "line": 21098
       },
       {
         "file": "src/conductor.rs",
-        "line": 21176
+        "line": 21192
       },
       {
         "file": "src/conductor.rs",
-        "line": 21263
+        "line": 21279
       },
       {
         "file": "src/conductor.rs",
-        "line": 21358
+        "line": 21374
       },
       {
         "file": "src/conductor.rs",
-        "line": 28486
+        "line": 28502
       },
       {
         "file": "src/conductor.rs",
-        "line": 28491
+        "line": 28507
       },
       {
         "file": "src/conductor.rs",
-        "line": 28554
+        "line": 28570
       },
       {
         "file": "src/dash.rs",
@@ -1009,31 +1009,23 @@
       },
       {
         "file": "src/main.rs",
-        "line": 15991
+        "line": 16019
       },
       {
         "file": "src/main.rs",
-        "line": 16024
+        "line": 16052
       },
       {
         "file": "src/main.rs",
-        "line": 16043
+        "line": 16071
       },
       {
         "file": "src/main.rs",
-        "line": 16046
+        "line": 16074
       },
       {
         "file": "src/main.rs",
-        "line": 16049
-      },
-      {
-        "file": "src/main.rs",
-        "line": 17681
-      },
-      {
-        "file": "src/main.rs",
-        "line": 17694
+        "line": 16077
       },
       {
         "file": "src/main.rs",
@@ -1041,15 +1033,23 @@
       },
       {
         "file": "src/main.rs",
-        "line": 23091
+        "line": 17722
       },
       {
         "file": "src/main.rs",
-        "line": 23092
+        "line": 17737
       },
       {
         "file": "src/main.rs",
-        "line": 23093
+        "line": 23146
+      },
+      {
+        "file": "src/main.rs",
+        "line": 23147
+      },
+      {
+        "file": "src/main.rs",
+        "line": 23148
       },
       {
         "file": "src/mcpserver.rs",
@@ -1185,43 +1185,43 @@
       },
       {
         "file": "src/worktree.rs",
-        "line": 3786
+        "line": 3826
       },
       {
         "file": "src/worktree.rs",
-        "line": 3809
+        "line": 3849
       },
       {
         "file": "src/worktree.rs",
-        "line": 3845
+        "line": 3885
       },
       {
         "file": "src/worktree.rs",
-        "line": 3877
+        "line": 3917
       },
       {
         "file": "src/worktree.rs",
-        "line": 3912
+        "line": 3952
       },
       {
         "file": "src/worktree.rs",
-        "line": 3928
+        "line": 3968
       },
       {
         "file": "src/worktree.rs",
-        "line": 3955
+        "line": 3995
       },
       {
         "file": "src/worktree.rs",
-        "line": 3985
+        "line": 4025
       },
       {
         "file": "src/worktree.rs",
-        "line": 3992
+        "line": 4032
       },
       {
         "file": "src/worktree.rs",
-        "line": 4000
+        "line": 4040
       },
       {
         "file": "tests/cli.rs",
@@ -1557,15 +1557,15 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 28484
+        "line": 28500
       },
       {
         "file": "src/conductor.rs",
-        "line": 28489
+        "line": 28505
       },
       {
         "file": "src/conductor.rs",
-        "line": 28552
+        "line": 28568
       },
       {
         "file": "src/driver/replay.rs",
@@ -1688,15 +1688,15 @@
     "test_only_references": [
       {
         "file": "src/worktree.rs",
-        "line": 3479
+        "line": 3519
       },
       {
         "file": "src/worktree.rs",
-        "line": 3489
+        "line": 3529
       },
       {
         "file": "src/worktree.rs",
-        "line": 3555
+        "line": 3595
       }
     ],
     "disposition": "delete",
