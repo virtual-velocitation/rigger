@@ -1179,14 +1179,14 @@
       },
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 109,
-        "end_line": 109,
+        "start_line": 121,
+        "end_line": 121,
         "name": "Command::new"
       },
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 154,
-        "end_line": 154,
+        "start_line": 166,
+        "end_line": 166,
         "name": "Command::new"
       },
       {
@@ -6565,86 +6565,98 @@
       },
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 135,
-        "end_line": 135,
+        "start_line": 147,
+        "end_line": 147,
         "name": "\".rigger\""
       },
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 164,
-        "end_line": 164,
+        "start_line": 176,
+        "end_line": 176,
         "name": "\".rigger\""
       },
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 199,
-        "end_line": 199,
+        "start_line": 211,
+        "end_line": 211,
         "name": "\".rigger\""
       },
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 212,
-        "end_line": 212,
+        "start_line": 224,
+        "end_line": 224,
         "name": "\".rigger\""
       },
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 240,
-        "end_line": 240,
+        "start_line": 252,
+        "end_line": 252,
         "name": "\".rigger\""
       },
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 293,
-        "end_line": 293,
+        "start_line": 305,
+        "end_line": 305,
         "name": "\".rigger\""
       },
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 322,
-        "end_line": 322,
+        "start_line": 334,
+        "end_line": 334,
         "name": "\".rigger\""
       },
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 367,
-        "end_line": 367,
+        "start_line": 379,
+        "end_line": 379,
         "name": "\".rigger\""
       },
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 705,
-        "end_line": 705,
+        "start_line": 717,
+        "end_line": 717,
         "name": "\".rigger\""
       },
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 825,
-        "end_line": 825,
+        "start_line": 805,
+        "end_line": 805,
         "name": "\".rigger\""
       },
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 860,
-        "end_line": 860,
+        "start_line": 878,
+        "end_line": 878,
         "name": "\".rigger\""
       },
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 923,
-        "end_line": 923,
+        "start_line": 913,
+        "end_line": 913,
         "name": "\".rigger\""
       },
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 1002,
-        "end_line": 1002,
+        "start_line": 976,
+        "end_line": 976,
         "name": "\".rigger\""
       },
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 1060,
-        "end_line": 1060,
+        "start_line": 1213,
+        "end_line": 1213,
+        "name": "\".rigger\""
+      },
+      {
+        "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
+        "start_line": 1262,
+        "end_line": 1262,
+        "name": "\".rigger\""
+      },
+      {
+        "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
+        "start_line": 1320,
+        "end_line": 1320,
         "name": "\".rigger\""
       },
       {
@@ -7855,7 +7867,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 676 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: .rigger-path string literals - 678 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0060",
@@ -17323,8 +17335,8 @@
       },
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 181,
-        "end_line": 193,
+        "start_line": 193,
+        "end_line": 205,
         "name": "run_rigger"
       },
       {
@@ -17517,8 +17529,8 @@
       },
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 153,
-        "end_line": 175,
+        "start_line": 165,
+        "end_line": 187,
         "name": "run_stream_identity"
       },
       {
@@ -17633,8 +17645,8 @@
       },
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 153,
-        "end_line": 175,
+        "start_line": 165,
+        "end_line": 187,
         "name": "run_stream_identity"
       },
       {
@@ -17799,8 +17811,8 @@
       },
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 130,
-        "end_line": 148,
+        "start_line": 142,
+        "end_line": 160,
         "name": "seed_run_events"
       },
       {
@@ -18047,8 +18059,8 @@
       },
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 130,
-        "end_line": 148,
+        "start_line": 142,
+        "end_line": 160,
         "name": "seed_run_events"
       },
       {
@@ -18073,8 +18085,8 @@
       },
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 101,
-        "end_line": 118,
+        "start_line": 113,
+        "end_line": 130,
         "name": "temp_git_project_with_commit"
       },
       {
@@ -18973,8 +18985,8 @@
       },
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 122,
-        "end_line": 124,
+        "start_line": 134,
+        "end_line": 136,
         "name": "temp_repoless_project"
       },
       {
@@ -18999,8 +19011,8 @@
       },
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 122,
-        "end_line": 124,
+        "start_line": 134,
+        "end_line": 136,
         "name": "temp_repoless_project"
       },
       {
@@ -22305,14 +22317,14 @@
     "sites": [
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 198,
-        "end_line": 206,
+        "start_line": 210,
+        "end_line": 218,
         "name": "write_git_worker_agent"
       },
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 211,
-        "end_line": 219,
+        "start_line": 223,
+        "end_line": 231,
         "name": "write_repoless_worker_agent"
       }
     ],
@@ -22325,14 +22337,14 @@
     "sites": [
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 783,
-        "end_line": 889,
+        "start_line": 836,
+        "end_line": 942,
         "name": "checkin_stays_unready_while_a_real_split_siblings_partner_has_not_integrated_yet"
       },
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 898,
-        "end_line": 983,
+        "start_line": 951,
+        "end_line": 1036,
         "name": "checkin_never_becomes_ready_when_a_real_split_siblings_partner_escalates_instead"
       }
     ],
@@ -22345,14 +22357,14 @@
     "sites": [
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 997,
-        "end_line": 1046,
+        "start_line": 1257,
+        "end_line": 1306,
         "name": "a_stages_own_max_retries_yaml_key_lowers_the_effective_bound_below_a_higher_default"
       },
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 1055,
-        "end_line": 1138,
+        "start_line": 1315,
+        "end_line": 1398,
         "name": "a_stages_own_max_retries_yaml_key_raises_the_effective_bound_above_a_lower_default"
       }
     ],
