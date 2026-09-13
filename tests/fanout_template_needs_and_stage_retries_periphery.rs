@@ -62,18 +62,30 @@
 //!      hand-built `stages`/`integrated`/`terminal` map, never through `rigger step`,
 //!      `rigger emit`, or `rigger result` process boundaries, and never through an
 //!      actual worktree-create -> commit -> merge (or escalate) cycle for either sibling.
+//!   7. (Round 4, closing `sdet-u91c1-r3-missing-added-subunit-and-refine-then-supersede-
+//!      fixtures`, upheld by the round-3 REJECT under the controlling ruling
+//!      `op-u91c1-round-3-template-need-is-a-predicate-over-all-live-owners`, whose
+//!      literal round-3 done-when enumerated five shapes and round 3 shipped only three.)
+//!      Nothing proves `need_satisfied`'s live-owner predicate generalizes past N=2 (an
+//!      ADDED third sub-unit to a same-episode split), and nothing proves a same-id REFINE
+//!      followed by a DISTINCT id's SUPERSEDE of that same criterion resolves correctly -
+//!      both through the real binary boundary, never a hand-built map.
 //!
-//! This file closes all six, through the compiled binary or the crate's public `run`/
+//! This file closes all seven, through the compiled binary or the crate's public `run`/
 //! `AgentDriver` API (gap 5, which needs a real git repo and a real superseding proposal),
 //! with real git worktrees/merges wherever the scenario needs them, and real `rigger
-//! step`/`rigger emit --spawn`/`rigger result` process boundaries for gaps 1-4 and 6 -
-//! gap 6's real split is produced by two `rigger emit --spawn <plan-spawn-id>
-//! UnitProposed` calls from the SAME parked spawn (`cmd_emit`, `src/main.rs`: the
-//! established native-courier idiom a scripted, non-MCP-tooled planner uses to record a
-//! decision, threading its own spawn id into `META_SPAWN` exactly as a live MCP-tooled
-//! agent's stamped emit does), so both proposals share one episode identity - a real
-//! multi-process planner idiom this file did not use for gap 5, which instead drives the
-//! public `AgentDriver` trait directly.
+//! step`/`rigger emit --spawn`/`rigger result` process boundaries for gaps 1-4, 6, and 7 -
+//! gaps 6 and 7's real splits/refines/supersedes are produced by `rigger emit --spawn
+//! <spawn-id> UnitProposed` calls (`cmd_emit`, `src/main.rs`: the established
+//! native-courier idiom a scripted, non-MCP-tooled planner uses to record a decision,
+//! threading its own spawn id into `META_SPAWN` exactly as a live MCP-tooled agent's
+//! stamped emit does) - gap 6 and gap 7's added-sub-unit case issue every call from the
+//! SAME parked `plan` spawn so every proposal shares one episode identity; gap 7's
+//! refine-then-supersede case issues its final (superseding) call from a DIFFERENT,
+//! synthetic spawn id (`plan/replan#1`) stamped the same native-courier way, so it falls
+//! into a strictly later episode without ever being a real parked `rigger step`-driven
+//! re-plan - a real multi-process planner idiom this file did not use for gap 5, which
+//! instead drives the public `AgentDriver` trait directly.
 //!
 //! NOT OWNED HERE: the pure `ready_stages`/`wave_ready`/`max_retries_for`/`need_satisfied`
 //! arithmetic itself (private to `conductor.rs`, exhaustively covered by its own colocated
@@ -748,29 +760,70 @@ fn propose_unit_via_rigger_emit(root: &Path, spawn: &str, body: &Value) {
     );
 }
 
-/// A same-episode REAL SPLIT of `SPLIT_CRITERION`'s deterministic baseline into two live
-/// siblings, `split-a-1` (gate `gate_a1`) and `split-a-2` (gate `gate_a2`), proposed as two
-/// separate `rigger emit --spawn` calls from the SAME parked `plan` spawn so both share one
-/// episode identity - the shape `harvest_proposed` never reaps a genuinely-new same-episode
-/// sibling for (spec 31/72), then records `plan`'s own result so its real (empty, since a
-/// planner writes no files) worktree merges and integrates.
-fn propose_real_split(root: &Path, gate_a1: &str, gate_a2: &str) {
+/// A same-episode REAL SPLIT of `SPLIT_CRITERION`'s deterministic baseline into one live
+/// sibling per `(id, gate)` pair in `members`, each proposed as a separate `rigger emit
+/// --spawn` call from the SAME parked `plan` spawn so every sibling shares one episode
+/// identity - the shape `harvest_proposed` never reaps a genuinely-new same-episode sibling
+/// for (spec 31/72), then records `plan`'s own result so its real (empty, since a planner
+/// writes no files) worktree merges and integrates. Generalized over N members (round 4,
+/// closing `sdet-u91c1-r3-missing-added-subunit-and-refine-then-supersede-fixtures`'s
+/// added-sub-unit shape, which needs N=3+ to distinguish `need_satisfied`'s genuine
+/// `.filter(..).all(..)` predicate from an accidental pairwise-only check that happens to
+/// also pass at N=2) so a 2-way call site never duplicates a 3-way one.
+fn propose_real_n_way_split(root: &Path, members: &[(&str, &str)]) {
     let plan_spawn = "plan/implementer#0";
-    propose_unit_via_rigger_emit(
-        root,
-        plan_spawn,
-        &json!({"id": "split-a-1", "agent": "worker", "criterion": SPLIT_CRITERION, "gates": [gate_a1]}),
-    );
-    propose_unit_via_rigger_emit(
-        root,
-        plan_spawn,
-        &json!({"id": "split-a-2", "agent": "worker", "criterion": SPLIT_CRITERION, "gates": [gate_a2]}),
-    );
+    for (id, gate) in members {
+        propose_unit_via_rigger_emit(
+            root,
+            plan_spawn,
+            &json!({"id": id, "agent": "worker", "criterion": SPLIT_CRITERION, "gates": [gate]}),
+        );
+    }
     let (_o, err, ok) = run_rigger(root, &["result", plan_spawn, "proposed a real split"]);
     assert!(
         ok,
         "recording plan's own result must succeed; stderr: {err}"
     );
+}
+
+/// The N=2 case of [`propose_real_n_way_split`]: `split-a-1` (gate `gate_a1`) and
+/// `split-a-2` (gate `gate_a2`).
+fn propose_real_split(root: &Path, gate_a1: &str, gate_a2: &str) {
+    propose_real_n_way_split(root, &[("split-a-1", gate_a1), ("split-a-2", gate_a2)]);
+}
+
+/// Write a trivial file into `unit`'s real worktree (already created by its parked
+/// implementer) and post its `rigger result`, landing a genuine git commit that its stage's
+/// `on_pass: merge` then merges for real. Factors out the land-a-real-unit shape repeated
+/// inline above (unit A/B, split-a-1/split-a-2) for the round-4 fixtures below, so the N-way
+/// and refine-then-supersede tests do not re-duplicate it a third and fourth time (the
+/// non-blocking round-3 finding `sdet-u91c1-r3-new-dup-cluster-between-its-own-two-
+/// periphery-tests-non-blocking` flagged exactly this inline shape recurring across a
+/// round's own new tests).
+fn land_real_unit(root: &Path, unit: &str) {
+    let wt = root
+        .join(".rigger")
+        .join("tmp")
+        .join(format!("rigger-wt-{unit}"));
+    assert!(
+        wt.exists(),
+        "{unit} must already have its real worktree on disk: {}",
+        wt.display()
+    );
+    let file_name = format!(
+        "{}.rs",
+        unit.replace(|c: char| !c.is_ascii_alphanumeric(), "_")
+    );
+    std::fs::write(wt.join(&file_name), "pub fn done() {}\n").unwrap();
+    let (_o, err, ok) = run_rigger(
+        root,
+        &[
+            "result",
+            &format!("{unit}/implementer#0"),
+            &format!("landed {unit}"),
+        ],
+    );
+    assert!(ok, "recording {unit}'s result must succeed; stderr: {err}");
 }
 
 /// checkin's needs edge must NEVER become satisfied while ANY live real-split sibling has
@@ -979,6 +1032,213 @@ fn checkin_never_becomes_ready_when_a_real_split_siblings_partner_escalates_inst
     assert!(
         !root.join("a2.rs").exists(),
         "split-a-2 escalated without ever merging - its file must never have landed"
+    );
+}
+
+// -----------------------------------------------------------------------------------------
+// Round 4 (closing `sdet-u91c1-r3-missing-added-subunit-and-refine-then-supersede-
+// fixtures`, upheld by the round-3 REJECT under the controlling ruling
+// `op-u91c1-round-3-template-need-is-a-predicate-over-all-live-owners`): that ruling's
+// literal round-3 done-when enumerated FIVE shapes needing a real-binary-boundary fixture -
+// supersede, a real split in both orderings, an ADDED sub-unit, and a REFINE-then-SUPERSEDE
+// - and round 3 shipped only three of them (supersede, kept green from round 2; both
+// real-split orderings, new that round). The two tests below close the remaining two,
+// through the same real `rigger emit --spawn`/`rigger step`/`rigger result` process
+// boundaries and real git merges gap 6 above already established.
+// -----------------------------------------------------------------------------------------
+
+/// Added-sub-unit: the round-3 real-split fixtures above only ever exercise N=2 live
+/// siblings under one criterion id - not enough to distinguish `need_satisfied`'s genuine
+/// `stages.iter().filter(..).all(..)` predicate (correct for ANY N) from an accidental
+/// pairwise-only check that also happens to pass at N=2 (e.g. "the first two owners", or a
+/// `.find()`-then-compare-the-next-one shape). This ADDS a third live sub-unit to a
+/// same-episode split - an N-way (N=3) fan-out, via [`propose_real_n_way_split`] - and
+/// lands the three siblings OUT of id order (first, then third - skipping the middle -
+/// before finally landing the middle one) so a check that only ever compares "the first
+/// N-1 lexically" or "any 2 of 3" could not pass by accident the way it might at a
+/// convenient N=2, id-ordered landing sequence.
+#[test]
+fn checkin_stays_unready_until_every_member_of_a_same_episode_three_way_split_has_integrated() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_split_fanout_workflow(root);
+    write_split_criterion_spec(root);
+
+    // Step 1: only "plan" is ready; no split proposed yet.
+    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
+    assert!(ok, "step 1 must succeed; stderr:\n{err}");
+    assert!(
+        out.contains(r#""id":"plan/implementer#0""#),
+        "plan must park first; got:\n{out}"
+    );
+
+    // A REAL three-way split, all three siblings sharing one episode.
+    propose_real_n_way_split(
+        root,
+        &[
+            ("split-a-1", "ok"),
+            ("split-a-2", "ok"),
+            ("split-a-3", "ok"),
+        ],
+    );
+
+    // Step 2: plan's own real (empty) worktree merges trivially and integrates; all three
+    // real split siblings are now live and ready - all three park in this same step.
+    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
+    assert!(ok, "step 2 must succeed; stderr:\n{err}");
+    for id in [
+        "split-a-1/implementer#0",
+        "split-a-2/implementer#0",
+        "split-a-3/implementer#0",
+    ] {
+        assert!(
+            out.contains(&format!(r#""id":"{id}""#)),
+            "all three same-episode split siblings must park together in the step their \
+             planner proposal lands; got:\n{out}"
+        );
+    }
+    assert!(
+        !out.contains("checkin"),
+        "checkin must not appear before any of the three split siblings has even attempted \
+         its gate; got:\n{out}"
+    );
+
+    // Land split-a-1 (the first).
+    land_real_unit(root, "split-a-1");
+    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
+    assert!(ok, "step 3 must succeed; stderr:\n{err}");
+    assert!(
+        !out.contains("checkin"),
+        "only one of three siblings has integrated so far - checkin must stay unready; \
+         got:\n{out}"
+    );
+
+    // Land split-a-3 (the third - SKIPPING split-a-2, the middle one). Two of the three
+    // siblings have now integrated, but NOT all three - the exact shape a hardcoded
+    // "any 2" or "the first two" predicate would wrongly satisfy.
+    land_real_unit(root, "split-a-3");
+    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
+    assert!(ok, "step 4 must succeed; stderr:\n{err}");
+    assert!(
+        !out.contains("checkin"),
+        "two of three same-episode split siblings have integrated (split-a-1 and \
+         split-a-3), but split-a-2 has not - checkin's needs edge must still be unsatisfied; \
+         got:\n{out}"
+    );
+
+    // Land split-a-2 (the middle one, last). NOW every live owner of the criterion has
+    // integrated, so checkin's needs edge is satisfied.
+    land_real_unit(root, "split-a-2");
+    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
+    assert!(ok, "step 5 must succeed; stderr:\n{err}");
+    assert!(
+        out.contains(r#""id":"checkin/implementer#0""#),
+        "once ALL THREE real split siblings have integrated through real git merges, \
+         checkin's needs edge must be satisfied and its own implementer must park; \
+         got:\n{out}"
+    );
+}
+
+/// Refine-then-supersede: a same-id `UnitProposed` REFINE (a re-emit of `auth-v1`'s id,
+/// still within its own originating episode `plan/implementer#0`) followed by a DISTINCT
+/// id's SUPERSEDING proposal (`auth-v2`, echoing the same criterion from a later episode,
+/// `plan/replan#1` - a synthetic id stamped via `rigger emit --spawn` exactly like every
+/// other native-courier proposal in this file, never a real parked `rigger step`-driven
+/// re-plan) - proving `harvest_proposed`'s fold correctly applies BOTH the same-id fold
+/// path and the cross-episode supersede path in sequence for one criterion, through the
+/// real binary boundary: `auth-v1` is refined, then removed before it ever parks (its
+/// worktree must never even exist), and `checkin`'s needs edge tracks only the surviving
+/// superseding unit, `auth-v2`.
+#[test]
+fn checkin_integrates_after_a_same_id_refine_is_later_superseded_by_a_distinct_proposal() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_split_fanout_workflow(root);
+    write_split_criterion_spec(root);
+
+    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
+    assert!(ok, "step 1 must succeed; stderr:\n{err}");
+    assert!(
+        out.contains(r#""id":"plan/implementer#0""#),
+        "plan must park first; got:\n{out}"
+    );
+
+    let plan_spawn = "plan/implementer#0";
+    // Propose auth-v1 for the criterion (the ADD path: supersedes the deterministic
+    // baseline).
+    propose_unit_via_rigger_emit(
+        root,
+        plan_spawn,
+        &json!({"id": "auth-v1", "agent": "worker", "criterion": SPLIT_CRITERION, "gates": ["ok"]}),
+    );
+    // REFINE auth-v1: a second same-id UnitProposed from the SAME episode - the fold path,
+    // never a second unit.
+    propose_unit_via_rigger_emit(
+        root,
+        plan_spawn,
+        &json!({"id": "auth-v1", "agent": "worker", "criterion": SPLIT_CRITERION, "gates": ["ok"]}),
+    );
+    // SUPERSEDE: a DISTINCT id for the SAME criterion, proposed from a LATER episode -
+    // auth-v1 (unintegrated, non-terminal, and from the strictly-earlier
+    // `plan/implementer#0` episode) is removed; auth-v2 becomes the sole live owner.
+    propose_unit_via_rigger_emit(
+        root,
+        "plan/replan#1",
+        &json!({"id": "auth-v2", "agent": "worker", "criterion": SPLIT_CRITERION, "gates": ["ok"]}),
+    );
+    let (_o, err, ok) = run_rigger(
+        root,
+        &["result", plan_spawn, "proposed, refined, then superseded"],
+    );
+    assert!(
+        ok,
+        "recording plan's own result must succeed; stderr: {err}"
+    );
+
+    // Step 2: plan's own real (empty) worktree merges trivially and integrates. auth-v1 was
+    // superseded before this wave ever ran, so it never parks at all - only auth-v2 does.
+    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
+    assert!(ok, "step 2 must succeed; stderr:\n{err}");
+    assert!(
+        out.contains(r#""id":"auth-v2/implementer#0""#),
+        "the surviving superseding unit auth-v2 must park; got:\n{out}"
+    );
+    assert!(
+        !out.contains("auth-v1"),
+        "auth-v1 was superseded before ever becoming ready and must never appear in any \
+         wave; got:\n{out}"
+    );
+    assert!(
+        !root
+            .join(".rigger")
+            .join("tmp")
+            .join("rigger-wt-auth-v1")
+            .exists(),
+        "auth-v1 was superseded before it was ever scheduled, so it must never have gotten \
+         its own worktree"
+    );
+    assert!(
+        !out.contains("checkin"),
+        "checkin must not appear before auth-v2 has even attempted its gate; got:\n{out}"
+    );
+
+    // Land auth-v2 for real.
+    land_real_unit(root, "auth-v2");
+
+    // Step 3: auth-v2's real merge lands (Integrated). checkin's needs edge tracks the
+    // surviving superseding unit, never the refined-then-superseded auth-v1, so it becomes
+    // ready now.
+    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
+    assert!(ok, "step 3 must succeed; stderr:\n{err}");
+    assert!(
+        root.join("auth_v2.rs").exists(),
+        "auth-v2's real merge must have actually landed its file on the base"
+    );
+    assert!(
+        out.contains(r#""id":"checkin/implementer#0""#),
+        "once the surviving superseding unit has integrated through a real git merge, \
+         checkin's needs edge must be satisfied and its own implementer must park; \
+         got:\n{out}"
     );
 }
 
