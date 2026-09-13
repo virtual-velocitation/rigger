@@ -108,7 +108,7 @@ defaults:
   #     class: product
 
 build:
-  mutation: "on"            # implementer's diff-scoped mutation-efficacy step (spec 73)
+  mutation: "off"           # spec 91 retires this switch: no per-round sweep; mutation runs once at the checkin stage (spec 73's step is off for spec 91's own run)
   max_concurrent: 1         # serialize builds machine-wide: two concurrent cargo-mutants sweeps (~100G each) exhausted /home this session. Blunt cap (operator-binary boundary blocks a surgical mutation-only slot); revisit as a spec.
 
 # Registered regenerable artifacts (spec 88, criterion 1): an integration merge conflict
