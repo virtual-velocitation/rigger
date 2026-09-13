@@ -152,15 +152,20 @@
 
 use std::path::Path;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use rigger::conductor::{
-    run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM, TYPE_UNIT_PROPOSED,
+    run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, META_REPLAY_KEY, STREAM,
+    TYPE_UNIT_PROPOSED,
 };
 use rigger::conductor::{META_COMPENSATED, META_CONTRADICTION};
 use rigger::config::{AgentDef, Config, Gate, Stage};
 use rigger::contextgraph;
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision};
+use rigger::eventstore::{
+    Direction, Error as StoreError, Event, EventStore, ExpectedRevision, Filter, Position,
+    Revision, Subscription,
+};
 use rigger::gate::ExecRunner;
 use rigger::ledger;
 use rigger::run::start_fresh;
@@ -2570,4 +2575,521 @@ fn a_quarantine_record_whose_ref_was_since_deleted_hard_errors_instead_of_silent
         "the retry's own implementer must never even spawn once its adoption decision \
          hard-errors"
     );
+}
+
+/// A wrapping `EventStore` double that fails, with a real backend `StoreError`, the FIRST
+/// append batch matching `matches` - then delegates that same call, and every other call
+/// (every other append included), straight through to the real store underneath. This
+/// reproduces an in-process `emit_keyed_meta` failure (a transient store write error is
+/// exactly as real a cause as an OS-level crash - both leave the SAME half-done state
+/// behind) at the EXACT statement production code calls it, without touching any other
+/// write in the same `run()` call - the technique test 16 below uses to prove WHERE in the
+/// real call sequence the quarantine record lands relative to the canonical branch's
+/// deletion, which no amount of hand-constructing before/after states (tests 13-15's own
+/// technique) can observe: those tests can only ever probe states this file chooses to
+/// construct, never the actual order two real, sequential statements execute in.
+struct FailsOnceOn<'a> {
+    inner: &'a Store,
+    matches: fn(&Event) -> bool,
+    fired: AtomicBool,
+}
+
+impl EventStore for FailsOnceOn<'_> {
+    fn append(
+        &self,
+        stream: &str,
+        expected: ExpectedRevision,
+        events: &[Event],
+    ) -> Result<rigger::eventstore::Appended, StoreError> {
+        if events.iter().any(|e| (self.matches)(e))
+            && self
+                .fired
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+        {
+            return Err(StoreError::Backend(
+                "simulated write failure (test double FailsOnceOn, fires once)".into(),
+            ));
+        }
+        self.inner.append(stream, expected, events)
+    }
+
+    fn read_stream(
+        &self,
+        stream: &str,
+        from: Revision,
+        dir: Direction,
+    ) -> Result<Vec<Event>, StoreError> {
+        self.inner.read_stream(stream, from, dir)
+    }
+
+    fn read_all(
+        &self,
+        from: Position,
+        dir: Direction,
+        filter: &Filter,
+    ) -> Result<Vec<Event>, StoreError> {
+        self.inner.read_all(from, dir, filter)
+    }
+
+    fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, StoreError> {
+        self.inner.subscribe_all(from, filter)
+    }
+
+    fn subscribe_stream(&self, stream: &str, from: Revision) -> Result<Subscription, StoreError> {
+        self.inner.subscribe_stream(stream, from)
+    }
+}
+
+/// Whether `e` is the durable `STATUS_BRANCH_QUARANTINED` mark
+/// `adopt_prior_criterion_branch`'s quarantine path writes - matched on the wire shape
+/// (`UnitStatus` carrying `"status": "branch-quarantined"`), a literal mirroring the
+/// private `STATUS_BRANCH_QUARANTINED` constant exactly the way test 8's own hand-built
+/// event above matches `"adoption-recorded"` literally - never imported, since this is a
+/// black-box periphery test asserting the WIRE contract, not the implementation's own
+/// naming.
+fn is_quarantine_record_write(e: &Event) -> bool {
+    if e.type_ != ledger::TYPE_UNIT_STATUS {
+        return false;
+    }
+    serde_json::from_slice::<Value>(&e.data)
+        .ok()
+        .and_then(|v| v.get("status").and_then(Value::as_str).map(str::to_string))
+        == Some("branch-quarantined".to_string())
+}
+
+/// Test 16 (round 8, closing `arch-u88c2-r7-quarantine-record-write-ordered-after-git-not-
+/// before` / `sdet-u88c2-r6-record-emit-crash-window-orphans-quarantine`, per operator
+/// ruling `op-u88c2-round-8-definition-of-done-record-between-create-and-delete`): round 7
+/// wrote the durable `STATUS_BRANCH_QUARANTINED` mark LAST - AFTER `delete_branch` had
+/// already cleared this whole block's own re-entry gate (`branch_exists(canonical)`). A
+/// crash, or any `emit_keyed_meta` failure (a transient store write error is just as real a
+/// cause as an OS-level crash), landing between the delete succeeding and the emit
+/// completing left the canonical branch gone, the orphaned ref real, and NO record ever
+/// naming it - and because the gate that re-enters this whole block was already cleared by
+/// the delete, a resumed retry of the SAME collision never even looks at this code again,
+/// so nothing ever retries the dropped emit: a PERMANENT, silent loss of the quarantined
+/// content's own future adoptability.
+///
+/// No public API can interrupt `adopt_prior_criterion_branch` mid-call to inject a real
+/// crash at that exact statement boundary (tests 7/8/14/15's shared limitation, noted in
+/// each of their own doc comments) - hand-constructing a before/after STATE, this file's
+/// usual technique for that class of gap, cannot observe this specific defect either: it
+/// tests what a resumed call does GIVEN a state, never which of two possible orderings a
+/// single uninterrupted call actually executes writes in. So this test drives the ACTUAL
+/// production statement sequence via `FailsOnceOn` above: a real second `run()` call, over
+/// the identical round-6/7 slug-collision setup tests 13-15 already share, whose `Deps`
+/// store is a thin wrapper that fails - with a real backend `StoreError`, not a panic - the
+/// FIRST append matching the quarantine record's own wire shape, and delegates every other
+/// append (including the git-independent bookkeeping the rest of the run performs) straight
+/// through to a real, otherwise fully functional in-memory store.
+///
+/// Fixed (record before delete): the failing emit now runs BEFORE `delete_branch`, so the
+/// run must fail with the canonical branch STILL PRESENT - no git mutation of it has
+/// happened yet - and the quarantine ref, if the guarded create already ran, is harmless
+/// and reusable. Pre-fix (record after delete): the delete already ran by the time the emit
+/// fails, so the canonical branch would already be gone with no record surviving it - this
+/// test's own primary assertion (`shared_branch` must still exist after the failed run)
+/// fails against that ordering, proving it RED against round 7's own committed code before
+/// this round's fix, GREEN after it.
+///
+/// A THIRD, ordinary `run()` (a real, non-failing store) then re-drives the identical
+/// collision from that exact recovered state, proving the failure above cost nothing: the
+/// collision completes cleanly to integration, the canonical branch is (now) actually
+/// deleted, and a FOURTH `run()` - the genuine later retry of criterion X's own original
+/// (criterion, spec), mirroring test 13's own final assertions - recovers its real, still
+/// abandoned, reviewed work from the quarantine ref rather than silently starting fresh.
+#[test]
+fn a_store_failure_writing_the_quarantine_record_never_lets_the_canonical_branch_be_deleted_first()
+{
+    let repo = tempfile::tempdir().unwrap();
+    init_repo(repo.path());
+    let store = Store::open(":memory:").unwrap();
+
+    let criterion_x = "the turbine reports its own rotational speed continuously";
+    let spec_a = "specs/88-a-unit-lineage-is-durable.md";
+
+    // RUN 1 (spec A, criterion X): escalates with real committed work, never integrated,
+    // never GC'd - identical shape to tests 13-15's own RUN 1.
+    start_fresh(&store, &[criterion_x.to_string()], "", "", spec_a).unwrap();
+    let shared_slug = "quarantine-write-failure-shared-slug";
+    let shared_branch = format!("rigger/u/{shared_slug}");
+    let driver1 = ProposesSlugDriver {
+        proposed_id: shared_slug.to_string(),
+        criterion: criterion_x.to_string(),
+        worker_write: Some((
+            "criterion-x-work.txt".into(),
+            "criterion X's real, reviewed, still-abandoned work\n".into(),
+        )),
+        gates: vec!["gate".to_string()],
+    };
+    let deps1 = Deps {
+        store: &store,
+        driver: &driver1,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion_x.to_string()],
+    };
+    let mut cfg1 = fresh_run_cfg("false");
+    cfg1.workflow.defaults.max_retries = 1;
+    let rs1 = run(&cfg1, &deps1).unwrap();
+    assert_eq!(
+        rs1.units[shared_slug].status,
+        ledger::Status::Escalated,
+        "an always-failing gate must exhaust remediation and escalate, never integrate"
+    );
+
+    // RUN 2 (spec B, an UNRELATED criterion Y): reuses the exact same literal slug, firing
+    // the round-6/7 quarantine - but this run's own store fails the quarantine record's
+    // OWN append, once, with a real backend error.
+    let criterion_y = "the compressor independently reports its own duty cycle on every poll";
+    let spec_b = "specs/90-hermetic-test-git-and-merge-friendly-audit-artifacts.md";
+    start_fresh(&store, &[criterion_y.to_string()], "", "", spec_b).unwrap();
+    let failing_store = FailsOnceOn {
+        inner: &store,
+        matches: is_quarantine_record_write,
+        fired: AtomicBool::new(false),
+    };
+    let driver2 = ProposesSlugDriver {
+        proposed_id: shared_slug.to_string(),
+        criterion: criterion_y.to_string(),
+        worker_write: Some((
+            "run2-own-work.txt".into(),
+            "spec B's own genuinely new work\n".into(),
+        )),
+        gates: Vec::new(),
+    };
+    let deps2 = Deps {
+        store: &failing_store,
+        driver: &driver2,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion_y.to_string()],
+    };
+    // `RunState` (the `Ok` type) does not implement `Debug`, so `expect_err` cannot be
+    // used here - match explicitly, exactly like test 15 above.
+    match run(&fresh_run_cfg("true"), &deps2) {
+        Err(_) => {}
+        Ok(_) => panic!(
+            "a store failure on the quarantine record's own append must propagate as a \
+             real Error, never be silently absorbed"
+        ),
+    }
+
+    // THE LOAD-BEARING ASSERTION: the canonical branch must still exist. Pre-fix (record
+    // written AFTER delete_branch), the delete already ran by the time the emit above
+    // failed, so this branch would already be gone with no record ever surviving it -
+    // exactly the primary blocker's data-loss window. Post-fix (record written BEFORE
+    // delete_branch), the failing emit runs before any git mutation of this branch, so it
+    // must still be here, completely untouched.
+    assert!(
+        worktree::branch_exists(repo.path().to_str().unwrap(), &shared_branch),
+        "the canonical branch must never be deleted before its own quarantine record has \
+         durably landed - a store failure on the record write must leave the git side \
+         effect entirely undone, not half-done"
+    );
+    let events_after_failure = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    assert!(
+        !events_after_failure.iter().any(is_quarantine_record_write),
+        "the failed append must not have landed a record either - this store failure must \
+         leave EITHER both the record and the delete undone, or neither; never the delete \
+         alone"
+    );
+
+    // RUN 3: retry the identical collision with an ORDINARY, non-failing store - the
+    // recovered state must complete cleanly to integration, exactly as an uninterrupted
+    // run would have.
+    let driver3 = ProposesSlugDriver {
+        proposed_id: shared_slug.to_string(),
+        criterion: criterion_y.to_string(),
+        worker_write: Some((
+            "run2-own-work.txt".into(),
+            "spec B's own genuinely new work\n".into(),
+        )),
+        gates: Vec::new(),
+    };
+    let deps3 = Deps {
+        store: &store,
+        driver: &driver3,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion_y.to_string()],
+    };
+    let rs3 = run(&fresh_run_cfg("true"), &deps3).unwrap();
+    assert_eq!(
+        rs3.units[shared_slug].status,
+        ledger::Status::Integrated,
+        "the retried collision must still run its ordinary lifecycle through to integration"
+    );
+    assert!(
+        !worktree::branch_exists(repo.path().to_str().unwrap(), &shared_branch),
+        "the retry must complete the quarantine's delete of the canonical name"
+    );
+    assert!(
+        !repo.path().join("criterion-x-work.txt").exists(),
+        "spec B's unit must never inherit spec A's escalated, unrelated content"
+    );
+
+    // RUN 4 (spec A AGAIN, criterion X AGAIN): the genuine later retry of the ORIGINAL
+    // criterion/spec, mirroring test 13's own final assertions - proves the store failure
+    // above cost nothing: the quarantined content is still fully recoverable.
+    start_fresh(&store, &[criterion_x.to_string()], "", "", spec_a).unwrap();
+    let retry_slug = "quarantine-write-failure-retry-slug";
+    let driver4 = ProposesSlugDriver {
+        proposed_id: retry_slug.to_string(),
+        criterion: criterion_x.to_string(),
+        worker_write: Some((
+            "run4-own-work.txt".into(),
+            "the retry's own genuinely new work\n".into(),
+        )),
+        gates: Vec::new(),
+    };
+    let deps4 = Deps {
+        store: &store,
+        driver: &driver4,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion_x.to_string()],
+    };
+    let rs4 = run(&fresh_run_cfg("true"), &deps4).unwrap();
+    assert_eq!(
+        rs4.units[retry_slug].status,
+        ledger::Status::Integrated,
+        "the genuine retry must run its ordinary lifecycle through to integration; units: {:?}",
+        rs4.units.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        repo.path().join("criterion-x-work.txt").exists(),
+        "the genuine retry of criterion X's own (criterion, spec) must still recover its \
+         real, reviewed work from the quarantine ref - the earlier store failure while \
+         writing that same record must never have cost the record its eventual durability"
+    );
+    assert!(repo.path().join("run4-own-work.txt").exists());
+}
+
+/// Test 17 (round 8, item 2 of operator ruling
+/// `op-u88c2-round-8-definition-of-done-record-between-create-and-delete`): "ONE
+/// crash-window fixture ... driving a crash after the record and before the delete
+/// (resume completes the delete and adopts from the quarantine)". Test 14 above already
+/// reproduces the OTHER half of this same crash window (a crash after the guarded
+/// `create_branch_at` but before ANYTHING durable lands) and stays green unchanged under
+/// round 8's reorder - this test reproduces the NEW half the reorder itself opens: the
+/// durable `STATUS_BRANCH_QUARANTINED` record has already landed (round 8's own fix
+/// writes it BEFORE `delete_branch`), but the canonical branch has not yet been deleted.
+///
+/// Mirrors test 14's own technique exactly, swapping which of the two writes is
+/// pre-built: the quarantine ref is pre-created via the SAME production
+/// `Worktree::create_branch_at` call the fix itself uses, at the SAME deterministic name,
+/// and the durable mark is appended directly - carrying the SAME `META_REPLAY_KEY` meta a
+/// real `emit_keyed_meta` call stamps (read back off the real `criterion_id` a real
+/// `UnitStarted` recorded, never hand-typed, exactly like tests 7/8's own technique) - so
+/// a resumed retry's own idempotent re-emit of the identical key is recognized as a
+/// replay, never appends a duplicate record. The canonical branch is left in place (the
+/// delete never ran): the simulated crash landed strictly between round 8's two
+/// statements.
+#[test]
+fn a_crash_after_the_quarantine_record_but_before_the_canonical_delete_completes_the_delete_on_resume(
+) {
+    let repo = tempfile::tempdir().unwrap();
+    init_repo(repo.path());
+    let store = Store::open(":memory:").unwrap();
+
+    let criterion_x = "the generator reports its own output frequency continuously";
+    let spec_a = "specs/88-a-unit-lineage-is-durable.md";
+
+    // RUN 1 (spec A, criterion X): escalates with real committed work, never integrated,
+    // never GC'd - identical shape to tests 13-16's own RUN 1.
+    start_fresh(&store, &[criterion_x.to_string()], "", "", spec_a).unwrap();
+    let shared_slug = "record-before-delete-shared-slug";
+    let shared_branch = format!("rigger/u/{shared_slug}");
+    let driver1 = ProposesSlugDriver {
+        proposed_id: shared_slug.to_string(),
+        criterion: criterion_x.to_string(),
+        worker_write: Some((
+            "criterion-x-work.txt".into(),
+            "criterion X's real, reviewed, still-abandoned work\n".into(),
+        )),
+        gates: vec!["gate".to_string()],
+    };
+    let deps1 = Deps {
+        store: &store,
+        driver: &driver1,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion_x.to_string()],
+    };
+    let mut cfg1 = fresh_run_cfg("false");
+    cfg1.workflow.defaults.max_retries = 1;
+    let rs1 = run(&cfg1, &deps1).unwrap();
+    assert_eq!(
+        rs1.units[shared_slug].status,
+        ledger::Status::Escalated,
+        "an always-failing gate must exhaust remediation and escalate, never integrate"
+    );
+    let prior_tip = git_out(repo.path(), &["rev-parse", &shared_branch])
+        .expect("the escalated unit's durable branch must exist with a resolvable tip");
+    let events_after_run1 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    let owner_criterion_id = find_unit_started(&events_after_run1, shared_slug)["criterion_id"]
+        .as_str()
+        .expect("the escalated unit's own UnitStarted carries its real criterion_id")
+        .to_string();
+
+    // RUN 2's own boundary (spec B, an UNRELATED criterion Y, the SAME literal slug)
+    // opens FIRST, so the hand-built crash state below lands INSIDE it: `emit_keyed_meta`
+    // seeds its in-process replay-key dedup from `crate::run::current_run`, scoped to the
+    // CURRENT run's own boundary (never the whole historical stream) - unlike the
+    // whole-stream READS `branch_owner`/`quarantined_branch` do - so a hand-built event
+    // meant to simulate "this run already wrote this record before crashing" must be
+    // appended AFTER this run's own `start_fresh`, exactly where a real crash mid-run
+    // would have left it, for the resumed call's own idempotent re-emit to recognize it.
+    let criterion_y = "the alternator independently reports its own duty cycle on every poll";
+    let spec_b = "specs/90-hermetic-test-git-and-merge-friendly-audit-artifacts.md";
+    start_fresh(&store, &[criterion_y.to_string()], "", "", spec_b).unwrap();
+
+    // Reproduce the CRASH STATE directly: the durable quarantine RECORD has already
+    // landed (round 8's own new ordering writes it BEFORE delete_branch) but the
+    // canonical branch has NOT yet been deleted.
+    let quarantine_branch = format!("rigger/orphaned/{shared_slug}-{}", &prior_tip[..12]);
+    Worktree::create_branch_at(
+        repo.path().to_str().unwrap(),
+        &quarantine_branch,
+        &prior_tip,
+    )
+    .unwrap();
+    // `branch_owner` (src/conductor.rs) independently recomputes `owner_spec` off the
+    // real `RunStarted` this test's own FIRST `start_fresh` call wrote for `spec_a` -
+    // through `ledger::spec_stem` (`pub(crate)`, so unreachable from this black-box
+    // periphery test) - never off this hand-built event's own "spec" field, so the value
+    // here must match that STEMMED form exactly (Rust's own `Path::file_stem`: directory
+    // and extension both dropped, no further sanitizing needed for this
+    // already-alphanumeric name), the same way test 15's own comment mirrors the private
+    // `STATUS_BRANCH_QUARANTINED` constant literally rather than importing it.
+    let owner_spec_stem = "88-a-unit-lineage-is-durable";
+    let replay_key = format!("{shared_slug}/{owner_criterion_id}/{owner_spec_stem}/quarantined");
+    store
+        .append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[Event::new(
+                ledger::TYPE_UNIT_STATUS,
+                serde_json::to_vec(&json!({
+                    "id": shared_slug,
+                    "status": "branch-quarantined",
+                    "criterion_id": owner_criterion_id,
+                    "spec": owner_spec_stem,
+                    "quarantined_to": {"branch": quarantine_branch, "tip": prior_tip},
+                }))
+                .unwrap(),
+            )
+            .with_meta(META_REPLAY_KEY, replay_key.as_str())],
+        )
+        .unwrap();
+    assert!(
+        worktree::branch_exists(repo.path().to_str().unwrap(), &shared_branch),
+        "the simulated crash must leave the canonical branch NOT YET deleted"
+    );
+
+    // RESUME: a real second `run()` call, same run boundary, reuses the identical
+    // literal slug for the unrelated criterion Y - the SAME collision that would have
+    // driven the original (pre-crash) quarantine attempt.
+    let driver2 = ProposesSlugDriver {
+        proposed_id: shared_slug.to_string(),
+        criterion: criterion_y.to_string(),
+        worker_write: Some((
+            "run2-own-work.txt".into(),
+            "spec B's own genuinely new work\n".into(),
+        )),
+        gates: Vec::new(),
+    };
+    let deps2 = Deps {
+        store: &store,
+        driver: &driver2,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion_y.to_string()],
+    };
+    let rs2 = run(&fresh_run_cfg("true"), &deps2).expect(
+        "a resumed retry recomputing the identical (unit_id, tip) quarantine ref, with its \
+         record already durably landed, must complete only the still-pending delete, \
+         never hard-error and never duplicate the record",
+    );
+    assert_eq!(
+        rs2.units[shared_slug].status,
+        ledger::Status::Integrated,
+        "the resumed unit must still run its ordinary lifecycle through to integration"
+    );
+    assert!(
+        !worktree::branch_exists(repo.path().to_str().unwrap(), &shared_branch),
+        "the resumed retry must complete the deferred delete of the canonical name"
+    );
+    assert!(
+        worktree::branch_exists(repo.path().to_str().unwrap(), &quarantine_branch),
+        "the pre-existing quarantine ref must survive untouched, never re-created or lost"
+    );
+    let events_after_run2 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    assert_eq!(
+        events_after_run2
+            .iter()
+            .filter(|e| is_quarantine_record_write(e))
+            .count(),
+        1,
+        "the resumed retry's own idempotent re-emit must recognize the pre-landed record \
+         as a replay under its shared META_REPLAY_KEY, never append a second, duplicate \
+         quarantine record for the identical identity"
+    );
+    assert!(repo.path().join("run2-own-work.txt").exists());
+    assert!(
+        !repo.path().join("criterion-x-work.txt").exists(),
+        "the foreign content must never ride into spec B's unit's own tree"
+    );
+
+    // RUN 3 (spec A AGAIN, criterion X AGAIN): the genuine later retry of the ORIGINAL
+    // criterion/spec must still recover its real, reviewed work from the quarantine ref -
+    // proving the crash between the record and the delete cost nothing.
+    start_fresh(&store, &[criterion_x.to_string()], "", "", spec_a).unwrap();
+    let retry_slug = "record-before-delete-retry-slug";
+    let driver3 = ProposesSlugDriver {
+        proposed_id: retry_slug.to_string(),
+        criterion: criterion_x.to_string(),
+        worker_write: Some((
+            "run3-own-work.txt".into(),
+            "the retry's own genuinely new work\n".into(),
+        )),
+        gates: Vec::new(),
+    };
+    let deps3 = Deps {
+        store: &store,
+        driver: &driver3,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion_x.to_string()],
+    };
+    let rs3 = run(&fresh_run_cfg("true"), &deps3).unwrap();
+    assert_eq!(
+        rs3.units[retry_slug].status,
+        ledger::Status::Integrated,
+        "the genuine retry must run its ordinary lifecycle through to integration; units: {:?}",
+        rs3.units.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        repo.path().join("criterion-x-work.txt").exists(),
+        "the genuine retry of criterion X's own (criterion, spec) must recover its real, \
+         reviewed work from the quarantine ref even though a crash landed between the \
+         record and the delete on the earlier round"
+    );
+    assert!(repo.path().join("run3-own-work.txt").exists());
 }

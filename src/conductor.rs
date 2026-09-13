@@ -8295,15 +8295,37 @@ impl RunCtx<'_> {
     /// `Ok(None)`, unchanged from before this fix.
     ///
     /// CRASH-WINDOW GUARD (round 7, operator ruling item 2, closing
-    /// `sdet-u88c2-r6-quarantine-crash-window-permanent-wedge`): the quarantine's two git
-    /// calls (`create_branch_at` the orphaned ref, then `delete_branch` the canonical
-    /// name) are both keyed on the SAME deterministic `(unit_id, tip)` pair, so a process
-    /// that crashes between them left a resumed retry recomputing the identical inputs and
-    /// hard-erroring on git's own "branch already exists" refusal - a permanent wedge,
-    /// since every subsequent retry fails identically. A `branch_exists` guard before
-    /// `create_branch_at`, mirroring the sibling adoption call site's own `!branch_exists`
-    /// guard a few lines above it in this same function, makes a resumed retry skip the
-    /// already-done rename and complete only the still-pending delete.
+    /// `sdet-u88c2-r6-quarantine-crash-window-permanent-wedge`): `create_branch_at` the
+    /// orphaned ref is keyed on the SAME deterministic `(unit_id, tip)` pair every retry
+    /// of this exact collision recomputes, so a process that crashes right after it lands
+    /// must never have a resumed retry redo it and hard-error on git's own "branch already
+    /// exists" refusal - a permanent wedge, since every subsequent retry would fail
+    /// identically. A `branch_exists` guard before `create_branch_at`, mirroring the
+    /// sibling adoption call site's own `!branch_exists` guard a few lines above it in this
+    /// same function, makes a resumed retry skip the already-done rename and complete only
+    /// whatever of the two steps below still hasn't landed.
+    ///
+    /// RECORD BEFORE DELETE, NOT AFTER (round 8, operator ruling
+    /// `op-u88c2-round-8-definition-of-done-record-between-create-and-delete`, closing
+    /// `arch-u88c2-r7-quarantine-record-write-ordered-after-git-not-before` /
+    /// `sdet-u88c2-r6-record-emit-crash-window-orphans-quarantine`): round 7 wrote the
+    /// durable [`STATUS_BRANCH_QUARANTINED`] mark LAST, after `delete_branch` had already
+    /// cleared this whole block's own re-entry gate (`branch_exists(branch)` above). A
+    /// crash - or any `emit_keyed_meta` failure, not only an OS-level crash - landing
+    /// between that delete succeeding and the emit completing left the canonical branch
+    /// gone, the orphaned ref real and resolvable, and NO record ever naming it; because
+    /// the gate that re-enters this whole block was already cleared, a resumed retry of
+    /// the SAME collision never even looks here again, so nothing ever retries the
+    /// dropped emit - a permanent, silent loss of the quarantined content's own future
+    /// adoptability, indistinguishable from the criterion having never been attempted.
+    /// Fixed by moving the record BEFORE the delete that clears the gate, mirroring this
+    /// same function's own record-before-mutate convention at
+    /// [`STATUS_ADOPTION_RECORDED`](Self::adopt_prior_criterion_branch)'s emit a few lines
+    /// below: a crash or failure before the record persists leaves the gate open, so a
+    /// resumed retry re-enters this block and redoes only what's still pending (the
+    /// already-guarded create is a no-op, the emit is idempotent under its replay key, and
+    /// the delete is idempotent) - closing the create-then-delete window above AND the
+    /// delete-then-emit window, with the one existing gate and no new durable state.
     fn adopt_prior_criterion_branch(
         &self,
         st: &Stage,
@@ -8340,17 +8362,19 @@ impl RunCtx<'_> {
                 let quarantine = quarantine_branch_name(&st.name, &tip);
                 // CRASH-WINDOW GUARD (round 7): a resumed retry recomputes the identical
                 // (unit_id, tip) pair, so a prior incarnation that crashed after this
-                // create but before the delete below must never hard-error on "branch
-                // already exists" - it completes the deferred rename instead.
-                // `delete_branch` is already idempotent (it no-ops when its target is
-                // already gone), so only this call needs the guard.
+                // create but before the record/delete below must never hard-error on
+                // "branch already exists" - it completes whatever's still pending instead.
                 if !worktree::branch_exists(&self.deps.repo, &quarantine) {
                     Worktree::create_branch_at(&self.deps.repo, &quarantine, &tip)?;
                 }
-                Worktree::delete_branch(&self.deps.repo, &branch)?;
-                // QUARANTINE IS A RECORD, NOT JUST A RENAME (round 7): keyed on the
-                // quarantined content's OWN identity so a later genuine retry of that
-                // exact criterion/spec can find it again via `quarantined_branch` below.
+                // QUARANTINE IS A RECORD, NOT JUST A RENAME (round 7), WRITTEN BEFORE THE
+                // DELETE THAT CLEARS THIS BLOCK'S OWN RE-ENTRY GATE (round 8): keyed on the
+                // quarantined content's OWN identity so a later genuine retry of that exact
+                // criterion/spec can find it again via `quarantined_branch` below. Ordered
+                // before `delete_branch` so a crash or emit failure here leaves the gate
+                // (`branch_exists(branch)` above) open for a resumed retry to redo this
+                // idempotent emit and complete the still-pending delete - never a git
+                // mutation with no durable record surviving it.
                 self.emit_keyed_meta(
                     &quarantine_record_key(&st.name, &owner_criterion, &owner_spec),
                     ledger::TYPE_UNIT_STATUS,
@@ -8363,6 +8387,12 @@ impl RunCtx<'_> {
                     }),
                     &[],
                 )?;
+                // Deferred to LAST: this is the ONLY step that clears the top-level
+                // `branch_exists(branch)` re-entry gate a few lines above, and it is
+                // already idempotent (a no-op once its target is gone) - so every step
+                // before it can be safely redone by a resumed retry, but this one must
+                // never run before the record it depends on has durably landed.
+                Worktree::delete_branch(&self.deps.repo, &branch)?;
             }
             return Ok(None);
         }
