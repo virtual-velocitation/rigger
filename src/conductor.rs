@@ -11890,6 +11890,12 @@ fn branch_owner(events: &[Event], unit_id: &str) -> Option<(String, String)> {
 /// caller preserves the historical behavior.
 fn branch_is_foreign(owner: &Option<(String, String)>, criterion_id: &str, spec: &str) -> bool {
     match owner {
+        // A recorded start with NO criterion id is UNKNOWN provenance, never proof of a
+        // foreign occupant: every `UnitStarted` written before this feature landed (the
+        // whole live run it landed in, 2026-09-13) carries none, and treating "" as
+        // "a different criterion" quarantined a unit's own live branch out from under
+        // its worktree (u88c5, spec 88). Unknown resolves like `None`: historical reuse.
+        Some((owner_criterion, _)) if owner_criterion.is_empty() => false,
         Some((owner_criterion, owner_spec)) => {
             owner_criterion != criterion_id || owner_spec != spec
         }
@@ -13154,6 +13160,31 @@ mod tests {
                 "spec-a"
             ),
             "an owner matching on both axes is this unit's own history, never foreign"
+        );
+    }
+
+    #[test]
+    fn branch_is_foreign_is_false_when_the_recorded_owner_has_no_criterion_id() {
+        // A `UnitStarted` written before this feature carries no `criterion_id`, so the
+        // fold yields an EMPTY owner id for the unit's own branch. That is unknown
+        // provenance, not a different criterion: on 2026-09-13 the live spec-88 run's
+        // final unit (u88c5) had its own branch quarantined out from under its worktree
+        // because "" != its criterion id. Unknown must resolve exactly like `None`.
+        assert!(
+            !branch_is_foreign(
+                &Some((String::new(), "spec-a".to_string())),
+                "c5-eee",
+                "spec-a"
+            ),
+            "an owner with no recorded criterion id is unknown, never foreign"
+        );
+        assert!(
+            !branch_is_foreign(
+                &Some((String::new(), "spec-b".to_string())),
+                "c5-eee",
+                "spec-a"
+            ),
+            "unknown provenance stays unknown even when the spec axis differs"
         );
     }
 
