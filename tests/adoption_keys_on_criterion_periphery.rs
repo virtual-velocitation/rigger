@@ -158,6 +158,7 @@ use rigger::conductor::{
 };
 use rigger::conductor::{META_COMPENSATED, META_CONTRADICTION};
 use rigger::config::{AgentDef, Config, Gate, Stage};
+use rigger::contextgraph;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision};
 use rigger::gate::ExecRunner;
@@ -2360,5 +2361,213 @@ fn a_crash_between_the_quarantine_rename_and_the_canonical_delete_completes_on_a
     assert!(
         !repo.path().join("criterion-x-work.txt").exists(),
         "the foreign content must never ride into spec B's unit's own tree"
+    );
+}
+
+/// Test 15 (round 7, sdet-author re-enumeration: new-public-API probe on
+/// `adopt_prior_criterion_branch`'s SECOND `branch_tip` call site, the one round 7 itself
+/// introduced): round 7's own commit message names the contract precisely - "a `branch_tip`
+/// failure on a ref this call positively knows should exist is now a real Error ..., never
+/// another silent `Ok(None)`. Only the genuinely-never-existed case (no canonical branch and
+/// no quarantine record) still returns `Ok(None)`." Test 9 (round 4) already proves the
+/// FIRST call site's precondition (`branch_exists(prior_branch) == false`, no quarantine
+/// record either) still degrades to the old, unchanged `Ok(None)` contract. Tests 13 and 14
+/// both drive the quarantine-ref arm's SUCCESS path only (the ref they resolve always
+/// actually exists). Neither exercises the one arm round 7 changed the contract for: the
+/// durable `STATUS_BRANCH_QUARANTINED` record survives (so `quarantined_branch` resolves
+/// `Some(ref)`, correctly - `prior_criterion_unit` still names this criterion's real unit),
+/// but the ref itself is gone (an operator's manual `git branch -D` of the orphaned ref,
+/// unaware the durable record still names it, or any other process that pruned it). This is
+/// the load-bearing case for spec 88's own Operator rule ("a unit's reviewed history is
+/// never discarded by the harness"): a silent `Ok(None)` here would read identically to
+/// "this criterion was simply never attempted," discarding the harness's own record that
+/// real reviewed work exists - never distinguishable from data loss by the unit's own
+/// operator. A real, durably-logged `Error` is the only outcome that keeps that promise.
+///
+/// THREE real `conductor::run` calls, identical RUN 1/RUN 2 setup to test 13's own (an
+/// escalated baseline with real committed work, then an unrelated criterion/spec collision
+/// that fires the round-6 quarantine) - then, before RUN 3, the quarantine ref RUN 2 just
+/// created is deleted directly via `git branch -D`, leaving the durable `UnitStatus` mark
+/// pointing at a ref that no longer resolves. RUN 3 drives the identical genuine retry test
+/// 13 proves ADOPTS when the ref is intact; here it must hard-error instead: `run()` itself
+/// returns `Err` (proven at the real boundary, never by calling the private function
+/// directly), the retry's own `UnitStarted` must never be written (the `?` fires inside
+/// `start_and_run_stage`, strictly BEFORE its `UnitStarted` emit - so a crash-resumed retry
+/// never sees a half-recorded unit either), and the wave's ordinary generic-error arm must
+/// still leave its usual durable lesson naming the failed stage - the failure stays legible
+/// in the log exactly like any other stage error, never a swallowed failure invisible to the
+/// operator.
+#[test]
+fn a_quarantine_record_whose_ref_was_since_deleted_hard_errors_instead_of_silently_starting_fresh()
+{
+    let repo = tempfile::tempdir().unwrap();
+    init_repo(repo.path());
+    let store = Store::open(":memory:").unwrap();
+
+    let criterion_x = "the reactor reports its own core pressure continuously";
+    let spec_a = "specs/88-a-unit-lineage-is-durable.md";
+
+    // RUN 1 (spec A, criterion X): escalates with real committed work, never integrated,
+    // never GC'd - identical shape to test 13's own RUN 1.
+    start_fresh(&store, &[criterion_x.to_string()], "", "", spec_a).unwrap();
+    let shared_slug = "deleted-quarantine-ref-original-slug";
+    let shared_branch = format!("rigger/u/{shared_slug}");
+    let driver1 = ProposesSlugDriver {
+        proposed_id: shared_slug.to_string(),
+        criterion: criterion_x.to_string(),
+        worker_write: Some((
+            "criterion-x-work.txt".into(),
+            "criterion X's real, reviewed, still-abandoned work\n".into(),
+        )),
+        gates: vec!["gate".to_string()],
+    };
+    let deps1 = Deps {
+        store: &store,
+        driver: &driver1,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion_x.to_string()],
+    };
+    let mut cfg1 = fresh_run_cfg("false");
+    cfg1.workflow.defaults.max_retries = 1;
+    let rs1 = run(&cfg1, &deps1).unwrap();
+    assert_eq!(
+        rs1.units[shared_slug].status,
+        ledger::Status::Escalated,
+        "an always-failing gate must exhaust remediation and escalate, never integrate"
+    );
+    let prior_tip = git_out(repo.path(), &["rev-parse", &shared_branch])
+        .expect("the escalated unit's durable branch must exist with a resolvable tip");
+
+    // RUN 2 (spec B, an UNRELATED criterion Y): reuses the exact same literal slug, firing
+    // the round-6 quarantine - moves the foreign content aside and (round 7) durably
+    // records the quarantine ref's identity.
+    let criterion_y = "the pump independently reports its own duty cycle on every poll";
+    let spec_b = "specs/90-hermetic-test-git-and-merge-friendly-audit-artifacts.md";
+    start_fresh(&store, &[criterion_y.to_string()], "", "", spec_b).unwrap();
+    let driver2 = ProposesSlugDriver {
+        proposed_id: shared_slug.to_string(),
+        criterion: criterion_y.to_string(),
+        worker_write: Some((
+            "run2-own-work.txt".into(),
+            "spec B's own genuinely new work\n".into(),
+        )),
+        gates: Vec::new(),
+    };
+    let deps2 = Deps {
+        store: &store,
+        driver: &driver2,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion_y.to_string()],
+    };
+    let rs2 = run(&fresh_run_cfg("true"), &deps2).unwrap();
+    assert_eq!(
+        rs2.units[shared_slug].status,
+        ledger::Status::Integrated,
+        "spec B's own unit must run its ordinary lifecycle through to integration"
+    );
+    let quarantine_branch = format!("rigger/orphaned/{shared_slug}-{}", &prior_tip[..12]);
+    assert!(
+        worktree::branch_exists(repo.path().to_str().unwrap(), &quarantine_branch),
+        "the round-6 quarantine must have created the orphaned ref before this test deletes \
+         it"
+    );
+
+    // Delete the quarantine ref itself - the durable STATUS_BRANCH_QUARANTINED record
+    // still names it, but the git ref it points to is now gone (an operator's manual
+    // cleanup, unaware of the record; or any other process that pruned it).
+    assert!(Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args(["branch", "-D", &quarantine_branch])
+        .status()
+        .unwrap()
+        .success());
+    assert!(
+        !worktree::branch_exists(repo.path().to_str().unwrap(), &quarantine_branch),
+        "the quarantine ref must be genuinely gone before RUN 3 - the record now names a ref \
+         that no longer resolves"
+    );
+
+    // RUN 3: the identical genuine retry test 13 proves ADOPTS when the quarantine ref is
+    // intact. Here `quarantined_branch` still resolves `Some(quarantine_branch)` (the
+    // durable record was never touched), but `branch_tip` on that ref must now fail - and
+    // that failure must propagate as a real `Error`, never silently degrade to "nothing to
+    // adopt, start fresh".
+    start_fresh(&store, &[criterion_x.to_string()], "", "", spec_a).unwrap();
+    let retry_slug = "deleted-quarantine-ref-retry-slug";
+    let driver3 = ProposesSlugDriver {
+        proposed_id: retry_slug.to_string(),
+        criterion: criterion_x.to_string(),
+        worker_write: Some((
+            "run3-own-work.txt".into(),
+            "the retry's own genuinely new work\n".into(),
+        )),
+        gates: Vec::new(),
+    };
+    let deps3 = Deps {
+        store: &store,
+        driver: &driver3,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion_x.to_string()],
+    };
+    // `RunState` (the `Ok` type) does not implement `Debug`, so `expect_err` cannot be
+    // used here - match explicitly instead (mirrors tests/build_env_authority_periphery.rs).
+    match run(&fresh_run_cfg("true"), &deps3) {
+        Err(_) => {}
+        Ok(_) => panic!(
+            "a durably-recorded quarantine ref that no longer resolves must hard-error, \
+             never silently degrade to Ok(None) and start the retry fresh - discarding the \
+             harness's own record that real reviewed history exists"
+        ),
+    }
+
+    let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    assert!(
+        !events.iter().any(|e| {
+            if e.type_ != ledger::TYPE_UNIT_STARTED {
+                return false;
+            }
+            let Ok(body) = serde_json::from_slice::<Value>(&e.data) else {
+                return false;
+            };
+            body.get("id").and_then(Value::as_str) == Some(retry_slug)
+        }),
+        "the hard error fires before start_and_run_stage's own UnitStarted emit - the retry \
+         unit must never be half-recorded, so a crash-resumed process never mistakes it for \
+         an already-started unit"
+    );
+    // The whole-stream fold also carries RUN 1's own unrelated escalation lesson - match
+    // on the retry stage's own name, never just "some LessonLearned exists somewhere in
+    // the log", so this proves the failure was attributed to the right unit.
+    assert!(
+        events.iter().any(|e| {
+            if e.type_ != contextgraph::TYPE_LESSON_LEARNED {
+                return false;
+            }
+            let Ok(body) = serde_json::from_slice::<Value>(&e.data) else {
+                return false;
+            };
+            body["summary"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(retry_slug)
+        }),
+        "the wave's ordinary generic-error arm must still leave its usual durable lesson \
+         naming the failing stage - this failure must stay legible in the log exactly like \
+         any other stage error, never a swallowed failure invisible to the operator"
+    );
+    assert!(
+        !repo.path().join("run3-own-work.txt").exists(),
+        "the retry's own implementer must never even spawn once its adoption decision \
+         hard-errors"
     );
 }
