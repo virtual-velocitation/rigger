@@ -29664,6 +29664,60 @@ mod tests {
         }
     }
 
+    #[test]
+    fn an_implement_stage_gate_round_creates_no_mutants_directory() {
+        // Spec 91, criterion 3 (NO SWEEP IN THE LOOP): an ordinary `implement` round's gate
+        // list never includes `mutation` - only the `checkin` stage (spec 91 criterion 2)
+        // does - so its real gate commands never run `rm -rf "$MUTANTS" && mkdir -p
+        // "$MUTANTS"` (the `mutation` gate's OWN command, the only place that ever
+        // materializes it - see `worktree::unit_mutants_sibling`'s own doc comment: "this
+        // crate never creates it"). Proven with a REAL `ExecRunner` (never `RecordingRunner`,
+        // which only records the env VALUE `two_units_gate_environments_never_share_a_
+        // mutants_root` above proves is non-empty, and could never distinguish "set" from
+        // "materialized"): the stage's one real gate command asserts, LIVE, mid-round, that
+        // its own non-empty $MUTANTS path does not exist on disk - immune to whatever
+        // unit-terminus cleanup runs afterward, which would otherwise make a post-hoc
+        // filesystem check pass vacuously regardless of whether the round itself ever
+        // created it.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert(
+            "no-mutants-dir-yet".into(),
+            gate_def(r#"test -n "$MUTANTS" && test ! -e "$MUTANTS""#),
+        );
+        cfg.workflow.stages.insert(
+            "implement-like".into(),
+            Stage {
+                name: "implement-like".into(),
+                agent: "worker".into(),
+                gates: vec!["no-mutants-dir-yet".into()],
+                on_pass: "none".into(),
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        let driver = UnitDistinctWriter;
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path,
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_ne!(
+            rs.units["implement-like"].status,
+            ledger::Status::Escalated,
+            "an implement-shaped stage's real gate command found its own $MUTANTS path \
+             already materialized on disk (or unset) mid-round: {:?}",
+            rs.units["implement-like"].status
+        );
+    }
+
     /// A driver that records the `SpawnOpts.env` handed to each spawn (spec 65) - lets a
     /// test assert the ONE build-environment authority reaches an agent spawn exactly as
     /// it reaches a gate build.
