@@ -1785,8 +1785,8 @@
       },
       {
         "file": "tests/reap_before_removal_periphery.rs",
-        "start_line": 339,
-        "end_line": 339,
+        "start_line": 407,
+        "end_line": 407,
         "name": "Command::new"
       },
       {
@@ -6313,140 +6313,164 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25046,
-        "end_line": 25046,
+        "start_line": 25026,
+        "end_line": 25026,
+        "name": "\"this repository's own .rigger/workflow.yml and agents must load: {e}\""
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 25033,
+        "end_line": 25033,
+        "name": "\".rigger/workflow.yml must define a `checkin` stage (spec 91)\""
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 25067,
+        "end_line": 25067,
+        "name": "\".rigger/workflow.yml must define a `mutation` gate (spec 91)\""
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 25088,
+        "end_line": 25088,
+        "name": "\"this repository's own committed .rigger/workflow.yml must pass Config::validate \\\n         on a correctly-provisioned machine (cargo-mutants installed)\""
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 25133,
+        "end_line": 25133,
         "name": "\".rigger/dash.attempt\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25047,
-        "end_line": 25047,
+        "start_line": 25134,
+        "end_line": 25134,
         "name": "\"a real step's own ensure_run_dashboard call must record .rigger/dash.attempt \\\n         (record_dash_attempt); without it this test cannot exercise the round-8 fact at all\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25104,
-        "end_line": 25104,
+        "start_line": 25191,
+        "end_line": 25191,
         "name": "\".rigger/dash.url\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25112,
-        "end_line": 25112,
+        "start_line": 25199,
+        "end_line": 25199,
         "name": "\".rigger/dash.marker\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25176,
-        "end_line": 25176,
+        "start_line": 25263,
+        "end_line": 25263,
         "name": "\".rigger/dash.marker\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25205,
-        "end_line": 25205,
+        "start_line": 25292,
+        "end_line": 25292,
         "name": "\".rigger/dash.url\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25212,
-        "end_line": 25212,
+        "start_line": 25299,
+        "end_line": 25299,
         "name": "\".rigger/dash.attempt\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25273,
-        "end_line": 25273,
+        "start_line": 25360,
+        "end_line": 25360,
         "name": "\".rigger/dash.marker\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25276,
-        "end_line": 25276,
+        "start_line": 25363,
+        "end_line": 25363,
         "name": "\".rigger/dash.url\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25330,
-        "end_line": 25330,
+        "start_line": 25417,
+        "end_line": 25417,
         "name": "\".rigger/dash.marker\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25352,
-        "end_line": 25352,
+        "start_line": 25439,
+        "end_line": 25439,
         "name": "\".rigger/dash.url\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25357,
-        "end_line": 25357,
+        "start_line": 25444,
+        "end_line": 25444,
         "name": "\".rigger/dash.attempt\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25396,
-        "end_line": 25396,
+        "start_line": 25483,
+        "end_line": 25483,
         "name": "\".rigger/dash.url\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25407,
-        "end_line": 25407,
+        "start_line": 25494,
+        "end_line": 25494,
         "name": "\".rigger/dash.marker\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25443,
-        "end_line": 25443,
+        "start_line": 25530,
+        "end_line": 25530,
         "name": "\".rigger/dash.url\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25451,
-        "end_line": 25451,
+        "start_line": 25538,
+        "end_line": 25538,
         "name": "\".rigger/dash.marker\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25503,
-        "end_line": 25503,
+        "start_line": 25590,
+        "end_line": 25590,
         "name": "\".rigger/dash.url\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25508,
-        "end_line": 25508,
+        "start_line": 25595,
+        "end_line": 25595,
         "name": "\".rigger/dash.marker\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25570,
-        "end_line": 25570,
+        "start_line": 25657,
+        "end_line": 25657,
         "name": "\".rigger/dash.url\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25578,
-        "end_line": 25578,
+        "start_line": 25665,
+        "end_line": 25665,
         "name": "\".rigger/dash.marker\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25831,
-        "end_line": 25831,
+        "start_line": 25918,
+        "end_line": 25918,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26539,
-        "end_line": 26539,
+        "start_line": 26626,
+        "end_line": 26626,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26577,
-        "end_line": 26577,
+        "start_line": 26664,
+        "end_line": 26664,
         "name": "\".rigger\""
       },
       {
@@ -7897,7 +7921,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 681 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: .rigger-path string literals - 685 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0060",
@@ -10343,86 +10367,86 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26608,
-        "end_line": 26608,
+        "start_line": 26695,
+        "end_line": 26695,
         "name": "\"/proc\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26693,
-        "end_line": 26693,
+        "start_line": 26780,
+        "end_line": 26780,
         "name": "\"/proc\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26740,
-        "end_line": 26740,
+        "start_line": 26827,
+        "end_line": 26827,
         "name": "\"/proc/{holder_pid}/stat\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26755,
-        "end_line": 26755,
+        "start_line": 26842,
+        "end_line": 26842,
         "name": "\"the holder pid {holder_pid} never reached the STOPPED (T) state in /proc\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26821,
-        "end_line": 26821,
+        "start_line": 26908,
+        "end_line": 26908,
         "name": "\"/proc\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26844,
-        "end_line": 26844,
+        "start_line": 26931,
+        "end_line": 26931,
         "name": "\"/proc\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26873,
-        "end_line": 26873,
+        "start_line": 26960,
+        "end_line": 26960,
         "name": "\"/proc\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26923,
-        "end_line": 26923,
+        "start_line": 27010,
+        "end_line": 27010,
         "name": "\"/proc/{holder_pid}/stat\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26938,
-        "end_line": 26938,
+        "start_line": 27025,
+        "end_line": 27025,
         "name": "\"the holder pid {holder_pid} never reached the STOPPED (T) state in /proc\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27012,
-        "end_line": 27012,
+        "start_line": 27099,
+        "end_line": 27099,
         "name": "\"/proc\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27038,
-        "end_line": 27038,
+        "start_line": 27125,
+        "end_line": 27125,
         "name": "\"/proc\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27136,
-        "end_line": 27136,
+        "start_line": 27223,
+        "end_line": 27223,
         "name": "\"/proc\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27174,
-        "end_line": 27174,
+        "start_line": 27261,
+        "end_line": 27261,
         "name": "\"held_port_holder's message half and describe_held_port_if_confirmed's own return \\\n             must agree (scheduler-state letter normalized away since each call independently \\\n             re-reads /proc and can observe a state flap) - they are documented as sharing one \\\n             discovery\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27193,
-        "end_line": 27193,
+        "start_line": 27280,
+        "end_line": 27280,
         "name": "\"/proc\""
       },
       {
@@ -10585,14 +10609,14 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26688,
-        "end_line": 26788,
+        "start_line": 26775,
+        "end_line": 26875,
         "name": "cmd_dash_gives_the_stopped_listener_diagnosis_naming_resume_or_kill"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26867,
-        "end_line": 26982,
+        "start_line": 26954,
+        "end_line": 27069,
         "name": "step_names_the_stopped_holder_when_the_step_paths_own_auto_start_hits_the_predecessor_scenario"
       },
       {
@@ -19601,8 +19625,8 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25436,
-        "end_line": 25474,
+        "start_line": 25523,
+        "end_line": 25561,
         "name": "watch_once_never_names_the_unattributed_pid_sentinel_when_the_url_is_unparseable"
       }
     ],
@@ -19621,8 +19645,8 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25496,
-        "end_line": 25525,
+        "start_line": 25583,
+        "end_line": 25612,
         "name": "watch_once_parses_the_urls_port_past_a_colon_in_the_path_with_no_marker"
       }
     ],
@@ -19873,14 +19897,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 25088,
-        "end_line": 25130,
+        "start_line": 25175,
+        "end_line": 25217,
         "name": "watch_once_never_names_a_mismatched_markers_pid_for_the_recorded_urls_port"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25554,
-        "end_line": 25603,
+        "start_line": 25641,
+        "end_line": 25690,
         "name": "watch_once_never_names_a_mismatched_markers_pid_when_the_urls_path_contains_a_colon"
       }
     ],
@@ -19893,26 +19917,26 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 25742,
-        "end_line": 25780,
+        "start_line": 25829,
+        "end_line": 25867,
         "name": "run_given_a_spec_path_names_the_spec_lint_as_a_next_step"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25905,
-        "end_line": 25948,
+        "start_line": 25992,
+        "end_line": 26035,
         "name": "step_given_a_spec_path_names_the_spec_lint_even_when_the_step_then_refuses_for_no_reachable_base"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26222,
-        "end_line": 26257,
+        "start_line": 26309,
+        "end_line": 26344,
         "name": "step_reminder_prints_despite_env_naming_a_foreign_pid"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26301,
-        "end_line": 26335,
+        "start_line": 26388,
+        "end_line": 26422,
         "name": "run_reminder_prints_despite_env_naming_a_foreign_pid"
       }
     ],
@@ -19925,20 +19949,20 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 25968,
-        "end_line": 26028,
+        "start_line": 26055,
+        "end_line": 26115,
         "name": "run_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26037,
-        "end_line": 26076,
+        "start_line": 26124,
+        "end_line": 26163,
         "name": "step_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26094,
-        "end_line": 26161,
+        "start_line": 26181,
+        "end_line": 26248,
         "name": "run_driver_workflow_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site"
       }
     ],
@@ -19951,14 +19975,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 26181,
-        "end_line": 26217,
+        "start_line": 26268,
+        "end_line": 26304,
         "name": "step_reminder_is_suppressed_when_env_names_the_real_direct_parent_pid"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26261,
-        "end_line": 26296,
+        "start_line": 26348,
+        "end_line": 26383,
         "name": "run_reminder_is_suppressed_when_env_names_the_real_direct_parent_pid"
       }
     ],
@@ -19971,14 +19995,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 26399,
-        "end_line": 26448,
+        "start_line": 26486,
+        "end_line": 26535,
         "name": "run_driver_workflow_prints_the_spec_lint_reminder_and_honors_the_pid_scoped_dedup"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26460,
-        "end_line": 26515,
+        "start_line": 26547,
+        "end_line": 26602,
         "name": "run_driver_workflow_reminder_never_reaches_stdout_in_any_pid_sentinel_direction"
       }
     ],
@@ -19991,14 +20015,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 26531,
-        "end_line": 26565,
+        "start_line": 26618,
+        "end_line": 26652,
         "name": "run_driver_workflow_fresh_notice_never_reaches_stdout"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26572,
-        "end_line": 26596,
+        "start_line": 26659,
+        "end_line": 26683,
         "name": "run_driver_cli_fresh_notice_still_prints_on_stdout"
       }
     ],
@@ -20011,14 +20035,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 26688,
-        "end_line": 26788,
+        "start_line": 26775,
+        "end_line": 26875,
         "name": "cmd_dash_gives_the_stopped_listener_diagnosis_naming_resume_or_kill"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26867,
-        "end_line": 26982,
+        "start_line": 26954,
+        "end_line": 27069,
         "name": "step_names_the_stopped_holder_when_the_step_paths_own_auto_start_hits_the_predecessor_scenario"
       }
     ],
@@ -24405,24 +24429,30 @@
       },
       {
         "file": "tests/reap_before_removal_periphery.rs",
-        "start_line": 138,
-        "end_line": 198,
+        "start_line": 155,
+        "end_line": 203,
+        "name": "worktree_remove_reaps_a_process_rooted_in_its_sibling_mutants_root_before_reclaiming_it"
+      },
+      {
+        "file": "tests/reap_before_removal_periphery.rs",
+        "start_line": 206,
+        "end_line": 266,
         "name": "discard_reaps_a_process_rooted_in_the_review_worktrees_fence_sibling_before_reclaiming_it"
       },
       {
         "file": "tests/reap_before_removal_periphery.rs",
-        "start_line": 201,
-        "end_line": 261,
+        "start_line": 269,
+        "end_line": 329,
         "name": "worktree_remove_reaps_a_process_rooted_in_the_cache_dirs_own_store_fence_sibling_before_reclaiming_it"
       },
       {
         "file": "tests/reap_before_removal_periphery.rs",
-        "start_line": 264,
-        "end_line": 325,
+        "start_line": 332,
+        "end_line": 393,
         "name": "discard_reaps_a_process_rooted_in_the_review_worktree_itself_before_clearing_it"
       }
     ],
-    "proposed_home": "reap_before_removal_periphery::support (consolidate these 4 sites into one function in this file)",
+    "proposed_home": "reap_before_removal_periphery::support (consolidate these 5 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {

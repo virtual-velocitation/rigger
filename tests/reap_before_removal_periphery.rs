@@ -31,7 +31,7 @@ use rigger::gate::STORE_FENCE_SUFFIX;
 use rigger::reap::processes_rooted_under;
 use rigger::worktree::{
     reclaim_worktree_on_branch, review_fence_sibling, scratch_root, sweep_terminal,
-    unit_cache_sibling, Worktree, UNIT_WORKTREE_PREFIX,
+    unit_cache_sibling, unit_mutants_sibling, Worktree, UNIT_WORKTREE_PREFIX,
 };
 
 /// Spawn a long-lived process rooted at `dir` that IGNORES SIGTERM, so only a SIGKILL
@@ -131,6 +131,74 @@ fn worktree_remove_reaps_a_process_rooted_in_its_sibling_build_cache_before_recl
     assert!(
         !cache_path.exists(),
         "the cache dir is still reclaimed once its rooted process is reaped"
+    );
+}
+
+/// SDET periphery (spec 91, THE GATE ENVIRONMENT): the identical structural gap as
+/// `worktree_remove_reaps_a_process_rooted_in_its_sibling_build_cache_before_reclaiming_it`
+/// above, for the NEW THIRD sibling `reclaim_cache_sibling` widened to reclaim - the
+/// `checkin` stage's `mutation` gate's own per-unit `cargo-mutants-<slug>` root.
+///
+/// WHAT THE INSIDE-OUT TESTS ARE STRUCTURALLY BLIND TO. `src/worktree.rs`'s own
+/// `worktree_remove_also_reclaims_the_sibling_mutants_root` test (spec 91) proves the dir is
+/// gone after `remove()` - but it never plants a LIVE process inside it first, so it cannot
+/// see the exact defect class this file exists to close (see this file's own module doc):
+/// a process rooted in the sibling can survive a bare `remove_dir_all`, outliving the
+/// removed dir with a now-deleted cwd. This is the realistic shape for THIS sibling
+/// specifically: `cargo mutants` forks one `cargo test` (and its own child test binary) per
+/// mutant into `$MUTANTS`, and spec 91's own Goal cites a real one that survived its
+/// launcher's death for 6.6 hours - if a unit's worktree is torn down (escalation,
+/// supersede, crash resume) while a sweep's process tree is still rooted in this exact
+/// directory, only a real reap-before-remove closes the same class of orphan the sibling
+/// build-cache case already guards.
+#[test]
+fn worktree_remove_reaps_a_process_rooted_in_its_sibling_mutants_root_before_reclaiming_it() {
+    let repo = tempfile::tempdir().unwrap();
+    let repo_path = repo.path().canonicalize().unwrap();
+    init_repo(&repo_path);
+
+    let scratch = tempfile::tempdir().unwrap();
+    let scratch_path = scratch.path().canonicalize().unwrap();
+    let wt_dir = scratch_path.join("rigger-wt-mutantsreaptest");
+
+    let wt = Worktree::create(
+        repo_path.to_str().unwrap(),
+        wt_dir.to_str().unwrap(),
+        "rigger/u/mutantsreaptest",
+        scratch_path.to_str().unwrap(),
+    )
+    .expect("create the unit worktree");
+
+    let mutants_dir = unit_mutants_sibling(wt_dir.to_str().unwrap())
+        .expect("a rigger-wt-* worktree dir has a mutants-root sibling");
+    std::fs::create_dir_all(&mutants_dir).unwrap();
+    let mutants_path = Path::new(&mutants_dir).to_path_buf();
+
+    let mut child = sigterm_ignorer_in(&mutants_path);
+    assert!(
+        wait_until(|| processes_rooted_under(&mutants_path)
+            .iter()
+            .any(|(pid, _)| *pid == child.id())),
+        "precondition: the fixture process is rooted in the mutants root before remove() runs"
+    );
+
+    wt.remove().expect("remove() itself must still succeed");
+
+    let died = wait_until(|| matches!(child.try_wait(), Ok(Some(_))));
+    if !died {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    assert!(
+        died,
+        "a process rooted in the per-unit cargo-mutants-<slug> root that Worktree::remove \
+         reclaims as reclaim_cache_sibling must be reaped (SIGTERM then SIGKILL) BEFORE that \
+         dir is removed - a bare remove_dir_all here leaks a mutation-sweep child as an \
+         orphan holding a deleted cwd, the same class spec 79 closed for the build cache"
+    );
+    assert!(
+        !mutants_path.exists(),
+        "the mutants root is still reclaimed once its rooted process is reaped"
     );
 }
 
