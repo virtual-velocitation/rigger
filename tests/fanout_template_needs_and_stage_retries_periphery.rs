@@ -15,6 +15,12 @@
 //!     (round 2, closing `adj-u91c1-verdict-reject` /
 //!     `arch-u91c1-fanout-members-orphans-a-superseded-baseline`) proves rule 1 survives a
 //!     planner supersede of a fan-out member, end to end through the real `run()` wiring.
+//!   - `a_real_split_pair_must_both_integrate_not_just_the_btreemap_key_first_sibling`
+//!     (round 3, closing `adj-u91c1-r2-verdict-reject` /
+//!     `arch-u91c1-r2-need-satisfied-ignores-real-split-siblings`) proves `need_satisfied`
+//!     requires EVERY live sibling sharing a criterion id to integrate - not merely the
+//!     first one a `BTreeMap` iterates to - over a hand-built `stages`/`integrated`/
+//!     `terminal` map, both directions (early integration, permanent escalation).
 //!   - `a_stages_own_max_retries_overrides_the_run_default_for_its_units` proves rule 2's
 //!     precedence arithmetic (`max_retries_for`) directly, including the resume-grant-still-
 //!     wins interaction.
@@ -48,12 +54,26 @@
 //!      resolution `need_satisfied` now does survives an ACTUAL worktree-create -> commit
 //!      -> merge cycle for the unit that supersedes a fan-out baseline, as opposed to an
 //!      in-memory `Stub` answering synchronously.
+//!   6. Nothing proves the round-3 real-split-sibling fix (`need_satisfied` resolving
+//!      EVERY live owner of a criterion id, not merely the first one `stages.iter()`
+//!      reaches) survives a REAL SPLIT produced by a genuine multi-process planner
+//!      courier and REAL git merges (or a REAL escalation) for each sibling - the
+//!      round-3 regression test itself proves the fixed arithmetic in one process over a
+//!      hand-built `stages`/`integrated`/`terminal` map, never through `rigger step`,
+//!      `rigger emit`, or `rigger result` process boundaries, and never through an
+//!      actual worktree-create -> commit -> merge (or escalate) cycle for either sibling.
 //!
-//! This file closes all five, through the compiled binary or the crate's public `run`/
-//! `AgentDriver` API (gap 5, which needs a real git repo and a real superseding proposal,
-//! never a subprocess CLI boundary the planner role has no established multi-process
-//! idiom for in this codebase), with real git worktrees/merges wherever the scenario needs
-//! them, and real `rigger step`/`rigger result` process boundaries for gaps 1-4.
+//! This file closes all six, through the compiled binary or the crate's public `run`/
+//! `AgentDriver` API (gap 5, which needs a real git repo and a real superseding proposal),
+//! with real git worktrees/merges wherever the scenario needs them, and real `rigger
+//! step`/`rigger emit --spawn`/`rigger result` process boundaries for gaps 1-4 and 6 -
+//! gap 6's real split is produced by two `rigger emit --spawn <plan-spawn-id>
+//! UnitProposed` calls from the SAME parked spawn (`cmd_emit`, `src/main.rs`: the
+//! established native-courier idiom a scripted, non-MCP-tooled planner uses to record a
+//! decision, threading its own spawn id into `META_SPAWN` exactly as a live MCP-tooled
+//! agent's stamped emit does), so both proposals share one episode identity - a real
+//! multi-process planner idiom this file did not use for gap 5, which instead drives the
+//! public `AgentDriver` trait directly.
 //!
 //! NOT OWNED HERE: the pure `ready_stages`/`wave_ready`/`max_retries_for`/`need_satisfied`
 //! arithmetic itself (private to `conductor.rs`, exhaustively covered by its own colocated
@@ -634,6 +654,332 @@ fn checkin_integrates_after_a_real_planner_supersede_of_a_fanout_baseline_lands_
             landed.display()
         );
     }
+}
+
+// -----------------------------------------------------------------------------------------
+// Rule 1, gap 6 (round-3 fix, closing `adj-u91c1-r2-verdict-reject` /
+// `arch-u91c1-r2-need-satisfied-ignores-real-split-siblings`): a REAL SPLIT - a same-episode
+// planner proposal that adds a SECOND live unit sharing one criterion id alongside the
+// first (spec 31/72's real-split guarantee: `harvest_proposed` never reaps a genuinely-new
+// same-episode sibling, only a strictly-earlier-episode owner) - must require EVERY live
+// sibling under that criterion id to integrate before a downstream `needs: [<template>]`
+// stage becomes ready. Round 2's own fix (`need_satisfied`'s `stages.iter().find(..)`
+// resolution) silently satisfied - or silently NEVER satisfied - the whole entry on
+// whichever sibling `BTreeMap` iteration reaches first, ignoring every other live sibling
+// entirely; round 3 replaced it with `.filter(..).all(..)`. The round-3 regression test
+// proving this (`a_real_split_pair_must_both_integrate_not_just_the_btreemap_key_first_sibling`,
+// `src/conductor.rs` `mod tests`) answers through a hand-built `stages`/`integrated`/
+// `terminal` map in one process - never a real planner proposal, never a real gate, never a
+// real git merge or a real escalation. The two tests below close that: a REAL split is
+// produced by a native courier's `rigger emit --spawn <plan-spawn-id> UnitProposed` (see
+// `propose_real_split` below) called TWICE from the SAME parked `plan` spawn so both
+// proposals share one episode identity, and each split unit's own real gate outcome and
+// real git merge (or real escalation) is driven through a genuine `rigger step`/`rigger
+// result` process boundary - never the crate's private `Stub`/`AgentDriver` in-process seam
+// gap 5 above already covers.
+// -----------------------------------------------------------------------------------------
+
+/// The one-criterion spec text every real-split test below decomposes: exactly one
+/// deterministic baseline unit, so the planner's real split is the ONLY source of a second
+/// live owner for its criterion id (never a second baseline from a second criterion).
+const SPLIT_CRITERION: &str = "the auth module lands";
+
+fn write_split_criterion_spec(root: &Path) {
+    std::fs::write(
+        root.join("spec.md"),
+        format!("# Spec\n\n## Done when\n\n- [ ] {SPLIT_CRITERION}\n"),
+    )
+    .unwrap();
+}
+
+/// The fan-out workflow every real-split test below shares: `plan` (agent: worker, the
+/// producer), `implement` (the fan-out template, needs the producer implicitly via
+/// `baseline_units`), `checkin` (`needs: [implement]`, the edge under test). One agent id
+/// ("worker", real git isolation) plays every role - the planner's own real actions here
+/// are driven by the TEST's calls to `rigger emit`/`rigger result`, never by an LLM, so a
+/// single agent identity suffices exactly as it does for `write_git_worker_agent`'s other
+/// callers above.
+fn write_split_fanout_workflow(root: &Path) {
+    write_git_worker_agent(root);
+    std::fs::write(
+        root.join(".rigger").join("workflow.yml"),
+        r#"name: fanoutrealsplittest
+defaults:
+  grounder: nop
+  budget: 60
+  max_retries: 1
+gates:
+  ok: { run: "true", kind: core }
+  bad: { run: "false", kind: core }
+stages:
+  plan:
+    agent: worker
+    produces: dag
+  implement:
+    agent: worker
+    strategy: fan-out
+    gates: [ok]
+    on_pass: merge
+  checkin:
+    agent: worker
+    needs: [implement]
+    gates: [ok]
+    on_pass: merge
+"#,
+    )
+    .unwrap();
+}
+
+/// Post one `UnitProposed` decision for the currently-parked spawn `spawn`, through the
+/// real `rigger emit --spawn` CLI courier (`cmd_emit`, `src/main.rs`) - the established
+/// native-courier idiom for a scripted (non-MCP) agent to record a decision, threading its
+/// OWN spawn id into `META_SPAWN` exactly as a live MCP-tooled planner's stamped emit does.
+/// Never the crate's private in-process `AgentDriver::spawn` emit closure gap 5's own test
+/// uses above - this drives the SAME real subprocess boundary `run_rigger` already does for
+/// `rigger step`/`rigger result` in every other test in this file.
+fn propose_unit_via_rigger_emit(root: &Path, spawn: &str, body: &Value) {
+    let (_out, err, ok) = run_rigger(
+        root,
+        &["emit", "--spawn", spawn, "UnitProposed", &body.to_string()],
+    );
+    assert!(
+        ok,
+        "rigger emit --spawn {spawn} UnitProposed {body} must succeed; stderr:\n{err}"
+    );
+}
+
+/// A same-episode REAL SPLIT of `SPLIT_CRITERION`'s deterministic baseline into two live
+/// siblings, `split-a-1` (gate `gate_a1`) and `split-a-2` (gate `gate_a2`), proposed as two
+/// separate `rigger emit --spawn` calls from the SAME parked `plan` spawn so both share one
+/// episode identity - the shape `harvest_proposed` never reaps a genuinely-new same-episode
+/// sibling for (spec 31/72), then records `plan`'s own result so its real (empty, since a
+/// planner writes no files) worktree merges and integrates.
+fn propose_real_split(root: &Path, gate_a1: &str, gate_a2: &str) {
+    let plan_spawn = "plan/implementer#0";
+    propose_unit_via_rigger_emit(
+        root,
+        plan_spawn,
+        &json!({"id": "split-a-1", "agent": "worker", "criterion": SPLIT_CRITERION, "gates": [gate_a1]}),
+    );
+    propose_unit_via_rigger_emit(
+        root,
+        plan_spawn,
+        &json!({"id": "split-a-2", "agent": "worker", "criterion": SPLIT_CRITERION, "gates": [gate_a2]}),
+    );
+    let (_o, err, ok) = run_rigger(root, &["result", plan_spawn, "proposed a real split"]);
+    assert!(
+        ok,
+        "recording plan's own result must succeed; stderr: {err}"
+    );
+}
+
+/// checkin's needs edge must NEVER become satisfied while ANY live real-split sibling has
+/// not integrated - even after its `BTreeMap`-key-first sibling (`split-a-1`, which sorts
+/// before `split-a-2`) has ALREADY integrated through a real git merge. Proves the round-3
+/// fix's early-satisfaction direction (`sdet-u91c1-r2-confirms-split-sibling-orphan`'s exact
+/// repro) through a real multi-step `rigger step` process and real git merges, not a
+/// hand-built map in one call.
+#[test]
+fn checkin_stays_unready_while_a_real_split_siblings_partner_has_not_integrated_yet() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_split_fanout_workflow(root);
+    write_split_criterion_spec(root);
+
+    // Step 1: only "plan" is ready (the baseline needs the producer); no split proposed
+    // yet.
+    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
+    assert!(ok, "step 1 must succeed; stderr:\n{err}");
+    assert!(
+        out.contains(r#""id":"plan/implementer#0""#),
+        "plan must park first; got:\n{out}"
+    );
+    assert!(
+        !out.contains("split-a") && !out.contains("checkin"),
+        "neither split sibling nor checkin exists before the planner proposes; got:\n{out}"
+    );
+
+    // A REAL split: both siblings pass "ok", from the SAME plan episode.
+    propose_real_split(root, "ok", "ok");
+
+    // Step 2: plan's own real (empty) worktree merges trivially and integrates; BOTH real
+    // split siblings are now live (superseding the deterministic baseline) and ready - both
+    // park in this same step.
+    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
+    assert!(ok, "step 2 must succeed; stderr:\n{err}");
+    for id in ["split-a-1/implementer#0", "split-a-2/implementer#0"] {
+        assert!(
+            out.contains(&format!(r#""id":"{id}""#)),
+            "both real split siblings must park together in the step their planner \
+             proposal lands; got:\n{out}"
+        );
+    }
+    assert!(
+        !out.contains("checkin"),
+        "checkin must not appear before either split sibling has even attempted its gate; \
+         got:\n{out}"
+    );
+
+    // Land ONLY split-a-1 for real - the BTreeMap-key-first sibling (alphabetically
+    // first), the exact one round 2's `.find()` locked onto.
+    let wt_a1 = root.join(".rigger").join("tmp").join("rigger-wt-split-a-1");
+    assert!(
+        wt_a1.exists(),
+        "split-a-1 must already have its real worktree on disk: {}",
+        wt_a1.display()
+    );
+    std::fs::write(wt_a1.join("a1.rs"), "pub fn a1() {}\n").unwrap();
+    let (_o, err, ok) = run_rigger(
+        root,
+        &["result", "split-a-1/implementer#0", "landed split a1"],
+    );
+    assert!(
+        ok,
+        "recording split-a-1's result must succeed; stderr: {err}"
+    );
+
+    // Step 3: split-a-1's real merge lands (Integrated); split-a-2 has posted no result yet
+    // and stays outstanding. THE ASSERTION THAT WAS RED before the round-3 fix: checkin
+    // must NOT appear even though the BTreeMap-key-first sibling has genuinely integrated
+    // through a real git merge - its real-split partner has not.
+    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
+    assert!(ok, "step 3 must succeed; stderr:\n{err}");
+    assert!(
+        root.join("a1.rs").exists(),
+        "split-a-1's real merge must have actually landed its file on the base"
+    );
+    assert!(
+        !out.contains("checkin"),
+        "split-a-2 (a real split sibling under the SAME criterion id as split-a-1) has not \
+         integrated yet - checkin's needs edge must stay unsatisfied even though split-a-1, \
+         the BTreeMap-key-first sibling, has genuinely integrated through a real git merge; \
+         got:\n{out}"
+    );
+
+    // Land split-a-2 too, the same way.
+    let wt_a2 = root.join(".rigger").join("tmp").join("rigger-wt-split-a-2");
+    assert!(
+        wt_a2.exists(),
+        "split-a-2 must already have its real worktree on disk: {}",
+        wt_a2.display()
+    );
+    std::fs::write(wt_a2.join("a2.rs"), "pub fn a2() {}\n").unwrap();
+    let (_o, err, ok) = run_rigger(
+        root,
+        &["result", "split-a-2/implementer#0", "landed split a2"],
+    );
+    assert!(
+        ok,
+        "recording split-a-2's result must succeed; stderr: {err}"
+    );
+
+    // Step 4: split-a-2's real merge lands too. NOW every live owner of the criterion has
+    // integrated, so checkin's needs edge is satisfied and its own implementer parks.
+    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
+    assert!(ok, "step 4 must succeed; stderr:\n{err}");
+    assert!(
+        root.join("a2.rs").exists(),
+        "split-a-2's real merge must have actually landed its file on the base"
+    );
+    assert!(
+        out.contains(r#""id":"checkin/implementer#0""#),
+        "once BOTH real split siblings have integrated through real git merges, checkin's \
+         needs edge must be satisfied and its own implementer must park; got:\n{out}"
+    );
+}
+
+/// The reverse direction (round-3's own reverse-direction regression test,
+/// `adv-u91c1-r2-confirms-split-sibling-reverse-direction`): a real-split sibling that
+/// permanently ESCALATES (terminal, never integrating) must keep checkin unready forever -
+/// even when its `BTreeMap`-key-first partner has ALREADY integrated through a real git
+/// merge - through a real multi-step `rigger step` process and a real remediation-bound
+/// escalation, never a hand-built terminal set in one call.
+#[test]
+fn checkin_never_becomes_ready_when_a_real_split_siblings_partner_escalates_instead() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_split_fanout_workflow(root);
+    write_split_criterion_spec(root);
+
+    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
+    assert!(ok, "step 1 must succeed; stderr:\n{err}");
+    assert!(
+        out.contains(r#""id":"plan/implementer#0""#),
+        "plan must park first; got:\n{out}"
+    );
+
+    // A REAL split: split-a-1 passes "ok"; split-a-2's gate always fails ("bad").
+    propose_real_split(root, "ok", "bad");
+
+    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
+    assert!(ok, "step 2 must succeed; stderr:\n{err}");
+    for id in ["split-a-1/implementer#0", "split-a-2/implementer#0"] {
+        assert!(
+            out.contains(&format!(r#""id":"{id}""#)),
+            "both real split siblings must park together; got:\n{out}"
+        );
+    }
+
+    let wt_a1 = root.join(".rigger").join("tmp").join("rigger-wt-split-a-1");
+    std::fs::write(wt_a1.join("a1.rs"), "pub fn a1() {}\n").unwrap();
+    let (_o, err, ok) = run_rigger(
+        root,
+        &["result", "split-a-1/implementer#0", "landed split a1"],
+    );
+    assert!(
+        ok,
+        "recording split-a-1's result must succeed; stderr: {err}"
+    );
+
+    // Step 3: split-a-1's real merge lands (Integrated); split-a-2 has posted no result yet.
+    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
+    assert!(ok, "step 3 must succeed; stderr:\n{err}");
+    assert!(
+        root.join("a1.rs").exists(),
+        "split-a-1's real merge must have actually landed its file on the base"
+    );
+    assert!(
+        !out.contains("checkin"),
+        "checkin must not appear while split-a-2 is still outstanding, even though \
+         split-a-1 has genuinely integrated; got:\n{out}"
+    );
+
+    let (_o, err, ok) = run_rigger(
+        root,
+        &["result", "split-a-2/implementer#0", "attempted split a2"],
+    );
+    assert!(
+        ok,
+        "recording split-a-2's result must succeed; stderr: {err}"
+    );
+
+    // Step 4: split-a-2's "bad" gate fails and the run-wide max_retries: 1 means this FIRST
+    // failure IS the escalation - it goes terminal WITHOUT ever integrating. THE ASSERTION
+    // THAT WAS RED before the round-3 fix (in the OPPOSITE direction from the test above):
+    // checkin must never appear at all - not spawned, and not itself in the escalated set
+    // either - even though its BTreeMap-key-first sibling genuinely integrated through a
+    // real git merge.
+    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
+    assert!(
+        ok,
+        "a step that reaches an escalated fixpoint still exits 0; stderr:\n{err}"
+    );
+    assert!(
+        out.contains(r#""escalated":["split-a-2"]"#),
+        "split-a-2 must reach the escalated fixpoint on its first failed attempt (the run's \
+         own max_retries: 1); got:\n{out}"
+    );
+    assert!(
+        !out.contains("checkin"),
+        "split-a-2 (a real split sibling under the SAME criterion id as split-a-1) \
+         escalated without ever integrating - checkin must never appear anywhere, even \
+         though split-a-1, the BTreeMap-key-first sibling, genuinely integrated through a \
+         real git merge; got:\n{out}"
+    );
+    assert!(
+        !root.join("a2.rs").exists(),
+        "split-a-2 escalated without ever merging - its file must never have landed"
+    );
 }
 
 // -----------------------------------------------------------------------------------------
