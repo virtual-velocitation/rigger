@@ -30,7 +30,8 @@ in this repository's `.rigger/workflow.yml`:
 gates:
   mutation:
     run: >-
-      git diff "$(git merge-base rigger-run HEAD)" -- '*.rs' > unit.diff &&
+      test -n "$RIGGER_RUN_BASE" &&
+      git diff "$RIGGER_RUN_BASE" -- '*.rs' > unit.diff &&
       rm -rf "$MUTANTS" && mkdir -p "$MUTANTS" &&
       TMPDIR="$MUTANTS" cargo mutants --in-diff unit.diff --timeout-multiplier 1.5 -j 2
     kind: core
@@ -46,7 +47,15 @@ stages:
 
 where `$MUTANTS` is the registered mutants root keyed by the stage's unit
 (`<mutants-root>/<unit>`, exported by the conductor to every gate command like
-`CARGO_TARGET_DIR` already is, reaped at unit terminus). The stage's task text (config, not
+`CARGO_TARGET_DIR` already is, reaped at unit terminus), and `$RIGGER_RUN_BASE` is the
+run's base commit: the run branch's tip at the moment the run started, recorded on
+`RunStarted` as `base_tip` (a field on an existing event type, not a new type) and exported
+to every gate command. The whole-spec diff is `git diff "$RIGGER_RUN_BASE"`, never a
+merge-base with the run branch: the check-in stage's worktree branches from the run branch
+AFTER every implement unit has integrated, so `git merge-base rigger-run HEAD` is HEAD there
+and the diff would be empty - the sweep would certify nothing. A run whose `RunStarted`
+predates this field has no base to diff against; the gate's `test -n` fails loud rather than
+sweeping an empty diff. The stage's task text (config, not
 code) is the kill-or-justify protocol spec 73 wrote for the implementer: read
 `mutants.out/outcomes.json`, kill each missed mutant with a strengthened test or justify it by
 an `exclude_re` entry in `.cargo/mutants.toml` with a one-line reason, commit, and record
