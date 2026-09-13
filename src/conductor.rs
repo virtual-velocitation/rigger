@@ -2019,20 +2019,34 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // UnitProposed. With no fan-out template the run synthesizes no baseline units and
     // falls back to the historical shape. The no-spec (empty criteria) path is
     // untouched: no template expansion, the workflow's own stages run as authored.
-    // fanout_members (spec 91, criterion 1, rule 1): snapshot, at the exact moment the
-    // template is consumed, which unit ids `baseline_units` synthesized from it - the
-    // live resolution table `ready_stages` consults so a LATER stage's `needs: [<template
-    // name>]` can be satisfied even though the template itself never appears in
-    // `integrated` (it is a template, not a unit; see the removal just below).
-    let mut fanout_members: HashMap<String, HashSet<String>> = HashMap::new();
+    // fanout_criteria (spec 91, criterion 1, rule 1; round 2 fix for
+    // adj-u91c1-verdict-reject/arch-u91c1-fanout-members-orphans-a-superseded-baseline):
+    // snapshot, at the exact moment the template is consumed, which CRITERION IDS
+    // `baseline_units` synthesized units FOR - never the unit ids themselves. `stages`
+    // entries are never pruned on integration (only the template above, and a
+    // superseded owner below), and `harvest_proposed`'s supersede fold always stamps
+    // the SAME criterion_id onto whichever unit replaces an owner (conductor.rs:10547
+    // `criterion_id: resolved_criterion_id`) - so a criterion id always names EXACTLY
+    // ONE live `stages` entry, whoever currently owns it. `ready_stages` resolves a
+    // later stage's `needs: [<template name>]` by walking `stages` LIVE for each
+    // criterion id's CURRENT owner and checking that unit's integration - never a
+    // frozen unit-id set. A frozen unit-id snapshot (the round-1 shape) permanently
+    // orphaned the needs edge the instant a planner supersede swapped which unit id
+    // owned a criterion, because the old id could never appear in `integrated` again
+    // and the snapshot was never patched; resolving by criterion id against the live
+    // map sidesteps the staleness entirely - there is nothing to keep in sync.
+    let mut fanout_criteria: HashMap<String, HashSet<String>> = HashMap::new();
     if !deps.criteria.is_empty() {
         if let Some(template_name) = fan_out_template_name(&stages) {
             let template = stages.remove(&template_name).expect("template just found");
             let producer = producer_name(&stages);
             let units = baseline_units(&template, &deps.criteria, producer.as_deref());
-            fanout_members.insert(
+            fanout_criteria.insert(
                 template_name,
-                units.iter().map(|(name, _)| name.clone()).collect(),
+                units
+                    .iter()
+                    .map(|(_, st)| st.criterion_id.clone())
+                    .collect(),
             );
             for (name, unit) in units {
                 stages.entry(name).or_insert(unit);
@@ -2114,7 +2128,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
             &integrated,
             &terminal,
             gate.as_deref(),
-            &fanout_members,
+            &fanout_criteria,
         );
         if !ready.is_empty() {
             ctx.run_wave(&stages, &ready, &mut integrated, &mut terminal)?;
@@ -2209,7 +2223,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
                 &integrated,
                 &terminal,
                 gate.as_deref(),
-                &fanout_members,
+                &fanout_criteria,
             );
             if ready.is_empty() {
                 break;
@@ -12610,16 +12624,16 @@ fn coverage_gap(stages: &BTreeMap<String, Stage>, criteria: &[String]) -> Option
 /// through `run_single_stage`'s standalone-review path spawns lenses with no worktree -
 /// the empty-cwd isolation refusal that killed the first adopted spec-10 run.
 ///
-/// `fanout_members` is threaded straight through to [`ready_stages`] - see its own doc
+/// `fanout_criteria` is threaded straight through to [`ready_stages`] - see its own doc
 /// comment for what it resolves (spec 91, criterion 1, rule 1).
 fn wave_ready(
     stages: &BTreeMap<String, Stage>,
     integrated: &HashSet<String>,
     terminal: &HashSet<String>,
     critique_gate: Option<&str>,
-    fanout_members: &HashMap<String, HashSet<String>>,
+    fanout_criteria: &HashMap<String, HashSet<String>>,
 ) -> Vec<String> {
-    ready_stages(stages, integrated, terminal, fanout_members)
+    ready_stages(stages, integrated, terminal, fanout_criteria)
         .into_iter()
         .filter(|n| critique_gate != Some(n.as_str()))
         .collect()
@@ -12630,35 +12644,57 @@ fn wave_ready(
 /// fan-out implement TEMPLATE - a stage `run` REMOVES from `stages` the moment it
 /// expands into per-criterion baseline units (§ the baseline-decomposition block), so it
 /// can never again satisfy a literal `integrated.contains(need)` - the entry is
-/// satisfied once EVERY unit `fanout_members` records as having come from that
-/// template's expansion has integrated (spec 91, criterion 1, rule 1). A member that is
-/// merely open (never in `integrated`), or reached a terminal-but-not-integrated state
-/// (escalated, or failed-terminal), leaves the whole entry unsatisfied - the run's
-/// escalated fixpoint stays loud, never silently satisfied by a partial fan-out. A
-/// `need` naming neither a live stage nor a tracked template resolves to the historical
-/// `integrated.contains(need)` (false for a typo'd or already-consumed name), so a
-/// workflow with no fan-out template is byte-for-byte unaffected.
+/// satisfied once EVERY criterion id `fanout_criteria` records as covered by that
+/// template's expansion has its CURRENT `stages` owner integrated (spec 91, criterion 1,
+/// rule 1; round 2 fix for adj-u91c1-verdict-reject). Each criterion id is resolved LIVE
+/// against `stages` - never a frozen unit-id snapshot - because `harvest_proposed`'s
+/// supersede fold can replace which unit id owns a criterion (a planner refinement
+/// superseding a fan-out baseline member) without ever touching this table; walking
+/// `stages` fresh on every call means whichever unit id currently carries that
+/// `criterion_id` is exactly the one this checks, so a supersede can never orphan the
+/// edge. A criterion id naming no live `stages` entry at all (unreachable in the
+/// designed paths - a criterion always has exactly one live owner, baseline or
+/// superseding) counts as unsatisfied rather than panicking, keeping the escalated
+/// fixpoint loud instead of crashing. A member that is merely open (never in
+/// `integrated`), or reached a terminal-but-not-integrated state (escalated, or
+/// failed-terminal), leaves the whole entry unsatisfied - the run's escalated fixpoint
+/// stays loud, never silently satisfied by a partial fan-out. A `need` naming neither a
+/// live stage nor a tracked template resolves to the historical `integrated.contains(need)`
+/// (false for a typo'd or already-consumed name), so a workflow with no fan-out template
+/// is byte-for-byte unaffected.
 fn need_satisfied(
     need: &str,
+    stages: &BTreeMap<String, Stage>,
     integrated: &HashSet<String>,
-    fanout_members: &HashMap<String, HashSet<String>>,
+    fanout_criteria: &HashMap<String, HashSet<String>>,
 ) -> bool {
-    match fanout_members.get(need) {
-        Some(members) => members.iter().all(|m| integrated.contains(m)),
+    match fanout_criteria.get(need) {
+        Some(criteria) => criteria.iter().all(|criterion_id| {
+            stages
+                .iter()
+                .find(|(_, st)| st.criterion_id == *criterion_id)
+                .is_some_and(|(name, _)| integrated.contains(name))
+        }),
         None => integrated.contains(need),
     }
 }
 
-/// `fanout_members` maps a fan-out implement TEMPLATE's name to the unit ids `run`
-/// synthesized from it (§ the baseline-decomposition block) - the live resolution table
-/// [`need_satisfied`] consults for a `needs` entry that names a template rather than a
-/// still-live stage (spec 91, criterion 1, rule 1). Empty for a workflow with no
-/// fan-out template, so `ready_stages` degrades to its historical literal-needs check.
+/// `fanout_criteria` maps a fan-out implement TEMPLATE's name to the stable criterion
+/// ids `run` synthesized ONE baseline unit per, at the moment the template was consumed
+/// (§ the baseline-decomposition block) - the live resolution table [`need_satisfied`]
+/// consults for a `needs` entry that names a template rather than a still-live stage
+/// (spec 91, criterion 1, rule 1). It never names unit ids: which unit id currently
+/// owns a criterion is looked up FRESH in `stages` on every call (round 2 fix for
+/// adj-u91c1-verdict-reject), so a planner supersede that swaps the owning unit id
+/// needs no companion update here - one authority (`stages`/`criterion_id`, already kept
+/// in sync by `harvest_proposed`), not a second membership index to maintain. Empty for
+/// a workflow with no fan-out template, so `ready_stages` degrades to its historical
+/// literal-needs check.
 fn ready_stages(
     stages: &BTreeMap<String, Stage>,
     integrated: &HashSet<String>,
     terminal: &HashSet<String>,
-    fanout_members: &HashMap<String, HashSet<String>>,
+    fanout_criteria: &HashMap<String, HashSet<String>>,
 ) -> Vec<String> {
     let mut ready: Vec<String> = stages
         .iter()
@@ -12667,7 +12703,7 @@ fn ready_stages(
                 && st
                     .needs
                     .iter()
-                    .all(|n| need_satisfied(n, integrated, fanout_members))
+                    .all(|n| need_satisfied(n, stages, integrated, fanout_criteria))
         })
         .map(|(name, _)| name.clone())
         .collect();
@@ -14163,7 +14199,7 @@ mod tests {
         // could never be satisfied: "implement" never again appears in `integrated`.
         // A `needs` entry naming the TEMPLATE must instead be satisfied once EVERY unit
         // the template expanded into has integrated - proven end to end here through the
-        // real `run()` wiring (baseline-decomposition -> fanout_members -> ready_stages),
+        // real `run()` wiring (baseline-decomposition -> fanout_criteria -> ready_stages),
         // not just the pure-function level.
         let criteria = ["the first slice lands", "the second slice lands"];
         let mut cfg = Config::default();
@@ -14527,6 +14563,93 @@ mod tests {
                 "criterion {c:?} must be served by exactly one unit, got {n}"
             );
         }
+    }
+
+    #[test]
+    fn a_planner_supersede_of_a_fan_out_member_still_satisfies_its_downstream_needs_edge() {
+        // THE round-1 REJECT regression (adj-u91c1-verdict-reject, upholding
+        // arch-u91c1-fanout-members-orphans-a-superseded-baseline / sdet-u91c1-confirms-
+        // fanout-orphan-live-repro / adv-u91c1-confirms-fanout-orphan-by-independent-
+        // execution): `harvest_proposed`'s pre-existing supersede fold (spec 18/72, the
+        // designed and routine planner-refinement path exercised by
+        // `planner_unit_supersedes_the_matching_baseline` above) removes a fan-out
+        // baseline's `stages` entry - a unit-id-keyed membership snapshot built once at
+        // decomposition time would never see the SUPERSEDING unit's different id
+        // integrate, permanently orphaning any downstream `needs: [<template>]` stage.
+        // The outer wave loop's `if ready.is_empty() { break; }` reads that as ordinary
+        // convergence: no escalation, no error, no lesson - the run silently finishes
+        // without ever running `checkin` (this spec's own deliverable class). Proves the
+        // fix end to end through the REAL `run()`/`harvest_proposed` wiring, not just the
+        // pure `ready_stages` level: a `checkin` stage needing the fan-out template must
+        // still become ready and integrate once the SUPERSEDING unit (a different id,
+        // the same criterion) integrates.
+        let crit_a = "criterion A: the metrics module is implemented";
+        let crit_b = "criterion B: the stats endpoint is implemented";
+        let mut cfg = supersede_cfg();
+        cfg.workflow.stages.insert(
+            "checkin".into(),
+            Stage {
+                name: "checkin".into(),
+                agent: "worker".into(),
+                needs: vec!["implement".into()],
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        // The planner supersedes criterion A's baseline with its own unit, under a
+        // DIFFERENT id than the baseline `run` would otherwise have synthesized for it.
+        let driver = Stub {
+            emits: vec![(
+                TYPE_UNIT_PROPOSED.to_string(),
+                json!({
+                    "id": "planner-unit-a",
+                    "agent": "worker",
+                    "criterion": crit_a,
+                    "gates": ["ok"],
+                }),
+            )],
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: vec![crit_a.to_string(), crit_b.to_string()],
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // The supersede happened exactly as `planner_unit_supersedes_the_matching_
+        // baseline` already proves: criterion A's baseline is gone, the planner's unit
+        // covers it instead.
+        let a_baseline = baseline_id(1, crit_a);
+        assert!(
+            !rs.units.contains_key(&a_baseline),
+            "criterion A's baseline must be superseded (removed), not run"
+        );
+        assert_eq!(
+            rs.units["planner-unit-a"].status,
+            ledger::Status::Integrated,
+            "the superseding unit must integrate"
+        );
+
+        // THE ASSERTION THAT WAS RED before the fix: checkin needs the fan-out
+        // template, whose live owner for criterion A is now "planner-unit-a" - an id
+        // that never existed at the moment the template was consumed. A frozen unit-id
+        // snapshot could never see it integrate; checkin would never even appear in
+        // `rs.units` (the run silently converges one wave early instead).
+        assert_eq!(
+            rs.units.get("checkin").map(|u| u.status),
+            Some(ledger::Status::Integrated),
+            "checkin must become ready and integrate once every criterion's CURRENT \
+             live owner has integrated, even when a planner supersede changed which \
+             unit id owns a criterion; got units: {:?}",
+            rs.units.keys().collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -39882,17 +40005,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_downstream_stage_needing_the_fan_out_template_stays_unready_until_every_member_integrates()
-    {
-        // Spec 91, criterion 1, rule 1, at the pure `ready_stages`/`wave_ready` level: a
-        // `needs` entry naming a fan-out TEMPLATE resolves against `fanout_members`, not
-        // a literal (now-removed) stage entry - "implement" is deliberately ABSENT from
-        // `stages` here, exactly as `run` leaves it once expanded. The edge stays
-        // unsatisfied while any member is merely open, or has reached a
-        // terminal-but-not-integrated state (escalated / failed-terminal) - the run's
-        // escalated fixpoint must stay loud, never silently satisfied by a partial
-        // fan-out.
+    /// Shared scaffold for the pure `ready_stages`/`wave_ready` fan-out-template-needs
+    /// tests: a `checkin` stage needing `["implement"]`, plus two criterion-owning
+    /// stages (criterion "c1", whose owner's NAME the caller supplies, and "u2" owning
+    /// "c2"), and the `fanout_criteria` table naming `implement` -> {"c1", "c2"}. The
+    /// caller-supplied owner name lets the ordinary case (`"u1"`) and the supersede-
+    /// shaped case (a differently-named live owner) share one fixture instead of two
+    /// near-identical ones.
+    fn fan_out_needs_template_fixture(
+        c1_owner: &str,
+    ) -> (BTreeMap<String, Stage>, HashMap<String, HashSet<String>>) {
         let mut stages: BTreeMap<String, Stage> = BTreeMap::new();
         stages.insert(
             "checkin".into(),
@@ -39902,15 +40024,49 @@ mod tests {
                 ..Default::default()
             },
         );
-        let mut fanout_members = HashMap::new();
-        fanout_members.insert(
-            "implement".to_string(),
-            HashSet::from(["u1".to_string(), "u2".to_string()]),
+        stages.insert(
+            c1_owner.into(),
+            Stage {
+                name: c1_owner.into(),
+                criterion_id: "c1".into(),
+                ..Default::default()
+            },
         );
+        stages.insert(
+            "u2".into(),
+            Stage {
+                name: "u2".into(),
+                criterion_id: "c2".into(),
+                ..Default::default()
+            },
+        );
+        let mut fanout_criteria = HashMap::new();
+        fanout_criteria.insert(
+            "implement".to_string(),
+            HashSet::from(["c1".to_string(), "c2".to_string()]),
+        );
+        (stages, fanout_criteria)
+    }
+
+    #[test]
+    fn a_downstream_stage_needing_the_fan_out_template_stays_unready_until_every_member_integrates()
+    {
+        // Spec 91, criterion 1, rule 1, at the pure `ready_stages`/`wave_ready` level: a
+        // `needs` entry naming a fan-out TEMPLATE resolves against `fanout_criteria`
+        // (criterion ids), each looked up LIVE in `stages` for its current owner - never
+        // a literal (now-removed) template stage entry. "implement" is deliberately
+        // ABSENT from `stages` here, exactly as `run` leaves it once expanded; "u1" and
+        // "u2" ARE present (as `run` leaves the criterion units it expanded the template
+        // into), each carrying the criterion id `fanout_criteria` names. The edge stays
+        // unsatisfied while any member is merely open, or has reached a
+        // terminal-but-not-integrated state (escalated / failed-terminal) - the run's
+        // escalated fixpoint must stay loud, never silently satisfied by a partial
+        // fan-out.
+        let (stages, fanout_criteria) = fan_out_needs_template_fixture("u1");
         let empty: HashSet<String> = HashSet::new();
 
         assert!(
-            !ready_stages(&stages, &empty, &empty, &fanout_members)
+            !ready_stages(&stages, &empty, &empty, &fanout_criteria)
                 .contains(&"checkin".to_string()),
             "no member has integrated yet: the needs edge must stay unsatisfied"
         );
@@ -39918,7 +40074,7 @@ mod tests {
         let mut integrated = HashSet::new();
         integrated.insert("u1".to_string());
         assert!(
-            !ready_stages(&stages, &integrated, &empty, &fanout_members)
+            !ready_stages(&stages, &integrated, &empty, &fanout_criteria)
                 .contains(&"checkin".to_string()),
             "a partially-integrated template must not satisfy the needs edge"
         );
@@ -39927,7 +40083,7 @@ mod tests {
         let mut terminal = HashSet::new();
         terminal.insert("u2".to_string());
         assert!(
-            !ready_stages(&stages, &integrated, &terminal, &fanout_members)
+            !ready_stages(&stages, &integrated, &terminal, &fanout_criteria)
                 .contains(&"checkin".to_string()),
             "an escalated (terminal, non-integrated) member must never satisfy the \
              needs edge"
@@ -39936,14 +40092,44 @@ mod tests {
         // Both members integrated: ready, and wave_ready (no critique gate here) agrees.
         integrated.insert("u2".to_string());
         assert!(
-            ready_stages(&stages, &integrated, &empty, &fanout_members)
+            ready_stages(&stages, &integrated, &empty, &fanout_criteria)
                 .contains(&"checkin".to_string()),
             "once every expanded member has integrated the needs edge is satisfied"
         );
         assert!(
-            wave_ready(&stages, &integrated, &empty, None, &fanout_members)
+            wave_ready(&stages, &integrated, &empty, None, &fanout_criteria)
                 .contains(&"checkin".to_string()),
             "wave_ready must agree with ready_stages when no critique gate is wired"
+        );
+
+        // Round 2 fix for adj-u91c1-verdict-reject / arch-u91c1-fanout-members-orphans-
+        // a-superseded-baseline, same fixture shape but a DIFFERENT c1 owner name: proves
+        // `fanout_criteria` resolves each criterion id against WHICHEVER unit currently
+        // owns it in `stages` - never a frozen unit-id snapshot. "u1-old" (which would
+        // have owned criterion "c1" under the ordinary naming above) is deliberately
+        // ABSENT from this second fixture entirely - exactly the state
+        // `harvest_proposed`'s `stages.remove(&owner)` supersede fold leaves - and a
+        // differently-named "u1-new" owns "c1" instead, exactly as `harvest_proposed`
+        // stamps a superseding proposal with the SAME criterion_id (conductor.rs
+        // `criterion_id: resolved_criterion_id`). The needs edge must track "c1"'s
+        // CURRENT live owner, not any unit id `fanout_criteria` was ever built against
+        // (it was never built against a unit id at all).
+        let (stages, fanout_criteria) = fan_out_needs_template_fixture("u1-new");
+        let mut integrated = HashSet::new();
+        integrated.insert("u2".to_string());
+        assert!(
+            !ready_stages(&stages, &integrated, &empty, &fanout_criteria)
+                .contains(&"checkin".to_string()),
+            "c1's live owner (u1-new) has not integrated yet: still unready"
+        );
+
+        integrated.insert("u1-new".to_string());
+        assert!(
+            ready_stages(&stages, &integrated, &empty, &fanout_criteria)
+                .contains(&"checkin".to_string()),
+            "the id fanout_criteria was originally built against (u1-old) never \
+             appears anywhere in stages or integrated - c1's CURRENT live owner \
+             (u1-new) integrating must still satisfy the needs edge"
         );
     }
 
