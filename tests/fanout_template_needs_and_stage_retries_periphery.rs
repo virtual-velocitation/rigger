@@ -11,6 +11,10 @@
 //!   - `a_downstream_stage_needing_the_fan_out_template_stays_unready_until_every_member_integrates`
 //!     proves rule 1 at the pure `ready_stages`/`wave_ready` level, including a partially-
 //!     integrated group and an escalated (terminal, non-integrated) member.
+//!   - `a_planner_supersede_of_a_fan_out_member_still_satisfies_its_downstream_needs_edge`
+//!     (round 2, closing `adj-u91c1-verdict-reject` /
+//!     `arch-u91c1-fanout-members-orphans-a-superseded-baseline`) proves rule 1 survives a
+//!     planner supersede of a fan-out member, end to end through the real `run()` wiring.
 //!   - `a_stages_own_max_retries_overrides_the_run_default_for_its_units` proves rule 2's
 //!     precedence arithmetic (`max_retries_for`) directly, including the resume-grant-still-
 //!     wins interaction.
@@ -35,21 +39,41 @@
 //!   4. Nothing proves the escalated-member case (rule 1's other half) stops a downstream
 //!      stage from ever appearing in a REAL `rigger step`'s printed wave, as opposed to a
 //!      pure function returning the right boolean.
+//!   5. Nothing proves the round-2 supersede fix (gap 3's SAME class of concern, for the
+//!      supersede path specifically) survives a REAL git-backed integrate: the round-2
+//!      regression test passes `deps.repo: String::new()` - no real git at all, so its
+//!      `on_pass: merge` stages never actually merge anything - and answers through a
+//!      private, hand-emitting `Stub`, never the crate's own public `AgentDriver` trait a
+//!      real embedder implements. Nothing proves the criterion-id-keyed live-owner
+//!      resolution `need_satisfied` now does survives an ACTUAL worktree-create -> commit
+//!      -> merge cycle for the unit that supersedes a fan-out baseline, as opposed to an
+//!      in-memory `Stub` answering synchronously.
 //!
-//! This file closes all four, through the compiled binary, real git worktrees/merges
-//! where the scenario needs them, and real `rigger step`/`rigger result` process
-//! boundaries throughout.
+//! This file closes all five, through the compiled binary or the crate's public `run`/
+//! `AgentDriver` API (gap 5, which needs a real git repo and a real superseding proposal,
+//! never a subprocess CLI boundary the planner role has no established multi-process
+//! idiom for in this codebase), with real git worktrees/merges wherever the scenario needs
+//! them, and real `rigger step`/`rigger result` process boundaries for gaps 1-4.
 //!
-//! NOT OWNED HERE: the pure `ready_stages`/`wave_ready`/`max_retries_for` arithmetic
-//! itself (private to `conductor.rs`, exhaustively covered by its own colocated tests),
-//! and the resume-grant-vs-stage-override interaction (pure arithmetic over already-parsed
-//! structs, no new I/O boundary - covered by the implementer's own
+//! NOT OWNED HERE: the pure `ready_stages`/`wave_ready`/`max_retries_for`/`need_satisfied`
+//! arithmetic itself (private to `conductor.rs`, exhaustively covered by its own colocated
+//! tests), and the resume-grant-vs-stage-override interaction (pure arithmetic over
+//! already-parsed structs, no new I/O boundary - covered by the implementer's own
 //! `a_stages_own_max_retries_overrides_the_run_default_for_its_units`).
 
 mod common;
 
 use std::path::Path;
 use std::process::Command;
+
+use rigger::conductor::{
+    run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, TYPE_UNIT_PROPOSED,
+};
+use rigger::config::{AgentDef, Config, Gate, Stage};
+use rigger::eventstore::sqlite::Store;
+use rigger::gate::ExecRunner;
+use rigger::ledger;
+use serde_json::{json, Value};
 
 /// A throwaway project that is its own git repo with one commit, so a base ref like
 /// `HEAD` resolves and a real per-unit worktree/branch/merge can land. Mirrors
@@ -394,6 +418,222 @@ stages:
          never appear anywhere - not spawned, and not itself in the escalated set; \
          got:\n{out}"
     );
+}
+
+// -----------------------------------------------------------------------------------------
+// Rule 1, gap 5 (round-2 regression fix, `adj-u91c1-verdict-reject` /
+// `arch-u91c1-fanout-members-orphans-a-superseded-baseline`): a real planner's `UnitProposed`
+// superseding one fan-out baseline member must not orphan a downstream `needs: [<template>]`
+// stage - proven through a REAL git-backed integrate (real worktrees, real commits, real
+// merges), never the round-2 fix's own regression test
+// (`a_planner_supersede_of_a_fan_out_member_still_satisfies_its_downstream_needs_edge`,
+// src/conductor.rs `mod tests`), which passes `deps.repo: String::new()` - no real git at
+// all, so its `on_pass: merge` stages never actually merge anything - and answers through a
+// private, hand-emitting `Stub`, never the crate's own public `AgentDriver` trait a real
+// embedder implements. This proves the criterion-id-keyed live-owner resolution
+// `need_satisfied`'s round-2 fix added survives an ACTUAL worktree-create -> commit -> merge
+// cycle for the SUPERSEDING unit, not merely an in-memory `Stub` answering synchronously.
+// -----------------------------------------------------------------------------------------
+
+/// A two-role `AgentDriver`, over the crate's PUBLIC trait (never `conductor.rs`'s private
+/// `Stub`): `planner` emits ONE real `UnitProposed` through the SAME `emit` closure a live
+/// planner agent's `rigger_emit` calls are wired to, proposing `proposed_id` for
+/// `criterion` under a DIFFERENT id than the deterministic baseline `baseline_units` would
+/// otherwise have synthesized for it - the designed spec-18/72 supersede path. Every other
+/// (`worker`) spawn writes one real, unit-named file into its real, isolated worktree, so
+/// its stage's `on_pass: merge` (or the equally-eligible unset default - `integrates`,
+/// `src/conductor.rs`, treats empty `on_pass` as merge too) lands a genuine git commit
+/// rather than a no-op.
+struct RealGitSupersedingPlannerDriver {
+    proposed_id: String,
+    criterion: String,
+}
+
+impl AgentDriver for RealGitSupersedingPlannerDriver {
+    fn spawn(
+        &self,
+        agent: &AgentDef,
+        _prompt: &str,
+        opts: &SpawnOpts,
+        emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+    ) -> Result<AgentResult, Error> {
+        if agent.id == "planner" {
+            emit(
+                TYPE_UNIT_PROPOSED,
+                json!({
+                    "id": self.proposed_id,
+                    "agent": "worker",
+                    "criterion": self.criterion,
+                    "gates": ["ok"],
+                }),
+            )?;
+            return Ok(AgentResult {
+                output: "proposed a refinement".into(),
+                resolved_model: String::new(),
+            });
+        }
+        if !opts.dir.is_empty() {
+            let file = format!(
+                "{}/{}.rs",
+                opts.dir,
+                opts.unit.replace(|c: char| !c.is_ascii_alphanumeric(), "_")
+            );
+            std::fs::write(file, "pub fn done() {}\n").unwrap();
+        }
+        Ok(AgentResult {
+            output: "ok".into(),
+            resolved_model: String::new(),
+        })
+    }
+}
+
+/// Proves the round-2 fix (`fanout_criteria` resolving a needs edge by each criterion's
+/// LIVE `stages` owner, never a frozen unit-id snapshot) end to end through a REAL git
+/// repo: `checkin` (`needs: [implement]`) must still integrate once the SUPERSEDING unit
+/// for criterion A (a planner-proposed id the deterministic baseline decomposition never
+/// produced) and criterion B's ordinary baseline BOTH land through real, separate git
+/// merges onto the base branch.
+#[test]
+fn checkin_integrates_after_a_real_planner_supersede_of_a_fanout_baseline_lands_via_real_git_merges(
+) {
+    let repo = temp_git_project_with_commit();
+
+    let mut cfg = Config::default();
+    for id in ["planner", "worker"] {
+        cfg.agents.insert(
+            id.into(),
+            AgentDef {
+                id: id.into(),
+                ..Default::default()
+            },
+        );
+    }
+    cfg.workflow.gates.insert(
+        "ok".into(),
+        Gate {
+            run: "true".into(),
+            kind: "core".into(),
+            inputs: Vec::new(),
+        },
+    );
+    cfg.workflow.stages.insert(
+        "plan".into(),
+        Stage {
+            name: "plan".into(),
+            agent: "planner".into(),
+            produces: "dag".into(),
+            ..Default::default()
+        },
+    );
+    cfg.workflow.stages.insert(
+        "implement".into(),
+        Stage {
+            name: "implement".into(),
+            agent: "worker".into(),
+            strategy: "fan-out".into(),
+            needs: vec!["plan".into()],
+            gates: vec!["ok".into()],
+            on_pass: "merge".into(),
+            ..Default::default()
+        },
+    );
+    cfg.workflow.stages.insert(
+        "checkin".into(),
+        Stage {
+            name: "checkin".into(),
+            agent: "worker".into(),
+            needs: vec!["implement".into()],
+            gates: vec!["ok".into()],
+            on_pass: "merge".into(),
+            ..Default::default()
+        },
+    );
+
+    let crit_a = "the auth module lands";
+    let crit_b = "the billing module lands";
+    let superseding_id = "planner-refines-the-auth-module";
+
+    let store = Store::open(":memory:").unwrap();
+    let driver = RealGitSupersedingPlannerDriver {
+        proposed_id: superseding_id.to_string(),
+        criterion: crit_a.to_string(),
+    };
+    let deps = Deps {
+        store: &store,
+        driver: &driver,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: None,
+        graph: None,
+        criteria: vec![crit_a.to_string(), crit_b.to_string()],
+    };
+    let rs = run(&cfg, &deps).unwrap();
+
+    // Exactly 4 units ever ran: "plan", "checkin", the real superseding unit, and criterion
+    // B's ordinary baseline - NEVER a 5th (criterion A's own deterministic baseline
+    // surviving ALONGSIDE the unit that superseded it, the round-1 defect this proves
+    // fixed).
+    assert_eq!(
+        rs.units.len(),
+        4,
+        "plan + checkin + exactly 2 implement-derived units (the real superseding unit for \
+         criterion A, the ordinary baseline for criterion B) - a 5th would mean criterion \
+         A's baseline survived alongside its superseding unit; units: {:?}",
+        rs.units.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        rs.units[superseding_id].status,
+        ledger::Status::Integrated,
+        "the real planner-proposed unit superseding criterion A's baseline must integrate \
+         through a real git merge"
+    );
+
+    // Find criterion B's ordinary baseline by elimination - its deterministic slug is
+    // derived from criterion text this test does not hand-compute - and confirm it
+    // integrated too.
+    let crit_b_baseline = rs
+        .units
+        .keys()
+        .find(|k| k.as_str() != "plan" && k.as_str() != "checkin" && k.as_str() != superseding_id)
+        .cloned()
+        .expect("criterion B's ordinary baseline must exist as a 4th unit");
+    assert_eq!(
+        rs.units[&crit_b_baseline].status,
+        ledger::Status::Integrated,
+        "criterion B's ordinary baseline must integrate through a real git merge"
+    );
+
+    // THE ASSERTION THAT WAS RED before the round-2 fix: checkin needs the fan-out
+    // template, whose live owner for criterion A is now the REAL superseding unit - an id
+    // the deterministic baseline decomposition never produced. A frozen unit-id snapshot
+    // could never see it integrate; checkin would never even appear in `rs.units` (the run
+    // silently converges one wave early instead, exactly as
+    // arch-u91c1-fanout-members-orphans-a-superseded-baseline described).
+    assert_eq!(
+        rs.units.get("checkin").map(|u| u.status),
+        Some(ledger::Status::Integrated),
+        "checkin must become ready and integrate once every criterion's CURRENT live owner \
+         has integrated through a REAL git merge, even when a real planner supersede \
+         changed which unit id owns criterion A; got units: {:?}",
+        rs.units.keys().collect::<Vec<_>>()
+    );
+
+    // Non-vacuity: the base repo's working tree really carries every landed unit's own
+    // real committed file after the real merges, not merely an in-memory status
+    // transition.
+    for name in [superseding_id, crit_b_baseline.as_str(), "checkin"] {
+        let file_name = format!(
+            "{}.rs",
+            name.replace(|c: char| !c.is_ascii_alphanumeric(), "_")
+        );
+        let landed = repo.path().join(&file_name);
+        assert!(
+            landed.exists(),
+            "unit {name:?}'s real committed file must have landed on the base after its \
+             real merge: {}",
+            landed.display()
+        );
+    }
 }
 
 // -----------------------------------------------------------------------------------------
