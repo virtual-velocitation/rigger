@@ -25003,6 +25003,93 @@ fn rigger_workflow_yml_pins_the_checkin_stage_and_mutation_gate_definition_to_sp
     );
 }
 
+/// SDET periphery (spec 91 criterion 2, THE CHECK-IN STAGE IS DEFINITION): the STRUCTURAL
+/// counterpart of `rigger_workflow_yml_pins_the_checkin_stage_and_mutation_gate_definition_
+/// to_spec_91` above.
+///
+/// WHAT THE TEXT PIN IS STRUCTURALLY BLIND TO: a substring check on raw YAML text passes
+/// identically whether `checkin:` is wired correctly or is a hollow stub that merely
+/// CONTAINS the right words - `needs: []` instead of `needs: [implement]`, a `max_retries`
+/// of `9` instead of `1`, or a `mutation` gate `run:` string that mentions "cargo mutants"
+/// only inside an adjacent comment and never actually invokes it, would all still satisfy
+/// every substring the sibling test asserts. This test instead LOADS the real committed
+/// file through the production parser (`rigger::config::load`, the exact function `rigger
+/// step`/`rigger validate` use - never a second, hand-rolled YAML read) and asserts on the
+/// resulting TYPED `Stage`/`Gate` structs - the same struct-level shape
+/// `main.rs::tests::scaffold_workflow_...` (grep `checkin.needs`) already proves for the
+/// SCAFFOLD template, mirrored here for the repository's own real, operative definition
+/// that this project's own loop actually runs itself with.
+#[test]
+fn rigger_workflow_yml_wires_the_checkin_stage_and_mutation_gate_with_the_spec_91_shape() {
+    let root = env!("CARGO_MANIFEST_DIR");
+    let cfg = rigger::config::load(root).unwrap_or_else(|e| {
+        panic!("this repository's own .rigger/workflow.yml and agents must load: {e}")
+    });
+
+    let checkin = cfg
+        .workflow
+        .stages
+        .get("checkin")
+        .expect(".rigger/workflow.yml must define a `checkin` stage (spec 91)");
+    assert_eq!(
+        checkin.needs,
+        vec!["implement".to_string()],
+        "checkin must need the fan-out `implement` TEMPLATE by name (satisfied once every \
+         unit it expanded into has integrated, per u91c1's generic conductor rule), not a \
+         specific unit: {:?}",
+        checkin.needs
+    );
+    assert_eq!(
+        checkin.max_retries, 1,
+        "checkin overrides the run default with exactly one remediation round for the \
+         whole spec diff's mutants, never per-round"
+    );
+    assert!(
+        checkin.gates.iter().any(|g| g == "mutation"),
+        "checkin must list the `mutation` gate alongside the ordinary suite it \
+         re-verifies against the merged tree, got: {:?}",
+        checkin.gates
+    );
+    assert_eq!(
+        checkin.on_pass, "merge",
+        "checkin integrates the whole spec diff on a green mutation sweep, exactly like \
+         every other stage's on_pass: merge"
+    );
+    assert!(
+        !checkin.agent.is_empty(),
+        "checkin must name a real agent to remediate a missed mutant"
+    );
+
+    let mutation_gate = cfg
+        .workflow
+        .gates
+        .get("mutation")
+        .expect(".rigger/workflow.yml must define a `mutation` gate (spec 91)");
+    assert!(
+        mutation_gate.run.contains("cargo mutants"),
+        "the mutation gate's command must actually invoke cargo mutants, not merely \
+         mention it in a comment: {:?}",
+        mutation_gate.run
+    );
+    assert!(
+        mutation_gate.run.contains("$MUTANTS"),
+        "the mutation gate's command must read the unit-keyed $MUTANTS root the conductor \
+         exports (THE GATE ENVIRONMENT) - never an ambient/shared TMPDIR: {:?}",
+        mutation_gate.run
+    );
+
+    // The real ambient PATH on a correctly-provisioned machine has cargo-mutants installed
+    // (the same precondition every other real-PATH mutation test in this file already
+    // documents) - proving the committed definition does not merely parse, but actually
+    // VALIDATES, closing the loop the text-only pin above cannot: a structurally broken
+    // `checkin`/`mutation` definition could still contain every required substring.
+    assert!(
+        cfg.validate().is_ok(),
+        "this repository's own committed .rigger/workflow.yml must pass Config::validate \
+         on a correctly-provisioned machine (cargo-mutants installed)"
+    );
+}
+
 /// Round-8 fix, closing sdet-u69c1r7-fresh-run-own-dead-dash-suppressed-by-mint-order /
 /// adv-u69c1r7-mint-order-bug-is-structural-not-a-coverage-gap for real: every sibling dash-
 /// liveness test in this file seeds `RunStarted` and the dash marker DIRECTLY via
