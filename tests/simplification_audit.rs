@@ -3451,7 +3451,7 @@ fn render_section_3() -> String {
 fn kg_degree_for(file: &str, line: usize) -> u32 {
     match (file, line) {
         ("src/canary.rs", 180) => 12,
-        ("src/config.rs", 436) => 3,
+        ("src/config.rs", 452) => 3,
         ("src/dash.rs", 425) => 5,
         ("src/dash.rs", 2815) => 7,
         ("src/dash.rs", 4665) => 3,
@@ -3474,8 +3474,7 @@ fn kg_degree_for(file: &str, line: usize) -> u32 {
         ("src/spawn.rs", 368) => 7,
         ("src/spawn.rs", 374) => 5,
         ("src/spawn.rs", 399) => 14,
-        ("src/worktree.rs", 82) => 10,
-        ("src/worktree.rs", 525) => 5,
+        ("src/worktree.rs", 544) => 5,
         (other_file, other_line) => panic!(
             "dead-code candidate {other_file}:{other_line} has no recorded knowledge-graph \
              degree - run `rigger graph --show {other_file}::<name>` and add it here (spec 87 \
@@ -4262,7 +4261,7 @@ fn render_section_6() -> String {
         together, rather than as two separately-tracked fixes.\n\n",
     );
     out.push_str(
-        "#### 3. Retire the duplicate `/proc`-reading authority (`dup-0131` + `dup-0132`)\n\n",
+        "#### 3. Retire the duplicate `/proc`-reading authority (`dup-0142` + `dup-0143`)\n\n",
     );
     out.push_str(
         "- Scope: `src/dash.rs::process_state` (`src/dash.rs:499-507`) and \
@@ -4270,16 +4269,16 @@ fn render_section_6() -> String {
         `/proc/<pid>/stat` and `/proc/<pid>/status` fields that `src/reap.rs` \
         (`pid_starttime`/`read_ppid`, `src/reap.rs:190-207`) already parses - the exact \
         \"second mutation authority\" example spec 85's own Goal names and spec 62's \
-        capstone previously caught (`dup-0132`, 14 sites: `src/dash.rs`, `src/main.rs`, \
+        capstone previously caught (`dup-0143`, 14 sites: `src/dash.rs`, `src/main.rs`, \
         `src/reap.rs`, `tests/cli.rs`), plus 59 raw `/proc`-path string literals scattered \
         across `src/dash.rs`, `src/main.rs`, `src/reap.rs` and three test files with no \
-        shared composer (`dup-0131`). Both clusters' own `proposed_home` agree: `src/reap.rs` \
+        shared composer (`dup-0142`). Both clusters' own `proposed_home` agree: `src/reap.rs` \
         becomes the one `/proc`-reading module; `dash.rs` and `main.rs` call it instead of \
         re-parsing. NOT SYMMETRIC: `process_state` is reachable from `dash`'s own always-on \
         production server, so it is the actual active-correctness risk this tier-1 placement \
         is about; `pgid_of` sits inside `main.rs`'s `mod tests` (opened at `src/main.rs:12650`) \
         and is called only by `#[test]` fns, so on its own it earns no tier-1 placement - it \
-        rides in this same item only because it shares `dup-0131`/`dup-0132`'s one root cause \
+        rides in this same item only because it shares `dup-0142`/`dup-0143`'s one root cause \
         and one proposed fix with `process_state`, not because retiring it retires any live \
         risk of its own.\n\
         - Files: `src/dash.rs`, `src/main.rs`, `src/reap.rs`, `tests/cli.rs` (`proc_pgid_of`, \
@@ -4439,7 +4438,7 @@ fn render_section_6() -> String {
     );
     out.push_str(
         "- Scope: one `.rigger`-relative path-composition helper (the cluster's own \
-        `proposed_home`) every one of the 655 sites routes through instead of building its \
+        `proposed_home`) every one of the 662 sites routes through instead of building its \
         own literal.\n\
         - Files: spans dozens of files including `src/conductor.rs`, `src/config.rs`, \
         `src/dash.rs`, `src/docs.rs`, `src/gate.rs`, `src/grounder/mod.rs`, \
@@ -4447,16 +4446,16 @@ fn render_section_6() -> String {
         `src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list \
         is in the committed `docs/audit/duplication-catalog.json` under `dup-0055` for the \
         follow-up spec to consume directly, not re-enumerated here.\n\
-        - Expected line delta: negative - 655 literal compositions collapse toward one \
+        - Expected line delta: negative - 662 literal compositions collapse toward one \
         helper's call sites; the helper itself is small.\n\
         - Risk: medium - the largest surface-area sweep in this plan by site count, even \
         though each individual site is trivial; needs a mechanical rewrite pass plus a \
-        full-suite green run, not hand-editing 655 sites.\n\
+        full-suite green run, not hand-editing 662 sites.\n\
         - Unblocks: the biggest single site-count reduction available anywhere in the \
         duplication catalog.\n\n",
     );
     out.push_str(
-        "#### 11. Consolidate the 269 `Command::new` call sites (`dup-0006`) behind one \
+        "#### 11. Consolidate the 333 `Command::new` call sites (`dup-0006`) behind one \
         injected process-spawn port\n\n",
     );
     out.push_str(
@@ -4469,14 +4468,14 @@ fn render_section_6() -> String {
         - Expected line delta: negative, though smaller per-site than `dup-0055` since each \
         `Command::new` call already carries real configuration (args, env, cwd) that must \
         move with it, not just a literal.\n\
-        - Risk: medium-high - several of these 267 sites sit inside `src/budget.rs`'s and \
+        - Risk: medium-high - several of these 333 sites sit inside `src/budget.rs`'s and \
         `src/conductor.rs`'s already-hardened process-lifecycle code (spec 78's no-os-kill \
         discipline); the follow-up spec must preserve every existing handle-bound-kill \
         invariant at each site it touches, and the no-os-kill gate is the acceptance bar, \
         not merely `cargo test`.\n\
-        - Unblocks: one seam instead of 267 independent constructions - the next \
+        - Unblocks: one seam instead of 333 independent constructions - the next \
         process-spawning concern added anywhere in the crate reuses it instead of adding \
-        site 268.\n\n",
+        site 334.\n\n",
     );
     out.push_str(
         "#### 12. Consolidate the 46 sqlite `Connection::open` call sites (`dup-0109`)\n\n",
@@ -4499,12 +4498,14 @@ fn render_section_6() -> String {
     );
     out.push_str(
         "- Scope: the cluster spans `src/grounder/mod.rs` (`retired_grounder_error`), \
-        `src/worktree.rs` (`revert_on_base_aborts_and_errors_on_a_conflicting_revert`) and \
-        three unrelated test files, at line counts from 6 to 78 - a wide spread for one \
+        `src/worktree.rs` (`revert_on_base_aborts_and_errors_on_a_conflicting_revert`), \
+        `src/conductor.rs` (a `mod tests` case, \
+        `integrate_plan_commits_wraps_any_hard_error_with_the_plan_landing_marker`) and \
+        three unrelated test files, at line counts from 7 to 132 - a wide spread for one \
         claimed duplicate. This may be a threshold-gaming false cluster (spec 85's own \
         CONSTRAINTS WALK: \"the threshold is a floor for the mechanical pass; the reading \
         pass owns semantic duplicates\") rather than one real shared concern - the follow-up \
-        spec's first job is confirming by reading whether these five sites share actual \
+        spec's first job is confirming by reading whether these six sites share actual \
         logic before proposing one helper, not assuming the cluster label proves it.\n\
         - Files: `src/grounder/mod.rs`, `src/worktree.rs`, plus the three test files named \
         in `docs/audit/duplication-catalog.json` under `dup-0213`.\n\
@@ -4616,7 +4617,7 @@ fn render_section_6() -> String {
     out.push_str(
         "- Scope: of the catalog's 674 clusters, 340 are test-only (items 14 and 16-18 \
         above) and 7 are the named tier-1/tier-4 items (`dup-0006`, `dup-0055`, `dup-0109`, \
-        `dup-0131`, `dup-0132`, `dup-0204`, `dup-0213`); the remaining 327 clusters touching \
+        `dup-0142`, `dup-0143`, `dup-0204`, `dup-0213`); the remaining 327 clusters touching \
         `src/` - mostly small 2-5-site exact/near matches like the two worked examples \
         section 2 itself opens with (`dup-0001`, `dup-0002`) - are swept here, largest \
         exact-duplicate clusters first, consumed directly from \
@@ -5598,7 +5599,7 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              loop) never consults it: corpus diversity is a load-time authoring check, not a \
              runtime one.",
         ),
-        ("src/config.rs", 436) => (
+        ("src/config.rs", 452) => (
             KeepPending,
             "sdet_author_enabled has zero production callers - a real, disclosed wiring gap, not \
              a false positive: spawn_sdet_author (conductor.rs:3980) gates the always-on SDET \
@@ -5815,19 +5816,30 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              references, not reachability, so park_in_run reads alive even though its only OTHER \
              caller (park) is itself dead.",
         ),
-        ("src/worktree.rs", 82) => (
+        ("src/worktree.rs", 544) => (
             Delete,
-            "expect_merged has no production caller - one of spec 87's own two Goal-cited worked \
+            "is_dirty has no production caller - one of spec 87's own two Goal-cited worked \
              examples ('src/worktree.rs expect_merged and is_dirty'), reconfirmed on the current \
-             tree: its 6 references are all test-only assertion helpers.",
-        ),
-        ("src/worktree.rs", 525) => (
-            Delete,
-            "is_dirty has no production caller - the second of spec 87's own two Goal-cited worked \
-             examples, reconfirmed on the current tree: its 3 references are all test-only. (Line \
-             shifted 496->520 by spec 88 criterion 2's new create_branch_at, then 520->525 by \
-             criterion 2 round 4's expanded create_branch_at doc comment (branch_tip / pinned-sha \
-             note); is_dirty itself remains untouched both times.)",
+             tree: its 3 references (worktree.rs:3479/3489/3555) are all test-only. Line shifted \
+             again as this merge lands three units' worktree.rs insertions together: spec 88 \
+             criterion 1's `MergeOutcome` (offset by the pre-round-4 `IntegrateOutcome` \
+             enum/`expect_merged` impl's removal into `#[cfg(test)] mod tests`, both now \
+             test-scoped) and criterion 4's `CherryPickOutcome` (both already landed on the run \
+             branch as 508->515, per u88c1-audit-pin-repair/u88c4) plus this unit's (criterion 2) \
+             own `create_branch_at` and its round-4 expanded doc comment (branch_tip / \
+             pinned-sha note; previously tracked here as a separate 496->520->525 shift) - the \
+             union of both prior shifts lands the function at 544 on the merged tree, re-pinned \
+             at this integration per op-u88c2-conflict-resolution-retry-regenerate-audit-union-code \
+             (see specs/90 criterion 2, not yet landed, for the line-free fix this pin dance \
+             works around). expect_merged itself (formerly src/worktree.rs:86) is no longer a \
+             candidate at all: round 4 moved it, together with `IntegrateOutcome` and the \
+             pre-round-4 `integrate` method, into this file's own `#[cfg(test)] mod tests` (a \
+             test-only recomposition of the newly-split `merge_into_worktree`/`land`, since \
+             production - `integrate_and_emit` - now calls those two split methods directly for \
+             its own row-level durable recording and has no caller left for the combined form) - \
+             a test-scoped item is not a production dead-code candidate by this scanner's own \
+             definition, closing the finding at its root rather than re-dispositioning it in \
+             place.",
         ),
         (other_file, other_line) => panic!(
             "dead-code candidate {other_file}:{other_line} has no assigned disposition - this is \
@@ -8002,8 +8014,8 @@ mod tests {
         assert!(rendered.contains("dup-0006"));
         assert!(rendered.contains("dup-0055"));
         assert!(rendered.contains("dup-0109"));
-        assert!(rendered.contains("dup-0131"));
-        assert!(rendered.contains("dup-0132"));
+        assert!(rendered.contains("dup-0142"));
+        assert!(rendered.contains("dup-0143"));
         assert!(rendered.contains("dup-0213"));
         // Cites the god-file test/production split for all three files.
         assert!(rendered.contains("src/conductor.rs"));
@@ -9120,7 +9132,11 @@ mod tests {
     /// Regression pin: the exact real-tree candidate count and disposition split this criterion's
     /// research established (26 candidates: the Self:: fix above removes `dash.rs::parse`'s false
     /// positive from criterion 2's original 27; 23 `delete`, 3 `keep-pending`, 0
-    /// `keep-public-surface` today). A future change to either the tree or `disposition_for`
+    /// `keep-public-surface` today - spec 88 criterion 1 round 4 then dropped this to 25/22/0/3:
+    /// `expect_merged` (formerly src/worktree.rs:86, `delete`) is no longer a production
+    /// candidate at all, moved into `src/worktree.rs`'s own `#[cfg(test)] mod tests` alongside
+    /// the `IntegrateOutcome` enum and a test-only `integrate` recomposition of the newly-split
+    /// `merge_into_worktree`/`land`). A future change to either the tree or `disposition_for`
     /// that shifts this split should be a deliberate, reviewed edit - this test makes that shift
     /// visible rather than silent.
     #[test]
@@ -9140,7 +9156,7 @@ mod tests {
             .count();
         assert_eq!(
             (candidates.len(), delete, keep_public, keep_pending),
-            (26, 23, 0, 3),
+            (25, 22, 0, 3),
             "the real-tree candidate count or disposition split has changed since this \
              criterion's research - {candidates:#?}"
         );

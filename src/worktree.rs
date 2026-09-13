@@ -62,31 +62,45 @@ pub enum RunBranchSetup {
     CreatedFromHead,
 }
 
-/// The outcome of merging a unit's branch into the run branch ([`Worktree::integrate`]).
-pub enum IntegrateOutcome {
-    /// The branch merged cleanly; carries the integrated commit sha (empty for a read-only
-    /// stage that merged nothing).
-    Merged(String),
-    /// The merge CONFLICTED and was ABORTED, so the run branch is left EXACTLY as it was.
-    /// Carries the conflict detail for the unit's remediation feedback. The conductor treats
-    /// this like a failed gate - the unit re-enters remediation off the current integrated
-    /// tree so its next merge rebases cleanly - instead of the run wedging on a broken branch.
-    /// This is the textual-conflict sibling of spec-12-unit-5's semantic-break rollback: that
-    /// one re-gates a SUCCESSFUL merge; this one never gets a clean merge to gate.
-    Conflict(String),
+/// The outcome of [`Worktree::merge_into_worktree`] (spec 88, criterion 1 round 4, TABLE row
+/// 1: "conflict detection"). This is the FRONT HALF of what a single pre-round-4 `integrate`
+/// method used to do in one call - merging the run branch's tip into the unit's own worktree
+/// and either leaving conflict markers or finishing with a committed, ready-to-land branch -
+/// split out so the
+/// caller (`integrate_and_emit`) can bracket the durable row-1 record around exactly this
+/// mutation and the row-4 record around the separate [`Worktree::land`] call, instead of both
+/// rows sharing one opaque function call with no seam in between.
+pub enum MergeOutcome {
+    /// The merge (or an already-resolved worktree) is fully committed on the unit's OWN
+    /// branch and ready to land via [`Worktree::land`]. Empty for a true no-op stage (nothing
+    /// to merge or land at all) - the caller must not call `land` in that case.
+    Ready(String),
+    /// The merge CONFLICTED: the sorted, deduplicated list of conflicting paths, read
+    /// directly from the worktree (never the event log) so a crash-resumed re-check of an
+    /// already-in-progress merge answers identically without re-invoking `git merge` (which
+    /// git would refuse).
+    Conflict(Vec<String>),
 }
 
-impl IntegrateOutcome {
-    /// The merged commit sha; panics on a conflict. A convenience for a caller that has
-    /// already established a clean merge is expected (the happy-path tests).
-    pub fn expect_merged(self) -> String {
-        match self {
-            IntegrateOutcome::Merged(sha) => sha,
-            IntegrateOutcome::Conflict(detail) => {
-                panic!("expected a clean merge, got a conflict: {detail}")
-            }
-        }
-    }
+/// The outcome of [`Worktree::cherry_pick_onto_run_branch`] (spec 88, criterion 4 - PLAN
+/// AMENDMENTS LAND): landing a `produces` stage's own `specs/`-only commits onto the run
+/// branch, so the next plan-critique worktree (branched from the run branch) sees them.
+pub enum CherryPickOutcome {
+    /// Every named commit applied cleanly, in order: the shas AS THEY LANDED on the run
+    /// branch. Usually distinct new commit objects (cherry-pick mints a fresh committer
+    /// timestamp), but NOT always - a cherry-pick onto its own original parent, applied
+    /// within the same committer-timestamp second, reproduces the byte-identical commit
+    /// object (same tree, parent, author, and now-matching committer), so the landed sha
+    /// can equal the original. Either way this is what is actually reachable on the run
+    /// branch right now - the caller records THIS, never the pre-landing sha it read from
+    /// [`Self::commits_since_base`].
+    Picked(Vec<String>),
+    /// The cherry-pick CONFLICTED partway through and the WHOLE sequence was ABORTED
+    /// (git's cherry-pick sequencer unwinds every commit it had already applied this
+    /// call), so the run branch is left EXACTLY as it was - the textual-conflict sibling
+    /// of [`MergeOutcome::Conflict`]. Carries the conflict detail for the caller's
+    /// remediation feedback.
+    Conflict(String),
 }
 
 impl Worktree {
@@ -349,12 +363,17 @@ impl Worktree {
         Ok(())
     }
 
-    /// Reset THIS worktree's branch HARD to `sha` (the run-branch tip), discarding the unit's
-    /// current commits so its NEXT remediation attempt re-implements off that tree. Used when
-    /// a unit's integration merge CONFLICTED (an unpredicted overlap): its work was based on a
-    /// tree a batch-mate has since changed, so re-doing it off the integrated tree lets its
-    /// next merge rebase cleanly - the recovery from the conflict, not a wedge. Resetting a
-    /// branch checked out in its OWN worktree is allowed (unlike deleting it).
+    /// Reset THIS worktree's branch HARD to `sha`, discarding only what [`Self::integrate`]
+    /// itself added since `sha` - never a unit's genuinely reviewed prior work (spec 88,
+    /// criterion 1: a real merge CONFLICT is resolved in place and never reaches this call at
+    /// all; the unit's approved rounds stay exactly as they are). The caller passes the
+    /// worktree's OWN tip from immediately before its `integrate` call, so this undoes exactly
+    /// that call's abandoned merge attempt: a POST-MERGE re-gate going RED (spec 12, unit 5 -
+    /// the merge was clean but semantically broken) or the implementer-respawn bound being
+    /// exhausted with a real conflict still unresolved (spec 88, criterion 1's ONE
+    /// attempt-charging fallback). Leaves the unit's branch clean (any in-progress merge is
+    /// also aborted by the hard reset) for its next attempt. Resetting a branch checked out in
+    /// its OWN worktree is allowed (unlike deleting it).
     pub fn reset_branch_to(&self, sha: &str) -> Result<(), Error> {
         if sha.is_empty() {
             return Ok(());
@@ -541,9 +560,26 @@ impl Worktree {
         // and a three-dot diff from the merge-base reports only THIS branch's own
         // changes, never the unrelated commits that landed meanwhile.
         let base = git(&self.repo, &["rev-parse", "HEAD"])?.trim().to_string();
+        let mut paths = self.committed_diff_names(&base)?;
+        paths.extend(self.changed_files()?);
+        paths.sort();
+        paths.dedup();
+        Ok(paths)
+    }
+
+    /// The committed (three-dot, merge-base-anchored) diff between `from` and this
+    /// worktree's current `HEAD`, name-only, sorted and de-duplicated - the shared
+    /// primitive [`Self::changed_since_base`] calls with `from` = the run branch's
+    /// CURRENT tip. Exposed separately (round 4, spec 88 criterion 1) for a resumed
+    /// [`RunCtx::integrate_and_emit`] to recompute the SAME fact against an OLDER `from` -
+    /// the tip a durably-recorded landing-intent named - when `changed_since_base` itself
+    /// would see nothing: by the time that resume runs, the run branch has ALREADY
+    /// fast-forward-absorbed everything this worktree has, so a fresh diff against its
+    /// CURRENT tip is empty even though real, unrecorded work landed.
+    pub fn committed_diff_names(&self, from: &str) -> Result<Vec<String>, Error> {
         let committed = git(
             &self.dir,
-            &["diff", "--name-only", &format!("{base}...HEAD")],
+            &["diff", "--name-only", &format!("{from}...HEAD")],
         )?;
         let mut paths: Vec<String> = committed
             .lines()
@@ -551,60 +587,542 @@ impl Worktree {
             .filter(|l| !l.is_empty())
             .map(|l| l.to_string())
             .collect();
-        paths.extend(self.changed_files()?);
         paths.sort();
         paths.dedup();
         Ok(paths)
     }
 
-    /// Commit any remaining changes and merge the branch into the base, returning
-    /// the commit hash that landed. A read-only stage (no changes, nothing ever
-    /// committed) merges nothing and returns "".
+    /// Every commit already made on this worktree's branch that the run branch's
+    /// CURRENT HEAD does not yet have, oldest-first: exactly the commits
+    /// [`Self::cherry_pick_onto_run_branch`] would carry across (spec 88, criterion 4 -
+    /// PLAN AMENDMENTS LAND). A `produces` stage never runs [`Self::commit`] (it writes
+    /// no code the conductor sweeps before gating), so this reads whatever its agent
+    /// committed directly with its own git access - an approved amendment to the spec
+    /// it is decomposing.
     ///
-    /// Idempotent with respect to [`Self::commit`]: when the unit's changes were
-    /// already committed (the conductor commits before gating), `commit` here finds
-    /// nothing new, so we resolve the branch's existing HEAD and merge that exact
-    /// commit. The gate-green artifact and the merged artifact are therefore the
-    /// same commit, by construction.
-    pub fn integrate(&self, message: &str) -> Result<IntegrateOutcome, Error> {
-        let committed = self.commit(message)?;
-        // Resolve the commit to merge: a fresh commit from this call, otherwise the
-        // branch's current HEAD (the pre-committed, already-gated artifact). When the
-        // branch never advanced past the base there is nothing to integrate.
-        let commit = if committed.is_empty() {
-            let head = git(&self.dir, &["rev-parse", "HEAD"])?.trim().to_string();
-            let base = git(&self.repo, &["rev-parse", "HEAD"])?.trim().to_string();
-            if head == base {
-                return Ok(IntegrateOutcome::Merged(String::new()));
+    /// Unlike [`Self::changed_since_base`]'s three-dot DIFF (which needs the merge-base
+    /// correction so an independently-advanced base contributes no unrelated file
+    /// noise), a commit RANGE needs no such correction: git's plain two-dot exclusion
+    /// (`base..HEAD`) already means "every commit reachable from HEAD but not from
+    /// base", which for a worktree branch that only ever gains commits (never rebased)
+    /// is precisely this branch's own.
+    pub fn commits_since_base(&self) -> Result<Vec<String>, Error> {
+        let base = git(&self.repo, &["rev-parse", "HEAD"])?.trim().to_string();
+        let out = git(
+            &self.dir,
+            &["rev-list", "--reverse", &format!("{base}..HEAD")],
+        )?;
+        Ok(out
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect())
+    }
+
+    /// Every path a single commit `sha` (already on this worktree's own object
+    /// database - it need not be on this branch's tip) touched, by ITS OWN parent
+    /// diff (`git diff-tree --no-commit-id --name-only -r --root <sha>`), independent
+    /// of any other commit around it. Unlike [`Self::changed_since_base`]'s AGGREGATE
+    /// three-dot diff across a whole range - which nets a path to nothing when a
+    /// LATER commit in the same range reverts an EARLIER one's own touch to that same
+    /// path - this answers "what did this ONE commit itself change", so a scope check
+    /// walking every commit in [`Self::commits_since_base`] individually can catch a
+    /// transient out-of-scope write that the aggregate view would miss entirely
+    /// (spec 88, criterion 4, `adv-u88c4-scope-check-nets-the-diff-not-each-commit`).
+    /// `--root` makes a parentless (root) commit report every path as added, rather
+    /// than erroring for lack of a parent to diff against.
+    pub fn files_touched_by_commit(&self, sha: &str) -> Result<Vec<String>, Error> {
+        let out = git(
+            &self.dir,
+            &[
+                "diff-tree",
+                "--no-commit-id",
+                "--name-only",
+                "-r",
+                "--root",
+                sha,
+            ],
+        )?;
+        Ok(out
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect())
+    }
+
+    /// Every path this worktree currently has UNMERGED (a real git conflict): each
+    /// `U`-status (unmerged) entry from `git diff --name-only --diff-filter=U`, sorted and
+    /// deduplicated. Reads WORKTREE STATE directly - never the event log, never a git
+    /// command's own exit code - so it answers identically whether called right after
+    /// [`Self::integrate`] left markers or on a crash-resumed step that never re-invokes
+    /// `git merge` at all (spec 88, criterion 1: "the merge is worktree state, not log
+    /// state"). Empty when nothing is unmerged.
+    pub fn conflicting_paths(&self) -> Result<Vec<String>, Error> {
+        let out = git(&self.dir, &["diff", "--name-only", "--diff-filter=U"])?;
+        let mut paths: Vec<String> = out
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .map(|l| l.to_string())
+            .collect();
+        paths.sort();
+        paths.dedup();
+        Ok(paths)
+    }
+
+    /// Whether this worktree currently has a merge IN PROGRESS (`MERGE_HEAD` resolves) -
+    /// true from the moment [`Self::integrate`] starts a real (non-"up to date") merge
+    /// until it is committed, whether or not it carries conflicts. [`Self::integrate`]
+    /// reads this to decide whether to invoke `git merge` again (never, once one is
+    /// already in progress - git refuses and a re-invocation would error) or to read the
+    /// worktree's current state instead - the crash-resume idempotency spec 88, criterion
+    /// 1 requires.
+    pub fn merge_in_progress(&self) -> bool {
+        run_git(&self.dir, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_ok()
+    }
+
+    /// Resolve `path`'s unmerged conflict by accepting the INCOMING (run branch) side, then
+    /// stage it - a deterministic PLACEHOLDER resolution for a registered regenerable path
+    /// (spec 88, criterion 1), never used for a source path a real implementer must resolve.
+    /// It exists only to unblock `git commit` (which refuses while ANY path is unmerged, even
+    /// one nobody was asked to touch) until the conductor's OWN regeneration pass overwrites
+    /// the path for real, in a follow-up commit, after the source conflict is resolved - the
+    /// design's "in that order".
+    pub fn accept_incoming(&self, path: &str) -> Result<(), Error> {
+        git(&self.dir, &["checkout", "--theirs", "--", path])?;
+        git(&self.dir, &["add", "--", path])?;
+        Ok(())
+    }
+
+    /// Merge the run branch's tip INTO this worktree (spec 88, criterion 1 round 4, TABLE row
+    /// 1: "conflict detection" - the mutation between the row's before-record, "the conflicting
+    /// path list"'s intent, i.e. the merge about to be attempted, and its after-record, "the
+    /// merge-in-progress outcome (conflicts or clean)"). Together with [`Self::land`] (TABLE
+    /// row 4) this is the split-in-two FRONT HALF of what a single `integrate` method used to
+    /// do before round 4: `integrate_and_emit` calls each half directly so it can durably
+    /// record its own row's before/after pair around exactly that one mutation - two rows, two
+    /// mutations, two independently resumable boundaries, rather than one opaque call spanning
+    /// both (this file's own `mod tests` recomposes the two into a test-only `integrate` that
+    /// mirrors the pre-round-4 combined shape, since the tests it re-derives - crash-resume
+    /// idempotency, conflict-leaves-markers, non-content-failure-surfaces - exercise the
+    /// combined git behavior end to end and gain nothing from being split across two calls).
+    ///
+    /// A merge already in progress (crash-resume) is NEVER re-entered here: `commit`'s `git add
+    /// -A` would blindly stage any still-conflicted file's literal marker text as "resolved"
+    /// content, and re-invoking `git merge` would be refused outright by git regardless.
+    /// Worktree state - read below via `conflicting_paths` - is the sole authority for what
+    /// happens next; this whole commit-and-attempt block is skipped.
+    pub fn merge_into_worktree(&self, message: &str) -> Result<MergeOutcome, Error> {
+        // Set only by a fresh attempt's own merge command below - `None` on a crash-resumed
+        // re-entry (the block below is skipped entirely) or when no merge was even needed.
+        let mut merge_attempt: Option<String> = None;
+        if !self.merge_in_progress() {
+            let committed = self.commit(message)?;
+            // Nothing at all for this unit to contribute (no fresh commit here, and its
+            // branch already sits exactly at the run branch's tip): true read-only no-op,
+            // matching the historical short circuit exactly - never even attempt a merge.
+            if committed.is_empty() {
+                let head = git(&self.dir, &["rev-parse", "HEAD"])?.trim().to_string();
+                let base = git(&self.repo, &["rev-parse", "HEAD"])?.trim().to_string();
+                if head == base {
+                    return Ok(MergeOutcome::Ready(String::new()));
+                }
             }
-            head
-        } else {
-            committed
-        };
-        // A merge that fails leaves the run branch mid-merge with unmerged files. A CONFLICT
-        // (an unpredicted overlap the partitioner did not serialize into separate batches) is
-        // a RECOVERABLE outcome: ABORT the merge so the run branch is left untouched, and
-        // report it so the conductor re-mediates the unit rather than wedging the whole run on
-        // a broken branch. Any OTHER merge failure is a genuine error and still surfaces.
+            let run_tip = git(&self.repo, &["rev-parse", "HEAD"])?.trim().to_string();
+            // Outcome (clean vs conflict) is read from worktree state just below, not
+            // from this command's own exit code alone - a genuine CONTENT conflict also
+            // exits non-zero, and is read back (and returned) via `conflicting_paths` right
+            // below regardless of what this call returns. But a NON-content failure (spec
+            // 88 criterion 1, operator ruling point (e): sdet-u88c1-worktree-merge-result-
+            // discarded) - e.g. a stray untracked file at a path `run_tip` newly tracks,
+            // which git refuses to clobber - leaves BOTH `conflicting_paths()` and
+            // `merge_in_progress()` at their ordinary "nothing to do" defaults. Worktree
+            // state alone cannot tell that apart from "nothing changed", so the error is
+            // captured here and, once the checks below have ruled out a real conflict,
+            // surfaced as a genuine `Err` instead of silently falling through to land the
+            // unit's branch UNCHANGED.
+            merge_attempt =
+                run_git(&self.dir, &["merge", "--no-commit", "--no-ff", &run_tip]).err();
+        }
+        let conflicts = self.conflicting_paths()?;
+        if !conflicts.is_empty() {
+            return Ok(MergeOutcome::Conflict(conflicts));
+        }
+        if self.merge_in_progress() {
+            // Every conflict (if any arose) is resolved and staged: finalize the merge
+            // commit on the unit's OWN branch before landing it on the run branch.
+            match run_git(&self.dir, &["commit", "--no-edit"]) {
+                Ok(_) => {}
+                Err(out) if out.contains("nothing to commit") => {}
+                Err(out) => return Err(Error(format!("commit merge: {out}"))),
+            }
+        } else if let Some(out) = merge_attempt {
+            // Worktree state has now ruled out a real content conflict (`conflicts` empty
+            // above) and an in-progress merge to finalize (`merge_in_progress` just above) -
+            // so a fresh attempt's own merge command failing here is a genuine, non-content
+            // error (spec 88 criterion 1, operator ruling point (e)), never a silent no-op.
+            return Err(Error(format!("worktree merge --no-commit --no-ff: {out}")));
+        }
+        let commit = git(&self.dir, &["rev-parse", "HEAD"])?.trim().to_string();
+        Ok(MergeOutcome::Ready(commit))
+    }
+
+    /// Land this worktree's branch - already fully resolved and committed by a prior
+    /// [`Self::merge_into_worktree`] call that returned `Ready` with a non-empty commit - onto
+    /// the run branch (spec 88, criterion 1 round 4, TABLE row 4: "landing", the mutation
+    /// between the row's before-record, "the landing intent (unit tip, run tip)", and its
+    /// after-record, "the landed sha"). The worktree's branch is, by construction, a strict
+    /// descendant of the run branch's tip (the merge `merge_into_worktree` just performed, or
+    /// an earlier one already established that), so this lands as a clean fast-forward. A
+    /// failure here is a genuine, unexpected error - never a conflict (conflicts are caught,
+    /// and returned, by `merge_into_worktree` itself, which the caller must check first).
+    pub fn land(&self) -> Result<(), Error> {
         match run_git(&self.repo, &["merge", "--no-edit", &self.branch]) {
-            Ok(_) => Ok(IntegrateOutcome::Merged(commit)),
-            Err(out) => {
-                // Unmerged files are the definitive conflict signal (git-version-independent);
-                // the phrasing checks are a belt-and-braces backup. Read BEFORE the abort.
-                let conflicted = run_git(&self.repo, &["ls-files", "--unmerged"])
-                    .map(|u| !u.trim().is_empty())
-                    .unwrap_or(false)
-                    || out.contains("CONFLICT")
-                    || out.contains("Automatic merge failed")
-                    || out.contains("unmerged files");
-                let _ = run_git(&self.repo, &["merge", "--abort"]);
-                if conflicted {
-                    Ok(IntegrateOutcome::Conflict(out))
-                } else {
-                    Err(Error(format!("git merge --no-edit {}: {out}", self.branch)))
+            Ok(_) => Ok(()),
+            Err(out) => Err(Error(format!("git merge --no-edit {}: {out}", self.branch))),
+        }
+    }
+
+    /// Cherry-pick `shas` (oldest-first, from [`Self::commits_since_base`]) from this
+    /// worktree's branch onto the run branch, as ONE cherry-pick sequence (spec 88,
+    /// criterion 4 - PLAN AMENDMENTS LAND): a `produces` stage's own commits are never
+    /// swept and merged like an ordinary unit's ([`Self::merge_into_worktree`] then
+    /// [`Self::land`]) - they carry no
+    /// code diff to gate, so this lands them directly, preserving each commit's own
+    /// identity (never squashed).
+    ///
+    /// A no-op (`Picked(vec![])`, nothing touched) on an empty `shas`. On a conflict
+    /// partway through a multi-commit sequence, `--abort` unwinds the WHOLE sequence
+    /// (git's cherry-pick sequencer tracks every commit already applied this call),
+    /// mirroring the invariant [`Self::merge_into_worktree`] keeps on a conflict (the run
+    /// branch itself is never left mid-merge) - the run branch never carries a
+    /// half-landed amendment.
+    ///
+    /// IDEMPOTENT on a RESUMED already-landed sequence (spec 88 c4,
+    /// `sdet-u88c4-cherry-pick-resume-not-idempotent`): a crash between a PRIOR call's
+    /// real git success and the caller recording it can mean a resumed process asks
+    /// to cherry-pick the SAME `shas` again - [`Self::commits_since_base`] is
+    /// identity-based, and a cherry-pick mints a NEW commit object, so the original
+    /// commit stays "not yet on the run branch" by identity even once its CONTENT
+    /// already landed. Applying a commit whose content is already present produces an
+    /// EMPTY patch, which git PAUSES on rather than silently dropping - `--skip`
+    /// moves the sequencer past it and on to the next commit, so a batch that is
+    /// EVERY pick empty (the whole-resume case) runs through to completion with
+    /// nothing new created (`Picked(vec![])`, the SAME no-op shape an empty `shas`
+    /// produces), and a batch that is PARTLY empty still lands whichever picks are
+    /// genuinely new.
+    /// The cherry-pick sequencer's own remaining-pick count for `repo` (spec 88 c4,
+    /// arch-u88c4-r7-classification-skip-is-single-shot-not-a-loop): a leftover
+    /// `CHERRY_PICK_HEAD`'s pending-commit count, read via `git rev-parse --git-path
+    /// sequencer/todo` - WORKTREE-SAFE, since this crate runs several worktrees off
+    /// ONE shared object database and sequencer state lives per-worktree under
+    /// `.git/worktrees/<name>/sequencer/`, never the shared `.git/sequencer`. Unlike
+    /// most `--git-path` uses, git's OWN output here is relative to `repo` (its `-C`
+    /// argument is a real chdir for the git subprocess, not for this one) for a
+    /// PLAIN repo, but already absolute for a LINKED worktree - joined onto `repo`
+    /// only when it is not already absolute, so both shapes resolve correctly from
+    /// this process's own cwd. Counts every non-blank, non-comment line (each is one
+    /// `pick <sha> <subject>` entry) - this is the SAME quantity
+    /// [`Self::cherry_pick_onto_run_branch`]'s fresh-sequence loop bounds itself by
+    /// proxy by using `shas.len()` (the two are equal at the point that loop starts,
+    /// since nothing has been skipped yet); reading it directly here is what lets the
+    /// leftover-marker classification bound its OWN skip loop the identical way when
+    /// it has no `shas` of its own to count.
+    ///
+    /// A MISSING todo file (`io::ErrorKind::NotFound`) is the NORMAL shape for a
+    /// leftover sequence whose remaining set is exactly ONE commit, not an anomaly
+    /// (adj-u88c4-r8-verdict-reject / sdet-u88c4-r8-single-commit-leftover-marker-
+    /// hard-errors-on-missing-sequencer-todo): git's sequencer machinery is never
+    /// engaged by a plain single-sha `git cherry-pick <sha>`, so it never creates
+    /// `.git/sequencer/` at all - and that single-sha shape is exactly what
+    /// [`Self::cherry_pick_onto_run_branch`] issues whenever its caller's own
+    /// `shas` (equivalently, the conductor's `still_pending`) has shrunk to one,
+    /// the routine steady state of an iterative multi-commit plan amendment, not
+    /// merely a literal one-commit-total unit. Reading it as exactly ONE remaining
+    /// entry (rather than propagating the io error) guarantees the bounded skip
+    /// loop above still attempts at least one `--skip`, so it resolves this
+    /// leftover the same way it resolves every other empty-commit pause instead of
+    /// hard-failing the very case it exists to handle.
+    fn sequencer_todo_remaining(repo: &str) -> Result<usize, Error> {
+        let raw = git(repo, &["rev-parse", "--git-path", "sequencer/todo"])?
+            .trim()
+            .to_string();
+        let todo_path = std::path::Path::new(&raw);
+        let todo_path = if todo_path.is_absolute() {
+            todo_path.to_path_buf()
+        } else {
+            std::path::Path::new(repo).join(todo_path)
+        };
+        match std::fs::read_to_string(&todo_path) {
+            Ok(contents) => Ok(contents
+                .lines()
+                .filter(|l| {
+                    let l = l.trim();
+                    !l.is_empty() && !l.starts_with('#')
+                })
+                .count()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(1),
+            Err(e) => Err(Error(format!("reading {}: {e}", todo_path.display()))),
+        }
+    }
+
+    pub fn cherry_pick_onto_run_branch(&self, shas: &[String]) -> Result<CherryPickOutcome, Error> {
+        if shas.is_empty() {
+            return Ok(CherryPickOutcome::Picked(Vec::new()));
+        }
+        // GIT IN-PROGRESS STATE, CLASSIFIED EXPLICITLY (spec 88 c4, operator ruling
+        // op-u88c4-next-round-plan-commit-landing-is-log-carried-and-idempotent, item
+        // 3, superseding the round-5 fix's blind abort-and-retry): a leftover
+        // CHERRY_PICK_HEAD from an earlier, crashed call is read BEFORE anything else
+        // and resolved by NAME rather than discarded unconditionally:
+        //   - unmerged paths present: a REAL conflict from that earlier call - the
+        //     SAME path a fresh conflict takes below (abort, report `Conflict`),
+        //     never silently re-run into the identical conflict a second time.
+        //   - no unmerged paths: an EMPTY-COMMIT PAUSE (adv-u88c4-r4-cherry-pick-in-
+        //     progress-marker-survives-a-crash-mid-skip-loop - a crash WHILE the
+        //     skip-loop below was mid-flight) - resolved the SAME way the loop below
+        //     resolves it, `--skip`, so the earlier call's own remaining sequencer
+        //     todo (if any) completes before this call's fresh sequence for `shas`
+        //     ever starts.
+        // A state that is neither (still in progress after `--skip`) is not a shape
+        // this function recognizes - a hard error naming the marker, never a guess.
+        if run_git(
+            &self.repo,
+            &["rev-parse", "-q", "--verify", "CHERRY_PICK_HEAD"],
+        )
+        .is_ok()
+        {
+            let unmerged = run_git(&self.repo, &["ls-files", "--unmerged"])
+                .map(|u| !u.trim().is_empty())
+                .unwrap_or(false);
+            if unmerged {
+                let detail = run_git(&self.repo, &["diff", "--diff-filter=U"]).unwrap_or_default();
+                let _ = run_git(&self.repo, &["cherry-pick", "--abort"]);
+                return Ok(CherryPickOutcome::Conflict(format!(
+                    "a leftover cherry-pick from an earlier, crashed attempt conflicted: {detail}"
+                )));
+            }
+            // BOUNDED LOOP, NOT A SINGLE SHOT (arch-u88c4-r7-classification-skip-is-
+            // single-shot-not-a-loop / sdet-u88c4-r7-classification-skip-confirmed-
+            // live-and-untested-for-2plus-chained-empties): git's own `--skip` only
+            // ever advances the sequencer past the CURRENT paused commit, and the
+            // very next one can ALSO be empty (an ordinary shape for a multi-commit
+            // plan amendment resumed after a crash) - a single attempt leaves
+            // CHERRY_PICK_HEAD still set and would wrongly read as an unrecognized
+            // state. This reuses the SAME `skips_left` shape the fresh-sequence loop
+            // below uses, bounded by the leftover sequence's OWN remaining `todo`
+            // count (read BEFORE any skip, via [`Self::sequencer_todo_remaining`]) -
+            // exactly mirroring that loop's `shas.len()` bound and the SAME
+            // reasoning: the sequencer's own remaining-commit list strictly shrinks
+            // by one each skip, so a correct git can never need more skips than this.
+            let mut skips_left = Self::sequencer_todo_remaining(&self.repo)?;
+            loop {
+                if skips_left == 0 {
+                    return Err(Error(
+                        "CHERRY_PICK_HEAD left in progress by an earlier attempt, and it is \
+                         neither a conflict nor a resolvable empty-commit pause: exhausted the \
+                         sequencer's own remaining-todo count without resolving"
+                            .to_string(),
+                    ));
+                }
+                skips_left -= 1;
+                match run_git(&self.repo, &["cherry-pick", "--skip"]) {
+                    Ok(_) => break, // the leftover sequence is now fully resolved
+                    Err(out) => {
+                        let unmerged_now = run_git(&self.repo, &["ls-files", "--unmerged"])
+                            .map(|u| !u.trim().is_empty())
+                            .unwrap_or(false);
+                        if unmerged_now {
+                            let detail = run_git(&self.repo, &["diff", "--diff-filter=U"])
+                                .unwrap_or_default();
+                            let _ = run_git(&self.repo, &["cherry-pick", "--abort"]);
+                            return Ok(CherryPickOutcome::Conflict(format!(
+                                "a leftover cherry-pick from an earlier, crashed attempt \
+                                 conflicted: {detail}"
+                            )));
+                        }
+                        if !out.contains("previous cherry-pick is now empty") {
+                            return Err(Error(format!(
+                                "CHERRY_PICK_HEAD left in progress by an earlier attempt, and \
+                                 it is neither a conflict nor a resolvable empty-commit pause: \
+                                 {out}"
+                            )));
+                        }
+                        // Another empty-commit pause further down the leftover
+                        // sequence - loop around and skip it too, bounded by
+                        // `skips_left`.
+                    }
                 }
             }
         }
+        let before = git(&self.repo, &["rev-parse", "HEAD"])?.trim().to_string();
+        // Unmerged files are the definitive conflict signal (git-version-independent),
+        // mirroring `integrate`'s own check; the phrasing checks are a belt-and-braces
+        // backup for a cherry-pick-specific message shape.
+        let is_conflicted = |out: &str| -> bool {
+            run_git(&self.repo, &["ls-files", "--unmerged"])
+                .map(|u| !u.trim().is_empty())
+                .unwrap_or(false)
+                || out.contains("CONFLICT")
+                || out.contains("could not apply")
+                || out.contains("after resolving the conflicts")
+        };
+        let mut args: Vec<&str> = vec!["cherry-pick"];
+        args.extend(shas.iter().map(String::as_str));
+        let mut result = run_git(&self.repo, &args);
+        // Bounded to `shas.len()` skips: the sequencer's own remaining-commit list
+        // strictly shrinks by one each skip, so a correct git can never need more.
+        let mut skips_left = shas.len();
+        loop {
+            let out = match &result {
+                Ok(_) => break,
+                Err(out) => out.clone(),
+            };
+            if skips_left == 0
+                || is_conflicted(&out)
+                || !out.contains("previous cherry-pick is now empty")
+            {
+                break;
+            }
+            skips_left -= 1;
+            result = run_git(&self.repo, &["cherry-pick", "--skip"]);
+        }
+        match result {
+            Ok(_) => {
+                // The shas AS THEY LAND (see the type's doc comment for why this can
+                // differ from - or equal - the pre-landing `shas`): every commit the
+                // run branch's HEAD gained this call, oldest-first, same two-dot
+                // exclusion `commits_since_base` uses. Empty when every pick this call
+                // made was already-applied (the resumed no-op case above).
+                let out = git(
+                    &self.repo,
+                    &["rev-list", "--reverse", &format!("{before}..HEAD")],
+                )?;
+                let landed = out
+                    .lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .map(str::to_string)
+                    .collect();
+                Ok(CherryPickOutcome::Picked(landed))
+            }
+            Err(out) => {
+                let conflicted = is_conflicted(&out);
+                let _ = run_git(&self.repo, &["cherry-pick", "--abort"]);
+                if conflicted {
+                    Ok(CherryPickOutcome::Conflict(out))
+                } else {
+                    Err(Error(format!("git cherry-pick {}: {out}", shas.join(" "))))
+                }
+            }
+        }
+    }
+
+    /// Git's own STABLE, CONTENT-based identity for commit `sha`'s diff
+    /// (`git show <sha> | git patch-id --stable`) - independent of the commit's
+    /// parent, author, committer, or timestamp, so a commit re-created by a
+    /// different mechanism (a cherry-pick mints a brand new commit object carrying
+    /// the SAME diff) is recognized as the SAME change. This is the mechanism the
+    /// operator ruling `op-u88c4-next-round-plan-commit-landing-is-log-carried-and-
+    /// idempotent`'s item (2) names ("reachable from the run branch by patch-id") -
+    /// it replaces
+    /// the REMOVED `already_landed_commits`, whose tree-POSITION walk was rejected
+    /// three review rounds running (arch-u88c4-r6-operator-ruling-unimplemented-
+    /// still-a-heuristic et al.) precisely because a position shifts when anything
+    /// else lands on the run branch in between, while a patch-id never does. `dir`
+    /// need not be the worktree `sha` originally lived on - every worktree of the
+    /// SAME repository shares one object database, so `self.repo` can resolve a sha
+    /// that only ever existed on `self.dir`'s branch, and vice versa.
+    fn patch_id_of(dir: &str, sha: &str) -> Result<String, Error> {
+        use std::process::{Command, Stdio};
+        let mut show = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["show", "--no-color", sha])
+            .stdout(Stdio::piped())
+            .spawn()
+            .map_err(|e| Error(format!("git show {sha}: {e}")))?;
+        let show_stdout = show
+            .stdout
+            .take()
+            .ok_or_else(|| Error(format!("git show {sha}: no stdout pipe")))?;
+        let patch_id = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["patch-id", "--stable"])
+            .stdin(Stdio::from(show_stdout))
+            .output()
+            .map_err(|e| Error(format!("git patch-id {sha}: {e}")))?;
+        // The Child handle that spawned `show` is waited on directly, never signalled -
+        // this crate's handle-bound process lifecycle discipline (spec 78): a process
+        // this crate starts is ended only through its own spawning handle, never a
+        // shell-out or a computed-pid signal.
+        let show_status = show
+            .wait()
+            .map_err(|e| Error(format!("git show {sha} wait: {e}")))?;
+        if !show_status.success() {
+            return Err(Error(format!("git show {sha}: exited {show_status}")));
+        }
+        if !patch_id.status.success() {
+            return Err(Error(format!(
+                "git patch-id {sha}: {}",
+                String::from_utf8_lossy(&patch_id.stderr)
+            )));
+        }
+        // A content-FREE commit (`git commit --allow-empty`, e.g. this crate's own
+        // `init_repo` test seed) has no diff at all, so `git patch-id` legitimately
+        // prints nothing - not a tool failure. The empty string is a valid, distinct
+        // identity (never a match for anything, including another empty commit -
+        // [`Self::find_landed_by_patch_id`] guards this explicitly rather than
+        // letting two content-free commits compare equal).
+        Ok(String::from_utf8_lossy(&patch_id.stdout)
+            .split_whitespace()
+            .next()
+            .map(str::to_string)
+            .unwrap_or_default())
+    }
+
+    /// Public wrapper over [`Self::patch_id_of`] against this worktree's own directory
+    /// (see that function's doc comment - the object database is shared, so this
+    /// resolves a sha from EITHER this worktree's branch or the run branch it was
+    /// created from).
+    pub fn patch_id(&self, sha: &str) -> Result<String, Error> {
+        Self::patch_id_of(&self.dir, sha)
+    }
+
+    /// Search the run branch's own recent history (`self.repo`, the `window` most
+    /// recent commits reachable from its HEAD) for a commit whose [`Self::patch_id`]
+    /// matches `original_sha`'s - the RECOVERY half of ruling item (2): confirming
+    /// that an intended plan-stage commit already reached the run branch under a
+    /// DIFFERENT (cherry-pick-minted) object, without depending on ITS POSITION in
+    /// that history at all. `None` when no match is found within `window` - never a
+    /// guess beyond what was actually searched, so a caller that cannot confirm
+    /// simply leaves the sha pending for the next call rather than fabricating an
+    /// identity.
+    pub fn find_landed_by_patch_id(
+        &self,
+        original_sha: &str,
+        window: usize,
+    ) -> Result<Option<String>, Error> {
+        let target = self.patch_id(original_sha)?;
+        if target.is_empty() {
+            // A content-free intended commit carries no reliable identity to search
+            // for - never a guess, so this never confirms one.
+            return Ok(None);
+        }
+        let out = git(
+            &self.repo,
+            &["rev-list", &format!("--max-count={window}"), "HEAD"],
+        )?;
+        for candidate in out.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            let candidate_id = self.patch_id(candidate)?;
+            if !candidate_id.is_empty() && candidate_id == target {
+                return Ok(Some(candidate.to_string()));
+            }
+        }
+        Ok(None)
     }
 
     /// Delete the worktree (its branch is left for the caller to clean up), and reclaim its
@@ -1437,6 +1955,54 @@ fn run_git(dir: &str, args: &[&str]) -> Result<String, String> {
 mod tests {
     use super::*;
 
+    /// Test-only recomposition of [`Worktree::merge_into_worktree`] + [`Worktree::land`] into
+    /// the single combined call this file's OWN pre-round-4 tests were written against (spec
+    /// 88, criterion 1 round 4): a plain merge-then-land, matching the production shape
+    /// `integrate_and_emit` used before it split the two so it could bracket each with its own
+    /// durable row-level record. Kept HERE, test-scoped, rather than in production - production
+    /// has no caller for the combined form any more (only this module's tests did, which the
+    /// dead-code audit would otherwise flag as a real production surface with zero real
+    /// callers, exactly the class `expect_merged`/`is_dirty` are already dispositioned for
+    /// nearby) - so the tests that genuinely want to exercise the combined merge+land behavior
+    /// end to end (crash-resume idempotency, conflict-leaves-markers-in-place, a non-content
+    /// merge failure surfacing) keep doing so through one call, unchanged.
+    enum IntegrateOutcome {
+        Merged(String),
+        Conflict(Vec<String>),
+    }
+
+    impl IntegrateOutcome {
+        fn expect_merged(self) -> String {
+            match self {
+                IntegrateOutcome::Merged(sha) => sha,
+                IntegrateOutcome::Conflict(paths) => {
+                    panic!(
+                        "expected a clean merge, got a conflict in: {}",
+                        paths.join(", ")
+                    )
+                }
+            }
+        }
+    }
+
+    trait IntegrateForTest {
+        fn integrate(&self, message: &str) -> Result<IntegrateOutcome, Error>;
+    }
+
+    impl IntegrateForTest for Worktree {
+        fn integrate(&self, message: &str) -> Result<IntegrateOutcome, Error> {
+            match self.merge_into_worktree(message)? {
+                MergeOutcome::Conflict(paths) => Ok(IntegrateOutcome::Conflict(paths)),
+                MergeOutcome::Ready(commit) => {
+                    if !commit.is_empty() {
+                        self.land()?;
+                    }
+                    Ok(IntegrateOutcome::Merged(commit))
+                }
+            }
+        }
+    }
+
     fn init_repo() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().to_str().unwrap();
@@ -1493,12 +2059,15 @@ mod tests {
     }
 
     #[test]
-    fn integrate_reports_a_merge_conflict_and_leaves_the_run_branch_untouched() {
-        // The unpredicted-overlap case the spec-13 dogfood hit: two units the partitioner
-        // placed in ONE batch both add the SAME file with DIFFERENT content off the same base.
-        // The first merges; the second's merge CONFLICTS. integrate() must ABORT the merge,
-        // leave the run branch EXACTLY as the first unit left it, and report Conflict - so the
-        // conductor re-mediates the second unit instead of the run wedging on a broken branch.
+    fn integrate_conflict_merges_the_run_branch_into_the_worktree_leaving_the_unit_branch_untouched(
+    ) {
+        // Spec 88, criterion 1 (INTEGRATE-CONFLICT MERGES): the unpredicted-overlap case the
+        // spec-13 dogfood hit - two units the partitioner placed in ONE batch both add the SAME
+        // file with DIFFERENT content off the same base. The first merges; the second's merge
+        // CONFLICTS. integrate() must merge the RUN BRANCH'S TIP INTO B's OWN worktree, leave
+        // conflict markers there (never abort), and leave B's BRANCH REF untouched (no reset, no
+        // lost commit) - so the conductor can re-park B's implementer to resolve on the SAME
+        // branch instead of discarding its work or wedging the run.
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
 
@@ -1517,36 +2086,1231 @@ mod tests {
             .to_string();
 
         // B adds the SAME file with DIFFERENT content off the same base: an add/add conflict.
+        // Committed here (like the conductor's OWN pre-gate commit, which always runs before
+        // `integrate` in production) so the branch-untouched assertion below measures the
+        // conflict handling alone, not B's own ordinary work commit.
         std::fs::write(wb.join("shared.txt"), "B version\n").unwrap();
+        b.commit("rigger: b's own work").unwrap();
+        let b_branch_before = run_git(&repo_path, &["rev-parse", "rigger/u/b"])
+            .unwrap()
+            .trim()
+            .to_string();
         match b.integrate("rigger: integrate b").unwrap() {
-            IntegrateOutcome::Conflict(detail) => assert!(
-                detail.to_lowercase().contains("conflict"),
-                "the conflict detail names the conflict; got: {detail}"
-            ),
+            IntegrateOutcome::Conflict(paths) => {
+                assert_eq!(
+                    paths,
+                    ["shared.txt"],
+                    "the conflict names exactly the conflicting path"
+                );
+            }
             IntegrateOutcome::Merged(_) => {
                 panic!("a divergent add/add merge must conflict, not merge")
             }
         }
 
-        // The run branch is UNTOUCHED: A's content stands, HEAD is unchanged, and no merge is
-        // left in progress (the abort cleaned it) - so the next `rigger step` runs clean.
+        // The RUN BRANCH is untouched: A's content stands, HEAD is unchanged - a conflict never
+        // touches the shared repo checkout at all.
         assert_eq!(
             std::fs::read_to_string(repo.path().join("shared.txt")).unwrap(),
             "A version\n",
-            "the aborted conflict must not alter the run branch"
+            "a conflict must not alter the run branch"
         );
         let head_now = run_git(&repo_path, &["rev-parse", "HEAD"])
             .unwrap()
             .trim()
             .to_string();
+        assert_eq!(head_now, head_after_a, "HEAD is unchanged after a conflict");
+
+        // B's BRANCH REF is untouched: still the exact commit it carried before this call - no
+        // reset, so every prior commit stays exactly as it was.
+        let b_branch_after = run_git(&repo_path, &["rev-parse", "rigger/u/b"])
+            .unwrap()
+            .trim()
+            .to_string();
         assert_eq!(
-            head_now, head_after_a,
-            "HEAD is unchanged after the aborted merge"
+            b_branch_after, b_branch_before,
+            "the unit branch ref must not move on a conflict (--no-commit never advances it)"
+        );
+
+        // The run branch's tip WAS merged INTO B's own worktree: a merge is in progress there,
+        // and B's version of shared.txt now carries real conflict markers naming both sides.
+        assert!(
+            b.merge_in_progress(),
+            "the run branch's tip must be merged into the unit's OWN worktree, not aborted"
+        );
+        let conflicted = std::fs::read_to_string(wb.join("shared.txt")).unwrap();
+        assert!(
+            conflicted.contains("<<<<<<<") && conflicted.contains("A version"),
+            "conflict markers naming both sides are left in place in the worktree: {conflicted}"
+        );
+        assert_eq!(
+            b.conflicting_paths().unwrap(),
+            ["shared.txt"],
+            "conflicting_paths reads the same list back from worktree state"
+        );
+    }
+
+    #[test]
+    fn integrate_conflict_is_idempotent_on_a_crash_resumed_worktree() {
+        // Spec 88, criterion 1, CONSTRAINTS WALK: "the merge is worktree state, not log state" -
+        // a re-park that re-enters integrate() on a worktree ALREADY carrying an in-progress
+        // merge (a crash between the first conflict and the resolving commit) must never
+        // re-invoke `git merge` (which git refuses on a tree with unmerged paths) and must read
+        // the SAME conflict list back from the worktree, not error.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wa = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wb = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let a = Worktree::create(&repo_path, wa.to_str().unwrap(), "rigger/u/a", "").unwrap();
+        let b = Worktree::create(&repo_path, wb.to_str().unwrap(), "rigger/u/b", "").unwrap();
+        std::fs::write(wa.join("shared.txt"), "A version\n").unwrap();
+        a.integrate("rigger: integrate a").unwrap().expect_merged();
+        std::fs::write(wb.join("shared.txt"), "B version\n").unwrap();
+
+        let first = b.integrate("rigger: integrate b").unwrap();
+        let IntegrateOutcome::Conflict(first_paths) = first else {
+            panic!("expected a conflict");
+        };
+
+        // Re-enter exactly as a resumed step would, with nothing resolved yet.
+        let second = b.integrate("rigger: integrate b (resumed)").unwrap();
+        let IntegrateOutcome::Conflict(second_paths) = second else {
+            panic!("a re-entered integrate on an unresolved conflict must still report Conflict");
+        };
+        assert_eq!(
+            first_paths, second_paths,
+            "the re-entered call reads the identical conflict list from worktree state"
         );
         assert!(
-            !repo.path().join(".git").join("MERGE_HEAD").exists(),
-            "no merge is left in progress after the abort"
+            b.merge_in_progress(),
+            "the in-progress merge survives the idempotent re-entry untouched"
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn integrate_reports_a_non_content_merge_failure_instead_of_silently_landing_a_stale_branch() {
+        // Spec 88, criterion 1, operator ruling op-u88c1-round-1-conflict-resolution-is-a-
+        // parked-spawn-not-an-inline-loop, point (e): "Every worktree git result is checked: a
+        // non-content failure of merge --no-commit ... is an integration ERROR ..., never a
+        // silent fall-through that lands an unvalidated branch." (sdet-u88c1-worktree-merge-
+        // result-discarded). `git merge --no-commit --no-ff` can fail for a reason that leaves
+        // BOTH `conflicting_paths()` and `merge_in_progress()` at their ordinary "nothing to
+        // do" defaults - a stray untracked, non-regular file (a build tool's leftover FIFO or
+        // socket, say) at a path the run branch's tip newly tracks makes git refuse outright
+        // ("untracked working tree files would be overwritten"), with no MERGE_HEAD and no
+        // unmerged path ever created. `Worktree::commit`'s own `git add -A` (always run first)
+        // cannot sweep it into the unit's own commit first (unlike a plain regular file) - `git
+        // add` has no blob to record for a FIFO, so `git status`/`add -A` never even see it -
+        // which is exactly what makes this reachable via the ordinary call sequence, not a
+        // fabricated repository state. Reading only worktree state (as every other outcome in
+        // this function correctly does) cannot distinguish that from "nothing changed", so
+        // discarding this command's own Result silently falls through to landing the unit's
+        // branch UNCHANGED - never actually merging the run branch's new content in at all.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wb = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        // b branches off the CURRENT base first, so its own history never learns about
+        // "clash.rs" - only the run branch's tip (landed directly below) tracks it.
+        let b = Worktree::create(&repo_path, wb.to_str().unwrap(), "rigger/u/b", "").unwrap();
+
+        // Land "clash.rs" on the run branch directly (simulating a sibling unit's own
+        // already-integrated work).
+        std::fs::write(repo.path().join("clash.rs"), "FROM_A\n").unwrap();
+        run_git(&repo_path, &["add", "--", "clash.rs"]).unwrap();
+        run_git(&repo_path, &["commit", "-q", "-m", "a lands clash.rs"]).unwrap();
+
+        std::fs::write(wb.join("b.rs"), "B_WORK\n").unwrap();
+        b.commit("rigger: b's own work").unwrap();
+        // A stray untracked FIFO at the exact path the run branch's tip now carries - `git
+        // add -A` cannot stage a non-regular file, so it stays genuinely untracked (invisible
+        // to `git status`, even) all the way to the merge attempt below; git itself (not this
+        // crate) then refuses to clobber it.
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(wb.join("clash.rs"))
+                .status()
+                .unwrap()
+                .success(),
+            "test setup: mkfifo must succeed"
+        );
+
+        let err = match b.integrate("rigger: integrate b") {
+            Err(e) => e,
+            Ok(IntegrateOutcome::Merged(c)) => panic!(
+                "a non-content git failure must surface as an Err, never a silent Merged({c:?})"
+            ),
+            Ok(IntegrateOutcome::Conflict(paths)) => panic!(
+                "a non-content git failure is not a real content conflict, got Conflict({paths:?})"
+            ),
+        };
+        assert!(
+            err.0.contains("clash.rs") || err.0.to_lowercase().contains("untracked"),
+            "the real git failure must propagate, not a fabricated message: {}",
+            err.0
+        );
+        // The stray FIFO is exactly what git itself refused to touch - proof this is the real
+        // git refusal, not some other failure.
+        use std::os::unix::fs::FileTypeExt;
+        assert!(
+            std::fs::symlink_metadata(wb.join("clash.rs"))
+                .unwrap()
+                .file_type()
+                .is_fifo(),
+            "git's own refusal leaves the stray file untouched"
+        );
+        assert!(
+            !b.merge_in_progress(),
+            "git refused before ever starting the merge - no MERGE_HEAD to speak of"
+        );
+    }
+
+    #[test]
+    fn integrate_propagates_a_genuine_commit_failure_finalizing_a_resolved_merge_instead_of_treating_it_as_a_no_op(
+    ) {
+        // worktree.rs:635 treats ONLY a "nothing to commit" failure from the finalizing
+        // `git commit --no-edit` as a benign no-op (an already-empty resolution, tolerated
+        // for crash-resume idempotency). Any OTHER failure - a hook rejecting the commit,
+        // a signing failure, disk full - must propagate as a genuine `Err`, never be
+        // silently swallowed as if the merge had finished; swallowing it would let
+        // `integrate` fall through to `git merge --no-edit` on the run branch believing a
+        // merge commit exists that was never actually made.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wa = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wb = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let a = Worktree::create(&repo_path, wa.to_str().unwrap(), "rigger/u/a", "").unwrap();
+        let b = Worktree::create(&repo_path, wb.to_str().unwrap(), "rigger/u/b", "").unwrap();
+        std::fs::write(wa.join("shared.txt"), "A version\n").unwrap();
+        a.integrate("rigger: integrate a").unwrap().expect_merged();
+        std::fs::write(wb.join("shared.txt"), "B version\n").unwrap();
+        b.commit("rigger: b's own work").unwrap();
+        match b.integrate("rigger: integrate b").unwrap() {
+            IntegrateOutcome::Conflict(_) => {}
+            IntegrateOutcome::Merged(_) => panic!("a divergent add/add merge must conflict"),
+        }
+        assert!(b.merge_in_progress());
+
+        // Resolve the conflict for real, to content that differs from both sides so the
+        // finalizing commit is never itself a no-op.
+        std::fs::write(wb.join("shared.txt"), "RESOLVED\n").unwrap();
+        run_git(wb.to_str().unwrap(), &["add", "--", "shared.txt"]).unwrap();
+
+        // A worktree's hooks are the MAIN repo's (git worktree add shares one hooks dir) -
+        // install a pre-commit hook there that always rejects with a message that does NOT
+        // contain "nothing to commit": a genuine, unrelated failure.
+        let hooks_dir = repo.path().join(".git").join("hooks");
+        std::fs::create_dir_all(&hooks_dir).unwrap();
+        let hook_path = hooks_dir.join("pre-commit");
+        std::fs::write(
+            &hook_path,
+            "#!/bin/sh\necho 'boom: forced hook failure' >&2\nexit 1\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&hook_path).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&hook_path, perms).unwrap();
+        }
+
+        let err = match b.integrate("rigger: integrate b (finalize)") {
+            Err(e) => e,
+            Ok(_) => panic!("a genuine commit failure must surface as an Err, not a silent no-op"),
+        };
+        assert!(
+            err.0.contains("boom: forced hook failure"),
+            "the real failure must propagate verbatim: {}",
+            err.0
+        );
+        assert!(
+            b.merge_in_progress(),
+            "a failed finalize must leave the merge in progress, not silently drop it"
+        );
+    }
+
+    #[test]
+    fn integrate_finalizes_a_divergent_merge_that_nets_to_an_empty_commit_when_both_sides_converge_on_identical_content(
+    ) {
+        // The MIRROR of the genuine-failure test above: worktree.rs:635's "nothing to
+        // commit" guard exists for a real, reachable case - two worktrees branch off the
+        // SAME base and independently add the SAME file with IDENTICAL content (an honest
+        // duplicate fix, not a conflict). Git's 3-way merge resolves "both sides added the
+        // same content" cleanly (no markers), but because the histories diverged, `--no-ff`
+        // still requires a merge commit for lineage - and because the resulting tree is
+        // byte-identical to the unit's own current HEAD, `git commit --no-edit` reports
+        // "nothing to commit, working tree clean" even though a real merge (MERGE_HEAD) is
+        // in progress. That must be tolerated as a benign no-op and still finalize as a
+        // successful [`IntegrateOutcome::Merged`] - never surfaced as a conflict, and never
+        // silently dropped without ever finalizing the merge commit either.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wa = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wb = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let a = Worktree::create(&repo_path, wa.to_str().unwrap(), "rigger/u/a", "").unwrap();
+        let b = Worktree::create(&repo_path, wb.to_str().unwrap(), "rigger/u/b", "").unwrap();
+
+        std::fs::write(wa.join("shared.txt"), "identical\n").unwrap();
+        std::fs::write(wb.join("shared.txt"), "identical\n").unwrap();
+        a.integrate("rigger: integrate a").unwrap().expect_merged();
+        b.commit("rigger: b's own work").unwrap();
+
+        let commit = match b.integrate("rigger: integrate b").unwrap() {
+            IntegrateOutcome::Merged(c) => c,
+            IntegrateOutcome::Conflict(paths) => panic!(
+                "both sides adding IDENTICAL content must merge cleanly, not conflict: {paths:?}"
+            ),
+        };
+        assert!(
+            !commit.is_empty(),
+            "a real merge commit hash is still returned, even though its content is empty"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("shared.txt")).unwrap(),
+            "identical\n",
+            "the run branch carries the converged content either way"
+        );
+        assert!(
+            !b.merge_in_progress(),
+            "the merge must be finalized (MERGE_HEAD cleared), not left dangling"
+        );
+    }
+
+    #[test]
+    fn commits_since_base_lists_this_branchs_own_commits_oldest_first() {
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt =
+            Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/u/plan", "").unwrap();
+
+        // No commits beyond base yet.
+        assert_eq!(wt.commits_since_base().unwrap(), Vec::<String>::new());
+
+        std::fs::create_dir_all(wt_path.join("specs")).unwrap();
+        std::fs::write(wt_path.join("specs").join("90-foo.md"), "amend one\n").unwrap();
+        run_git(wt_path.to_str().unwrap(), &["add", "-A"]).unwrap();
+        run_git(
+            wt_path.to_str().unwrap(),
+            &["commit", "-q", "-m", "amend one"],
+        )
+        .unwrap();
+        let first = git(wt_path.to_str().unwrap(), &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+
+        std::fs::write(wt_path.join("specs").join("90-foo.md"), "amend two\n").unwrap();
+        run_git(wt_path.to_str().unwrap(), &["add", "-A"]).unwrap();
+        run_git(
+            wt_path.to_str().unwrap(),
+            &["commit", "-q", "-m", "amend two"],
+        )
+        .unwrap();
+        let second = git(wt_path.to_str().unwrap(), &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+
+        assert_eq!(
+            wt.commits_since_base().unwrap(),
+            vec![first, second],
+            "oldest-first, exactly the two commits beyond the run branch's HEAD"
+        );
+        wt.remove().unwrap();
+    }
+
+    #[test]
+    fn cherry_pick_onto_run_branch_lands_commits_preserving_the_original_shas() {
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt =
+            Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/u/plan", "").unwrap();
+
+        std::fs::create_dir_all(wt_path.join("specs")).unwrap();
+        std::fs::write(wt_path.join("specs").join("90-foo.md"), "amend\n").unwrap();
+        run_git(wt_path.to_str().unwrap(), &["add", "-A"]).unwrap();
+        run_git(wt_path.to_str().unwrap(), &["commit", "-q", "-m", "amend"]).unwrap();
+        let shas = wt.commits_since_base().unwrap();
+        assert_eq!(shas.len(), 1);
+
+        let landed = match wt.cherry_pick_onto_run_branch(&shas).unwrap() {
+            CherryPickOutcome::Picked(landed) => landed,
+            CherryPickOutcome::Conflict(detail) => {
+                panic!("a clean specs/-only cherry-pick must not conflict: {detail}")
+            }
+        };
+        assert_eq!(landed.len(), 1, "one commit in, one commit landed");
+
+        // The content landed on the run branch...
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("specs").join("90-foo.md")).unwrap(),
+            "amend\n",
+            "the cherry-picked content must be present on the run branch"
+        );
+        // ...and the landed sha is the run branch's new HEAD: a real, reachable,
+        // revertible commit on the run branch, whatever its relationship to the
+        // pre-landing sha (see `CherryPickOutcome::Picked`'s doc comment).
+        let run_head = git(&repo_path, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+        assert_eq!(
+            landed[0], run_head,
+            "the landed sha must be the run branch's new HEAD"
+        );
+        wt.remove().unwrap();
+    }
+
+    #[test]
+    fn cherry_pick_onto_run_branch_reports_a_conflict_and_leaves_the_run_branch_untouched() {
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        // The run branch independently gains a conflicting edit to the same spec path.
+        std::fs::create_dir_all(repo.path().join("specs")).unwrap();
+        std::fs::write(repo.path().join("specs").join("90-foo.md"), "operator\n").unwrap();
+        run_git(&repo_path, &["add", "-A"]).unwrap();
+        run_git(&repo_path, &["commit", "-q", "-m", "operator edit"]).unwrap();
+        let head_before = run_git(&repo_path, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+
+        // A plan worktree, branched from the PRE-operator-edit base, commits a
+        // DIFFERENT amendment to the same path - a genuine conflict on cherry-pick.
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt =
+            Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/u/plan", "").unwrap();
+        // Rewind the worktree branch to before the operator edit landed, so its own
+        // commit is a genuine divergent edit rather than a fast-forward.
+        run_git(wt_path.to_str().unwrap(), &["reset", "--hard", "HEAD~1"]).unwrap();
+        std::fs::create_dir_all(wt_path.join("specs")).unwrap();
+        std::fs::write(wt_path.join("specs").join("90-foo.md"), "planner\n").unwrap();
+        run_git(wt_path.to_str().unwrap(), &["add", "-A"]).unwrap();
+        run_git(
+            wt_path.to_str().unwrap(),
+            &["commit", "-q", "-m", "planner amend"],
+        )
+        .unwrap();
+        let sha = git(wt_path.to_str().unwrap(), &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+
+        match wt.cherry_pick_onto_run_branch(&[sha]).unwrap() {
+            CherryPickOutcome::Conflict(detail) => assert!(
+                detail.to_lowercase().contains("conflict"),
+                "the conflict detail names the conflict; got: {detail}"
+            ),
+            CherryPickOutcome::Picked(_) => {
+                panic!("a divergent edit to the same path must conflict, not land")
+            }
+        }
+
+        // The run branch is UNTOUCHED and no cherry-pick is left in progress.
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("specs").join("90-foo.md")).unwrap(),
+            "operator\n",
+            "the aborted cherry-pick must not alter the run branch"
+        );
+        let head_now = run_git(&repo_path, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+        assert_eq!(head_now, head_before, "HEAD is unchanged after the abort");
+        assert!(
+            !repo.path().join(".git").join("CHERRY_PICK_HEAD").exists(),
+            "no cherry-pick is left in progress after the abort"
+        );
+        wt.remove().unwrap();
+    }
+
+    #[test]
+    fn cherry_pick_onto_run_branch_is_idempotent_on_a_resumed_already_landed_sequence() {
+        // sdet-u88c4-cherry-pick-resume-not-idempotent / adv-u88c4-crash-resume-halts-
+        // the-whole-run-not-just-the-stage: a crash between THIS call's real git
+        // success and the caller recording it can mean the SAME shas get cherry-picked
+        // again on a resume - the caller recomputes `commits_since_base`, which is
+        // IDENTITY-based, and a cherry-pick mints a NEW commit object, so the ORIGINAL
+        // sha stays unreachable-by-identity from the run branch even once its content
+        // already landed. A second call with the SAME (pre-landing) shas must resolve
+        // to a benign no-op (`Picked(vec![])`), never a hard Err that would propagate
+        // through the caller's `?` and halt the WHOLE step/wave, not just this stage.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt =
+            Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/u/plan", "").unwrap();
+
+        std::fs::create_dir_all(wt_path.join("specs")).unwrap();
+        std::fs::write(wt_path.join("specs").join("90-foo.md"), "amend\n").unwrap();
+        run_git(wt_path.to_str().unwrap(), &["add", "-A"]).unwrap();
+        run_git(wt_path.to_str().unwrap(), &["commit", "-q", "-m", "amend"]).unwrap();
+        let shas = wt.commits_since_base().unwrap();
+        assert_eq!(shas.len(), 1);
+
+        // FIRST call: a real, fresh landing (the pre-crash attempt).
+        match wt.cherry_pick_onto_run_branch(&shas).unwrap() {
+            CherryPickOutcome::Picked(landed) => assert_eq!(landed.len(), 1),
+            CherryPickOutcome::Conflict(detail) => {
+                panic!("a clean specs/-only cherry-pick must not conflict: {detail}")
+            }
+        }
+        let head_after_first = git(&repo_path, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+
+        // SECOND call with the SAME (original, pre-landing) `shas` - the resumed-
+        // process shape: `commits_since_base` would recompute this identical list,
+        // since the landed content sits on the run branch under a DIFFERENT
+        // (cherry-pick-minted) commit object.
+        let second = wt.cherry_pick_onto_run_branch(&shas);
+        assert!(
+            second.is_ok(),
+            "a resumed already-landed cherry-pick must resolve, never hard-error: {:?}",
+            second.err().map(|e| e.0)
+        );
+        match second.unwrap() {
+            CherryPickOutcome::Picked(landed) => assert!(
+                landed.is_empty(),
+                "nothing NEW lands the second time - it was already there; got {landed:?}"
+            ),
+            CherryPickOutcome::Conflict(detail) => {
+                panic!("an already-landed resume must never be treated as a conflict: {detail}")
+            }
+        }
+        // The run branch is UNCHANGED by the idempotent second call, and no
+        // cherry-pick is left in progress.
+        assert_eq!(
+            git(&repo_path, &["rev-parse", "HEAD"]).unwrap().trim(),
+            head_after_first,
+            "the second, already-applied call must not move the run branch's HEAD"
+        );
+        assert!(
+            !repo.path().join(".git").join("CHERRY_PICK_HEAD").exists(),
+            "no cherry-pick is left in progress after the idempotent no-op"
+        );
+        wt.remove().unwrap();
+    }
+
+    #[test]
+    fn cherry_pick_onto_run_branch_self_heals_a_leftover_marker_from_a_crash_mid_skip_loop() {
+        // adv-u88c4-r4-cherry-pick-in-progress-marker-survives-a-crash-mid-skip-loop:
+        // a crash WHILE the skip-loop is running (not merely after the whole sequence
+        // finishes, the case the sibling idempotency test above covers) leaves a real
+        // git CHERRY_PICK_HEAD sequencer marker on disk - zero unmerged files, since
+        // the pause is on an empty re-pick, never a conflict - that a fresh call must
+        // not choke on.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt =
+            Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/u/plan", "").unwrap();
+
+        // Three commits, each adding its OWN new path - no real conflicts among them.
+        let mut shas = Vec::new();
+        for (name, content) in [
+            ("90-a.md", "amend a\n"),
+            ("90-b.md", "amend b\n"),
+            ("90-c.md", "amend c\n"),
+        ] {
+            std::fs::create_dir_all(wt_path.join("specs")).unwrap();
+            std::fs::write(wt_path.join("specs").join(name), content).unwrap();
+            run_git(wt_path.to_str().unwrap(), &["add", "-A"]).unwrap();
+            run_git(
+                wt_path.to_str().unwrap(),
+                &["commit", "-q", "-m", &format!("amend {name}")],
+            )
+            .unwrap();
+            shas.push(
+                git(wt_path.to_str().unwrap(), &["rev-parse", "HEAD"])
+                    .unwrap()
+                    .trim()
+                    .to_string(),
+            );
+        }
+        assert_eq!(shas.len(), 3);
+
+        // Pre-land the SECOND commit's content directly, independent of the
+        // interrupted sequence below - modeling content that already reached the
+        // run branch by some earlier means, so replaying it in the sequence below
+        // becomes an EMPTY re-pick (git pauses on it) rather than a real apply.
+        run_git(&repo_path, &["cherry-pick", &shas[1]]).unwrap();
+        assert!(
+            repo.path().join("specs").join("90-b.md").exists(),
+            "precondition: the second commit's content is already present before the \
+             interrupted sequence starts"
+        );
+
+        // Simulate the crash: run the RAW multi-sha cherry-pick directly (bypassing
+        // this crate's own skip-loop entirely) so it naturally pauses on the second,
+        // now-empty commit - exactly the state a process death mid skip-loop leaves,
+        // never a synthetic one.
+        let raw = run_git(&repo_path, &["cherry-pick", &shas[0], &shas[1], &shas[2]]);
+        assert!(
+            raw.is_err(),
+            "the raw sequence must pause on the empty second commit, not succeed outright"
+        );
+        assert!(
+            repo.path().join(".git").join("CHERRY_PICK_HEAD").exists(),
+            "precondition: a cherry-pick sequencer marker is left in progress"
+        );
+        assert!(
+            run_git(&repo_path, &["ls-files", "--unmerged"])
+                .unwrap()
+                .trim()
+                .is_empty(),
+            "precondition: the pause carries ZERO unmerged files - it is not a conflict"
+        );
+
+        // A FRESH call with the ORIGINAL (identity) shas, exactly as a resumed
+        // process recomputing `commits_since_base` would - must self-heal the
+        // leftover marker and complete, never hard-error on git's own "cherry-pick
+        // is already in progress".
+        let resumed = wt.cherry_pick_onto_run_branch(&shas);
+        assert!(
+            resumed.is_ok(),
+            "a leftover in-progress marker from a crash mid skip-loop must be self-healed, \
+             never surfaced as a hard error: {:?}",
+            resumed.err().map(|e| e.0)
+        );
+        match resumed.unwrap() {
+            CherryPickOutcome::Conflict(detail) => {
+                panic!(
+                    "a self-healed, non-conflicting sequence must not read as a conflict: {detail}"
+                )
+            }
+            CherryPickOutcome::Picked(_) => {}
+        }
+        assert!(
+            !repo.path().join(".git").join("CHERRY_PICK_HEAD").exists(),
+            "no cherry-pick is left in progress after the self-healed retry"
+        );
+        for name in ["90-a.md", "90-b.md", "90-c.md"] {
+            assert!(
+                repo.path().join("specs").join(name).exists(),
+                "every commit's content must be present on the run branch after the \
+                 self-healed retry completes the interrupted sequence: missing {name}"
+            );
+        }
+        wt.remove().unwrap();
+    }
+
+    #[test]
+    fn cherry_pick_onto_run_branch_self_heals_a_leftover_marker_ahead_of_two_chained_empty_commits()
+    {
+        // arch-u88c4-r7-classification-skip-is-single-shot-not-a-loop /
+        // sdet-u88c4-r7-classification-skip-confirmed-live-and-untested-for-2plus-
+        // chained-empties: the leftover-marker classification above issues exactly
+        // ONE `--skip` before re-checking CHERRY_PICK_HEAD. That is enough for the
+        // sibling test above (a SINGLE empty commit ahead of the marker), but an
+        // ordinary multi-commit plan amendment can leave TWO OR MORE chained empty
+        // commits ahead of the leftover marker - each `--skip` only ever advances the
+        // sequencer by ONE, so a single attempt still finds CHERRY_PICK_HEAD set on
+        // the SECOND empty commit and (pre-fix) hard-errors on a state that is
+        // actually still resolvable, reopening
+        // adv-u88c4-r4-cherry-pick-in-progress-marker-survives-a-crash-mid-skip-loop
+        // through a narrower trigger.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt =
+            Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/u/plan", "").unwrap();
+
+        // Three commits, each adding its OWN new path - no real conflicts among them.
+        let mut shas = Vec::new();
+        for (name, content) in [
+            ("90-a.md", "amend a\n"),
+            ("90-b.md", "amend b\n"),
+            ("90-c.md", "amend c\n"),
+        ] {
+            std::fs::create_dir_all(wt_path.join("specs")).unwrap();
+            std::fs::write(wt_path.join("specs").join(name), content).unwrap();
+            run_git(wt_path.to_str().unwrap(), &["add", "-A"]).unwrap();
+            run_git(
+                wt_path.to_str().unwrap(),
+                &["commit", "-q", "-m", &format!("amend {name}")],
+            )
+            .unwrap();
+            shas.push(
+                git(wt_path.to_str().unwrap(), &["rev-parse", "HEAD"])
+                    .unwrap()
+                    .trim()
+                    .to_string(),
+            );
+        }
+        assert_eq!(shas.len(), 3);
+
+        // Pre-land the FIRST *and* SECOND commits' content directly, independent of
+        // the interrupted sequence below - so replaying the sequence pauses on the
+        // first (empty), and skipping ONCE lands on the second, which is ALSO empty:
+        // exactly the "2+ chained empty commits ahead of the marker" shape.
+        run_git(&repo_path, &["cherry-pick", &shas[0], &shas[1]]).unwrap();
+        for name in ["90-a.md", "90-b.md"] {
+            assert!(
+                repo.path().join("specs").join(name).exists(),
+                "precondition: {name}'s content is already present before the \
+                 interrupted sequence starts"
+            );
+        }
+
+        // Simulate the crash: run the RAW multi-sha cherry-pick directly (bypassing
+        // this crate's own skip-loop entirely) so it naturally pauses on the first,
+        // now-empty commit - exactly the state a process death right after the pause
+        // (before even ONE skip ran) leaves, never a synthetic one.
+        let raw = run_git(&repo_path, &["cherry-pick", &shas[0], &shas[1], &shas[2]]);
+        assert!(
+            raw.is_err(),
+            "the raw sequence must pause on the empty first commit, not succeed outright"
+        );
+        assert!(
+            repo.path().join(".git").join("CHERRY_PICK_HEAD").exists(),
+            "precondition: a cherry-pick sequencer marker is left in progress"
+        );
+        assert!(
+            run_git(&repo_path, &["ls-files", "--unmerged"])
+                .unwrap()
+                .trim()
+                .is_empty(),
+            "precondition: the pause carries ZERO unmerged files - it is not a conflict"
+        );
+
+        // A FRESH call with the ORIGINAL (identity) shas, exactly as a resumed
+        // process recomputing `commits_since_base` would - must self-heal the
+        // leftover marker THROUGH BOTH chained empty commits and complete, never
+        // hard-error after only one skip.
+        let resumed = wt.cherry_pick_onto_run_branch(&shas);
+        assert!(
+            resumed.is_ok(),
+            "a leftover in-progress marker ahead of two chained empty commits must be \
+             self-healed, never surfaced as a hard error: {:?}",
+            resumed.err().map(|e| e.0)
+        );
+        match resumed.unwrap() {
+            CherryPickOutcome::Conflict(detail) => {
+                panic!(
+                    "a self-healed, non-conflicting sequence must not read as a conflict: {detail}"
+                )
+            }
+            CherryPickOutcome::Picked(_) => {}
+        }
+        assert!(
+            !repo.path().join(".git").join("CHERRY_PICK_HEAD").exists(),
+            "no cherry-pick is left in progress after the self-healed retry"
+        );
+        for name in ["90-a.md", "90-b.md", "90-c.md"] {
+            assert!(
+                repo.path().join("specs").join(name).exists(),
+                "every commit's content must be present on the run branch after the \
+                 self-healed retry completes the interrupted sequence: missing {name}"
+            );
+        }
+        wt.remove().unwrap();
+    }
+
+    #[test]
+    fn cherry_pick_onto_run_branch_self_heals_a_leftover_marker_with_no_sequencer_todo_file() {
+        // adj-u88c4-r8-verdict-reject / sdet-u88c4-r8-single-commit-leftover-marker-
+        // hard-errors-on-missing-sequencer-todo: git NEVER materializes
+        // `.git/sequencer/todo` for a cherry-pick whose remaining set is exactly ONE
+        // sha - a plain `git cherry-pick <sha>` never engages the sequencer
+        // machinery at all, so `sequencer_todo_remaining`'s
+        // `std::fs::read_to_string` sees a genuine `NotFound`, not an empty file.
+        // This is the ORDINARY shape for a single-commit plan-stage amendment
+        // resumed after a crash, not a corner case - the leftover-marker
+        // classification above must resolve it with one `--skip`, never hard-error.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt =
+            Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/u/plan", "").unwrap();
+
+        std::fs::create_dir_all(wt_path.join("specs")).unwrap();
+        std::fs::write(wt_path.join("specs").join("90-a.md"), "amend a\n").unwrap();
+        run_git(wt_path.to_str().unwrap(), &["add", "-A"]).unwrap();
+        run_git(
+            wt_path.to_str().unwrap(),
+            &["commit", "-q", "-m", "amend 90-a.md"],
+        )
+        .unwrap();
+        let sha = git(wt_path.to_str().unwrap(), &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+        let shas = vec![sha.clone()];
+
+        // Pre-land the ONLY commit's content directly, independent of the
+        // interrupted attempt below, so replaying it becomes an EMPTY re-pick.
+        run_git(&repo_path, &["cherry-pick", &sha]).unwrap();
+        assert!(
+            repo.path().join("specs").join("90-a.md").exists(),
+            "precondition: the sole commit's content is already present"
+        );
+
+        // Simulate the crash: a RAW single-sha cherry-pick (bypassing this crate's
+        // own skip-loop entirely), the exact same invocation shape a call with
+        // `shas.len() == 1` makes - so it naturally pauses empty with NO sequencer
+        // directory ever created.
+        let raw = run_git(&repo_path, &["cherry-pick", &sha]);
+        assert!(
+            raw.is_err(),
+            "the raw single-sha pick must pause on the empty commit, not succeed outright"
+        );
+        assert!(
+            repo.path().join(".git").join("CHERRY_PICK_HEAD").exists(),
+            "precondition: a cherry-pick sequencer marker is left in progress"
+        );
+        assert!(
+            run_git(&repo_path, &["ls-files", "--unmerged"])
+                .unwrap()
+                .trim()
+                .is_empty(),
+            "precondition: the pause carries ZERO unmerged files - it is not a conflict"
+        );
+        let todo_path = git(&repo_path, &["rev-parse", "--git-path", "sequencer/todo"])
+            .unwrap()
+            .trim()
+            .to_string();
+        let todo_path = std::path::Path::new(&todo_path);
+        let todo_path = if todo_path.is_absolute() {
+            todo_path.to_path_buf()
+        } else {
+            std::path::Path::new(&repo_path).join(todo_path)
+        };
+        assert!(
+            !todo_path.exists(),
+            "precondition: git never materializes sequencer/todo for a genuinely \
+             single-sha cherry-pick - {} must be ABSENT",
+            todo_path.display()
+        );
+
+        // A FRESH call with the ORIGINAL (identity) single-element shas, exactly as
+        // a resumed process recomputing a shrunk-to-one `still_pending` would - must
+        // self-heal the leftover marker despite the missing sequencer/todo file,
+        // never hard-error on it.
+        let resumed = wt.cherry_pick_onto_run_branch(&shas);
+        assert!(
+            resumed.is_ok(),
+            "a leftover in-progress marker with no sequencer/todo file must be \
+             self-healed, never surfaced as a hard error: {:?}",
+            resumed.err().map(|e| e.0)
+        );
+        match resumed.unwrap() {
+            CherryPickOutcome::Conflict(detail) => {
+                panic!("a self-healed, non-conflicting pause must not read as a conflict: {detail}")
+            }
+            CherryPickOutcome::Picked(_) => {}
+        }
+        assert!(
+            !repo.path().join(".git").join("CHERRY_PICK_HEAD").exists(),
+            "no cherry-pick is left in progress after the self-healed retry"
+        );
+        assert!(repo.path().join("specs").join("90-a.md").exists());
+        wt.remove().unwrap();
+    }
+
+    #[test]
+    fn cherry_pick_onto_run_branch_self_heals_when_a_multi_commit_amendment_shrinks_to_one_still_pending(
+    ) {
+        // adv-u88c4-r8-single-commit-trigger-is-any-still-pending-len-1-not-just-
+        // single-commit-units: the sibling test above proves the missing-
+        // sequencer/todo trigger with a literal one-commit-total unit; this proves
+        // the trigger is reachable from the conductor's REAL, routine steady state
+        // too - an ordinary multi-commit plan amendment whose `still_pending` set
+        // has shrunk to exactly one sha across two separate calls (all-but-one of
+        // its commits already confirmed landed), never merely a synthetic single-
+        // commit unit.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt =
+            Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/u/plan", "").unwrap();
+
+        let mut shas = Vec::new();
+        for (name, content) in [
+            ("90-a.md", "amend a\n"),
+            ("90-b.md", "amend b\n"),
+            ("90-c.md", "amend c\n"),
+        ] {
+            std::fs::create_dir_all(wt_path.join("specs")).unwrap();
+            std::fs::write(wt_path.join("specs").join(name), content).unwrap();
+            run_git(wt_path.to_str().unwrap(), &["add", "-A"]).unwrap();
+            run_git(
+                wt_path.to_str().unwrap(),
+                &["commit", "-q", "-m", &format!("amend {name}")],
+            )
+            .unwrap();
+            shas.push(
+                git(wt_path.to_str().unwrap(), &["rev-parse", "HEAD"])
+                    .unwrap()
+                    .trim()
+                    .to_string(),
+            );
+        }
+        assert_eq!(shas.len(), 3);
+
+        // CALL 1: a real, ordinary landing of the first two commits - mirroring the
+        // conductor calling `cherry_pick_onto_run_branch(&still_pending)` while two
+        // of the amendment's three commits are still pending.
+        let first_call = shas[0..2].to_vec();
+        let first = wt.cherry_pick_onto_run_branch(&first_call).unwrap();
+        match first {
+            CherryPickOutcome::Picked(landed) => assert_eq!(landed.len(), 2),
+            CherryPickOutcome::Conflict(detail) => {
+                panic!("the first two commits must land cleanly: {detail}")
+            }
+        }
+        for name in ["90-a.md", "90-b.md"] {
+            assert!(repo.path().join("specs").join(name).exists());
+        }
+
+        // The conductor now recomputes `still_pending` down to the ONE commit its
+        // patch-id check has not yet confirmed: `shas[2]` alone.
+        let still_pending = vec![shas[2].clone()];
+
+        // That sole remaining commit's content is separately, coincidentally
+        // already on the run branch (an out-of-band landing, or a duplicate
+        // amendment) - so a call with this single-element list pauses empty too.
+        run_git(&repo_path, &["cherry-pick", &shas[2]]).unwrap();
+        assert!(repo.path().join("specs").join("90-c.md").exists());
+
+        // Simulate a crash mid this SECOND, single-remaining-sha call: the raw
+        // single-sha invocation the crate's own fresh path would have made.
+        let raw = run_git(&repo_path, &["cherry-pick", &shas[2]]);
+        assert!(
+            raw.is_err(),
+            "the raw single-sha pick must pause on the empty commit, not succeed outright"
+        );
+        assert!(repo.path().join(".git").join("CHERRY_PICK_HEAD").exists());
+        assert!(run_git(&repo_path, &["ls-files", "--unmerged"])
+            .unwrap()
+            .trim()
+            .is_empty());
+        let todo_path = git(&repo_path, &["rev-parse", "--git-path", "sequencer/todo"])
+            .unwrap()
+            .trim()
+            .to_string();
+        let todo_path = std::path::Path::new(&todo_path);
+        let todo_path = if todo_path.is_absolute() {
+            todo_path.to_path_buf()
+        } else {
+            std::path::Path::new(&repo_path).join(todo_path)
+        };
+        assert!(
+            !todo_path.exists(),
+            "precondition: a single-element still_pending call never materializes \
+             sequencer/todo either - {} must be ABSENT",
+            todo_path.display()
+        );
+
+        // A FRESH call with the SAME shrunk-to-one still_pending list, exactly as a
+        // resumed conductor recomputing it would - must self-heal, never hard-error.
+        let resumed = wt.cherry_pick_onto_run_branch(&still_pending);
+        assert!(
+            resumed.is_ok(),
+            "a shrunk-to-one still_pending leftover marker with no sequencer/todo \
+             file must be self-healed, never surfaced as a hard error: {:?}",
+            resumed.err().map(|e| e.0)
+        );
+        match resumed.unwrap() {
+            CherryPickOutcome::Conflict(detail) => {
+                panic!("a self-healed, non-conflicting pause must not read as a conflict: {detail}")
+            }
+            CherryPickOutcome::Picked(_) => {}
+        }
+        assert!(!repo.path().join(".git").join("CHERRY_PICK_HEAD").exists());
+        for name in ["90-a.md", "90-b.md", "90-c.md"] {
+            assert!(repo.path().join("specs").join(name).exists());
+        }
+        wt.remove().unwrap();
+    }
+
+    #[test]
+    fn patch_id_is_stable_across_a_cherry_pick_but_differs_for_different_content() {
+        // op-u88c4-next-round-plan-commit-landing-is-log-carried-and-idempotent, item
+        // 2: "an equivalent commit is reachable from the run branch by patch-id" -
+        // this is the git-native, CONTENT-based (never tree-POSITION-based) identity
+        // `find_landed_by_patch_id` is built on. A cherry-pick mints a brand new
+        // commit object (different parent, timestamp, sha) but must carry the SAME
+        // patch-id as its original, since `git patch-id` hashes only the diff.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt =
+            Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/u/plan", "").unwrap();
+
+        std::fs::create_dir_all(wt_path.join("specs")).unwrap();
+        std::fs::write(wt_path.join("specs").join("90-a.md"), "amend a\n").unwrap();
+        run_git(wt_path.to_str().unwrap(), &["add", "-A"]).unwrap();
+        // A FIXED, deliberately old author/committer date - never the wall-clock "now"
+        // a bare `git commit` would use - so the cherry-pick below (which stamps its
+        // OWN committer time as real "now") cannot coincidentally reproduce a
+        // byte-identical commit object in the rare same-committer-second case (see the
+        // sibling idempotency tests' identical guard) - which would defeat this very
+        // test's own `assert_ne!` below.
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(wt_path.to_str().unwrap())
+            .args(["commit", "-q", "-m", "amend a"])
+            .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00")
+            .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "fixed-date commit failed");
+        let original = git(wt_path.to_str().unwrap(), &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+
+        let landed = match wt
+            .cherry_pick_onto_run_branch(std::slice::from_ref(&original))
+            .unwrap()
+        {
+            CherryPickOutcome::Picked(landed) => landed,
+            CherryPickOutcome::Conflict(detail) => {
+                panic!("a clean specs/-only cherry-pick must not conflict: {detail}")
+            }
+        };
+        assert_eq!(landed.len(), 1);
+        assert_ne!(
+            landed[0], original,
+            "a cherry-pick mints a genuinely different commit object"
+        );
+
+        assert_eq!(
+            wt.patch_id(&original).unwrap(),
+            wt.patch_id(&landed[0]).unwrap(),
+            "the same content re-committed by a cherry-pick must carry the SAME patch-id"
+        );
+
+        // A DIFFERENT commit (different content) must carry a DIFFERENT patch-id -
+        // proving this is a real content hash, not a constant.
+        std::fs::write(wt_path.join("specs").join("90-b.md"), "amend b\n").unwrap();
+        run_git(wt_path.to_str().unwrap(), &["add", "-A"]).unwrap();
+        run_git(
+            wt_path.to_str().unwrap(),
+            &["commit", "-q", "-m", "amend b"],
+        )
+        .unwrap();
+        let other = git(wt_path.to_str().unwrap(), &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+        assert_ne!(
+            wt.patch_id(&original).unwrap(),
+            wt.patch_id(&other).unwrap(),
+            "different content must carry a different patch-id"
+        );
+
+        wt.remove().unwrap();
+    }
+
+    #[test]
+    fn find_landed_by_patch_id_recovers_by_content_never_by_position() {
+        // op-u88c4-next-round-plan-commit-landing-is-log-carried-and-idempotent, item
+        // 2, superseding the removed `already_landed_commits` (a tree-POSITION
+        // heuristic UPHELD REJECT three times: arch-u88c4-r6-operator-ruling-
+        // unimplemented-still-a-heuristic et al.): the recovery must find an
+        // already-landed commit by its CONTENT identity, regardless of what else has
+        // landed on the run branch in between - the exact case the old positional
+        // walk could not handle (an intervening, unrelated commit shifts every
+        // position).
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt =
+            Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/u/plan", "").unwrap();
+
+        std::fs::create_dir_all(wt_path.join("specs")).unwrap();
+        std::fs::write(wt_path.join("specs").join("98-diverged.md"), "amend\n").unwrap();
+        run_git(wt_path.to_str().unwrap(), &["add", "-A"]).unwrap();
+        run_git(wt_path.to_str().unwrap(), &["commit", "-q", "-m", "amend"]).unwrap();
+        let original = git(wt_path.to_str().unwrap(), &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+
+        let landed = match wt
+            .cherry_pick_onto_run_branch(std::slice::from_ref(&original))
+            .unwrap()
+        {
+            CherryPickOutcome::Picked(landed) => landed,
+            CherryPickOutcome::Conflict(detail) => {
+                panic!("a clean specs/-only cherry-pick must not conflict: {detail}")
+            }
+        };
+        assert_eq!(landed.len(), 1);
+
+        // MEANWHILE: an unrelated commit lands on the run branch - the shape that
+        // broke the old position-based walk.
+        std::fs::write(repo.path().join("specs").join("99-unrelated.md"), "x\n").unwrap();
+        run_git(&repo_path, &["add", "-A"]).unwrap();
+        run_git(&repo_path, &["commit", "-q", "-m", "unrelated meanwhile"]).unwrap();
+
+        let recovered = wt
+            .find_landed_by_patch_id(&original, 50)
+            .unwrap()
+            .expect("content-based recovery must succeed despite the intervening commit");
+        assert_eq!(
+            recovered, landed[0],
+            "the recovered sha must be the real, reachable run-branch commit"
+        );
+
+        // Content that was never landed at all must never be confirmed.
+        std::fs::write(wt_path.join("specs").join("never-landed.md"), "nope\n").unwrap();
+        run_git(wt_path.to_str().unwrap(), &["add", "-A"]).unwrap();
+        run_git(
+            wt_path.to_str().unwrap(),
+            &["commit", "-q", "-m", "never landed"],
+        )
+        .unwrap();
+        let never_landed = git(wt_path.to_str().unwrap(), &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+        assert_eq!(
+            wt.find_landed_by_patch_id(&never_landed, 50).unwrap(),
+            None,
+            "content that was never landed must never be confirmed - never a guess"
+        );
+
+        // A window too narrow to reach the real match must also refuse to confirm -
+        // never a guess beyond what was actually searched.
+        std::fs::write(repo.path().join("specs").join("100-filler.md"), "y\n").unwrap();
+        run_git(&repo_path, &["add", "-A"]).unwrap();
+        run_git(&repo_path, &["commit", "-q", "-m", "filler 1"]).unwrap();
+        std::fs::write(repo.path().join("specs").join("101-filler.md"), "z\n").unwrap();
+        run_git(&repo_path, &["add", "-A"]).unwrap();
+        run_git(&repo_path, &["commit", "-q", "-m", "filler 2"]).unwrap();
+        assert_eq!(
+            wt.find_landed_by_patch_id(&original, 2).unwrap(),
+            None,
+            "a window that does not reach the real match must not confirm it"
+        );
+
+        wt.remove().unwrap();
+    }
+
+    #[test]
+    fn cherry_pick_onto_run_branch_self_heals_a_leftover_conflict_marker_as_conflict() {
+        // op-u88c4-next-round-plan-commit-landing-is-log-carried-and-idempotent, item
+        // 3 (GIT IN-PROGRESS STATE IS CLASSIFIED EXPLICITLY): a leftover
+        // CHERRY_PICK_HEAD from an earlier, crashed call that DOES carry unmerged
+        // files is a real conflict from that earlier call, not an empty-commit pause
+        // - it must be reported as `Conflict`, never blindly discarded and retried
+        // as if nothing had happened.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        std::fs::create_dir_all(repo.path().join("specs")).unwrap();
+        std::fs::write(repo.path().join("specs").join("90-a.md"), "base\n").unwrap();
+        run_git(&repo_path, &["add", "-A"]).unwrap();
+        run_git(&repo_path, &["commit", "-q", "-m", "seed 90-a.md"]).unwrap();
+
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt =
+            Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/u/plan", "").unwrap();
+        std::fs::write(wt_path.join("specs").join("90-a.md"), "amend on worktree\n").unwrap();
+        run_git(wt_path.to_str().unwrap(), &["add", "-A"]).unwrap();
+        run_git(
+            wt_path.to_str().unwrap(),
+            &["commit", "-q", "-m", "amend 90-a.md"],
+        )
+        .unwrap();
+        let sha = git(wt_path.to_str().unwrap(), &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+
+        // Meanwhile the run branch diverges on the SAME path, so a raw cherry-pick
+        // genuinely conflicts.
+        std::fs::write(repo.path().join("specs").join("90-a.md"), "diverged\n").unwrap();
+        run_git(&repo_path, &["add", "-A"]).unwrap();
+        run_git(&repo_path, &["commit", "-q", "-m", "diverge 90-a.md"]).unwrap();
+
+        // Simulate the crash: a raw cherry-pick left mid-conflict, bypassing this
+        // crate's own conflict handling entirely.
+        let raw = run_git(&repo_path, &["cherry-pick", &sha]);
+        assert!(raw.is_err(), "the raw cherry-pick must conflict");
+        assert!(
+            repo.path().join(".git").join("CHERRY_PICK_HEAD").exists(),
+            "precondition: a cherry-pick sequencer marker is left in progress"
+        );
+        assert!(
+            !run_git(&repo_path, &["ls-files", "--unmerged"])
+                .unwrap()
+                .trim()
+                .is_empty(),
+            "precondition: the leftover marker DOES carry unmerged files - a real conflict"
+        );
+
+        let resumed = wt.cherry_pick_onto_run_branch(&[sha]);
+        assert!(
+            resumed.is_ok(),
+            "a leftover conflict marker must resolve, never hard-error: {:?}",
+            resumed.err().map(|e| e.0)
+        );
+        match resumed.unwrap() {
+            CherryPickOutcome::Conflict(_) => {}
+            CherryPickOutcome::Picked(landed) => panic!(
+                "a leftover marker WITH unmerged files is a real conflict, not a \
+                 resolvable pause: got Picked({landed:?})"
+            ),
+        }
+        assert!(
+            !repo.path().join(".git").join("CHERRY_PICK_HEAD").exists(),
+            "no cherry-pick is left in progress after the classified conflict"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("specs").join("90-a.md")).unwrap(),
+            "diverged\n",
+            "the run branch is left untouched by a leftover conflict marker"
+        );
+        wt.remove().unwrap();
+    }
+
+    #[test]
+    fn cherry_pick_onto_run_branch_reports_the_real_git_failure_not_a_wasted_skip_retry() {
+        // The retry loop's guard (`skips_left == 0 || is_conflicted(&out) ||
+        // !out.contains("previous cherry-pick is now empty")`) must break on the
+        // FIRST error for a failure that is neither a real conflict NOR the
+        // already-applied-empty marker this loop exists to skip past - a bad
+        // (nonexistent) sha is exactly that shape (git fails with "fatal: bad
+        // object", before any sequencer state even starts). Breaking immediately
+        // means `shas`' own fatal reason reaches the caller; mis-classifying it as
+        // skippable would instead waste a `git cherry-pick --skip` call (which
+        // itself fails with the unrelated "no cherry-pick in progress", since
+        // nothing was ever in progress) and surface THAT confusing message
+        // instead of the real one.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt =
+            Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/u/plan", "").unwrap();
+
+        let bogus_sha = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef".to_string();
+        let err = match wt.cherry_pick_onto_run_branch(&[bogus_sha]) {
+            Ok(CherryPickOutcome::Picked(landed)) => {
+                panic!("a nonexistent sha must never land; got Picked({landed:?})")
+            }
+            Ok(CherryPickOutcome::Conflict(detail)) => {
+                panic!("a nonexistent sha is not a conflict; got Conflict({detail})")
+            }
+            Err(e) => e.0,
+        };
+        assert!(
+            err.contains("bad object"),
+            "the real git failure for a nonexistent sha must reach the caller; got: {err}"
+        );
+        assert!(
+            !err.contains("no cherry-pick in progress"),
+            "a fatal, non-conflict, non-empty failure must break immediately rather than \
+             waste a --skip retry that masks it with an unrelated message; got: {err}"
+        );
+        wt.remove().unwrap();
     }
 
     #[test]
