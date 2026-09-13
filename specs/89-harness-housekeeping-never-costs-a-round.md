@@ -40,6 +40,16 @@ spawn is halted by the liveness sweep with UNCOMMITTED changes in its worktree, 
 commits them as `wip(<unit>): tree of halted spawn <id>` before re-parking - the re-park prompt
 names that commit and says "finish and report; do not start over" - so a halt never discards a
 tree. The halt still charges no attempt (it is an infrastructure fault today and stays one).
+A CHECKPOINT NEVER COMMITS A HALF-MERGE, decided: every conductor commit into a unit worktree
+(the halt `wip`, the per-attempt checkpoint, the integration merge) first checks the worktree
+for an in-progress merge or cherry-pick (`MERGE_HEAD`, `CHERRY_PICK_HEAD`, unmerged index
+entries) and for conflict markers in tracked files; finding either it commits nothing, charges
+nothing and fails loud as an infrastructure fault naming the state and the worktree, and the run
+branch is never advanced to a commit whose tree carries conflict markers. On 2026-09-12 the
+attempt checkpoint ran `git add -A && git commit` over a merge someone had left in progress in
+the unit worktree, staged the marker-laden files as resolved, produced a merge commit with 2720
+conflict markers and integrated it as the unit's approved final round; the run branch had to be
+moved by hand.
 
 THE FAN-OUT IS A DEFINITION KNOB, decided: the number of units a run builds at once is
 `defaults.max_parallel_units` in workflow.yml (default 2), replacing the conductor constant
@@ -118,9 +128,12 @@ in-flight set; when its result lands the next step parks its successor.
 
 - [ ] a test proves A HALT NEVER DISCARDS A TREE: a spawn halted with uncommitted worktree
   changes has them committed as a `wip` commit on its branch before the re-park, whose prompt
-  names that commit, and the implementer persona text carries the checkpoint rule. This
-  criterion OWNS the halt path and the persona rule; scratch placement is criterion 2's, NOT
-  this one's.
+  names that commit, and the implementer persona text carries the checkpoint rule; and every
+  conductor commit into a unit worktree (halt `wip`, attempt checkpoint, integration) refuses
+  a worktree with an in-progress merge or cherry-pick or with conflict markers in tracked
+  files - commits nothing, charges nothing, fails loud naming the state - and the run branch
+  never advances to a tree carrying conflict markers. This criterion OWNS the halt path, the
+  checkpoint guard and the persona rule; scratch placement is criterion 2's, NOT this one's.
 - [ ] a test proves SCRATCH IS OUTSIDE THE STORE TREE: a spawn's `rigger scratch`, `TMPDIR` and
   `CARGO_TARGET_DIR` resolve under the cache root, never under any `.rigger`, the reaper and
   `validate` account for the new root, and the store-walk unit tests pass under a spawn's
